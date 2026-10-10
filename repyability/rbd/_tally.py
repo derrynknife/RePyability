@@ -28,6 +28,7 @@ import numpy as np
 
 from repyability.rbd import (
     _conditional,
+    _curves,
     _timeline_runs,
     _windows,
 )
@@ -183,7 +184,7 @@ class _ModuleRun:
         self.T = T
         self.working, self.broken, self.method = working, broken, method
         self.antithetic, self.n_jobs = antithetic, n_jobs
-        states = rbd._simulation_states(state, working | broken)
+        states = _curves._simulation_states(rbd, state, working | broken)
         if modules is None:
             modules = rbd._conditional_modules(working, broken)
         self.modules = modules
@@ -237,7 +238,9 @@ class _ModuleRun:
                 twin, T, working, broken, method, state
             )
             self.twin_sub = twin._modules_rbd(modules)
-            twin_states = twin._simulation_states(state, working | broken)
+            twin_states = _curves._simulation_states(
+                twin, state, working | broken
+            )
             self.twin_module_states = {
                 node: twin_states[node]
                 for node in modules

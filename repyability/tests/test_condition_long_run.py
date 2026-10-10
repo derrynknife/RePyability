@@ -13,7 +13,7 @@ import surpyval as surv
 
 from repyability import RepairableRBD
 from repyability.rbd import _condition_replacement as condition
-from repyability.rbd import _long_run
+from repyability.rbd import _curves, _long_run
 from repyability.rbd import routes as r
 
 W, E, LN = (
@@ -161,6 +161,6 @@ def test_the_routes():
     # Over time too (#161): followed from one inspection to the next.
     over = report["point_availability"]
     assert over.route == r.NUMERICAL
-    route, reason = rbd._node_over_time("a", "availability")
+    route, reason = _curves._node_over_time(rbd, "a", "availability")
     assert route == r.NUMERICAL and "replacement on condition" in reason
     assert 0.0 < float(np.ravel(rbd.point_availability(10.0))[0]) < 1.0

@@ -896,7 +896,7 @@ class _GroupsCurve:
     bend."""
 
     def __init__(self, groups: Sequence[OverTime]):
-        from .repairable_rbd import _settling
+        from ._curves import _settling
 
         self.groups = list(groups)
         self.settle, self.period = _settling(self.groups)
@@ -1131,7 +1131,7 @@ class GroupsCurve:
     members' failures by their causes (see ``GroupsSystem``)."""
 
     def __init__(self, rbd, curves: dict, system: GroupsSystem):
-        from .repairable_rbd import _settling
+        from ._curves import _settling
 
         self.rbd = rbd
         self.curves = curves

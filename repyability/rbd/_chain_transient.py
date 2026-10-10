@@ -417,7 +417,7 @@ class CrewCurve:
     taken over the chain."""
 
     def __init__(self, rbd, chain: Uniformized, nested: dict):
-        from .repairable_rbd import _settling
+        from ._curves import _settling
 
         self.rbd = rbd
         self.chain = chain

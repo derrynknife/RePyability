@@ -2090,7 +2090,9 @@ class SystemCurve:
         self.period = period
 
     def at(self, x: np.ndarray) -> np.ndarray:
-        return self.rbd._curves_at(self.curves, x, set(), set(), "p")
+        from . import _curves
+
+        return _curves._curves_at(self.rbd, self.curves, x, set(), set(), "p")
 
     def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
         """Its rate of change at each ``x``: each of its nodes' (see

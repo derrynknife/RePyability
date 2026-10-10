@@ -21,7 +21,7 @@ import scipy.linalg
 import surpyval as surv
 
 from repyability import BetaFactor, CCFGroup, NodeState, RepairableRBD
-from repyability.rbd import _ccf_groups
+from repyability.rbd import _ccf_groups, _curves
 from repyability.rbd.rbd import RBD
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
@@ -142,7 +142,7 @@ def enumerated(rbd, availability: dict):
 def test_criticality_and_fussell_vesely_by_enumeration():
     rbd = bridge()
     t = 40.0
-    curves = rbd._availability_curves(t, set())
+    curves = _curves._availability_curves(rbd, t, set())
     availability = {
         n: float(c.at(np.array([t]))[0]) for n, c in curves.items()
     }
@@ -266,7 +266,7 @@ def test_with_crews_the_chain_against_its_matrix_exponential():
     rbd = pair_then_c(repair_crews=1)
     times = np.array([0.5, 4.0, 40.0])
     chain = rbd._crew_chain(frozenset())
-    start = rbd._crew_start(chain, {})
+    start = _curves._crew_start(rbd, chain, {})
     p, _ = rbd._chain_probabilities(set(), set())
     q = {n: 1.0 - v for n, v in p.items()}
     generator = np.asarray(

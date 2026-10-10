@@ -25,6 +25,7 @@ from repyability.rbd import (
     _ccf_chain,
     _ccf_groups,
     _chain_transient,
+    _curves,
     _importance_time,
     _long_run,
     _rates,
@@ -431,8 +432,8 @@ def _independent_rates(
     components jump, and each one's part in each jump (see
     ``_rates``)."""
     # A little past the last time, for the differences there.
-    curves = rbd._availability_curves(
-        1.01 * scale, working | broken, state=states
+    curves = _curves._availability_curves(
+        rbd, 1.01 * scale, working | broken, state=states
     )
 
     def importances(values: dict) -> dict:
@@ -469,12 +470,13 @@ def _crew_rates(
     crews' uniformized chain, exact; the second, the nested RBDs', each
     one's Birnbaum importance over the chain times its own rate, as for
     independent components, and their jumps are split likewise."""
-    nested = rbd._require_crew_over_time(frozenset(working | broken))
+    nested = _curves._require_crew_over_time(rbd, frozenset(working | broken))
     chain = rbd._crew_chain(frozenset(working | broken))
     size, count = len(chain.probabilities), len(chain.nodes)
     patterns = 2 ** len(nested)
     ups = [
-        rbd._crew_vectors(
+        _curves._crew_vectors(
+            rbd,
             chain,
             {
                 node: np.full(size, float((m >> j) & 1))
@@ -486,16 +488,16 @@ def _crew_rates(
         )[0]
         for m in range(patterns)
     ]
-    uniformized = rbd._uniformized(
+    uniformized = _curves._uniformized(
         "The repair crews'",
         chain.generator,
-        rbd._crew_start(chain, states),
+        _curves._crew_start(rbd, chain, states),
         chain.probabilities,
         np.column_stack(ups + [chain.split(up) for up in ups]),
     )
     curves = {
-        node: rbd.components[node]._nested_curve(
-            1.01 * scale, start=states.get(node)
+        node: _curves._nested_curve(
+            rbd.components[node], 1.01 * scale, start=states.get(node)
         )
         for node in nested
     }
@@ -738,7 +740,7 @@ def availability_rate(
     broken = set() if broken_nodes is None else set(broken_nodes)
     rbd._validate_node_overrides(working, broken)
     forced = working | broken
-    states = rbd._states(state, forced)
+    states = _curves._states(rbd, state, forced)
     flat = times.ravel()
     horizon = float(flat.max()) if flat.size else 0.0
     scale = horizon if horizon > 0.0 else 1.0

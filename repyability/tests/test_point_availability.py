@@ -20,8 +20,8 @@ from scipy.integrate import quad
 from scipy.special import gamma as gamma_function
 
 import repyability.rbd._point_availability as point_availability
-import repyability.rbd.repairable_rbd as repairable_rbd
 from repyability import NodeState, RepairableRBD
+from repyability.rbd import _curves
 from repyability.tests.test_performance_equivalence import (
     instrument_air,
     repairable_rbds,
@@ -288,7 +288,7 @@ def test_units_replaced_together_go_down_together(monkeypatch):
     rbd = pair(spec, dict(spec))
     windows = [10_000.0, 40_000.0]
     default = rbd.mission_availability(windows)
-    monkeypatch.setattr(repairable_rbd, "_POINT_STEPS", 4000)
+    monkeypatch.setattr(_curves, "_POINT_STEPS", 4000)
     fine = rbd.mission_availability(windows)
     assert np.abs(default - fine).max() < 2e-8
     # Without the maintenance of units that each reach their age kept off
@@ -409,9 +409,7 @@ def test_mission_repeats_its_calendar(monkeypatch):
     )
     windows = np.array([333.0, 2000.0, 4321.5])
     repeated = rbd.mission_availability(windows)
-    monkeypatch.setattr(
-        repairable_rbd, "_settling", lambda curves: (np.inf, None)
-    )
+    monkeypatch.setattr(_curves, "_settling", lambda curves: (np.inf, None))
     assert rbd.mission_availability(windows) == pytest.approx(
         repeated, abs=1e-12
     )
@@ -527,7 +525,7 @@ def test_the_error_falls_as_the_square_of_the_step(monkeypatch):
     windows = np.array([50.0, 300.0, 5000.0])
     points, missions = [], []
     for steps in [500, 2000, 8000]:
-        monkeypatch.setattr(repairable_rbd, "_POINT_STEPS", steps)
+        monkeypatch.setattr(_curves, "_POINT_STEPS", steps)
         points.append(rbd.point_availability(t))
         missions.append(rbd.mission_availability(windows))
     # Against the finest: the default grid is some 16 times closer than
@@ -615,13 +613,13 @@ def test_identical_components_share_one_curve(monkeypatch):
         {"a": spec(), "b": spec(), "c": spec(120.0)},
     )
     built = []
-    plain = RepairableRBD._unit_curve
+    plain = _curves._unit_curve
 
-    def counted(self, node, *args, **kwargs):
+    def counted(rbd, node, *args, **kwargs):
         built.append(node)
-        return plain(self, node, *args, **kwargs)
+        return plain(rbd, node, *args, **kwargs)
 
-    monkeypatch.setattr(RepairableRBD, "_unit_curve", counted)
+    monkeypatch.setattr(_curves, "_unit_curve", counted)
     x = np.array([0.0, 30.0, 300.0])
     shared = (
         rbd.point_availability(x),
@@ -633,7 +631,7 @@ def test_identical_components_share_one_curve(monkeypatch):
     built.clear()
     rbd.point_availability(x, state={"b": NodeState(age=50.0)})
     assert built == ["a", "b", "c"]
-    monkeypatch.setattr(RepairableRBD, "_curve_twin", lambda *a: None)
+    monkeypatch.setattr(_curves, "_curve_twin", lambda *a: None)
     apart = (
         rbd.point_availability(x),
         rbd.mission_availability(1000.0),
@@ -648,7 +646,7 @@ def test_a_curve_is_followed_about_as_far_as_it_takes_to_settle():
     # is followed until it has kept within 1e-10 for a quarter of its
     # length, not four times as far (as before) when it has not yet.
     rbd = alone(unit(W([80.0, 1.6]), LN([0.5, 0.6])))
-    curve = rbd._unit_curve("c", 5000.0)
+    curve = _curves._unit_curve(rbd, "c", 5000.0)
     off = np.abs(curve.at(curve.times) - curve.long_run)
     settled = curve.times[np.flatnonzero(off >= 1e-10)[-1]]
     tail = curve.times[len(curve.times) - len(curve.times) // 4 :]

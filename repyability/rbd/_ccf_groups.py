@@ -20,6 +20,7 @@ import numpy as np
 from repyability.rbd import (
     _ccf_chain,
     _ccf_modules,
+    _curves,
     _long_run,
 )
 from repyability.rbd._common import (
@@ -373,7 +374,7 @@ def _groups_over_time(rbd) -> list:
                     group.members,
                     life,
                     repair,
-                    partial(rbd._uniformized, where),
+                    partial(_curves._uniformized, where),
                 )
             )
             continue
@@ -449,7 +450,8 @@ def _groups_curve(
     _require_free_members(rbd, working, broken)
     _require_groups_over_time(rbd, states)
     members = {m for group in rbd.ccf_groups for m in group.members}
-    curves = rbd._availability_curves(
+    curves = _curves._availability_curves(
+        rbd,
         horizon,
         working | broken | members,
         counts=counts,
