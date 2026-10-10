@@ -22,6 +22,7 @@ infinite for a unit that never fails, 0 for one dead on arrival.
 :func:`inverse_sampler` replays that too.
 """
 
+import math
 import weakref
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -125,7 +126,8 @@ _SETTLED = 4.0 * np.finfo(float).eps
 
 def _components(model) -> Callable[[str, np.ndarray], np.ndarray]:
     """``values(name, x)``: a mixture's components' function ``name``
-    (``"ff"``, ``"sf"``, ``"df"`` or ``"qf"``) at the 1-d ``x``, one column
+    (``"ff"``, ``"sf"``, ``"df"``, ``"qf"``, ``"Hf"`` or ``"hf"``) at the
+    1-d ``x``, one column
     a component. In one call over every component where the distribution's
     functions broadcast over their parameters (checked once, against a call
     a component), else one call each."""
@@ -153,6 +155,8 @@ def _components(model) -> Callable[[str, np.ndarray], np.ndarray]:
                     ("ff", points),
                     ("sf", points),
                     ("df", points),
+                    ("Hf", points),
+                    ("hf", points),
                 )
             )
     except MODEL_ERRORS:
@@ -245,9 +249,88 @@ class MixtureLife:
     def __init__(self, model):
         self._model = model
         self.qf = mixture_quantile(model)
+        self._values = _components(model)
+        self._log_w = np.log(np.ravel(np.asarray(model.w, dtype=float)))
+        self._w = np.exp(self._log_w)
+        self._start: Optional[tuple] = None
 
     def Hf(self, x):
         return self._model.Hf(x)
+
+    def _cumulative(self, x: np.ndarray) -> tuple:
+        """The mixture's cumulative hazard and hazard at the 1-d ``x``,
+        from its components' (``H = -log sum w_i exp(-H_i)``, and ``h``
+        the components' hazards weighed by their shares of the survivors,
+        ``w_i S_i``): from the share that has failed while it is under a
+        half, where the cumulative hazard is small, else in logs, so that
+        both tails keep their precision."""
+        with np.errstate(all="ignore"):
+            each = self._values("Hf", x)
+            rates = self._values("hf", x)
+            logs = self._log_w - each
+            top = np.max(logs, axis=1, keepdims=True)
+            alive = np.exp(logs - top)
+            total = np.sum(alive, axis=1)
+            failed = -np.expm1(-each) @ self._w
+            H = np.where(
+                failed < 0.5,
+                -np.log1p(-failed),
+                -(top[:, 0] + np.log(total)),
+            )
+            h = np.sum(alive * rates, axis=1) / total
+        return H, h
+
+    def aged(self, age: float, u: float) -> float:
+        """The life left at virtual age ``age``, from the uniform ``u``: the
+        ``x`` with ``H(age + x) = H(age) - log(u)``, as surpyval's
+        ``conditional_gaps`` draws it (#295), to the last bit or two.
+        Newton's steps on ``H``, with its hazard, from a table of ``H``
+        made once a model, inside a bracket that a step leaving it halves
+        (about 3 evaluations a draw, where ``conditional_gaps`` takes the
+        quantile's or some 150 of ``H`` deep in the tail)."""
+        if not u > 0.0:
+            return math.inf
+        H_age = float(self._cumulative(np.array([age]))[0][0]) if age else 0.0
+        if math.isinf(H_age):
+            return 0.0  # no survival past its age: it fails at once
+        target = H_age - math.log(u)
+        if not math.isfinite(target):
+            return math.inf
+        if target <= H_age:
+            return 0.0
+        lo, hi = age, math.inf
+        x = max(self._first_guess(target), age)
+        for _ in range(_STEPS):
+            H, h = (float(v[0]) for v in self._cumulative(np.array([x])))
+            if H < target:
+                lo = x
+            else:
+                hi = x
+            step = (H - target) / h if h > 0.0 else math.nan
+            if abs(step) <= _SETTLED * x or H == target:
+                return max(x - step - age, 0.0)
+            new = x - step
+            if not lo < new < hi:
+                # Out of the bracket: its middle, or further out.
+                new = 0.5 * (lo + hi) if math.isfinite(hi) else 2.0 * x + 1.0
+            x = new
+        return max(x - age, 0.0)
+
+    def _first_guess(self, target: float) -> float:
+        """Where ``H`` reaches ``target``, read off a table of ``H`` on a
+        log grid over the components' lives (made once a model)."""
+        if self._start is None:
+            with np.errstate(all="ignore"):
+                scale = float(np.max(self._values("qf", np.array([0.5]))))
+            grid = scale * np.logspace(-9.0, 9.0, 2048)
+            H, _ = self._cumulative(grid)
+            kept = np.isfinite(H) & (H > 0.0)
+            kept[kept] &= np.diff(np.r_[-np.inf, H[kept]]) > 0.0
+            self._start = (np.log(H[kept]), np.log(grid[kept]))
+        log_H, log_x = self._start
+        if not log_H.size:
+            return 0.0
+        return math.exp(np.interp(math.log(target), log_H, log_x))
 
     @classmethod
     def of(cls, model) -> "MixtureLife":

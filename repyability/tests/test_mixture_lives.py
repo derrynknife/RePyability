@@ -206,3 +206,80 @@ def test_a_standalone_unit_prices_age_replacement(mix):
     assert unit.cost_rate(age) <= unit.cost_rate(0.8 * age)
     assert unit.cost_rate(age) <= unit.cost_rate(1.25 * age)
     assert isinstance(MixtureLife(mix).qf(np.array([0.5]))[0], float)
+
+
+ISSUE_295 = {
+    "model": "MixtureModel",
+    "dist": "Weibull",
+    "m": 2,
+    "params": [[60.0, 0.8], [2000.0, 3.5]],
+    "w": [0.25, 0.75],
+}
+
+
+def exact_life_left(age, u):
+    # The root of H(age + x) = H(age) - log(u) for the issue's mixture,
+    # in extended precision, by bisection.
+    L = np.longdouble
+
+    def H(x):
+        x = L(x)
+        return -np.log(
+            L(0.25) * np.exp(-((x / L(60)) ** L(0.8)))
+            + L(0.75) * np.exp(-((x / L(2000)) ** L(3.5)))
+        )
+
+    target = H(age) - np.log(L(u))
+    lo, hi = L(age), L(age) + 1
+    while H(hi) < target:
+        hi = 2 * hi + 1
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if H(mid) < target else (lo, mid)
+    return float((lo + hi) / 2 - L(age))
+
+
+def test_a_life_given_an_age_is_the_root_to_the_last_bits():
+    # #295: the mixture's life left at an age, by Newton's steps on its
+    # cumulative hazard, is the root to a few bits of age + x, from new to
+    # deep in the tail (where conditional_gaps root-found with some 150
+    # evaluations), and agrees with surpyval's draw.
+    from surpyval.recurrent.renewal.renewal_model import conditional_gaps
+
+    life = MixtureLife.of(surv.MixtureModel.from_dict(ISSUE_295))
+    rng = np.random.default_rng(4)
+    for age in (0.0, 5.0, 100.0, 1000.0, 3000.0, 9000.0, 15000.0):
+        for u in np.r_[rng.uniform(size=8), 1e-6, 0.999]:
+            left = life.aged(age, u)
+            exact = exact_life_left(age, u)
+            assert abs(left - exact) <= 16 * np.finfo(float).eps * (
+                age + exact
+            ), (age, u)
+            theirs = conditional_gaps(life, np.array([age]), np.array([u]))
+            assert left == pytest.approx(theirs[0], rel=1e-7)
+    assert life.aged(100.0, 1.0) == 0.0
+    assert life.aged(100.0, 0.0) == np.inf
+
+
+def test_a_life_given_an_age_takes_a_few_evaluations(monkeypatch):
+    # #295: a handful of evaluations of the cumulative hazard a draw, at
+    # any age (the issue's 15,000 h run went from ~53 s to a few).
+    life = MixtureLife.of(surv.MixtureModel.from_dict(ISSUE_295))
+    calls = []
+    plain = MixtureLife._cumulative
+
+    def counted(self, x):
+        calls.append(len(x))
+        return plain(self, x)
+
+    life.aged(100.0, 0.5)  # its table, made once
+    monkeypatch.setattr(MixtureLife, "_cumulative", counted)
+    rng = np.random.default_rng(0)
+    counts = []
+    for age in (0.0, 100.0, 1000.0, 2000.0, 8000.0, 30000.0):
+        for u in rng.uniform(size=50):
+            calls.clear()
+            life.aged(age, u)
+            counts.append(len(calls))
+    assert max(counts) <= 8
+    assert np.mean(counts) <= 4.5

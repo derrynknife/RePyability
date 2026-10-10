@@ -270,10 +270,10 @@ def _aged_life(model, age: float, u: float) -> float:
     ``age``, from the uniform ``u``: the ``x`` with ``H(age + x) = H(age) -
     log(u)`` (``H`` the cumulative hazard), as surpyval's virtual-age
     renewal models draw it (``conditional_gaps``). A plain Exponential or
-    Weibull is worked in closed form, any other model by surpyval (a
-    mixture with its quantile worked out, ``MixtureLife``)."""
+    Weibull is worked in closed form, a mixture by ``MixtureLife.aged``
+    (#295), any other model by surpyval."""
     if is_mixture(model):
-        model = MixtureLife.of(model)
+        return MixtureLife.of(model).aged(age, u)
     dist = getattr(model, "dist", None)
     name = getattr(dist, "name", None)
     if (
