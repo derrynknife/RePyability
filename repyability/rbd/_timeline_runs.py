@@ -17,6 +17,7 @@ from typing import List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
+from repyability.rbd import _ccf_groups
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import _streams
 from repyability.timelines import Timelines, _Data
@@ -200,7 +201,7 @@ def simulate(
     from repyability.rbd.repairable_rbd import _UNSTREAMED
     from repyability.rbd.results import TimelineSimulation
 
-    rbd._require_groups_simulated()
+    _ccf_groups._require_groups_simulated(rbd)
     if (
         isinstance(t_simulation, bool)
         or not isinstance(t_simulation, (int, float, np.integer, np.floating))

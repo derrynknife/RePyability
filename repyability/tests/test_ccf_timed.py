@@ -16,6 +16,7 @@ import pytest
 from surpyval import ExactEventTime, Exponential, Weibull
 
 from repyability import BetaFactor, CCFGroup, RepairableRBD
+from repyability.rbd import _ccf_groups
 from repyability.rbd import routes as r
 
 E, X, W = (
@@ -178,7 +179,7 @@ def test_copies_of_members_whose_repairs_take_time_are_refused():
     group = rbd.ccf_groups[0]
     times, _ = rbd._long_run_grid()
     with pytest.raises(NotImplementedError, match="copies of them"):
-        rbd._group_states(group, times, counts=[2, 1])
+        _ccf_groups._group_states(rbd, group, times, counts=[2, 1])
 
 
 def test_the_ends_of_tests_and_repairs_are_jumps_over_time():

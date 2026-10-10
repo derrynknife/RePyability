@@ -28,7 +28,7 @@ import numpy as np
 from scipy.optimize import OptimizeResult, brentq, minimize
 from scipy.special import expit, logit, logsumexp, softmax
 
-from repyability.rbd import _costs
+from repyability.rbd import _ccf_groups, _costs
 from repyability.rbd._common import (
     _discount_rate,
     _horizons,
@@ -100,11 +100,14 @@ def _require_groups_allocated(rbd, chosen, drawn) -> dict:
     train. Returns each member given copies' group."""
     from repyability.rbd.ccf import BetaFactor
 
-    rbd._require_ccf_long_run()
+    _ccf_groups._require_ccf_long_run(rbd)
     group_of = {m: g for g in rbd.ccf_groups for m in g.members}
     for node in chosen:
         group = group_of.get(node)
-        if group is not None and rbd._ccf_timings(group) is not None:
+        if (
+            group is not None
+            and _ccf_groups._ccf_timings(rbd, group) is not None
+        ):
             raise NotImplementedError(
                 f"Node {node!r} is in a common-cause group whose "
                 "members' tests or repairs take time: its copies would "
@@ -256,7 +259,8 @@ def allocate_redundancy(
         )
         if key not in designs:
             designs[key] = [
-                rbd._group_states(
+                _ccf_groups._group_states(
+                    rbd,
                     group,
                     times,
                     [
@@ -298,7 +302,8 @@ def allocate_redundancy(
                         p[name], q[name] = up[node], down[node]
         points, at = size, weights
         if rbd.ccf_groups:
-            p, split, at, _ = rbd._with_ccf_groups(
+            p, split, at, _ = _ccf_groups._with_ccf_groups(
+                rbd,
                 times,
                 p,
                 q,
@@ -323,7 +328,7 @@ def allocate_redundancy(
         if (node, k) not in copies_down:
             group = grouped[node]
             counts = [k if m == node else 0 for m in group.members]
-            states = rbd._group_states(group, times, counts)
+            states = _ccf_groups._group_states(rbd, group, times, counts)
             copies_down[(node, k)] = states.probabilities[:, -1]
         return copies_down[(node, k)]
 
@@ -776,7 +781,7 @@ def _allocatable(
     whose members' MTTF and MTTR are the group's, and are not in
     ``fixed``); and the set of the others, which keep theirs."""
     rbd._require_unlimited_crews(*_ALLOCATION_CREWS)
-    rbd._require_ccf_long_run()
+    _ccf_groups._require_ccf_long_run(rbd)
     held = set()
     if fixed is not None:
         held = set(fixed)
@@ -864,7 +869,8 @@ def _allocation_view(rbd, held: set) -> "RepairableRBD":
         return rbd
     profiles = rbd._availabilities_at(times)
     if rbd.ccf_groups:
-        profiles, _, weights, _ = rbd._with_ccf_groups(
+        profiles, _, weights, _ = _ccf_groups._with_ccf_groups(
+            rbd,
             times,
             profiles,
             None,

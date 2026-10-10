@@ -30,6 +30,7 @@ from repyability import MGL, CCFGroup, Network, NonRepairableRBD, RepairableRBD
 from repyability import network as network_module
 from repyability.rbd import (
     _ccf_chain,
+    _ccf_groups,
     _hidden_tests,
     _intervals,
     _ordered_bdd,
@@ -250,12 +251,12 @@ def test_a_chain_s_kept_steps_give_what_its_series_gives():
     rbd = two_out_of_three()
     group = rbd.ccf_groups[0]
     times, _ = rbd._long_run_grid()
-    kept = rbd._group_states(group, times).probabilities
+    kept = _ccf_groups._group_states(rbd, group, times).probabilities
     # The same chain with each step's series summed for the vector alone.
     original = _ccf_chain._Hidden.evolve
     try:
         _ccf_chain._Hidden.evolve = _ccf_chain._Hidden._uniformized
-        again = rbd._group_states(group, times).probabilities
+        again = _ccf_groups._group_states(rbd, group, times).probabilities
     finally:
         _ccf_chain._Hidden.evolve = original
     np.testing.assert_allclose(kept, again, rtol=1e-11, atol=1e-15)

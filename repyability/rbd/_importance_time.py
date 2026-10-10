@@ -176,6 +176,8 @@ def _independent(rbd, curves: dict, x, working, broken) -> Tuple[dict, dict]:
 
 def _at(rbd, spec, times, working, broken, states, state) -> dict:
     """The measure of every node at each of ``times``, as arrays."""
+    from . import _ccf_groups
+
     if rbd._crews_couple():
         if spec.name in _HELD:
             return _held(rbd, spec, working, broken, state, times=times)
@@ -183,7 +185,9 @@ def _at(rbd, spec, times, working, broken, states, state) -> dict:
     horizon = float(times.max()) if times.size else 0.0
     forced = working | broken
     if rbd.ccf_groups:
-        grouped = rbd._groups_curve(horizon, working, broken, "p", states)
+        grouped = _ccf_groups._groups_curve(
+            rbd, horizon, working, broken, "p", states
+        )
         p, q = _independent(rbd, grouped.curves, times, working, broken)
         values = _grouped(rbd, spec, grouped.system.groups, p, q, times, None)
         return {
@@ -268,6 +272,7 @@ def window_points(
 
 def _over(rbd, spec, end, working, broken, states, state) -> dict:
     """The measure of every node over the window ``[0, end)``."""
+    from . import _ccf_groups
     from .repairable_rbd import _MISSION_POINTS
 
     if rbd._crews_couple():
@@ -276,7 +281,9 @@ def _over(rbd, spec, end, working, broken, states, state) -> dict:
         return _chain_measure(rbd, spec, working, broken, states, end=end)
     forced = working | broken
     if rbd.ccf_groups:
-        grouped = rbd._groups_curve(end, working, broken, "p", states)
+        grouped = _ccf_groups._groups_curve(
+            rbd, end, working, broken, "p", states
+        )
 
         def system(x):
             return {"up": grouped.at(x)}
