@@ -18,7 +18,7 @@ import pytest
 import surpyval as surv
 
 from repyability import CostResult, RepairableRBD, TotalCostAllocation
-from repyability.rbd import redundancy_allocation
+from repyability.rbd import _costs, redundancy_allocation
 from repyability.rbd.redundancy_allocation import lowest_total_cost
 
 E = surv.Exponential.from_params
@@ -807,7 +807,8 @@ def test_nodes_in_series_with_an_imperfect_rest(target):
             nx * (900.0 + H * 40.0 * failures(0.01, 0.2))
             + ny * (400.0 + H * 10.0 * failures(0.03, 0.5))
             + H * 500.0 * (1 - availability)
-            + H * rbd._node_cost_rate("a", 1.0)  # the bridge costs nothing
+            + H
+            * _costs._node_cost_rate(rbd, "a", 1.0)  # the bridge costs nothing
         )
         return total, availability
 

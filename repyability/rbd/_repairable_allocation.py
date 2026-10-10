@@ -28,6 +28,7 @@ import numpy as np
 from scipy.optimize import OptimizeResult, brentq, minimize
 from scipy.special import expit, logit, logsumexp, softmax
 
+from repyability.rbd import _costs
 from repyability.rbd._common import (
     _discount_rate,
     _horizons,
@@ -211,7 +212,7 @@ def allocate_redundancy(
     }
     copy_cost = {}
     for node in rbd.components:
-        rate = rbd._node_cost_rate(node, rbd._node_availability(node))
+        rate = _costs._node_cost_rate(rbd, node, rbd._node_availability(node))
         copy_cost[node] = (
             rbd.acquisition_costs.get(node, 0.0),
             rate,

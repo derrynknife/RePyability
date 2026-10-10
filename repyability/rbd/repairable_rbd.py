@@ -147,7 +147,7 @@ from repyability.rbd.standby_node import StandbyModel
 if TYPE_CHECKING:
     from repyability.rbd.chunks import SimulationChunk
 
-from repyability.rbd import _intervals, _repairable_allocation, _spec
+from repyability.rbd import _costs, _intervals, _repairable_allocation, _spec
 from repyability.rbd._common import (
     _DISCOUNT_ROUNDS,
     _DISCOUNT_TOLERANCE,
@@ -3502,128 +3502,16 @@ class RepairableRBD(RBD):
         >>> round(rbd.expected_cost_rate(), 4)
         13.6364
         """
-        if not self.has_costs:
-            return 0.0
-
-        working_nodes = set() if working_nodes is None else set(working_nodes)
-        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-        self._validate_node_overrides(working_nodes, broken_nodes)
-        forced = working_nodes | broken_nodes
-        setups = [
-            group for group in self._maintenance.values() if group.setup_cost
-        ]
-        if setups:
-            self._require_separate_setups()
-
-        rate = 0.0
-
-        # Production lost while the *system* is down.
-        if self.downtime_cost_rate:
-            unavailability = self.mean_unavailability(
-                working_nodes, broken_nodes
-            )
-            rate += self.downtime_cost_rate * unavailability
-
-        if not self.costs and not setups:
-            return rate
-
-        if self._crews_couple():
-            # Held working or broken, a node needs no crew, and the others
-            # have more of them: from the chain without it.
-            probabilities, weights = self._chain_probabilities(
-                working_nodes, broken_nodes
-            )
-            node_availability = {
-                node: float(weights @ probabilities[node])
-                for node in self.nodes
-            }
-        else:
-            node_availability = _squeeze_values(
-                self._probabilities_with_overrides(
-                    self.node_availability(), working_nodes, broken_nodes
-                )
-            )
-        for node in self.costs:
-            rate += self._node_cost_rate(
-                node, node_availability[node], node in forced
-            )
-        # A maintenance group's set-up, at each failure and each preventive
-        # replacement of a member (none is renewed early: that would have
-        # been refused), a forced member making none.
-        for group in setups:
-            rate += group.setup_cost * sum(
-                sum(self._node_actions(node, node_availability[node]))
-                for node in group.members
-                if node not in forced
-            )
-        return rate
-
-    def _node_cost_rate(
-        self, node, availability: float, forced: bool = False
-    ) -> float:
-        """A component's own running cost per unit time, in the long run:
-        its corrective, preventive and inspection actions, and its own
-        downtime (``availability`` its long-run availability). A forced node
-        never changes state, so it incurs no actions."""
-        node_costs = self.costs.get(node, {})
-        rate = 0.0
-        # Corrective actions, charged per failure, and preventive ones.
-        per_action = sum(
-            _mean_cost(node_costs[key])
-            for key in self.PER_FAILURE_COST_KEYS
-            if key in node_costs
+        return _costs.expected_cost_rate(
+            self, working_nodes=working_nodes, broken_nodes=broken_nodes
         )
-        preventive = node_costs.get("preventive_cost")
-        if (per_action or preventive is not None) and not forced:
-            failures, maintained = self._node_actions(node, availability)
-            rate += per_action * failures
-            if preventive is not None:
-                rate += _mean_cost(preventive) * maintained
-        inspection = node_costs.get("inspection_cost")
-        if inspection is not None and not forced:
-            schedule = self._preventive.get(node)
-            if schedule is not None and schedule.policy == "condition":
-                # Inspected at each multiple of the interval at which it is
-                # up (one in a repair or replacement is not).
-                up = self._block_cycle(node).before
-                rate += _mean_cost(inspection) * up / schedule.interval
-            else:
-                # One test per interval, but those that fall in a repair,
-                # which are not done.
-                unit = self._tested_unit(node)
-                tests = (
-                    1.0 / self._inspection[node].interval
-                    if unit is None
-                    else unit.long_run.inspections
-                )
-                rate += _mean_cost(inspection) * tests
-        # Optional cost of *this component* being down, whether or not the
-        # system as a whole is.
-        downtime_cost = node_costs.get("downtime_cost", 0.0)
-        if downtime_cost:
-            rate += downtime_cost * (1.0 - availability)
-        return rate
-
-    def _node_actions(self, node, availability: float) -> Tuple[float, float]:
-        """A component's corrective and preventive actions per unit time,
-        in the long run (``availability`` its long-run availability)."""
-        if self._crews_couple():
-            # Waiting for a crew, as while repaired, it cannot fail: it
-            # fails at its constant rate while it is up.
-            life = self._crew_chain_rates()[node][0]
-            return life * availability, 0.0
-        if node in self._standby:
-            # Each of its units' failures is a repair.
-            return self._standby_long_run(node).unit_failure_frequency, 0.0
-        failures, maintained, _ = self._node_frequencies(node)
-        return failures, maintained
 
     @property
     def acquisition_cost(self) -> float:
         """The one-off cost of buying the components: the sum of their
         ``"acquisition_cost"`` (0.0 if none is given). Only this RBD's own
         components count, not those inside a nested ``RepairableRBD``."""
-        return float(sum(self.acquisition_costs.values()))
+        return _costs.acquisition_cost(self)
 
     def total_cost(
         self,
@@ -3719,14 +3607,13 @@ class RepairableRBD(RBD):
         >>> round(rbd.total_cost(87600.0, discount_rate=r))
         114538
         """
-        rate = _discount_rate(discount_rate)
-        present = _present_horizon(
-            _horizons(horizon, rate), rate, self._mean_lives
+        return _costs.total_cost(
+            self,
+            horizon=horizon,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            discount_rate=discount_rate,
         )
-        total = self.acquisition_cost + present * self.expected_cost_rate(
-            working_nodes, broken_nodes
-        )
-        return float(total) if np.ndim(total) == 0 else total
 
     def _mean_lives(self) -> List[float]:
         """The components' mean lives (their failure-time scales), against
