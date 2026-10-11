@@ -1,4 +1,9 @@
-"""Shared result types for component maintenance-policy optimisations."""
+"""Maintenance: the single-unit optimisers' result types, and the
+planned-maintenance forecaster being built (#319).
+
+The forecaster is built one use case at a time: ``README.md`` in this
+package records each use case, the question it answers and how it is
+solved, before and as it is built."""
 
 from dataclasses import dataclass
 
