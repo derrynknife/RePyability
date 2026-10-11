@@ -9,3 +9,5 @@
 ::: repyability.Task
 
 ::: repyability.Monthly
+
+::: repyability.Component

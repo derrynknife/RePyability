@@ -42,6 +42,8 @@ from repyability.demonstration import (
 )
 from repyability.fault_tree import FaultTree
 from repyability.maintenance import (
+    Component,
+    FailureForecast,
     FailureLimitPolicy,
     MaintenancePolicy,
     Monthly,
@@ -143,6 +145,7 @@ __all__ = [
     # Maintenance planning
     "Task",
     "Monthly",
+    "Component",
     # Up/down histories
     "Timeline",
     "Timelines",
@@ -170,6 +173,7 @@ __all__ = [
     "MaintenancePolicy",
     "FailureLimitPolicy",
     "TaskDates",
+    "FailureForecast",
     "MaintenancePlan",
     "RateBreakdown",
     "AvailabilityAllocation",
