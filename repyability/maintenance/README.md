@@ -145,6 +145,99 @@ Keep to the project's rules (`CLAUDE.md`):
     no hours, parts or cost, and no spread. Those are the next use
     cases' questions.
 
+### UC-2: "I've got a weekly task, started 15 July 2026. How many times will it happen through the rest of 2026?"
+
+- **Status:** built: `Task` and `TaskDates`
+  (`repyability/maintenance/_tasks.py`).
+- **Who asks, and why:** anyone with a recurring task on a fixed
+  calendar (an inspection, a lubrication round, a test), planning the
+  rest of the year.
+- **What they know:** the task's first date (Wednesday 15 July 2026), its
+  interval (a week), and the period asked about: from today (Sunday 11
+  October 2026) to 31 December 2026, both days included.
+- **What they want back:** how many times, and ideally the dates.
+- **The answer:** **12 times**: every Wednesday from 14 October to 30
+  December 2026 (14, 21, 28 Oct; 4, 11, 18, 25 Nov; 2, 9, 16, 23, 30
+  Dec). Counting the 13 already done since 15 July, 25 in all of 2026.
+- **How it is solved:** this needs no probability at all. A calendar
+  task happens on its dates whatever the equipment does, so the dates are
+  the first date plus whole intervals, kept to those inside the period.
+  It is exact by date arithmetic.
+- **Today:** RePyability has no dates and no tasks of their own, only
+  components with maintenance. The count can be had by dressing the task
+  up as a block-replaced component and converting the dates to day
+  numbers by hand:
+
+  ```python
+  import surpyval as surv
+  from repyability import NodeState, RepairableRBD
+
+  rbd = RepairableRBD(
+      [("s", "task"), ("task", "t")],
+      {
+          "task": {
+              # a life far longer than the window: PerfectReliability is
+              # refused ("never fails, so it takes no preventive")
+              "reliability": surv.Exponential.from_params([1e-12]),
+              "repairability": "instant",
+              "preventive": {"interval": 7.0, "policy": "block"},
+          }
+      },
+  )
+  # 82 days from 11 Oct to 1 Jan (the window [0, t) leaves its end out);
+  # phase: 4 days since the last time, 7 Oct
+  rbd.expected_events(82.0, state={"task": NodeState(phase=4.0)}).node_preventive
+  # -> {'task': 12.0}
+  ```
+
+- **Checks:** the dates by hand (above). The dates one interval apart,
+  with the first on or after the period's start and the last on or before
+  its end. A whole year of a weekly task from 1 January gives 52 or 53.
+- **Learned / open questions:**
+  - **Dates are new.** Everything in RePyability is a number of time
+    units from 0, in the models' own unit. The forecaster has to take
+    dates and turn them into model time with an origin date and a unit
+    (days, hours). The conversion belongs at the edge: no result inside
+    may depend on the unit (`CLAUDE.md`).
+  - **A task is not a component.** A plain recurring task has nothing
+    to fail, and RePyability has nowhere to put it.
+  - **The ends of the period.** People say "through 31 December" and
+    mean the day included. `expected_events` counts `[0, t)`, so the
+    window has to end at 1 January. The forecaster should take dates
+    with both ends included and do the conversion itself.
+  - **Later, intervals that aren't a fixed length.** "Monthly" or "on
+    the first Monday" aren't a number of days. They are not needed here,
+    but the design shouldn't rule them out.
+- **Design, as built (the smallest thing that answers it):** a `Task` in
+  `repyability.maintenance`: a name, a first date (a `datetime.date`, or
+  text such as `"2026-07-15"`) and an interval (a `datetime.timedelta`,
+  or a number of days). Its `due(start, end)` returns its dates within
+  the period, both ends included, as a `TaskDates` result (the dates and
+  their `count`, with `to_dict()`). It uses the standard
+  library's dates (no new dependency). Two changes from the first
+  proposal:
+  - The count is `due.count`, not `len(due)`: a result is a read-only
+    mapping of its fields, so its `len` is the number of fields.
+  - `to_dict()` (every result's, through `results.plain`) now writes a
+    date as ISO text, as JSON has no dates.
+
+  ```python
+  from datetime import timedelta
+  from repyability.maintenance import Task
+
+  conveyor = Task("inspect conveyor", first="2026-07-15", every=timedelta(weeks=1))
+  due = conveyor.due("2026-10-11", "2026-12-31")
+  due.count   # 12
+  due.dates   # 2026-10-14, 2026-10-21, ..., 2026-12-30
+  ```
+
+  `test_maintenance_tasks.py` checks the UC-2 answer, and the dates
+  against the calendar walked a day at a time on random tasks and
+  periods.
+- **Next, noted by the maintainer:** a task will hold a collection of
+  tasks (a weekly round made of several jobs, say). Not built yet: it
+  waits for a use case that needs it.
+
 ## Candidates
 
 Questions to take up next, one at a time, in whatever order proves useful.
