@@ -672,6 +672,60 @@ Keep to the project's rules (`CLAUDE.md`):
   off there, or the 90th percentiles of successive dates need not even
   rise. The seeded streams give that for free.
 
+### UC-9: "Accountants need this in financial year sums."
+
+- **Status:** answered by hand; design proposed, not built.
+- **Who asks, and why:** the planner of UC-8, passing the forecast to the
+  accountants, who budget each financial year's own spend: not the
+  running total, and not calendar quarters.
+- **What they know:** UC-8's bearing, policies, prices and shuts. The
+  financial year runs **July to June** (Claude's assumption, as in
+  Australia: FY2028 is 1 July 2027 to 30 June 2028); the forecast starts
+  today, 11 October 2026, part way through FY2027.
+- **What they want back:** each financial year's cost, its mean and its
+  range.
+- **The answer** (dollars; the range from the 10th to the 90th
+  percentile):
+
+  | Financial year | Best policy: mean | 10% / 50% / 90% | Every shut: mean | Run to failure: mean |
+  |---|---|---|---|---|
+  | FY2027 (from 11 Oct 2026) | 307 | 200 / 200 / 500 | 330 | 356 |
+  | FY2028 | 359 | 200 / 200 / 600 | 382 | 452 |
+  | FY2029 | 359 | 200 / 200 / 600 | 382 | 452 |
+  | FY2030 | 359 | 200 / 200 / 600 | 382 | 451 |
+  | **All four** | **1,384** | **800 / 1,400 / 2,000** | 1,477 | 1,711 |
+
+  - **A typical year is two shuts and no failure** ($200, the median);
+    the mean ($359) carries the chance of a failure ($400) on top. A
+    budget of the mean is right on average and short in about a year in
+    four or five.
+  - **Yearly 90th percentiles do not add up.** For the best policy they
+    sum to $2,300 over the four years, but the four years' own 90th
+    percentile is $2,000: bad years seldom come together. A contingency
+    for the whole period should be set on the period, not by adding the
+    years'.
+  - The part year, FY2027, has both of its shuts in it (1 November 2026
+    and 30 April 2027), so it costs nearly a full year's.
+- **How it is solved:** as UC-8, at each financial year's end:
+  - **The mean:** the differences of `expected_cost(t, state=...)` at the
+    years' ends, exact.
+  - **The range:** each simulation's cost in a year is its cost to the
+    year's end less its cost to the year's start, from the same seed
+    (`cost(...).samples`), so each year's percentiles are of the same
+    histories. Checked: no simulation spends less than $0 in a year, and
+    the simulated means agree with the exact ones within $4 (20,000
+    simulations).
+- **Today:** by hand, as UC-8.
+- **Proposed design (to agree with the maintainer):** UC-8's forecast,
+  summed by period: a financial year with its starting month (July here;
+  April or October elsewhere), calendar years, quarters or months; and
+  over the whole horizon, whose range is its own (not the years' added).
+  Open: the starting month, the percentiles, and how many years ahead.
+- **Learned:** the per-period range needs each simulation's cost per
+  period, not only its total: `cost()` gives the total of one window, so
+  by hand it took a run per year's end. The forecaster should sum each
+  simulation's costs into the periods in one run.
+
 ## Candidates
 
 Questions to take up next, one at a time, in whatever order proves useful.
