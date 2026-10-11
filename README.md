@@ -128,6 +128,155 @@ compiled engine, which needs [numba](https://numba.pydata.org) (available for
 pip install "repyability[fast]"
 ```
 
+## What each model can do
+
+The analyses each model type has, and how each family of them is worked
+out for each kind of node or component: the gaps are where a cell says
+— or ✗. The tables are made from the code (`python -m
+repyability.tests.capabilities` writes them, and a test checks they are
+current).
+
+<!-- capabilities:start -->
+
+Which analyses each model type has (the method; — where it has none):
+
+| | `NonRepairableRBD` | `RepairableRBD` | `FaultTree` | `Network` | `PhasedMission` |
+|---|---|---|---|---|---|
+| **Reliability and lifetime** | | | | | |
+| Reliability R(t) | `sf` | — | `sf` | `sf` | `sf` |
+| Unreliability F(t) | `ff` | — | `ff` | `ff` | `ff` |
+| Density, hazard, cumulative hazard | `df` | — | — | — | — |
+| Mean time to (first) failure | `mean` | — | — | `mean` | — |
+| Each node's own R(t), F(t) and MTTF | `node_sf` | — | — | — | — |
+| B-life, time to a reliability | `bx_life` | — | — | — | — |
+| Given the system's age | `cs` | — | — | — | — |
+| Given the components' ages or states | `sf_given_state` | — | — | — | — |
+| Mean residual and remaining life | `mean_residual_life` | — | — | — | — |
+| Random lifetimes | `random` | — | — | `random` | — |
+| Top event probability | — | — | `top_event_probability` | — | — |
+| Each phase's failure probability | — | — | — | — | `phase_failure_probabilities` |
+| **Availability and outages** | | | | | |
+| Long-run availability | — | `mean_availability` | — | — | — |
+| Each node's availability | — | `node_availability` | — | — | — |
+| Availability over time | — | `point_availability` | — | — | — |
+| Over a mission | — | `mission_availability` | — | — | — |
+| Unavailability (precise when small) | — | `mean_unavailability` | — | — | — |
+| Failure frequency, MTBF | — | `system_failure_frequency` | — | — | — |
+| Mean up and down times | — | `mean_up_time` | — | — | — |
+| Expected failures and events in a window | — | `expected_events` | — | — | — |
+| Simulated availability (distribution) | — | `availability` | — | — | — |
+| Simulated histories | — | `simulate_timelines` | — | — | — |
+| Compare two designs | `compare` | `compare` | — | — | — |
+| **Costs and spares** | | | | | |
+| Long-run cost rate | — | `expected_cost_rate` | — | — | — |
+| Expected cost in a window | — | `expected_cost` | — | — | — |
+| Simulated cost (distribution) | — | `cost` | — | — | — |
+| Total cost of ownership | — | `total_cost` | — | — | — |
+| Spares demand and stock | — | `spares_demand` | — | — | — |
+| **Structure** | | | | | |
+| Minimal path and cut sets | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `cut_sets` | — |
+| Each path set's probability | `path_set_probabilities` | `path_set_probabilities` | — | — | — |
+| Cut sets ranked by probability | — | — | `ranked_cut_sets` | — | — |
+| Irrelevant components | `find_irrelevant_components` | `find_irrelevant_components` | — | — | — |
+| Convert to and from an RBD | — | — | `to_rbd` | — | — |
+| Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — |
+| Capacity over time | — | `point_capacity` | — | — | — |
+| How each analysis is computed | `analysis_routes` | `analysis_routes` | — | — | — |
+| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | — | — |
+| **Importance measures** | | | | | |
+| Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | — |
+| Structural | `structural_importance` | `structural_importance` | — | — | — |
+| Improvement potential | `improvement_potential` | `improvement_potential` | — | — | — |
+| Risk achievement worth | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | — | — |
+| Risk reduction worth | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | — | — |
+| Criticality | `criticality_importance` | `criticality_importance` | `criticality_importance` | — | — |
+| Fussell-Vesely | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | — | — |
+| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | — | — |
+| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | — | — |
+| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | — | — | — |
+| Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — |
+| Uncertainty importance | `uncertainty_importance` | `uncertainty_importance` | — | — | — |
+| All measures given a state | `importances_given_state` | — | — | — | — |
+| Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | — | — | — |
+| **Uncertainty** | | | | | |
+| Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | — | — | `reliability_interval` |
+| Of the MTTF | `mean_uncertainty` | — | — | — | — |
+| Of the B-life | `bx_life_uncertainty` | — | — | — | — |
+| Of the cost rate | — | `expected_cost_rate_uncertainty` | — | — | — |
+| **Design and maintenance** | | | | | |
+| Reliability allocation | `simple_allocation` | `simple_allocation` | — | — | — |
+| Availability, MTTF and MTTR allocation | — | `availability_allocation` | — | — | — |
+| Redundancy allocation | `allocate_redundancy` | `allocate_redundancy` | — | — | — |
+| Reliability-redundancy allocation | `allocate_reliability_redundancy` | — | — | — | — |
+| Cost-reliability front | `redundancy_front` | — | — | — | — |
+| Optimal replacement intervals | — | `optimal_replacement_intervals` | — | — | — |
+| Optimal proof-test intervals | — | `optimal_inspection_intervals` | — | — | — |
+
+How each family of analyses is worked out on a diagram with each kind of node or component: **E** exact, **N** numerical (to a stated accuracy), **S** simulated, **✗** refused as not worked out (naming the methods, or counting them, where only some are), – where the diagram has nothing the analysis works on. Made from `analysis_routes()` on the test catalogue's diagrams.
+
+<details><summary><code>NonRepairableRBD</code>, by node</summary>
+
+| | Reliability | MTTF | B-life | Given a state | Importance | Sensitivity | Uncertainty | Allocation | Capacity | Simulation |
+|---|---|---|---|---|---|---|---|---|---|---|
+| A surpyval model | E | N | N | E N | E N | N | S | E N | – | S |
+| A fitted model (with its covariance) | E | N | N | E N | E N | N | S | E N | – | S |
+| A fit with a cure share and zero-inflation | E | N | N | E N | E N | N | S | E N | – | S |
+| A probability per demand | E | – | – | E | E N | N | S | E N | – | S |
+| A mixture (`MixtureModel`) | E | N | N | E N | E N | N | S | E N | – | S |
+| A regression node (covariates) | E | N | N | E N | E N | N | S | E N | – | S |
+| A degrading node | N | N | N | N | N | N | S | N | N | S |
+| A fitted degradation process | E | N | N | E N | E N | N | S | E N | – | S |
+| Cold standby (convolved) | N | N | N | N | N | N | S | N | – | S |
+| Standby with no reliability of its own | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | N; ✗ `allocate_redundancy` | – | S |
+| Load sharing | E | N | N | E N | E N | N | S | E N | – | S |
+| A repeated node | E | N | N | E N | E N | N | S | E N | – | S |
+| A repeated standby node | N | N | N | N | N | N | S | N | – | S |
+| A nested RBD | E | N | N | E N | E N | N | S | E N | – | S |
+| A junction | E | N | N | E N | E N | N | S | E N | – | S |
+| A beta-factor common-cause group | E | ✗ | N | ✗ | E N; ✗ `joint_importance` | N | S; ✗ `mean_uncertainty` | E N | – | S |
+| An MGL common-cause group | E | ✗ | N | ✗ | E N; ✗ `joint_importance` | N | S; ✗ `mean_uncertainty` | E N | – | S |
+| Capacities | E | N | N | E N | E N | N | S | E N | E | S |
+| A structure too meshed to work out | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | S |
+
+</details>
+
+<details><summary><code>RepairableRBD</code>, by component</summary>
+
+| | Long run | Frequency | Over time | Costs | Importance | Sensitivity | Uncertainty | Allocation | Intervals | Spares | Capacity | Simulation |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Any life and repair | E | E | N | E N | E N | N | S | E | – | N | – | S |
+| A fitted life | E | E | N | E | E N | N | S | E | – | N | – | S |
+| A fitted Crow-AMSAA process | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| A probability per demand | ✗ | ✗ | ✗ | E | ✗ | ✗ | S; ✗ `mean_availability_uncertainty` | ✗ | – | N | ✗ `capacity_distribution` | S |
+| A mixture life | E | E | N | E N | E N | N | S | E | – | N | – | S |
+| A fitted degradation process life | E | E | N | E | E N | N | S | E | – | N | – | S |
+| Operated part of the time (duty) | N | N | N | E | N | N | S | N | – | N | – | S |
+| A standby or load-sharing life, simulated | ✗ | ✗ | ✗ | E | ✗ | ✗ | S; ✗ `mean_availability_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| k-out-of-n | E | E | N | E | E N | N | S | E | – | N | – | S |
+| A nested RBD | E | E | N | E N | E N | N | S | E | – | N | – | S |
+| A junction | E | E | N | E N | E N | N | S | E | – | N | – | S |
+| Capacities | E | E | N | E | E N | N | S | E | – | N | E N | S |
+| Age replacement | N | N | N | N | N | N | S | N | N | N | – | S |
+| Block replacement | N | N | N | E | N | N | S | N | – | N | – | S |
+| Opportunistic maintenance | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ `optimal_replacement_intervals` | ✗ | ✗ `capacity_distribution` | S |
+| Replacement on condition | N | N | N | N | N | N | S | N | – | ✗ | – | S |
+| Replacement on condition by level | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| Hidden failures, tested | N | N | N | E | N | N | S | N | – | N | – | S |
+| Tests that take time | N | N | N | E | N | N | S | N | – | N | – | S |
+| Tests that can miss a failure | N | N | N | E | N | N | S | N | – | N | – | S |
+| Imperfect repair (Kijima) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| Minimal repair | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 9 of 10 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| Limited repair crews | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| A standby group | E | E | N | E N | E N | N | S | E | – | ✗ | – | S |
+| A beta-factor group, revealed failures | N | N | N | E | N; ✗ `joint_importance` | N | S | N | – | N | – | S |
+| A beta-factor group, tested | E | E | N | E N | E N; ✗ `joint_importance` | N | S | E | – | N | – | S |
+| A group whose tests take time | N | N | N | N | N; ✗ `joint_importance` | N | S | N | – | N | – | S |
+| A structure too meshed to work out | ✗ | ✗ | ✗ | E; ✗ `expected_cost` | ✗ | ✗ | S; ✗ `mean_availability_uncertainty` | ✗ | – | N | – | S |
+
+</details>
+
+<!-- capabilities:end -->
+
 ## When is a simulation needed?
 
 RePyability computes exactly by default: by closed forms, or by

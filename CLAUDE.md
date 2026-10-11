@@ -254,6 +254,15 @@
   simulated and whether it must be (or could be exact, with the issue).
   `test_the_readme_says_what_is_simulated` checks each row against
   `analysis_routes()`: when an analysis is made exact, update its row.
+- **The README's capability matrices are generated** by
+  `repyability/tests/capabilities.py` (`python -m
+  repyability.tests.capabilities` writes them between its markers): which
+  analyses each model type has, and, from `analysis_routes()` on the
+  catalogue's diagrams, how each family is worked out for each kind of
+  node. `test_readme_capabilities.py` checks they are current and that
+  every public method is in a row (or in `NOT_ANALYSES`): a new method
+  goes into a row of `CAPABILITIES`, and a new catalogue kind worth a
+  row of its own into `NODES`.
 - **A diagram too meshed to work out keeps only its graph (#172).** When a
   core's decision diagram passes `bdd.STEP_LIMIT`, `RBD._decomposition()`
   is a `modular.GraphStructure`, which works out a state and a lifetime
