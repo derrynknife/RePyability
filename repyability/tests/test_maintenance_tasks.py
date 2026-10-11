@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 import numpy as np
 import pytest
 
-from repyability import Task, TaskDates
+from repyability import Monthly, Task, TaskDates
 
 WEEKLY = Task("inspect conveyor", first="2026-07-15", every=timedelta(weeks=1))
 
@@ -186,3 +186,143 @@ def test_a_task_with_no_cost_has_none_and_a_free_one_costs_0():
 def test_a_cost_must_be_a_number_at_least_0(cost):
     with pytest.raises(ValueError, match="cost"):
         Task("t", "2026-07-15", 7, cost=cost)
+
+
+# Monthly rules (UC-4).
+
+
+def month_length(day):
+    following = date(day.year + day.month // 12, day.month % 12 + 1, 1)
+    return (following - date(day.year, day.month, 1)).days
+
+
+def on_rule(rule, day):
+    """Whether ``day`` is one of a monthly rule's dates: the rule's
+    definition, written out plainly."""
+    if rule.weekday is not None:
+        if day.strftime("%A") != rule.weekday:
+            return False
+        if rule.nth > 0:
+            return (day.day - 1) // 7 == rule.nth - 1
+        return (month_length(day) - day.day) // 7 == -rule.nth - 1
+    if rule.short_months == "skip":
+        return day.day == rule.day
+    return day.day == min(rule.day, month_length(day))
+
+
+def walked_monthly(task, start, end):
+    dates, day = [], max(start, task.first)
+    while day <= end:
+        if on_rule(task.every, day):
+            dates.append(day)
+        day += timedelta(days=1)
+    return tuple(dates)
+
+
+def test_the_first_tuesday_and_the_30th_through_the_rest_of_2026():
+    # UC-4: from Sunday 11 October to 31 December 2026.
+    tuesdays = Task("t", "2026-07-15", Monthly(weekday="Tuesday", nth=1))
+    assert tuesdays.due("2026-10-11", "2026-12-31").dates == (
+        date(2026, 11, 3),
+        date(2026, 12, 1),
+    )
+    thirtieths = Task("t", "2026-07-15", Monthly(30))
+    assert thirtieths.due("2026-10-11", "2026-12-31").dates == (
+        date(2026, 10, 30),
+        date(2026, 11, 30),
+        date(2026, 12, 30),
+    )
+
+
+def test_a_short_month_has_its_last_day_or_is_skipped():
+    last = Task("t", "2026-07-15", Monthly(30))
+    skip = Task("t", "2026-07-15", Monthly(30, short_months="skip"))
+    assert last.every.short_months == "last"
+    february = ("2027-02-01", "2027-02-28")
+    assert last.due(*february).dates == (date(2027, 2, 28),)
+    assert skip.due(*february).count == 0
+    # 2028 is a leap year.
+    assert last.due("2028-02-01", "2028-02-29").dates == (date(2028, 2, 29),)
+    # The 31st: the last day of every month, or only the long ones.
+    longest = Task("t", "2026-01-01", Monthly(31))
+    assert longest.due("2026-01-01", "2026-12-31").count == 12
+    only_long = Task("t", "2026-01-01", Monthly(31, short_months="skip"))
+    assert only_long.due("2026-01-01", "2026-12-31").count == 7
+
+
+def test_the_monthly_dates_are_the_calendar_walked_a_day_at_a_time():
+    rng = np.random.default_rng(1)
+    origin = date(2026, 1, 1)
+    weekdays = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ]
+    for _ in range(200):
+        if rng.random() < 0.5:
+            rule = Monthly(
+                int(rng.integers(1, 32)),
+                short_months=str(rng.choice(["last", "skip"])),
+            )
+        else:
+            rule = Monthly(
+                weekday=str(rng.choice(weekdays)),
+                nth=int(rng.choice([1, 2, 3, 4, -1, -2, -3, -4])),
+            )
+        task = Task(
+            "t",
+            first=origin + timedelta(days=int(rng.integers(0, 1500))),
+            every=rule,
+        )
+        start = origin + timedelta(days=int(rng.integers(0, 1800)))
+        end = start + timedelta(days=int(rng.integers(0, 400)))
+        assert task.due(start, end).dates == walked_monthly(task, start, end)
+
+
+def test_the_last_weekday_of_the_month():
+    fridays = Task("t", "2026-10-01", Monthly(weekday="friday", nth=-1))
+    assert fridays.every.weekday == "Friday"
+    assert fridays.due("2026-10-01", "2026-12-31").dates == (
+        date(2026, 10, 30),
+        date(2026, 11, 27),
+        date(2026, 12, 25),
+    )
+
+
+def test_a_monthly_task_costs_its_count_times_its_cost():
+    task = Task("t", "2026-07-15", Monthly(30), cost=100)
+    assert task.due("2026-10-11", "2026-12-31").cost == 300.0
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"day": 30, "weekday": "Tuesday", "nth": 1},
+        {"day": 0},
+        {"day": 32},
+        {"day": 15.5},
+        {"day": True},
+        {"day": 30, "nth": 1},
+        {"day": 30, "short_months": "first"},
+        {"weekday": "Tues", "nth": 1},
+        {"weekday": 1, "nth": 1},
+        {"weekday": "Tuesday"},
+        {"weekday": "Tuesday", "nth": 5},
+        {"weekday": "Tuesday", "nth": 0},
+        {"weekday": "Tuesday", "nth": 1.5},
+        {"weekday": "Tuesday", "nth": 1, "short_months": "skip"},
+    ],
+)
+def test_a_monthly_rule_is_checked(arguments):
+    with pytest.raises(ValueError):
+        Monthly(**arguments)
+
+
+def test_an_interval_or_a_rule_is_needed():
+    with pytest.raises(TypeError, match="Monthly"):
+        Task("t", "2026-07-15", "monthly")
