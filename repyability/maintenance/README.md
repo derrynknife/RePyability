@@ -413,50 +413,107 @@ Keep to the project's rules (`CLAUDE.md`):
   - **Replacements take no time.** A replacement that takes days, or
     waits for a part, waits for a use case.
 
-### UC-6: "What's the NPV of skipping the next planned replacement?"
+### UC-6: "Right after a failure, what's the NPV of skipping the next planned replacement?"
 
-- **Status:** proposed, with questions for the maintainer (below).
+- **Status:** built: `ReplacementPlan` and `SkipValue`
+  (`repyability/maintenance/_plans.py`).
 - **Who asks, and why:** the planner of UC-5, now replacing the bearing on
   a plan as well as when it fails. A planned replacement costs less than
-  an unplanned one, but replaces a working bearing. At each failure, the
-  new bearing makes the next planned replacement look wasteful: is it
-  worth skipping?
-- **What they know:** the bearing of UC-5; the plan's interval; the
-  costs of a planned and an unplanned replacement; a discount rate; and
-  whether the plan resets.
+  an unplanned one, but replaces a working bearing. Right after a
+  failure, the new bearing makes the next planned replacement look
+  wasteful: is it worth skipping?
+- **What they know (the maintainer chose these numbers):** the bearing of
+  UC-5 (Weibull, scale 365 days, shape 2); a plan every 180 days; $150
+  for a planned replacement and $400 for one at a failure; a discount
+  rate of 8% a year. It is asked right after a failure, a new bearing
+  just in.
+- **What they want back:** the NPV of skipping, as what it saves
+  (positive: skip it), net of the failures it adds.
 - **The option the maintainer named: does the plan reset?**
   - **The plan resets** (age replacement): the next planned replacement
-    is an interval after the last replacement, planned or not, so a
-    failure moves the plan. Skipping is "easy" (the maintainer's word):
-    every replacement starts the same process afresh, so the two choices
-    differ only until the bearing now fitted is replaced, at a failure or at
-    the planned replacement after the skipped one. From then on both run
-    the same process, though at different times, so the NPV needs the
-    discounted value of the process that follows.
+    is an interval after the last replacement, planned or not, so right
+    after a failure it is 180 days away. Skipping it, the bearing runs
+    to a failure or to 360 days. Every replacement starts the same
+    process afresh, so the two choices are the same process from the
+    bearing's replacement on, but at different times: the NPV needs the
+    discounted value of the plan from new.
   - **The plan does not reset** (calendar, block replacement): planned
-    replacements fall on fixed dates whatever happens. A failure just
-    before a planned date leaves a nearly new bearing to be replaced.
-    Skipping the next date, the bearing runs on to a failure or the
-    following date; doing it, a new bearing runs from the next date to
-    the following one. At the following date both replace, and from then
-    on the choices are the same. So the NPV of skipping is the
-    difference of the expected discounted costs from now to the
-    following planned date: the planned cost saved, against the
-    unplanned replacements it adds.
-- **How it could be solved:** both by existing exact pieces. The calendar
-  plan with `expected_cost(t, state=..., discount_rate=...)` (block
-  replacement from its phase, against replacement on failure alone up to
-  the following date). The resetting plan by renewal-reward with
-  discounting (`NonRepairable` already prices age replacement in the
-  long run, undiscounted).
-- **Questions for the maintainer:**
-  1. **The numbers:** the plan's interval (say every 180 days), the
-     planned and unplanned costs (say $150 and $400), the discount rate
-     (say 8% a year), and the next planned date.
-  2. **When is it asked?** At a failure (as just replaced), or on any
-     day, from the bearing's age then?
-  3. **The answer's sign:** the NPV of skipping as what skipping saves
-     (positive: skip it), net of the failures it adds?
+    replacements fall on fixed dates. Right after a failure, the next
+    date may be any number of days away, up to 180; a failure just
+    before it leaves a nearly new bearing to be replaced. Skipping it,
+    the bearing runs on to a failure or the following date. Both choices
+    replace at the following date, so they differ only before it.
+- **The answer:**
+  - **Resetting plan: skipping saves $26.56.**
+  - **Calendar plan:** it depends on the days to the next date:
+
+    | Days to the next planned date | 1 | 10 | 30 | 60 | 90 | 120 | 150 | 180 |
+    |---|---|---|---|---|---|---|---|---|
+    | NPV of skipping ($) | 149.06 | 140.73 | 123.08 | 99.06 | 78.21 | 60.68 | 46.42 | 35.26 |
+
+  Skipping pays every time: a 180-day plan is too frequent for this
+  bearing. `NonRepairable.optimal_replacement_policy()` puts the best
+  age at about 298 days (undiscounted). On a 365-day calendar plan the
+  answer changes sign: skipping pays when the next date is less than
+  about 261 days away (the failure came at least about 104 days after
+  the last planned replacement), and costs up to about $2 otherwise.
+- **How it is solved:** exactly, with no simulation:
+  - **Resetting:** renewal-reward with discounting. With `M(s)` the
+    expected discounted length of a cycle cut off at age `s` (the
+    integral of `exp(-r x) R(x)` to `s`) and `A(s)` its expected
+    discounted cost, the plan from new is worth `A(T) / (r M(T))`, and
+    `NPV = A(T) - A(2T) + A(T) (M(2T) - M(T)) / M(T)`. The discount rate
+    cancels from the last term, so it holds undiscounted too (the
+    classic comparison: the cycle cost saved, less the cost rate over
+    the time added). `M` is integrated by the Gauss-Kronrod rule that
+    the MTTF uses (`_mean_lifetime._integrate`).
+  - **Calendar:** `NPV = planned exp(-r d) + exp(-r d) F(T) - (F(d + T) -
+    F(d))`, `d` the days to the next date and `F(t)` the expected
+    discounted cost of a new bearing's failures (and its replacements')
+    in `[0, t)`: `RepairableRBD.expected_cost(t, discount_rate=r)`.
+  - **The discount rate** is a rate a year, `i`; costs are discounted
+    continuously at `r = log(1 + i) / 365.25` a day, so a cost a year
+    away is worth `1 / (1 + i)`.
+- **Today (before this use case):** the calendar plan by hand from three
+  `expected_cost` calls and the formula above; the resetting plan not
+  at all (`NonRepairable` prices age replacement only in the long run,
+  undiscounted).
+- **Design, as built:**
+
+  ```python
+  from repyability.maintenance import ReplacementPlan
+
+  life = surv.Weibull.from_params([365.0, 2.0])
+  resetting = ReplacementPlan(life, every=180, planned_cost=150, unplanned_cost=400, resets=True)
+  resetting.skip_next(discount_rate=0.08).npv                    # 26.56
+
+  calendar = ReplacementPlan(life, every=180, planned_cost=150, unplanned_cost=400, resets=False)
+  calendar.skip_next(discount_rate=0.08, days_to_next=30).npv    # 123.08
+  ```
+
+  `resets` has no default: the two plans answer differently, so it is
+  always said. A calendar plan needs `days_to_next`; a resetting one
+  refuses it (its next planned replacement is always `every` away).
+- **Checks:** `test_maintenance_plans.py` checks:
+  - the answers against plain simulations of both plans (the resetting
+    one over 300 years);
+  - an exponential life against both plans' closed forms, at 0%, 8% and
+    50% a year;
+  - the resetting plan with no discounting against the classic
+    undiscounted comparison, and a tiny rate next to it;
+  - the 180-day plan's NPVs falling with the days to the next date, and
+    the 365-day plan's change of sign;
+  - the input checks.
+- **Learned / open questions:**
+  - **The plan itself may be the question.** With these costs a 180-day
+    plan is too frequent, so skipping always pays. Comparing the plan
+    with the best one (discounted), or the latest day at which skipping
+    a calendar replacement still pays, are natural next use cases.
+  - **Days, not dates, so far.** "Right after a failure" needs only the
+    days to the next planned date. Tying the plan to a `Component` (its
+    installed date) and a `Task` (the planned dates) waits for a use
+    case.
+  - **Replacements take no time**, as in UC-5.
 
 ## Candidates
 

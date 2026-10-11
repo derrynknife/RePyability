@@ -33,7 +33,17 @@ other release, fixes included, the minor.
   replacement, new units' too, exactly) and their expected cost
   (`FailureForecast`). A bearing with a Weibull life (scale 365 days,
   shape 2) installed on 1 March 2026 fails before the end of 2026 with a
-  chance of 27.8%, with 0.283 replacements expected. A task's `cost` each
+  chance of 27.8%, with 0.283 replacements expected. A
+  `ReplacementPlan` replaces a unit when it fails and on a plan, which
+  resets at each replacement (age) or keeps to fixed dates (calendar);
+  its `skip_next(discount_rate, days_to_next=)` gives the NPV of skipping
+  the next planned replacement right after a failure (`SkipValue`),
+  exactly: renewal-reward with discounting for a plan that resets, and
+  the discounted failure costs up to the following planned date for a
+  calendar plan. For that bearing, replaced every 180 days for 150 or at
+  a failure for 400, at 8% a year, skipping saves 26.56 on a plan that
+  resets, and 35 to 149 on a calendar plan, the more the sooner the next
+  date. A task's `cost` each
   time gives their total
   (`TaskDates.cost`): at 250 each time, 3000. `to_dict()` writes a
   result's dates as ISO text (`"2026-07-15"`).
