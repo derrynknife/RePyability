@@ -41,7 +41,12 @@ from repyability.demonstration import (
     mtbf_test_time,
 )
 from repyability.fault_tree import FaultTree
-from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
+from repyability.maintenance import (
+    FailureLimitPolicy,
+    MaintenancePolicy,
+    Task,
+    TaskDates,
+)
 from repyability.network import Network
 from repyability.non_repairable import NonRepairable
 from repyability.rbd.ccf import MGL, BetaFactor, CCFGroup
@@ -134,6 +139,8 @@ __all__ = [
     "mtbf_pass_probability",
     "mtbf_demonstration_plan",
     "ComponentOption",
+    # Maintenance planning
+    "Task",
     # Up/down histories
     "Timeline",
     "Timelines",
@@ -160,6 +167,7 @@ __all__ = [
     "RestorationCriticalityIndex",
     "MaintenancePolicy",
     "FailureLimitPolicy",
+    "TaskDates",
     "MaintenancePlan",
     "RateBreakdown",
     "AvailabilityAllocation",

@@ -23,6 +23,7 @@ methods until 0.12 (#184): calling them still works, with a
 """
 
 import dataclasses
+import datetime
 import math
 import warnings
 from collections.abc import Mapping
@@ -67,7 +68,8 @@ def plain(value) -> Any:
     """``value`` as plain data, for JSON: a result (or anything
     with a ``to_dict``) as its ``to_dict()``, a dataclass as a dict of its
     fields, an array or a tuple as a list, a numpy number as a Python one,
-    a mapping with its keys as JSON holds them (see ``_json_key``), and
+    a date as ISO text (``"2026-07-15"``), a mapping with its keys as
+    JSON holds them (see ``_json_key``), and
     anything else as it is."""
     if isinstance(value, np.ndarray):
         return value.tolist()
@@ -75,6 +77,8 @@ def plain(value) -> Any:
         return value.item()
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
+    if isinstance(value, datetime.date):
+        return value.isoformat()
     if callable(getattr(value, "to_dict", None)) and not isinstance(
         value, type
     ):

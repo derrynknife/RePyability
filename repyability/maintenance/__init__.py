@@ -86,3 +86,7 @@ class FailureLimitPolicy:
 
     failure_count: int
     cost_rate: float
+
+
+# After the policies, which the modules it imports may import from here.
+from repyability.maintenance._tasks import Task, TaskDates  # noqa: E402

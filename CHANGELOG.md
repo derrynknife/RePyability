@@ -11,6 +11,15 @@ other release, fixes included, the minor.
 
 ### Added
 
+- **Calendar tasks and their due dates (#319).** The first piece of the
+  planned-maintenance forecaster, built one use case at a time (recorded
+  in `repyability/maintenance/README.md`): a `Task` done on its first
+  date and every whole number of days after it, whatever the equipment
+  does, and its `due(start, end)`, the dates it falls due in a period
+  with both days included (`TaskDates`: the dates and their `count`).
+  A weekly task first done on 15 July 2026 falls due 12 times from 11
+  October to the end of 2026. `to_dict()` writes a result's dates as
+  ISO text (`"2026-07-15"`).
 - **The failure frequency, MUT and MDT with common-cause groups whose
   tests, or another block's replacements, take time (#293).** They were
   refused there (#220): a test or a block replacement that takes time is

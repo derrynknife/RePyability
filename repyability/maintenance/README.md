@@ -147,7 +147,8 @@ Keep to the project's rules (`CLAUDE.md`):
 
 ### UC-2: "I've got a weekly task, started 15 July 2026. How many times will it happen through the rest of 2026?"
 
-- **Status:** answered by hand; design proposed, not built.
+- **Status:** built: `Task` and `TaskDates`
+  (`repyability/maintenance/_tasks.py`).
 - **Who asks, and why:** anyone with a recurring task on a fixed
   calendar (an inspection, a lubrication round, a test), planning the
   rest of the year.
@@ -207,13 +208,18 @@ Keep to the project's rules (`CLAUDE.md`):
   - **Later, intervals that aren't a fixed length.** "Monthly" or "on
     the first Monday" aren't a number of days. They are not needed here,
     but the design shouldn't rule them out.
-- **Proposed design (the smallest thing that answers it):** a `Task` in
+- **Design, as built (the smallest thing that answers it):** a `Task` in
   `repyability.maintenance`: a name, a first date (a `datetime.date`, or
   text such as `"2026-07-15"`) and an interval (a `datetime.timedelta`,
-  or a number of days). Its `due(start, end)`
-  returns its dates within the period, both ends included, as a result
-  with `to_dict()`, whose length is the count. It uses the standard
-  library's dates (no new dependency):
+  or a number of days). Its `due(start, end)` returns its dates within
+  the period, both ends included, as a `TaskDates` result (the dates and
+  their `count`, with `to_dict()`). It uses the standard
+  library's dates (no new dependency). Two changes from the first
+  proposal:
+  - The count is `due.count`, not `len(due)`: a result is a read-only
+    mapping of its fields, so its `len` is the number of fields.
+  - `to_dict()` (every result's, through `results.plain`) now writes a
+    date as ISO text, as JSON has no dates.
 
   ```python
   from datetime import timedelta
@@ -221,9 +227,16 @@ Keep to the project's rules (`CLAUDE.md`):
 
   conveyor = Task("inspect conveyor", first="2026-07-15", every=timedelta(weeks=1))
   due = conveyor.due("2026-10-11", "2026-12-31")
-  len(due)    # 12
+  due.count   # 12
   due.dates   # 2026-10-14, 2026-10-21, ..., 2026-12-30
   ```
+
+  `test_maintenance_tasks.py` checks the UC-2 answer, and the dates
+  against the calendar walked a day at a time on random tasks and
+  periods.
+- **Next, noted by the maintainer:** a task will hold a collection of
+  tasks (a weekly round made of several jobs, say). Not built yet: it
+  waits for a use case that needs it.
 
 ## Candidates
 
