@@ -515,6 +515,89 @@ Keep to the project's rules (`CLAUDE.md`):
     case.
   - **Replacements take no time**, as in UC-5.
 
+### UC-7: "Replacing at a scheduled shut is cheaper than a planned replacement off the schedule. What's the best way to replace the bearing?"
+
+- **Status:** answered by hand; design proposed, not built.
+- **Who asks, and why:** the planner of UC-6. The plant has planned shuts
+  every 180 days (the schedule). Replacing the bearing in a shut is
+  cheaper and easier than a planned replacement that needs its own
+  outage, which is cheaper than a failure. The maintainer's framing:
+  "just another part of the optimisation problem".
+- **What they know:** the bearing of UC-5 (Weibull, scale 365 days,
+  shape 2); shuts every 180 days; **$100 at a shut, $150 planned off the
+  schedule, $400 at a failure** (the maintainer chose these).
+- **What they want back:** the cheapest way to replace it, in the long
+  run.
+- **How it was framed (proposed by Claude, as the maintainer had not
+  pinned it down):** five policies, the last containing the others:
+  1. **run to failure** ($400 each);
+  2. **age replacement off the schedule** at age τ (the plan resets),
+     $150 each;
+  3. **every shut**, or **every second shut** (a calendar plan), $100
+     each;
+  4. **at each shut by age:** replace in a shut only if the bearing is
+     at least *a* days old, else leave it to the next shut. This is
+     UC-6's skip decision, taken at every shut;
+  5. **both:** in a shut if at least *a* days old, or off the schedule
+     at age τ if that comes first.
+- **The answer** (long-run cost a day, undiscounted):
+
+  | Policy | Cost a day |
+  |---|---|
+  | Run to failure | 1.237 |
+  | Age replacement off the schedule, best τ about 300 days | 1.117 |
+  | Every second shut | 1.098 |
+  | Every shut | 1.056 |
+  | **At each shut, if at least about 138 days old** | **0.990** |
+
+  - **The best policy:** replace in a shut only if the bearing is at
+    least about 138 days old. Right after a failure, skip the next shut
+    if it is less than about 138 days away, and replace at the one after.
+    Anywhere from 120 to 180 days costs within 0.1% of it.
+  - **An off-schedule replacement adds nothing at these prices.** The
+    shuts come often enough that the best τ for policy 5 is "never".
+    Dearer failures, or shuts further apart, would change that.
+  - **It agrees with UC-6.** With the shut price, UC-6's NPV of skipping
+    the next shut (right after a failure, calendar plan) changes sign
+    when the shut is about 145 days away at 8% a year (142 undiscounted):
+    the one-off decision and the long-run policy say the same thing.
+- **How it is solved:**
+  - **Policies 1 to 3:** a one-component `RepairableRBD` with
+    `expected_cost_rate()` (a replacement on failure at $400, and
+    preventive age or block replacement), exact.
+  - **Policy 4:** exactly too, through replacement on condition (#145),
+    which inspects on a calendar and replaces a unit more likely than a
+    threshold to fail before the next inspection. For a life whose hazard
+    rises (as this Weibull's), that is a unit at least *a* days old: the
+    threshold is `1 - R(a + 180) / R(a)`. The best *a* then comes from a
+    one-dimensional search.
+  - **Policy 5:** simulated by hand here (RePyability's policies do not
+    combine a condition at inspections with an age off them). With these
+    prices it is policy 4.
+- **Today:** all by hand, as above. The thresholds are found by turning
+  an age into a condition threshold, which only holds for a rising
+  hazard.
+- **Checks (by hand):** the exact cost rates against a plain simulation
+  of every policy (which runs about 0.001 a day low, from stopping at
+  150,000 days: its run to failure gives 1.2354, the exact 1.2366); every
+  shut against the calendar plan's exact value; and UC-6's break-even
+  against the best threshold.
+- **Proposed design (to agree with the maintainer):** a way to say "the
+  shuts" once (every 180 days, $100), and to compare the policies with
+  the three prices, giving each policy's cost a day and the best
+  threshold. Open:
+  - **Undiscounted, or discounted?** UC-6 used 8% a year; the long-run
+    comparison here is undiscounted.
+  - **Ages rather than conditions.** A policy "at least *a* days old at a
+    shut" should be said as an age, worked out for any life (where the
+    hazard does not rise, an age and a condition threshold differ).
+  - **Policy 5 exactly**, if a case needs it: a unit's phase between
+    shuts makes it a Markov chain on the phase, to be worked out on a
+    grid.
+- **Learned:** the cheaper shut price is what makes skipping a shut
+  worthwhile only for young bearings. With the off-schedule price ($150)
+  at the shuts, as in UC-6, skipping always paid.
+
 ## Candidates
 
 Questions to take up next, one at a time, in whatever order proves useful.
