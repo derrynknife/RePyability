@@ -598,6 +598,80 @@ Keep to the project's rules (`CLAUDE.md`):
   worthwhile only for young bearings. With the off-schedule price ($150)
   at the shuts, as in UC-6, skipping always paid.
 
+### UC-8: "Those cost rates are good, but what does that actually look like over a timeline, and what is the range of those costs over time?"
+
+- **Status:** answered by hand; design proposed, not built.
+- **Who asks, and why:** the planner of UC-7. A long-run cost a day says
+  which policy is cheapest, but a budget is for real dates, from the
+  bearing as it is now, and needs to know how far the actual spend can
+  stray from the average.
+- **What they know:** UC-7's bearing, prices and policies; the bearing
+  in now is 224 days old today (11 October 2026, as in UC-5); the next
+  shut is on **1 November 2026** (21 days away; Claude's assumption),
+  then every 180 days.
+- **What they want back:** for each policy, the cost from today to each
+  date ahead, its mean and its range.
+- **The answer** (the cost from 11 October 2026 to the end of each
+  quarter shown, in dollars; the range from the 10th to the 90th
+  percentile):
+
+  **The best policy** (replace at a shut if at least 138 days old):
+
+  | To the end of | Mean | 10% | 50% | 90% |
+  |---|---|---|---|---|
+  | Dec 2026 | 133 | 100 | 100 | 100 |
+  | Dec 2027 | 487 | 300 | 300 | 900 |
+  | Dec 2028 | 846 | 500 | 800 | 1,400 |
+  | Sep 2029 | 1,090 | 600 | 1,000 | 1,600 |
+
+  **Three years on** (to the end of September 2029):
+
+  | Policy | Mean | 10% to 90% | Long run, a year |
+  |---|---|---|---|
+  | Best: at a shut if at least 138 days old | 1,090 | 600 to 1,600 | 362 |
+  | Every shut | 1,155 | 600 to 1,800 | 386 |
+  | Run to failure | 1,373 | 800 to 2,000 | 452 |
+
+  - **The first months cost more than the long run** (about $590 a year
+    to December 2026, against $362): the bearing in now is old, and is
+    almost certain to be replaced at the November shut.
+  - **The spend comes in steps**, $100 at a shut and $400 at a failure,
+    so the percentiles jump: half the time the best policy spends $300
+    by the end of 2027, but one time in ten $900 or more (a failure or
+    two).
+  - **The best policy lowers the mean more than the range.** Its 90th
+    percentile is $200 under every shut's after three years, its 10th
+    the same.
+- **How it is solved:**
+  - **The mean:** `RepairableRBD.expected_cost(t, state=...)` at each
+    date, exact, from the bearing's state today (its age, and the days
+    since the last shut: `NodeState(age=224, phase=159)`). The policies
+    are UC-7's: replacement on condition at the shuts for the best one,
+    block replacement for every shut.
+  - **The range:** simulated, as a range must be (the README: "the answer
+    is a sample"). `RepairableRBD.cost(t, state=..., seed=...)` at each
+    date with one seed: simulation *r* draws the same lives whatever the
+    window, so the runs to each date are the same histories cut off
+    there, and each date's percentiles are of one set of timelines.
+    Their means agree with the exact ones at every date (within $2,
+    20,000 simulations each).
+- **Today:** all of it by hand, as above: a one-component diagram per
+  policy, the dates turned into days, and a simulation per date.
+- **Proposed design (to agree with the maintainer):** a forecast over
+  dates for a component under a plan, the mean exact and the range
+  simulated, from its state today. Open:
+  - **Cumulative, or each period's own?** The tables above are the
+    cost to each date. A quarter's own spend is lumpy (mostly $0 or
+    $100, $400 with a failure); both could be given.
+  - **Which range?** 10% to 90% here; or any percentiles asked for.
+  - **Dates ahead:** month ends, quarter ends, or each shut.
+  - **The plan as an input:** UC-7's policies need the shuts (a `Task`)
+    and the rule at them (an age), tied to a `Component` (its life,
+    installed date and prices). UC-6 and UC-7 left that open too.
+- **Learned:** each date's range must come from the same simulations, cut
+  off there, or the 90th percentiles of successive dates need not even
+  rise. The seeded streams give that for free.
+
 ## Candidates
 
 Questions to take up next, one at a time, in whatever order proves useful.
