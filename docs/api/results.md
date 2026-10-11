@@ -61,3 +61,5 @@
 ::: repyability.FailureLimitPolicy
 
 ::: repyability.TaskDates
+
+::: repyability.FailureForecast

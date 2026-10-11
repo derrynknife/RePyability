@@ -341,6 +341,123 @@ Keep to the project's rules (`CLAUDE.md`):
     a use case needs it. Accepting a dateutil `rrule` (or iCalendar text)
     directly, for anything not covered yet, is possible but not done.
 
+### UC-5: "My bearing was installed on 1 March 2026 and is replaced when it fails. What's the chance it fails before the end of 2026, how many replacements should I expect, and at $400 each, what will they cost?"
+
+- **Status:** built: `Component` and `FailureForecast`
+  (`repyability/maintenance/_components.py`).
+- **Who asks, and why:** a planner with a non-repairable part (a bearing)
+  that is run to failure and replaced, budgeting for the rest of the year.
+- **What they know:** the bearing's life, a Weibull with a scale of 365
+  days and a shape of 2 (fitted in surpyval); that the current one was
+  installed on 1 March 2026 and is still working today (11 October 2026);
+  that a failed one is replaced with a new one, for $400.
+- **What they want back:** for 11 October to 31 December 2026, the chance
+  it fails, the expected number of replacements, and their expected cost.
+- **The answer:** the bearing is 224 days old, and the period is 82 days
+  (both ends included):
+  - **chance it fails: 27.8%**, `1 - R(306) / R(224)`;
+  - **expected replacements: 0.283**, a little more than the chance of a
+    failure, because a new bearing can fail before the year is out too;
+  - **expected cost: $113.20**, 0.283 times $400.
+- **How it is solved:**
+  - **The chance it fails:** the life conditioned on the age reached,
+    `1 - R(age + days) / R(age)`, exact.
+  - **The expected replacements:** the renewal count from that age,
+    which `RepairableRBD.expected_events` already works out exactly (no
+    simulation, to about 1e-7) for a component replaced in no time,
+    started from its state. The forecaster calls it rather than having a
+    second renewal calculation of its own.
+- **Today (before this use case):** a one-component diagram, with the
+  dates turned into days by hand:
+
+  ```python
+  rbd = RepairableRBD(
+      [("s", "bearing"), ("bearing", "t")],
+      {"bearing": {"reliability": life, "repairability": "instant",
+                   "replace_cost": 400.0}},
+  )
+  state = {"bearing": NodeState(age=224.0)}
+  rbd.expected_events(82.0, state=state).node_failures   # {'bearing': 0.2830}
+  rbd.expected_cost(82.0, state=state).mean              # 113.20
+  ```
+
+  The chance of a failure is not among its results. A component with
+  redundancy around it is another question (#313).
+- **Design, as built:** a `Component` in `repyability.maintenance`, beside
+  `Task`: a name, a life (a surpyval model, in days), the date the
+  current unit was installed, and a cost each replacement (optional, as
+  for a task). Its `failures(start, end)` gives a `FailureForecast`: the
+  `probability`, `expected_failures` and `expected_cost`.
+
+  ```python
+  bearing = Component("bearing", surv.Weibull.from_params([365.0, 2.0]),
+                      installed="2026-03-01", cost=400.0)
+  forecast = bearing.failures("2026-10-11", "2026-12-31")
+  forecast.probability         # 0.2784
+  forecast.expected_failures   # 0.2830
+  forecast.expected_cost       # 113.20
+  ```
+
+- **Checks:** `test_maintenance_components.py` checks:
+  - the UC-5 answers, against the closed form and a plain simulation;
+  - an exponential life, whose expected failures are its rate times the
+    days whatever its age;
+  - Weibull units of several ages and periods, against the simulation;
+  - a one-day period, where the expected failures are the chance of one;
+  - the input checks.
+- **Learned / open questions:**
+  - **Days only.** A life in running hours needs the hours a day it runs
+    to put it on the calendar. That waits for a use case.
+  - **The current unit is taken to be working at the start** of the
+    period, and the period may not start before it was installed.
+  - **Replacements take no time.** A replacement that takes days, or
+    waits for a part, waits for a use case.
+
+### UC-6: "What's the NPV of skipping the next planned replacement?"
+
+- **Status:** proposed, with questions for the maintainer (below).
+- **Who asks, and why:** the planner of UC-5, now replacing the bearing on
+  a plan as well as when it fails. A planned replacement costs less than
+  an unplanned one, but replaces a working bearing. At each failure, the
+  new bearing makes the next planned replacement look wasteful: is it
+  worth skipping?
+- **What they know:** the bearing of UC-5; the plan's interval; the
+  costs of a planned and an unplanned replacement; a discount rate; and
+  whether the plan resets.
+- **The option the maintainer named: does the plan reset?**
+  - **The plan resets** (age replacement): the next planned replacement
+    is an interval after the last replacement, planned or not, so a
+    failure moves the plan. Skipping is "easy" (the maintainer's word):
+    every replacement starts the same process afresh, so the two choices
+    differ only until the bearing now fitted is replaced, at a failure or at
+    the planned replacement after the skipped one. From then on both run
+    the same process, though at different times, so the NPV needs the
+    discounted value of the process that follows.
+  - **The plan does not reset** (calendar, block replacement): planned
+    replacements fall on fixed dates whatever happens. A failure just
+    before a planned date leaves a nearly new bearing to be replaced.
+    Skipping the next date, the bearing runs on to a failure or the
+    following date; doing it, a new bearing runs from the next date to
+    the following one. At the following date both replace, and from then
+    on the choices are the same. So the NPV of skipping is the
+    difference of the expected discounted costs from now to the
+    following planned date: the planned cost saved, against the
+    unplanned replacements it adds.
+- **How it could be solved:** both by existing exact pieces. The calendar
+  plan with `expected_cost(t, state=..., discount_rate=...)` (block
+  replacement from its phase, against replacement on failure alone up to
+  the following date). The resetting plan by renewal-reward with
+  discounting (`NonRepairable` already prices age replacement in the
+  long run, undiscounted).
+- **Questions for the maintainer:**
+  1. **The numbers:** the plan's interval (say every 180 days), the
+     planned and unplanned costs (say $150 and $400), the discount rate
+     (say 8% a year), and the next planned date.
+  2. **When is it asked?** At a failure (as just replaced), or on any
+     day, from the bearing's age then?
+  3. **The answer's sign:** the NPV of skipping as what skipping saves
+     (positive: skip it), net of the failures it adds?
+
 ## Candidates
 
 Questions to take up next, one at a time, in whatever order proves useful.

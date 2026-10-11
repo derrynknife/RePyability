@@ -26,7 +26,15 @@ other release, fixes included, the minor.
   first Tuesday; `nth=-1`, the last). The calendar arithmetic is
   python-dateutil's (the iCalendar standard's recurrence rules), now a
   dependency (2.8.2 or later; every install had it already, through
-  surpyval). A task's `cost` each time gives their total
+  surpyval). A `Component` is replaced with a new unit each time it
+  fails: from its life (in days) and the date its current unit was
+  installed, its `failures(start, end)` gives the chance the current unit
+  fails in the period, the expected number of failures (each a
+  replacement, new units' too, exactly) and their expected cost
+  (`FailureForecast`). A bearing with a Weibull life (scale 365 days,
+  shape 2) installed on 1 March 2026 fails before the end of 2026 with a
+  chance of 27.8%, with 0.283 replacements expected. A task's `cost` each
+  time gives their total
   (`TaskDates.cost`): at 250 each time, 3000. `to_dict()` writes a
   result's dates as ISO text (`"2026-07-15"`).
 - **The failure frequency, MUT and MDT with common-cause groups whose
