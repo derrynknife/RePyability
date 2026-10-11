@@ -334,8 +334,8 @@ Keep to the project's rules (`CLAUDE.md`):
   - **Holidays and working days.** The last Friday of December 2026 is
     Christmas Day. dateutil can leave out listed dates, but has no
     holiday calendars, and nothing moves a date to the working day
-    before or after. That waits for a use case (perhaps with the
-    `holidays` package).
+    before or after. **Set aside by the maintainer:** public holidays
+    are not to be implemented for now.
   - **Other rules.** Every other month, quarterly, yearly, a set number
     of times: dateutil has them all. Each gets a readable form here when
     a use case needs it. Accepting a dateutil `rrule` (or iCalendar text)
