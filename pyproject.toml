@@ -50,6 +50,10 @@ dependencies = [
     # its fits (for n_jobs' worker processes), as RePyability relies on.
     "surpyval>=0.24",
     "tqdm>=4.64",
+    # Calendar rules for maintenance tasks (the iCalendar standard's
+    # recurrences). Every install has it already, through surpyval's pandas
+    # and matplotlib; 2.8.2 is the oldest pandas 2 takes.
+    "python-dateutil>=2.8.2",
 ]
 
 [project.optional-dependencies]
@@ -65,6 +69,8 @@ dev = [
     # Pinned (like black) so a new mypy release can't fail CI on code that
     # type-checks locally; bump deliberately.
     "mypy==2.3.0",
+    # dateutil's type information, for mypy.
+    "types-python-dateutil",
     "pytest>=7.0",
     # The suite runs on every core (pytest -n auto), and its coverage is
     # collected from each worker.

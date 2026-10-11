@@ -7,3 +7,5 @@
 ::: repyability.minimal_repair_time_to_nth_failure
 
 ::: repyability.Task
+
+::: repyability.Monthly

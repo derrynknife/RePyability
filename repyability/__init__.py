@@ -44,6 +44,7 @@ from repyability.fault_tree import FaultTree
 from repyability.maintenance import (
     FailureLimitPolicy,
     MaintenancePolicy,
+    Monthly,
     Task,
     TaskDates,
 )
@@ -141,6 +142,7 @@ __all__ = [
     "ComponentOption",
     # Maintenance planning
     "Task",
+    "Monthly",
     # Up/down histories
     "Timeline",
     "Timelines",

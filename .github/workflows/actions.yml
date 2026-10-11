@@ -122,8 +122,8 @@ jobs:
   test-minimum:
     # The other jobs install the newest of every dependency, so nothing
     # else tests the oldest that pyproject.toml allows: this one installs
-    # each dependency at its floor (numpy, scipy, networkx, surpyval, tqdm),
-    # on the oldest Python, then the test tools.
+    # each dependency at its floor (numpy, scipy, networkx, surpyval, tqdm,
+    # python-dateutil), on the oldest Python, then the test tools.
     name: test (minimum dependencies)
     runs-on: ubuntu-latest
     timeout-minutes: 120

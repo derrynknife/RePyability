@@ -276,6 +276,71 @@ Keep to the project's rules (`CLAUDE.md`):
   - **No currency.** A cost is a number in whatever currency the user
     works in, as `RepairableRBD`'s costs are.
 
+### UC-4: "What about the first Tuesday of the month? And on the 30th of every month?"
+
+- **Status:** built: `Monthly`, on python-dateutil.
+- **Who asks, and why:** the same planner, whose tasks are not all a
+  fixed number of days apart: many are set by the calendar's months.
+- **What they know:** the rule (the first Tuesday; the 30th), and the
+  period: from today (11 October 2026) to 31 December 2026.
+- **What they want back:** how many times each falls due, and when.
+- **The answer:**
+  - **First Tuesday: 2 times**, on 3 November and 1 December. October's
+    was the 6th, already past.
+  - **The 30th: 3 times**, on 30 October, 30 November and 30 December.
+- **Decisions (the maintainer's):**
+  - **Short months are an option, defaulting to the last day.** February
+    has no 30th. `short_months="last"` (the default) makes the task fall
+    due on the month's last day instead (28 February, or the 29th in a
+    leap year); `"skip"` leaves the month without it (the iCalendar
+    standard's own behaviour).
+  - **python-dateutil does the calendar arithmetic, behind RePyability's
+    own rules.** Calendars get complicated (every other month, the last
+    weekday, a set number of times, exclusions), and dateutil's `rrule`
+    is the iCalendar standard's recurrence, used for twenty years. Every
+    install already had it, through surpyval's pandas and matplotlib; it
+    is now a dependency of its own (2.8.2 or later). Users write readable
+    rules (`Monthly(30)`, `Monthly(weekday="Tuesday", nth=1)`), not
+    iCalendar text.
+- **How it is solved:** every schedule is a dateutil rule from the task's
+  first date: a fixed interval is a daily rule every *n* days, and a
+  monthly rule names a day or a weekday of the month. The last day for a
+  short month is the latest of the 28th up to the day that the month has
+  (the standard's `BYSETPOS=-1`). A period's dates are the rule's between
+  its ends, both included. It is exact, with no probability.
+- **Design, as built:**
+
+  ```python
+  from repyability.maintenance import Monthly, Task
+
+  Task("check pumps", "2026-07-15", every=Monthly(weekday="Tuesday", nth=1))
+  Task("meter reading", "2026-07-15", every=Monthly(30))                        # February: the 28th
+  Task("meter reading", "2026-07-15", every=Monthly(30, short_months="skip"))   # February: none
+  Task("month end", "2026-07-15", every=Monthly(weekday="Friday", nth=-1))      # the last Friday
+  ```
+
+  With a monthly rule, `first` is when the schedule starts: the task falls
+  due on the rule's dates from then on. `nth` may be 1 to 4 or -1 to -4,
+  which every month has; a fifth Tuesday is not in every month, and would
+  raise the short-month question again.
+- **Checks:** `test_maintenance_tasks.py` checks the UC-4 answers;
+  February under each option, in a leap year too; the 31st (12 times a
+  year, or the 7 long months); and every rule's dates against the
+  calendar walked a day at a time (on 200 random rules, tasks and periods,
+  over several years). The weekly tasks of UC-2 now go through dateutil
+  too, and still match their walk. The tests pass with dateutil 2.8.2,
+  the floor.
+- **Learned / open questions:**
+  - **Holidays and working days.** The last Friday of December 2026 is
+    Christmas Day. dateutil can leave out listed dates, but has no
+    holiday calendars, and nothing moves a date to the working day
+    before or after. That waits for a use case (perhaps with the
+    `holidays` package).
+  - **Other rules.** Every other month, quarterly, yearly, a set number
+    of times: dateutil has them all. Each gets a readable form here when
+    a use case needs it. Accepting a dateutil `rrule` (or iCalendar text)
+    directly, for anything not covered yet, is possible but not done.
+
 ## Candidates
 
 Questions to take up next, one at a time, in whatever order proves useful.

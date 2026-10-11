@@ -89,4 +89,8 @@ class FailureLimitPolicy:
 
 
 # After the policies, which the modules it imports may import from here.
-from repyability.maintenance._tasks import Task, TaskDates  # noqa: E402
+from repyability.maintenance._tasks import (  # noqa: E402
+    Monthly,
+    Task,
+    TaskDates,
+)
