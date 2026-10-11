@@ -708,6 +708,28 @@ Keep to the project's rules (`CLAUDE.md`):
     years'.
   - The part year, FY2027, has both of its shuts in it (1 November 2026
     and 30 April 2027), so it costs nearly a full year's.
+- **The outcomes of each year** (asked for after the percentiles above
+  misled: with the costs in steps, 60% of years at exactly $200 make the
+  10th and 50th percentiles both $200). The share of years with each
+  outcome, from 1,000,000 plain simulations; RePyability's 20,000 agree
+  with every row within about 0.3 points:
+
+  | What happens in the year | Cost | FY2027 (from 11 Oct) | FY2028 | FY2029 | FY2030 |
+  |---|---|---|---|---|---|
+  | No failure, one shut replacement | $100 | – | 0.9% | 1.2% | 1.5% |
+  | No failure, two shut replacements | $200 | 70.7% | 59.1% | 58.6% | 58.2% |
+  | One failure, no shut replacement | $400 | – | 0.5% | 0.7% | 0.8% |
+  | One failure, one shut replacement | $500 | 22.1% | 27.2% | 26.9% | 26.4% |
+  | One failure, two shut replacements | $600 | 3.0% | 2.9% | 3.2% | 3.5% |
+  | Two failures, no shut replacement | $800 | 1.4% | 4.8% | 4.6% | 4.5% |
+  | Two failures, one shut replacement | $900 | 2.5% | 3.5% | 3.6% | 3.8% |
+  | Three or more failures, or two and both shuts | $1,000+ | 0.3% | 1.2% | 1.2% | 1.2% |
+  | Mean | | $307 | $359 | $359 | $359 |
+
+  The chance of spending more than $200 (any failure) is 29% in FY2027
+  and 40% a full year; more than $600, 4% and 9%; more than $900, 0.3%
+  and 1.2%. A $100 or $400 year comes when a failure late in the year
+  before leaves a bearing too young to replace at the year's first shut.
 - **How it is solved:** as UC-8, at each financial year's end:
   - **The mean:** the differences of `expected_cost(t, state=...)` at the
     years' ends, exact.
@@ -723,10 +745,17 @@ Keep to the project's rules (`CLAUDE.md`):
   April or October elsewhere), calendar years, quarters or months; and
   over the whole horizon, whose range is its own (not the years' added).
   Open: the starting month, the percentiles, and how many years ahead.
-- **Learned:** the per-period range needs each simulation's cost per
-  period, not only its total: `cost()` gives the total of one window, so
-  by hand it took a run per year's end. The forecaster should sum each
-  simulation's costs into the periods in one run.
+- **Learned:**
+  - **Lumpy costs need their outcomes, not percentiles.** When costs
+    come in a few steps, percentiles hide the shape (here 10% / 50% /
+    90% = $200 / $200 / $600), and read as if no year were cheap. The
+    forecaster should give each period's outcomes (what happened: the
+    failures and planned replacements, and its cost, with its share) and
+    the chance of exceeding a budget, as above.
+  - **The per-period range** needs each simulation's cost per
+    period, not only its total: `cost()` gives the total of one window,
+    so by hand it took a run per year's end. The forecaster should sum
+    each simulation's costs into the periods in one run.
 
 ## Candidates
 
