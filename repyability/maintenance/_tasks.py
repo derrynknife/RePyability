@@ -10,7 +10,7 @@ days, and a period includes both of its ends, as people say it ("through
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Tuple
+from typing import Optional, Tuple
 
 from repyability.rbd.results import _ResultMapping
 from repyability.utils import checks
@@ -76,6 +76,10 @@ class Task:
         The interval between one time and the next: a whole number of
         days, at least one, as a ``timedelta`` (``timedelta(weeks=1)``) or
         a number of days (``7``).
+    cost : float, optional
+        What it costs each time it is done, at least 0, in your currency.
+        By default None: not given, and the dates it falls due have no
+        cost.
 
     Examples
     --------
@@ -92,18 +96,37 @@ class Task:
     12
     >>> due.dates[0], due.dates[-1]
     (datetime.date(2026, 10, 14), datetime.date(2026, 12, 30))
+
+    At 250 each time, they cost 3000:
+
+    >>> conveyor = Task(
+    ...     "inspect conveyor",
+    ...     first="2026-07-15",
+    ...     every=timedelta(weeks=1),
+    ...     cost=250.0,
+    ... )
+    >>> conveyor.due("2026-10-11", "2026-12-31").cost
+    3000.0
     """
 
     name: str
     first: date
     every: timedelta
+    cost: Optional[float]
 
-    def __init__(self, name: str, first, every) -> None:
+    def __init__(self, name: str, first, every, cost=None) -> None:
         if not isinstance(name, str):
             raise TypeError(f"name must be text; got {name!r}.")
+        if cost is not None and not (
+            checks.is_number(cost) and 0.0 <= float(cost) < float("inf")
+        ):
+            raise ValueError(
+                f"cost must be a number, at least 0 (or None); got {cost!r}."
+            )
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "first", _date(first, "first"))
         object.__setattr__(self, "every", _interval(every))
+        object.__setattr__(self, "cost", None if cost is None else float(cost))
 
     def due(self, start, end) -> "TaskDates":
         """The dates the task falls due from ``start`` to ``end``, both
@@ -118,7 +141,8 @@ class Task:
         Returns
         -------
         TaskDates
-            The task's dates in the period, and how many there are.
+            The task's dates in the period, how many there are, and what
+            they cost.
         """
         start, end = _date(start, "start"), _date(end, "end")
         if end < start:
@@ -132,7 +156,8 @@ class Task:
         dates = tuple(
             self.first + k * self.every for k in range(first, last + 1)
         )
-        return TaskDates(self.name, start, end, dates, len(dates))
+        cost = None if self.cost is None else len(dates) * self.cost
+        return TaskDates(self.name, start, end, dates, len(dates), cost)
 
 
 @dataclass
@@ -150,6 +175,9 @@ class TaskDates(_ResultMapping):
         The dates the task falls due in the period, in order.
     count : int
         How many there are.
+    cost : float or None
+        What they cost: the task's cost each time, times ``count``; None
+        if the task was given no cost.
     """
 
     task: str
@@ -157,3 +185,4 @@ class TaskDates(_ResultMapping):
     end: date
     dates: Tuple[date, ...]
     count: int
+    cost: Optional[float]
