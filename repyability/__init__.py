@@ -47,6 +47,8 @@ from repyability.maintenance import (
     FailureLimitPolicy,
     MaintenancePolicy,
     Monthly,
+    ReplacementPlan,
+    SkipValue,
     Task,
     TaskDates,
 )
@@ -146,6 +148,7 @@ __all__ = [
     "Task",
     "Monthly",
     "Component",
+    "ReplacementPlan",
     # Up/down histories
     "Timeline",
     "Timelines",
@@ -174,6 +177,7 @@ __all__ = [
     "FailureLimitPolicy",
     "TaskDates",
     "FailureForecast",
+    "SkipValue",
     "MaintenancePlan",
     "RateBreakdown",
     "AvailabilityAllocation",

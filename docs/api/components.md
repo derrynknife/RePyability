@@ -11,3 +11,5 @@
 ::: repyability.Monthly
 
 ::: repyability.Component
+
+::: repyability.ReplacementPlan

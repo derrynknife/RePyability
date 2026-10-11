@@ -93,6 +93,10 @@ from repyability.maintenance._components import (  # noqa: E402
     Component,
     FailureForecast,
 )
+from repyability.maintenance._plans import (  # noqa: E402
+    ReplacementPlan,
+    SkipValue,
+)
 from repyability.maintenance._tasks import (  # noqa: E402
     Monthly,
     Task,
