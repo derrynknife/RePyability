@@ -453,9 +453,10 @@ Keep to the project's rules (`CLAUDE.md`):
 
   Skipping pays every time: a 180-day plan is too frequent for this
   bearing. `NonRepairable.optimal_replacement_policy()` puts the best
-  age at about 298 days (undiscounted). On a 365-day calendar plan
-  skipping pays when the failure came within about 200 days of the next
-  date, and costs a little (about $2) when it came earlier.
+  age at about 298 days (undiscounted). On a 365-day calendar plan the
+  answer changes sign: skipping pays when the next date is less than
+  about 261 days away (the failure came at least about 104 days after
+  the last planned replacement), and costs up to about $2 otherwise.
 - **How it is solved:** exactly, with no simulation:
   - **Resetting:** renewal-reward with discounting. With `M(s)` the
     expected discounted length of a cycle cut off at age `s` (the
