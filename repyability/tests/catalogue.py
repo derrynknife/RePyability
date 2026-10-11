@@ -211,6 +211,13 @@ def nonrepairable_kinds():
                 **rest,
             },
         ),
+        "nested, worked out": NonRepairableRBD(
+            EDGES,
+            {
+                "a": NonRepairableRBD([("s", "x"), ("x", "t")], {"x": unit}),
+                **rest,
+            },
+        ),
         "junction in series": NonRepairableRBD(
             JUNCTION, {"a": unit, **rest, "j": PerfectReliability}
         ),
