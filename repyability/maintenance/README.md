@@ -697,8 +697,10 @@ Keep to the project's rules (`CLAUDE.md`):
 
   - **A typical year is two shuts and no failure** ($200, the median);
     the mean ($359) carries the chance of a failure ($400) on top. A
-    budget of the mean is right on average and short in about a year in
-    four or five.
+    full year (FY2028) costs $200 in 60% of the simulations, $500 (a
+    failure, and one shut replacement) in 27%, and more in the rest, so
+    a budget of the mean is right on average but short in about two
+    years in five (40%).
   - **Yearly 90th percentiles do not add up.** For the best policy they
     sum to $2,300 over the four years, but the four years' own 90th
     percentile is $2,000: bad years seldom come together. A contingency
