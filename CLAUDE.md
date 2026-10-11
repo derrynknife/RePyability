@@ -63,6 +63,13 @@
   inside the functions that use them, as they import the modules above
   them.
 
+- **The maintenance forecaster (#319) is built one use case at a time.**
+  `repyability/maintenance/README.md` records each use case (who asks,
+  what they know and want back, how it is solved, the hand-worked answer
+  with today's methods, the checks, what was learned) before it is
+  built. Add a use case there before the code that answers it, and add
+  nothing no use case needs; the maintainer chooses which is next.
+
 ## Simulation engines and seeded results
 
 - **A `RepairableRBD` simulation has two engines that must agree to the last
