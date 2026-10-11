@@ -148,4 +148,41 @@ def test_the_dates_go_through_json():
         "end": "2026-10-31",
         "dates": ["2026-10-14", "2026-10-21", "2026-10-28"],
         "count": 3,
+        "cost": None,
     }
+
+
+def test_the_weekly_task_costs_3000_through_the_rest_of_2026():
+    # UC-3: 250 each time, the same every time: 12 times, 3000.
+    task = Task(
+        "inspect conveyor",
+        first="2026-07-15",
+        every=timedelta(weeks=1),
+        cost=250,
+    )
+    due = task.due("2026-10-11", "2026-12-31")
+    assert due.count == 12
+    assert due.cost == 3000.0
+    assert json.loads(json.dumps(due.to_dict()))["cost"] == 3000.0
+
+
+def test_the_cost_is_the_count_times_the_cost_each_time():
+    task = Task("t", "2026-07-15", 7, cost=12.5)
+    for end in ("2026-07-14", "2026-07-15", "2026-08-31", "2027-07-15"):
+        due = task.due("2026-07-01", end)
+        assert due.cost == due.count * 12.5
+
+
+def test_a_task_with_no_cost_has_none_and_a_free_one_costs_0():
+    assert WEEKLY.cost is None
+    assert WEEKLY.due("2026-10-11", "2026-12-31").cost is None
+    free = Task("t", "2026-07-15", 7, cost=0)
+    assert free.due("2026-10-11", "2026-12-31").cost == 0.0
+
+
+@pytest.mark.parametrize(
+    "cost", [-1.0, float("inf"), float("nan"), True, "250", [250]]
+)
+def test_a_cost_must_be_a_number_at_least_0(cost):
+    with pytest.raises(ValueError, match="cost"):
+        Task("t", "2026-07-15", 7, cost=cost)

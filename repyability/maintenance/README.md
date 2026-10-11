@@ -238,6 +238,44 @@ Keep to the project's rules (`CLAUDE.md`):
   tasks (a weekly round made of several jobs, say). Not built yet: it
   waits for a use case that needs it.
 
+### UC-3: "How much will this cost?" (the weekly task of UC-2)
+
+- **Status:** built: `Task(..., cost=)` and `TaskDates.cost`.
+- **Who asks, and why:** the same planner, budgeting for the task over
+  the rest of the year.
+- **What they know:** the task of UC-2, and that it costs $250 each
+  time, the same every time.
+- **What they want back:** just the total, not a split by month.
+- **The answer:** **$3,000**: 12 times at $250.
+- **How it is solved:** the task's cost each time, times the number of
+  times it falls due in the period. It is exact, with no probability, as
+  the dates are.
+- **Today (before this use case):** `due.count * 250`, by hand. A
+  `RepairableRBD` could also give it, through the block-replaced
+  component of UC-2 with a preventive cost, but only with the same
+  workarounds.
+- **Design, as built:** `Task` takes a `cost` each time (a number, at
+  least 0, in the user's currency; by default None, not given), and
+  `TaskDates.cost` is the total, `count * cost`. It is None when the task
+  has no cost, so a cost never given is not mistaken for a free task.
+
+  ```python
+  conveyor = Task("inspect conveyor", first="2026-07-15",
+                  every=timedelta(weeks=1), cost=250.0)
+  conveyor.due("2026-10-11", "2026-12-31").cost   # 3000.0
+  ```
+
+  `test_maintenance_tasks.py` checks the UC-3 answer, the cost as the
+  count times the cost each time, and the input checks.
+- **Learned / open questions:**
+  - **One price, no breakdown.** The planner gave one figure. Hours,
+    parts and rates (and so the labour plan) wait for a use case that
+    needs them.
+  - **The same price every time.** A price that changes (from 1 January,
+    say) would make the cost depend on the date, not just the count.
+  - **No currency.** A cost is a number in whatever currency the user
+    works in, as `RepairableRBD`'s costs are.
+
 ## Candidates
 
 Questions to take up next, one at a time, in whatever order proves useful.
