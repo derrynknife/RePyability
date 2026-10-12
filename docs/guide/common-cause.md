@@ -562,3 +562,6 @@ held working or broken, a member started from a current state (`state=`), a
 member maintained on a schedule, repaired imperfectly or in a maintenance
 group, and a group with limited repair crews are refused, with the reason;
 `analysis_routes()` says which.
+
+Common-cause groups can also be added to a diagram in the browser in
+[Reliafy](https://reliafy.com/guides/common-cause-group).

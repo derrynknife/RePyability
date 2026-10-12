@@ -382,6 +382,10 @@ mkdocs serve            # then open http://127.0.0.1:8000
 
 The source lives in `docs/` and `mkdocs.yml`; start with `docs/index.md`.
 
+## Related
+
+[Reliafy](https://reliafy.com) is a hosted, browser-based app built on RePyability and SurPyval, for building reliability block diagrams and analysing their reliability and availability without writing code.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md): setting up, the checks a change
