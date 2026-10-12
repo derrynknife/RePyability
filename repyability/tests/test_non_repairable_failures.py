@@ -34,8 +34,7 @@ def simulated_failures(scale, shape, age, days, n=400_000, seed=0, fix=0.0):
 
 
 def test_the_bearing_over_82_days_from_224():
-    # UC-5: installed 1 March 2026, 224 days old on 11 October; 82 days to
-    # the end of 31 December.
+    # UC-5: a bearing 224 days old, over the next 82 days.
     forecast = BEARING.failures(82.0, age=224.0)
     assert isinstance(forecast, FailureForecast)
     held, reached = (224 / 365) ** 2, (306 / 365) ** 2
