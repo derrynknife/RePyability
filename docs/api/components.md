@@ -10,6 +10,14 @@
 
 ::: repyability.Monthly
 
+::: repyability.Asset
+
+::: repyability.Window
+
+::: repyability.Hours
+
+::: repyability.Starts
+
 ::: repyability.Component
 
 ::: repyability.ReplacementPlan

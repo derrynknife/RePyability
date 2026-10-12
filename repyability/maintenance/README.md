@@ -515,6 +515,384 @@ Keep to the project's rules (`CLAUDE.md`):
     case.
   - **Replacements take no time**, as in UC-5.
 
+### UC-7: "Replacing at a scheduled shut is cheaper than a planned replacement off the schedule. What's the best way to replace the bearing?"
+
+- **Status:** answered by hand; design proposed, not built.
+- **Who asks, and why:** the planner of UC-6. The plant has planned shuts
+  every 180 days (the schedule). Replacing the bearing in a shut is
+  cheaper and easier than a planned replacement that needs its own
+  outage, which is cheaper than a failure. The maintainer's framing:
+  "just another part of the optimisation problem".
+- **What they know:** the bearing of UC-5 (Weibull, scale 365 days,
+  shape 2); shuts every 180 days; **$100 at a shut, $150 planned off the
+  schedule, $400 at a failure** (the maintainer chose these).
+- **What they want back:** the cheapest way to replace it, in the long
+  run.
+- **How it was framed (proposed by Claude, as the maintainer had not
+  pinned it down):** five policies, the last containing the others:
+  1. **run to failure** ($400 each);
+  2. **age replacement off the schedule** at age τ (the plan resets),
+     $150 each;
+  3. **every shut**, or **every second shut** (a calendar plan), $100
+     each;
+  4. **at each shut by age:** replace in a shut only if the bearing is
+     at least *a* days old, else leave it to the next shut. This is
+     UC-6's skip decision, taken at every shut;
+  5. **both:** in a shut if at least *a* days old, or off the schedule
+     at age τ if that comes first.
+- **The answer** (long-run cost a day, undiscounted):
+
+  | Policy | Cost a day |
+  |---|---|
+  | Run to failure | 1.237 |
+  | Age replacement off the schedule, best τ about 300 days | 1.117 |
+  | Every second shut | 1.098 |
+  | Every shut | 1.056 |
+  | **At each shut, if at least about 138 days old** | **0.990** |
+
+  - **The best policy:** replace in a shut only if the bearing is at
+    least about 138 days old. Right after a failure, skip the next shut
+    if it is less than about 138 days away, and replace at the one after.
+    Anywhere from 120 to 180 days costs within 0.1% of it.
+  - **An off-schedule replacement adds nothing at these prices.** The
+    shuts come often enough that the best τ for policy 5 is "never".
+    Dearer failures, or shuts further apart, would change that.
+  - **It agrees with UC-6.** With the shut price, UC-6's NPV of skipping
+    the next shut (right after a failure, calendar plan) changes sign
+    when the shut is about 145 days away at 8% a year (142 undiscounted):
+    the one-off decision and the long-run policy say the same thing.
+- **How it is solved:**
+  - **Policies 1 to 3:** a one-component `RepairableRBD` with
+    `expected_cost_rate()` (a replacement on failure at $400, and
+    preventive age or block replacement), exact.
+  - **Policy 4:** exactly too, through replacement on condition (#145),
+    which inspects on a calendar and replaces a unit more likely than a
+    threshold to fail before the next inspection. For a life whose hazard
+    rises (as this Weibull's), that is a unit at least *a* days old: the
+    threshold is `1 - R(a + 180) / R(a)`. The best *a* then comes from a
+    one-dimensional search.
+  - **Policy 5:** simulated by hand here (RePyability's policies do not
+    combine a condition at inspections with an age off them). With these
+    prices it is policy 4.
+- **Today:** all by hand, as above. The thresholds are found by turning
+  an age into a condition threshold, which only holds for a rising
+  hazard.
+- **Checks (by hand):** the exact cost rates against a plain simulation
+  of every policy (which runs about 0.001 a day low, from stopping at
+  150,000 days: its run to failure gives 1.2354, the exact 1.2366); every
+  shut against the calendar plan's exact value; and UC-6's break-even
+  against the best threshold.
+- **Proposed design (to agree with the maintainer):** a way to say "the
+  shuts" once (every 180 days, $100), and to compare the policies with
+  the three prices, giving each policy's cost a day and the best
+  threshold. Open:
+  - **Undiscounted, or discounted?** UC-6 used 8% a year; the long-run
+    comparison here is undiscounted.
+  - **Ages rather than conditions.** A policy "at least *a* days old at a
+    shut" should be said as an age, worked out for any life (where the
+    hazard does not rise, an age and a condition threshold differ).
+  - **Policy 5 exactly**, if a case needs it: a unit's phase between
+    shuts makes it a Markov chain on the phase, to be worked out on a
+    grid.
+- **Learned:** the cheaper shut price is what makes skipping a shut
+  worthwhile only for young bearings. With the off-schedule price ($150)
+  at the shuts, as in UC-6, skipping always paid.
+
+### UC-8: "Those cost rates are good, but what does that actually look like over a timeline, and what is the range of those costs over time?"
+
+- **Status:** answered by hand; design proposed, not built.
+- **Who asks, and why:** the planner of UC-7. A long-run cost a day says
+  which policy is cheapest, but a budget is for real dates, from the
+  bearing as it is now, and needs to know how far the actual spend can
+  stray from the average.
+- **What they know:** UC-7's bearing, prices and policies; the bearing
+  in now is 224 days old today (11 October 2026, as in UC-5); the next
+  shut is on **1 November 2026** (21 days away; Claude's assumption),
+  then every 180 days.
+- **What they want back:** for each policy, the cost from today to each
+  date ahead, its mean and its range.
+- **The answer** (the cost from 11 October 2026 to the end of each
+  quarter shown, in dollars; the range from the 10th to the 90th
+  percentile):
+
+  **The best policy** (replace at a shut if at least 138 days old):
+
+  | To the end of | Mean | 10% | 50% | 90% |
+  |---|---|---|---|---|
+  | Dec 2026 | 133 | 100 | 100 | 100 |
+  | Dec 2027 | 487 | 300 | 300 | 900 |
+  | Dec 2028 | 846 | 500 | 800 | 1,400 |
+  | Sep 2029 | 1,090 | 600 | 1,000 | 1,600 |
+
+  **Three years on** (to the end of September 2029):
+
+  | Policy | Mean | 10% to 90% | Long run, a year |
+  |---|---|---|---|
+  | Best: at a shut if at least 138 days old | 1,090 | 600 to 1,600 | 362 |
+  | Every shut | 1,155 | 600 to 1,800 | 386 |
+  | Run to failure | 1,373 | 800 to 2,000 | 452 |
+
+  - **The first months cost more than the long run** (about $590 a year
+    to December 2026, against $362): the bearing in now is old, and is
+    almost certain to be replaced at the November shut.
+  - **The spend comes in steps**, $100 at a shut and $400 at a failure,
+    so the percentiles jump: half the time the best policy spends $300
+    by the end of 2027, but one time in ten $900 or more (a failure or
+    two).
+  - **The best policy lowers the mean more than the range.** Its 90th
+    percentile is $200 under every shut's after three years, its 10th
+    the same.
+- **How it is solved:**
+  - **The mean:** `RepairableRBD.expected_cost(t, state=...)` at each
+    date, exact, from the bearing's state today (its age, and the days
+    since the last shut: `NodeState(age=224, phase=159)`). The policies
+    are UC-7's: replacement on condition at the shuts for the best one,
+    block replacement for every shut.
+  - **The range:** simulated, as a range must be (the README: "the answer
+    is a sample"). `RepairableRBD.cost(t, state=..., seed=...)` at each
+    date with one seed: simulation *r* draws the same lives whatever the
+    window, so the runs to each date are the same histories cut off
+    there, and each date's percentiles are of one set of timelines.
+    Their means agree with the exact ones at every date (within $2,
+    20,000 simulations each).
+- **Today:** all of it by hand, as above: a one-component diagram per
+  policy, the dates turned into days, and a simulation per date.
+- **Proposed design (to agree with the maintainer):** a forecast over
+  dates for a component under a plan, the mean exact and the range
+  simulated, from its state today. Open:
+  - **Cumulative, or each period's own?** The tables above are the
+    cost to each date. A quarter's own spend is lumpy (mostly $0 or
+    $100, $400 with a failure); both could be given.
+  - **Which range?** 10% to 90% here; or any percentiles asked for.
+  - **Dates ahead:** month ends, quarter ends, or each shut.
+  - **The plan as an input:** UC-7's policies need the shuts (a `Task`)
+    and the rule at them (an age), tied to a `Component` (its life,
+    installed date and prices). UC-6 and UC-7 left that open too.
+- **Learned:** each date's range must come from the same simulations, cut
+  off there, or the 90th percentiles of successive dates need not even
+  rise. The seeded streams give that for free.
+
+### UC-9: "Accountants need this in financial year sums."
+
+- **Status:** answered by hand; design proposed, not built.
+- **Who asks, and why:** the planner of UC-8, passing the forecast to the
+  accountants, who budget each financial year's own spend: not the
+  running total, and not calendar quarters.
+- **What they know:** UC-8's bearing, policies, prices and shuts. The
+  financial year runs **July to June** (Claude's assumption, as in
+  Australia: FY2028 is 1 July 2027 to 30 June 2028); the forecast starts
+  today, 11 October 2026, part way through FY2027.
+- **What they want back:** each financial year's cost, its mean and its
+  range.
+- **The answer** (dollars; the range from the 10th to the 90th
+  percentile):
+
+  | Financial year | Best policy: mean | 10% / 50% / 90% | Every shut: mean | Run to failure: mean |
+  |---|---|---|---|---|
+  | FY2027 (from 11 Oct 2026) | 307 | 200 / 200 / 500 | 330 | 356 |
+  | FY2028 | 359 | 200 / 200 / 600 | 382 | 452 |
+  | FY2029 | 359 | 200 / 200 / 600 | 382 | 452 |
+  | FY2030 | 359 | 200 / 200 / 600 | 382 | 451 |
+  | **All four** | **1,384** | **800 / 1,400 / 2,000** | 1,477 | 1,711 |
+
+  - **A typical year is two shuts and no failure** ($200, the median);
+    the mean ($359) carries the chance of a failure ($400) on top. A
+    full year (FY2028) costs $200 in 60% of the simulations, $500 (a
+    failure, and one shut replacement) in 27%, and more in the rest, so
+    a budget of the mean is right on average but short in about two
+    years in five (40%).
+  - **Yearly 90th percentiles do not add up.** For the best policy they
+    sum to $2,300 over the four years, but the four years' own 90th
+    percentile is $2,000: bad years seldom come together. A contingency
+    for the whole period should be set on the period, not by adding the
+    years'.
+  - The part year, FY2027, has both of its shuts in it (1 November 2026
+    and 30 April 2027), so it costs nearly a full year's.
+- **The outcomes of each year** (asked for after the percentiles above
+  misled: with the costs in steps, 60% of years at exactly $200 make the
+  10th and 50th percentiles both $200). The share of years with each
+  outcome, from 1,000,000 plain simulations; RePyability's 20,000 agree
+  with every row within about 0.3 points:
+
+  | What happens in the year | Cost | FY2027 (from 11 Oct) | FY2028 | FY2029 | FY2030 |
+  |---|---|---|---|---|---|
+  | No failure, one shut replacement | $100 | – | 0.9% | 1.2% | 1.5% |
+  | No failure, two shut replacements | $200 | 70.7% | 59.1% | 58.6% | 58.2% |
+  | One failure, no shut replacement | $400 | – | 0.5% | 0.7% | 0.8% |
+  | One failure, one shut replacement | $500 | 22.1% | 27.2% | 26.9% | 26.4% |
+  | One failure, two shut replacements | $600 | 3.0% | 2.9% | 3.2% | 3.5% |
+  | Two failures, no shut replacement | $800 | 1.4% | 4.8% | 4.6% | 4.5% |
+  | Two failures, one shut replacement | $900 | 2.5% | 3.5% | 3.6% | 3.8% |
+  | Three or more failures, or two and both shuts | $1,000+ | 0.3% | 1.2% | 1.2% | 1.2% |
+  | Mean | | $307 | $359 | $359 | $359 |
+
+  The chance of spending more than $200 (any failure) is 29% in FY2027
+  and 40% a full year; more than $600, 4% and 9%; more than $900, 0.3%
+  and 1.2%. A $100 or $400 year comes when a failure late in the year
+  before leaves a bearing too young to replace at the year's first shut.
+- **How it is solved:** as UC-8, at each financial year's end:
+  - **The mean:** the differences of `expected_cost(t, state=...)` at the
+    years' ends, exact.
+  - **The range:** each simulation's cost in a year is its cost to the
+    year's end less its cost to the year's start, from the same seed
+    (`cost(...).samples`), so each year's percentiles are of the same
+    histories. Checked: no simulation spends less than $0 in a year, and
+    the simulated means agree with the exact ones within $4 (20,000
+    simulations).
+- **Today:** by hand, as UC-8.
+- **Proposed design (to agree with the maintainer):** UC-8's forecast,
+  summed by period: a financial year with its starting month (July here;
+  April or October elsewhere), calendar years, quarters or months; and
+  over the whole horizon, whose range is its own (not the years' added).
+  Open: the starting month, the percentiles, and how many years ahead.
+- **Learned:**
+  - **Lumpy costs need their outcomes, not percentiles.** When costs
+    come in a few steps, percentiles hide the shape (here 10% / 50% /
+    90% = $200 / $200 / $600), and read as if no year were cheap. The
+    forecaster should give each period's outcomes (what happened: the
+    failures and planned replacements, and its cost, with its share) and
+    the chance of exceeding a budget, as above.
+  - **The per-period range** needs each simulation's cost per
+    period, not only its total: `cost()` gives the total of one window,
+    so by hand it took a run per year's end. The forecaster should sum
+    each simulation's costs into the periods in one run.
+
+### UC-10: "My pump runs 06:00 to 22:00 on weekdays and is serviced every 500 running hours. When is each service due?"
+
+- **Status:** built in part: every run going ahead (`Asset`, `Window`,
+  `Hours`, `Starts`, a `Task` by use, `UsageDue`;
+  `repyability/maintenance/_usage.py`). Utilisation below 100%, and its
+  spread, is the next step.
+- **Who asks, and why:** a planner whose maintenance is set by use
+  (running hours, starts, flight cycles), not by the calendar. The asset
+  runs to an operating schedule with defined start and stop times, and
+  the plan has to be forecast from that schedule. A pump on shifts, or an
+  aircraft with a flight programme, is the same question.
+- **What they know:**
+  - **the operating schedule:** the pump runs Monday to Friday, starting
+    at 06:00 and stopping at 22:00 (16 hours a run, one start);
+  - **utilisation:** the share of scheduled runs that actually go ahead,
+    100%, or 90% when some are lost;
+  - **the meter:** 12,340 hours before Monday 12 October 2026's start;
+  - **the task:** a service every 500 running hours, last done at 12,000
+    hours.
+- **What they want back:** when each service falls due (the moment the
+  meter crosses its hours), and how many fall in a period.
+- **The answer:**
+
+  | Service at | Hours from now | Runs needed | All runs go ahead | 90% of runs go ahead (10% / 50% / 90%) |
+  |---|---|---|---|---|
+  | 12,500 h | 160 | 10 | Fri 23 Oct, 22:00 (the stop) | Fri 23 Oct / Mon 26 Oct / Wed 28 Oct, 22:00 |
+  | 13,000 h | 660 | 41¼ | Tue 8 Dec, 10:00 (mid-run) | Thu 10 Dec / Mon 14 Dec / Fri 18 Dec, 10:00 |
+  | 13,500 h | 1,160 | 72½ | Wed 20 Jan 2027, 14:00 | Tue 26 Jan / Mon 1 Feb / Fri 5 Feb 2027, 14:00 |
+
+  - **Two services fall in the rest of 2026** either way: 59 weekday runs
+    are left in the year, and the second service needs 42 of them.
+  - **The schedule matters.** At a flat 16 hours a day, every day, the
+    services would be due on 21 October, 22 November and 23 December:
+    three this year, not two.
+  - **A due time can fall mid-run** (Tuesday 8 December, 10:00): the
+    planner chooses between the stop before (Monday 22:00, 4 running
+    hours early) and the stop after (Tuesday 22:00, 12 running hours
+    over).
+- **How it is solved:**
+  - **All runs go ahead:** walk the schedule's runs from the reading,
+    adding each run's hours, to the run in which the meter crosses the
+    task's hours; the time is the run's start plus the hours still
+    needed in it. Exact.
+  - **Utilisation below 1:** each scheduled run goes ahead with chance
+    `u`, independently. The *n*-th run that goes ahead is the (n + k)-th
+    scheduled one, `k` negative binomial (`n`, `u`), so the due time's
+    distribution, and the number due in a period (a binomial count of
+    the runs that go ahead), are exact, with no simulation. A plain
+    simulation (200,000 runs) agrees.
+- **Today:** nothing in RePyability: `Task` works in whole days, from a
+  first date; it has no meters, no operating schedule, and no times of
+  day.
+- **Proposed API (to agree with the maintainer):**
+
+  ```python
+  from repyability.maintenance import Asset, Hours, Starts, Task, Window
+
+  pump = Asset(
+      "pump 1",
+      runs=[Window(days="Mon-Fri", start="06:00", stop="22:00")],
+      utilisation=0.9,                 # share of scheduled runs that go ahead
+      meters={"hours": 12_340, "starts": 4_210},
+      read_at="2026-10-12 00:00",      # when the meters were read
+  )
+  service = Task("pump service", every=Hours(500), asset=pump,
+                 last_done=12_000, cost=250)
+  due = service.due("2026-10-12", "2026-12-31")
+  due.count                            # 2
+  due.times                            # with utilisation 1: Fri 23 Oct 22:00, Tue 8 Dec 10:00
+  due.spread                           # with utilisation < 1: each due time's 10% / 50% / 90%
+  ```
+
+  - **`Window(days, start, stop)`:** a run on each of the days named
+    ("Mon-Fri", "Sat", or a calendar rule such as `Monthly`), from
+    `start` to `stop` in local clock time. A `stop` before its `start`
+    runs overnight into the next day. Each run adds its hours to the
+    `"hours"` meter and one to `"starts"`. An asset may have several
+    windows (two shifts with a break; an aircraft's flights, each a
+    window that adds one cycle).
+  - **`Asset`:** the operating schedule (its windows), the utilisation,
+    and its meters as read at a time. A new reading re-anchors the
+    forecast.
+  - **`Task(..., every=Hours(500) | Starts(1000), asset=..., last_done=...)`:**
+    a task by use. `last_done` is the meter reading at its last time.
+    Calendar tasks (`first`, `every` a number of days or `Monthly`) stay
+    as they are, and a usage task's `due` gives times, not dates.
+  - **The result:** the due times (exact with every run going ahead) or
+    their spread (utilisation below 1), how many fall in the period
+    (with their chances, when uncertain), and their cost.
+- **Decisions (the maintainer's):**
+  - **No daylight saving:** times are clock times, and a 06:00 to 22:00
+    run is 16 hours every day.
+  - **Utilisation is whole runs:** the share of scheduled runs that go
+    ahead, not shorter runs.
+  - **Whichever comes first** ("500 hours or 3 months") waits for a
+    later use case.
+  - Not answered, so the smallest choice: the forecast reports when the
+    meter crosses, not the stop before or after it.
+  - Runs that stop for shuts or holidays are set aside, as holidays are.
+- **As built (the first step, every run going ahead):**
+
+  ```python
+  from repyability.maintenance import Asset, Hours, Task, Window
+
+  pump = Asset("pump 1", runs=Window("Mon-Fri", "06:00", "22:00"),
+               meters={"hours": 12_340, "starts": 4_210},
+               read_at="2026-10-12 00:00")
+  service = Task("pump service", every=Hours(500), asset=pump,
+                 last_done=12_000, cost=250)
+  due = service.due("2026-10-12", "2026-12-31")   # a UsageDue
+  due.times      # 2026-10-23 22:00, 2026-12-08 10:00
+  due.readings   # 12,500, 13,000
+  due.count      # 2
+  due.cost       # 500.0
+  ```
+
+  - `Window(days, start, stop)`: days by name or their first three
+    letters, ranges (wrapping round the week) and lists ("Mon-Fri",
+    "Fri-Mon", "Mon, Wed, Fri"); a stop before the start runs overnight;
+    the same start and stop is refused. `utilisation` is not taken yet.
+  - `Asset` refuses windows whose runs overlap (they would count hours
+    twice), and meters other than `"hours"` and `"starts"`. A reading
+    taken during a run counts the rest of that run; a run starting at
+    the reading counts its start.
+  - A `Task` by use takes `every=Hours(...)` or `Starts(...)`, `asset`
+    and `last_done`, and no `first`; its `due` gives a `UsageDue`. It
+    refuses a `last_done` past the reading, and a task already due at
+    the reading. A calendar task is as it was (`first` is now optional
+    in the signature, and refused with a usage interval).
+  - **Checks:** `test_maintenance_usage.py` checks the UC-10 times; an
+    overnight run, two shifts with a break, starts, a reading mid-run, a
+    period after the reading; the input checks; and, on 60 random
+    schedules (windows on random days at quarter hours, overnight or
+    not, one or two of them, either meter), the times against the clock
+    walked a quarter of an hour at a time.
+
 ## Candidates
 
 Questions to take up next, one at a time, in whatever order proves useful.

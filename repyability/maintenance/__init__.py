@@ -102,3 +102,10 @@ from repyability.maintenance._tasks import (  # noqa: E402
     Task,
     TaskDates,
 )
+from repyability.maintenance._usage import (  # noqa: E402
+    Asset,
+    Hours,
+    Starts,
+    UsageDue,
+    Window,
+)
