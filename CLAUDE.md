@@ -13,6 +13,20 @@
   open source) handles plotting/dashboards/reporting. RePyability is the
   computational reliability engine; keep it free of plotting dependencies.
 
+- **RePyability is about timelines; Reliafy is about calendars.**
+  RePyability works in model time (the models' own unit, from 0 or from
+  a state: ages, phases and meter readings as numbers) and answers in
+  plain data. Dates, calendars, operating schedules, meters read by date,
+  financial years, and the CMMS (work orders, the asset register, the
+  history store, the forecast by date) and RCM's records and workflow
+  belong to Reliafy, which turns dates into model time, calls
+  RePyability, and turns the answers back into dates. RePyability keeps
+  the quantitative questions: RCM's per failure mode (run to failure,
+  scheduled replacement, failure finding, on-condition, the options at a
+  planned replacement), a failure's consequences at system level, and
+  the probabilities a forecast is made of (expected failures and costs
+  over a window from a state, and their distribution).
+
 - **Model behaviour belongs in surpyval too.** When a surpyval model
   misbehaves (its draws, means, densities or save format), raise an issue in
   derrynknife/surpyval rather than only working around it here. Keep any
@@ -63,7 +77,9 @@
   inside the functions that use them, as they import the modules above
   them.
 
-- **The maintenance forecaster (#319) is built one use case at a time.**
+- **The maintenance forecaster (#319) is built one use case at a time**
+  (its calendar side, `Task`, `Monthly`, `Asset` and the rest of what
+  takes dates, moves to Reliafy before 0.14, by the scope note above).
   `repyability/maintenance/README.md` records each use case (who asks,
   what they know and want back, how it is solved, the hand-worked answer
   with today's methods, the checks, what was learned) before it is
