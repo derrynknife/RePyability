@@ -16,7 +16,9 @@ Scope notes:
   fit your failure data in surpyval and pass the models in.
 - **Visualisation lives in the Reliafy app, not here.** RePyability returns
   numbers and typed result objects; plotting and dashboards are a separate
-  layer.
+  layer. [Reliafy](https://reliafy.com) is a hosted, browser-based app built
+  on RePyability and SurPyval, for building reliability block diagrams and
+  analysing their reliability and availability without writing code.
 
 ## Install
 

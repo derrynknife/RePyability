@@ -397,3 +397,6 @@ transient input you supply at evaluation time.
   sets, the importance-measure family and when to use each, conditioning,
   availability and cost, and the dependent-failure models from step 9.
 - **[API reference](api/index.md)**: the generated signatures and docstrings.
+
+The same kind of diagram can be built and analysed in the browser in
+[Reliafy](https://reliafy.com/guides/build-an-rbd).

@@ -940,3 +940,6 @@ drives the same machinery, with each component drawing from its own random
 streams. Stepped by hand, the components draw from numpy's global RNG as it
 is (there is no `seed` argument), so a history stepped by hand is not one of
 `availability()`'s.
+
+The same analysis runs in the browser in
+[Reliafy](https://reliafy.com/guides/repairable-availability).

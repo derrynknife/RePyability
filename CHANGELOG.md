@@ -111,6 +111,10 @@ other release, fixes included, the minor.
 
 ### Changed
 
+- **The README and the documentation mention Reliafy**, the hosted app built
+  on RePyability and SurPyval: the README's new "Related" section, the docs
+  home page, and one line at the end of the tutorial and of the repairable
+  systems and common-cause guides, linking the matching Reliafy guide.
 - **Parameter uncertainty draws a fit's shares too (#267).** `"fit"` drew
   only a distribution's own parameters (from surpyval's `hess_inv`) and
   kept a limited failure population's share that ever fails (`lfp_p`) and
