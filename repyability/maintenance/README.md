@@ -56,21 +56,23 @@ Keep to the project's rules (`CLAUDE.md`):
 
 ## Use cases
 
-### UC-5: "My bearing was installed on 1 March 2026 and is replaced when it fails. What's the chance it fails before the end of 2026, how many replacements should I expect, and at $400 each, what will they cost?"
+### UC-5: "My bearing is 224 days old and is replaced when it fails. What's the chance it fails in the next 82 days, how many replacements should I expect, and at $400 each, what will they cost?"
+
+(First asked with dates: installed on 1 March 2026, from 11 October to
+the end of 2026. Turning dates into an age and a window is Reliafy's; the
+question here is the model-time one it becomes.)
 
 - **Status:** built: `NonRepairable(..., unplanned_cost=)` and its
   `failures(t, age=)`, giving a `FailureForecast`.
 - **Who asks, and why:** a planner with a non-repairable part (a bearing)
-  run to failure and replaced, budgeting for the rest of the year.
+  run to failure and replaced, budgeting ahead.
 - **What they know:** the bearing's life, a Weibull with a scale of 365
-  days and a shape of 2 (fitted in surpyval); the current one was
-  installed on 1 March 2026 and is working today (11 October 2026); a
-  failed one is replaced with a new one, for $400.
-- **The answer:** the bearing is 224 days old, and 82 days are left to the
-  end of 31 December: **a 27.8% chance it fails, 0.283 replacements
-  expected (a new bearing can fail too), $113.20.**
-- **How it is solved:** in model time (RePyability is about timelines:
-  the dates are turned into an age and a window by Reliafy, or by hand):
+  days and a shape of 2 (fitted in surpyval); the current one is 224
+  days old and working; a failed one is replaced with a new one, for
+  $400.
+- **The answer:** over the next 82 days, **a 27.8% chance it fails, 0.283
+  replacements expected (a new bearing can fail too), $113.20.**
+- **How it is solved:** in model time (RePyability is about timelines):
   - the chance it fails: the life conditioned on the age reached,
     `1 - R(age + t) / R(age)`, exact;
   - the expected replacements: the renewal count from that age, as
