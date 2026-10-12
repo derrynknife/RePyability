@@ -42,15 +42,20 @@ from repyability.demonstration import (
 )
 from repyability.fault_tree import FaultTree
 from repyability.maintenance import (
+    Asset,
     Component,
     FailureForecast,
     FailureLimitPolicy,
+    Hours,
     MaintenancePolicy,
     Monthly,
     ReplacementPlan,
     SkipValue,
+    Starts,
     Task,
     TaskDates,
+    UsageDue,
+    Window,
 )
 from repyability.network import Network
 from repyability.non_repairable import NonRepairable
@@ -147,6 +152,10 @@ __all__ = [
     # Maintenance planning
     "Task",
     "Monthly",
+    "Asset",
+    "Window",
+    "Hours",
+    "Starts",
     "Component",
     "ReplacementPlan",
     # Up/down histories
@@ -178,6 +187,7 @@ __all__ = [
     "TaskDates",
     "FailureForecast",
     "SkipValue",
+    "UsageDue",
     "MaintenancePlan",
     "RateBreakdown",
     "AvailabilityAllocation",

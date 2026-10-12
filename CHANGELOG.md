@@ -43,7 +43,16 @@ other release, fixes included, the minor.
   calendar plan. For that bearing, replaced every 180 days for 150 or at
   a failure for 400, at 8% a year, skipping saves 26.56 on a plan that
   resets, and 35 to 149 on a calendar plan, the more the sooner the next
-  date. A task's `cost` each
+  date. A task may also go by use: an `Asset` runs to an operating
+  schedule of `Window`s (days of the week, from a start time to a stop
+  time, overnight when the stop is earlier), each run adding its hours to
+  the `"hours"` meter and one to `"starts"`, from the meters as read at a
+  time; a `Task(every=Hours(500), asset=..., last_done=...)` (or
+  `Starts(...)`) falls due when its meter crosses the next multiple, and
+  its `due(start, end)` gives the readings and times (`UsageDue`), exact.
+  A pump running 06:00 to 22:00 on weekdays, serviced every 500 hours
+  from a meter at 12,340, is due on Friday 23 October 2026 at 22:00 and
+  Tuesday 8 December at 10:00. A task's `cost` each
   time gives their total
   (`TaskDates.cost`): at 250 each time, 3000. `to_dict()` writes a
   result's dates as ISO text (`"2026-07-15"`).

@@ -759,7 +759,10 @@ Keep to the project's rules (`CLAUDE.md`):
 
 ### UC-10: "My pump runs 06:00 to 22:00 on weekdays and is serviced every 500 running hours. When is each service due?"
 
-- **Status:** answered by hand; API proposed (below), not built.
+- **Status:** built in part: every run going ahead (`Asset`, `Window`,
+  `Hours`, `Starts`, a `Task` by use, `UsageDue`;
+  `repyability/maintenance/_usage.py`). Utilisation below 100%, and its
+  spread, is the next step.
 - **Who asks, and why:** a planner whose maintenance is set by use
   (running hours, starts, flight cycles), not by the calendar. The asset
   runs to an operating schedule with defined start and stop times, and
@@ -843,19 +846,52 @@ Keep to the project's rules (`CLAUDE.md`):
   - **The result:** the due times (exact with every run going ahead) or
     their spread (utilisation below 1), how many fall in the period
     (with their chances, when uncertain), and their cost.
-- **Open questions for the maintainer:**
-  - **Local time and daylight saving:** a 06:00 to 22:00 run on a
-    clock-change day lasts 15 or 17 real hours. Count real hours in the
-    site's time zone, or ignore daylight saving at first?
-  - **Utilisation:** whole runs that go ahead or not (as above), or
-    shorter runs?
-  - **Whichever comes first:** "500 hours or 3 months" (and an
-    aircraft's hours, cycles or calendar), each counter restarting at
-    the task: from the start, or a later use case?
-  - **When the work is done:** report only when the meter crosses, or
-    also the stop before or after it?
-  - **Runs that stop for shuts or holidays:** set aside for now, as
-    holidays are.
+- **Decisions (the maintainer's):**
+  - **No daylight saving:** times are clock times, and a 06:00 to 22:00
+    run is 16 hours every day.
+  - **Utilisation is whole runs:** the share of scheduled runs that go
+    ahead, not shorter runs.
+  - **Whichever comes first** ("500 hours or 3 months") waits for a
+    later use case.
+  - Not answered, so the smallest choice: the forecast reports when the
+    meter crosses, not the stop before or after it.
+  - Runs that stop for shuts or holidays are set aside, as holidays are.
+- **As built (the first step, every run going ahead):**
+
+  ```python
+  from repyability.maintenance import Asset, Hours, Task, Window
+
+  pump = Asset("pump 1", runs=Window("Mon-Fri", "06:00", "22:00"),
+               meters={"hours": 12_340, "starts": 4_210},
+               read_at="2026-10-12 00:00")
+  service = Task("pump service", every=Hours(500), asset=pump,
+                 last_done=12_000, cost=250)
+  due = service.due("2026-10-12", "2026-12-31")   # a UsageDue
+  due.times      # 2026-10-23 22:00, 2026-12-08 10:00
+  due.readings   # 12,500, 13,000
+  due.count      # 2
+  due.cost       # 500.0
+  ```
+
+  - `Window(days, start, stop)`: days by name or their first three
+    letters, ranges (wrapping round the week) and lists ("Mon-Fri",
+    "Fri-Mon", "Mon, Wed, Fri"); a stop before the start runs overnight;
+    the same start and stop is refused. `utilisation` is not taken yet.
+  - `Asset` refuses windows whose runs overlap (they would count hours
+    twice), and meters other than `"hours"` and `"starts"`. A reading
+    taken during a run counts the rest of that run; a run starting at
+    the reading counts its start.
+  - A `Task` by use takes `every=Hours(...)` or `Starts(...)`, `asset`
+    and `last_done`, and no `first`; its `due` gives a `UsageDue`. It
+    refuses a `last_done` past the reading, and a task already due at
+    the reading. A calendar task is as it was (`first` is now optional
+    in the signature, and refused with a usage interval).
+  - **Checks:** `test_maintenance_usage.py` checks the UC-10 times; an
+    overnight run, two shifts with a break, starts, a reading mid-run, a
+    period after the reading; the input checks; and, on 60 random
+    schedules (windows on random days at quarter hours, overnight or
+    not, one or two of them, either meter), the times against the clock
+    walked a quarter of an hour at a time.
 
 ## Candidates
 
