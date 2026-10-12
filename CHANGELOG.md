@@ -19,10 +19,11 @@ other release, fixes included, the minor.
   with both days included (`TaskDates`: the dates, their `count` and
   their `cost`).
   A weekly task first done on 15 July 2026 falls due 12 times from 11
-  October to the end of 2026. A task may instead follow a monthly rule,
-  `Monthly`: a day of the month (`Monthly(30)`; a month too short for it
-  has the task on its last day, or with `short_months="skip"` not at
-  all) or a weekday of it (`Monthly(weekday="Tuesday", nth=1)`, the
+  October to the end of 2026. A task may instead fall due on the days a
+  monthly rule names, `Task(on=Monthly(...))`, from an optional
+  `starting=` date: a day of the month (`Monthly(day=30)`; a month too
+  short for it has the task on its last day, or with
+  `short_months="skip"` not at all) or a weekday of it (`Monthly(weekday="Tuesday", nth=1)`, the
   first Tuesday; `nth=-1`, the last). The calendar arithmetic is
   python-dateutil's (the iCalendar standard's recurrence rules), now a
   dependency (2.8.2 or later; every install had it already, through

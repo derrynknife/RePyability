@@ -93,10 +93,10 @@ def test_a_weekly_task_from_new_year_falls_due_53_times_in_2026():
 
 
 def test_an_interval_is_a_timedelta_or_a_number_of_days():
-    assert Task("t", "2026-07-15", 7) == Task(
-        "t", "2026-07-15", timedelta(days=7)
+    assert Task("t", every=7, first="2026-07-15") == Task(
+        "t", every=timedelta(days=7), first="2026-07-15"
     )
-    assert Task("t", "2026-07-15", 7.0).every == timedelta(weeks=1)
+    assert Task("t", every=7.0, first="2026-07-15").every == timedelta(weeks=1)
 
 
 @pytest.mark.parametrize(
@@ -114,7 +114,7 @@ def test_an_interval_is_a_timedelta_or_a_number_of_days():
 )
 def test_an_interval_must_be_whole_days(every, error):
     with pytest.raises(error, match="every"):
-        Task("t", "2026-07-15", every)
+        Task("t", every=every, first="2026-07-15")
 
 
 @pytest.mark.parametrize(
@@ -127,7 +127,7 @@ def test_an_interval_must_be_whole_days(every, error):
 )
 def test_a_date_is_a_date_or_iso_text(first, error):
     with pytest.raises(error, match="first"):
-        Task("t", first, 7)
+        Task("t", every=7, first=first)
 
 
 def test_a_period_cannot_end_before_it_starts():
@@ -137,7 +137,7 @@ def test_a_period_cannot_end_before_it_starts():
 
 def test_the_name_is_text():
     with pytest.raises(TypeError, match="name"):
-        Task(3, "2026-07-15", 7)
+        Task(3, every=7, first="2026-07-15")
 
 
 def test_the_dates_go_through_json():
@@ -167,7 +167,7 @@ def test_the_weekly_task_costs_3000_through_the_rest_of_2026():
 
 
 def test_the_cost_is_the_count_times_the_cost_each_time():
-    task = Task("t", "2026-07-15", 7, cost=12.5)
+    task = Task("t", every=7, first="2026-07-15", cost=12.5)
     for end in ("2026-07-14", "2026-07-15", "2026-08-31", "2027-07-15"):
         due = task.due("2026-07-01", end)
         assert due.cost == due.count * 12.5
@@ -176,7 +176,7 @@ def test_the_cost_is_the_count_times_the_cost_each_time():
 def test_a_task_with_no_cost_has_none_and_a_free_one_costs_0():
     assert WEEKLY.cost is None
     assert WEEKLY.due("2026-10-11", "2026-12-31").cost is None
-    free = Task("t", "2026-07-15", 7, cost=0)
+    free = Task("t", every=7, first="2026-07-15", cost=0)
     assert free.due("2026-10-11", "2026-12-31").cost == 0.0
 
 
@@ -185,7 +185,7 @@ def test_a_task_with_no_cost_has_none_and_a_free_one_costs_0():
 )
 def test_a_cost_must_be_a_number_at_least_0(cost):
     with pytest.raises(ValueError, match="cost"):
-        Task("t", "2026-07-15", 7, cost=cost)
+        Task("t", every=7, first="2026-07-15", cost=cost)
 
 
 # Monthly rules (UC-4).
@@ -211,9 +211,9 @@ def on_rule(rule, day):
 
 
 def walked_monthly(task, start, end):
-    dates, day = [], max(start, task.first)
+    dates, day = [], max(start, task.starting or start)
     while day <= end:
-        if on_rule(task.every, day):
+        if on_rule(task.on, day):
             dates.append(day)
         day += timedelta(days=1)
     return tuple(dates)
@@ -221,12 +221,12 @@ def walked_monthly(task, start, end):
 
 def test_the_first_tuesday_and_the_30th_through_the_rest_of_2026():
     # UC-4: from Sunday 11 October to 31 December 2026.
-    tuesdays = Task("t", "2026-07-15", Monthly(weekday="Tuesday", nth=1))
+    tuesdays = Task("t", on=Monthly(weekday="Tuesday", nth=1))
     assert tuesdays.due("2026-10-11", "2026-12-31").dates == (
         date(2026, 11, 3),
         date(2026, 12, 1),
     )
-    thirtieths = Task("t", "2026-07-15", Monthly(30))
+    thirtieths = Task("t", on=Monthly(day=30))
     assert thirtieths.due("2026-10-11", "2026-12-31").dates == (
         date(2026, 10, 30),
         date(2026, 11, 30),
@@ -235,18 +235,18 @@ def test_the_first_tuesday_and_the_30th_through_the_rest_of_2026():
 
 
 def test_a_short_month_has_its_last_day_or_is_skipped():
-    last = Task("t", "2026-07-15", Monthly(30))
-    skip = Task("t", "2026-07-15", Monthly(30, short_months="skip"))
-    assert last.every.short_months == "last"
+    last = Task("t", on=Monthly(day=30))
+    skip = Task("t", on=Monthly(day=30, short_months="skip"))
+    assert last.on.short_months == "last"
     february = ("2027-02-01", "2027-02-28")
     assert last.due(*february).dates == (date(2027, 2, 28),)
     assert skip.due(*february).count == 0
     # 2028 is a leap year.
     assert last.due("2028-02-01", "2028-02-29").dates == (date(2028, 2, 29),)
     # The 31st: the last day of every month, or only the long ones.
-    longest = Task("t", "2026-01-01", Monthly(31))
+    longest = Task("t", on=Monthly(day=31))
     assert longest.due("2026-01-01", "2026-12-31").count == 12
-    only_long = Task("t", "2026-01-01", Monthly(31, short_months="skip"))
+    only_long = Task("t", on=Monthly(day=31, short_months="skip"))
     assert only_long.due("2026-01-01", "2026-12-31").count == 7
 
 
@@ -265,7 +265,7 @@ def test_the_monthly_dates_are_the_calendar_walked_a_day_at_a_time():
     for _ in range(200):
         if rng.random() < 0.5:
             rule = Monthly(
-                int(rng.integers(1, 32)),
+                day=int(rng.integers(1, 32)),
                 short_months=str(rng.choice(["last", "skip"])),
             )
         else:
@@ -273,10 +273,10 @@ def test_the_monthly_dates_are_the_calendar_walked_a_day_at_a_time():
                 weekday=str(rng.choice(weekdays)),
                 nth=int(rng.choice([1, 2, 3, 4, -1, -2, -3, -4])),
             )
+        # Half the tasks apply from a date, half whenever asked.
+        starting = origin + timedelta(days=int(rng.integers(0, 1500)))
         task = Task(
-            "t",
-            first=origin + timedelta(days=int(rng.integers(0, 1500))),
-            every=rule,
+            "t", on=rule, starting=starting if rng.random() < 0.5 else None
         )
         start = origin + timedelta(days=int(rng.integers(0, 1800)))
         end = start + timedelta(days=int(rng.integers(0, 400)))
@@ -284,8 +284,8 @@ def test_the_monthly_dates_are_the_calendar_walked_a_day_at_a_time():
 
 
 def test_the_last_weekday_of_the_month():
-    fridays = Task("t", "2026-10-01", Monthly(weekday="friday", nth=-1))
-    assert fridays.every.weekday == "Friday"
+    fridays = Task("t", on=Monthly(weekday="friday", nth=-1))
+    assert fridays.on.weekday == "Friday"
     assert fridays.due("2026-10-01", "2026-12-31").dates == (
         date(2026, 10, 30),
         date(2026, 11, 27),
@@ -294,7 +294,7 @@ def test_the_last_weekday_of_the_month():
 
 
 def test_a_monthly_task_costs_its_count_times_its_cost():
-    task = Task("t", "2026-07-15", Monthly(30), cost=100)
+    task = Task("t", on=Monthly(day=30), cost=100)
     assert task.due("2026-10-11", "2026-12-31").cost == 300.0
 
 
@@ -324,5 +324,37 @@ def test_a_monthly_rule_is_checked(arguments):
 
 
 def test_an_interval_or_a_rule_is_needed():
-    with pytest.raises(TypeError, match="Monthly"):
-        Task("t", "2026-07-15", "monthly")
+    with pytest.raises(TypeError, match="every"):
+        Task("t", every="monthly", first="2026-07-15")
+    with pytest.raises(TypeError, match="one of them"):
+        Task("t")
+    with pytest.raises(TypeError, match="one of them"):
+        Task("t", every=7, first="2026-07-15", on=Monthly(day=30))
+
+
+def test_a_monthly_rule_goes_in_on_and_names_its_day():
+    with pytest.raises(TypeError, match="on=Monthly"):
+        Task("t", every=Monthly(day=30), first="2026-07-15")
+    with pytest.raises(TypeError):
+        Monthly(30)  # the day by name: Monthly(day=30)
+    with pytest.raises(TypeError, match="on must be"):
+        Task("t", on=7)
+
+
+def test_a_rule_applies_from_starting_and_an_interval_from_first():
+    task = Task("t", on=Monthly(day=30), starting="2026-11-15")
+    assert task.due("2026-10-01", "2026-12-31").dates == (
+        date(2026, 11, 30),
+        date(2026, 12, 30),
+    )
+    with pytest.raises(ValueError, match="starting="):
+        Task("t", on=Monthly(day=30), first="2026-07-15")
+    with pytest.raises(ValueError, match="first="):
+        Task("t", every=7, first="2026-07-15", starting="2026-07-15")
+    with pytest.raises(TypeError, match="first time"):
+        Task("t", every=7)
+
+
+def test_every_argument_but_the_name_is_given_by_name():
+    with pytest.raises(TypeError):
+        Task("t", "2026-07-15", 7)

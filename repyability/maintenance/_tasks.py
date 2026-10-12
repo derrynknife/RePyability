@@ -3,16 +3,18 @@ UC-4 of this package's ``README.md``); and tasks by use, every so many
 hours or starts of an asset (UC-10), whose times are worked out in
 ``_usage``.
 
-A calendar task happens on its dates whatever the equipment does: from its
-first date, every whole number of days, or on a monthly rule (a day of the
-month, or the first Tuesday, say). So the dates it falls due in a period
+A calendar task happens on its dates whatever the equipment does: every
+whole number of days from its first date (``every=``), or on the days a
+monthly rule names (``on=``: a day of the month, or the first Tuesday,
+say). So the dates it falls due in a period
 are date arithmetic, exact, with no probability. Dates are whole days, and
 a period includes both of its ends, as people say it ("through 31
 December").
 
 Every schedule is a recurrence rule of python-dateutil (``rrule``, the
-iCalendar standard's), from the task's first date, and a period's dates
-are the rule's between its ends.
+iCalendar standard's): an interval's from the task's first date, a monthly
+rule's from the date it applies from (``starting``, or the period's
+start), and a period's dates are the rule's between its ends.
 """
 
 import math
@@ -88,8 +90,8 @@ def _interval(value) -> timedelta:
     if checks.is_number(value):
         return timedelta(days=checks.whole_number(value, "every"))
     raise TypeError(
-        "every must be a datetime.timedelta, a number of days or a "
-        "Monthly rule; got "
+        "every must be a datetime.timedelta or a number of days (a task "
+        "by use takes Hours(...) or Starts(...)); got "
         f"{value!r}."
     )
 
@@ -101,8 +103,9 @@ def _midnight(day: date) -> datetime:
 
 @dataclass(frozen=True, init=False)
 class Monthly:
-    """A monthly rule for a [`Task`][repyability.Task]: a day of the
-    month (the 30th), or a weekday of it (the first Tuesday).
+    """A monthly rule naming the days a [`Task`][repyability.Task] falls
+    due (its ``on``): a day of the month (the 30th), or a weekday of it
+    (the first Tuesday).
 
     Parameters
     ----------
@@ -126,15 +129,14 @@ class Monthly:
     On the 30th of every month, on 28 February in 2027:
 
     >>> from repyability.maintenance import Monthly, Task
-    >>> readings = Task("meter reading", "2026-10-01", every=Monthly(30))
+    >>> readings = Task("meter reading", on=Monthly(day=30))
     >>> due = readings.due("2027-01-01", "2027-03-31")
     >>> [day.isoformat() for day in due.dates]
     ['2027-01-30', '2027-02-28', '2027-03-30']
 
     On the first Tuesday:
 
-    >>> first_tuesday = Monthly(weekday="Tuesday", nth=1)
-    >>> pumps = Task("check pumps", "2026-10-01", every=first_tuesday)
+    >>> pumps = Task("check pumps", on=Monthly(weekday="Tuesday", nth=1))
     >>> pumps.due("2026-10-11", "2026-12-31").count
     2
     """
@@ -145,11 +147,11 @@ class Monthly:
     short_months: Optional[str]
 
     def __init__(
-        self, day=None, *, weekday=None, nth=None, short_months=None
+        self, *, day=None, weekday=None, nth=None, short_months=None
     ) -> None:
         if (day is None) == (weekday is None):
             raise ValueError(
-                "Monthly takes a day of the month (Monthly(30)) or a "
+                "Monthly takes a day of the month (Monthly(day=30)) or a "
                 "weekday (Monthly(weekday='Tuesday', nth=1)), not both or "
                 "neither."
             )
@@ -218,27 +220,29 @@ def _ordinal(nth: int) -> str:
 
 @dataclass(frozen=True, init=False)
 class Task:
-    """A task on a fixed calendar, done from its first date on, every
-    whole number of days or on a monthly rule, whatever the equipment does;
-    or a task by use, every so many hours or starts of an asset.
+    """A task: on the calendar, every so many days from its first date or
+    on the days a monthly rule names, whatever the equipment does; or by
+    use, every so many hours or starts of an asset.
 
     Parameters
     ----------
     name : str
         What the task is called.
-    first : datetime.date or str, optional
-        For a task on the calendar: the date its schedule starts, as a
-        date or as text such as ``"2026-07-15"``. With an interval, it is
-        the first time the task is done; with a monthly rule, the task
-        falls due on the rule's dates from then on. A task by use takes
-        none.
-    every : datetime.timedelta, int, Monthly, Hours or Starts
-        The interval between one time and the next: on the calendar, a
+    every : datetime.timedelta, int, Hours or Starts, optional
+        An interval between one time and the next: on the calendar, a
         whole number of days, at least one, as a ``timedelta``
-        (``timedelta(weeks=1)``) or a number of days (``7``), or a monthly
-        rule ([`Monthly`][repyability.Monthly]: the 30th, the first
-        Tuesday); by use, the running hours or starts of ``asset``
-        ([`Hours`][repyability.Hours], [`Starts`][repyability.Starts]).
+        (``timedelta(weeks=1)``) or a number of days (``7``); by use, the
+        running hours or starts of ``asset`` ([`Hours`][repyability.Hours],
+        [`Starts`][repyability.Starts]). Give ``every`` or ``on``.
+    on : Monthly, optional
+        A rule naming the days the task falls due
+        ([`Monthly`][repyability.Monthly]: the 30th, the first Tuesday).
+    first : datetime.date or str, optional
+        With an interval on the calendar: the first time the task is done,
+        as a date or as text such as ``"2026-07-15"``.
+    starting : datetime.date or str, optional
+        With a rule (``on``): the date from which it applies. By default
+        None: the rule's days whenever asked.
     cost : float, optional
         What it costs each time it is done, at least 0, in your currency.
         By default None: not given, and the dates it falls due have no
@@ -253,29 +257,29 @@ class Task:
     Examples
     --------
     A weekly task first done on Wednesday 15 July 2026 falls due 12 times
-    from Sunday 11 October to the end of 2026:
+    from Sunday 11 October to the end of 2026, at 250 each time 3000:
 
     >>> from datetime import timedelta
     >>> from repyability.maintenance import Task
     >>> conveyor = Task(
-    ...     "inspect conveyor", first="2026-07-15", every=timedelta(weeks=1)
+    ...     "inspect conveyor",
+    ...     every=timedelta(weeks=1),
+    ...     first="2026-07-15",
+    ...     cost=250.0,
     ... )
     >>> due = conveyor.due("2026-10-11", "2026-12-31")
-    >>> due.count
-    12
+    >>> due.count, due.cost
+    (12, 3000.0)
     >>> due.dates[0], due.dates[-1]
     (datetime.date(2026, 10, 14), datetime.date(2026, 12, 30))
 
-    At 250 each time, they cost 3000:
+    On the 30th of each month (the last day of a shorter one):
 
-    >>> conveyor = Task(
-    ...     "inspect conveyor",
-    ...     first="2026-07-15",
-    ...     every=timedelta(weeks=1),
-    ...     cost=250.0,
-    ... )
-    >>> conveyor.due("2026-10-11", "2026-12-31").cost
-    3000.0
+    >>> from repyability.maintenance import Monthly
+    >>> readings = Task("meter reading", on=Monthly(day=30))
+    >>> [day.isoformat() for day in readings.due(
+    ...     "2027-01-01", "2027-03-31").dates]
+    ['2027-01-30', '2027-02-28', '2027-03-30']
 
     By use: a pump that runs 06:00 to 22:00 on weekdays, serviced every
     500 running hours, its meter at 12,340 hours on Monday 12 October
@@ -296,8 +300,10 @@ class Task:
     """
 
     name: str
+    every: Union[timedelta, Hours, Starts, None]
+    on: Optional[Monthly]
     first: Optional[date]
-    every: Union[timedelta, Monthly, Hours, Starts]
+    starting: Optional[date]
     cost: Optional[float]
     asset: Optional[Asset]
     last_done: Optional[float]
@@ -305,10 +311,12 @@ class Task:
     def __init__(
         self,
         name: str,
-        first=None,
-        every=None,
-        cost=None,
         *,
+        every=None,
+        on=None,
+        first=None,
+        starting=None,
+        cost=None,
         asset=None,
         last_done=None,
     ) -> None:
@@ -320,41 +328,79 @@ class Task:
             raise ValueError(
                 f"cost must be a number, at least 0 (or None); got {cost!r}."
             )
+        if isinstance(every, Monthly):
+            raise TypeError(
+                "A monthly rule names the days a task falls due: give it as "
+                "on=Monthly(...), not every=."
+            )
+        if (every is None) == (on is None):
+            raise TypeError(
+                "A task needs an interval (every=...) or a rule naming its "
+                "days (on=Monthly(...)), one of them."
+            )
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "cost", None if cost is None else float(cost))
-        if isinstance(every, (Hours, Starts)):
-            object.__setattr__(self, "first", None)
+        for field in ("every", "on", "first", "starting", "asset"):
+            object.__setattr__(self, field, None)
+        object.__setattr__(self, "last_done", None)
+        if on is not None:
+            self._on_rule(on, first, starting, asset, last_done)
+        elif isinstance(every, (Hours, Starts)):
             object.__setattr__(self, "every", every)
-            self._by_use(first, asset, last_done)
-            return
+            self._by_use(first, starting, asset, last_done)
+        else:
+            self._interval(every, first, starting, asset, last_done)
+
+    def _on_rule(self, on, first, starting, asset, last_done) -> None:
+        """Check and keep a task on the days a rule names."""
+        if not isinstance(on, Monthly):
+            raise TypeError(
+                f"on must be a rule naming days (Monthly(...)); got {on!r}."
+            )
+        if first is not None:
+            raise ValueError(
+                "A rule's days are not counted from a first time: give the "
+                "date it applies from as starting=, not first=."
+            )
+        if asset is not None or last_done is not None:
+            raise ValueError(
+                "asset and last_done go with a task by use (every=Hours(...) "
+                "or Starts(...)), not with a rule naming days."
+            )
+        object.__setattr__(self, "on", on)
+        if starting is not None:
+            object.__setattr__(self, "starting", _date(starting, "starting"))
+
+    def _interval(self, every, first, starting, asset, last_done) -> None:
+        """Check and keep a task every so many days from its first date."""
         if asset is not None or last_done is not None:
             raise ValueError(
                 "asset and last_done go with a task by use (every=Hours(...) "
                 f"or Starts(...)); this one is every {every!r}."
             )
+        if starting is not None:
+            raise ValueError(
+                "starting goes with a rule naming days (on=); an interval "
+                "counts from the first time the task is done (first=)."
+            )
         if first is None:
             raise TypeError(
-                "A task on the calendar needs its first date (first=...)."
+                "A task every so many days needs the first time it is done "
+                "(first=...)."
             )
+        object.__setattr__(self, "every", _interval(every))
         object.__setattr__(self, "first", _date(first, "first"))
-        object.__setattr__(
-            self,
-            "every",
-            every if isinstance(every, Monthly) else _interval(every),
-        )
-        object.__setattr__(self, "asset", None)
-        object.__setattr__(self, "last_done", None)
 
-    def _by_use(self, first, asset, last_done) -> None:
+    def _by_use(self, first, starting, asset, last_done) -> None:
         """Check and keep a task by use: its asset, with the meter it goes
         by, and the reading at its last time."""
         every = self.every
         assert isinstance(every, (Hours, Starts))
-        if first is not None:
+        if first is not None or starting is not None:
             raise ValueError(
                 "A task by use falls due by its asset's meter, not from a "
-                "first date: give last_done (the meter reading at its last "
-                "time) and no first."
+                "date: give last_done (the meter reading at its last time), "
+                "and no first or starting."
             )
         if not isinstance(asset, Asset):
             raise TypeError(
@@ -414,7 +460,7 @@ class Task:
             )
         if self.asset is not None:
             return self._due_by_use(start, end)
-        times = self._rule().between(
+        times = self._rule(start).between(
             _midnight(start), _midnight(end), inc=True
         )
         dates = tuple(time.date() for time in times)
@@ -446,12 +492,14 @@ class Task:
             cost,
         )
 
-    def _rule(self) -> rrule:
-        """The task's dates, as a dateutil rule from its first date."""
-        assert self.first is not None
-        if isinstance(self.every, Monthly):
-            return self.every._rule(self.first)
-        assert isinstance(self.every, timedelta)
+    def _rule(self, start: date) -> rrule:
+        """The task's dates as a dateutil rule: a rule's from the date it
+        applies from (or the period's ``start``), an interval's from its
+        first date."""
+        if self.on is not None:
+            applies = start if self.starting is None else self.starting
+            return self.on._rule(applies)
+        assert self.first is not None and isinstance(self.every, timedelta)
         return rrule(
             DAILY, dtstart=_midnight(self.first), interval=self.every.days
         )
