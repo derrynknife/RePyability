@@ -1,9 +1,10 @@
-"""Maintenance: the single-unit optimisers' result types, and the
-planned-maintenance forecaster being built (#319).
+"""Maintenance: the single-unit optimisers' result types, and the choice
+at a planned replacement (#319).
 
-The forecaster is built one use case at a time: ``README.md`` in this
-package records each use case, the question it answers and how it is
-solved, before and as it is built."""
+RePyability is about timelines: the calendar side of maintenance planning
+(tasks on dates, operating schedules, meters read by date) is Reliafy's.
+``README.md`` in this package records the use cases, the question each
+answers and how it is solved."""
 
 from dataclasses import dataclass
 
@@ -89,23 +90,7 @@ class FailureLimitPolicy:
 
 
 # After the policies, which the modules it imports may import from here.
-from repyability.maintenance._components import (  # noqa: E402
-    Component,
-    FailureForecast,
-)
 from repyability.maintenance._plans import (  # noqa: E402
     ReplacementPlan,
     SkipValue,
-)
-from repyability.maintenance._tasks import (  # noqa: E402
-    Monthly,
-    Task,
-    TaskDates,
-)
-from repyability.maintenance._usage import (  # noqa: E402
-    Asset,
-    Hours,
-    Starts,
-    UsageDue,
-    Window,
 )

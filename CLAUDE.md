@@ -77,14 +77,16 @@
   inside the functions that use them, as they import the modules above
   them.
 
-- **The maintenance forecaster (#319) is built one use case at a time**
-  (its calendar side, `Task`, `Monthly`, `Asset` and the rest of what
-  takes dates, moves to Reliafy before 0.14, by the scope note above).
-  `repyability/maintenance/README.md` records each use case (who asks,
-  what they know and want back, how it is solved, the hand-worked answer
-  with today's methods, the checks, what was learned) before it is
-  built. Add a use case there before the code that answers it, and add
-  nothing no use case needs; the maintainer chooses which is next.
+- **Maintenance (#319) is built one use case at a time.** Its calendar
+  side (tasks on dates, operating schedules, meters read by date) moved
+  to Reliafy (Reliafy/reliafy#389), by the scope note above; what stays
+  works in model time (`NonRepairable.failures`, the choice at a planned
+  replacement). `repyability/maintenance/README.md` records each use case
+  (who asks, what they know and want back, how it is solved, the
+  hand-worked answer with today's methods, the checks, what was learned)
+  before it is built. Add a use case there before the code that answers
+  it, and add nothing no use case needs; the maintainer chooses which is
+  next.
 
 ## Simulation engines and seeded results
 

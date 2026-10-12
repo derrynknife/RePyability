@@ -23,7 +23,6 @@ methods until 0.12 (#184): calling them still works, with a
 """
 
 import dataclasses
-import datetime
 import math
 import warnings
 from collections.abc import Mapping
@@ -68,8 +67,7 @@ def plain(value) -> Any:
     """``value`` as plain data, for JSON: a result (or anything
     with a ``to_dict``) as its ``to_dict()``, a dataclass as a dict of its
     fields, an array or a tuple as a list, a numpy number as a Python one,
-    a date as ISO text (``"2026-07-15"``), a mapping with its keys as
-    JSON holds them (see ``_json_key``), and
+    a mapping with its keys as JSON holds them (see ``_json_key``), and
     anything else as it is."""
     if isinstance(value, np.ndarray):
         return value.tolist()
@@ -77,8 +75,6 @@ def plain(value) -> Any:
         return value.item()
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    if isinstance(value, datetime.date):
-        return value.isoformat()
     if callable(getattr(value, "to_dict", None)) and not isinstance(
         value, type
     ):
@@ -1787,6 +1783,35 @@ class DemonstrationPlan(_ResultMapping):
     failures: int
     consumer_risk: float
     producer_risk: float
+
+
+@dataclass
+class FailureForecast(_ResultMapping):
+    """The failures of a part replaced when it fails, over a window from
+    its current unit's age: returned by
+    [`NonRepairable.failures`][repyability.NonRepairable.failures].
+
+    Attributes
+    ----------
+    window : float or numpy.ndarray
+        The window's length, in the models' time unit.
+    age : float
+        The current unit's age at the window's start.
+    probability : float or numpy.ndarray
+        The chance the current unit fails in the window.
+    expected_failures : float or numpy.ndarray
+        The expected number of failures in the window, each a replacement:
+        the current unit's, and its replacements'.
+    expected_cost : float, numpy.ndarray or None
+        Their expected cost: the unplanned cost times
+        ``expected_failures``; None if the part has no unplanned cost.
+    """
+
+    window: Any
+    age: float
+    probability: Any
+    expected_failures: Any
+    expected_cost: Any
 
 
 @dataclass
