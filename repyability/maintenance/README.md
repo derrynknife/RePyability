@@ -789,8 +789,9 @@ Keep to the project's rules (`CLAUDE.md`):
     services would be due on 21 October, 22 November and 23 December:
     three this year, not two.
   - **A due time can fall mid-run** (Tuesday 8 December, 10:00): the
-    planner chooses between the stop before (Monday 22:00, 12 hours
-    early) and the stop after (Tuesday 22:00, 12 hours over).
+    planner chooses between the stop before (Monday 22:00, 4 running
+    hours early) and the stop after (Tuesday 22:00, 12 running hours
+    over).
 - **How it is solved:**
   - **All runs go ahead:** walk the schedule's runs from the reading,
     adding each run's hours, to the run in which the meter crosses the
