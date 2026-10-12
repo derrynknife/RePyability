@@ -11,52 +11,23 @@ other release, fixes included, the minor.
 
 ### Added
 
-- **Calendar tasks and their due dates (#319).** The first piece of the
-  planned-maintenance forecaster, built one use case at a time (recorded
-  in `repyability/maintenance/README.md`): a `Task` done on its first
-  date and every whole number of days after it, whatever the equipment
-  does, and its `due(start, end)`, the dates it falls due in a period
-  with both days included (`TaskDates`: the dates, their `count` and
-  their `cost`).
-  A weekly task first done on 15 July 2026 falls due 12 times from 11
-  October to the end of 2026. A task may instead fall due on the days a
-  monthly rule names, `Task(on=Monthly(...))`, from an optional
-  `starting=` date: a day of the month (`Monthly(day=30)`; a month too
-  short for it has the task on its last day, or with
-  `short_months="skip"` not at all) or a weekday of it (`Monthly(weekday="Tuesday", nth=1)`, the
-  first Tuesday; `nth=-1`, the last). The calendar arithmetic is
-  python-dateutil's (the iCalendar standard's recurrence rules), now a
-  dependency (2.8.2 or later; every install had it already, through
-  surpyval). A `Component` is replaced with a new unit each time it
-  fails: from its life (in days) and the date its current unit was
-  installed, its `failures(start, end)` gives the chance the current unit
-  fails in the period, the expected number of failures (each a
-  replacement, new units' too, exactly) and their expected cost
+- **A part's failures over a window, and its costs given by name (#319).**
+  `NonRepairable` takes `planned_cost=` and `unplanned_cost=` (each alone
+  if need be; both as `set_costs_planned_and_unplanned` sets them), and
+  its `failures(t, age=)` gives, over a window `t` from the current
+  unit's age, the chance it fails, the expected number of failures (each
+  a replacement, new units' too, each taking the part's
+  `time_to_replace`; exact, with no simulation) and their expected cost
   (`FailureForecast`). A bearing with a Weibull life (scale 365 days,
-  shape 2) installed on 1 March 2026 fails before the end of 2026 with a
-  chance of 27.8%, with 0.283 replacements expected. A
-  `ReplacementPlan` replaces a unit when it fails and on a plan, which
-  resets at each replacement (age) or keeps to fixed dates (calendar);
-  its `skip_next(discount_rate, days_to_next=)` gives the NPV of skipping
-  the next planned replacement right after a failure (`SkipValue`),
-  exactly: renewal-reward with discounting for a plan that resets, and
-  the discounted failure costs up to the following planned date for a
-  calendar plan. For that bearing, replaced every 180 days for 150 or at
-  a failure for 400, at 8% a year, skipping saves 26.56 on a plan that
-  resets, and 35 to 149 on a calendar plan, the more the sooner the next
-  date. A task may also go by use: an `Asset` runs to an operating
-  schedule of `Window`s (days of the week, from a start time to a stop
-  time, overnight when the stop is earlier), each run adding its hours to
-  the `"hours"` meter and one to `"starts"`, from the meters as read at a
-  time; a `Task(every=Hours(500), asset=..., last_done=...)` (or
-  `Starts(...)`) falls due when its meter crosses the next multiple, and
-  its `due(start, end)` gives the readings and times (`UsageDue`), exact.
-  A pump running 06:00 to 22:00 on weekdays, serviced every 500 hours
-  from a meter at 12,340, is due on Friday 23 October 2026 at 22:00 and
-  Tuesday 8 December at 10:00. A task's `cost` each
-  time gives their total
-  (`TaskDates.cost`): at 250 each time, 3000. `to_dict()` writes a
-  result's dates as ISO text (`"2026-07-15"`).
+  shape 2), 224 days old, fails in the next 82 days with a chance of
+  27.8%, with 0.283 replacements expected. A `ReplacementPlan` replaces a
+  unit when it fails and on a plan, which resets at each replacement
+  (age) or keeps to fixed dates (calendar); its `skip_next(discount_rate,
+  days_to_next=)` gives the NPV of skipping the next planned replacement
+  right after a failure (`SkipValue`), exactly. Built one use case at a
+  time (`repyability/maintenance/README.md`); its calendar side (tasks on
+  dates, operating schedules, meters read by date) went to Reliafy, as
+  RePyability is about timelines and Reliafy about calendars.
 - **The failure frequency, MUT and MDT with common-cause groups whose
   tests, or another block's replacements, take time (#293).** They were
   refused there (#220): a test or a block replacement that takes time is

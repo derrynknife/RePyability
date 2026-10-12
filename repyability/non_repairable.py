@@ -12,8 +12,9 @@ from repyability.rbd._model_utils import (
     never_fails,
 )
 from repyability.rbd.helper_classes import PerfectReliability, perfect_class
+from repyability.rbd.results import FailureForecast
 from repyability.rbd.standby_node import StandbyModel
-from repyability.utils.checks import no_distribution
+from repyability.utils.checks import is_number, no_distribution, real_array
 
 FAILURE = 1
 REPLACE = 0
@@ -114,6 +115,12 @@ class NonRepairable:
         failure, used by the availability and event methods. By default
         None, or ``"instant"`` as a ``RepairableRBD`` spec takes it:
         instantaneous replacement (``ExactEventTime.from_params(0)``).
+    planned_cost, unplanned_cost : float, optional
+        What a planned (preventive) replacement and one at a failure cost,
+        each at least 0, by name; as ``set_costs_planned_and_unplanned``
+        sets them (``cp`` and ``cu``), which with both given requires the
+        planned to be less. Either may be given alone: ``failures`` needs
+        only the unplanned cost. By default None: not given.
 
     Attributes
     ----------
@@ -168,7 +175,14 @@ class NonRepairable:
     0.9804
     """
 
-    def __init__(self, reliability, time_to_replace=None):
+    def __init__(
+        self,
+        reliability,
+        time_to_replace=None,
+        *,
+        planned_cost=None,
+        unplanned_cost=None,
+    ):
         reliability = perfect_class(reliability)
         no_distribution(reliability, "A NonRepairable's life")
         no_distribution(time_to_replace, "A NonRepairable's time_to_replace")
@@ -242,6 +256,108 @@ class NonRepairable:
             ),
         )
         self.__next_event_type = FAILURE
+        self._set_costs(planned_cost, unplanned_cost)
+
+    def _set_costs(self, planned, unplanned) -> None:
+        """Keep the costs given to the constructor (``cp``, ``cu``): each
+        a finite number at least 0, and with both, the planned less."""
+        for name, cost in (
+            ("planned_cost", planned),
+            ("unplanned_cost", unplanned),
+        ):
+            if cost is not None and not (
+                is_number(cost) and 0.0 <= float(cost) < np.inf
+            ):
+                raise ValueError(
+                    f"{name} must be a number, at least 0; got {cost!r}."
+                )
+        if planned is not None and unplanned is not None:
+            self.set_costs_planned_and_unplanned(
+                float(planned), float(unplanned)
+            )
+        elif planned is not None:
+            self.cp = float(planned)
+        elif unplanned is not None:
+            self.cu = float(unplanned)
+
+    def failures(self, t, age: float = 0.0) -> FailureForecast:
+        """The failures over a window ``t`` from now, with the current unit
+        ``age`` old and working, each failure replaced by a new unit.
+
+        The chance the current unit fails in the window is its life
+        conditioned on the age reached, ``1 - R(age + t) / R(age)``. The
+        expected number of failures counts its replacements' too: the
+        renewal count of the part as a
+        [`RepairableRBD`][repyability.RepairableRBD]'s component started
+        from that age (its ``expected_events``, exact, with no
+        simulation), each replacement taking its ``time_to_replace``.
+
+        Parameters
+        ----------
+        t : float or array_like
+            The window's length (or lengths), at least 0, in the models'
+            time unit.
+        age : float, optional
+            The current unit's age, at least 0, by default 0 (new).
+
+        Returns
+        -------
+        FailureForecast
+            The chance the current unit fails, the expected failures, and
+            their expected cost (with an ``unplanned_cost``).
+
+        Examples
+        --------
+        A bearing with a Weibull life (scale 365 days, shape 2), 224 days
+        old, over the next 82 days, at 400 a failure:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]), unplanned_cost=400.0
+        ... )
+        >>> forecast = bearing.failures(82.0, age=224.0)
+        >>> round(forecast.probability, 4)
+        0.2784
+        >>> round(forecast.expected_failures, 4)
+        0.283
+        >>> round(forecast.expected_cost, 2)
+        113.2
+        """
+        from repyability.rbd.node_state import NodeState
+        from repyability.rbd.repairable_rbd import RepairableRBD
+
+        window = real_array(t, "t")
+        if not np.all(np.isfinite(window) & (window >= 0.0)):
+            raise ValueError(f"t must be at least 0, and finite; got {t!r}.")
+        if not (is_number(age) and 0.0 <= float(age) < np.inf):
+            raise ValueError(f"age must be a number, at least 0; got {age!r}.")
+        age = float(age)
+        surviving = float(np.ravel(self.reliability_function(age))[0])
+        if not surviving > 0.0:
+            raise ValueError(
+                f"The life gives no chance of a unit working at age {age:g}."
+            )
+        reached = np.asarray(self.reliability_function(age + window), float)
+        probability = 1.0 - reached.reshape(window.shape) / surviving
+        unit = RepairableRBD([("s", "unit"), ("unit", "t")], {"unit": self})
+        events = unit.expected_events(
+            window if window.ndim else float(window),
+            state={"unit": NodeState(age=age)},
+        )
+        failures = np.asarray(events.node_failures["unit"], float)
+        cost = None if not hasattr(self, "cu") else failures * self.cu
+
+        def shaped(values):
+            return float(values) if np.ndim(values) == 0 else values
+
+        return FailureForecast(
+            shaped(window),
+            age,
+            shaped(probability),
+            shaped(failures),
+            None if cost is None else shaped(cost),
+        )
 
     def set_costs_planned_and_unplanned(self, cp, cu):
         """Set the planned and unplanned replacement costs.
@@ -275,10 +391,10 @@ class NonRepairable:
         self.cu = cu
 
     def _require_costs(self) -> None:
-        if not hasattr(self, "cp"):
+        if not (hasattr(self, "cp") and hasattr(self, "cu")):
             raise ValueError(
-                "costs not set: call set_costs_planned_and_unplanned"
-                "(cp, cu) first"
+                "costs not set: give planned_cost and unplanned_cost, or "
+                "call set_costs_planned_and_unplanned(cp, cu) first"
             )
 
     def avg_replacement_time(self, t):

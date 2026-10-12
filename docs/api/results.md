@@ -60,10 +60,6 @@
 
 ::: repyability.FailureLimitPolicy
 
-::: repyability.TaskDates
-
 ::: repyability.FailureForecast
 
 ::: repyability.SkipValue
-
-::: repyability.UsageDue
