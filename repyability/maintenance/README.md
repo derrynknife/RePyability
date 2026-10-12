@@ -300,7 +300,7 @@ Keep to the project's rules (`CLAUDE.md`):
     is the iCalendar standard's recurrence, used for twenty years. Every
     install already had it, through surpyval's pandas and matplotlib; it
     is now a dependency of its own (2.8.2 or later). Users write readable
-    rules (`Monthly(30)`, `Monthly(weekday="Tuesday", nth=1)`), not
+    rules (`Monthly(day=30)`, `Monthly(weekday="Tuesday", nth=1)`), not
     iCalendar text.
 - **How it is solved:** every schedule is a dateutil rule from the task's
   first date: a fixed interval is a daily rule every *n* days, and a
@@ -313,14 +313,22 @@ Keep to the project's rules (`CLAUDE.md`):
   ```python
   from repyability.maintenance import Monthly, Task
 
-  Task("check pumps", "2026-07-15", every=Monthly(weekday="Tuesday", nth=1))
-  Task("meter reading", "2026-07-15", every=Monthly(30))                        # February: the 28th
-  Task("meter reading", "2026-07-15", every=Monthly(30, short_months="skip"))   # February: none
-  Task("month end", "2026-07-15", every=Monthly(weekday="Friday", nth=-1))      # the last Friday
+  Task("check pumps", on=Monthly(weekday="Tuesday", nth=1))
+  Task("meter reading", on=Monthly(day=30))                        # February: the 28th
+  Task("meter reading", on=Monthly(day=30, short_months="skip"))   # February: none
+  Task("month end", on=Monthly(weekday="Friday", nth=-1))          # the last Friday
   ```
 
-  With a monthly rule, `first` is when the schedule starts: the task falls
-  due on the rule's dates from then on. `nth` may be 1 to 4 or -1 to -4,
+  **Renamed after UC-10 (the maintainer's choice):** `every=Monthly(30)`
+  read as "every 30 months", and a rule's first date was no time the task
+  is done. A rule naming days now goes in `on=`, with its day by name
+  (`on=Monthly(day=30)`) and, optionally, the date it applies from
+  (`starting=`); `every=` keeps the intervals (days, hours, starts),
+  `first=` the first time an interval's task is done, and every argument
+  but the name is given by name.
+
+  With a monthly rule, `starting` (optional) is when the schedule starts:
+  the task falls due on the rule's dates from then on. `nth` may be 1 to 4 or -1 to -4,
   which every month has; a fifth Tuesday is not in every month, and would
   raise the short-month question again.
 - **Checks:** `test_maintenance_tasks.py` checks the UC-4 answers;

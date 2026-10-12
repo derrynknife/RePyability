@@ -229,7 +229,7 @@ def test_the_result_goes_through_json():
 
 
 def test_a_calendar_task_is_as_it_was():
-    weekly = Task("t", "2026-07-15", 7)
+    weekly = Task("t", every=7, first="2026-07-15")
     assert isinstance(weekly.due("2026-10-11", "2026-12-31"), TaskDates)
     assert weekly.asset is None and weekly.last_done is None
 
@@ -305,8 +305,8 @@ def test_a_task_by_use_is_checked(keywords, error, match):
 
 def test_a_calendar_task_takes_no_asset_and_needs_a_first_date():
     with pytest.raises(ValueError, match="by use"):
-        Task("t", "2026-07-15", 7, asset=PUMP)
-    with pytest.raises(TypeError, match="first date"):
+        Task("t", every=7, first="2026-07-15", asset=PUMP)
+    with pytest.raises(TypeError, match="first time"):
         Task("t", every=7)
 
 
