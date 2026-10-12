@@ -757,6 +757,105 @@ Keep to the project's rules (`CLAUDE.md`):
     so by hand it took a run per year's end. The forecaster should sum
     each simulation's costs into the periods in one run.
 
+### UC-10: "My pump runs 06:00 to 22:00 on weekdays and is serviced every 500 running hours. When is each service due?"
+
+- **Status:** answered by hand; API proposed (below), not built.
+- **Who asks, and why:** a planner whose maintenance is set by use
+  (running hours, starts, flight cycles), not by the calendar. The asset
+  runs to an operating schedule with defined start and stop times, and
+  the plan has to be forecast from that schedule. A pump on shifts, or an
+  aircraft with a flight programme, is the same question.
+- **What they know:**
+  - **the operating schedule:** the pump runs Monday to Friday, starting
+    at 06:00 and stopping at 22:00 (16 hours a run, one start);
+  - **utilisation:** the share of scheduled runs that actually go ahead,
+    100%, or 90% when some are lost;
+  - **the meter:** 12,340 hours before Monday 12 October 2026's start;
+  - **the task:** a service every 500 running hours, last done at 12,000
+    hours.
+- **What they want back:** when each service falls due (the moment the
+  meter crosses its hours), and how many fall in a period.
+- **The answer:**
+
+  | Service at | Hours from now | Runs needed | All runs go ahead | 90% of runs go ahead (10% / 50% / 90%) |
+  |---|---|---|---|---|
+  | 12,500 h | 160 | 10 | Fri 23 Oct, 22:00 (the stop) | Fri 23 Oct / Mon 26 Oct / Wed 28 Oct, 22:00 |
+  | 13,000 h | 660 | 41¼ | Tue 8 Dec, 10:00 (mid-run) | Thu 10 Dec / Mon 14 Dec / Fri 18 Dec, 10:00 |
+  | 13,500 h | 1,160 | 72½ | Wed 20 Jan 2027, 14:00 | Tue 26 Jan / Mon 1 Feb / Fri 5 Feb 2027, 14:00 |
+
+  - **Two services fall in the rest of 2026** either way: 59 weekday runs
+    are left in the year, and the second service needs 42 of them.
+  - **The schedule matters.** At a flat 16 hours a day, every day, the
+    services would be due on 21 October, 22 November and 23 December:
+    three this year, not two.
+  - **A due time can fall mid-run** (Tuesday 8 December, 10:00): the
+    planner chooses between the stop before (Monday 22:00, 12 hours
+    early) and the stop after (Tuesday 22:00, 12 hours over).
+- **How it is solved:**
+  - **All runs go ahead:** walk the schedule's runs from the reading,
+    adding each run's hours, to the run in which the meter crosses the
+    task's hours; the time is the run's start plus the hours still
+    needed in it. Exact.
+  - **Utilisation below 1:** each scheduled run goes ahead with chance
+    `u`, independently. The *n*-th run that goes ahead is the (n + k)-th
+    scheduled one, `k` negative binomial (`n`, `u`), so the due time's
+    distribution, and the number due in a period (a binomial count of
+    the runs that go ahead), are exact, with no simulation. A plain
+    simulation (200,000 runs) agrees.
+- **Today:** nothing in RePyability: `Task` works in whole days, from a
+  first date; it has no meters, no operating schedule, and no times of
+  day.
+- **Proposed API (to agree with the maintainer):**
+
+  ```python
+  from repyability.maintenance import Asset, Hours, Starts, Task, Window
+
+  pump = Asset(
+      "pump 1",
+      runs=[Window(days="Mon-Fri", start="06:00", stop="22:00")],
+      utilisation=0.9,                 # share of scheduled runs that go ahead
+      meters={"hours": 12_340, "starts": 4_210},
+      read_at="2026-10-12 00:00",      # when the meters were read
+  )
+  service = Task("pump service", every=Hours(500), asset=pump,
+                 last_done=12_000, cost=250)
+  due = service.due("2026-10-12", "2026-12-31")
+  due.count                            # 2
+  due.times                            # with utilisation 1: Fri 23 Oct 22:00, Tue 8 Dec 10:00
+  due.spread                           # with utilisation < 1: each due time's 10% / 50% / 90%
+  ```
+
+  - **`Window(days, start, stop)`:** a run on each of the days named
+    ("Mon-Fri", "Sat", or a calendar rule such as `Monthly`), from
+    `start` to `stop` in local clock time. A `stop` before its `start`
+    runs overnight into the next day. Each run adds its hours to the
+    `"hours"` meter and one to `"starts"`. An asset may have several
+    windows (two shifts with a break; an aircraft's flights, each a
+    window that adds one cycle).
+  - **`Asset`:** the operating schedule (its windows), the utilisation,
+    and its meters as read at a time. A new reading re-anchors the
+    forecast.
+  - **`Task(..., every=Hours(500) | Starts(1000), asset=..., last_done=...)`:**
+    a task by use. `last_done` is the meter reading at its last time.
+    Calendar tasks (`first`, `every` a number of days or `Monthly`) stay
+    as they are, and a usage task's `due` gives times, not dates.
+  - **The result:** the due times (exact with every run going ahead) or
+    their spread (utilisation below 1), how many fall in the period
+    (with their chances, when uncertain), and their cost.
+- **Open questions for the maintainer:**
+  - **Local time and daylight saving:** a 06:00 to 22:00 run on a
+    clock-change day lasts 15 or 17 real hours. Count real hours in the
+    site's time zone, or ignore daylight saving at first?
+  - **Utilisation:** whole runs that go ahead or not (as above), or
+    shorter runs?
+  - **Whichever comes first:** "500 hours or 3 months" (and an
+    aircraft's hours, cycles or calendar), each counter restarting at
+    the task: from the start, or a later use case?
+  - **When the work is done:** report only when the meter crosses, or
+    also the stop before or after it?
+  - **Runs that stop for shuts or holidays:** set aside for now, as
+    holidays are.
+
 ## Candidates
 
 Questions to take up next, one at a time, in whatever order proves useful.
