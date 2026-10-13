@@ -377,6 +377,7 @@ question here is the model-time one it becomes.)
   *z*-th shut, and every *x*-th shut as long as older than *y*.
 
   ```python
+  import surpyval as surv
   from repyability import replacement_policies
 
   found = replacement_policies(
