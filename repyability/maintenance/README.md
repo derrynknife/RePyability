@@ -22,7 +22,7 @@ use cases, under the same numbers.
 | UC-2, UC-3, UC-4 | Tasks on dates and monthly rules: calendar only | Reliafy's |
 | UC-5 | A part's chance of failing, expected failures and their cost over a window, from its age | **Built**: `NonRepairable.failures` |
 | UC-6 | Right after a failure, the value of skipping the next planned replacement | **Built**: `ReplacementPlan.skip_next`, to be reworked |
-| UC-7 | The cheapest replacement policy when replacing at a shut is cheaper than between shuts | Answered by hand |
+| UC-7 | The cheapest replacement policy when replacing at a shut is cheaper than between shuts | **Built**: `replacement_policies` |
 | UC-8 | Each policy's cost over a window from a state, and its spread | Answered by hand |
 | UC-9 | The cost in each of a run of windows from a state, and how often each outcome happens | Answered by hand |
 | UC-10 | Tasks by use on an operating schedule: calendar only | Reliafy's |
@@ -321,8 +321,8 @@ question here is the model-time one it becomes.)
 
 ### UC-7: "Replacing the bearing at a shut (every 180 days) costs $100, a planned replacement between shuts $150, and one at a failure $400. Which replacement policy is cheapest in the long run?"
 
-- **Status:** answered by hand with today's RePyability; not built. It
-  would be one of the RCM calculators.
+- **Status:** built: `replacement_policies(life, shut_every=, shut_cost=,
+  planned_cost=, failure_cost=)`, the first of the RCM calculators.
 - **Who asks, and why:** the planner of UC-6. The plant shuts every 180
   days; replacing in a shut is cheaper than a planned replacement that
   needs its own outage, which is cheaper than a failure.
@@ -372,6 +372,45 @@ question here is the model-time one it becomes.)
     rise, an age and a condition threshold differ.
   - Policy 5 exactly needs a Markov chain on how far into the shut
     interval each new bearing went in, on a grid, if a case needs it.
+- **As built:** the maintainer asked for the tools to find the best policy
+  of four families: run to failure, every *d* days between shuts, every
+  *z*-th shut, and every *x*-th shut as long as older than *y*.
+
+  ```python
+  from repyability import replacement_policies
+
+  found = replacement_policies(
+      surv.Weibull.from_params([365.0, 2.0]),
+      shut_every=180.0, shut_cost=100.0, planned_cost=150.0, failure_cost=400.0,
+  )
+  found.run_to_failure      # 1.2366 a day
+  found.between_shuts       # at age 297.6, 1.1170
+  found.every_shut          # every shut (z = 1), 1.0555
+  found.at_a_shut_if_older  # every shut (x = 1) if at least 137.9 old, 0.9903
+  found.best                # the last; found.saving, 0.2463 a day
+  ```
+
+  - **One calculation for the shut families:** replacement on condition at
+    inspections every *x* shuts, its rule an age (`older_than`, new to
+    `_condition_replacement.condition_cycle`; 0 for every shut), exact for
+    any life, not only one whose hazard rises. Between shuts:
+    `NonRepairable.optimal_replacement_policy` at the planned price.
+  - **The search:** every number of shuts, and for each the age on a grid
+    of 8 a shut interval, refined around the best, up to the age a unit
+    outlives with a chance of 0.1%. About 10 seconds for the bearing.
+  - **Learned while building:** a rule that seldom replaces (every sixth
+    shut, if older than 1,080 days) has cycles of many thousands of
+    failures, and its cost a day is good only to a few parts in 10,000.
+    With a shut dearer than a failure, such a rule "beat" running to
+    failure by 0.01%, which cannot be (a planned replacement dearer than
+    a failure never pays). So a planned policy is chosen only if it saves
+    more than 0.1% against running to failure.
+  - **Checks** (`test_maintenance_shuts.py`): the UC-7 figures; every shut
+    against RePyability's block replacement (to 1e-6); three shut
+    policies against a plain simulation; the age rule against the
+    threshold rule for a rising hazard; an exponential life (no planned
+    replacement pays); a shut dearer than a failure; the answer the same
+    in days and in hours; JSON; the input checks.
 
 ### UC-8: "From the bearing's state now, what will each policy cost over the next *t* days, and how much could that vary?"
 
