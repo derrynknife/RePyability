@@ -26,6 +26,7 @@ use cases, under the same numbers.
 | UC-8 | Each policy's cost over a window from a state, and its spread | Answered by hand |
 | UC-9 | The cost in each of a run of windows from a state, and how often each outcome happens | Answered by hand |
 | UC-10 | Tasks by use on an operating schedule: calendar only | Reliafy's |
+| UC-11 | A part renewed at every service and at failure: its risk before each service, from its state, in running hours | Answered by hand |
 
 ## How a use case is added
 
@@ -473,3 +474,92 @@ financial year is Reliafy's.)
     $2,300; the 90th percentile of their total is $2,000.
   - What RePyability could give: each simulation's cost in each of a run
     of windows, from one run (by hand it took a run per window's end).
+
+### UC-11: "My pump's seal is replaced at every 500-hour service and whenever it fails. It has run 340 hours, and the next service is in 160. What's the chance it fails before each service, what will failures and replacements cost over the next 944 running hours, and is replacing it at every service worth it?"
+
+(It comes from Reliafy's side: the pump's on and off times give its
+running hours, so the seal's age (340 h, since it went in at the last
+service), how far the pump is into its service interval (340 of 500 h)
+and, through the operating schedule, how many running hours lie ahead
+(944 h to the end of the year, at 16 hours a weekday). Turning the
+answers back into dates is Reliafy's too.)
+
+- **Status:** answered by hand with today's RePyability; design to agree.
+- **Who asks, and why:** a planner whose part is renewed by the
+  maintenance as well as at failures, so its risk starts again at each
+  service: what is the risk before the next one, and is the plan right?
+- **What they know:**
+  - the seal's life in running hours, fitted in surpyval from the pump's
+    history: a Weibull with a scale of 6,000 h and a shape of 2.2;
+  - the plan: a new seal at every service, every 500 running hours on
+    the pump's meter (block replacement: the services do not move when a
+    seal fails), for $200; a new seal at a failure, at once, for $900;
+  - the state: the seal is 340 h old, and the next service is in 160 h.
+- **What they want back:** the chance it fails before each service, the
+  expected failures, replacements and cost over the hours ahead, and
+  whether the plan is worth it.
+- **The answer:**
+  - **Before the next service** (160 h): a **0.24%** chance it fails,
+    `1 - R(500) / R(340)`.
+  - **Before each later service:** a new seal goes in at each, so the
+    chance is the same in every interval, **0.42%**, `1 - R(500)`.
+  - **Over the next 944 running hours** (two services): **0.0078 failures
+    expected, 2 seals at services, $407** ($7 of failures, $400 of
+    planned seals).
+  - **Without the replacements at services**, the same seal from 340 h
+    would fail in those 944 h with a chance of 3.1% ($28 expected); over
+    5,000 h, 54%.
+  - **The plan is not worth it.** Renewing at every service costs $0.41 a
+    running hour; the best age replacement (`NonRepairable(...,
+    planned_cost=200, unplanned_cost=900).optimal_replacement_policy()`)
+    replaces at about 3,180 h, for $0.12 a running hour. With services
+    every 500 h, the natural policy is UC-7's: renew at a service only if
+    the seal is older than some age.
+- **How it is solved:** in running hours, by today's methods:
+  - the chances: the life conditioned on the age, exact;
+  - the expected failures, planned replacements and cost: a
+    one-component `RepairableRBD` with a block replacement every 500 h
+    (`"preventive": {"interval": 500, "policy": "block", "cost": 200}`),
+    `replace_cost` 900, started from `NodeState(age=340, phase=340)`:
+    `expected_events(944, state=...)` and `expected_cost(944, state=...)`,
+    exact;
+  - the long-run cost: its `expected_cost_rate()`.
+- **Today (by hand):**
+
+  ```python
+  import surpyval as surv
+  from repyability import NodeState, RepairableRBD
+
+  life = surv.Weibull.from_params([6000.0, 2.2])            # running hours
+  rbd = RepairableRBD(
+      [("s", "seal"), ("seal", "t")],
+      {"seal": {"reliability": life, "repairability": "instant",
+                "replace_cost": 900.0,
+                "preventive": {"interval": 500.0, "policy": "block", "cost": 200.0}}},
+  )
+  state = {"seal": NodeState(age=340.0, phase=340.0)}
+  rbd.expected_events(944.0, state=state).node_failures      # {'seal': 0.0078}
+  rbd.expected_cost(944.0, state=state).mean                 # 407.06
+  1 - life.sf(500) / life.sf(340)                            # 0.0024, before the next service
+  ```
+
+- **Checks:** the expected failures over 944 h against a plain simulation
+  of the seal and its services (0.0080 ± 0.0001, against 0.0078).
+- **Proposed design (to agree with the maintainer):** a part's risk and
+  costs under a plan that renews it, on the part, in model time, beside
+  `failures`: the plan (renew every so many hours, keeping to the
+  interval or resetting at each renewal) and the state (the part's age,
+  how far into the interval), giving the chance of a failure before each
+  of the next renewals, and the expected failures, renewals and cost
+  over a window. It shares its open questions with UC-6's rework (the
+  plan as arguments or an object, the state given explicitly).
+- **Learned:**
+  - **Renewal at each service resets the risk:** the chance before a
+    service is small and the same each time, where without it the risk
+    grows with the seal's age.
+  - **The answer can show the plan is wrong:** here a renewal at every
+    service costs over three times the best age replacement, which is
+    the question to ask next (UC-7's shape, at services).
+  - **History in, risk out:** Reliafy's history gives the age and the
+    phase in running hours, RePyability the risk and cost in running
+    hours, and the schedule turns them into dates.
