@@ -527,6 +527,9 @@ answers back into dates is Reliafy's too.)
 - **Today (by hand):**
 
   ```python
+  import surpyval as surv
+  from repyability import NodeState, RepairableRBD
+
   life = surv.Weibull.from_params([6000.0, 2.2])            # running hours
   rbd = RepairableRBD(
       [("s", "seal"), ("seal", "t")],
