@@ -94,3 +94,8 @@ from repyability.maintenance._plans import (  # noqa: E402
     ReplacementPlan,
     SkipValue,
 )
+from repyability.maintenance._shuts import (  # noqa: E402
+    ReplacementPolicies,
+    ReplacementPolicy,
+    replacement_policies,
+)

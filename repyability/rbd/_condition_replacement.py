@@ -85,11 +85,20 @@ class ConditionCycle(NamedTuple):
 class _Ages:
     """A life on a grid of ages ``0, h, 2h, ...``, extended as needed: its
     survival and CDF, its integrated survival, and whether an inspection
-    replaces a unit of each age."""
+    replaces a unit of each age: one more likely than ``threshold`` to fail
+    before the next, or, given ``older_than``, one at least that old."""
 
-    def __init__(self, life, h: float, interval: float, threshold: float):
+    def __init__(
+        self,
+        life,
+        h: float,
+        interval: float,
+        threshold: Optional[float],
+        older_than: Optional[float] = None,
+    ):
         self.life, self.h = life, h
         self.interval, self.threshold = interval, threshold
+        self.older_than = older_than
         self.size = 0
         self.R = self.F = self.up = np.empty(0)
         self.replace = np.empty(0, dtype=bool)
@@ -124,7 +133,10 @@ class _Ages:
         self.up = _cumulative(
             lambda v: np.clip(_values(self.life.sf, v), 0.0, 1.0), x
         )
-        self.replace = self.likely(x) > self.threshold
+        if self.older_than is not None:
+            self.replace = x >= self.older_than
+        else:
+            self.replace = self.likely(x) > self.threshold
         self.size = size
 
 
@@ -160,7 +172,13 @@ def _merge(lo_a: int, a: np.ndarray, lo_b: int, b: np.ndarray):
 
 
 def condition_cycle(
-    life, repair, duration, interval: float, threshold: float, node=None
+    life,
+    repair,
+    duration,
+    interval: float,
+    threshold: Optional[float],
+    node=None,
+    older_than: Optional[float] = None,
 ) -> ConditionCycle:
     """The regeneration cycle of a component replaced on condition.
 
@@ -169,9 +187,14 @@ def condition_cycle(
     life, repair, duration, interval, node
         As for ``block_replacement.block_cycle``: the inspections are every
         ``interval``, and ``duration`` is the time a replacement takes.
-    threshold : float
+    threshold : float or None
         The chance of failing before the next inspection above which an
         inspection replaces the unit.
+    older_than : float, optional
+        Instead of ``threshold``: the age at or past which an inspection
+        replaces the unit (0: every inspection replaces it). For a life
+        whose hazard rises, the same as the threshold ``1 - R(older_than +
+        interval) / R(older_than)``; for any life, the rule as an age.
 
     Returns
     -------
@@ -189,7 +212,7 @@ def condition_cycle(
     g = _grid(life, repair, duration, interval, node, starts=True)
     assert g.renewals is not None and g.done is not None  # starts=True
     steps, h, T = g.steps, g.h, g.interval
-    ages = _Ages(life, h, T, threshold)
+    ages = _Ages(life, h, T, threshold, older_than)
     if _never_replaced(ages, steps):
         # Then a plain alternating renewal process of lives and repairs.
         mttf = float(model_mean(life))

@@ -63,3 +63,7 @@
 ::: repyability.FailureForecast
 
 ::: repyability.SkipValue
+
+::: repyability.ReplacementPolicies
+
+::: repyability.ReplacementPolicy
