@@ -126,6 +126,26 @@ other release, fixes included, the minor.
   every method takes. Repairs, maintenance and tests stay on the clock;
   levers, draws and saving keep the life as given. The rescaling rule of
   each distribution is RePyability's until surpyval has one (SurPyval#845).
+- **Minimal repair whose repairs take time, over a window (#318).** A
+  component repaired minimally (Kijima, `q = 1`) with repairs that take
+  time, a fitted Crow-AMSAA, Duane or HPP process with a repair time
+  among them, has its availability over time, its expected events and
+  cost over a window, and the importance and sensitivity over time
+  numerical, where every analysis but the simulation refused it. It fails
+  at its life's hazard at its operating age, the time it has been up,
+  which its repairs leave as it is, so its failures by operating age `a`
+  are Poisson with mean `H(a)` and the repairs so far a compound Poisson
+  sum: its availability and expected failures are sums, over the repairs
+  so far, of that Poisson probability against the distribution of their
+  total, on a grid of its operating age (`MinimalRepairCurve`, by
+  `minimal_repair_lattice`; the error falls as the square of the step,
+  about 1e-7). Checked against the two-state chain of an exponential
+  unit, the renewal equation (an exponential life is renewed by any
+  repair) and the simulations. The long-run values stay refused: a
+  minimally repaired unit's rate of failures need not settle. A run's
+  means are the numerical values by default, as for any system the
+  methods over time work out. `analysis_routes()` says so, and the
+  README's tables follow.
 
 ### Changed
 

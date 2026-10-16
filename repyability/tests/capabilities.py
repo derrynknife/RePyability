@@ -387,6 +387,10 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("Tests that can miss a failure", "tested, missing"),
         ("Imperfect repair (Kijima)", "imperfect repair"),
         ("Minimal repair", "minimal repair in no time"),
+        (
+            "Minimal repair, repairs that take time",
+            "minimal repair, repairs that take time",
+        ),
         ("Limited repair crews", "one repair crew"),
         ("A standby group", "standby group"),
         ("A beta-factor group, revealed failures", "common cause, revealed"),

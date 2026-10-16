@@ -1187,7 +1187,7 @@ def _twin_simpler(diagram, node, spec: dict) -> Tuple[Any, str]:
     being the twin so far, and what it changes (or ""): a standby group
     whose own chain cannot follow it over time becomes its units
     operating together; imperfect repair becomes perfect (but for
-    minimal repair in no time, whose values over time are exact);
+    minimal repair, whose values over time are exact or numerical);
     replacement on condition, inspections and block replacement that
     the exact methods do not take go."""
     from repyability.rbd import routes as r

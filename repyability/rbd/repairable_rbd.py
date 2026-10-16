@@ -253,11 +253,14 @@ class RepairableRBD(RBD):
           A preventive replacement renews the unit, and age replacement
           counts its operating time since it was renewed. The exact
           methods refuse such a component, and the simulations follow it,
-          in Python; but minimally repaired (``q = 1``) in no time, with no
-          ``"replace_after"``, maintenance or tests, it is up throughout
-          and fails ``H(t)`` times by ``t`` on average (``H`` its life's
-          cumulative hazard), which the values over a window from new
-          (``expected_failures`` and the others) take in exactly.
+          in Python; but minimally repaired (``q = 1``), with no
+          ``"replace_after"``, maintenance or tests, it fails at its
+          life's hazard at its operating age, the time it has been up:
+          in no time it is up throughout and fails ``H(t)`` times by
+          ``t`` on average (``H`` its life's cumulative hazard), which
+          the values over a window from new (``expected_failures`` and
+          the others) take in exactly, and with repairs that take time
+          its operating age is followed on a grid, numerically.
           ``"duty"``, a fraction ``d`` in (0, 1], is the share of the time
           the component operates, for a ``"reliability"`` fitted in
           operating time: it ages only while it operates, so its life on

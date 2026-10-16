@@ -433,6 +433,9 @@ def repairable_kinds():
                     "replace_cost": 10.0,
                 }
             ),
+            "minimal repair, repairs that take time": system(
+                unit(repair={"model": "kijima1", "q": 1.0}, repair_cost=1.0)
+            ),
             "imperfect repair, replaced and maintained": system(
                 unit(
                     repair={"model": "kijima2", "q": 0.8},
