@@ -221,8 +221,9 @@ plant.birnbaum_importance(x=1.0, state=down)["B"]   # -> 0.3886
 With limited repair crews, the measures follow the crews' chain over time:
 the Birnbaum importance, improvement potential and risk worths hold each
 node working and failed in it, as in the long run, and the criticality and
-Fussell–Vesely measures average over its states at each time (not yet
-around nested RBDs). With common-cause groups, each time's point is split
+Fussell–Vesely measures average over its states at each time; a nested
+RBD, with crews of its own, enters by its own availability then, as in
+`point_availability`. With common-cause groups, each time's point is split
 by the groups' joint states then. A component whose curve over time is not
 worked out (one repaired imperfectly, say) is refused, as by
 `point_availability`.

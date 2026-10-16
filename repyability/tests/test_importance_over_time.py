@@ -20,7 +20,13 @@ import pytest
 import scipy.linalg
 import surpyval as surv
 
-from repyability import BetaFactor, CCFGroup, NodeState, RepairableRBD
+from repyability import (
+    BetaFactor,
+    CCFGroup,
+    NodeState,
+    PerfectReliability,
+    RepairableRBD,
+)
 from repyability.rbd import _ccf_groups, _crews, _curves
 from repyability.rbd.rbd import RBD
 
@@ -352,13 +358,199 @@ def test_what_it_refuses():
     kijima = RepairableRBD([("s", "a"), ("a", "t")], {"a": imperfect})
     with pytest.raises(NotImplementedError):
         kijima.birnbaum_importance(x=1.0)
-    # Crews around a nested RBD: the chain's states take no nested curve.
-    inner = RepairableRBD([("s", "u"), ("u", "t")], {"u": unit()})
-    crewed = RepairableRBD(
-        [("s", "a"), ("s", "b"), ("a", "n"), ("b", "n"), ("n", "t")],
-        {"a": unit(), "b": unit(), "n": inner},
+
+
+# -- limited repair crews around a nested RBD (#312) -------------------------
+
+
+def nested_in_series():
+    """x, a nested RBD with a crew of its own, in series with y and z in
+    parallel, sharing one crew: the outer system, the pair alone with the
+    crew, and the nested RBD. The nested RBD is independent of the pair's
+    chain, so each measure has a closed form from the two halves'
+    curves."""
+    inner = RepairableRBD(
+        [("s", "u"), ("s", "v"), ("u", "t"), ("v", "t")],
+        {"u": unit(E([0.05]), E([0.2])), "v": unit(E([0.08]), E([0.3]))},
         repair_crews=1,
     )
-    with pytest.raises(NotImplementedError, match="nested RBD"):
-        crewed.criticality_importance(x=1.0)
-    assert set(crewed.birnbaum_importance(x=1.0)) == {"a", "b", "n"}
+    y, z = unit(E([0.03]), E([0.1])), unit(E([0.04]), E([0.15]))
+    outer = RepairableRBD(
+        [("s", "x"), ("x", "y"), ("x", "z"), ("y", "t"), ("z", "t")],
+        {"x": inner, "y": y, "z": z},
+        repair_crews=1,
+    )
+    pair = RepairableRBD(
+        [("s", "y"), ("s", "z"), ("y", "t"), ("z", "t")],
+        {"y": y, "z": z},
+        repair_crews=1,
+    )
+    return outer, pair, inner
+
+
+def halves(pair, inner, times):
+    """The closed forms' parts at ``times``: the nested RBD's availability
+    ``a``, the pair's ``A``, and the pair's joint states from its chain
+    (through its own success criticality: ``y up, z down`` is y's times
+    ``A``), all of which the outer measures are products of."""
+    a = inner.point_availability(times)
+    A = pair.point_availability(times)
+    success = pair.criticality_importance(times, kind="success")
+    y_up_z_down = success["y"] * A
+    z_up_y_down = success["z"] * A
+    both_down = 1.0 - A
+    both_up = A - y_up_z_down - z_up_y_down
+    return a, A, y_up_z_down, z_up_y_down, both_down, both_up
+
+
+def closed_forms(pair, inner, times) -> dict:
+    """Each measure's numerator over the system's unavailability: x is
+    critical and down when the pair is up; y when x is up and z down."""
+    a, A, y_up_z_down, z_up_y_down, both_down, both_up = halves(
+        pair, inner, times
+    )
+    down = 1.0 - a * A
+    return {
+        "criticality": {
+            "x": (1.0 - a) * A / down,
+            "y": a * both_down / down,
+            "z": a * both_down / down,
+        },
+        "success": {
+            "x": np.ones_like(a),
+            "y": y_up_z_down / A,
+            "z": z_up_y_down / A,
+        },
+        # Cut sets {x} and {y, z}; path sets {x, y} and {x, z}.
+        "cuts": {
+            "x": (1.0 - a) / down,
+            "y": both_down / down,
+            "z": both_down / down,
+        },
+        "paths": {
+            "x": (1.0 - a) * (1.0 - both_up) / down,
+            "y": (1.0 - a) * (z_up_y_down + both_down) / down,
+            "z": (1.0 - a) * (y_up_z_down + both_down) / down,
+        },
+    }
+
+
+def test_with_crews_a_nested_rbd_enters_by_its_own_curve():
+    outer, pair, inner = nested_in_series()
+    times = np.array([0.5, 5.0, 30.0, 200.0])
+    expected = closed_forms(pair, inner, times)
+    values = {
+        "criticality": outer.criticality_importance(times),
+        "success": outer.criticality_importance(times, kind="success"),
+        "cuts": outer.fussell_vesely(times),
+        "paths": outer.fussell_vesely(times, fv_type="p"),
+    }
+    for measure, nodes in expected.items():
+        for node, value in nodes.items():
+            np.testing.assert_allclose(values[measure][node], value, rtol=1e-9)
+    # Each node is in one cut set, so the rare-event sum is the same.
+    rare = outer.fussell_vesely(times, method="rare_event")
+    for node, value in expected["cuts"].items():
+        np.testing.assert_allclose(rare[node], value, rtol=1e-9)
+    # From the long run, every time's value is the long-run one.
+    long_run = outer.criticality_importance()
+    stationary = outer.criticality_importance(
+        [0.0, 3.0, 50.0], state="stationary"
+    )
+    for node, value in long_run.items():
+        np.testing.assert_allclose(stationary[node], value, rtol=1e-9)
+
+
+def test_with_crews_a_nested_rbd_over_a_window():
+    from scipy.integrate import simpson
+
+    outer, pair, inner = nested_in_series()
+    end = 20.0
+    # The numerators and the system's unavailability, integrated over the
+    # window on a fine grid: the measure is the ratio of the integrals.
+    grid = np.linspace(0.0, end, 4001)
+    a, A, _, _, both_down, _ = halves(pair, inner, grid)
+    down = simpson(1.0 - a * A, x=grid)
+    criticality = outer.criticality_importance(window=end)
+    assert criticality["x"] == pytest.approx(
+        simpson((1.0 - a) * A, x=grid) / down, rel=1e-6
+    )
+    assert criticality["y"] == pytest.approx(
+        simpson(a * both_down, x=grid) / down, rel=1e-6
+    )
+    cuts = outer.fussell_vesely(window=end)
+    assert cuts["x"] == pytest.approx(
+        simpson(1.0 - a, x=grid) / down, rel=1e-6
+    )
+    assert cuts["z"] == pytest.approx(
+        simpson(both_down, x=grid) / down, rel=1e-6
+    )
+    # A long window from the long run is the long-run value.
+    long_run = outer.fussell_vesely()
+    window = outer.fussell_vesely(window=30.0, state="stationary")
+    for node, value in long_run.items():
+        assert window[node] == pytest.approx(value, rel=1e-9)
+
+
+def test_with_crews_a_nested_rbd_against_simulated_timelines():
+    """w in series with two out of x (a nested RBD with a crew of its
+    own), y and z, one crew for w, y and z: x's measures depend on the
+    joint states of the chain's components, so they are checked against
+    the histories of seeded simulations."""
+    inner = RepairableRBD(
+        [("s", "u"), ("s", "v"), ("u", "t"), ("v", "t")],
+        {"u": unit(E([0.05]), E([0.2])), "v": unit(E([0.08]), E([0.3]))},
+        repair_crews=1,
+    )
+    edges = [("s", "x"), ("s", "y"), ("s", "z"), ("x", "j"), ("y", "j")]
+    edges += [("z", "j"), ("j", "w"), ("w", "t")]
+    rbd = RepairableRBD(
+        edges,
+        {
+            "x": inner,
+            "y": unit(E([0.03]), E([0.1])),
+            "z": unit(E([0.04]), E([0.15])),
+            "w": unit(E([0.02]), E([0.2])),
+            "j": PerfectReliability,
+        },
+        k={"j": 2},
+        repair_crews=1,
+    )
+    times = np.array([4.0, 12.0, 30.0])
+    count = 8000
+    simulated = rbd.simulate_timelines(30.0, mc_samples=count, seed=5)
+    up = {n: simulated.components[n].state(times) for n in "xyzw"}
+
+    def works(up):
+        votes = up["x"].astype(int) + up["y"] + up["z"]
+        return up["w"] & (votes >= 2)
+
+    system = works(up)
+    assert np.array_equal(system, simulated.system.state(times))
+    unavailability = 1.0 - rbd.point_availability(times)
+    criticality = rbd.criticality_importance(times)
+    cuts = rbd.fussell_vesely(times)
+    down = {n: ~v for n, v in up.items()}
+    cut_sets = {
+        "x": down["x"] & (down["y"] | down["z"]),
+        "y": down["y"] & (down["x"] | down["z"]),
+        "z": down["z"] & (down["x"] | down["y"]),
+        "w": down["w"],
+    }
+
+    def within(estimate: np.ndarray, value: np.ndarray) -> None:
+        # Each a mean of 0s and 1s: within four standard errors.
+        error = np.sqrt(estimate * (1.0 - estimate) / count)
+        assert np.all(np.abs(estimate - value) < 4.0 * error + 1e-12)
+
+    within(1.0 - system.mean(axis=0), unavailability)
+    for node in "xyzw":
+        held_up = works({**up, node: np.ones_like(system)})
+        held_down = works({**up, node: np.zeros_like(system)})
+        critical = held_up & ~held_down & down[node]
+        within(critical.mean(axis=0), criticality[node] * unavailability)
+        within(cut_sets[node].mean(axis=0), cuts[node] * unavailability)
+    # The measures change with time, and x's is no product of the two
+    # halves: with w up and y down, say, z's state decides whether x is
+    # critical.
+    assert np.ptp(criticality["x"]) > 0.01
