@@ -101,3 +101,68 @@ interval = flight.reliability_interval(1_000_000, seed=1)
 interval.estimate    # -> 0.996079   simulated
 flight.reliability() # -> 0.996037
 ```
+
+## Importance and cut sets
+
+Which component matters most over the whole mission, and which
+combinations of failures end it? A component is the same through every
+phase, so its importance holds it across all of them: *working throughout*
+(every phase's segment of its life survived) or *failed from the start*
+(failed in the first phase, so in every phase). `birnbaum_importance()` is
+the mission's reliability with the component working throughout less its
+reliability with it failed from the start; `improvement_potential()`,
+`risk_achievement_worth()`, `risk_reduction_worth()` and
+`criticality_importance()` are built on the same held values, as the
+diagrams' are. Each is the mission's decision diagram replayed with the
+component's segments so held, exact, at the mission's end; there is no
+simulated version. Here any component failed from the start fails the
+take-off or the cruise, so the risk achievement worth cannot tell them
+apart, but the risk reduction worth can: the navigation unit, alone in
+series through the cruise, accounts for half the mission's failures, each
+engine for a quarter, the gear for almost none.
+
+```python
+raw = flight.risk_achievement_worth()
+raw["nav"] == raw["gear"]       # -> True
+rrw = flight.risk_reduction_worth()
+rrw["nav"]                      # -> 2.0545
+rrw["e1"]                       # -> 1.3191
+rrw["gear"]                     # -> 1.0017
+criticality = flight.criticality_importance()
+criticality["nav"]              # -> 0.5133   the share of failures nav accounts for
+```
+
+`minimal_cut_sets()` gives the combinations: each a set of events
+`(component, phase)`, "the component has failed by the end of that phase",
+that together fail the mission. A failure by one phase is one by every
+later phase, so a cut set keeps the weakest events that still fail the
+mission: an engine lost by the end of the take-off is a cut set of the
+take-off, but the landing needs both engines too, so the engine lost by the
+end of the landing, whenever it was lost, is the cut set listed. The
+phases' own cut sets, dated, less those another implies, are the mission's
+(the usual phased-mission minimisation).
+
+```python
+cuts = flight.minimal_cut_sets()
+sorted(sorted(cut) for cut in cuts)
+# -> [[('e1', 'landing')], [('e2', 'landing')], [('gear', 'landing')], [('nav', 'cruise')]]
+```
+
+`fussell_vesely()` is the share of the mission's failure probability that
+involves each component: the probability that some cut set naming it, in
+any phase, has occurred, over the mission's unreliability. The union is
+exact, from a decision diagram of the cut sets' events over the segments;
+`method="rare_event"` sums the cut sets' probabilities instead, the
+approximation many PRA tools report, which over-estimates the union when
+cut sets overlap (here none share a component, so the two agree).
+
+```python
+fv = flight.fussell_vesely()
+fv["nav"]                       # -> 0.5143
+fv["e1"]                        # -> 0.2426
+flight.fussell_vesely(method="rare_event")["e1"]   # -> 0.2426
+```
+
+`analysis_routes()` reports each analysis as exact, or refused when the
+mission's diagram (for `fussell_vesely`, the cut sets' too) would pass
+`MAX_NODES`, and `reliability_interval` as simulated.

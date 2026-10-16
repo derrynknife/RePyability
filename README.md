@@ -174,23 +174,23 @@ Which analyses each model type has (the method; — where it has none):
 | Total cost of ownership | — | `total_cost` | — | — | — |
 | Spares demand and stock | — | `spares_demand` | — | — | — |
 | **Structure** | | | | | |
-| Minimal path and cut sets | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `cut_sets` | — |
+| Minimal path and cut sets | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `cut_sets` | `minimal_cut_sets` |
 | Each path set's probability | `path_set_probabilities` | `path_set_probabilities` | — | — | — |
 | Cut sets ranked by probability | — | — | `ranked_cut_sets` | — | — |
 | Irrelevant components | `find_irrelevant_components` | `find_irrelevant_components` | — | — | — |
 | Convert to and from an RBD | — | — | `to_rbd` | — | — |
 | Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — |
 | Capacity over time | — | `point_capacity` | — | — | — |
-| How each analysis is computed | `analysis_routes` | `analysis_routes` | — | — | — |
+| How each analysis is computed | `analysis_routes` | `analysis_routes` | — | — | `analysis_routes` |
 | Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | — | — |
 | **Importance measures** | | | | | |
-| Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | — |
+| Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` |
 | Structural | `structural_importance` | `structural_importance` | — | — | — |
-| Improvement potential | `improvement_potential` | `improvement_potential` | — | — | — |
-| Risk achievement worth | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | — | — |
-| Risk reduction worth | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | — | — |
-| Criticality | `criticality_importance` | `criticality_importance` | `criticality_importance` | — | — |
-| Fussell-Vesely | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | — | — |
+| Improvement potential | `improvement_potential` | `improvement_potential` | — | — | `improvement_potential` |
+| Risk achievement worth | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | — | `risk_achievement_worth` |
+| Risk reduction worth | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | — | `risk_reduction_worth` |
+| Criticality | `criticality_importance` | `criticality_importance` | `criticality_importance` | — | `criticality_importance` |
+| Fussell-Vesely | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | — | `fussell_vesely` |
 | Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | — | — |
 | Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | — | — |
 | Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | — | — | — |
