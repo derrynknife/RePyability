@@ -687,3 +687,12 @@ answers back into dates is Reliafy's too.)
   - It is a break-even age for each later choice, as the maintainer
     framed it: the decision is "replace now" once the part is older than
     the largest.
+  - **With no shuts it is the textbook age replacement.** With only the
+    planned ($150) and failure ($400) prices, and `g` the textbook
+    optimum's own cost rate (1.117 a day), the best later replacement of
+    a part of age *a* is at 297.6 - *a* days from now, and replacing now
+    is the best from 297.6 days old: the optimal interval exactly. So `g`
+    is that calculation's cost rate, not a number from outside: the
+    optimal interval is the age at which a day's added risk,
+    (400 - 150) × hazard, reaches it. With shuts, it is the best
+    schedule's cost rate with the shuts (UC-7's 0.990).
