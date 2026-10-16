@@ -267,11 +267,11 @@ CASES = {
     ),
     "in a repair": (
         hidden(W([4.0, 2.0]), E([5.0]), X([0.05])),
-        NodeState(alive=False, down_for=0.1, phase=0.6),
+        NodeState(alive=False, down_for=0.1, since_scheduled=0.6),
     ),
     "up at an age": (
         hidden(W([4.0, 2.0]), E([5.0]), X([0.05])),
-        NodeState(age=2.0, phase=0.4),
+        NodeState(age=2.0, since_scheduled=0.4),
     ),
     "exponential, missing": (
         hidden(

@@ -50,7 +50,6 @@ from repyability.maintenance import (
     Opportunity,
     PlannedReplacement,
     ReplacementChoice,
-    ReplacementPlan,
     SkipValue,
 )
 from repyability.network import Network
@@ -147,7 +146,6 @@ __all__ = [
     "mtbf_demonstration_plan",
     "ComponentOption",
     # Maintenance planning
-    "ReplacementPlan",
     "Opportunity",
     "Calendar",
     # Up/down histories

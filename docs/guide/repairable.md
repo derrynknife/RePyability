@@ -306,8 +306,9 @@ availability, failures, cost and capacity over the next month?* Pass
   down so far, in a repair or (`maintenance=True`) in its preventive
   maintenance. What is left of that has the survival function
   `G(r + s) / G(r)`, and the unit is then new;
-- **on a calendar:** `phase`, the time since its last block replacement or
-  test, so that the next falls `interval - phase` from now. A unit with
+- **on a calendar:** `since_scheduled`, the time since its last block
+  replacement or test, so that the next falls `interval - since_scheduled`
+  from now. A unit with
   hidden failures is known to have been up only at its last test (or when
   put into service, if that was since): it may have failed since, unseen,
   and the next test finds it;
@@ -323,8 +324,9 @@ availability, failures, cost and capacity over the next month?* Pass
   `replace_after`, maintenance or tests;
 - **a nested RBD:** a dict of its own components' states;
 - **long in service, state unknown:** `state="stationary"` puts every
-  component in its long-run state (one on a calendar at its phase; for one
-  component, `NodeState(stationary=True, phase=...)`).
+  component in its long-run state (one on a calendar at its
+  `since_scheduled`; for one component, `NodeState(stationary=True,
+  since_scheduled=...)`).
 
 A component left out starts new, and every component's later units are new,
 as from new.

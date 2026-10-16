@@ -184,7 +184,7 @@ def test_the_long_run_profile_by_its_definition(name):
         atol=1e-15,
     )
     # Its last test 0.3 intervals before 0.
-    later = {"a": NodeState(stationary=True, phase=0.3 * interval)}
+    later = {"a": NodeState(stationary=True, since_scheduled=0.3 * interval)}
     np.testing.assert_allclose(
         rbd.point_availability(u, state=later),
         profile(model, interval, np.mod(u + 0.3 * interval, interval)),
@@ -402,7 +402,7 @@ def test_from_a_state(age, phase):
     # or, younger than that, put into service since, and not yet tested.
     model, interval = W([200.0, 2.5]), 50.0
     rbd = RepairableRBD(SINGLE, {"a": hidden(model, interval)})
-    state = {"a": NodeState(age=age, phase=phase)}
+    state = {"a": NodeState(age=age, since_scheduled=phase)}
     known = max(age - phase, 0.0)
     first = interval - phase if phase else interval
     reference = Units(

@@ -86,7 +86,7 @@ def _draws_start(start) -> bool:
     """Whether a component started from ``start`` (a ``NodeState``, or
     None for new) draws what is left of its life, repair or maintenance:
     when it is down, or up at an age. Up at age 0, it is new, whatever its
-    phase."""
+    ``since_scheduled``."""
     return isinstance(start, NodeState) and (not start.alive or start.age > 0)
 
 
@@ -562,10 +562,11 @@ def _node_curve(
         raise NotImplementedError(
             f"Component {node!r} has hidden failures, repaired at once "
             "when a test finds them, as the exact values need: it cannot "
-            "be down. Give the time since its last test as its phase (it "
-            "was found working), or simulate it: availability(state=...)."
+            "be down. Give the time since its last test as its "
+            "since_scheduled (it was found working), or simulate it: "
+            "availability(state=...)."
         )
-    phase = 0.0 if start is None else start.phase or 0.0
+    phase = 0.0 if start is None else start.since_scheduled or 0.0
     # Last known up at its last test, or, put into service since, when
     # it was.
     since = (
@@ -588,7 +589,7 @@ def _tested_unit_curve(rbd, node, unit: TestedUnit, horizon: float, start):
         if inspection.offset:
             return unit.curve(horizon, inspection.offset, 0)
         return unit.curve(horizon, 0.0, 1)
-    phase = start.phase or 0.0
+    phase = start.since_scheduled or 0.0
     if start.stationary:
         return unit.curve(horizon, -phase, 1, ("stationary",))
     if not start.alive:
@@ -608,7 +609,7 @@ def _tested_life_curve(rbd, node, life: TestedLife, start):
     if start is None:
         return TestedLifeCurve(life, inspection.offset or interval)
     # Up: its repairs take no time (see _check_state).
-    phase = start.phase or 0.0
+    phase = start.since_scheduled or 0.0
     if start.stationary:
         return TestedLifeSteady(life, phase)
     model = life.model
@@ -700,8 +701,8 @@ def _states(rbd, state, forced=frozenset(), simulated=False) -> dict:
 
 
 def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
-    """Raise if a component cannot be in ``state``: a phase off a
-    calendar or past its interval, maintenance it does not have, an age
+    """Raise if a component cannot be in ``state``: a ``since_scheduled``
+    off a calendar or past its interval, maintenance it does not have, an age
     it cannot be up at or a repair or maintenance that is always over
     sooner, a virtual age of a component not repaired imperfectly, or a
     state of a kind of component whose state is not taken (an
@@ -716,7 +717,7 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
     if (
         schedule is not None
         and schedule.level is not None
-        and not (state.new and state.phase is None)
+        and not (state.new and state.since_scheduled is None)
     ):
         raise NotImplementedError(
             f"Component {node!r} is replaced on condition by its "
@@ -726,7 +727,7 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
     if (
         inspection is not None
         and inspection.partial
-        and (state.phase is not None or not state.new)
+        and (state.since_scheduled is not None or not state.new)
     ):
         raise NotImplementedError(
             f"The tests of component {node!r} can miss a failure (a "
@@ -740,17 +741,18 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
         interval = inspection.interval
     elif schedule is not None and schedule.policy not in ("age", "calendar"):
         interval = schedule.interval
-    if state.phase is not None:
+    if state.since_scheduled is not None:
         if interval is None:
             raise ValueError(
                 f"Component {node!r} is not on a calendar (block "
                 "replacement, replacement on condition, or tests): give "
-                "it no phase."
+                "it no since_scheduled."
             )
-        if state.phase >= interval:
+        if state.since_scheduled >= interval:
             raise ValueError(
-                f"Component {node!r}: the phase, {state.phase:g}, is "
-                "the time since its last scheduled replacement or test, "
+                f"Component {node!r}: since_scheduled, "
+                f"{state.since_scheduled:g}, is the time since its last "
+                "scheduled replacement or test, "
                 f"less than its interval, {interval:g}."
             )
     if state.maintenance and (schedule is None or schedule.duration is None):
@@ -808,7 +810,7 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
         # last test, or when put into service since.
         since = 0.0
         if inspection is not None:
-            since = min(state.age, state.phase or 0.0)
+            since = min(state.age, state.since_scheduled or 0.0)
         age = state.age - since + (state.virtual_age or 0.0)
         survive = _sf_values(component.reliability.sf, np.array([age]))
         if not survive[0] > 0.0:
@@ -1642,7 +1644,7 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
         return block_availability(*models, horizon, node, head)
 
     if start is not None and not start.new and not stationary:
-        length = schedule.interval - (start.phase or 0.0)
+        length = schedule.interval - (start.since_scheduled or 0.0)
         head = _unit_curve(
             rbd, node, length, counts=True, start=start, unscheduled=True
         )
@@ -1675,7 +1677,7 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     if not stationary:
         return curve
     assert start is not None
-    return ShiftedCurve(curve, curve.settle + (start.phase or 0.0))
+    return ShiftedCurve(curve, curve.settle + (start.since_scheduled or 0.0))
 
 
 def _first_unit(

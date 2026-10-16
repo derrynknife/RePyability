@@ -64,8 +64,6 @@ NOT_NODES = {
     "RBD",
     # A component analysed alone: a diagram takes a NonRepairable.
     "Repairable",
-    # A part's replacement plan, analysed alone (#319).
-    "ReplacementPlan",
     "SimulationChunk",
     "Timeline",
     "Timelines",

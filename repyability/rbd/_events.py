@@ -466,7 +466,7 @@ class _Run:
     #: What the components draw their events from, when the diagram
     #: started the run itself (None when the caller passed them).
     _step_sources: Optional[dict]
-    #: Each calendar a state's phase shifts: by node, the time since its
+    #: Each calendar a state shifts: by node, the time since its
     #: last scheduled replacement or test.
     _phases: dict
     #: Common-cause groups: their members, each member's next event,
@@ -661,7 +661,7 @@ class _Inspection(NamedTuple):
 
     def without_offset(self) -> "_Inspection":
         """The schedule on a calendar from 0 (a start from a state, whose
-        phase places it)."""
+        ``since_scheduled`` places it)."""
         return self._replace(offset=0.0) if self.offset else self
 
 

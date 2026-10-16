@@ -309,7 +309,7 @@ already 600 hours old, 100 hours after its last inspection:
 from repyability import NodeState
 
 inspected.expected_cost(8760.0).total     # -> 114491   new: less than a year at the rate, 117139
-worn = {"p": NodeState(age=600.0, phase=100.0)}
+worn = {"p": NodeState(age=600.0, since_scheduled=100.0)}
 inspected.expected_cost(720.0, state=worn).total   # -> 10265   against 8517 new
 ```
 

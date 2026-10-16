@@ -6,6 +6,7 @@ from repyability.maintenance import (
     CalendarPolicy,
     MaintenancePolicy,
     NextReplacement,
+    SkipValue,
 )
 from repyability.rbd._degradation import check_life, is_degradation
 from repyability.rbd._model_utils import (
@@ -979,6 +980,104 @@ class NonRepairable:
             now_cost=now_cost,
             scheduled_outages=scheduled_outages,
             policy=policy,
+        )
+
+    def skip_next_replacement(
+        self, every, *, resets, time_to_next=None, discount_rate=0.0
+    ) -> SkipValue:
+        """Whether to skip the next planned replacement, right after a
+        failure (a new unit just in): the present-value cost of doing it
+        against that of skipping it, and the NPV of skipping.
+
+        The part is replaced when it fails (at its ``unplanned_cost``) and
+        on a plan (at its ``planned_cost``), in no time either way (this
+        package's use case UC-6). The plan either resets at each
+        replacement, planned or not (age replacement: the next planned
+        replacement is ``every`` after the failure), or keeps to fixed
+        times (block replacement: the next is ``time_to_next`` after the
+        failure, and the following one ``every`` later). Both costs are
+        exact, with no simulation; what each covers is in
+        [`SkipValue`][repyability.SkipValue].
+        [`optimal_next_replacement`][repyability.NonRepairable.optimal_next_replacement]
+        is the undiscounted, long-run question of a part in service with
+        no plan in force.
+
+        Parameters
+        ----------
+        every : float
+            The plan's interval, more than 0, in the life's time unit.
+        resets : bool
+            Whether the plan resets at each replacement: True, the next
+            planned replacement is ``every`` after the last replacement,
+            planned or not; False, planned replacements fall on fixed
+            times, ``every`` apart, whatever happens.
+        time_to_next : float, optional
+            For a plan that does not reset: the time from the failure to
+            the next planned replacement, more than 0 and at most
+            ``every``. A plan that resets has its next planned replacement
+            ``every`` after the failure, and takes none.
+        discount_rate : float, optional
+            The continuous discount rate per unit time of the life, by
+            default 0 (undiscounted): for an annual rate of 8% with a life
+            in days, ``math.log(1.08) / 365.25``.
+
+        Returns
+        -------
+        SkipValue
+            The present-value cost of doing the replacement (``replace``)
+            and of skipping it (``skip``), their difference (``npv``:
+            positive, skipping pays), the ``best`` of the two, and what
+            they were worked out for.
+
+        Raises
+        ------
+        ValueError
+            If the costs have not been set, or an argument is out of its
+            range, or ``time_to_next`` is given with a plan that resets or
+            missing from one that does not.
+        NotImplementedError
+            For a life with no survival function in closed form (a
+            non-parametric estimate or a ``StandbyModel``).
+
+        Examples
+        --------
+        A bearing with a Weibull life (scale 365 days, shape 2), replaced
+        every 180 days for $150, and at a failure for $400; right after a
+        failure, at 8% a year, skipping the next planned replacement
+        saves:
+
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]),
+        ...     planned_cost=150.0,
+        ...     unplanned_cost=400.0,
+        ... )
+        >>> a_day = math.log(1.08) / 365.25
+        >>> value = bearing.skip_next_replacement(
+        ...     180.0, resets=True, discount_rate=a_day
+        ... )
+        >>> round(value.npv, 2), value.best
+        (26.56, 'skip')
+
+        On fixed times, it depends on how soon the next planned
+        replacement is:
+
+        >>> value = bearing.skip_next_replacement(
+        ...     180.0, resets=False, time_to_next=30.0, discount_rate=a_day
+        ... )
+        >>> round(value.npv, 2)
+        123.08
+        """
+        from repyability.maintenance._skip import skip_next_replacement
+
+        return skip_next_replacement(
+            self,
+            every,
+            resets=resets,
+            time_to_next=time_to_next,
+            discount_rate=discount_rate,
         )
 
     def optimal_calendar_policy(

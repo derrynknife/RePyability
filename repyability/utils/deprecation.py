@@ -12,6 +12,11 @@ Python always shows, as the notice is short:
   or ``DegradingNode``'s exact ``mean``, which it ignores (``ignored``,
   #233).
 
+What 0.14 deprecates goes in 0.15 (each says so, with ``removal=``):
+
+- ``NodeState``'s ``phase``, renamed ``since_scheduled`` (``renamed`` for
+  the argument, ``renamed_attribute`` for reading it, #350).
+
 What 0.12 deprecated went in 0.13: calling ``SparesDemand.mean()`` and
 ``std()``, properties since 0.12 (#184), and ``StandbyModel``'s and
 ``LoadSharingModel``'s ``mc_samples``, ``lower`` and ``seed``, which set a
@@ -121,12 +126,29 @@ def ignored(
         )
 
 
-def renamed(method: str, old: str, new: str, why: str) -> None:
+def renamed(
+    method: str, old: str, new: str, why: str, removal: str = NEXT_REMOVAL
+) -> None:
     """Warn that ``method``'s argument ``old`` is renamed ``new``, for the
-    reason ``why``: deprecated in 0.13, it is refused in ``NEXT_REMOVAL``."""
+    reason ``why``: deprecated, it is refused in ``removal``
+    (``NEXT_REMOVAL`` by default)."""
     warnings.warn(
         f"{method}'s {old}= is renamed {new}=, as {why}. Passing {old}= is "
-        f"deprecated, and {NEXT_REMOVAL} will refuse it.",
+        f"deprecated, and {removal} will refuse it.",
+        FutureWarning,
+        stacklevel=outside_level(),
+    )
+
+
+def renamed_attribute(
+    owner: str, old: str, new: str, why: str, removal: str = NEXT_REMOVAL
+) -> None:
+    """Warn that ``owner``'s attribute ``old`` (read as ``owner.old``) is
+    renamed ``new``, for the reason ``why``: deprecated, reading it is
+    refused in ``removal`` (``NEXT_REMOVAL`` by default)."""
+    warnings.warn(
+        f"{owner}.{old} is renamed {new}, as {why}. Reading {old} is "
+        f"deprecated, and {removal} will refuse it.",
         FutureWarning,
         stacklevel=outside_level(),
     )

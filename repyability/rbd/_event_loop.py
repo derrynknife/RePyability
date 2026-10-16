@@ -1199,17 +1199,17 @@ def _start_queue(
     # The window's end, which the first events already look to (see
     # _replaced_at).
     rbd._run_state.t_simulation = t_simulation
-    # Each calendar a state's phase shifts: by node, the time since its
-    # last scheduled replacement or test (see _due).
+    # Each calendar a state shifts: by node, its since_scheduled, the
+    # time since its last scheduled replacement or test (see _due).
     rbd._run_state._phases = {
-        node: start.phase
+        node: start.since_scheduled
         for node, start in states.items()
         if isinstance(start, NodeState)
         and (
-            start.phase
+            start.since_scheduled
             or (
                 # On a calendar from 0, not at its offset.
-                start.phase is not None
+                start.since_scheduled is not None
                 and node in rbd._inspection
                 and rbd._inspection[node].offset
             )
@@ -1350,12 +1350,13 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
     maintenance given how long it has taken so far, or of its life
     given its age (``_aged_life``: ``S(a + x) / S(a)`` is the chance
     of more than ``x`` left). Up at age 0 it is new, and draws its life
-    as a new unit does. Its calendar is shifted by the state's phase
-    (see ``_due``); under age replacement, its replacement is due when
-    it reaches the age, at once if it has. A unit with hidden failures
-    is known to have been up only at its last test (or when put into
-    service, if since): its life left is drawn from then, and if it
-    has run out it failed unseen, and the next test finds it. After
+    as a new unit does. Its calendar is shifted by the state's
+    ``since_scheduled`` (see ``_due``); under age replacement, its
+    replacement is due when it reaches the age, at once if it has. A
+    unit with hidden failures is known to have been up only at its last
+    test (or when put into service, if since): its life left is drawn
+    from then, and if it has run out it failed unseen, and the next test
+    finds it. After
     the first, its units are new, as from new.
     """
     component = rbd.components[node]
@@ -1390,7 +1391,7 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
     since = 0.0
     if inspection is not None:
         # Last known up at its last test, or when put into service.
-        since = min(start.age, start.phase or 0.0)
+        since = min(start.age, start.since_scheduled or 0.0)
     life = (
         _aged_life(
             component.reliability,

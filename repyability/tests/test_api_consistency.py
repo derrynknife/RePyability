@@ -271,6 +271,36 @@ def test_what_0_13_deprecates_goes_in_0_14():
     assert version < tuple(map(int, NEXT_REMOVAL.split(".")))
 
 
+def test_what_0_14_deprecates_goes_in_0_15():
+    # NodeState's phase, renamed since_scheduled (#350): giving phase= and
+    # reading .phase warn, and 0.15 refuses them.
+    version = tuple(map(int, __version__.split(".")))
+    assert version < (0, 15)
+
+
+def test_a_node_state_takes_phase_as_since_scheduled_for_now():
+    with pytest.warns(
+        FutureWarning, match="phase= is renamed since_scheduled"
+    ):
+        state = NodeState(age=10.0, phase=4.0)
+    assert state.since_scheduled == 4.0
+    assert state == NodeState(age=10.0, since_scheduled=4.0)
+    assert (
+        repr(state) == "NodeState(age=10.0, alive=True, since_scheduled=4.0)"
+    )
+    with pytest.warns(FutureWarning, match="phase is renamed since_scheduled"):
+        assert state.phase == 4.0
+    with pytest.raises(TypeError, match="since_scheduled alone"):
+        NodeState(phase=4.0, since_scheduled=4.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert NodeState(since_scheduled=4.0).since_scheduled == 4.0
+        assert (
+            NodeState(stationary=True, since_scheduled=4.0).since_scheduled
+            == 4.0
+        )
+
+
 def test_an_uncertainty_result_shows_a_summary():
     pump = surv.Weibull.fit(np.linspace(200, 1800, 50))
     rbd = NonRepairableRBD([("s", "pump"), ("pump", "t")], {"pump": pump})

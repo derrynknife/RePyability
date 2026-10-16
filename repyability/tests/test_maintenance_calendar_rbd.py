@@ -117,11 +117,11 @@ def test_a_calendar_policy_is_not_saved(plant):
 
 def test_its_times_are_absolute(plant):
     rbd = bearing(plant)
-    with pytest.raises(ValueError, match="no phase"):
+    with pytest.raises(ValueError, match="no since_scheduled"):
         rbd.availability(
             t_simulation=100.0,
             mc_samples=2,
-            state={"b": NodeState(age=10.0, phase=5.0)},
+            state={"b": NodeState(age=10.0, since_scheduled=5.0)},
         )
     # An age is taken: an old unit is replaced at the first chance.
     rbd.availability(

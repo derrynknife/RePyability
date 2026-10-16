@@ -54,7 +54,7 @@ TIMES = np.array([50.0, 199.0, 200.0, 201.0, 650.0, 1000.0, 1999.0, 5000.0])
 
 @pytest.mark.parametrize(
     "state",
-    [None, {"c": NodeState(age=30.0, phase=50.0)}],
+    [None, {"c": NodeState(age=30.0, since_scheduled=50.0)}],
     ids=["new", "from a state"],
 )
 def test_a_threshold_of_0_is_block_replacement(state):
@@ -83,7 +83,7 @@ def test_it_settles_into_its_long_run_cycle(threshold, phase):
     # intervals are the long-run ones.
     # Over [T, 4T): at phase 0 the inspection at the start is past.
     rbd = single(unit(threshold=threshold))
-    state = {"c": NodeState(stationary=True, phase=phase)}
+    state = {"c": NodeState(stationary=True, since_scheduled=phase)}
     ends = np.array([INTERVAL, 4 * INTERVAL])
     mission = np.ravel(rbd.mission_availability(ends, state=state))
     up = (ends[1] * mission[1] - ends[0] * mission[0]) / (3 * INTERVAL)
@@ -116,7 +116,7 @@ def test_the_first_inspection_decides_at_the_unit_s_own_age(side):
     first = INTERVAL - phase
     age = threshold_age(0.2) - first + side * 1e-3
     rbd = single(unit(threshold=0.2))
-    state = {"c": NodeState(age=age, phase=phase)}
+    state = {"c": NodeState(age=age, since_scheduled=phase)}
     replaced = categories(rbd.expected_cost(first + 1.0, state=state))
     unfailed = LIFE.sf(age + first) / LIFE.sf(age)
     expected = unfailed if side > 0 else 0.0
@@ -127,8 +127,8 @@ def test_the_first_inspection_decides_at_the_unit_s_own_age(side):
     "state",
     [
         None,
-        {"c": NodeState(age=700.0, phase=50.0)},
-        {"c": NodeState(alive=False, down_for=1.0, phase=150.0)},
+        {"c": NodeState(age=700.0, since_scheduled=50.0)},
+        {"c": NodeState(alive=False, down_for=1.0, since_scheduled=150.0)},
     ],
     ids=["new", "up and kept so far", "in a repair"],
 )
