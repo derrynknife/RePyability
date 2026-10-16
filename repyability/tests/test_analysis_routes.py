@@ -18,6 +18,7 @@ import surpyval as surv
 from repyability import (
     AnalysisRoute,
     DegradingNode,
+    FaultTree,
     LoadSharingModel,
     NonRepairableRBD,
     RepairableRBD,
@@ -32,6 +33,7 @@ from repyability.tests.catalogue import (
     EDGES,
     E,
     W,
+    fault_tree_kinds,
     nonrepairable_kinds,
     repairable_kinds,
 )
@@ -834,6 +836,128 @@ def test_the_readme_says_what_is_simulated():
     assert phased_mission.MAX_STATES == 200_000
     assert network.MAX_PATHS == 100_000
     assert network.MAX_STATES == 5_000_000
+
+
+# -- fault trees (#314) -------------------------------------------------------
+
+
+def uncertain_event(tree):
+    """An event's model parameter known to within 5%: the first event,
+    outside the common-cause groups, whose model has parameters (a
+    probability's is ``p``)."""
+    members = {m for g in tree.ccf_groups for m in g.members}
+    for event in tree.events:
+        spec = parametric_spec(tree._event_model(event))
+        if spec is not None and event not in members:
+            name, value = spec[2][0], spec[1][0]
+            return {event: {name: st.uniform(0.95 * value, 0.1 * value)}}
+    raise AssertionError("No event's model has parameters.")
+
+
+FAULT_TREE_CALLS = {
+    **{
+        name: (lambda name: lambda tree: getattr(tree, name)(X))(name)
+        for name in (
+            "top_event_probability",
+            "sf",
+            "ff",
+            "Hf",
+            "df",
+            "hf",
+            "ranked_cut_sets",
+            "birnbaum_importance",
+            "improvement_potential",
+            "risk_achievement_worth",
+            "risk_reduction_worth",
+            "criticality_importance",
+            "fussell_vesely",
+            "differential_importance",
+            "joint_importance",
+            "barlow_proschan_importance",
+            "parameter_sensitivity",
+        )
+    },
+    "time_to_reliability": lambda tree: tree.time_to_reliability(0.5),
+    "bx_life": lambda tree: tree.bx_life(10),
+    "mean": lambda tree: tree.mean(),
+    "structural_importance": lambda tree: tree.structural_importance(),
+    "sf_uncertainty": lambda tree: tree.sf_uncertainty(
+        X, uncertain_event(tree), n_draws=2, seed=1
+    ),
+    "mean_uncertainty": lambda tree: tree.mean_uncertainty(
+        uncertain_event(tree), n_draws=2, seed=1
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(fault_tree_kinds()))
+def test_every_fault_tree_method_does_what_the_report_says(name):
+    tree = fault_tree_kinds()[name]
+    report = tree.analysis_routes()
+    for method, call in FAULT_TREE_CALLS.items():
+        behaves_as_reported(report[method], lambda: call(tree))
+
+
+def test_every_fault_tree_analysis_is_called():
+    report = next(iter(fault_tree_kinds().values())).analysis_routes()
+    assert set(FAULT_TREE_CALLS) == set(report)
+
+
+def test_the_fault_tree_report_covers_every_public_analysis():
+    # Everything public but building, saving, converting, the logic at one
+    # state, the cut and path sets, and the levers.
+    not_analyses = {
+        "analysis_routes",
+        "from_dict",
+        "from_json",
+        "from_rbd",
+        "to_dict",
+        "to_json",
+        "to_rbd",
+        "occurs",
+        "get_min_cut_sets",
+        "get_min_path_sets",
+        "minimal_cut_sets",
+        "minimal_path_sets",
+        "levers",
+        "with_levers",
+    }
+    public = {
+        name
+        for name, _ in inspect.getmembers(FaultTree, callable)
+        if not name.startswith("_")
+    }
+    tree = next(iter(fault_tree_kinds().values()))
+    assert set(tree.analysis_routes()) == public - not_analyses
+
+
+def test_a_fault_tree_s_routes_follow_its_events_and_groups():
+    kinds = fault_tree_kinds()
+    fixed = kinds["fixed"].analysis_routes()
+    assert fixed["top_event_probability"].route == routes.EXACT
+    assert fixed["mean"].route == routes.REFUSED
+    assert "does not vary with time" in fixed["mean"].reason
+    assert fixed["bx_life"].route == routes.REFUSED
+    assert fixed["sf_uncertainty"].route == routes.SIMULATED
+    timed = kinds["lifetimes"].analysis_routes()
+    assert timed["mean"].route == routes.NUMERICAL
+    assert timed["bx_life"].route == routes.NUMERICAL
+    assert timed["df"].route == routes.NUMERICAL
+    assert timed["structural_importance"].route == routes.EXACT
+    assert timed["barlow_proschan_importance"].route == routes.NUMERICAL
+    assert timed["mean_uncertainty"].route == routes.SIMULATED
+    grouped = kinds["common cause"].analysis_routes()
+    assert grouped["sf"].route == routes.EXACT
+    assert "common-cause" in grouped["sf"].reason
+    assert grouped["mean"].route == routes.REFUSED
+    assert "split a failure probability" in grouped["mean"].reason
+    assert grouped["mean_uncertainty"].route == routes.REFUSED
+    assert grouped["joint_importance"].route == routes.REFUSED
+    by_rate = kinds["common cause by rate"].analysis_routes()
+    assert by_rate["mean"].route == routes.NUMERICAL
+    assert by_rate["parameter_sensitivity"].route == routes.NUMERICAL
+    for route in by_rate.values():
+        assert route.to_dict()["route"] == route.route
 
 
 def test_a_fault_in_a_check_is_raised_not_reported_as_a_refusal():

@@ -277,6 +277,8 @@
   exact-against-simulated checks (`test_catalogue.py`) share. A new node
   class, spec key, policy or diagram option needs a diagram there:
   `test_the_catalogue_has_every_kind` names what no diagram uses.
+  `FaultTree.analysis_routes()` is held to the same (#314): its calls in
+  `FAULT_TREE_CALLS`, on the trees of `catalogue.fault_tree_kinds()`.
 - **The README's "When is a simulation needed?" table follows the routes.**
   It says, by what is asked, the components and the maintenance, what is
   simulated and whether it must be (or could be exact, with the issue).

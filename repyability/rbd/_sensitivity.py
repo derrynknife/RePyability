@@ -378,16 +378,47 @@ def _nonrepairable_levers(rbd) -> List[_Lever]:
     by their own names, and a common-cause group's (its members' one
     model's, then its own, ``ccf_beta``, ...) under the tuple of its
     members, at its first member's place, in the order of the nodes."""
+    return _model_levers_of(
+        rbd._init_args, "reliabilities", rbd.reliabilities, rbd.ccf_groups
+    )
+
+
+def _fault_tree_levers(tree) -> List[_Lever]:
+    """Every lever of a fault ``tree``, as its ``parameter_sensitivity``
+    reports them (as ``_nonrepairable_levers`` lists a diagram's): each
+    event's model's parameters, an event given as a probability having
+    the one, ``p``, and a common-cause group's under the tuple of its
+    members; a moved model goes back into the tree as the event was given
+    (``_as_event``: a probability stays one)."""
+    return _model_levers_of(
+        tree._init_args,
+        "events",
+        {event: tree._event_model(event) for event in tree.events},
+        tree.ccf_groups,
+        tree._as_event,
+    )
+
+
+def _model_levers_of(
+    args: dict, field: str, models: Mapping, groups, entry=lambda key, m: m
+) -> List[_Lever]:
+    """The levers of a structure built from ``args``, its constructor's
+    arguments, whose ``args[field]`` holds its nodes' ``models`` (the
+    diagram's ``reliabilities``, or a tree's events as models): each
+    node's model's parameters, by their own names, and a common-cause
+    group's (its members' one model's, then its own, ``ccf_beta``, ...)
+    under the tuple of its members, at its first member's place, in the
+    order of the nodes. ``entry(key, model)`` is a moved model as the
+    constructor takes it."""
     from .ccf import CCFGroup
     from .ccf import parameters as ccf_parameters
     from .ccf import with_parameters as with_ccf_parameters
 
-    args = rbd._init_args
-    models = dict(args["reliabilities"])
-    groups = list(rbd.ccf_groups)
+    given = dict(args[field])
+    groups = list(groups)
     group_of = {m: g for g, group in enumerate(groups) for m in group.members}
     out: List[_Lever] = []
-    for node, model in rbd.reliabilities.items():
+    for node, model in models.items():
         g = group_of.get(node)
         if g is not None and node != groups[g].members[0]:
             continue
@@ -401,9 +432,9 @@ def _nonrepairable_levers(rbd) -> List[_Lever]:
                 changed = moved(v)
                 return {
                     **args,
-                    "reliabilities": {
-                        **models,
-                        **{member: changed for member in members},
+                    field: {
+                        **given,
+                        **{m: entry(m, changed) for m in members},
                     },
                 }
 
@@ -446,9 +477,13 @@ def _nonrepairable_levers(rbd) -> List[_Lever]:
 
 
 def _levers_of(rbd) -> List[_Lever]:
-    """``rbd``'s levers, repairable or not."""
+    """``rbd``'s levers, repairable or not, or a fault tree's."""
+    from repyability.fault_tree import FaultTree
+
     from .non_repairable_rbd import NonRepairableRBD
 
+    if isinstance(rbd, FaultTree):
+        return _fault_tree_levers(rbd)
     if isinstance(rbd, NonRepairableRBD):
         return _nonrepairable_levers(rbd)
     return _levers(rbd)

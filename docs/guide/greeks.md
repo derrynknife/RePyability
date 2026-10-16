@@ -344,12 +344,12 @@ ownership (`discount_rate=`, see [Costs](costs.md#discounting)).
 | Measure | `NonRepairableRBD` | `RepairableRBD` | `FaultTree` |
 |---|---|---|---|
 | `birnbaum_importance` | at `x` | long run, `x`, `window`, `state` | at `t` |
-| `parameter_sensitivity` | at `x` | long run, `x`, `window`, `state`; `of="cost_rate"` | |
-| `levers`, `with_levers` | the parameters | every lever | |
+| `parameter_sensitivity` | at `x` | long run, `x`, `window`, `state`; `of="cost_rate"` | at `t` |
+| `levers`, `with_levers` | the parameters | every lever | the parameters |
 | `differential_importance` | at `x` | long run, `x`, `window`, `state` | at `t` |
 | `joint_importance` | at `x` | long run, `x`, `window`, `state` | at `t` |
 | Theta | `reliability_rate(x)` | `availability_rate(x)`, from new or `state` | |
-| `barlow_proschan_importance` | whole life, or by `x` | long run, `window`, `state` | |
+| `barlow_proschan_importance` | whole life, or by `x` | long run, `window`, `state` | whole life, or by `t` |
 | `uncertainty_importance` | at `x`; `of=` the MTTF, a B-life, a time to a reliability | long run; `of=` the availability at `x` or over missions `x`, from new or `state`, or the cost rate | |
 
 With limited repair crews or common-cause groups, the measures follow the

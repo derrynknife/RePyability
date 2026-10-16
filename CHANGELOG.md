@@ -11,6 +11,32 @@ other release, fixes included, the minor.
 
 ### Added
 
+- **A fault tree's lifetime, density and hazard, the remaining importance
+  measures, its parameter sensitivities and levers, and the uncertainty
+  from fitted event models (#314).** `FaultTree` now has what
+  `NonRepairableRBD` had and it lacked, on the same structures: the mean
+  time to the top event (`mean`, the area under the exact probability that
+  it has not occurred, to about 1e-10), the B-lives (`bx_life`,
+  `time_to_reliability`, by root-finding), the density, hazard and
+  cumulative hazard (`df`, `hf`, `Hf`), the structural importance (from
+  the gates alone), the improvement potential, the Barlow-Proschan
+  importance (each event's Birnbaum importance times its model's density,
+  integrated), `parameter_sensitivity` (the Birnbaum importance times each
+  parameter's derivative; a common-cause group's parameters and its model's
+  by differences), `levers()` and `with_levers` (an event given as a
+  probability has the lever `p`, and stays a probability), and
+  `sf_uncertainty` and `mean_uncertainty`, drawn as the diagram of the
+  tree draws them (`to_rbd()`, converted once). Each honours the tree's
+  common-cause groups as `sf` does, conditioned module by module, and
+  gives the values of `to_rbd()`'s diagram. The lifetime analyses call the
+  functions `NonRepairableRBD`'s now are, with the tree's own evaluation
+  (`cumulative_hazard`, `density_by_differences`, `invert_reliability`,
+  `rate_parts`, `barlow_proschan`, `ccf_group_sensitivity` in
+  `rbd/non_repairable_rbd.py`), rather than convert the tree at each call.
+  `FaultTree.analysis_routes()` says how each of the tree's analyses is
+  computed, as a diagram's does, and the README's capability matrix shows
+  the methods.
+
 - **The long-run optimal replacement policy over a calendar of shuts
   (#319).** `NonRepairable.optimal_calendar_policy(calendar)` finds, for a
   part whose planned replacement costs differently at different times
