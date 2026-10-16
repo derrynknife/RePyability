@@ -95,7 +95,10 @@ go once the minimum surpyval version has the fix.
 1. Branch off `dev`.
 2. Keep changes focused, and update `CHANGELOG.md` under `[Unreleased]`.
 3. Run `scripts/check.sh` with the tests of what you changed.
-4. Open a pull request into `dev` describing the change and its motivation.
+4. Open a pull request into `dev` describing the change and its motivation,
+   with a "Closes #N" line for each issue it finishes: they are closed when
+   it merges (`.github/workflows/close-issues.yml`), with a comment naming
+   the pull request.
 
 ## Deprecations
 
