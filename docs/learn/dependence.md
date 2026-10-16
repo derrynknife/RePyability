@@ -522,7 +522,7 @@ some causes fail only some units (two pumps of three), which matters when
 the group needs more than one unit. The **Multiple Greek Letter** (MGL)
 model generalises the beta factor with a parameter per level ($\gamma$ for
 the chance that a shared failure takes a third unit, and so on); see
-[Common-cause failures](../guide/common-cause.md#the-two-models).
+[Common-cause failures](../guide/common-cause.md#the-three-models).
 
 ## Pitfalls
 
