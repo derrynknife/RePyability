@@ -1137,7 +1137,7 @@ def test_a_fault_tree_s_routes_follow_its_events_and_groups():
     assert grouped["mean"].route == routes.REFUSED
     assert "split a failure probability" in grouped["mean"].reason
     assert grouped["mean_uncertainty"].route == routes.REFUSED
-    assert grouped["joint_importance"].route == routes.REFUSED
+    assert grouped["joint_importance"].route == routes.EXACT
     by_rate = kinds["common cause by rate"].analysis_routes()
     assert by_rate["mean"].route == routes.NUMERICAL
     assert by_rate["parameter_sensitivity"].route == routes.NUMERICAL

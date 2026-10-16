@@ -116,7 +116,7 @@ include = ["repyability*"]
 [tool.setuptools.package-data]
 "repyability" = ["py.typed"]
 "repyability.tests" = ["*.json"]
-"repyability.maintenance" = ["README.md"]
+"repyability.maintenance" = ["README.md", "CALENDAR_DECISIONS.md"]
 
 # For Black pre-commit hook
 [tool.black]
