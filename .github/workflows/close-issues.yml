@@ -2,10 +2,10 @@ name: close issues
 
 # Close the issues a pull request into dev finishes, when it merges.
 # GitHub itself closes an issue only when the pull request that says
-# "Closes #N" merges into the default branch (master), which here happens
+# "Closes #N" merges into the default branch (main), which here happens
 # at a release: this closes them as the work reaches dev, with a comment
 # naming the pull request. It runs no tests (the one automated test run
-# is actions.yml, on the pull request from dev into master).
+# is actions.yml, on the pull request from dev into main).
 
 on:
   pull_request:

@@ -23,10 +23,10 @@ RePyability needs Python 3.11 or later and surpyval 0.24 or later.
 ## Branches and the one automated test run
 
 Work branches off **`dev`** and goes back into `dev` by pull request.
-Releases go from `dev` into `master`.
+Releases go from `dev` into `main`.
 
 There is **one automated test run**: the full suite on the pull request from
-`dev` into `master` (`.github/workflows/actions.yml`). Nothing runs on pushes
+`dev` into `main` (`.github/workflows/actions.yml`). Nothing runs on pushes
 or on pull requests into `dev`, so check your change locally before it goes
 in:
 
@@ -118,10 +118,10 @@ release:
    `[Unreleased]` section into a dated `## [X.Y] - YYYY-MM-DD` section. Its
    opening paragraphs become the summary at the top of the release notes.
    Update the version in `docs/guide/saving.md`. Merge to `dev`, then open
-   the pull request from `dev` into `master`, which runs the full suite.
-2. Once it has passed, merge it and run the `release` workflow on master
+   the pull request from `dev` into `main`, which runs the full suite.
+2. Once it has passed, merge it and run the `release` workflow on main
    with the version: Actions → release → Run workflow, or
-   `gh workflow run release.yml --ref master -f version=X.Y`. Add
+   `gh workflow run release.yml --ref main -f version=X.Y`. Add
    `-f dry_run=true` to check and build without publishing. The workflow
    checks the version, the CHANGELOG section, that the tag is new, that CI
    passed and that PyPI does not have the version. Then it builds, publishes
