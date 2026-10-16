@@ -558,11 +558,13 @@ def test_ample_crews_through_the_chain_are_the_independent_values():
     independent, chained = plant(2), plant(2)
     chained._crews_couple = lambda: True  # type: ignore[method-assign]
     windows = np.array([5.0, 60.0, 400.0])
+    # Each path integrates by its own quadrature: over the shortest window
+    # both are within about 2e-6 of the closed form (the chain's closer).
     for name in ("system_failures", "system_downtime"):
         np.testing.assert_allclose(
             chained.expected_events(windows)[name],
             independent.expected_events(windows)[name],
-            rtol=1e-6,
+            rtol=5e-6,
             atol=1e-10,
         )
     np.testing.assert_allclose(

@@ -336,6 +336,13 @@ class CrewSystem:
         #: For the pieces of the integrals: the chain's knots and settling.
         self.curve = ChainCurve(chain)
 
+    def jump_times(self, stop: float) -> np.ndarray:
+        """The times in ``(0, stop)`` at which the chain's states jump
+        down at exact times: none, as its components fail and are
+        repaired at rates (a common-cause group's chain jumps at its
+        members' tests, see ``_ccf_chain.GroupsSystem.jump_times``)."""
+        return np.empty(0)
+
     def evaluate(self, values: dict, x: np.ndarray):
         """At the times ``x``, with each nested RBD up with the probability
         ``values[node]`` (an array over ``x``): each nested RBD's Birnbaum
