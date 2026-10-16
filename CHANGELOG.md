@@ -542,6 +542,75 @@ other release, fixes included, the minor.
   said 0.922), the costs lesson's share of years above the mean 0.48,
   and the quickstart uses `minimal_path_sets()` and
   `minimal_cut_sets()`.
+- **`expected_events` counts a common-cause group's tests that take
+  time (from the 0.14 persona review).** A group whose members' tests
+  take time (a `duration`) had no planned outages over a window, and its
+  down time was the instant tests' (a 1oo2 pair tested together for 8
+  hours a year with a 0.1 beta factor: 0 outages and 84 h of down time
+  over ten years, where the same pair without the group counts 9 and
+  81 h, and `mission_unavailability` gave 156 h): the groups' chains
+  were followed between the pieces of the integrals without their tests
+  among the pieces' edges, and a test's jump was no event. The members'
+  tests that take time are now the system's planned outages at exact
+  times, from the chains just before and at each test, as a node's
+  scheduled outages are, and the chains' bends are the integrals'
+  pieces' edges: `system_planned_outages`, `system_downtime` (now `t -
+  mission_availability(t) · t` again) and the members' down times agree
+  with the pair without the group when nothing is shared, and with the
+  simulation.
+- **`mission_unavailability` with a common-cause group whose tests or
+  repairs take an exponential time.** The transient after a test, at
+  the test's or repair's rate, fell inside pieces of the integral far
+  longer than it and was missed: the same pair's tests of 8 hours on
+  average gave the instant tests' value (0.00096 for 0.00138 over ten
+  years). The group's chain now bends, for the integrals, at geometric
+  offsets after each test at the transients' scales, and the integral
+  of the unavailability refines to those scales, as it does to a unit's
+  closed form. `mission_availability` and `expected_events` take the
+  same pieces.
+- **A common-cause group's members keep their own test offsets through
+  `with_levers`, and `levers()` lists them.** A group's levers were the
+  first member's spec, rebuilt for every member: moving the group's test
+  interval (or any lever) lost a staggered member's `offset`, so the
+  derivative `parameter_sensitivity` reported for the interval was the
+  pair tested together's (-9.8e-5 for -5.8e-5), and with tests that can
+  miss a failure nonsense (-10.4). The levers the members hold at one
+  value are the group's, moved in each member's own spec; a member's
+  offset, its place on the calendar, and any lever the members hold at
+  different values, are the member's own, under its name, in the range
+  the constructor checks (`[0, interval)` for an offset). A group's test
+  at the end of its calendar's period could also be worked out a
+  rounding past it (3 × 99.9 for 299.7) and skipped by the chain, which
+  then lost that member's full test (the unavailability doubled at
+  intervals near 100): it is now the period's end.
+- **`expected_events` counted a test at the end of its period twice
+  (from the 0.14 persona review).** The counts over a window are
+  extended, once every component has settled, a period at a time: a
+  test a rounding short of the period's end (248.642 + 6 × 731.3, for
+  a period ending at 248.642 + 5 × 731.3 + 731.3) fell in the period
+  and was counted again in the extension, a quarter more planned
+  outages for a staggered pair tested every 731.3 hours. The period
+  now ends at such an event.
+- **From the 0.14 persona review, smaller.** `BetaFactor` and `MGL`
+  check their parameters as numbers, as `AlphaFactor` does (`True` read
+  as 1, and `"0.1"` raised a bare `TypeError`); `CCFGroup` refuses one
+  name for its members (`"v1"` read as the members `v` and `1`);
+  `differential_importance` over several windows gives one share per
+  window, as the other measures do, where it gave the first window's;
+  the importance measures at a test's instant are documented as of the
+  state just after it (a pair tested together cannot then be down, and
+  its ratio measures are 0/0, NaN), as `point_availability` is; a
+  shared cause's system failure in `simulate_timelines` is documented
+  as the member's whose fall took the system down, and the timelines
+  guide no longer says groups are refused; the README's capability row
+  for a beta-factor group with revealed failures shows the group's own
+  routes, exact, from a diagram of exponential members and repairs (its
+  catalogue diagram had a block-replaced node); and a model's constant
+  failure rate is kept while the model lives, where every diagram built
+  around the same model (hundreds, in `optimal_inspection_intervals`)
+  worked it out tens of times over: a staggered search over four
+  intervals for a 2oo3 MGL group takes 2.6 s for 13 s, and without the
+  group 0.6 s for 6.8 s.
 - **Spares from new of a block-replaced component dead on arrival, put in
   at a block time in no time (#322).** The unit a block replacement in no
   time puts in may be dead on arrival, and the one put in at its failure,

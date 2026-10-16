@@ -702,6 +702,7 @@ class OverTime:
         self.period = period
         self._chain: Any = None
         self._tests: Optional[list] = None
+        self._timings: Optional[Sequence[Timing]] = None
         self._settled: Any = None
         #: The chain's moves, labelled (see ``Move``), and the combination
         #: of the members up or down of each of its states (#199).
@@ -756,9 +757,11 @@ class OverTime:
         else:
             chain = _Hidden(model, members, rate, coverage)
             settle = float(period)
+            timings = None
         out = cls(members, chain.combinations, settle, float(period))
         out._chain = chain
         out._tests = sorted(tests)
+        out._timings = timings
         # The states at the start of the period that repeats.
         out._settled = chain.follow(out._early(settle), np.array([settle]))[0]
         out.moves = chain.moves
@@ -837,12 +840,61 @@ class OverTime:
             out = np.vstack([self._chain.tested_at(row, test) for row in out])
         return out
 
+    def jump_times(self, stop: float) -> np.ndarray:
+        """The times in ``(0, stop)`` at which a member's test that takes
+        time starts (#220), taking it off line while it works: where the
+        states jump down, as a node's planned outage does."""
+        if self._timings is None:
+            return np.empty(0)
+        timings = self._timings
+        return np.array(
+            sorted(
+                time
+                for time, tests in self.tests(stop).items()
+                if time < stop
+                and any(
+                    test.kind == TEST and timings[test.member].test.takes_time
+                    for test in tests
+                )
+            )
+        )
+
+    def _bends(self) -> np.ndarray:
+        """Where its states bend or jump within a period (times in ``(0,
+        period]``): the tests and the ends of their fixed lengths, and
+        after a test of a member whose test or repair takes an
+        exponential time (#220), the transient it starts, at geometric
+        offsets at the length's scale (the test's, and the test's and
+        repair's together), closing in on the test as a tested unit's
+        breaks close in on 0."""
+        assert self._tests is not None
+        period = self.period
+        times = [np.array([test.time for test in self._tests])]
+        for test in self._tests:
+            if test.kind != TEST or self._timings is None:
+                continue
+            timing = self._timings[test.member]
+            scales = []
+            if timing.test.rate is not None:
+                scales.append(1.0 / timing.test.rate)
+            if timing.repair.rate is not None:
+                scales.append(sum(scales) + 1.0 / timing.repair.rate)
+            for scale in scales:
+                stop = math.ceil(math.log2(period / scale))
+                offsets = scale * 2.0 ** np.arange(-3.0, stop + 1.0)
+                offsets = timing.test.fixed + offsets[offsets < period]
+                at = test.time + offsets
+                at -= period * np.floor((at - 1e-12 * period) / period)
+                times.append(at)
+        return np.unique(np.concatenate(times))
+
     def knots(self, start: float, stop: float) -> np.ndarray:
-        """Where its states bend or jump: the tests (every period), or the
-        chain's times."""
+        """Where its states bend or jump: the tests and the transients
+        they start (every period, see ``_bends``), or the chain's
+        times."""
         if self._tests is None:
             return self._chain.knots(start, stop)
-        times = np.array([test.time for test in self._tests])
+        times = self._bends()
         first = int(np.floor(start / self.period))
         last = int(np.ceil(stop / self.period))
         every = (
@@ -908,6 +960,12 @@ class _GroupsCurve:
 
     breaks = knots
 
+    def jump_times(self, stop: float) -> np.ndarray:
+        """The times in ``(0, stop)`` at which a group's states jump
+        down (see ``OverTime.jump_times``)."""
+        parts = [group.jump_times(stop) for group in self.groups]
+        return np.unique(np.concatenate(parts)) if parts else np.empty(0)
+
 
 class GroupsSystem:
     """A system with common-cause groups over time, as the analyses
@@ -950,6 +1008,14 @@ class GroupsSystem:
         )
         #: For the pieces of the integrals: the groups' knots and settling.
         self.curve = _GroupsCurve(self.groups)
+
+    def jump_times(self, stop: float) -> np.ndarray:
+        """The times in ``(0, stop)`` at which the groups' states jump
+        down, a member's test that takes time starting (#220): the
+        system's planned outages there are counted from its values
+        just before and at them, as a node's at its exact times (see
+        ``_windows._atom_groups``)."""
+        return self.curve.jump_times(stop)
 
     def _split(self, values: dict, x: np.ndarray, chances=None):
         """The points at the times ``x`` split by the groups' combinations:
@@ -1178,8 +1244,9 @@ class GroupsCurve:
 
     def atoms(self, stop: float):
         """The system's failures and planned outages at exact times before
-        ``stop``: its nodes outside the groups' (the groups' members fail
-        only at random times)."""
+        ``stop``: its nodes outside the groups', and the planned outages
+        where a group's members' tests that take time start (the groups'
+        members fail only at random times)."""
         from . import _windows
 
         return _windows._system_atoms(

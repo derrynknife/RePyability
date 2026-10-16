@@ -420,7 +420,7 @@ def differential_importance(
             key: np.asarray(derivatives[key], dtype=float) * scale[key]
             for key in kept
         }
-    scalar = x is None or np.ndim(x) == 0
+    scalar = np.ndim(x) == 0 and np.ndim(window) == 0
     return shares(contributions, groups, scalar, improving)
 
 

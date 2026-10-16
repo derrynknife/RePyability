@@ -228,7 +228,14 @@
   repaired once the test is over; a test in a member's own test or repair
   is not done. A change to one goes into the other: `test_ccf_timed.py`
   checks the chain against the simulation, and against the members' own
-  model (`_hidden_tests`) where no cause is shared.
+  model (`_hidden_tests`) where no cause is shared. Over a window, a
+  member's test that takes time is a planned outage of the system at an
+  exact time (`OverTime.jump_times`, which `_windows._atom_groups` counts
+  from the chain just before and at it, as a node's scheduled outages),
+  and the chain's bends (`OverTime._bends`: the tests, the fixed ends,
+  geometric offsets at an exponential length's scale) are the integrals'
+  pieces' edges, with the integral of the unavailability refined to those
+  scales (`_ccf_groups._timing_rates`).
 - **A tested unit's numerical model (`repyability/rbd/_hidden_tests.py`,
   #159) copies the simulation's inspections** (`_event_loop._inspected_follow_up`,
   `_event_loop._inspected_next`): a test takes a working unit off line without ageing
@@ -451,6 +458,10 @@
 
 ## Performance
 
+- **A model's constant failure rate is kept while the model lives**
+  (`_common._constant_rate`, a `WeakKeyDictionary` by model): the checks
+  and the chains ask for it tens of times per diagram, and a search over
+  intervals builds hundreds of diagrams around the same models.
 - **In a loop, a dot product of long vectors goes through
   `repyability.utils.vectors.dot`, not `@`.** OpenBLAS threads one of more
   than about 10,000 terms, at milliseconds a call; a loop of thousands of
