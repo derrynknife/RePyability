@@ -1419,9 +1419,11 @@ class RepairableRBD(RBD):
         interval or a block replacement, each followed block interval by
         block interval, the replacements before one as those after it,
         and from a random time by Campbell's formula; on grids of the
-        interval, extrapolated, to about 1e-6. A unit dead on arrival is
-        refused while its repairs or block replacements may take no time,
-        as replacements could then come several at one instant. A fleet's
+        interval, extrapolated, to about 1e-6. A unit dead on arrival
+        fails as it is put in: with repairs and block replacements in no
+        time, each replacement brings a geometric number more at its
+        instant, which the lasting units' count is compounded with
+        (#322); taking time, they are followed on the grid. A fleet's
         systems are taken as on block schedules of their own, out of step
         with each other.
 

@@ -31,6 +31,28 @@ other release, fixes included, the minor.
   rounded table's alpha factors, summing to within 1% of 1, are scaled to
   1. A `CCFGroup` refuses any other model naming the three it takes,
   where it said alpha-factor was not supported yet.
+- **The stock of a block-replaced component dead on arrival whose repairs
+  or block replacements take no time (#322).** `spares_stock` refused it
+  (#160): a unit dead on arrival fails as it is put in, and its
+  replacement, put in at that instant, may be too, so replacements come
+  several at one instant. With repairs and block replacements in no time,
+  each replacement of a unit that lasts, a failure or a block
+  replacement, brings a geometric number more at its instant (`g` more
+  with probability `q^g (1 − q)`, `q` the share dead on arrival),
+  independent of everything else: the demand in a lead time is the
+  lasting units' count compounded with it (`s` or more if, of the units
+  put in one after another, the `s`-th has fewer than that count lasting
+  before it, a binomial), and a demand has a geometric number of its
+  instant's before it. Where the repairs or block replacements take time,
+  a unit dead on arrival after one that took time fails on its own, and
+  the recursion from a typical replacement follows it on the grid, where
+  it keeps the units put in at a block time after its replacement apart
+  from those put in just before it. An exponential life 15% dead on
+  arrival agrees with the closed form (Poisson failures compounded) to
+  1e-7, and a Weibull one with 5 million simulated windows within their
+  noise, whether its repairs, its block replacements, both or neither
+  take time. The README's "When is a simulation needed?" row no longer
+  excepts it.
 - **The long-run optimal replacement policy over a calendar of shuts
   (#319).** `NonRepairable.optimal_calendar_policy(calendar)` finds, for a
   part whose planned replacement costs differently at different times
@@ -271,6 +293,18 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **Spares from new of a block-replaced component dead on arrival, put in
+  at a block time in no time (#322).** The unit a block replacement in no
+  time puts in may be dead on arrival, and the one put in at its failure,
+  in no time, is at the block time too, after its replacement: it is not
+  replaced there again. On the grid rounded up, `spares_demand` took it
+  for one put in just before the block time and replaced there, unless
+  dead on arrival too, and so counted replacements that never come: a
+  Weibull life (100, shape 2) 10% dead on arrival, block replaced every
+  60, was 0.035 out by 130 (the chance of exactly three replacements
+  0.331, for 0.366 simulated). The count of a typical replacement's
+  followers with repairs or block replacements that take time now keeps
+  such a unit apart too (a block replacement or a repair in under a step).
 - **A mixture life with imperfect repair simulates in a few seconds
   (#295).** A component whose life is a `MixtureModel` and whose
   repairs are imperfect (Kijima) drew each life left given its virtual

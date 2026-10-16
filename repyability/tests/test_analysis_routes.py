@@ -593,6 +593,17 @@ def test_the_readme_says_what_is_simulated():
     tested_group = repairable["common cause, tested"]
     revealed_group = repairable["common cause, revealed"]
     timed_group = repairable["common cause, timed tests and repairs"]
+    # A unit dead on arrival, repaired and block replaced in no time (#322).
+    dead_on_arrival = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {
+            "a": {
+                "reliability": W([100, 2], f0=0.1),
+                "repairability": "instant",
+                "preventive": {"interval": 60.0, "policy": "block"},
+            }
+        },
+    )
     claims = {
         "Sampled lifetimes or histories, and distributions or percentiles "
         "of an outcome over a window": [
@@ -811,6 +822,8 @@ def test_the_readme_says_what_is_simulated():
                 "spares_stock",
                 "numerical",
             ),
+            (dead_on_arrival, "spares_stock", "numerical"),
+            (dead_on_arrival, "spares_demand", "numerical"),
             (
                 repairable["tested, constant rate"],
                 "spares_demand",
