@@ -419,7 +419,7 @@ common-cause model adds that coupling. (This is the mirror image of load
 sharing: there the coupling is load transfer, here it is a shared shock.)
 
 A [`CCFGroup`][repyability.CCFGroup] declares the coupled (symmetric) members
-and the model, passed via `ccf_groups`. Two models:
+and the model, passed via `ccf_groups`. Three models:
 
 - [`BetaFactor(beta)`][repyability.BetaFactor]: a share `β` of each
   member's `Q` fails the whole group at once, and the remaining `(1 − β) Q`
@@ -440,6 +440,13 @@ Q_k = [ 1 / C(m−1, k−1) ] · (ρ₁ ρ₂ ⋯ ρ_k) · (1 − ρ_{k+1}) · Q
   being separate events, it fails with probability `Q` to first order (as
   in PRA's basic events). A group of `m` members takes `m − 1` letters, and `MGL(β)` on
   two members is exactly `BetaFactor(β)`.
+- [`AlphaFactor(alphas)`][repyability.AlphaFactor]: the **alpha-factor**
+  model, the same multiplicities by the shares `α_1, …, α_m` of a group's
+  failure events that failed exactly `1, …, m` members, which event
+  counts estimate directly (NUREG/CR-5485): `Q_k = α_k / C(m−1, k−1) · Q`
+  for staggered testing, and `Q_k = k α_k / (α_t C(m−1, k−1)) · Q` with
+  `α_t = Σ k α_k` for non-staggered. It is the `MGL` model with the letters
+  those `Q_k` give.
 
 **The evaluation is exact, not a correction factor.** Each model's
 `decompose` splits the group's failure into an independent part plus a set of
@@ -494,8 +501,6 @@ and a copy of a beta-factor group's member joins the group in a redundancy
 allocation. The condition-based methods would need members of different
 ages, and raise a clear error on a CCF RBD; `structural_importance`, being
 probability-free, is unaffected.
-**Alpha-factor**, a data-estimable reparameterisation of the same
-multiplicities, is a planned extension.
 
 A `RepairableRBD` takes `ccf_groups` too. There a member's failures are a
 rate, so the model splits the rate: each cause, a member's own or a shared

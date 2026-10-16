@@ -173,9 +173,10 @@ class FaultTree:
         Common-cause groups over basic events (keyword only), as a
         ``NonRepairableRBD`` takes them: each group's members,
         events with the same model, occur together through its shared
-        causes as well as on their own, split by its ``BetaFactor`` or
-        ``MGL`` model at every ``t``. The top event probability and the
-        importance measures sum over the groups' shock outcomes, exactly
+        causes as well as on their own, split by its ``BetaFactor``,
+        ``MGL`` or ``AlphaFactor`` model at every ``t``. The top event
+        probability and the importance measures sum over the groups'
+        shock outcomes, exactly
         as the diagram's do; the cut sets stay sets of basic events (their
         probabilities, in ``ranked_cut_sets``, take the groups in). By
         default none.

@@ -55,7 +55,7 @@ from repyability.maintenance import (
 )
 from repyability.network import Network
 from repyability.non_repairable import NonRepairable
-from repyability.rbd.ccf import MGL, BetaFactor, CCFGroup
+from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor, CCFGroup
 from repyability.rbd.chunks import SimulationChunk
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
@@ -133,6 +133,7 @@ __all__ = [
     "RegressionNode",
     "BetaFactor",
     "MGL",
+    "AlphaFactor",
     "CCFGroup",
     "minimal_repair_time_to_nth_failure",
     # Demonstration test planning

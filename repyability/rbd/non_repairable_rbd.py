@@ -1375,8 +1375,9 @@ class NonRepairableRBD(RBD):
                     f"Node {node!r} is in a common-cause group whose model, "
                     f"{group.model!r}, is for a group of "
                     f"{len(group.members)}: its copies would join the group, "
-                    "and an MGL model's letters for a larger group are not "
-                    "known. Give the group a BetaFactor model, whose beta "
+                    "and an MGL model's letters (an AlphaFactor model's "
+                    "alpha factors) for a larger group are not known. Give "
+                    "the group a BetaFactor model, whose beta "
                     "holds at any size, or leave its members out of costs."
                 )
             if node in options:
@@ -1724,10 +1725,12 @@ class NonRepairableRBD(RBD):
         model may be uncertain too: give the
         [`CCFGroup`][repyability.CCFGroup] itself as a key, with
         ``{parameter name: distribution}`` over its model's parameters
-        (``"beta"``, and an [`MGL`][repyability.MGL] model's ``"gamma"``,
-        ``"delta"``, ...), each drawn in ``[0, 1]``, or a list of models
-        (``BetaFactor`` or ``MGL``, for the group's size and with its
-        model's ``basis``), drawn with replacement. The common-cause models
+        (``"beta"``, an [`MGL`][repyability.MGL] model's ``"gamma"``,
+        ``"delta"``, ..., an [`AlphaFactor`][repyability.AlphaFactor]
+        model's ``"alpha_2"``, ...), each drawn in ``[0, 1]``, or a list
+        of models (``BetaFactor``, ``MGL`` or ``AlphaFactor``, for the
+        group's size and with its model's ``basis``), drawn with
+        replacement. The common-cause models
         are drawn after the nodes', so the nodes' draws are the same
         whether or not they are uncertain.
 
@@ -2950,9 +2953,10 @@ class NonRepairableRBD(RBD):
         shared cause fails it too, and each design is scored exactly over
         the groups' outcomes. A ``BetaFactor`` group's ``beta`` holds at
         any size, so its members can be copied: active copies of their own
-        model (with any number of them ``required``). An ``MGL`` model's
-        letters are for its group's size, so copies of its member are
-        refused, as are options and cold spares for a member.
+        model (with any number of them ``required``). An ``MGL`` or
+        ``AlphaFactor`` model's parameters are for its group's size, so
+        copies of its member are refused, as are options and cold
+        spares for a member.
 
         ``method="exact"`` returns a proven optimum. When every costed node
         is in series with the rest of the system (it lies on every path, as
@@ -3071,8 +3075,8 @@ class NonRepairableRBD(RBD):
             search that is too large.
         NotImplementedError
             If a costed node is in a common-cause group whose model is an
-            ``MGL`` (its letters are for its group's size), or has options
-            or cold spares (see above).
+            ``MGL`` or ``AlphaFactor`` (its parameters are for its group's
+            size), or has options or cold spares (see above).
 
         References
         ----------
@@ -8096,7 +8100,9 @@ class NonRepairableRBD(RBD):
         parameter moves for every member at once. So are the parameters of
         the group's common-cause model, named ``"ccf_beta"`` (and for an
         [`MGL`][repyability.MGL] model ``"ccf_gamma"``, ``"ccf_delta"``,
-        ...), by a central difference in each; a parameter at the edge of
+        ..., and for an [`AlphaFactor`][repyability.AlphaFactor] model
+        ``"ccf_alpha_2"``, ..., ``alpha_1`` being the remainder), by a
+        central difference in each; a parameter at the edge of
         ``[0, 1]`` is differenced on its one side. Each difference is of
         the system's probability of failing where that is the smaller, so
         a small one keeps its precision.

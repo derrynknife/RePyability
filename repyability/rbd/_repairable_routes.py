@@ -326,7 +326,7 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             + (
                 " A common-cause group member's copies join its group, "
                 "whose chain takes them in: a BetaFactor group's (an MGL "
-                "group's member refuses)."
+                "or AlphaFactor group's member refuses)."
                 if rbd.ccf_groups
                 else ""
             ),

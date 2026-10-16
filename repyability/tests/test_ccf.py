@@ -14,6 +14,7 @@ from surpyval import FixedEventProbability, Weibull
 
 from repyability import (
     MGL,
+    AlphaFactor,
     BetaFactor,
     CCFGroup,
     NodeState,
@@ -325,3 +326,271 @@ def test_mgl_validation():
     # An MGL model's parameter count must match the group size.
     with pytest.raises(ValueError, match="members"):
         CCFGroup(["a", "b"], MGL(0.1, 0.3))  # 2 letters -> needs 3 members
+
+
+# -- Alpha-factor (#311) ------------------------------------------------------
+
+# The alpha-factor model's basic-event probabilities (NUREG/CR-5485,
+# Mosleh et al.), for a group of m members with alpha_1..alpha_m summing to
+# 1 and each member's total Q: under staggered testing
+#     Q_k = alpha_k / C(m-1, k-1) * Q,
+# and under non-staggered testing
+#     Q_k = k / C(m-1, k-1) * alpha_k / alpha_t * Q,  alpha_t = sum k alpha_k.
+# A three-member group with alpha = (0.95, 0.04, 0.01) and Q = 1e-3 then has,
+# by hand: staggered Q_1 = 9.5e-4, Q_2 = 0.04 / 2 * 1e-3 = 2e-5, Q_3 = 1e-5;
+# non-staggered alpha_t = 0.95 + 0.08 + 0.03 = 1.06, Q_1 = 0.95 / 1.06 * 1e-3,
+# Q_2 = 0.04 / 1.06 * 1e-3, Q_3 = 0.03 / 1.06 * 1e-3.
+ALPHAS = (0.95, 0.04, 0.01)
+BY_HAND = {
+    "staggered": (9.5e-4, 2e-5, 1e-5),
+    "non-staggered": (0.95e-3 / 1.06, 0.04e-3 / 1.06, 0.03e-3 / 1.06),
+}
+
+
+def _specific_sets(model, members, Q):
+    """``Q_1, ..., Q_m`` from ``decompose``: the independent part, then
+    one shock's probability for each size (every set of a size alike)."""
+    q_independent, shocks = model.decompose(members, Q)
+    by_size = {}
+    for subset, p in shocks:
+        by_size.setdefault(len(subset), set()).add(float(p[0]))
+    assert all(len(values) == 1 for values in by_size.values())
+    return (float(q_independent[0]),) + tuple(
+        by_size[k].pop() for k in range(2, len(members) + 1)
+    )
+
+
+@pytest.mark.parametrize("testing", ["staggered", "non-staggered"])
+def test_alpha_factor_specific_sets_by_hand(testing):
+    model = AlphaFactor(ALPHAS, testing=testing)
+    assert model.group_size == 3
+    found = _specific_sets(model, list("abc"), 1e-3)
+    assert found == pytest.approx(BY_HAND[testing], rel=1e-12)
+    # The Q_k of the sets holding a member sum to its Q.
+    Q1, Q2, Q3 = found
+    assert Q1 + 2 * Q2 + Q3 == pytest.approx(1e-3, rel=1e-12)
+
+
+def _mgl_letters(fractions):
+    """The MGL letters of the specific-set fractions ``Q_k / Q``,
+    ``k = 1..m``: ``rho_k`` is the share of a member's failures shared
+    by at least ``k`` members among those shared by at least ``k - 1``."""
+    from math import comb
+
+    m = len(fractions)
+
+    def at_least(k):
+        return sum(
+            comb(m - 1, j - 1) * fractions[j - 1] for j in range(k, m + 1)
+        )
+
+    return [at_least(k) / at_least(k - 1) for k in range(2, m + 1)]
+
+
+@pytest.mark.parametrize("testing", ["staggered", "non-staggered"])
+@pytest.mark.parametrize(
+    "alphas", [(0.95, 0.04, 0.01), (0.9, 0.06, 0.03, 0.01), (0.8, 0.2)]
+)
+@pytest.mark.parametrize(
+    "options", [{}, {"shocks": "independent"}, {"basis": "rate"}]
+)
+def test_alpha_factor_is_the_equivalent_mgl(testing, alphas, options):
+    # Its outcomes, and so every analysis, are those of the MGL model with
+    # the letters its specific-set probabilities give.
+    model = AlphaFactor(alphas, testing=testing, **options)
+    letters = _mgl_letters(
+        _specific_sets(
+            AlphaFactor(alphas, testing=testing),
+            list("abcd")[: len(alphas)],
+            1.0,
+        )
+    )
+    mgl = MGL(*letters, **options)
+    members = list("abcd")[: len(alphas)]
+    Q = np.array([1e-4, 0.01, 0.1, 0.4])
+    ours = model._split(members, Q, 1.0 - Q)
+    theirs = mgl._split(members, Q, 1.0 - Q)
+    np.testing.assert_allclose(ours[0], theirs[0], rtol=1e-12)
+    np.testing.assert_allclose(ours[1], theirs[1], rtol=1e-12)
+    assert [s for s, _ in ours[2]] == [s for s, _ in theirs[2]]
+    for (_, p), (_, q) in zip(ours[2], theirs[2]):
+        np.testing.assert_allclose(p, q, rtol=1e-12)
+    own, causes = model._causes(members)
+    own_mgl, causes_mgl = mgl._causes(members)
+    assert own == pytest.approx(own_mgl, rel=1e-12)
+    assert [s for s, _ in causes] == [s for s, _ in causes_mgl]
+    assert [c for _, c in causes] == pytest.approx(
+        [c for _, c in causes_mgl], rel=1e-12
+    )
+    # And a 2-out-of-m system agrees.
+    edges = [("s", n) for n in members] + [(n, "t") for n in members]
+    nodes = {n: Weibull.from_params([1000.0, 1.5]) for n in members}
+    x = np.array([30.0, 300.0])
+    assert NonRepairableRBD(
+        edges, nodes, k={"t": 2}, ccf_groups=[CCFGroup(members, model)]
+    ).ff(x) == pytest.approx(
+        NonRepairableRBD(
+            edges, nodes, k={"t": 2}, ccf_groups=[CCFGroup(members, mgl)]
+        ).ff(x),
+        rel=1e-12,
+    )
+
+
+def test_alpha_factor_on_a_pair_is_the_beta_factor():
+    # Staggered, alpha_2 is the share of a member's failures that are
+    # shared: the beta factor. Non-staggered, each shared event counts
+    # twice, so beta = 2 alpha_2 / (alpha_1 + 2 alpha_2).
+    Q, beta = 0.1, 0.15
+    bf = float(_parallel(Q, [CCFGroup(["a", "b"], BetaFactor(beta))]).sf())
+    staggered = AlphaFactor([1.0 - beta, beta])
+    assert float(_parallel(Q, [CCFGroup(["a", "b"], staggered)]).sf()) == (
+        pytest.approx(bf, rel=1e-12)
+    )
+    alpha_2 = beta / (2.0 - beta)
+    non_staggered = AlphaFactor(
+        [1.0 - alpha_2, alpha_2], testing="non-staggered"
+    )
+    assert float(
+        _parallel(Q, [CCFGroup(["a", "b"], non_staggered)]).sf()
+    ) == pytest.approx(bf, rel=1e-12)
+
+
+def test_alpha_factor_serialisation_roundtrip():
+    edges = [("s", n) for n in "abc"] + [(n, "t") for n in "abc"]
+    nodes = {n: FixedEventProbability.from_params(0.01) for n in "abc"}
+    for model in (
+        AlphaFactor(ALPHAS),
+        AlphaFactor(ALPHAS, testing="non-staggered"),
+        AlphaFactor(ALPHAS, shocks="independent"),
+        AlphaFactor(ALPHAS, testing="non-staggered", basis="rate"),
+    ):
+        rbd = NonRepairableRBD(
+            edges, nodes, ccf_groups=[CCFGroup(list("abc"), model)]
+        )
+        saved = rbd.to_dict()
+        assert saved["ccf_groups"][0]["model"]["kind"] == "alpha_factor"
+        assert saved["ccf_groups"][0]["model"]["testing"] == model.testing
+        for restored in (
+            NonRepairableRBD.from_dict(saved),
+            NonRepairableRBD.from_json(rbd.to_json()),
+        ):
+            assert restored.ccf_groups[0].model == model
+            assert repr(restored.ccf_groups[0].model) == repr(model)
+            assert float(restored.sf()) == pytest.approx(
+                float(rbd.sf()), rel=1e-12
+            )
+
+
+def test_alpha_factor_parameters_round_trip():
+    from repyability.rbd.ccf import parameters, with_parameters
+
+    model = AlphaFactor(ALPHAS, testing="non-staggered", shocks="independent")
+    assert parameters(model) == {"alpha_2": 0.04, "alpha_3": 0.01}
+    assert with_parameters(model, {}) == model
+    moved = with_parameters(model, {"alpha_2": 0.1})
+    assert moved == AlphaFactor(
+        [0.89, 0.1, 0.01], testing="non-staggered", shocks="independent"
+    )
+    # alpha_1 is the remainder, and cannot go negative.
+    with pytest.raises(ValueError, match="sum to at most 1"):
+        with_parameters(model, {"alpha_2": 0.995})
+    assert with_parameters(model, {"alpha_2": 0.99}).alphas == pytest.approx(
+        (0.0, 0.99, 0.01)
+    )
+    with pytest.raises(ValueError, match="not parameters"):
+        with_parameters(model, {"alpha_1": 0.5})
+
+
+def test_alpha_factor_levers():
+    edges = [("s", n) for n in "abc"] + [(n, "t") for n in "abc"]
+    nodes = {n: Weibull.from_params([100.0, 2.0]) for n in "abc"}
+    rbd = NonRepairableRBD(
+        edges,
+        nodes,
+        k={"t": 2},
+        ccf_groups=[CCFGroup(list("abc"), AlphaFactor(ALPHAS))],
+    )
+    levers = {(lever.key, lever.name): lever for lever in rbd.levers()}
+    assert set(levers) == {
+        (("a", "b", "c"), "alpha"),
+        (("a", "b", "c"), "beta"),
+        (("a", "b", "c"), "ccf_alpha_2"),
+        (("a", "b", "c"), "ccf_alpha_3"),
+    }
+    assert levers[(("a", "b", "c"), "ccf_alpha_2")].value == 0.04
+    assert levers[(("a", "b", "c"), "ccf_alpha_3")].bounds == (0.0, 1.0)
+    moved = rbd.with_levers({(("a", "b", "c"), "ccf_alpha_2"): 0.1})
+    assert moved.ccf_groups[0].model == AlphaFactor([0.89, 0.1, 0.01])
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        rbd.with_levers({(("a", "b", "c"), "ccf_alpha_2"): 1.5})
+    with pytest.raises(ValueError, match="sum to at most 1"):
+        rbd.with_levers({(("a", "b", "c"), "ccf_alpha_2"): 0.995})
+    # The sensitivity moves each alpha_k with alpha_1 the remainder.
+    x = 50.0
+    report = rbd.parameter_sensitivity(x)
+    step = 1e-5
+    up = rbd.with_levers({(("a", "b", "c"), "ccf_alpha_3"): 0.01 + step})
+    down = rbd.with_levers({(("a", "b", "c"), "ccf_alpha_3"): 0.01 - step})
+    assert report[("a", "b", "c")]["ccf_alpha_3"] == pytest.approx(
+        (float(up.sf(x)) - float(down.sf(x))) / (2 * step), rel=1e-5
+    )
+
+
+def test_alpha_factor_validation():
+    with pytest.raises(ValueError, match="at least two"):
+        AlphaFactor([1.0])
+    with pytest.raises(ValueError, match="in a list"):
+        AlphaFactor(0.9)
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        AlphaFactor([1.5, -0.5])
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        AlphaFactor([0.9, "0.1"])
+    with pytest.raises(ValueError, match="sum to 1"):
+        AlphaFactor([0.9, 0.2])
+    with pytest.raises(ValueError, match="testing must be"):
+        AlphaFactor([0.9, 0.1], testing="weekly")
+    with pytest.raises(ValueError, match="shocks must be"):
+        AlphaFactor([0.9, 0.1], shocks="both")
+    with pytest.raises(ValueError, match="strikes independently"):
+        AlphaFactor([0.9, 0.1], basis="rate", shocks="exclusive")
+    # A rounded table's alphas are scaled to sum to 1.
+    rounded = AlphaFactor([0.958, 0.0263, 0.0086, 0.007])
+    assert sum(rounded.alphas) == pytest.approx(1.0, abs=1e-15)
+    assert rounded.alphas[1] / rounded.alphas[0] == pytest.approx(
+        0.0263 / 0.958
+    )
+    assert AlphaFactor(ALPHAS) == AlphaFactor(list(ALPHAS))
+    assert AlphaFactor(ALPHAS) != AlphaFactor(ALPHAS, testing="non-staggered")
+    assert AlphaFactor(ALPHAS) != MGL(0.05, 0.2)
+    assert len({AlphaFactor(ALPHAS), AlphaFactor(ALPHAS)}) == 1
+    assert repr(AlphaFactor(ALPHAS)) == "AlphaFactor([0.95, 0.04, 0.01])"
+    assert repr(
+        AlphaFactor(ALPHAS, testing="non-staggered", basis="rate")
+    ) == (
+        "AlphaFactor([0.95, 0.04, 0.01], testing='non-staggered', "
+        "basis='rate')"
+    )
+    assert repr(AlphaFactor(ALPHAS, shocks="independent")) == (
+        "AlphaFactor([0.95, 0.04, 0.01], shocks='independent')"
+    )
+    assert AlphaFactor(ALPHAS).required_group_size() == 3
+    with pytest.raises(ValueError, match="members"):
+        CCFGroup(["a", "b"], AlphaFactor(ALPHAS))
+    with pytest.raises(ValueError, match="BetaFactor, MGL or AlphaFactor"):
+        CCFGroup(["a", "b"], "alpha")
+
+
+def test_alpha_factor_warns_naming_its_rate_model():
+    edges = [("s", n) for n in "abc"] + [(n, "t") for n in "abc"]
+    nodes = {n: FixedEventProbability.from_params(0.3) for n in "abc"}
+    rbd = NonRepairableRBD(
+        edges,
+        nodes,
+        ccf_groups=[
+            CCFGroup(list("abc"), AlphaFactor(ALPHAS, testing="non-staggered"))
+        ],
+    )
+    with pytest.warns(
+        UserWarning, match="testing='non-staggered', basis='rate'"
+    ):
+        rbd.sf()
