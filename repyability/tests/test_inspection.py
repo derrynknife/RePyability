@@ -300,8 +300,9 @@ def test_importance_is_averaged_over_the_interval():
     # Every system failure has both failed and both critical.
     assert rbd.criticality_importance()["a"] == pytest.approx(1.0)
     assert rbd.fussell_vesely()["a"] == pytest.approx(1.0)
-    # Held working, "a" makes the system perfect.
-    assert rbd.mean_availability(working_nodes=["a"]) == 1.0
+    # Held working, "a" makes the system perfect (to rounding: the mean is
+    # worked out numerically, and some numpy builds sum it a unit short).
+    assert rbd.mean_availability(working_nodes=["a"]) == pytest.approx(1.0)
 
 
 def test_the_cost_rate_trades_tests_against_hidden_downtime():
