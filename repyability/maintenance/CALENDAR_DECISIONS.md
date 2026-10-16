@@ -286,9 +286,10 @@ eye.
     `optimal_next_replacement`.** Decided: `replacement_policies` is
     removed (a special case of `optimal_calendar_policy`), with the
     `older_than` rule it added to `condition_cycle`;
-    `optimal_replacement_policy` is kept. Still open:
-    `optimal_next_replacement` could take a `CalendarPolicy`'s
-    `cost_rate` as its baseline.
+    `optimal_replacement_policy` is kept. Done (#348):
+    `optimal_next_replacement(policy=)` takes the `cost_rate` of a
+    `CalendarPolicy` (or a `MaintenancePolicy`) as its baseline; the
+    age replacement's stays the default.
 28. **The chart.** It is an SVG committed under `docs/guide/img/`, drawn by
     `scripts/calendar_policy_chart.py` with matplotlib, outside the package
     (which keeps no plotting dependency). Run the script again after a change

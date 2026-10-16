@@ -47,7 +47,13 @@ other release, fixes included, the minor.
   (`NextReplacement`, `ReplacementChoice`). A bearing 200 days old
   (Weibull, 365 days, shape 2; $150 planned, $400 at a failure, outages
   in 150 and 330 days at $100) is best kept to the outage in 150 days;
-  replacing now is the best from 297.6 days old.
+  replacing now is the best from 297.6 days old. Where cheap shuts keep
+  coming, `policy=` makes the `cost_rate` of a `CalendarPolicy` the
+  baseline (#348; a `MaintenancePolicy` is taken too, its cost rate
+  alone refused): with a shut every 180 days at $100, a day of the bearing's
+  service is worth 0.990 rather than 1.117, and replacing now beats the
+  outage in 150 days from 256.1 days old rather than 288.4, and every
+  later choice from 263.9.
 - **A part's failures over a window, and its costs given by name (#319).**
   `NonRepairable` takes `planned_cost=` and `unplanned_cost=` (each alone
   if need be; both as `set_costs_planned_and_unplanned` sets them), and
