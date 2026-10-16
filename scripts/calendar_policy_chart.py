@@ -52,8 +52,8 @@ def main() -> None:
     axes.set_facecolor(SURFACE)
     for name, colour, marker in SERIES:
         points = policy.schedule(kinds=(name,))
-        days = [t for t, _, _ in points]
-        ages = [a for _, _, a in points]
+        days = [t for t, _, _, _ in points]
+        ages = [a for _, _, a, _ in points]
         axes.plot(
             days,
             ages,

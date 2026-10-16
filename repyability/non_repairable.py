@@ -1025,9 +1025,10 @@ class NonRepairable:
         Returns
         -------
         CalendarPolicy
-            The threshold at each time (``threshold(t)``, ``replace(t,
-            age)``, ``schedule()``), the cost rate, and how it was worked
-            out.
+            The long-run cost rate and what it is made of by kind, each
+            shut's threshold and chance of a replacement (``schedule()``),
+            a unit's next replacement (``next_replacement()``), and how it
+            was worked out.
 
         Raises
         ------
@@ -1051,8 +1052,10 @@ class NonRepairable:
         ...     unplanned_cost=5.0,
         ... )
         >>> policy = unit.optimal_calendar_policy(Calendar(), step=1.0)
-        >>> policy.threshold(0.0), round(policy.cost_rate, 6)
-        (493.0, 0.003462)
+        >>> round(policy.cost_rate, 6)
+        0.003462
+        >>> policy.next_replacement(age=0.0)
+        PlannedReplacement(time=493.0, kind='anytime', price=1.0)
         >>> round(unit.optimal_replacement_policy().interval, 1)
         493.0
         """

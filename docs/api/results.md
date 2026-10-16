@@ -73,3 +73,5 @@
 ::: repyability.ReplacementChoice
 
 ::: repyability.CalendarPolicy
+
+::: repyability.PlannedReplacement

@@ -59,10 +59,11 @@ def test_a_unit_is_next_replaced_where_its_threshold_is_reached(method):
     )
     # New at 0: the next annual shut. Put in at an annual shut (300 days
     # on, it is young at the next): the one after. Old: at once.
-    assert policy._next_planned(0.0, 0.0) == (364.0, 1.0)
-    assert policy._next_planned(300.0, 300.0) == (728.0, 1.0)
-    assert policy._next_planned(-500.0, 0.0) == (0.0, 1.0)
-    assert policy._next_planned(100.0, 150.0) == (364.0, 1.0)
+    annual = 1.0, "annual"
+    assert policy._next_planned(0.0, 0.0) == (364.0, *annual)
+    assert policy._next_planned(300.0, 300.0) == (728.0, *annual)
+    assert policy._next_planned(-500.0, 0.0) == (0.0, *annual)
+    assert policy._next_planned(100.0, 150.0) == (364.0, *annual)
 
 
 def test_the_diagram_costs_the_policys_rate(plant):

@@ -131,6 +131,18 @@ class _Gap:
         self.failure = failure
         self.sf = sf
         self.q, self.lasting, self.later = self._kept(ages)
+        # Forward, the same operators transposed: a new unit at each node
+        # is, at the gap's end, of each age with ``ends`` (how G takes the
+        # cost to go there), after ``renewals`` failures on the way.
+        reach = np.zeros((m + 1, ages.size))
+        reach[:m] = self.lasting_new[:, None] * _spread(self.remaining, ages)
+        reach[m, 0] = 1.0
+        self.ends = self.a_inverse @ reach
+        once = np.zeros(m + 1)
+        once[:m] = weights[:m].sum(axis=1)
+        renewals = self.a_inverse @ once
+        self.fails = self.q @ (1.0 + 0.5 * (renewals[:-1] + renewals[1:]))
+        self.kept_to = _nearest(self.later, ages)
 
     def _kept(self, ages):
         held = self.sf(ages)
@@ -164,19 +176,66 @@ class _Gap:
         middle = self.failure + 0.5 * (g_nodes[:-1] + g_nodes[1:])
         return q @ middle + lasting * np.interp(later, grid, after)
 
+    def forward(self, share: np.ndarray):
+        """The chance of the unit in place being of each age at the gap's
+        end, from ``share`` at its start, and the expected failures in
+        it."""
+        pieces = share @ self.q
+        nodes = np.zeros(NODES + 1)
+        nodes[:-1] += 0.5 * pieces
+        nodes[1:] += 0.5 * pieces
+        kept = share * self.lasting
+        j, part = self.kept_to
+        size = share.size
+        later = nodes @ self.ends
+        later += np.bincount(j, kept * (1.0 - part), minlength=size)
+        later += np.bincount(j + 1, kept * part, minlength=size)
+        return later, float(share @ self.fails)
+
+
+def _nearest(points: np.ndarray, grid: np.ndarray):
+    """Where linear interpolation on ``grid`` takes each of ``points``
+    from, as ``np.interp`` does (a point past the grid's end from its last
+    age): the index below it, and its share of the way to the next."""
+    x = np.clip(points, grid[0], grid[-1])
+    j = np.clip(np.searchsorted(grid, x, side="right") - 1, 0, grid.size - 2)
+    return j, (x - grid[j]) / (grid[j + 1] - grid[j])
+
+
+def _spread(points: np.ndarray, grid: np.ndarray) -> np.ndarray:
+    """The linear interpolation's weights of ``points`` on ``grid``, as a
+    matrix (each row sums to 1)."""
+    j, part = _nearest(points, grid)
+    out = np.zeros((points.size, grid.size))
+    rows = np.arange(points.size)
+    out[rows, j] = 1.0 - part
+    out[rows, j + 1] += part
+    return out
+
 
 class _OpportunityTable:
     """The thresholds at the opportunities of a cycle, from ``origin``
     (a repeated plan's first date: none before it)."""
 
     def __init__(
-        self, length, times, thresholds, kinds, names, origin=0.0, prices=None
+        self,
+        length,
+        times,
+        thresholds,
+        kinds,
+        names,
+        origin=0.0,
+        prices=None,
+        chance=None,
     ):
         self.length, self.times = length, times
         self.thresholds, self.kinds, self.names = thresholds, kinds, names
         self.origin = origin
         self.prices = (
             np.zeros(times.size) if prices is None else np.asarray(prices)
+        )
+        self.chance = (
+            np.zeros(times.size) if chance is None else np.asarray(chance)
         )
 
     def at(self, t):
@@ -199,10 +258,10 @@ class _OpportunityTable:
     def next_planned(self, installed, after, oldest):
         """The first opportunity at or after ``after`` (strictly after, if
         the unit was put in then) at which a unit put in at ``installed``
-        is replaced, and its price; ``(inf, 0.0)`` if none before it
-        would be ``oldest``."""
+        is replaced, its price and kind; ``(inf, 0.0, None)`` if none
+        before it would be ``oldest``."""
         if self.times.size == 0:
-            return math.inf, 0.0
+            return math.inf, 0.0, None
         start = max(after, self.origin)
         first = math.floor((start - self.times[-1]) / self.length)
         last = math.ceil((installed + oldest - self.times[0]) / self.length)
@@ -210,6 +269,7 @@ class _OpportunityTable:
         times = (cycles[:, None] + self.times[None, :]).ravel()
         thresholds = np.tile(self.thresholds, cycles.size)
         prices = np.tile(self.prices, cycles.size)
+        kinds = np.tile(self.kinds, cycles.size)
         tolerance = 1e-9 * self.length
         later = (
             (times > after + tolerance)
@@ -220,15 +280,17 @@ class _OpportunityTable:
         due &= times - installed >= thresholds - tolerance
         due &= times - installed <= oldest
         if not due.any():
-            return math.inf, 0.0
+            return math.inf, 0.0, None
         i = int(np.argmax(due))
-        return float(times[i]), float(prices[i])
+        return float(times[i]), float(prices[i]), self.names[kinds[i]]
 
     def schedule(self, until, wanted):
         out = []
         cycles = int(math.ceil(until / self.length))
         for c in range(cycles):
-            for t, a, k in zip(self.times, self.thresholds, self.kinds):
+            for t, a, k, p in zip(
+                self.times, self.thresholds, self.kinds, self.chance
+            ):
                 time = c * self.length + t
                 name = self.names[k]
                 if (
@@ -237,7 +299,7 @@ class _OpportunityTable:
                     or (wanted is not None and name not in wanted)
                 ):
                     continue
-                out.append((float(time), name, float(a)))
+                out.append((float(time), name, float(a), float(p)))
         return out
 
 
@@ -248,15 +310,17 @@ def integrated_policy(part, calendar, failure, *, max_age=None, tail="repeat"):
     mean = _mean(part, sf)
     if not calendar.opportunities:
         policy = CalendarPolicy(
-            failure / mean,
-            None,
-            "integration",
-            "exact",
-            None,
-            None,
-            None,
-            True,
-            {"opportunities": 0},
+            cost_rate=failure / mean,
+            cost_rate_se=None,
+            replacement_rates={"failure": 1.0 / mean},
+            cost_rates={"failure": failure / mean},
+            method="integration",
+            basis="exact",
+            step=None,
+            period=None,
+            determined_until=None,
+            threshold_only=True,
+            settings={"opportunities": 0},
         )
         table = _OpportunityTable(
             1.0, np.array([]), np.array([]), np.array([], np.int64), [ANYTIME]
@@ -344,16 +408,26 @@ def integrated_policy(part, calendar, failure, *, max_age=None, tail="repeat"):
             else:
                 lo = middle
         thresholds[k] = hi
+    replaced, failures = _stationary(kept, prices, grid, length, oldest)
+    rates = {name: 0.0 for name in names if name != ANYTIME}
+    spent = dict(rates)
+    for k in range(times.size):
+        rates[names[kinds[k]]] += float(replaced[k] / length)
+        spent[names[kinds[k]]] += float(replaced[k] * prices[k] / length)
+    rates["failure"] = float(failures / length)
+    spent["failure"] = float(failures * failure / length)
     policy = CalendarPolicy(
-        0.5 * (low + high) / length,
-        None,
-        "integration",
-        "exact",
-        None,
-        length,
-        None,
-        upper,
-        {
+        cost_rate=0.5 * (low + high) / length,
+        cost_rate_se=None,
+        replacement_rates=rates,
+        cost_rates=spent,
+        method="integration",
+        basis="exact",
+        step=None,
+        period=length,
+        determined_until=None,
+        threshold_only=upper,
+        settings={
             "sweeps": sweeps,
             "converged": converged,
             "cost_rate_bounds": (low / length, high / length),
@@ -374,6 +448,38 @@ def integrated_policy(part, calendar, failure, *, max_age=None, tail="repeat"):
             for d in o.dates
         )
     table = _OpportunityTable(
-        length, times, thresholds, kinds, names, origin, prices
+        length, times, thresholds, kinds, names, origin, prices, replaced
     )
     return policy._bind(table, names, None, oldest)
+
+
+def _stationary(kept, prices, grid, length, oldest):
+    """The long-run chance of a replacement at each opportunity of the
+    cycle, and the expected failures over it: forward across the cycle
+    (each opportunity replacing the ages its last sweep did, then its
+    gap) from a new unit, until the ages at its start settle."""
+    share = np.zeros(grid.size)
+    share[0] = 1.0
+
+    def across(share):
+        replaced = np.zeros(len(kept))
+        failures = 0.0
+        for k, (shape, _, _, w) in enumerate(kept):
+            act = prices[k] + w[0] < w
+            moved = float(share[act].sum())
+            share = np.where(act, 0.0, share)
+            share[0] += moved
+            replaced[k] = moved
+            share, failed = shape.forward(share)
+            failures += failed
+        return share, replaced, failures
+
+    limit = max(1, int(MAX_LIVES * oldest / length))
+    for _ in range(limit):
+        later, _, _ = across(share)
+        settled = float(np.abs(later - share).sum()) <= TOLERANCE
+        share = later
+        if settled:
+            break
+    _, replaced, failures = across(share)
+    return replaced, failures
