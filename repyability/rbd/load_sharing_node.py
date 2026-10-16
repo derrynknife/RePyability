@@ -400,11 +400,10 @@ class LoadSharingModel:
         mc_samples : int, optional
             The number of draws to estimate the mean from, 10_000 by
             default: with ``method="simulate"``, or for a group with no
-            exact mean. An exact mean draws nothing, and ignores it with a
-            ``FutureWarning`` (0.14 will refuse it).
+            exact mean. An exact mean draws nothing, and refuses it.
         seed : int or None, optional
             Seed for those draws (see ``random``), by default None.
-            Ignored as ``mc_samples`` is.
+            Refused as ``mc_samples`` is.
         method : {None, "exact", "simulate"}, optional
             As for ``StandbyModel.mean``.
 
@@ -419,9 +418,8 @@ class LoadSharingModel:
             If the group has no exact mean and neither ``mc_samples`` nor
             ``seed`` is given (or ``method="exact"``).
         ValueError
-            If ``method`` is not one of these.
-        TypeError
-            If ``method="exact"`` is given with ``mc_samples`` or ``seed``.
+            If ``method`` is not one of these, or ``mc_samples`` or ``seed``
+            is given to an exact mean.
         """
 
         def exact() -> float:

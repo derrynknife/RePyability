@@ -1,28 +1,28 @@
 """Deprecated names, arguments and calls.
 
-A deprecation gives one minor release's notice: what 0.13 deprecates goes
-in 0.14 (``NEXT_REMOVAL``). Each warns with a ``FutureWarning``, which
-Python always shows, as the notice is short:
-
-- the search's ``offsets`` of ``optimal_inspection_intervals``, renamed
-  ``offset_shares`` (``renamed``, #222);
-- calling ``CapacityDistribution.mean()``, now a property (``called``,
-  #235);
-- the simulation options of a ``StandbyModel``'s, ``LoadSharingModel``'s
-  or ``DegradingNode``'s exact ``mean``, which it ignores (``ignored``,
-  #233).
-
-What 0.14 deprecates goes in 0.15 (each says so, with ``removal=``):
+A deprecation gives one minor release's notice: what 0.14 deprecates goes
+in 0.15 (``NEXT_REMOVAL``). Each warns with a ``FutureWarning``, which
+Python always shows, as the notice is short: an argument renamed
+(``renamed``; an attribute, ``renamed_attribute``), a result's value
+called that is now a property (``called``), or arguments a method ignores
+(``ignored``). 0.14 deprecates:
 
 - ``NodeState``'s ``phase``, renamed ``since_scheduled`` (``renamed`` for
   the argument, ``renamed_attribute`` for reading it, #350).
 
-What 0.12 deprecated went in 0.13: calling ``SparesDemand.mean()`` and
-``std()``, properties since 0.12 (#184), and ``StandbyModel``'s and
-``LoadSharingModel``'s ``mc_samples``, ``lower`` and ``seed``, which set a
-fit to simulated lifetimes that 0.12 removed (#149). What 0.11 deprecated
-went in 0.12 (#149): its old names are refused with the names that took
-their place (``refuses_removed_names``, #232).
+What 0.13 deprecated went in 0.14: ``optimal_inspection_intervals``'
+``offsets``, renamed ``offset_shares`` (#222); calling
+``CapacityDistribution.mean()``, a property since 0.13 (#235); the
+simulation options given to the exact ``mean`` of a ``StandbyModel``,
+``LoadSharingModel`` or ``DegradingNode``, which it would ignore (#233);
+and ``rbd._sensitivity``'s ``levers`` and ``Lever``, the names callers
+used before the levers were public (#244). What 0.12 deprecated went in
+0.13: calling ``SparesDemand.mean()`` and ``std()``, properties since 0.12
+(#184), and ``StandbyModel``'s and ``LoadSharingModel``'s ``mc_samples``,
+``lower`` and ``seed``, which set a fit to simulated lifetimes that 0.12
+removed (#149). What 0.11 deprecated went in 0.12 (#149): its old names
+are refused with the names that took their place
+(``refuses_removed_names``, #232).
 """
 
 import functools
@@ -34,8 +34,8 @@ import numpy as np
 
 from repyability.utils.wrappers import outside_level
 
-#: The release that removes what 0.13 deprecates.
-NEXT_REMOVAL = "0.14"
+#: The release that removes what 0.14 deprecates.
+NEXT_REMOVAL = "0.15"
 
 
 def _called_warning(name: str, removal: str) -> None:

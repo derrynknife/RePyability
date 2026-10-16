@@ -9,6 +9,94 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+## [0.14] - 2026-10-16
+
+Fitted models in, every kind of model brought up to the diagram, and
+maintenance questions answered in model time. A component's life may be
+what surpyval fits to a repairable unit's history (a Crow-AMSAA, Duane or
+HPP process, or a Kijima `GeneralizedRenewal`), and a simulation starts
+such a unit from its virtual age (#269); a fitted Wiener or gamma
+degradation process is a life, and replacement on condition may go by its
+measured level (#271); a component may operate part of the time
+(`"duty"`, #276); and a regression node's covariates are levers (#272).
+The alpha-factor common-cause model joins the beta factor and MGL (#311),
+and the joint importance is worked out with common-cause groups (#317). A
+`FaultTree` has the lifetime analyses, the remaining importance measures,
+the sensitivities, levers and uncertainty a diagram has (#314), a
+`Network` its importance measures, B-lives, uncertainty, saving and routes
+(#315), and a `PhasedMission` its importance measures and cut sets (#316).
+Over a window, the failure frequency, MUT and MDT are worked out with
+common-cause groups whose tests take time (#293), the criticality and
+Fussell-Vesely importance with repair crews around a nested RBD (#312),
+and the availability, events and cost of a minimally repaired component
+whose repairs take time (#318); `spares_stock` takes a block-replaced
+component dead on arrival (#322). The maintenance module (#319) answers,
+from a part's life and prices: its failures and their cost over a window,
+whether to skip the next planned replacement (#350), the long-run optimal
+replacement policy over a calendar of shuts (`optimal_calendar_policy`,
+whose `CalendarPolicy` a `RepairableRBD` component takes, in a maintenance
+group too, #349) and when to replace a part in service next, a calendar's
+cost rate as the baseline (#348). Parameter uncertainty draws a fit's
+shares too (#267), conditional survival keeps its precision at old ages
+(#268), a regression node's mean and draws are exact, the importance
+measures with common-cause groups whose tests take time are no longer NaN
+(#294), and a mixture life with imperfect repair simulates in seconds
+(#295). The 0.14 persona review's fixes run through the classes: the
+fault tree, network and mission take the arguments the diagram takes and
+refuse what it refuses, `expected_events` counts a common-cause group's
+tests that take time and a test at its period's end once, a group's
+members keep their own test offsets through `with_levers`, the cost
+analyses refuse a diagram with nothing priced, and messages say what to
+do. `RepairableRBD`'s code is in modules by analysis, with results
+unchanged; the README shows what each model can do; surpyval 0.24 is
+required; and what 0.13 deprecated is gone.
+
+Behaviour changes: surpyval 0.24 is required; seeded uncertainty results
+of limited-failure-population and zero-inflated fits change, as their
+shares are drawn (#267); a regression node's mean is no longer low, and
+seeded draws of a diagram with one change; seeded results with a mixture
+life and imperfect repair change in their last bits (#295); a cold
+standby's grid and the density's steps are sized from the lives, so
+results for lives far from a unit of time move, and a LogNormal's `mu`
+moves proportionally as a time does in differential importance; a
+probability per demand is refused by a `RepairableRBD`'s long-run methods,
+and one of 0 is a junction; a component with hidden failures repaired
+minimally is refused by the exact methods, which gave the renewed unit's
+values; the cost analyses refuse a diagram with nothing priced, where
+`cost()` returned `None` and the others zeros; `expected_events`,
+`mission_unavailability` and the measures over a window change with a
+common-cause group whose tests take time (the tests are planned outages,
+and their transients are integrated), and `expected_events` no longer
+counts a test at its period's end twice; `FaultTree.criticality_importance`
+and `differential_importance` take the success-oriented form, and
+`fussell_vesely` the path-set form, as the diagram does; a simulation
+option given to an exact call is refused everywhere with a `ValueError`
+(a diagram raised `TypeError`), and `mean_time_to_failure_interval` and
+`reliability_interval` refuse fewer than two samples; a network, a diagram
+and a tree with every element a fixed probability refuse `mean()` and
+`barlow_proschan_importance()` (a network refused with any fixed element,
+a diagram gave `nan`); a phased mission's `components` leave the junctions
+out, and its routes refuse a component with no exact reliability; a run's
+`delivered_fraction` is the run's estimate (exact or conditional by
+default), the simulations' own being `sample_delivered_fraction`;
+`node_availability()` lists the components alone; `differential_importance`
+over several windows gives one share per window; `spares_demand`,
+`spares_stock` and the parameter uncertainty methods refuse a nested RBD
+by default; `analysis_routes()` returns an `AnalysisRoutes` dict that
+prints one method a line; `CCFGroup` refuses one name for its members and
+any model naming the three it takes; a `RepairableRBD` component given a
+`CalendarPolicy` worked out for another life is refused; an error in a
+user's model is raised where it happens rather than taken for something
+the model cannot do; private names of `repyability.rbd.repairable_rbd` are
+in the modules it was split into; and what 0.13 deprecated is removed:
+`optimal_inspection_intervals(offsets=)` raises `TypeError` (give
+`offset_shares=`), as does calling `CapacityDistribution.mean()` (a
+property), `mc_samples` or `seed` given to the exact `mean` of a
+`StandbyModel`, `LoadSharingModel` or `DegradingNode` raises `ValueError`,
+and `rbd._sensitivity`'s `levers` and `Lever` are gone (use `levers()`,
+`Lever` and `with_levers`). Deprecated, to go in 0.15: `NodeState`'s
+`phase`, renamed `since_scheduled` (#350).
+
 ### Added
 
 - **The alpha-factor common-cause model (#311).**
@@ -306,6 +394,18 @@ other release, fixes included, the minor.
 
 ### Changed
 
+- **The README shows what each model can do.** Its "What each model can
+  do" section has two kinds of table, made from the code (`python -m
+  repyability.tests.capabilities` writes them, and a test checks they are
+  current): which analyses each model type has, by method, and how each
+  family of analyses is worked out (exact, numerical, simulated or
+  refused) for each kind of node or component, from `analysis_routes()`
+  on the test catalogue's diagrams.
+- **One automated test run.** The full suite runs on the pull request
+  from `dev` into `master`, on every core (`pytest -n auto`), with
+  coverage measured on Python 3.14 alone; nothing runs on pushes or on
+  pull requests into `dev` (CONTRIBUTING.md says what to run locally).
+  The `release` workflow publishes only what that run passed.
 - **`NodeState.phase` is `since_scheduled` (#350).** The time since a
   component's last block replacement or test placed it on its calendar as
   its "phase", a word a phased mission uses for its own phases: the field
@@ -398,6 +498,26 @@ other release, fixes included, the minor.
   an `AssertionError` say, is raised where it happens. `analysis_routes()`
   likewise reports only refusals, and raises any other error a check
   meets.
+
+### Deprecated
+
+- **`NodeState.phase`, renamed `since_scheduled` (#350).** Giving `phase=`
+  and reading `.phase` still work and warn (a `FutureWarning`); 0.15
+  refuses them (`deprecation.NEXT_REMOVAL`).
+
+### Removed
+
+- **What 0.13 deprecated.** `optimal_inspection_intervals` no longer takes
+  `offsets=`, renamed `offset_shares=` as its values are shares of the
+  interval where `with_intervals`' and the plan's `offsets` are times
+  (#222): passing it raises `TypeError`. `CapacityDistribution.mean` is a
+  property alone: calling it, `mean()`, raises `TypeError` (#235). The
+  exact `mean` of a `StandbyModel`, `LoadSharingModel` or `DegradingNode`
+  refuses `mc_samples` and `seed`, which it ignored, with the `ValueError`
+  every exact call gives a simulation option (#233). `rbd._sensitivity`'s
+  `levers` and `Lever`, the names callers used before the levers were
+  public, are gone: use `levers()`, `Lever` and `with_levers` (#244).
+  `test_removed_in_0_14.py` keeps them gone.
 
 ### Fixed
 

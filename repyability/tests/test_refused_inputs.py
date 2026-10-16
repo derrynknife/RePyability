@@ -208,11 +208,11 @@ MODELS = [standby, load_sharing, degrading]
 
 
 @pytest.mark.parametrize("model", MODELS)
-def test_an_exact_mean_warns_of_options_it_ignores(model):
+def test_an_exact_mean_refuses_options_it_would_ignore(model):
     node = model()
     exact = node.mean()
-    with pytest.warns(FutureWarning, match="ignores mc_samples, seed.*0.14"):
-        assert node.mean(mc_samples=10, seed=1) == exact
+    with pytest.raises(ValueError, match=r"mean\(\) takes mc_samples, seed"):
+        node.mean(mc_samples=10, seed=1)
     with pytest.raises(ValueError, match="only with method='simulate'"):
         node.mean(method="exact", mc_samples=10)
     with warnings.catch_warnings():

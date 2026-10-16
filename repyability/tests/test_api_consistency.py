@@ -33,6 +33,7 @@ from repyability import (
 from repyability._version import __version__
 from repyability.rbd.ccf import with_parameters
 from repyability.rbd.uncertainty import draw_ccf_models
+from repyability.utils import deprecation
 from repyability.utils.deprecation import NEXT_REMOVAL
 
 W, E = surv.Weibull.from_params, surv.Exponential.from_params
@@ -260,22 +261,27 @@ def test_the_spares_demand_values_are_properties():
     assert demand.std == pytest.approx(np.sqrt(10.0), rel=1e-4)
 
 
-def test_what_0_13_deprecates_goes_in_0_14():
-    # optimal_inspection_intervals(offsets=), renamed offset_shares (#222);
-    # CapacityDistribution.mean() called, now a property (#235); and the
-    # simulation options of StandbyModel, LoadSharingModel and
-    # DegradingNode's exact mean, which it ignores (#233). And the private
-    # names callers used before the levers were public, kept as they were
-    # for 0.13: rbd._sensitivity's levers and Lever (#244).
+def test_what_0_14_deprecates_goes_in_0_15():
+    # NodeState's phase, renamed since_scheduled (#350): giving phase= and
+    # reading .phase warn, and NEXT_REMOVAL (0.15) refuses them.
     version = tuple(map(int, __version__.split(".")))
     assert version < tuple(map(int, NEXT_REMOVAL.split(".")))
 
 
-def test_what_0_14_deprecates_goes_in_0_15():
-    # NodeState's phase, renamed since_scheduled (#350): giving phase= and
-    # reading .phase warn, and 0.15 refuses them.
-    version = tuple(map(int, __version__.split(".")))
-    assert version < (0, 15)
+def test_a_deprecation_warns_until_the_next_removal():
+    # The helpers a deprecation warns through.
+    match = f"{NEXT_REMOVAL} will refuse it"
+    with pytest.warns(FutureWarning, match=f"renamed new=.*{match}"):
+        deprecation.renamed("f", "old", "new", "it is clearer")
+    with pytest.warns(FutureWarning, match=f"f ignores seed: why.*{match}"):
+        deprecation.ignored("f", "why.", {"seed": 1, "lower": None})
+    number = deprecation.called(2.0, "Result.value")
+    array = deprecation.called(np.array([1.0, 2.0]), "Result.values")
+    assert number == 2.0 and np.array_equal(array, [1.0, 2.0])
+    with pytest.warns(FutureWarning, match=r"write value, not value\(\)"):
+        assert number() == 2.0
+    with pytest.warns(FutureWarning, match=f"refused in {NEXT_REMOVAL}"):
+        assert np.array_equal(array(), [1.0, 2.0])
 
 
 def test_a_node_state_takes_phase_as_since_scheduled_for_now():

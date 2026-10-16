@@ -234,8 +234,7 @@ def test_the_capacity_mean_is_a_property():
         warnings.simplefilter("error")
         assert capacity.mean == pytest.approx(expected)
         assert float(capacity.mean) == pytest.approx(expected)
-    with pytest.warns(FutureWarning, match="0.14"):
-        assert capacity.mean() == pytest.approx(expected)
+    assert type(capacity.mean) is float
 
 
 def test_spares_mean_is_still_a_property():
