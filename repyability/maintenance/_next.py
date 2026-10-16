@@ -4,9 +4,11 @@ replacement between them, or at its failure.
 
 Each choice is costed from the part's age ``a`` to its replacement: its
 expected cost, less the time it serves valued at ``g``, the long-run cost
-a unit of time of the part's
-[`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy]
-(the baseline),
+a unit of time of how the position is run (the baseline): the part's
+[`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy],
+or the policy given, a
+[`CalendarPolicy`][repyability.CalendarPolicy] where cheap shuts keep
+coming (#348),
 
     cost(u, price) = price S(u) + failure (1 - S(u)) - g ∫₀ᵘ S,
 
@@ -14,12 +16,19 @@ with ``S(u) = R(a + u) / R(a)``, the chance the part is working ``u`` from
 now (replacing now costs its price). The time the part serves is time a
 new part would otherwise serve, which ``g`` values: this is the relative
 value of the renewal-reward process, a new part taken to be worth the same
-whenever it is fitted. With no outages, replacing now is the best from the
-optimal replacement age exactly.
+whenever it is fitted. With no outages and the age replacement's rate,
+replacing now is the best from the optimal replacement age exactly.
 
-A planned replacement is costed at its best time, on a grid of ``_GRID``
-times up to the time the part outlives with a chance of ``_FAR``, refined
-between the best one's neighbours. Each later choice's break-even age (the
+A planned replacement is one later than now, costed at its best time, on
+a grid of ``_GRID`` times up to the time the part outlives with a chance
+of ``_FAR``, refined between the best one's neighbours. Where its cost is
+lowest as soon as possible (no later time beats replacing at once, as
+for a part past its optimal age), replacing at once is replacing now,
+and costs what that does, ``now_cost``: the planned choice is then
+replacing now (time 0, at ``now_cost``), never a planned price at time
+0 that ``now_cost`` contradicts; ``now`` is True exactly when the best
+choice is at time 0. A planned replacement with a lead time is a
+scheduled outage at that time. Each later choice's break-even age (the
 youngest at which replacing now costs no more) is found on a grid of
 ``_AGES`` ages up to the age a new part reaches with a chance of ``_FAR``,
 then halved down to its first.
@@ -60,8 +69,9 @@ class ReplacementChoice(_ResultMapping):
         ``"failure"`` (run to failure).
     time : float
         When, from now: 0 for now, the outage's time, the planned
-        replacement's best time (``inf`` if none beats running to
-        failure), ``inf`` at failure.
+        replacement's best time (0 where no later time beats replacing
+        at once, which is then replacing now, at ``now_cost``; ``inf``
+        if none beats running to failure), ``inf`` at failure.
     price : float
         What the replacement costs if the part has not failed by then (at
         failure, the failure price).
@@ -103,7 +113,7 @@ class NextReplacement(_ResultMapping):
         largest break-even age.
     cost_rate : float
         The value of a unit of the part's service, the baseline: the
-        long-run cost a unit of time of the part's
+        long-run cost a unit of time of the policy given, or of the part's
         [`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy].
     """
 
@@ -205,7 +215,10 @@ class _Life:
 
     def planned(self, age: float, price: float) -> tuple:
         """The best time from now for a planned replacement of a part
-        ``age`` old at ``price``, and its cost."""
+        ``age`` old at ``price``, and its cost: ``(0.0, None)`` where no
+        later time beats replacing it at once (its cost is lowest as
+        soon as possible), ``inf`` where none beats running to
+        failure."""
         held = self.survival(age)
         later = _beyond(lambda u: self.survival(age + u) / held, self.scale)
         times = np.linspace(0.0, later, _GRID)
@@ -227,8 +240,9 @@ class _Life:
         )
         if refined.success and refined.fun < best:
             best_time, best = float(refined.x), float(refined.fun)
-        if not best < price:
-            return 0.0, price
+        if not best < price or best_time <= later * 1e-9:
+            # Lowest at once (at time 0 it costs the price): replacing now.
+            return 0.0, None
         return best_time, best
 
 
@@ -251,8 +265,27 @@ def _break_even(beaten, oldest: float) -> float:
     return high
 
 
+def _baseline(part, policy) -> float:
+    """The long-run cost a unit of time of ``policy`` (a
+    ``CalendarPolicy`` or a ``MaintenancePolicy``), or of the part's
+    optimal replacement policy if none is given."""
+    from repyability.maintenance import CalendarPolicy, MaintenancePolicy
+
+    if policy is None:
+        policy = part.optimal_replacement_policy()
+    elif not isinstance(policy, (CalendarPolicy, MaintenancePolicy)):
+        what = "its cost rate" if checks.is_number(policy) else "this"
+        raise TypeError(
+            "policy must be the policy whose long-run cost rate values the "
+            "time the part serves: a CalendarPolicy "
+            "(optimal_calendar_policy) or a MaintenancePolicy "
+            f"(optimal_replacement_policy), not {what}; got {policy!r}."
+        )
+    return _amount(policy.cost_rate, "the cost rate of policy")
+
+
 def optimal_next_replacement(
-    part, age, *, now_cost=None, scheduled_outages=()
+    part, age, *, now_cost=None, scheduled_outages=(), policy=None
 ) -> NextReplacement:
     """The work of ``NonRepairable.optimal_next_replacement`` (see
     there)."""
@@ -271,7 +304,7 @@ def optimal_next_replacement(
     age = float(age)
     now = part.cp if now_cost is None else _amount(now_cost, "now_cost")
     coming = _coming(scheduled_outages)
-    rate = float(part.optimal_replacement_policy().cost_rate)
+    rate = _baseline(part, policy)
     mean = model_mean(part.reliability)
     life = _Life(part.reliability_function, mean, part.cu, rate)
     if not life.survival(age) > 0.0:
@@ -285,22 +318,25 @@ def optimal_next_replacement(
     later += [("planned", 0.0, part.cp), ("failure", math.inf, part.cu)]
 
     def chosen(kind: str, time: float, price: float, at: float) -> tuple:
-        """A choice's time and cost for a part ``at`` old."""
+        """A choice's time, price and cost for a part ``at`` old. A
+        planned replacement that pays as soon as possible is replacing
+        now, at now_cost."""
         if kind == "planned":
-            return life.planned(at, price)
-        return time, life.keep(at, time, price)
+            when, cost = life.planned(at, price)
+            return (0.0, now, now) if cost is None else (when, price, cost)
+        return time, price, life.keep(at, time, price)
 
     oldest = _beyond(life.survival, mean)
     tie = 1e-10 * max(now, part.cu)
     choices = [ReplacementChoice("now", 0.0, now, now, None)]
     evens: List[float] = []
     for kind, time, price in later:
-        when, cost = chosen(kind, time, price, age)
+        when, at_price, cost = chosen(kind, time, price, age)
         even = _break_even(
-            lambda at: now <= chosen(kind, time, price, at)[1] + tie, oldest
+            lambda at: now <= chosen(kind, time, price, at)[2] + tie, oldest
         )
         evens.append(even)
-        choices.append(ReplacementChoice(kind, when, price, cost, even))
+        choices.append(ReplacementChoice(kind, when, at_price, cost, even))
     # On a tie, the earlier choice; a planned replacement that never pays
     # is running to failure.
     best = min(

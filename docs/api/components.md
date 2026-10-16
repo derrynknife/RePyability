@@ -6,8 +6,6 @@
 
 ::: repyability.minimal_repair_time_to_nth_failure
 
-::: repyability.ReplacementPlan
-
 ::: repyability.Opportunity
 
 ::: repyability.Calendar

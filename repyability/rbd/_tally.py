@@ -133,13 +133,15 @@ _Breakdown = Tuple[Dict[str, float], Dict[Hashable, float]]
 
 class _Exacts(NamedTuple):
     """A system's expected values over a window, worked out exactly (see
-    ``RepairableRBD._twin_exact``): its mean availability and, if it is
-    priced, its expected cost, with that cost's split (see
-    ``ExpectedCost``)."""
+    ``RepairableRBD._twin_exact``): its mean availability, if it is
+    priced its expected cost, with that cost's split (see
+    ``ExpectedCost``), and against a demand the fraction of it delivered
+    (``mission_capacity``), where that is worked out."""
 
     availability: float
     cost: Optional[float] = None
     breakdown: Optional[_Breakdown] = None
+    delivered: Optional[float] = None
 
 
 class _ModuleRun:
@@ -569,6 +571,15 @@ class _ModuleRun:
             return None
         return self.breakdown()
 
+    def delivered(self) -> Optional[np.ndarray]:
+        """Each simulation's expected fraction of the demand delivered
+        given its modules' histories, in order; None without a demand."""
+        if self.recorder is None or self.recorder.demand is None:
+            return None
+        return np.concatenate(
+            [piece.delivered for piece in self.capacity_parts]
+        ) / (self.recorder.demand * self.T)
+
     def means(self) -> ConditionalRun:
         """The record of a plain run whose means are taken given its
         modules (see ``RepairableRBD._conditioned_run``)."""
@@ -582,6 +593,7 @@ class _ModuleRun:
             whole=True,
             uptimes=self.uptimes(),
             costs=self.costs() if self.priced else None,
+            delivered=self.delivered(),
         )
 
     def result(self) -> AvailabilityResult:
@@ -645,22 +657,14 @@ class _ModuleRun:
             unlimited = np.sum(
                 [piece.unlimited for piece in self.capacity_parts], axis=0
             )
-            demand = self.recorder.demand
             capacity_fields = dict(
                 capacity_timeline=curve_x.copy(),
                 capacity=np.where(unlimited > 0, np.inf, mean / n),
                 capacity_time={
                     level: time_at[level] for level in sorted(time_at)
                 },
-                demand=demand,
-                delivered=(
-                    None
-                    if demand is None
-                    else np.concatenate(
-                        [piece.delivered for piece in self.capacity_parts]
-                    )
-                    / (demand * T)
-                ),
+                demand=self.recorder.demand,
+                delivered=self.delivered(),
             )
         return AvailabilityResult(
             timeline=curve_x,
@@ -689,11 +693,13 @@ def _exact_controls(
     t_simulation: float,
     exacts: _Exacts,
     antithetic: bool,
-) -> Tuple[ControlVariate, Optional[ControlVariate]]:
-    """The controls of a run's fractions up and costs by the system itself,
-    whose expected values the exact methods work out (#187): ``exacts``,
-    its mean availability over the window and its expected cost (None
-    unpriced). Its intervals are then those values, with no error (see
+) -> Tuple[ControlVariate, Optional[ControlVariate], Optional[ControlVariate]]:
+    """The controls of a run's fractions up, costs and delivered
+    fractions by the system itself, whose expected values the exact
+    methods work out (#187): ``exacts``, its mean availability over the
+    window, its expected cost (None unpriced) and the fraction of the
+    demand delivered (None without one, or where ``mission_capacity``
+    refuses). Its intervals are then those values, with no error (see
     ``ControlVariate.itself``)."""
     exact, exact_cost = exacts.availability, exacts.cost
     fractions = np.asarray(tally.uptimes, dtype=float) / t_simulation
@@ -706,7 +712,13 @@ def _exact_controls(
         cost_control = ControlVariate.of(
             costs, costs, exact_cost, antithetic, itself=True
         )
-    return control, cost_control
+    delivered_control = None
+    if exacts.delivered is not None and tally.delivered:
+        delivered = np.asarray(tally.delivered, dtype=float)
+        delivered_control = ControlVariate.of(
+            delivered, delivered, exacts.delivered, antithetic, itself=True
+        )
+    return control, cost_control, delivered_control
 
 
 def _chunk_means(control_variate, conditional) -> Dict[str, Optional[bool]]:

@@ -183,6 +183,20 @@ def _ccf_timings(rbd, group) -> Optional[List["_ccf_chain.Timing"]]:
     return out
 
 
+def _timing_rates(rbd) -> List[float]:
+    """The rates at which the common-cause groups' members' tests and
+    repairs of an exponential length end (#220), the time scales of
+    their chains' transients after a test, for the integrals that
+    refine to them (see ``_windows._mission``)."""
+    out = []
+    for group in rbd.ccf_groups:
+        for timing in _ccf_timings(rbd, group) or ():
+            for duration in (timing.test, timing.repair):
+                if duration.rate is not None:
+                    out.append(float(duration.rate))
+    return out
+
+
 def _shared_causes(rbd) -> List[_Cause]:
     """The common-cause groups' shared causes, as the simulation strikes
     them (see ``_Cause``): each a Poisson process at its share of the
@@ -354,7 +368,8 @@ def _group_tests(rbd, group) -> Tuple[list, float]:
         count = int(round(period / schedule.interval))
         first = 0 if schedule.offset else 1
         for k in range(first, first + count):
-            time = schedule.offset + k * schedule.interval
+            # The last, at the period's end, rounded no further.
+            time = min(schedule.offset + k * schedule.interval, period)
             tests.append(
                 _ccf_chain.ProofTest(time, position, schedule.is_full(time))
             )
@@ -608,12 +623,12 @@ def _ccf_long_run_measure(
 ) -> dict:
     """An importance measure of every node in the long run, with the
     common-cause groups (see ``_ccf_measure``)."""
-    working = set(working_nodes or ())
-    broken = set(broken_nodes or ())
-    rbd._validate_node_overrides(working, broken)
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     _, weights, inputs = _ccf_long_run(rbd, working, broken)
     return _squeeze_values(
-        rbd._ccf_measure(measure, inputs, weights, kind, fv_type, method)
+        rbd._ccf_measure(
+            measure, inputs, weights, kind, fv_type, method, working | broken
+        )
     )
 
 

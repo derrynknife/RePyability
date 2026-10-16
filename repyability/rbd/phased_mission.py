@@ -23,8 +23,19 @@ set is listed, so a meshed phase stays as cheap as its diagram.
 ``METHOD = "paths"`` decomposes the phases' minimal path sets over the
 segments instead, as before (``_mission_plan``). The simulation draws each
 component's life once per mission instead.
+
+The importance measures (#316) hold a component across every phase: working
+throughout (every segment survived) or failed from the start (none), and
+replay the plan with its segments so held. The mission's minimal cut sets
+are sets of events "component failed by the end of phase j", from the
+phases' own cut sets with the usual phased-mission minimisation (a set is
+dropped when another is implied by it: fewer components, or later phases);
+the exact Fussell-Vesely importance takes the probability that some cut set
+naming a component has occurred from a decision diagram of those events
+over the segments (``_cut_set_plan``).
 """
 
+import math
 from typing import (
     Any,
     Dict,
@@ -39,12 +50,12 @@ from typing import (
 import numpy as np
 
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.rbd import bdd, modular
+from repyability.rbd import bdd, modular, routes
 from repyability.rbd._ordered_bdd import FALSE, TRUE, OrderedBDD
 from repyability.rbd._sampling import lifetime_sampler
 from repyability.rbd.results import ConfidenceInterval
-from repyability.rbd.shannon import _shannon_value_and_gradient
-from repyability.utils.checks import one_of
+from repyability.rbd.shannon import _plan_rows, replay, room
+from repyability.utils.checks import one_of, simulation_options
 from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.wrappers import numpy_seed
 
@@ -56,7 +67,9 @@ from repyability.utils.wrappers import numpy_seed
 METHOD = "bdd"
 
 #: The most nodes of the missions's decision diagram before the exact values
-#: refuse, pointing to the simulation.
+#: refuse, pointing to the simulation (and of the cut sets' diagram before
+#: the exact Fussell-Vesely importance refuses, pointing to the rare-event
+#: sum).
 MAX_NODES = 1_000_000
 
 #: The most distinct sub-problems the decomposition of the path sets
@@ -168,12 +181,13 @@ def _phase_diagram(
     manager: OrderedBDD, rbd, j: int, rank: Dict[Hashable, int], count: int
 ) -> int:
     """Phase ``j``'s structure as a decision diagram over the segments:
-    built from its diagram's modules and core (see ``modular.py``), each
-    component working when its first ``j + 1`` segments are survived.
-    Component ``c``'s ``k``-th segment is variable ``rank[c] * count + k``,
-    so a component's segments are decided together, in phase order."""
+    built from its diagram's modules and core (see ``modular.py``, the
+    junctions folded in as always working), each component working when
+    its first ``j + 1`` segments are survived. Component ``c``'s ``k``-th
+    segment is variable ``rank[c] * count + k``, so a component's segments
+    are decided together, in phase order."""
     try:
-        decomposition = rbd._decomposition()
+        decomposition = rbd._set_structure()
     except ValueError:
         return FALSE  # no set of working nodes makes the phase work
     if decomposition.always_works:
@@ -201,6 +215,43 @@ def _phase_diagram(
     return slots[root]
 
 
+def _outcomes(
+    plan: tuple, p: Dict[int, float], q: Dict[int, float]
+) -> Tuple[float, float]:
+    """The probabilities that the mission of ``plan`` succeeds and that it
+    fails, for the segments' survival probabilities ``p`` and their
+    complements ``q`` (by element number), each to its own relative
+    precision: the plan replayed with the terminals of failing and
+    succeeding at 0 and 1, and again with them swapped."""
+    pivots, actives, inactives, names = _plan_rows(plan)
+    works = [p[name] for name in names]
+    fails = [q[name] for name in names]
+    success, failure = (
+        replay(
+            pivots,
+            actives,
+            inactives,
+            plan[1],
+            works,
+            fails,
+            room(len(pivots), fail, work),
+        )
+        for fail, work in ((0.0, 1.0), (1.0, 0.0))
+    )
+    return float(success), float(failure)
+
+
+def _weaker(one: Dict[Hashable, int], other: Dict[Hashable, int]) -> bool:
+    """Whether the cut set ``one`` (each component's phase, by number) is
+    implied by ``other`` and is not it: every event of ``one`` follows from
+    one of ``other``, the same component failed by that phase or an
+    earlier one. Then ``other`` is no minimal cut set."""
+    return one != other and all(
+        component in other and other[component] <= phase
+        for component, phase in one.items()
+    )
+
+
 @refuse_removed_names
 class PhasedMission:
     """A mission through phases, each with its own duration and diagram over
@@ -225,7 +276,11 @@ class PhasedMission:
     ``MAX_NODES`` nodes. ``method="simulate"`` draws each component's life
     once per mission
     instead, and ``reliability_interval`` gives the simulated reliability
-    with a confidence interval, to a tolerance if asked.
+    with a confidence interval, to a tolerance if asked. The importance
+    measures (``birnbaum_importance`` and the others) hold a component
+    across every phase, working throughout or failed from the start, and
+    ``minimal_cut_sets`` gives the events, a component failed by the end
+    of a phase, that together fail the mission.
 
     Parameters
     ----------
@@ -315,8 +370,10 @@ class PhasedMission:
                     f"Phase {name!r} has common-cause groups, which a phased "
                     "mission does not model."
                 )
-            ends = {rbd.input_node, rbd.output_node}
-            used = tuple(n for n in rbd._components() if n not in ends)
+            # A junction (a PerfectReliability node, such as a vote point)
+            # is no component: the diagram folds it out of its structure.
+            left_out = {rbd.input_node, rbd.output_node} | rbd._junctions()
+            used = tuple(n for n in rbd._components() if n not in left_out)
             for node in used:
                 model = rbd.reliabilities[node]
                 known = self.components.setdefault(node, model)
@@ -331,24 +388,37 @@ class PhasedMission:
         self.duration = end
         # The decomposition of the first so many phases, once worked out.
         self._plans: Dict[int, tuple] = {}
+        # The minimal cut sets, and the plan of their occurrence by
+        # component (see ``_cut_set_plan``), once worked out.
+        self._cut_sets: Optional[List[frozenset]] = None
+        self._cut_plan: Optional[Tuple[tuple, Dict[Hashable, int]]] = None
 
     # ------------------------------------------------------------------
     # Exact
     # ------------------------------------------------------------------
+
+    def _at_ends(self) -> Dict[Hashable, Tuple[np.ndarray, np.ndarray]]:
+        """Each component's probabilities of working and of having failed
+        at the phases' ends, from its model (each in its own right, so a
+        small one keeps its precision)."""
+        ends = np.array([phase.end for phase in self.phases])
+        out: Dict[Hashable, Tuple[np.ndarray, np.ndarray]] = {}
+        for node, model in self.components.items():
+            with np.errstate(all="ignore"):
+                sf = np.clip(np.ravel(model.sf(ends)).astype(float), 0, 1)
+                ff = np.clip(np.ravel(model.ff(ends)).astype(float), 0, 1)
+            out[node] = (sf, ff)
+        return out
 
     def _segments(self) -> Tuple[Dict[int, float], Dict[int, float]]:
         """Each component's segments' survival probabilities, and their
         complements, by element number (``component * phases + k``): the
         ``k``-th survived with ``R(T_k) / R(T_{k-1})``, the first from the
         mission's start (so a unit dead on arrival fails in it)."""
-        ends = np.array([phase.end for phase in self.phases])
-        count = len(ends)
+        count = len(self.phases)
         p: Dict[int, float] = {}
         q: Dict[int, float] = {}
-        for index, model in enumerate(self.components.values()):
-            with np.errstate(all="ignore"):
-                sf = np.clip(np.ravel(model.sf(ends)).astype(float), 0, 1)
-                ff = np.clip(np.ravel(model.ff(ends)).astype(float), 0, 1)
+        for index, (sf, ff) in enumerate(self._at_ends().values()):
             before_sf, before_ff = 1.0, 0.0
             for k in range(count):
                 element = index * count + k
@@ -393,7 +463,7 @@ class PhasedMission:
         order: Dict[Hashable, None] = {}
         for phase in self.phases:
             try:
-                decomposition = phase.rbd._decomposition()
+                decomposition = phase.rbd._set_structure()
             except ValueError:
                 continue  # the phase cannot work: it uses no component
             terms = decomposition.terms
@@ -454,10 +524,17 @@ class PhasedMission:
             plans.append((steps, slot))
         return plans
 
-    def _exact(self, phases: int) -> Tuple[float, float]:
-        """The probability that the mission gets through its first
-        ``phases`` phases, and that it fails in them, each to its own
-        relative precision."""
+    def _plan(self, phases: int) -> tuple:
+        """The plan of the probability that the mission gets through its
+        first ``phases`` phases (see ``_mission_plan``), worked out once.
+
+        Raises
+        ------
+        NotImplementedError
+            If the diagram needs more than ``MAX_NODES`` nodes (with
+            ``METHOD = "paths"``, the decomposition more than
+            ``MAX_STATES`` states).
+        """
         plan = self._plans.get(phases)
         if plan is None:
             if METHOD not in ("bdd", "paths"):
@@ -472,10 +549,153 @@ class PhasedMission:
                 for j, made in enumerate(self._diagram_plans()):
                     self._plans[j + 1] = made
                 plan = self._plans[phases]
+        return plan
+
+    def _exact(self, phases: int) -> Tuple[float, float]:
+        """The probability that the mission gets through its first
+        ``phases`` phases, and that it fails in them, each to its own
+        relative precision."""
+        return _outcomes(self._plan(phases), *self._segments())
+
+    # ------------------------------------------------------------------
+    # Importance and cut sets (#316)
+    # ------------------------------------------------------------------
+
+    def _held(self) -> Dict[Hashable, Tuple[float, float, float, float]]:
+        """For each component, the mission's reliability and unreliability
+        with it working throughout (every segment survived), then with it
+        failed from the start (none): the plan replayed with its segments
+        so held."""
+        plan = self._plan(len(self.phases))
         p, q = self._segments()
-        success, _ = _shannon_value_and_gradient(plan, p, q, (0.0, 1.0))
-        failure, _ = _shannon_value_and_gradient(plan, p, q, (1.0, 0.0))
-        return float(success), float(failure)
+        count = len(self.phases)
+        out: Dict[Hashable, Tuple[float, float, float, float]] = {}
+        for index, component in enumerate(self.components):
+            segments = range(index * count, (index + 1) * count)
+            working = _outcomes(
+                plan,
+                {**p, **dict.fromkeys(segments, 1.0)},
+                {**q, **dict.fromkeys(segments, 0.0)},
+            )
+            failed = _outcomes(
+                plan,
+                {**p, **dict.fromkeys(segments, 0.0)},
+                {**q, **dict.fromkeys(segments, 1.0)},
+            )
+            out[component] = (*working, *failed)
+        return out
+
+    def _measures(self) -> Dict[Hashable, Tuple[float, float, float]]:
+        """Each component's Birnbaum importance, ``R(works) - R(failed)``,
+        improvement potential, ``R(works) - R``, and the fall in the
+        reliability with it failed from the start, ``R - R(failed)``, each
+        taken from the probabilities of succeeding or of failing,
+        whichever are the smaller (a difference of values near 1 would
+        cancel), as a diagram's are (see
+        ``modular.Decomposition.value_and_gradient``): ``R(works) -
+        R(failed)`` is ``F(failed) - F(works)``."""
+        success, failure = self._exact(len(self.phases))
+        out: Dict[Hashable, Tuple[float, float, float]] = {}
+        for component, (
+            r_works,
+            f_works,
+            r_failed,
+            f_failed,
+        ) in self._held().items():
+            if success <= failure:
+                out[component] = (
+                    r_works - r_failed,
+                    r_works - success,
+                    success - r_failed,
+                )
+            else:
+                out[component] = (
+                    f_failed - f_works,
+                    failure - f_works,
+                    f_failed - failure,
+                )
+        return out
+
+    def _cut_set_plan(self) -> Tuple[tuple, Dict[Hashable, int]]:
+        """One plan (in ``shannon.py``'s format) of, for each component,
+        the event that some minimal cut set naming it (in any phase) has
+        occurred, with the root slot of each component's: a decision
+        diagram over the segments, an event "failed by the end of phase
+        ``j``" being the component's first ``j + 1`` segments not all
+        survived. Worked out once.
+
+        Raises
+        ------
+        NotImplementedError
+            If the diagram needs more than ``MAX_NODES`` nodes.
+        """
+        if self._cut_plan is None:
+            count = len(self.phases)
+            index = {node: i for i, node in enumerate(self.components)}
+            phase = {ph.name: j for j, ph in enumerate(self.phases)}
+            manager = OrderedBDD(
+                MAX_NODES,
+                "The mission's cut sets are too many to combine exactly "
+                f"(more than {MAX_NODES:,} nodes of their decision "
+                "diagram). Sum them instead: method='rare_event'.",
+            )
+            occurred: Dict[Hashable, List[int]] = {
+                node: [] for node in self.components
+            }
+            for cut in self.minimal_cut_sets():
+                events = []
+                for node, name in cut:
+                    chain = TRUE
+                    for k in range(phase[name], -1, -1):
+                        chain = manager.node(
+                            index[node] * count + k, FALSE, chain
+                        )
+                    events.append(manager.ite(chain, FALSE, TRUE))
+                diagram = manager.conjunction(events)
+                for node, _ in cut:
+                    occurred[node].append(diagram)
+            roots = {
+                node: manager.disjunction(diagrams)
+                for node, diagrams in occurred.items()
+            }
+            steps, slots = manager.plan(list(roots.values()), lambda v: v)
+            # The plan's own root is no one component's: each's slot is
+            # read from the replayed values.
+            self._cut_plan = ((steps, _FAIL), dict(zip(roots, slots)))
+        return self._cut_plan
+
+    def _fv_numerators(self, method: str) -> Dict[Hashable, float]:
+        """For each component, the probability that some minimal cut set
+        naming it has occurred (``method="exact"``), or the sum of the cut
+        sets' probabilities (``"rare_event"``), each cut set's the product
+        of its events', ``F_c(T_j)`` for "``c`` failed by the end of phase
+        ``j``"."""
+        one_of("method", method, ("exact", "rare_event"))
+        if method == "exact":
+            plan, slots = self._cut_set_plan()
+            pivots, actives, inactives, names = _plan_rows(plan)
+            p, q = self._segments()
+            values = room(len(pivots), 0.0, 1.0)
+            replay(
+                pivots,
+                actives,
+                inactives,
+                _FAIL,
+                [p[name] for name in names],
+                [q[name] for name in names],
+                values,
+            )
+            return {node: float(values[slot]) for node, slot in slots.items()}
+        failed = self._at_ends()
+        phase = {ph.name: j for j, ph in enumerate(self.phases)}
+        out: Dict[Hashable, float] = dict.fromkeys(self.components, 0.0)
+        for cut in self.minimal_cut_sets():
+            chance = float(
+                np.prod([failed[node][1][phase[name]] for node, name in cut])
+            )
+            for node, _ in cut:
+                out[node] += chance
+        return out
 
     # ------------------------------------------------------------------
     # Simulation
@@ -523,7 +743,7 @@ class PhasedMission:
                 for n in rbd._components()
             }
             lifetime = np.asarray(
-                rbd._decomposition().lifetime(nodes, size), dtype=float
+                rbd._set_structure().lifetime(nodes, size), dtype=float
             )
             failed[~(lifetime > phase.end)] = j
         return failed
@@ -536,10 +756,12 @@ class PhasedMission:
         tolerance=None,
         confidence: float = 0.95,
         max_samples=None,
+        least: int = 1,
     ) -> np.ndarray:
-        """The failure phases of ``mc_samples`` simulated missions, then
-        more while a run to ``tolerance`` needs them."""
-        montecarlo.check_count(mc_samples, antithetic, "mc_samples")
+        """The failure phases of ``mc_samples`` simulated missions (at
+        least ``least``), then more while a run to ``tolerance`` needs
+        them."""
+        montecarlo.check_count(mc_samples, antithetic, "mc_samples", least)
         montecarlo.check_confidence(confidence)
         limit = montecarlo.sample_limit(
             mc_samples,
@@ -602,8 +824,9 @@ class PhasedMission:
         Raises
         ------
         ValueError
-            If ``method`` is unknown, or ``mc_samples`` is given with
-            ``method="exact"`` or is not a positive integer.
+            If ``method`` is unknown, or ``mc_samples`` or ``seed`` is
+            given with ``method="exact"``, or ``mc_samples`` is not a
+            positive integer.
         NotImplementedError
             If the mission's decision diagram needs more than
             ``MAX_NODES`` nodes (with ``METHOD = "paths"``, the
@@ -627,7 +850,7 @@ class PhasedMission:
         >>> round(mission.reliability(), 10) == round(float(pair.sf(50.0)), 10)
         True
         """
-        return self._outcome(method, mc_samples, seed)[0]
+        return self._outcome(method, mc_samples, seed, "reliability")[0]
 
     def unreliability(
         self,
@@ -654,7 +877,7 @@ class PhasedMission:
         float
             The mission's unreliability.
         """
-        return self._outcome(method, mc_samples, seed)[1]
+        return self._outcome(method, mc_samples, seed, "unreliability")[1]
 
     #: The mission's reliability, by the name the diagrams give it (#179).
     sf = reliability
@@ -698,7 +921,9 @@ class PhasedMission:
         >>> {name: round(chance, 5) for name, chance in failing.items()}
         {'out': 0.09516, 'back': 0.08611}
         """
-        method = self._method(method, mc_samples)
+        method = self._method(
+            method, mc_samples, seed, "phase_failure_probabilities"
+        )
         names = [phase.name for phase in self.phases]
         if method == "simulate":
             failed = self._simulated(
@@ -761,8 +986,9 @@ class PhasedMission:
         Raises
         ------
         ValueError
-            If ``mc_samples``, ``confidence``, ``tolerance`` or
-            ``max_samples`` is invalid.
+            If ``mc_samples`` is not a whole number of at least 2 (an
+            interval needs two missions; even, with ``antithetic``), or
+            ``confidence``, ``tolerance`` or ``max_samples`` is invalid.
         NotImplementedError
             If ``antithetic`` is asked for and a component's lives cannot
             be drawn from uniforms.
@@ -779,7 +1005,13 @@ class PhasedMission:
         True
         """
         failed = self._simulated(
-            mc_samples, seed, antithetic, tolerance, confidence, max_samples
+            mc_samples,
+            seed,
+            antithetic,
+            tolerance,
+            confidence,
+            max_samples,
+            least=2,
         )
         succeeded = (failed == len(self.phases)).astype(float)
         estimate = float(succeeded.mean())
@@ -792,17 +1024,572 @@ class PhasedMission:
             confidence=confidence,
             standard_error=error,
             n_samples=len(succeeded),
+            method="simulated",
         )
 
-    def _method(self, method: str, mc_samples) -> str:
+    def birnbaum_importance(self) -> Dict[Hashable, float]:
+        """Birnbaum importance of each component over the mission.
+
+        ``B_i = R(i works) - R(i failed)``: the mission's reliability with
+        component ``i`` working throughout (every phase's segment of its
+        life survived) less its reliability with ``i`` failed from the
+        start (failed in the first phase, so in every phase), the
+        probability that ``i`` is critical to the mission. Each is the
+        mission's decision diagram replayed with the component's segments
+        so held, and the difference is taken from the probabilities of
+        succeeding or of failing, whichever are the smaller, so a small
+        importance in a reliable mission keeps its precision. Exact, at
+        the mission's end; it assumes independent components.
+
+        Returns
+        -------
+        dict[Hashable, float]
+            ``{component: importance}`` over the mission's components.
+
+        Raises
+        ------
+        NotImplementedError
+            If the mission's decision diagram needs more than ``MAX_NODES``
+            nodes.
+
+        Examples
+        --------
+        Two engines, both needed to take off and either to cruise: an
+        engine failed from the start fails the take-off, and one working
+        throughout carries the mission unless the other fails in the
+        take-off, so each is critical with the probability that the other
+        lasts the take-off, ``exp(-0.01 * 0.1)``.
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> engine = surv.Exponential.from_params([0.01])
+        >>> both = NonRepairableRBD(
+        ...     [("s", "e1"), ("e1", "e2"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> either = NonRepairableRBD(
+        ...     [("s", "e1"), ("s", "e2"), ("e1", "t"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> mission = PhasedMission(
+        ...     [("take-off", 0.1, both), ("cruise", 5.0, either)]
+        ... )
+        >>> {k: round(v, 6) for k, v in mission.birnbaum_importance().items()}
+        {'e1': 0.999, 'e2': 0.999}
+        """
+        return {
+            component: birnbaum
+            for component, (birnbaum, _, _) in self._measures().items()
+        }
+
+    def improvement_potential(self) -> Dict[Hashable, float]:
+        """Improvement potential of each component over the mission.
+
+        ``IP_i = R(i works) - R``: how much the mission's reliability would
+        rise if component ``i`` worked throughout (every phase's segment
+        of its life survived). Each is the mission's decision diagram
+        replayed with the component's segments so held (see
+        [`birnbaum_importance`][repyability.PhasedMission.birnbaum_importance]),
+        the difference taken from the probabilities of succeeding or of
+        failing, whichever are the smaller. Exact, at the mission's end; it
+        assumes independent components.
+
+        Returns
+        -------
+        dict[Hashable, float]
+            ``{component: improvement potential}`` over the mission's
+            components.
+
+        Raises
+        ------
+        NotImplementedError
+            If the mission's decision diagram needs more than ``MAX_NODES``
+            nodes.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> engine = surv.Exponential.from_params([0.01])
+        >>> both = NonRepairableRBD(
+        ...     [("s", "e1"), ("e1", "e2"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> either = NonRepairableRBD(
+        ...     [("s", "e1"), ("s", "e2"), ("e1", "t"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> mission = PhasedMission(
+        ...     [("take-off", 0.1, both), ("cruise", 5.0, either)]
+        ... )
+        >>> potential = mission.improvement_potential()
+        >>> {k: round(v, 6) for k, v in potential.items()}
+        {'e1': 0.003372, 'e2': 0.003372}
+        """
+        return {
+            component: potential
+            for component, (_, potential, _) in self._measures().items()
+        }
+
+    def risk_achievement_worth(self) -> Dict[Hashable, float]:
+        """Risk achievement worth (RAW) of each component over the mission.
+
+        ``RAW_i = F(i failed) / F``, per Modarres & Kaminskiy: the factor by
+        which the mission's unreliability would grow if component ``i``
+        were failed from the start (failed in the first phase, so in every
+        phase). It is at least 1. Each unreliability is the mission's
+        decision diagram replayed with the component's segments so held
+        (see
+        [`birnbaum_importance`][repyability.PhasedMission.birnbaum_importance]),
+        in its own right (not as one less a reliability), so a small one
+        keeps its precision; where the mission cannot fail the division
+        gives ``inf`` or ``nan``. Exact, at the mission's end; it assumes
+        independent components.
+
+        Returns
+        -------
+        dict[Hashable, float]
+            ``{component: RAW}`` over the mission's components.
+
+        Raises
+        ------
+        NotImplementedError
+            If the mission's decision diagram needs more than ``MAX_NODES``
+            nodes.
+
+        Examples
+        --------
+        Either engine failed from the start fails the take-off, so the
+        mission: its unreliability becomes 1.
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> engine = surv.Exponential.from_params([0.01])
+        >>> both = NonRepairableRBD(
+        ...     [("s", "e1"), ("e1", "e2"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> either = NonRepairableRBD(
+        ...     [("s", "e1"), ("s", "e2"), ("e1", "t"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> mission = PhasedMission(
+        ...     [("take-off", 0.1, both), ("cruise", 5.0, either)]
+        ... )
+        >>> raw = mission.risk_achievement_worth()
+        >>> {k: round(v, 2) for k, v in raw.items()}
+        {'e1': 228.74, 'e2': 228.74}
+        >>> round(1 / mission.unreliability(), 2)
+        228.74
+        """
+        _, failure = self._exact(len(self.phases))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return {
+                component: float(np.float64(f_failed) / failure)
+                for component, (_, _, _, f_failed) in self._held().items()
+            }
+
+    def risk_reduction_worth(self) -> Dict[Hashable, float]:
+        """Risk reduction worth (RRW) of each component over the mission.
+
+        ``RRW_i = F / F(i works)``, per Modarres & Kaminskiy: the factor by
+        which the mission's unreliability would shrink if component ``i``
+        worked throughout (every phase's segment of its life survived). It
+        is at least 1, and ``inf`` where the component working throughout
+        makes the mission certain. Each unreliability is the mission's
+        decision diagram replayed with the component's segments so held
+        (see
+        [`birnbaum_importance`][repyability.PhasedMission.birnbaum_importance]),
+        in its own right, so a small one keeps its precision. Exact, at the
+        mission's end; it assumes independent components.
+
+        Returns
+        -------
+        dict[Hashable, float]
+            ``{component: RRW}`` over the mission's components.
+
+        Raises
+        ------
+        NotImplementedError
+            If the mission's decision diagram needs more than ``MAX_NODES``
+            nodes.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> engine = surv.Exponential.from_params([0.01])
+        >>> both = NonRepairableRBD(
+        ...     [("s", "e1"), ("e1", "e2"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> either = NonRepairableRBD(
+        ...     [("s", "e1"), ("s", "e2"), ("e1", "t"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> mission = PhasedMission(
+        ...     [("take-off", 0.1, both), ("cruise", 5.0, either)]
+        ... )
+        >>> rrw = mission.risk_reduction_worth()
+        >>> {k: round(v, 4) for k, v in rrw.items()}
+        {'e1': 4.374, 'e2': 4.374}
+        """
+        _, failure = self._exact(len(self.phases))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return {
+                component: float(np.float64(failure) / f_works)
+                for component, (_, f_works, _, _) in self._held().items()
+            }
+
+    def criticality_importance(
+        self, kind: str = "failure"
+    ) -> Dict[Hashable, float]:
+        """Criticality importance of each component over the mission.
+
+        With ``R`` and ``F`` the mission's reliability and unreliability,
+        and ``R(i works)`` and ``R(i failed)`` its reliability with
+        component ``i`` working throughout and failed from the start (see
+        [`birnbaum_importance`][repyability.PhasedMission.birnbaum_importance]):
+
+        - ``kind="failure"`` (the default) gives the failure-oriented form
+          (Rausand & Høyland), ``CI_i = (R(i works) - R) / F``: the
+          probability, given that the mission has failed, that it would
+          have succeeded with component ``i`` working throughout; the
+          share of the mission's failures that ``i`` accounts for. For a
+          diagram this is ``B_i * (1 - R_i) / (1 - R_sys)``, as
+          [`criticality_importance`][repyability.NonRepairableRBD.criticality_importance]
+          gives it. It is ``nan`` where the mission cannot fail.
+        - ``kind="success"`` gives the success-oriented form,
+          ``CI_i = (R - R(i failed)) / R``: the probability, given that the
+          mission succeeds, that it would have failed with component ``i``
+          failed from the start (for a diagram, ``B_i * R_i / R_sys``). It
+          is ``nan`` where the mission cannot succeed.
+
+        Each difference is taken from the probabilities of succeeding or
+        of failing, whichever are the smaller, so a small share keeps its
+        precision. Exact, at the mission's end; it assumes independent
+        components.
+
+        Parameters
+        ----------
+        kind : str, optional
+            ``"failure"`` (the default) or ``"success"``.
+
+        Returns
+        -------
+        dict[Hashable, float]
+            ``{component: criticality importance}`` over the mission's
+            components.
+
+        Raises
+        ------
+        ValueError
+            If ``kind`` is neither ``"failure"`` nor ``"success"``.
+        NotImplementedError
+            If the mission's decision diagram needs more than ``MAX_NODES``
+            nodes.
+
+        Examples
+        --------
+        Two engines, both needed to take off and either to cruise: the
+        mission's failures without either engine's own failure are the
+        other's in the take-off, so each engine accounts for a share
+        ``1 - 1 / RRW_i`` of the failures.
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> engine = surv.Exponential.from_params([0.01])
+        >>> both = NonRepairableRBD(
+        ...     [("s", "e1"), ("e1", "e2"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> either = NonRepairableRBD(
+        ...     [("s", "e1"), ("s", "e2"), ("e1", "t"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> mission = PhasedMission(
+        ...     [("take-off", 0.1, both), ("cruise", 5.0, either)]
+        ... )
+        >>> ci = mission.criticality_importance()
+        >>> {k: round(v, 4) for k, v in ci.items()}
+        {'e1': 0.7714, 'e2': 0.7714}
+        >>> round(1 - 1 / mission.risk_reduction_worth()["e1"], 4)
+        0.7714
+        """
+        one_of("kind", kind, ("failure", "success"))
+        success, failure = self._exact(len(self.phases))
+        mission, which = (failure, 1) if kind == "failure" else (success, 2)
+        return {
+            component: (
+                float(measures[which] / mission) if mission > 0.0 else math.nan
+            )
+            for component, measures in self._measures().items()
+        }
+
+    def fussell_vesely(self, method: str = "exact") -> Dict[Hashable, float]:
+        """Fussell-Vesely importance of each component over the mission:
+        the share of the mission's failure probability that involves the
+        component, through the mission's minimal cut sets (see
+        [`minimal_cut_sets`][repyability.PhasedMission.minimal_cut_sets]),
+        sets of events "component ``c`` has failed by the end of phase
+        ``j``", each with probability ``F_c(T_j)``, that together fail the
+        mission. A cut set has occurred when every one of its events has,
+        and a component's are the cut sets naming it in any phase:
+
+            FV_i = P(some minimal cut set naming i has occurred) / F
+
+        with ``F`` the mission's unreliability. ``method="exact"`` (the
+        default) works out the probability of that union exactly, from a
+        decision diagram of the cut sets' events over the components'
+        segments (an event being the component's first ``j + 1`` segments
+        not all survived), so it is between 0 and 1.
+        ``method="rare_event"`` gives the rare-event approximation that
+        many PRA tools report, summing the cut sets' probabilities, each
+        the product of its events', instead of taking their union:
+
+            FV_i = sum over minimal cut sets C naming i of
+                   prod over (c, j) in C of F_c(T_j), divided by F
+
+        The sum over-estimates the union, so it can exceed 1 when the
+        failure probabilities are not small. ``F`` and each event's
+        probability are worked out in their own right (the mission's as
+        [`unreliability`][repyability.PhasedMission.unreliability] is, a
+        component's from its model's ``ff``), and so is the union, so
+        small ones keep their precision. Exact; it assumes independent
+        components.
+
+        Parameters
+        ----------
+        method : str, optional
+            ``"exact"`` (the default): the probability of the union of the
+            cut sets' occurrences; or ``"rare_event"``: the sum of their
+            probabilities.
+
+        Returns
+        -------
+        dict[Hashable, float]
+            ``{component: Fussell-Vesely importance}`` over the mission's
+            components.
+
+        Raises
+        ------
+        ValueError
+            If ``method`` is not ``"exact"`` or ``"rare_event"``.
+        NotImplementedError
+            If the mission's decision diagram, or with ``method="exact"``
+            the cut sets', needs more than ``MAX_NODES`` nodes.
+
+        Examples
+        --------
+        Two engines, both needed to take off and either to cruise: an
+        engine's share is the failures through its own loss in the
+        take-off or both engines' by the end of the cruise, not through the
+        other's loss in the take-off alone. The rare-event sum counts a
+        failure that is both at once twice.
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> engine = surv.Exponential.from_params([0.01])
+        >>> both = NonRepairableRBD(
+        ...     [("s", "e1"), ("e1", "e2"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> either = NonRepairableRBD(
+        ...     [("s", "e1"), ("s", "e2"), ("e1", "t"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> mission = PhasedMission(
+        ...     [("take-off", 0.1, both), ("cruise", 5.0, either)]
+        ... )
+        >>> fv = mission.fussell_vesely()
+        >>> {k: round(v, 4) for k, v in fv.items()}
+        {'e1': 0.7827, 'e2': 0.7827}
+        >>> fv = mission.fussell_vesely(method="rare_event")
+        >>> {k: round(v, 4) for k, v in fv.items()}
+        {'e1': 0.7941, 'e2': 0.7941}
+        """
+        _, failure = self._exact(len(self.phases))
+        numerators = self._fv_numerators(method)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return {
+                component: float(np.float64(numerator) / failure)
+                for component, numerator in numerators.items()
+            }
+
+    def minimal_cut_sets(self) -> List[frozenset]:
+        """The mission's minimal cut sets: sets of events ``(component,
+        phase name)``, "the component has failed by the end of that
+        phase", that together fail the mission, smallest first (then by
+        name).
+
+        A failure by one phase is one by every later phase, so an event is
+        implied by the same component's at an earlier phase. A cut set is
+        minimal when no event can be dropped and none replaced by a weaker
+        one, the component's failure by a later phase. They are the
+        phases' own minimal cut sets (each a phase's diagram's, its
+        components' failures dated to that phase), less those another
+        implies: a set is dropped when every event of another follows from
+        one of its own (the other names no component it lacks, each at
+        that phase or a later one), the usual phased-mission minimisation.
+        A phase whose diagram can never work has the empty cut set, which
+        implies every other. They are worked out on first use and kept.
+
+        Returns
+        -------
+        list of frozenset
+            The minimal cut sets, each a frozenset of ``(component, phase
+            name)`` events.
+
+        Raises
+        ------
+        NotImplementedError
+            If a phase's diagram is too meshed for its cut sets.
+
+        Examples
+        --------
+        Two engines, both needed to take off and either to cruise: an
+        engine failed by the end of the take-off fails the mission, as do
+        both failed by the end of the cruise.
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> engine = surv.Exponential.from_params([0.01])
+        >>> both = NonRepairableRBD(
+        ...     [("s", "e1"), ("e1", "e2"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> either = NonRepairableRBD(
+        ...     [("s", "e1"), ("s", "e2"), ("e1", "t"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> mission = PhasedMission(
+        ...     [("take-off", 0.1, both), ("cruise", 5.0, either)]
+        ... )
+        >>> for cut in mission.minimal_cut_sets():
+        ...     print(sorted(cut))
+        [('e1', 'take-off')]
+        [('e2', 'take-off')]
+        [('e1', 'cruise'), ('e2', 'cruise')]
+        """
+        if self._cut_sets is None:
+            dated: List[Dict[Hashable, int]] = []
+            for j, phase in enumerate(self.phases):
+                try:
+                    cuts = phase.rbd.get_min_cut_sets()
+                except ValueError:
+                    cuts = {frozenset()}  # no set of working nodes works
+                dated.extend(dict.fromkeys(cut, j) for cut in cuts)
+            kept = [
+                cut
+                for cut in dated
+                if not any(_weaker(other, cut) for other in dated)
+            ]
+            self._cut_sets = sorted(
+                (
+                    frozenset(
+                        (node, self.phases[j].name) for node, j in cut.items()
+                    )
+                    for cut in kept
+                ),
+                key=lambda cut: (len(cut), sorted(map(str, cut))),
+            )
+        return list(self._cut_sets)
+
+    def analysis_routes(self) -> Dict[str, routes.AnalysisRoute]:
+        """How each analysis of the mission is computed, found without
+        running it: exactly, by simulation, or not at all.
+
+        The exact analyses replay the phases' decision diagram over the
+        components' segments, and refuse when it would need more than
+        ``MAX_NODES`` nodes (the diagram is built, and kept for the
+        analyses; the Fussell-Vesely importance's cut sets' diagram too).
+        They are as exact as the components' reliabilities: a component
+        whose reliability is numerical makes them numerical, and one with
+        none (a ``StandbyModel`` only simulations take) makes them refuse,
+        as the diagrams' routes have it. The refusal is the message the
+        method would raise.
+
+        Returns
+        -------
+        dict[str, AnalysisRoute]
+            For each public analysis, by method name: its ``route``
+            (``"exact"``, ``"numerical"``, ``"simulated"`` or
+            ``"refused"``), the ``reason`` and the components that decide
+            it (see [`AnalysisRoute`][repyability.AnalysisRoute]).
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> unit = surv.Exponential.from_params([0.01])
+        >>> one = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": unit})
+        >>> mission = PhasedMission([("out", 10.0, one), ("back", 10.0, one)])
+        >>> routes = mission.analysis_routes()
+        >>> routes["reliability"].route, routes["reliability_interval"].route
+        ('exact', 'simulated')
+        """
+        r = routes
+        # A component whose model has no exact or numerical reliability
+        # refuses what is built on it, as the diagrams' routes have it.
+        nodes = {n: r.model_route(m) for n, m in self.components.items()}
+        refused = r.refusal(lambda: self._plan(len(self.phases)))
+        diagram = (
+            r.refused(refused)
+            if refused
+            else r.with_nodes(
+                r.EXACT,
+                "The phases' decision diagram over the components' "
+                "segments (Esary and Ziehms), replayed.",
+                nodes,
+                "reliabilities",
+            )
+        )
+        out = {
+            name: diagram
+            for name in (
+                "reliability",
+                "unreliability",
+                "sf",
+                "ff",
+                "phase_failure_probabilities",
+                "birnbaum_importance",
+                "improvement_potential",
+                "risk_achievement_worth",
+                "risk_reduction_worth",
+                "criticality_importance",
+            )
+        }
+        cuts = refused or r.refusal(self._cut_set_plan)
+        out["fussell_vesely"] = (
+            r.refused(cuts)
+            if cuts
+            else r.with_nodes(
+                r.EXACT,
+                "The mission's minimal cut sets, their occurrence a "
+                "decision diagram over the components' segments.",
+                nodes,
+                "reliabilities",
+            )
+        )
+        out["reliability_interval"] = r.AnalysisRoute(
+            r.SIMULATED, "Each component's life drawn once per mission."
+        )
+        return r.AnalysisRoutes(out)
+
+    def _method(self, method: str, mc_samples, seed, name: str) -> str:
         one_of("method", method, ("exact", "simulate"))
-        if method == "exact" and mc_samples is not None:
-            raise ValueError("mc_samples applies only to method='simulate'.")
+        if method == "exact":
+            simulation_options(
+                f"{name}()", {"mc_samples": mc_samples, "seed": seed}
+            )
         return method
 
-    def _outcome(self, method: str, mc_samples, seed) -> Tuple[float, float]:
-        """The mission's reliability and unreliability."""
-        method = self._method(method, mc_samples)
+    def _outcome(
+        self, method: str, mc_samples, seed, name: str
+    ) -> Tuple[float, float]:
+        """The mission's reliability and unreliability, as ``name`` asks
+        for them."""
+        method = self._method(method, mc_samples, seed, name)
         if method == "simulate":
             failed = self._simulated(
                 10_000 if mc_samples is None else mc_samples, seed

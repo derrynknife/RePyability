@@ -107,9 +107,12 @@ def test_acquisition_cost_alone_prices_no_running_cost():
         assert result.by_category["repair"] == 0.0
     assert rbd.expected_cost(10.0).total == 7.0
     assert rbd.total_cost(1e6) == 7.0
-    # With nothing priced at all, there is no cost to give.
+    # With nothing priced at all, there is no cost to give: it refuses.
     unpriced = RepairableRBD(SERIES, {"pump": spec(1e-3, 0.1)})
-    assert unpriced.cost(t_simulation=10.0, mc_samples=5, seed=0) is None
+    with pytest.raises(ValueError, match="Nothing is priced"):
+        unpriced.cost(t_simulation=10.0, mc_samples=5, seed=0)
+    with pytest.raises(ValueError, match="Nothing is priced"):
+        unpriced.total_cost(10.0)
     # A cost of 0 is left out.
     free = RepairableRBD(SERIES, {"pump": spec(1e-3, 0.1, acquisition_cost=0)})
     assert free.acquisition_costs == {}

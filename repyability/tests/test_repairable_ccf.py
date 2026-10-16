@@ -618,6 +618,38 @@ def test_beta_zero_gives_the_independent_measures_of_tested_members():
             )
 
 
+@pytest.mark.parametrize("interval", [99.9, 100.0, 100.001])
+def test_a_test_at_the_period_s_end_is_not_rounded_past_it(interval):
+    # Three tests of 99.9 end at the period of the full tests, 299.7,
+    # where the chain's last test, worked out as 3 * 99.9, rounds just
+    # past it, and would be skipped: the full test is lost, and the
+    # unavailability doubles. With no shared cause the group is the
+    # independent members, at every interval alike.
+    def components():
+        return {
+            "a": hidden(1e-3, interval, coverage=0.8, full_test=3 * interval),
+            "b": hidden(
+                1e-3,
+                interval,
+                offset=50.0,
+                coverage=0.8,
+                full_test=3 * interval,
+            ),
+        }
+
+    grouped = RepairableRBD(
+        PAIR, components(), ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.0))]
+    )
+    plain = RepairableRBD(PAIR, components())
+    assert grouped.mean_unavailability() == pytest.approx(
+        plain.mean_unavailability(), rel=1e-6
+    )
+    x = np.array([30.0 * 3 * interval + 20.0])
+    assert grouped.point_unavailability(x) == pytest.approx(
+        plain.point_unavailability(x), rel=1e-6
+    )
+
+
 def test_a_shared_cause_raises_the_members_importance():
     # Tested members: a shared cause makes the pair fail together, so a
     # member down says more of the other being down.

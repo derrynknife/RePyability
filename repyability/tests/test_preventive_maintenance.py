@@ -515,7 +515,8 @@ def test_a_zero_cost_prices_nothing():
     }
     rbd = single(spec)
     assert not rbd.has_costs
-    assert rbd.cost(100.0, mc_samples=2, seed=1) is None
+    with pytest.raises(ValueError, match="Nothing is priced"):
+        rbd.cost(100.0, mc_samples=2, seed=1)
     spec["preventive"]["cost"] = 1.0
     assert single(spec).has_costs
 

@@ -155,14 +155,15 @@ def _proportional_scale(spec, name: str, value: float) -> Optional[float]:
 def _option_bounds(key: str, option: str, options: dict) -> tuple:
     """The range of a maintenance option (as the constructor checks it):
     an interval past its offset or opportunity, an offset or opportunity
-    within the interval, a coverage or threshold a probability."""
+    within the interval (any age under a calendar policy, which has
+    none), a coverage or threshold a probability."""
     if option == "interval":
         floor = number_or_nan(
             options.get("offset" if key == "inspection" else "opportunity")
         )
         return (0.0 if math.isnan(floor) else floor, math.inf)
     if option in ("offset", "opportunity"):
-        return (0.0, float(options["interval"]))
+        return (0.0, float(options.get("interval", math.inf)))
     return _UNIT
 
 
@@ -307,30 +308,82 @@ def _levers(rbd) -> List[_Lever]:
             )
     for g, group in enumerate(groups):
         names = tuple(group.members)
-        spec = _as_spec(components[names[0]])
-        if spec is not None:
-            for name, value, moved, discrete, bounds, scale in _spec_levers(
-                spec
+        # Each member's own levers, by name: a lever the members hold at
+        # one value is the group's, moved in each member's own spec (so
+        # that what else differs between them, an offset, is kept); a
+        # member's test offset, its own place on the calendar, and a
+        # lever whose values differ between them, are each member's own,
+        # listed after the group's (the sensitivities report by key).
+        own: Dict[Hashable, Dict[str, tuple]] = {}
+        members_own: List[_Lever] = []
+        for member in names:
+            spec = _as_spec(components[member])
+            own[member] = (
+                {}
+                if spec is None
+                else {lever[0]: lever for lever in _spec_levers(spec)}
+            )
+        order = dict.fromkeys(name for m in names for name in own[m])
+        for name in order:
+            each = {m: own[m][name] for m in names if name in own[m]}
+            values = {lever[1] for lever in each.values()}
+            if (
+                name == "inspection.offset"
+                or len(each) < len(names)
+                or len(values) > 1
             ):
+                for member, (
+                    _,
+                    value,
+                    moved,
+                    discrete,
+                    bounds,
+                    scale,
+                ) in each.items():
 
-                def build_group(v, moved=moved, names=names):
-                    changed = dict(components)
-                    for member in names:
-                        changed[member] = moved(v)
-                    return {**args, "components": changed}
+                    def build_member(v, member=member, moved=moved):
+                        return {
+                            **args,
+                            "components": {**components, member: moved(v)},
+                        }
 
-                out.append(
-                    _Lever(
-                        names,
-                        name,
-                        value,
-                        discrete,
-                        build_group,
-                        None,
-                        bounds,
-                        scale,
+                    members_own.append(
+                        _Lever(
+                            member,
+                            name,
+                            value,
+                            discrete,
+                            build_member,
+                            None,
+                            bounds,
+                            scale,
+                        )
                     )
+                continue
+
+            def build_group(v, each=each):
+                changed = dict(components)
+                for member, (_, _, moved, _, _, _) in each.items():
+                    changed[member] = moved(v)
+                return {**args, "components": changed}
+
+            _, value, _, discrete, _, scale = each[names[0]]
+            bounds = (
+                max(lever[4][0] for lever in each.values()),
+                min(lever[4][1] for lever in each.values()),
+            )
+            out.append(
+                _Lever(
+                    names,
+                    name,
+                    value,
+                    discrete,
+                    build_group,
+                    None,
+                    bounds,
+                    scale,
                 )
+            )
         for letter, value in ccf_parameters(group.model).items():
 
             def build_ccf(v, g=g, letter=letter, group=group):
@@ -351,6 +404,7 @@ def _levers(rbd) -> List[_Lever]:
                     value,
                 )
             )
+        out += members_own
     crews = args.get("repair_crews")
     if crews is not None:
 
@@ -378,16 +432,47 @@ def _nonrepairable_levers(rbd) -> List[_Lever]:
     by their own names, and a common-cause group's (its members' one
     model's, then its own, ``ccf_beta``, ...) under the tuple of its
     members, at its first member's place, in the order of the nodes."""
+    return _model_levers_of(
+        rbd._init_args, "reliabilities", rbd.reliabilities, rbd.ccf_groups
+    )
+
+
+def _fault_tree_levers(tree) -> List[_Lever]:
+    """Every lever of a fault ``tree``, as its ``parameter_sensitivity``
+    reports them (as ``_nonrepairable_levers`` lists a diagram's): each
+    event's model's parameters, an event given as a probability having
+    the one, ``p``, and a common-cause group's under the tuple of its
+    members; a moved model goes back into the tree as the event was given
+    (``_as_event``: a probability stays one)."""
+    return _model_levers_of(
+        tree._init_args,
+        "events",
+        {event: tree._event_model(event) for event in tree.events},
+        tree.ccf_groups,
+        tree._as_event,
+    )
+
+
+def _model_levers_of(
+    args: dict, field: str, models: Mapping, groups, entry=lambda key, m: m
+) -> List[_Lever]:
+    """The levers of a structure built from ``args``, its constructor's
+    arguments, whose ``args[field]`` holds its nodes' ``models`` (the
+    diagram's ``reliabilities``, or a tree's events as models): each
+    node's model's parameters, by their own names, and a common-cause
+    group's (its members' one model's, then its own, ``ccf_beta``, ...)
+    under the tuple of its members, at its first member's place, in the
+    order of the nodes. ``entry(key, model)`` is a moved model as the
+    constructor takes it."""
     from .ccf import CCFGroup
     from .ccf import parameters as ccf_parameters
     from .ccf import with_parameters as with_ccf_parameters
 
-    args = rbd._init_args
-    models = dict(args["reliabilities"])
-    groups = list(rbd.ccf_groups)
+    given = dict(args[field])
+    groups = list(groups)
     group_of = {m: g for g, group in enumerate(groups) for m in group.members}
     out: List[_Lever] = []
-    for node, model in rbd.reliabilities.items():
+    for node, model in models.items():
         g = group_of.get(node)
         if g is not None and node != groups[g].members[0]:
             continue
@@ -401,9 +486,9 @@ def _nonrepairable_levers(rbd) -> List[_Lever]:
                 changed = moved(v)
                 return {
                     **args,
-                    "reliabilities": {
-                        **models,
-                        **{member: changed for member in members},
+                    field: {
+                        **given,
+                        **{m: entry(m, changed) for m in members},
                     },
                 }
 
@@ -446,9 +531,13 @@ def _nonrepairable_levers(rbd) -> List[_Lever]:
 
 
 def _levers_of(rbd) -> List[_Lever]:
-    """``rbd``'s levers, repairable or not."""
+    """``rbd``'s levers, repairable or not, or a fault tree's."""
+    from repyability.fault_tree import FaultTree
+
     from .non_repairable_rbd import NonRepairableRBD
 
+    if isinstance(rbd, FaultTree):
+        return _fault_tree_levers(rbd)
     if isinstance(rbd, NonRepairableRBD):
         return _nonrepairable_levers(rbd)
     return _levers(rbd)
@@ -533,13 +622,22 @@ def _difference(at: Callable, lever: _Lever, rel_step: float, base):
     return np.full_like(base, np.nan)
 
 
+#: What a diagram keeps that a diagram rebuilt with a lever moved reuses
+#: for the components it shares (see ``_rebuilt``): the cycles and tested
+#: units keyed by their models' identities and their own schedules.
+_REUSED = ("age_cycles", "block_cycles", "tested_lives", "tested_units")
+
+
 def _rebuilt(rbd, lever: _Lever, value: float):
     """The diagram with the lever at ``value``, or None if that is not a
-    valid value."""
+    valid value. It reuses what ``rbd`` has worked out for the
+    components the lever leaves as they are (``_REUSED``)."""
     try:
-        return type(rbd)(**lever.build(value))
+        changed = type(rbd)(**lever.build(value))
     except (ValueError, TypeError):
         return None
+    changed.__dict__["_kept"] = rbd._cache.copied(*_REUSED)
+    return changed
 
 
 def _system_at(rbd, lever: _Lever, quantities, asked: _Asked):
@@ -613,7 +711,8 @@ def _apart_at(rbd, lever: _Lever, quantity: str, importance: float):
             )
             part = importance * float(alone.mean_unavailability())
             if quantity == "cost_rate":
-                part = float(alone.expected_cost_rate()) + rate * part
+                own = alone.expected_cost_rate() if alone.has_costs else 0.0
+                part = float(own) + rate * part
         except (ValueError, TypeError, NotImplementedError):
             return None
         return np.atleast_1d(part)
@@ -772,9 +871,7 @@ def sensitivity(
                 f"window must be a positive, finite length, got {window!r}."
             )
         window = float(window)
-    working = set(working_nodes or ())
-    broken = set(broken_nodes or ())
-    rbd._validate_node_overrides(working, broken)
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     held = working | broken
     asked = _Asked(x, window, state, working, broken)
     found = _levers(rbd)
@@ -808,6 +905,11 @@ def sensitivity(
         pinned = lever.key in held or (
             isinstance(lever.key, tuple) and bool(held & set(lever.key))
         )
+        if timed and lever.name == "repair.q" and lever.value >= 1.0:
+            # Minimal repair (q = 1) is the one imperfect repair the
+            # values over time take: the derivative in q does not exist
+            # there, so the lever is left out of the report.
+            continue
         system = None
         for quantity in quantities:
             if pinned:
@@ -872,11 +974,14 @@ def _named(lever) -> Tuple[Hashable, str]:
     )
 
 
-def _no_lever(key, name: str, found: dict) -> ValueError:
-    """The error for a lever the diagram does not have, with the closest
-    name if one is close (#232): of the levers of ``key``, or else of the
-    keys."""
+def _no_lever(rbd, key, name: str, found: dict) -> ValueError:
+    """The error for a lever ``rbd`` does not have, with the closest name
+    if one is close (#232): of the levers of ``key``, or else of the keys,
+    which are named by the kind of diagram."""
+    from repyability.fault_tree import FaultTree
+
     from .rbd import _close_name
+    from .repairable_rbd import RepairableRBD
 
     names = [n for k, n in found if k == key]
     if names:
@@ -888,10 +993,17 @@ def _no_lever(key, name: str, found: dict) -> ValueError:
     keys = list(dict.fromkeys(k for k, _ in found))
     close = _close_name(key, keys)
     hint = "" if close is None else f" Did you mean {close!r}?"
+    if isinstance(rbd, FaultTree):
+        holders = "event with a model or common-cause group"
+    elif isinstance(rbd, RepairableRBD):
+        holders = (
+            "node with a model, common-cause group or the repair crews (None)"
+        )
+    else:
+        holders = "node with a model or common-cause group"
     return ValueError(
-        f"{key!r} has no levers: it is no node with a model, common-cause "
-        f"group or the repair crews (None).{hint} The keys with levers are: "
-        f"{keys}."
+        f"{key!r} has no levers: it is no {holders}.{hint} The keys with "
+        f"levers are: {keys}."
     )
 
 
@@ -911,7 +1023,7 @@ def with_levers(rbd, values) -> Any:
             (lever.key, lever.name): lever for lever in _levers_of(changed)
         }
         if (key, name) not in found:
-            raise _no_lever(key, name, found)
+            raise _no_lever(rbd, key, name, found)
         lever = found[(key, name)]
         if not is_number(value):
             raise TypeError(

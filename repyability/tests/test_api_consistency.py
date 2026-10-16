@@ -271,6 +271,36 @@ def test_what_0_13_deprecates_goes_in_0_14():
     assert version < tuple(map(int, NEXT_REMOVAL.split(".")))
 
 
+def test_what_0_14_deprecates_goes_in_0_15():
+    # NodeState's phase, renamed since_scheduled (#350): giving phase= and
+    # reading .phase warn, and 0.15 refuses them.
+    version = tuple(map(int, __version__.split(".")))
+    assert version < (0, 15)
+
+
+def test_a_node_state_takes_phase_as_since_scheduled_for_now():
+    with pytest.warns(
+        FutureWarning, match="phase= is renamed since_scheduled"
+    ):
+        state = NodeState(age=10.0, phase=4.0)
+    assert state.since_scheduled == 4.0
+    assert state == NodeState(age=10.0, since_scheduled=4.0)
+    assert (
+        repr(state) == "NodeState(age=10.0, alive=True, since_scheduled=4.0)"
+    )
+    with pytest.warns(FutureWarning, match="phase is renamed since_scheduled"):
+        assert state.phase == 4.0
+    with pytest.raises(TypeError, match="since_scheduled alone"):
+        NodeState(phase=4.0, since_scheduled=4.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert NodeState(since_scheduled=4.0).since_scheduled == 4.0
+        assert (
+            NodeState(stationary=True, since_scheduled=4.0).since_scheduled
+            == 4.0
+        )
+
+
 def test_an_uncertainty_result_shows_a_summary():
     pump = surv.Weibull.fit(np.linspace(200, 1800, 50))
     rbd = NonRepairableRBD([("s", "pump"), ("pump", "t")], {"pump": pump})
@@ -452,3 +482,71 @@ def test_the_shocks_are_kept():
             np.random.default_rng(0),
         )
     assert all(m.shocks == "independent" for m in drawn)
+
+
+# -- the routes print one method a line (0.14 persona review) ----------------
+
+
+def test_the_routes_print_one_method_a_line():
+    import json
+
+    from repyability import AnalysisRoutes, FaultTree
+    from repyability.rbd.routes import AnalysisRoute
+
+    unit = {"reliability": W([100, 2]), "repairability": E([0.5])}
+    diagrams = [
+        NonRepairableRBD(BRIDGE, {n: W([100, 2]) for n in "abcde"}),
+        RepairableRBD(BRIDGE, {n: dict(unit) for n in "abcde"}),
+        FaultTree({"top": ("and", ["a", "b"])}, {"a": W([100, 2]), "b": 0.1}),
+        Network(
+            {"a": ("s", "t", W([100, 2])), "b": ("s", "t", 0.1)}, "s", "t"
+        ),
+        PhasedMission(
+            [
+                (
+                    "p",
+                    10.0,
+                    NonRepairableRBD(
+                        BRIDGE, {n: W([100, 2]) for n in "abcde"}
+                    ),
+                )
+            ]
+        ),
+    ]
+    for diagram in diagrams:
+        report = diagram.analysis_routes()
+        assert isinstance(report, AnalysisRoutes)
+        assert isinstance(report, dict)
+        assert all(isinstance(r, AnalysisRoute) for r in report.values())
+        lines = str(report).splitlines()
+        assert repr(report) == str(report)
+        assert len(lines) == len(report)
+        for line, (name, route) in zip(lines, report.items()):
+            head, rest = line.split(": ", 1)
+            assert head == name
+            assert rest.startswith(route.route + " -- ")
+            assert "\n" not in rest
+            assert route.reason.startswith(rest[len(route.route) + 4 :])
+        plain = report.to_dict()
+        assert plain == json.loads(json.dumps(plain))
+        first = next(iter(report))
+        assert plain[first] == report[first].to_dict()
+        assert dict(report) == {k: v for k, v in report.items()}
+    # A long refusal is cut to its first sentence.
+    long = AnalysisRoutes(
+        {
+            "mean": AnalysisRoute(
+                "refused", "First sentence. Then more.\nAnd more."
+            )
+        }
+    )
+    assert str(long) == "mean: refused -- First sentence."
+
+
+def test_simulated_intervals_say_so():
+    rbd = NonRepairableRBD(BRIDGE, {n: W([100, 2]) for n in "abcde"})
+    assert rbd.mean_time_to_failure_interval(mc_samples=50, seed=1).method == (
+        "simulated"
+    )
+    mission = PhasedMission([("p", 10.0, rbd)])
+    assert mission.reliability_interval(50, seed=1).method == "simulated"

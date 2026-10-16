@@ -86,7 +86,7 @@ def _draws_start(start) -> bool:
     """Whether a component started from ``start`` (a ``NodeState``, or
     None for new) draws what is left of its life, repair or maintenance:
     when it is down, or up at an age. Up at age 0, it is new, whatever its
-    phase."""
+    ``since_scheduled``."""
     return isinstance(start, NodeState) and (not start.alive or start.age > 0)
 
 
@@ -242,6 +242,12 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
         )
         if message:
             return r.REFUSED, message
+        if _requirements._repairs_take_time(component):
+            return (
+                r.NUMERICAL,
+                "minimal repair with repairs that take time: its operating "
+                "age followed on a grid, each failure's repair convolved in",
+            )
         return (
             r.EXACT,
             "minimal repair in no time: up throughout, failing as often "
@@ -533,7 +539,10 @@ def _node_curve(
         return _nested_curve(component, horizon, counts, stages, start)
     if node in rbd._standby:
         return _standby_curve(rbd, node, start)
-    if node not in rbd._inspection:
+    if node in rbd._imperfect or node not in rbd._inspection:
+        # An imperfectly repaired component's goes through
+        # _minimal_repair_curve, which refuses one whose failures are
+        # found only by its tests (as _node_over_time does).
         return _unit_curve(rbd, node, horizon, counts, degrading, start)
     unit = _requirements._tested_unit(rbd, node)
     if unit is not None:
@@ -562,10 +571,11 @@ def _node_curve(
         raise NotImplementedError(
             f"Component {node!r} has hidden failures, repaired at once "
             "when a test finds them, as the exact values need: it cannot "
-            "be down. Give the time since its last test as its phase (it "
-            "was found working), or simulate it: availability(state=...)."
+            "be down. Give the time since its last test as its "
+            "since_scheduled (it was found working), or simulate it: "
+            "availability(state=...)."
         )
-    phase = 0.0 if start is None else start.phase or 0.0
+    phase = 0.0 if start is None else start.since_scheduled or 0.0
     # Last known up at its last test, or, put into service since, when
     # it was.
     since = (
@@ -588,7 +598,7 @@ def _tested_unit_curve(rbd, node, unit: TestedUnit, horizon: float, start):
         if inspection.offset:
             return unit.curve(horizon, inspection.offset, 0)
         return unit.curve(horizon, 0.0, 1)
-    phase = start.phase or 0.0
+    phase = start.since_scheduled or 0.0
     if start.stationary:
         return unit.curve(horizon, -phase, 1, ("stationary",))
     if not start.alive:
@@ -608,7 +618,7 @@ def _tested_life_curve(rbd, node, life: TestedLife, start):
     if start is None:
         return TestedLifeCurve(life, inspection.offset or interval)
     # Up: its repairs take no time (see _check_state).
-    phase = start.phase or 0.0
+    phase = start.since_scheduled or 0.0
     if start.stationary:
         return TestedLifeSteady(life, phase)
     model = life.model
@@ -700,8 +710,8 @@ def _states(rbd, state, forced=frozenset(), simulated=False) -> dict:
 
 
 def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
-    """Raise if a component cannot be in ``state``: a phase off a
-    calendar or past its interval, maintenance it does not have, an age
+    """Raise if a component cannot be in ``state``: a ``since_scheduled``
+    off a calendar or past its interval, maintenance it does not have, an age
     it cannot be up at or a repair or maintenance that is always over
     sooner, a virtual age of a component not repaired imperfectly, or a
     state of a kind of component whose state is not taken (an
@@ -716,7 +726,7 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
     if (
         schedule is not None
         and schedule.level is not None
-        and not (state.new and state.phase is None)
+        and not (state.new and state.since_scheduled is None)
     ):
         raise NotImplementedError(
             f"Component {node!r} is replaced on condition by its "
@@ -726,7 +736,7 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
     if (
         inspection is not None
         and inspection.partial
-        and (state.phase is not None or not state.new)
+        and (state.since_scheduled is not None or not state.new)
     ):
         raise NotImplementedError(
             f"The tests of component {node!r} can miss a failure (a "
@@ -740,17 +750,18 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
         interval = inspection.interval
     elif schedule is not None and schedule.policy not in ("age", "calendar"):
         interval = schedule.interval
-    if state.phase is not None:
+    if state.since_scheduled is not None:
         if interval is None:
             raise ValueError(
                 f"Component {node!r} is not on a calendar (block "
                 "replacement, replacement on condition, or tests): give "
-                "it no phase."
+                "it no since_scheduled."
             )
-        if state.phase >= interval:
+        if state.since_scheduled >= interval:
             raise ValueError(
-                f"Component {node!r}: the phase, {state.phase:g}, is "
-                "the time since its last scheduled replacement or test, "
+                f"Component {node!r}: since_scheduled, "
+                f"{state.since_scheduled:g}, is the time since its last "
+                "scheduled replacement or test, "
                 f"less than its interval, {interval:g}."
             )
     if state.maintenance and (schedule is None or schedule.duration is None):
@@ -808,7 +819,7 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
         # last test, or when put into service since.
         since = 0.0
         if inspection is not None:
-            since = min(state.age, state.phase or 0.0)
+            since = min(state.age, state.since_scheduled or 0.0)
         age = state.age - since + (state.virtual_age or 0.0)
         survive = _sf_values(component.reliability.sf, np.array([age]))
         if not survive[0] > 0.0:
@@ -1429,6 +1440,66 @@ def _crew_window(
     return curves, counts
 
 
+#: The most grid points for a minimally repaired component's point
+#: availability with repairs that take time (see
+#: ``_minimal_repair_curve``): each power of its repair time summed costs
+#: a few FFTs of the grid.
+_MINIMAL_POINTS = 2**16
+
+
+def _minimal_repair_curve(rbd, node, horizon: float, counts: bool):
+    """A minimally repaired component's point availability and expected
+    failures from new over ``[0, horizon]`` (see ``MinimalRepairCurve``):
+    exact, as its life's cumulative hazard, with repairs in no time; with
+    repairs that take time, on a grid of ``_POINT_STEPS`` steps over its
+    typical up time (no coarser than 1024 steps over the window) to the
+    horizon, as the curve never settles."""
+    _requirements._require_minimal_repair(rbd, node)
+    component = rbd.components[node]
+    life = component.reliability
+    scale = _up_scale(life, None)
+    if not _requirements._repairs_take_time(component):
+        if not (np.isfinite(scale) and scale > 0.0):
+            scale = horizon if horizon > 0.0 else 1.0
+        return MinimalRepairCurve(life, scale, _POINT_STEPS, counts)
+    repair = component.time_to_replace
+    horizon = max(horizon, 0.0)
+    step = horizon / 1024.0 if horizon > 0.0 else np.inf
+    if np.isfinite(scale) and scale > 0.0:
+        step = min(step, scale / _POINT_STEPS)
+    if not np.isfinite(step):
+        step = 1.0
+    n = int(np.ceil(horizon / step))
+    if n > _MINIMAL_POINTS:
+        step = horizon / _MINIMAL_POINTS
+        if np.isfinite(scale) and step > scale / 250.0:
+            raise NotImplementedError(
+                f"Component {node!r} would need more than "
+                f"{_MINIMAL_POINTS} grid points to follow its "
+                f"availability to {horizon} (its typical up time is "
+                f"about {scale:.3g}): estimate it by simulation, "
+                "with availability()."
+            )
+        n = _MINIMAL_POINTS
+    try:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return MinimalRepairCurve(
+                life,
+                scale,
+                _POINT_STEPS,
+                counts,
+                repair_sf=lambda s: _sf_values(repair.sf, s),
+                repair_splits=point_knots(repair),
+                step=step,
+                n=max(n, 1),
+            )
+    except NotImplementedError as error:
+        raise NotImplementedError(
+            f"Component {node!r}: {error}. Estimate its availability "
+            "by simulation, with availability()."
+        ) from None
+
+
 def _unit_curve(
     rbd,
     node,
@@ -1456,13 +1527,7 @@ def _unit_curve(
     _requirements._require_no_opportunities(rbd, node)
     component = rbd.components[node]
     if node in rbd._imperfect:
-        _requirements._require_minimal_repair(rbd, node)
-        scale = _up_scale(component.reliability, None)
-        if not (np.isfinite(scale) and scale > 0.0):
-            scale = horizon if horizon > 0.0 else 1.0
-        return MinimalRepairCurve(
-            component.reliability, scale, _POINT_STEPS, counts
-        )
+        return _minimal_repair_curve(rbd, node, horizon, counts)
     schedule = None if unscheduled else rbd._preventive.get(node)
     if schedule is not None and schedule.policy in ("block", "condition"):
         return _block_curve(rbd, node, horizon, start)
@@ -1642,7 +1707,7 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
         return block_availability(*models, horizon, node, head)
 
     if start is not None and not start.new and not stationary:
-        length = schedule.interval - (start.phase or 0.0)
+        length = schedule.interval - (start.since_scheduled or 0.0)
         head = _unit_curve(
             rbd, node, length, counts=True, start=start, unscheduled=True
         )
@@ -1675,7 +1740,7 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     if not stationary:
         return curve
     assert start is not None
-    return ShiftedCurve(curve, curve.settle + (start.phase or 0.0))
+    return ShiftedCurve(curve, curve.settle + (start.since_scheduled or 0.0))
 
 
 def _first_unit(

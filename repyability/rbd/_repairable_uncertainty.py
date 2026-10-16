@@ -46,21 +46,20 @@ from repyability.rbd.results import (
     UncertaintyImportance,
     UncertaintyResult,
 )
+from repyability.rbd.routes import Refused
 from repyability.utils.checks import (
     one_of,
 )
-from repyability.utils.checks import seed as check_seed
 from repyability.utils.wrappers import outside_level
 
 from .uncertainty import (
     FIT,
-    Counter,
-    SobolPoints,
-    check_sampling,
+    check_draws,
     draw_ccf_models,
     draw_models,
+    draw_with,
     is_fit,
-    sobol_table,
+    split_group_levers,
     varied_ccf_parameters,
     varied_parameters,
 )
@@ -247,6 +246,45 @@ def fitted(rbd) -> Dict[Hashable, Dict[str, str]]:
     }
 
 
+def nested_fits(rbd) -> list:
+    """The nested RBDs (by node) holding a fitted model the default
+    uncertainty would draw if they were this diagram's own components:
+    they are not drawn here (a nested diagram's own uncertainty methods
+    take them)."""
+    from .repairable_rbd import RepairableRBD
+
+    return [
+        node
+        for node, component in rbd.components.items()
+        if isinstance(component, RepairableRBD)
+        and (fitted(component) or nested_fits(component))
+    ]
+
+
+def require_fitted(rbd) -> None:
+    """Raise (``Refused``) unless some component's model is a surpyval
+    fit with a parameter covariance, which the uncertainty is drawn from
+    by default (``fitted``): the message names the nested RBDs whose
+    fits are not drawn here, if any."""
+    if fitted(rbd):
+        return
+    inside = nested_fits(rbd)
+    nested = (
+        ""
+        if not inside
+        else (
+            f" (the fits inside nested RBD {inside[0]!r} are not drawn "
+            "here: its own uncertainty methods take them)"
+        )
+    )
+    raise Refused(
+        "No component's model is a surpyval fit with a parameter "
+        f"covariance, which the uncertainty is drawn from by default{nested}: "
+        "give the uncertain nodes, uncertainty={node: 'fit'} or {node: "
+        "{'repairability': {parameter: distribution}}}, for example."
+    )
+
+
 def half_named(label: str, others: list, what: str, together) -> None:
     """Warn that an input is drawn without ``others``, which hold the same
     fitted ``what`` and keep it as it is in every draw."""
@@ -274,15 +312,8 @@ def sources(
 
     given = uncertainty is not None
     if uncertainty is None:
+        require_fitted(rbd)
         uncertainty = fitted(rbd)
-        if not uncertainty:
-            raise ValueError(
-                "No component's model is a surpyval fit with a parameter "
-                "covariance, which the uncertainty is drawn from by "
-                "default: give the uncertain nodes, uncertainty={node: "
-                "'fit'} or {node: {'repairability': {parameter: "
-                "distribution}}}, for example."
-            )
     if not uncertainty:
         raise ValueError(
             "Give the uncertain nodes: uncertainty={node: 'fit'}, for "
@@ -297,8 +328,27 @@ def sources(
             (i for i, g in enumerate(rbd.ccf_groups) if key is g), None
         )
         if index is not None:
+            if index in groups:
+                raise ValueError(
+                    f"Common-cause group {list(key.members)!r} is given an "
+                    "uncertainty twice: under the CCFGroup and under its "
+                    "members."
+                )
             groups[index] = (key, spec)
             continue
+        # A group's own parameters under its members' tuple, named as its
+        # levers are (ccf_beta, ...), go to its model.
+        index, own, spec = split_group_levers(key, spec, rbd.ccf_groups)
+        if index is not None and own:
+            if index in groups:
+                raise ValueError(
+                    f"Common-cause group {list(key)!r} is given an "
+                    "uncertainty twice: under the CCFGroup and as "
+                    f"{list(own)!r} under its members."
+                )
+            groups[index] = (rbd.ccf_groups[index], own)
+            if not spec:
+                continue
         members = (
             key
             if isinstance(key, tuple) and key not in rbd.components
@@ -312,8 +362,9 @@ def sources(
             if _spec(rbd, node) is None:
                 raise ValueError(
                     f"Node {node!r} has no models of its own to draw (a "
-                    "nested RBD or a junction): give its own components' "
-                    "uncertainty to the nested RBD."
+                    "nested RBD or a junction): the models inside a nested "
+                    "RBD are not drawn here. Give its own uncertainty "
+                    "methods its components' uncertainty."
                 )
         label = _label(members)
         models = _models(rbd, members[0])
@@ -395,12 +446,7 @@ def draws(
     after the other. With ``sampling="sobol"``, from a scrambled Sobol
     sequence's points, a pair's sets from dimensions of their own (as
     ``NonRepairableRBD._uncertain_draws``)."""
-    if isinstance(n, bool) or not isinstance(n, (int, np.integer)):
-        raise ValueError(f"n_draws must be an integer, got {n!r}.")
-    if n < 1:
-        raise ValueError(f"n_draws must be at least 1, got {n}.")
-    check_sampling(sampling)
-    rng = np.random.default_rng(check_seed(seed))
+    check_draws(n)
 
     def draw(count: int, source) -> Tuple[List[Dict[str, list]], list]:
         drawn = []
@@ -431,23 +477,19 @@ def draws(
         ]
         return drawn, drawn_groups
 
-    if sampling == "random":
-        return draw(2 * n if paired else n, rng)
-    counter = Counter()
-    draw(1, counter)
-    width = counter.dimensions
-    table = sobol_table(n, 2 * width if paired else width, rng)
-    first = draw(n, SobolPoints(table[:, :width]))
-    if not paired:
-        return first
-    second = draw(n, SobolPoints(table[:, width:]))
-    return (
-        [
-            {role: a[role] + b[role] for role in a}
-            for a, b in zip(first[0], second[0])
-        ],
-        [None if a is None else a + b for a, b in zip(first[1], second[1])],
-    )
+    def join(first, second):
+        return (
+            [
+                {role: a[role] + b[role] for role in a}
+                for a, b in zip(first[0], second[0])
+            ],
+            [
+                None if a is None else a + b
+                for a, b in zip(first[1], second[1])
+            ],
+        )
+
+    return draw_with(draw, n, seed, sampling, paired, join)
 
 
 def build(rbd, inputs, drawn, drawn_groups, i: int):

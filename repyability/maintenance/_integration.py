@@ -238,33 +238,55 @@ class _OpportunityTable:
             np.zeros(times.size) if chance is None else np.asarray(chance)
         )
 
-    def at(self, t):
+    def _index(self, t) -> np.ndarray:
+        """The index in ``times`` of the opportunity at each of ``t``
+        (within a tolerance), -1 where none falls, or before
+        ``origin``."""
         t = np.asarray(t, float)
+        index = np.full(t.shape, -1, np.int64)
+        if self.times.size == 0:
+            return index
         local = np.mod(t, self.length)
         where = np.searchsorted(self.times, local)
-        out = np.full(t.shape, math.inf)
-        kinds = np.full(t.shape, -1, np.int64)
         tolerance = 1e-9 * self.length
         for shift in (0, -1):
             i = np.clip(where + shift, 0, self.times.size - 1)
             hit = np.abs(self.times[i] - local) <= tolerance
             hit |= np.abs(self.times[i] - local - self.length) <= tolerance
             hit |= np.abs(self.times[i] - local + self.length) <= tolerance
-            out = np.where(hit, self.thresholds[i], out)
-            kinds = np.where(hit, self.kinds[i], kinds)
-        before = t < self.origin - 1e-9 * self.length
-        return np.where(before, math.inf, out), np.where(before, -1, kinds)
+            index = np.where(hit, i, index)
+        before = t < self.origin - tolerance
+        return np.where(before, -1, index)
+
+    def at(self, t):
+        index = self._index(t)
+        if self.times.size == 0:
+            return np.full(index.shape, math.inf), index
+        found = index >= 0
+        i = np.maximum(index, 0)
+        out = np.where(found, self.thresholds[i], math.inf)
+        kinds = np.where(found, self.kinds[i], -1)
+        return out, kinds
+
+    def price_at(self, t: float) -> float:
+        """The price of the opportunity at ``t``, ``inf`` if none falls
+        there (this table prices no replacement on any day)."""
+        index = int(self._index(t))
+        return math.inf if index < 0 else float(self.prices[index])
 
     def next_planned(self, installed, after, oldest):
         """The first opportunity at or after ``after`` (strictly after, if
         the unit was put in then) at which a unit put in at ``installed``
         is replaced, its price and kind; ``(inf, 0.0, None)`` if none
-        before it would be ``oldest``."""
+        does. A unit past ``oldest`` (the oldest age worked out) is past
+        every threshold, so the opportunities are searched to where the
+        unit reaches that age, or a cycle ahead if it already has."""
         if self.times.size == 0:
             return math.inf, 0.0, None
         start = max(after, self.origin)
         first = math.floor((start - self.times[-1]) / self.length)
-        last = math.ceil((installed + oldest - self.times[0]) / self.length)
+        end = max(installed + oldest, start) + self.length
+        last = math.ceil((end - self.times[0]) / self.length)
         cycles = np.arange(first, last + 1) * self.length
         times = (cycles[:, None] + self.times[None, :]).ravel()
         thresholds = np.tile(self.thresholds, cycles.size)
@@ -278,7 +300,6 @@ class _OpportunityTable:
         )
         due = later & (times >= self.origin - tolerance)
         due &= times - installed >= thresholds - tolerance
-        due &= times - installed <= oldest
         if not due.any():
             return math.inf, 0.0, None
         i = int(np.argmax(due))
@@ -303,7 +324,9 @@ class _OpportunityTable:
         return out
 
 
-def integrated_policy(part, calendar, failure, *, max_age=None, tail="repeat"):
+def integrated_policy(
+    part, calendar, failure, *, max_age=None, tail="repeat", life=None
+):
     """The calendar policy between opportunities in continuous time (see
     the module's docstring)."""
     sf = _survival(part)
@@ -321,6 +344,7 @@ def integrated_policy(part, calendar, failure, *, max_age=None, tail="repeat"):
             determined_until=None,
             threshold_only=True,
             settings={"opportunities": 0},
+            life=life,
         )
         table = _OpportunityTable(
             1.0, np.array([]), np.array([]), np.array([], np.int64), [ANYTIME]
@@ -438,6 +462,7 @@ def integrated_policy(part, calendar, failure, *, max_age=None, tail="repeat"):
             "tail": tail if repeat is not None else None,
             "repeat": repeat,
         },
+        life=life,
     )
     origin = 0.0
     if repeat is not None:

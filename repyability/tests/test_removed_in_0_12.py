@@ -104,13 +104,13 @@ def test_repairables_old_name_raises():
 def test_simulation_options_need_method_simulate():
     rbd = NonRepairableRBD(ONE, {"a": W([100, 2])})
     for method in ("mean", "mean_time_to_failure"):
-        with pytest.raises(TypeError, match="only with method='simulate'"):
+        with pytest.raises(ValueError, match="only with method='simulate'"):
             getattr(rbd, method)(mc_samples=100)
-        with pytest.raises(TypeError, match="seed"):
+        with pytest.raises(ValueError, match="seed"):
             getattr(rbd, method)(seed=1)
     assert rbd.mean(method="simulate", mc_samples=100, seed=1) > 0
     node = RepeatedNode(W([100, 2]), 2, "series")
-    with pytest.raises(TypeError, match="only with method='simulate'"):
+    with pytest.raises(ValueError, match="only with method='simulate'"):
         node.mean(mc_samples=100)
 
 

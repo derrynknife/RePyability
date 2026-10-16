@@ -203,8 +203,12 @@ bool(TimelineSimulation.join(halves).system == year)   # True
 `Timelines` of one unit join the same way: `Timelines([first, second])`.
 
 Each history keeps every change, about 25 bytes of memory each: for a
-summary of a long run, `availability` keeps less. A diagram with
-common-cause groups is refused, as the simulations refuse it.
+summary of a long run, `availability` keeps less. With common-cause
+groups, a shared cause fails the members it strikes one after another at
+one instant, each a failure of the member's own: a system failure it makes
+is the member's whose fall took the system down (the last the structure
+could spare), not the group's, and `failures_by_cause()` counts it under
+that member.
 
 ### From the plant as it is now
 

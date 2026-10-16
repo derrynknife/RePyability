@@ -192,19 +192,105 @@ array), with `Q` the top event probability and `q_e` the event's:
 |---|---|
 | `birnbaum_importance(t)` | `Q(e occurred) − Q(e did not)`: how much `Q` depends on the event. |
 | `criticality_importance(t)` | `I_B(e) · q_e / Q`: the share of the top event the event accounts for. |
+| `improvement_potential(t)` | `Q − Q(e did not occur)`, which is `I_B(e) · q_e`: how far the top event would fall if the event could not occur. |
 | `fussell_vesely(t)` | The probability that some minimal cut set containing `e` has occurred, over `Q` (`method="rare_event"`: their probabilities summed, which can pass 1). |
 | `risk_achievement_worth(t)` | `Q(e occurred) / Q`. |
 | `risk_reduction_worth(t)` | `Q / Q(e did not occur)`. |
+| `structural_importance()` | The fraction of the other events' states in which `e` is pivotal: the Birnbaum importance with every event at 1/2, from the gates alone. |
+| `differential_importance(t)` | Each event's share of a change in `Q` when every event's probability moves ([DIM](importance.md#shares-of-a-change-differential-importance)). |
+| `joint_importance(t)` | Whether preventing two events together is worth more than preventing each ([second order](importance.md#pairs-joint-importance)). |
+| `barlow_proschan_importance(t)` | The probability that the event's occurring is what brings the top event about, by `t` or ever: `I_B(e)` times the event's density, integrated, over the sum. |
 
 ```python
 cooling.criticality_importance()
 # {'pump 1': 0.1597, 'pump 2': 0.1597, 'valve': 0.8319}
 cooling.risk_achievement_worth()["valve"]   # -> 16.81   top event certain once the valve fails
+cooling.improvement_potential()
+# {'pump 1': 0.0095, 'pump 2': 0.0095, 'valve': 0.0495}
+cooling.structural_importance()             # the valve is pivotal unless both pumps have failed
+# {'pump 1': 0.25, 'pump 2': 0.25, 'valve': 0.75}
+timed.barlow_proschan_importance()          # which event brings cooling down, over its life
+# {'pump 1': 0.3625, 'pump 2': 0.3625, 'valve': 0.2750}
 ```
 
 They are the same measures, with the same definitions, as the
 [importance measures](importance.md) of a `NonRepairableRBD`: a tree and the
-diagram of the same system give the same values.
+diagram of the same system give the same values. The Barlow–Proschan
+importance needs the events' models (an event given as a probability has
+no density, so no share), and is integrated numerically, to about `1e-9`.
+
+## Over a lifetime
+
+With lifetime models the top event has a time, and the tree gives what a
+diagram gives of its lifetime (see [Reliability of a
+system](reliability.md)), worked out on the tree's own evaluation: the mean
+time to the top event, the area under `sf` (to about `1e-10`); the time at
+which `sf` falls to a reliability, or by which the top event has occurred
+in `x` percent of systems, by root-finding; and the density, hazard and
+cumulative hazard, the first two by differences of the exact probability.
+
+```python
+timed.mean()                        # -> 8014.98   the mean time to loss of cooling
+timed.bx_life(10)                   # -> 3360.3    10% of systems have lost cooling by then
+timed.time_to_reliability(0.5)      # -> 7676.3    half have
+timed.hf(5000)                      # -> 0.000117  the hazard rate at 5000 h
+timed.Hf(5000)                      # -> 0.2548    the cumulative hazard, −ln sf
+```
+
+A tree of probabilities alone has no time to its top event: `mean`,
+`bx_life` and `time_to_reliability` refuse it, saying so. A common-cause
+group that splits a probability is refused by `mean` too, as a diagram
+refuses it (its model assumes a small probability, while over a lifetime it
+runs to 1): split the failure rate instead (`basis="rate"`).
+
+### Sensitivities and levers
+
+`parameter_sensitivity(t)` gives how far `sf(t)` moves with each parameter
+of each event's model, the event's Birnbaum importance times its model's
+parameter derivative (an event given as a probability has the one lever
+`p`; a common-cause group's parameters, and its model's `ccf_beta`, ...,
+are reported once under the tuple of its members, by differences of the
+exact probability). `levers()` lists the parameters, with their values and
+ranges, and `with_levers` builds the tree with some moved, as a diagram's
+do ([Sensitivities: the Greeks](greeks.md)):
+
+```python
+timed.parameter_sensitivity(5000)["valve"]
+# {'alpha': 7.27e-06, 'beta': 0.1343}
+[(lever.key, lever.name) for lever in timed.levers()][:2]
+# [('pump 1', 'alpha'), ('pump 1', 'beta')]
+timed.with_levers({("valve", "alpha"): 40000.0}).mean()   # -> 8850.3   a valve lasting twice as long
+```
+
+### Uncertainty from fitted event models
+
+`sf_uncertainty` and `mean_uncertainty` draw plausible models for the
+uncertain events, from their surpyval fits' covariance by default, or from
+distributions over named parameters, or a list of models, and work the
+top event probability, or the mean time to it, out exactly for each draw,
+as a diagram's [`sf_uncertainty`](reliability.md#uncertainty-in-the-component-models)
+does; the draws are those of the tree's diagram (`to_rbd()`, converted
+once), so events of one population go together in a tuple, and a group's
+members together. Here the pumps' Weibull scale is known only to lie
+between 7000 and 9000 h:
+
+```python
+import scipy.stats as st
+
+scale = {"alpha": st.uniform(7000, 2000)}
+spread = timed.sf_uncertainty(5000, {("pump 1", "pump 2"): scale}, n_draws=2000, seed=1)
+spread.nominal                      # -> 0.7751
+spread.interval(0.9)                # (0.733, 0.804)
+```
+
+`analysis_routes()` says, without running anything, how each of the tree's
+analyses is computed, as a diagram's does: exact, numerical, simulated, or
+refused and why.
+
+```python
+timed.analysis_routes()["mean"].route     # 'numerical'
+cooling.analysis_routes()["mean"].route   # 'refused'   no event has a lifetime
+```
 
 ## From diagrams to trees and back
 
@@ -251,7 +337,8 @@ with the bridge's logic.
 `to_json()` / `FaultTree.from_json()` (and `to_dict` / `from_dict`) save
 the gates, the top event and the events, probabilities as numbers and
 models as RePyability saves a diagram's node models, and the common-cause
-groups as a diagram saves them.
+groups as a diagram saves them. A tree built by `with_levers` saves the
+same way: an event given as a probability is still one.
 
 ## The model and its limits
 

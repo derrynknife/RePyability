@@ -36,6 +36,7 @@ from repyability.rbd import (
 from repyability.rbd._common import (
     _squeeze_values,
 )
+from repyability.rbd.rbd import Pairs
 from repyability.rbd.results import (
     RateBreakdown,
 )
@@ -112,9 +113,7 @@ def _crew_held_importance(
     is ``U(0_i) - U(1_i)``, ``"improvement"`` ``U - U(1_i)``, ``"raw"``
     ``U(0_i) / U`` and ``"rrw"`` ``U / U(1_i)``. A node already held
     is held the other way for its own measure."""
-    working = set(working_nodes or ())
-    broken = set(broken_nodes or ())
-    rbd._validate_node_overrides(working, broken)
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     base = np.float64(rbd.mean_unavailability(working, broken))
     out: dict = {}
     for node in rbd.nodes:
@@ -421,7 +420,7 @@ def differential_importance(
             key: np.asarray(derivatives[key], dtype=float) * scale[key]
             for key in kept
         }
-    scalar = x is None or np.ndim(x) == 0
+    scalar = np.ndim(x) == 0 and np.ndim(window) == 0
     return shares(contributions, groups, scalar, improving)
 
 
@@ -737,9 +736,7 @@ def availability_rate(
 ) -> RateBreakdown:
     """See ``RepairableRBD.availability_rate``."""
     times = nonnegative_times(x)
-    working = set() if working_nodes is None else set(working_nodes)
-    broken = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working, broken)
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     forced = working | broken
     states = _curves._states(rbd, state, forced)
     flat = times.ravel()
@@ -867,6 +864,28 @@ def joint_importance(
         for key, value in (("x", x), ("window", window), ("state", state))
         if value is not None
     }
+    if rbd.ccf_groups:
+        # Each pair conditioned on its states through the groups' chains
+        # (#317, see ``RepairableRBD._ccf_measure``), as the other measures
+        # are: refused where their chains do not cover the groups.
+        _ccf_groups._require_ccf_long_run(rbd)
+        if timed:
+            return Pairs(
+                _importance_over_time(
+                    rbd,
+                    _importance_time.Spec(_importance_time.JOINT),
+                    working_nodes,
+                    broken_nodes,
+                    x,
+                    window,
+                    state,
+                )
+            )
+        return Pairs(
+            _ccf_groups._ccf_long_run_measure(
+                rbd, _importance_time.JOINT, working_nodes, broken_nodes
+            )
+        )
     with rbd._sharing_curves():
         return rbd._joint_pairs(
             lambda working, broken: rbd.birnbaum_importance(

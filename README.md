@@ -13,7 +13,9 @@ taking already-fitted lifetime models (from
 
 - **Fault trees**: static fault trees (OR, AND and VOTE gates, repeated
   events) evaluated exactly, with common-cause groups, cut sets, importance
-  measures and conversion to and from block diagrams.
+  measures, the mean time to the top event, B-lives and hazard, parameter
+  sensitivities, uncertainty from fitted event models, and conversion to
+  and from block diagrams.
 - **Reliability**: exact system reliability, hazard and conditional survival;
   the exact MTTF (or simulated, with confidence intervals); B*X* life;
   uncertainty intervals on the reliability, MTTF, B*X* life and time to a
@@ -145,14 +147,14 @@ Which analyses each model type has (the method; — where it has none):
 | **Reliability and lifetime** | | | | | |
 | Reliability R(t) | `sf` | — | `sf` | `sf` | `sf` |
 | Unreliability F(t) | `ff` | — | `ff` | `ff` | `ff` |
-| Density, hazard, cumulative hazard | `df` | — | — | — | — |
-| Mean time to (first) failure | `mean` | — | — | `mean` | — |
+| Density, hazard, cumulative hazard | `df` | — | `df` | — | — |
+| Mean time to (first) failure | `mean` | — | `mean` | `mean` | — |
 | Each node's own R(t), F(t) and MTTF | `node_sf` | — | — | — | — |
-| B-life, time to a reliability | `bx_life` | — | — | — | — |
+| B-life, time to a reliability | `bx_life` | — | `bx_life` | `bx_life` | — |
 | Given the system's age | `cs` | — | — | — | — |
 | Given the components' ages or states | `sf_given_state` | — | — | — | — |
 | Mean residual and remaining life | `mean_residual_life` | — | — | — | — |
-| Random lifetimes | `random` | — | — | `random` | — |
+| Random lifetimes | `random` | — | `random` | `random` | — |
 | Top event probability | — | — | `top_event_probability` | — | — |
 | Each phase's failure probability | — | — | — | — | `phase_failure_probabilities` |
 | **Availability and outages** | | | | | |
@@ -174,33 +176,33 @@ Which analyses each model type has (the method; — where it has none):
 | Total cost of ownership | — | `total_cost` | — | — | — |
 | Spares demand and stock | — | `spares_demand` | — | — | — |
 | **Structure** | | | | | |
-| Minimal path and cut sets | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `cut_sets` | — |
+| Minimal path and cut sets | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` |
 | Each path set's probability | `path_set_probabilities` | `path_set_probabilities` | — | — | — |
 | Cut sets ranked by probability | — | — | `ranked_cut_sets` | — | — |
 | Irrelevant components | `find_irrelevant_components` | `find_irrelevant_components` | — | — | — |
 | Convert to and from an RBD | — | — | `to_rbd` | — | — |
 | Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — |
 | Capacity over time | — | `point_capacity` | — | — | — |
-| How each analysis is computed | `analysis_routes` | `analysis_routes` | — | — | — |
-| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | — | — |
+| How each analysis is computed | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` |
+| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | — |
 | **Importance measures** | | | | | |
-| Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | — |
-| Structural | `structural_importance` | `structural_importance` | — | — | — |
-| Improvement potential | `improvement_potential` | `improvement_potential` | — | — | — |
-| Risk achievement worth | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | — | — |
-| Risk reduction worth | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | — | — |
-| Criticality | `criticality_importance` | `criticality_importance` | `criticality_importance` | — | — |
-| Fussell-Vesely | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | — | — |
-| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | — | — |
-| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | — | — |
-| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | — | — | — |
+| Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` |
+| Structural | `structural_importance` | `structural_importance` | `structural_importance` | `structural_importance` | — |
+| Improvement potential | `improvement_potential` | `improvement_potential` | `improvement_potential` | `improvement_potential` | `improvement_potential` |
+| Risk achievement worth | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` |
+| Risk reduction worth | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` |
+| Criticality | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` |
+| Fussell-Vesely | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` |
+| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | — |
+| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | — |
+| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | — |
 | Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — |
 | Uncertainty importance | `uncertainty_importance` | `uncertainty_importance` | — | — | — |
 | All measures given a state | `importances_given_state` | — | — | — | — |
-| Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | — | — | — |
+| Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — | — |
 | **Uncertainty** | | | | | |
-| Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | — | — | `reliability_interval` |
-| Of the MTTF | `mean_uncertainty` | — | — | — | — |
+| Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | `sf_uncertainty` | `sf_uncertainty` | `reliability_interval` |
+| Of the MTTF | `mean_uncertainty` | — | `mean_uncertainty` | `mean_uncertainty` | — |
 | Of the B-life | `bx_life_uncertainty` | — | — | — | — |
 | Of the cost rate | — | `expected_cost_rate_uncertainty` | — | — | — |
 | **Design and maintenance** | | | | | |
@@ -221,7 +223,7 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | A surpyval model | E | N | N | E N | E N | N | S | E N | – | S |
 | A fitted model (with its covariance) | E | N | N | E N | E N | N | S | E N | – | S |
 | A fit with a cure share and zero-inflation | E | N | N | E N | E N | N | S | E N | – | S |
-| A probability per demand | E | – | – | E | E N | N | S | E N | – | S |
+| A probability per demand | E | – | – | E | E | N | S | E N | – | S |
 | A mixture (`MixtureModel`) | E | N | N | E N | E N | N | S | E N | – | S |
 | A regression node (covariates) | E | N | N | E N | E N | N | S | E N | – | S |
 | A degrading node | N | N | N | N | N | N | S | N | N | S |
@@ -233,8 +235,9 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | A repeated standby node | N | N | N | N | N | N | S | N | – | S |
 | A nested RBD | E | N | N | E N | E N | N | S | E N | – | S |
 | A junction | E | N | N | E N | E N | N | S | E N | – | S |
-| A beta-factor common-cause group | E | ✗ | N | ✗ | E N; ✗ `joint_importance` | N | S; ✗ `mean_uncertainty` | E N | – | S |
-| An MGL common-cause group | E | ✗ | N | ✗ | E N; ✗ `joint_importance` | N | S; ✗ `mean_uncertainty` | E N | – | S |
+| A beta-factor common-cause group | E | ✗ | N | ✗ | E N | N | S; ✗ `mean_uncertainty` | E N | – | S |
+| An MGL common-cause group | E | ✗ | N | ✗ | E N | N | S; ✗ `mean_uncertainty` | E N | – | S |
+| An alpha-factor common-cause group | E | ✗ | N | ✗ | E N | N | S; ✗ `mean_uncertainty` | E N | – | S |
 | Capacities | E | N | N | E N | E N | N | S | E N | E | S |
 | A structure too meshed to work out | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | S |
 
@@ -245,32 +248,34 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | | Long run | Frequency | Over time | Costs | Importance | Sensitivity | Uncertainty | Allocation | Intervals | Spares | Capacity | Simulation |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | Any life and repair | E | E | N | E N | E N | N | S | E | – | N | – | S |
-| A fitted life | E | E | N | E | E N | N | S | E | – | N | – | S |
-| A fitted Crow-AMSAA process | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
-| A probability per demand | ✗ | ✗ | ✗ | E | ✗ | ✗ | S; ✗ `mean_availability_uncertainty` | ✗ | – | N | ✗ `capacity_distribution` | S |
+| A fitted life | E | E | N | – | E N | N | S | E | – | N | – | S |
+| A fitted Crow-AMSAA process | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 9 of 10 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| A probability per demand | ✗ | ✗ | ✗ | – | ✗ | ✗ | ✗ `mean_availability_uncertainty` | ✗ | – | N | ✗ `capacity_distribution` | S |
 | A mixture life | E | E | N | E N | E N | N | S | E | – | N | – | S |
-| A fitted degradation process life | E | E | N | E | E N | N | S | E | – | N | – | S |
-| Operated part of the time (duty) | N | N | N | E | N | N | S | N | – | N | – | S |
-| A standby or load-sharing life, simulated | ✗ | ✗ | ✗ | E | ✗ | ✗ | S; ✗ `mean_availability_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
-| k-out-of-n | E | E | N | E | E N | N | S | E | – | N | – | S |
-| A nested RBD | E | E | N | E N | E N | N | S | E | – | N | – | S |
+| A fitted degradation process life | E | E | N | – | E N | N | S | E | – | N | – | S |
+| Operated part of the time (duty) | N | N | N | – | N | N | S | N | – | N | – | S |
+| A standby or load-sharing life, simulated | ✗ | ✗ | ✗ | – | ✗ | ✗ | ✗ `mean_availability_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| k-out-of-n | E | E | N | – | E N | N | S | E | – | N | – | S |
+| A nested RBD | E | E | N | E N | E N | N | S | E | – | – | – | S |
 | A junction | E | E | N | E N | E N | N | S | E | – | N | – | S |
-| Capacities | E | E | N | E | E N | N | S | E | – | N | E N | S |
+| Capacities | E | E | N | – | E N | N | S | E | – | N | E N | S |
 | Age replacement | N | N | N | N | N | N | S | N | N | N | – | S |
-| Block replacement | N | N | N | E | N | N | S | N | – | N | – | S |
+| Block replacement | N | N | N | – | N | N | S | N | – | N | – | S |
 | Opportunistic maintenance | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ `optimal_replacement_intervals` | ✗ | ✗ `capacity_distribution` | S |
 | Replacement on condition | N | N | N | N | N | N | S | N | – | ✗ | – | S |
 | Replacement on condition by level | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
-| Hidden failures, tested | N | N | N | E | N | N | S | N | – | N | – | S |
-| Tests that take time | N | N | N | E | N | N | S | N | – | N | – | S |
-| Tests that can miss a failure | N | N | N | E | N | N | S | N | – | N | – | S |
+| Hidden failures, tested | N | N | N | – | N | N | S | N | – | N | – | S |
+| Tests that take time | N | N | N | – | N | N | S | N | – | N | – | S |
+| Tests that can miss a failure | N | N | N | – | N | N | S | N | – | N | – | S |
 | Imperfect repair (Kijima) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Minimal repair | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 9 of 10 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| Minimal repair, repairs that take time | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 9 of 10 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Limited repair crews | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A standby group | E | E | N | E N | E N | N | S | E | – | ✗ | – | S |
-| A beta-factor group, revealed failures | N | N | N | E | N; ✗ `joint_importance` | N | S | N | – | N | – | S |
-| A beta-factor group, tested | E | E | N | E N | E N; ✗ `joint_importance` | N | S | E | – | N | – | S |
-| A group whose tests take time | N | N | N | N | N; ✗ `joint_importance` | N | S | N | – | N | – | S |
+| A beta-factor group, revealed failures | E | E | N | – | E N | N | S | E | – | N | – | S |
+| A beta-factor group, tested | E | E | N | E N | E N | N | S | E | – | N | – | S |
+| An alpha-factor group, revealed failures | E | E | N | – | E N | N | S | E | – | N | – | S |
+| A group whose tests take time | N | N | N | N | N | N | S | N | – | N | – | S |
 | A structure too meshed to work out | ✗ | ✗ | ✗ | E; ✗ `expected_cost` | ✗ | ✗ | S; ✗ `mean_availability_uncertainty` | ✗ | – | N | – | S |
 
 </details>

@@ -79,6 +79,20 @@ def _not_a_component(rbd, node, given: str) -> ValueError:
     )
 
 
+def _require_costs(rbd) -> None:
+    """Raise (``Refused``) if nothing is priced, not even an acquisition
+    cost (see ``has_costs``): the cost analyses have no cost model to
+    work on. (With an ``acquisition_cost`` alone they have the one-off
+    purchase, and no running cost, exactly.)"""
+    if not (rbd.has_costs or rbd.acquisition_cost):
+        raise Refused(
+            "Nothing is priced: give the components a repair_cost, "
+            "replace_cost, downtime_cost or acquisition_cost, their "
+            "maintenance or tests a cost, a maintenance group a "
+            "setup_cost, or the system a downtime_cost_rate."
+        )
+
+
 def _require_one_inspected(rbd) -> None:
     """Raise if more than one component has hidden failures, when no
     intervals are given to choose from (``optimal_inspection_intervals``
@@ -176,19 +190,32 @@ def _imperfect_phrase(rbd, node) -> str:
     return phrase
 
 
+def _repairs_take_time(component) -> bool:
+    """Whether a component's repairs take time (some of them, at least):
+    its repair time's survival function is above 0 at 0."""
+    repair = component.time_to_replace
+    return float(np.ravel(_sf_values(repair.sf, np.zeros(1)))[0]) > 0.0
+
+
 def _require_perfect_repair(rbd, node) -> None:
     """Raise if a component is repaired imperfectly (a spec's
     ``"repair"``): a repair does not renew it, so its long-run values
     are known only by simulation (its values over time, only by
-    simulation too, but for minimal repair in no time: see
+    simulation too, but for minimal repair: see
     ``_require_minimal_repair``)."""
     if node in rbd._imperfect:
-        over_time = (
-            "its values over a window from new are exact, as it fails "
-            "as often as its life's cumulative hazard"
-            if _minimal_repair_blocker(rbd, node) is None
-            else "nor its values over time"
-        )
+        if _minimal_repair_blocker(rbd, node) is not None:
+            over_time = "nor its values over time"
+        elif _repairs_take_time(rbd.components[node]):
+            over_time = (
+                "its values over a window from new are numerical, its "
+                "operating age followed on a grid"
+            )
+        else:
+            over_time = (
+                "its values over a window from new are exact, as it fails "
+                "as often as its life's cumulative hazard"
+            )
         raise NotImplementedError(
             f"Component {node!r} is repaired imperfectly "
             f"({_imperfect_phrase(rbd, node)}), so a repair does not "
@@ -200,14 +227,15 @@ def _require_perfect_repair(rbd, node) -> None:
 
 def _minimal_repair_blocker(rbd, node) -> Optional[str]:
     """Why an imperfectly repaired component's values over time have no
-    exact value, or None if they have: when it is minimally repaired
-    (Kijima, ``q = 1``) in no time, with no ``replace_after``,
-    preventive maintenance or tests, and a life that works at 0. Its
-    failures are then a non-homogeneous Poisson process whose intensity
-    is its life's hazard at its age (its age is its operating time,
-    which is all the time), so that it is up throughout and fails
-    ``H(t)`` times by ``t`` on average, ``H`` the life's cumulative
-    hazard (see ``MinimalRepairCurve``)."""
+    exact or numerical value, or None if they have: when it is minimally
+    repaired (Kijima, ``q = 1``), with no ``replace_after``, preventive
+    maintenance or tests, and a life that works at 0. Its failures are
+    then a non-homogeneous Poisson process in its operating time whose
+    intensity is its life's hazard at its age, the time it has been up,
+    which its repairs leave as it is: repaired in no time it is up
+    throughout and fails ``H(t)`` times by ``t`` on average, ``H`` the
+    life's cumulative hazard, and with repairs that take time its
+    operating age is followed on a grid (see ``MinimalRepairCurve``)."""
     imperfect = rbd._imperfect[node]
     component = rbd.components[node]
     if imperfect.q < 1.0:
@@ -217,9 +245,6 @@ def _minimal_repair_blocker(rbd, node) -> Optional[str]:
             f"it is replaced at its failure {imperfect.replace_after} "
             "since it was renewed"
         )
-    repair = component.time_to_replace
-    if float(np.ravel(_sf_values(repair.sf, np.zeros(1)))[0]) > 0.0:
-        return "its repairs take time"
     if node in rbd._preventive:
         return "it has preventive maintenance"
     if node in rbd._inspection:
@@ -232,7 +257,7 @@ def _minimal_repair_blocker(rbd, node) -> Optional[str]:
 
 def _require_minimal_repair(rbd, node) -> None:
     """Raise unless an imperfectly repaired component's values over time
-    are exact: minimal repair in no time (see
+    are exact or numerical: minimal repair (see
     ``_minimal_repair_blocker``)."""
     blocker = _minimal_repair_blocker(rbd, node)
     if blocker is not None:
@@ -240,9 +265,9 @@ def _require_minimal_repair(rbd, node) -> None:
             f"Component {node!r} is repaired imperfectly "
             f"({_imperfect_phrase(rbd, node)}), and {blocker}: its "
             "availability over time has no exact value here (it has "
-            "for minimal repair, q = 1, in no time, with no "
-            "replace_after, maintenance or tests). Estimate it by "
-            "simulation, with availability() or cost()."
+            "for minimal repair, q = 1, with no replace_after, "
+            "maintenance or tests). Estimate it by simulation, with "
+            "availability() or cost()."
         )
 
 

@@ -49,8 +49,10 @@ simulations' own means are beside them, whatever the method
 `method` says which the means are: `"exact"`, `"conditional"`,
 `"control_variate"` or `"simulated"`. `control_variate=False` keeps the
 simulations' own means, for a quick run that should not wait for the exact
-part (a few tenths of a second, more than a few hundred simulations of a
-small system take).
+part: the components' curves over the window, a few tenths of a second
+for plain units (more than a few hundred simulations of a small system
+take), and longer for maintained or tested components, whose curves
+follow their schedules (see [Availability over time](repairable.md#availability-over-time-exact)).
 
 | Option | Where | What it does |
 |---|---|---|
@@ -283,8 +285,9 @@ of 6 000 for `tolerance=0.0005`.
   on repair crews, and maintenance groups. And, component by component,
   what the exact methods over time do not take: a standby group's switching
   (unless its units are exponential, when its own chain follows it), whose
-  units then operate together; imperfect repair (but minimal repair in no
-  time, which the exact methods take); and inspections they do not take
+  units then operate together; imperfect repair (but minimal repair,
+  which the exact methods take, its repairs taking time or not); and
+  inspections they do not take
   (tests that can last as long as their interval), whose failures are then
   revealed. It
   keeps the rest, age and block replacement and replacement on condition

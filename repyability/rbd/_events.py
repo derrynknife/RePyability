@@ -466,7 +466,7 @@ class _Run:
     #: What the components draw their events from, when the diagram
     #: started the run itself (None when the caller passed them).
     _step_sources: Optional[dict]
-    #: Each calendar a state's phase shifts: by node, the time since its
+    #: Each calendar a state shifts: by node, the time since its
     #: last scheduled replacement or test.
     _phases: dict
     #: Common-cause groups: their members, each member's next event,
@@ -475,7 +475,10 @@ class _Run:
     _ccf_pending: dict
     _ccf_coins: dict
     #: Each component on a calendar policy: the price of its next planned
-    #: replacement (the opportunity's), charged when it falls.
+    #: replacement (the opportunity's), charged when it falls; of its
+    #: early renewal at a stop of its maintenance group, once queued
+    #: (``inf``: the calendar allows none then, see
+    #: ``_event_loop._CalendarCharge``).
     _calendar_price: dict
 
     def __init__(self) -> None:
@@ -546,8 +549,9 @@ class _Preventive(NamedTuple):
     policy: str
     duration: Any
     threshold: float = 0.0
-    #: Under ``"age"``, the age from which the unit is renewed early at a
-    #: stop of its maintenance group (#108); ``inf`` for never.
+    #: Under ``"age"`` or ``"calendar"``, the age from which the unit is
+    #: renewed early at a stop of its maintenance group (#108, #349);
+    #: ``inf`` for never.
     opportunity: float = math.inf
     #: Under ``"condition"`` with a degradation process for a life (#271):
     #: the measured level at or past which an inspection replaces the
@@ -661,7 +665,7 @@ class _Inspection(NamedTuple):
 
     def without_offset(self) -> "_Inspection":
         """The schedule on a calendar from 0 (a start from a state, whose
-        phase places it)."""
+        ``since_scheduled`` places it)."""
         return self._replace(offset=0.0) if self.offset else self
 
 

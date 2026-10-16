@@ -54,11 +54,13 @@ rbd.mean_time_to_failure()          # -> 93.82    mean time to failure, exactly
 rbd.birnbaum_importance(50)         # per-node Birnbaum importance at t = 50
 ```
 
-Minimal path and cut sets are available too:
+Minimal path and cut sets are available too, listed smallest first:
 
 ```python
-rbd.get_min_path_sets(include_in_out_nodes=False)
-rbd.get_min_cut_sets()
+rbd.minimal_path_sets()
+# [frozenset({'pump1', 'valve'}), frozenset({'pump2', 'valve'})]
+rbd.minimal_cut_sets()
+# [frozenset({'valve'}), frozenset({'pump1', 'pump2'})]
 ```
 
 You can force nodes working or failed to explore conditional behaviour:

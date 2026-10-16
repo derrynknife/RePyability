@@ -235,3 +235,51 @@ def test_quasi_random_draws_in_a_nonrepairable_diagram():
         sampling="sobol",
     )
     assert importance.first_order[("p1", "p2")] == pytest.approx(1.0, abs=0.02)
+
+
+def test_no_fit_refuses_the_default_and_the_routes_say_so():
+    # With no fitted model the default uncertainty has nothing to draw: a
+    # Refused, which the routes quote (the methods stay simulated: given
+    # the uncertain nodes, they run). The fits inside a nested RBD are
+    # not drawn, and the message says so.
+    from repyability.rbd.routes import Refused
+
+    rbd = RepairableRBD(
+        SERIES,
+        {
+            "pump": {**unit(E([0.01]), E([0.5])), "repair_cost": 1.0},
+            "valve": unit(E([0.005]), E([0.5])),
+        },
+    )
+    with pytest.raises(Refused, match="No component's model is a") as error:
+        rbd.mean_availability_uncertainty(n_draws=3, seed=0)
+    for name in (
+        "mean_availability_uncertainty",
+        "point_availability_uncertainty",
+        "mission_availability_uncertainty",
+        "expected_cost_rate_uncertainty",
+    ):
+        route = rbd.analysis_routes()[name]
+        assert route.route == "simulated"
+        assert str(error.value) in route.reason
+    assert "nested" not in str(error.value)
+    inner = RepairableRBD(
+        SERIES,
+        {
+            "pump": unit(fitted(10.0, 20), E([0.5])),
+            "valve": unit(E([0.01]), E([0.5])),
+        },
+    )
+    outer = RepairableRBD(
+        [("s", "sub"), ("sub", "c"), ("c", "t")],
+        {"sub": inner, "c": unit(E([0.02]), E([0.5]))},
+    )
+    with pytest.raises(Refused, match="inside nested RBD 'sub' are not"):
+        outer.mean_availability_uncertainty(n_draws=3, seed=0)
+    assert "nested RBD 'sub'" in (
+        outer.analysis_routes()["mean_availability_uncertainty"].reason
+    )
+    with pytest.raises(ValueError, match="not drawn here"):
+        outer.mean_availability_uncertainty({"sub": "fit"}, n_draws=3, seed=0)
+    # The nested diagram's own methods take them.
+    assert inner.mean_availability_uncertainty(n_draws=3, seed=0).std > 0

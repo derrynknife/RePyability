@@ -6,6 +6,7 @@ class's attributes (``RepairableRBD.PREVENTIVE_KEYS``, ...).
 """
 
 import math
+import warnings
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -39,6 +40,7 @@ from repyability.utils.checks import (
     number_or_nan,
     unfitted_distribution,
 )
+from repyability.utils.wrappers import outside_level
 
 #: Optional per-component cost fields accepted in a component spec dict.
 COST_KEYS = ("repair_cost", "replace_cost", "downtime_cost")
@@ -120,6 +122,52 @@ def _mean_cost(cost) -> float:
     if isinstance(cost, float):
         return cost
     return float(np.ravel(cost.mean())[0])
+
+
+def _warn_nested_costs(components: dict) -> None:
+    """Warn of a nested ``RepairableRBD`` that carries costs, which this
+    diagram does not count (its cost analyses price its own components
+    alone), naming the node: once per nested object, so that a diagram
+    rebuilt with the same one (a lever moved, a draw) says nothing new."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    for name, component in components.items():
+        if not isinstance(component, RepairableRBD):
+            continue
+        if component._costs_reported or not (
+            component.has_costs or component.acquisition_cost
+        ):
+            continue
+        component._costs_reported = True
+        warnings.warn(
+            f"Node {name!r} is a nested RBD that carries costs, which this "
+            "diagram does not count: its cost analyses (expected_cost_rate, "
+            "expected_cost, cost, total_cost) price its own components "
+            "alone. Count the nested diagram's costs with its own methods.",
+            UserWarning,
+            stacklevel=outside_level(),
+        )
+
+
+def _refuse_shared_nested(components: dict) -> None:
+    """Raise if one ``RepairableRBD`` object is given for two nodes: a
+    nested diagram carries its simulation state (its event queue), so
+    it is one node's. Give each node its own (``copy.deepcopy`` one
+    for nodes alike)."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    first: dict = {}
+    for name, component in components.items():
+        if not isinstance(component, RepairableRBD):
+            continue
+        other = first.setdefault(id(component), name)
+        if other != name:
+            raise ValueError(
+                f"Nodes {other!r} and {name!r} are given one RepairableRBD "
+                "object: a nested diagram carries its simulation state, "
+                "so it is one node's. Give each node its own "
+                "(copy.deepcopy it for nodes alike)."
+            )
 
 
 def _validate_ccf_groups(rbd, ccf_groups) -> list:
@@ -391,11 +439,22 @@ def _validate_component_spec(node, spec: dict) -> None:
             )
 
 
-def _validate_calendar(node, spec: dict, policy: str):
+def _saved_name(saved: dict) -> str:
+    """A model's saved form in a few words, for a message."""
+    if saved.get("kind") == "surpyval":
+        model = saved["model"]
+        return f"{model.get('distribution')} {model.get('params')}"
+    return str(saved.get("kind"))
+
+
+def _validate_calendar(node, spec: dict, policy: str, life):
     """A ``"calendar"`` policy's ``CalendarPolicy`` (#319), checked: given
     under that policy and no other, with no interval (its thresholds say
-    when) and no cost (its calendar's prices are charged)."""
+    when) and no cost (its calendar's prices are charged), and worked out
+    for the component's own ``life`` (the policy carries the saved form
+    of the life it was worked out for; one that does not save passes)."""
     from repyability.maintenance import CalendarPolicy
+    from repyability.rbd.serialisation import serialise_model
 
     given = spec.get("calendar")
     if policy != "calendar":
@@ -419,6 +478,19 @@ def _validate_calendar(node, spec: dict, policy: str):
             raise ValueError(
                 f"Component {node!r}: a 'calendar' policy takes no {key}: "
                 f"{why}."
+            )
+    if given.life is not None:
+        try:
+            saved = serialise_model(life)
+        except (NotImplementedError, TypeError, ValueError):
+            saved = None
+        if saved is not None and saved != given.life:
+            raise ValueError(
+                f"Component {node!r}: its calendar policy was worked out "
+                f"for another life ({_saved_name(given.life)}), not the "
+                f"life of the component ({_saved_name(saved)}): work the "
+                "policy out for it, "
+                "NonRepairable(life, ...).optimal_calendar_policy(calendar)."
             )
     return given
 
@@ -448,7 +520,7 @@ def _validate_preventive(
             f"Component {node!r}: the preventive policy must be 'age', "
             f"'block', 'condition' or 'calendar', got {policy!r}."
         )
-    calendar = _validate_calendar(node, spec, policy)
+    calendar = _validate_calendar(node, spec, policy, life)
     if calendar is not None:
         interval = math.inf
     else:
@@ -493,13 +565,19 @@ def _validate_preventive(
                 )
     opportunity = math.inf
     if spec.get("opportunity") is not None:
-        if policy != "age":
+        if policy not in ("age", "calendar"):
             raise ValueError(
                 f"Component {node!r}: an opportunity applies only to "
-                "the 'age' policy (a unit renewed early at a stop of "
-                "its maintenance group)."
+                "the 'age' and 'calendar' policies (a unit renewed early "
+                "at a stop of its maintenance group)."
             )
         opportunity = spec["opportunity"]
+        # Under a calendar policy (no single interval, #349): any age.
+        within = (
+            "at least 0"
+            if policy == "calendar"
+            else f"from 0 to the interval ({interval:g})"
+        )
         if (
             isinstance(opportunity, bool)
             or not isinstance(opportunity, (int, float, np.number))
@@ -507,8 +585,7 @@ def _validate_preventive(
         ):
             raise ValueError(
                 f"Component {node!r}: the opportunity must be an age "
-                f"from 0 to the interval ({interval:g}), got "
-                f"{opportunity!r}."
+                f"{within}, got {opportunity!r}."
             )
         opportunity = float(opportunity)
     duration = spec.get("duration", "instant")

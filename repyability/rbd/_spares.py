@@ -68,7 +68,21 @@ Two kinds of component are counted otherwise (#147):
   end, the block replacement there and ``C`` past it; after a block
   replacement, ``C``; over ``M(T) + 1`` replacements an interval. The
   life's sums are kept as the bands of grid points that hold their mass,
-  as a block interval may hold many lives.
+  as a block interval may hold many lives. A unit dead on arrival (its
+  life ending at 0 with probability ``q``) put in at a replacement fails
+  at its instant, and its replacement is put in there too (#322): each
+  replacement of the units that last, a failure or a block replacement,
+  brings ``G`` more at its instant, ``P(G = g) = q^g (1 - q)``,
+  independent of everything else, so the count above is that of the
+  lasting lives (the life given that it lasts) compounded
+  (``_compounded``): ``s`` or more if, of the units put in one after
+  another, the ``s``-th has fewer than that count lasting before it (a
+  binomial). A typical replacement is one of its instant's, with ``d``
+  of them before it as often as ``q^d (1 - q)``, so before a replacement
+  it is one more lasting replacement compounded, less one. (With repairs
+  or block replacements that take time, a unit dead on arrival after one
+  that took time fails on its own, and its replacement goes on as the
+  recursion below has it: on the grid, where it follows the atoms.)
 
   With repairs or block replacements that take time (#160), a unit down
   at a block time is not replaced there, and an interval need not start
@@ -166,6 +180,7 @@ from repyability.rbd.results import (
     SparesDemand,
     SparesStock,
 )
+from repyability.rbd.routes import Refused
 from repyability.utils.checks import (
     one_of,
 )
@@ -231,33 +246,64 @@ class Tested(NamedTuple):
     position: int = 0
 
 
-class _Dist(NamedTuple):
+class _Dist:
     """A distribution on the grid, rounded one way: its continuous part as
-    masses on the grid points, and its atoms (on grid points), exactly."""
+    masses on the grid points, and its atoms (on grid points), exactly.
+    Its Fourier transforms, for the convolutions of ``_sum``, are kept
+    once taken (``spectrum``): one convolved with many (a cycle with
+    each count's sum so far) is transformed once. Its masses are not
+    changed once a transform is taken."""
 
-    rest: np.ndarray
-    atoms: np.ndarray
+    __slots__ = ("rest", "atoms", "_spectra")
 
-    def __add__(self, other):  # type: ignore[override]
+    def __init__(self, rest: np.ndarray, atoms: np.ndarray):
+        self.rest = rest
+        self.atoms = atoms
+        self._spectra: Dict[Tuple[bool, int], np.ndarray] = {}
+
+    def __add__(self, other: "_Dist") -> "_Dist":
         return _Dist(self.rest + other.rest, self.atoms + other.atoms)
 
     def scaled(self, factor: float) -> "_Dist":
         return _Dist(factor * self.rest, factor * self.atoms)
 
+    def spectrum(self, atoms: bool, size: int) -> np.ndarray:
+        """The real FFT of length ``size`` of its atoms, or of all its
+        masses, taken once."""
+        from scipy.fft import rfft
 
-def _fft(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    from scipy.signal import fftconvolve
+        found = self._spectra.get((atoms, size))
+        if found is None:
+            values = self.atoms if atoms else self.rest + self.atoms
+            found = self._spectra[(atoms, size)] = rfft(values, size)
+        return found
 
-    if not a.any() or not b.any():
-        return np.zeros(len(a))
-    return np.maximum(fftconvolve(a, b)[: len(a)], 0.0)
+
+def _fft(a: _Dist, b: _Dist, atoms: bool) -> np.ndarray:
+    """The convolution of the masses of ``a`` and ``b`` (their atoms, or
+    all their masses), on the grid: by FFT, as ``scipy.signal.fftconvolve``
+    does it, with each distribution's transform taken once."""
+    from scipy.fft import irfft, next_fast_len
+
+    n = len(a.rest)
+    if atoms:
+        empty = not (a.atoms.any() and b.atoms.any())
+    else:
+        empty = not (
+            (a.rest.any() or a.atoms.any()) and (b.rest.any() or b.atoms.any())
+        )
+    if empty:
+        return np.zeros(n)
+    size = next_fast_len(2 * n - 1, True)
+    product = a.spectrum(atoms, size) * b.spectrum(atoms, size)
+    return np.maximum(irfft(product, size)[:n], 0.0)
 
 
 def _sum(a: _Dist, b: _Dist) -> _Dist:
     """The distribution of the sum of two independent ones: its atoms are
     sums of atoms, the rest continuous."""
-    total = _fft(a.rest + a.atoms, b.rest + b.atoms)
-    atoms = _fft(a.atoms, b.atoms)
+    total = _fft(a, b, False)
+    atoms = _fft(a, b, True)
     return _Dist(np.maximum(total - atoms, 0.0), atoms)
 
 
@@ -496,7 +542,10 @@ def _block_step(
     (an atom there). Rounded up, a failure on the block time itself came
     before it; rounded down, after it. ``before`` holds units put into
     service on a block time but just before it (rounded up onto it), which
-    are replaced there unless dead on arrival."""
+    are replaced there unless dead on arrival, a failure just before it
+    too (rounded up onto it). The failures that are atoms are those at
+    the instant of a start that is one: of units dead on arrival put in
+    at a block time, after its replacement (#322)."""
     size = len(start.rest)
     failed = _Dist(np.zeros(size), np.zeros(size))
     blocks = np.zeros(size)
@@ -508,15 +557,14 @@ def _block_step(
     for lo in range(0, size, period):
         hi = lo + period
         if hi < size and before[hi]:
-            failed.atoms[hi] += before[hi] * dead
+            failed.rest[hi] += before[hi] * dead
             blocks[hi] += before[hi] * (1.0 - dead)
         rest, atoms = start.rest[lo:hi], start.atoms[lo:hi]
         if not (rest.any() or atoms.any()):
             continue
-        part = _Dist(
-            np.pad(rest, (0, width - len(rest))),
-            np.pad(atoms, (0, width - len(atoms))),
-        )
+        part = _Dist(np.zeros(width), np.zeros(width))
+        part.rest[: len(rest)] = rest
+        part.atoms[: len(atoms)] = atoms
         out = _sum(part, cut)
         keep = width if up else width - 1
         stop = min(lo + keep, size)
@@ -541,8 +589,10 @@ def _block_starts(
     """The next units' starts: after each failure's repair and each block
     replacement's. Rounded up, a start on a block time is before it (its
     true time is at most the grid's), unless it is the unit put in there
-    by that block's replacement in no time (or, split, in under a step):
-    those are kept apart."""
+    by that block's replacement in no time (or, split, in under a step),
+    or by the repair in no time (or in under a step) of a failure at the
+    block time itself, the atoms (a unit dead on arrival after that
+    block's replacement, #322): those are kept apart, as atoms."""
     start = _sum(failed, repair) + _sum(blocks, maintenance)
     size = len(start.rest)
     before = np.zeros(size)
@@ -550,12 +600,12 @@ def _block_starts(
         return start, before
     on = np.arange(period, size, period)
     total = start.rest[on] + start.atoms[on]
-    renewed = blocks.atoms[on] * float(
-        maintenance.atoms[0] + maintenance.rest[0]
-    )
-    before[on] = np.maximum(total - renewed, 0.0)
+    after = failed.atoms[on] * float(
+        repair.atoms[0] + repair.rest[0]
+    ) + blocks.atoms[on] * float(maintenance.atoms[0] + maintenance.rest[0])
+    before[on] = np.maximum(total - after, 0.0)
     start.rest[on] = 0.0
-    start.atoms[on] = np.minimum(renewed, total)
+    start.atoms[on] = np.minimum(after, total)
     return start, before
 
 
@@ -1013,6 +1063,55 @@ def carries_over(model: Block) -> bool:
     )
 
 
+def _alive(model: Block) -> Tuple[Block, float]:
+    """``model`` with its life given that it lasts, and the share of its
+    units dead on arrival (#322): with repairs and block replacements in
+    no time, a replacement is followed at its instant by the failure of
+    a unit dead on arrival, whose replacement is too, and so on; the
+    replacements of the units that last are the lasting lives' alone."""
+    dead = float(np.ravel(model.life(np.zeros(1)))[0])
+    if dead <= 0.0:
+        return model, 0.0
+    life = model.life
+
+    def alive(x: np.ndarray) -> np.ndarray:
+        return np.maximum(life(x) - dead, 0.0) / (1.0 - dead)
+
+    return model._replace(life=alive), dead
+
+
+def _compounded(tails: np.ndarray, dead: float, kind: str) -> np.ndarray:
+    """``P(N >= s)``, ``s = 1, 2, ...``, for the replacements ``N`` when
+    each of the lasting units' replacements, counted by ``tails`` (their
+    ``P(B >= s)``), brings ``G`` more at its instant, ``P(G = g) = dead^g
+    (1 - dead)``: the units dead on arrival put in one after another
+    there. ``N`` is ``s`` or more if the ``s``-th of the units put in, in
+    ``s - 1`` Bernoulli trials with the chance ``1 - dead`` of lasting,
+    has fewer than ``B`` lasting before it (#322). Before a replacement
+    (``"arrival"``), the ones before it at its instant count too: as
+    often as it has ``d`` of its instant's before it, ``P(d) = dead^d (1 -
+    dead)``, so ``N + 1`` is ``B + 1`` replacements compounded."""
+    if dead <= 0.0:
+        return tails
+    from scipy.stats import binom
+
+    chances = -np.diff(np.concatenate(([1.0], tails, [0.0])))
+    counts = np.arange(len(chances))
+    more = 1 if kind == "arrival" else 0
+    out: List[float] = []
+    for s in range(1, MAX_COUNT + 1):
+        tail = float(
+            chances @ binom.cdf(counts - 1 + more, s - 1 + more, 1.0 - dead)
+        )
+        out.append(min(max(tail, 0.0), 1.0))
+        if tail < _TAIL:
+            return np.array(out)
+    raise NotImplementedError(
+        f"More than {MAX_COUNT} replacements are likely in the time: count "
+        "them by simulation instead."
+    )
+
+
 def _rows_fft(a: np.ndarray, b: np.ndarray, size: int = 0) -> np.ndarray:
     """Each row of ``a`` convolved with ``b`` and cut to ``size`` (the
     rows' length by default), clipped at 0 (as ``_fft``), on every core.
@@ -1069,7 +1168,7 @@ def _rows_step(
     for lo in range(0, size, period):
         hi = lo + period
         if hi < size:
-            failed_atoms[:, hi] += before[:, hi] * dead
+            failed_rest[:, hi] += before[:, hi] * dead
             blocks[:, hi] += before[:, hi] * (1.0 - dead)
         part_rest, part_atoms = rest[:, lo:hi], atoms[:, lo:hi]
         if not (part_rest.any() or part_atoms.any()):
@@ -1126,10 +1225,12 @@ def _rows_starts(
         return start_rest, start_atoms, before
     on = np.arange(period, size, period)
     total = start_rest[:, on] + start_atoms[:, on]
-    renewed = blocks[:, on] * float(maintenance.atoms[0] + maintenance.rest[0])
-    before[:, on] = np.maximum(total - renewed, 0.0)
+    after = failed_atoms[:, on] * float(
+        repair.atoms[0] + repair.rest[0]
+    ) + blocks[:, on] * float(maintenance.atoms[0] + maintenance.rest[0])
+    before[:, on] = np.maximum(total - after, 0.0)
     start_rest[:, on] = 0.0
-    start_atoms[:, on] = np.minimum(renewed, total)
+    start_atoms[:, on] = np.minimum(after, total)
     return start_rest, start_atoms, before
 
 
@@ -1676,7 +1777,10 @@ def count(model, end: float, kind: str) -> np.ndarray:
         if isinstance(model, Block):
             if kind == "new":
                 return _block_tails(model, end, steps)
-            return _block_lead_tails(model, end, kind, steps)
+            alive, dead = _alive(model)
+            return _compounded(
+                _block_lead_tails(alive, end, kind, steps), dead, kind
+            )
         return _count_tails(model, end, kind, steps)
 
     steps = FIRST_STEPS
@@ -1715,15 +1819,25 @@ _STOCK_CREWS = (
 
 def _spares_nodes(rbd, nodes, given: str = "nodes") -> list:
     """The components whose spares are counted: ``nodes`` (given in
-    ``given``) checked, or every component that is not a nested RBD."""
+    ``given``) checked, or every component; refused when none is given
+    and one is a nested RBD, whose components' spares are not counted
+    here (its own ``spares_demand`` counts them)."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     if nodes is None:
-        return [
+        nested = [
             node
             for node, component in rbd.components.items()
-            if not isinstance(component, RepairableRBD)
+            if isinstance(component, RepairableRBD)
         ]
+        if nested:
+            raise Refused(
+                f"Node {nested[0]!r} is a nested RBD, whose components' "
+                "spares are not counted here (its own spares_demand and "
+                "spares_stock count them): give the components counted, "
+                f"nodes={[n for n in rbd.components if n not in nested]!r}."
+            )
+        return list(rbd.components)
     chosen = list(dict.fromkeys(nodes))
     for node in chosen:
         _requirements._require_component(rbd, node, given)
@@ -1845,16 +1959,6 @@ def _replacements(rbd, node, long_run: bool = False):
         return _tested_replacements(rbd, node, simulate)
     schedule = rbd._preventive.get(node)
     if schedule is not None and schedule.policy == "block":
-        blocker = _block_lead_time_blocker(rbd, node) if long_run else None
-        if blocker is not None:
-            raise NotImplementedError(
-                f"Component {node!r} is replaced on a block schedule, "
-                f"and {blocker}: replacements can then come several at "
-                "one instant (a new unit failing as it is put in), "
-                "which its demand in a lead time does not take. "
-                "spares_demand counts its spares over a horizon, and "
-                "spares_demand(method='simulate') in the simulation."
-            )
         component = rbd.components[node]
         duration = schedule.duration
         return Block(
@@ -1913,33 +2017,6 @@ def _replacements(rbd, node, long_run: bool = False):
         age,
         mean_cycle,
     )
-
-
-def _block_lead_time_blocker(rbd, node) -> Optional[str]:
-    """Why a block-replaced component's demand in a lead time is not
-    worked out (None if it is): a unit may be dead on arrival while its
-    repairs or block replacements may take no time, so that
-    replacements can come several at one instant (#160; see
-    ``_spares``)."""
-    component = rbd.components[node]
-
-    def at_zero(model) -> float:
-        return 1.0 - float(np.ravel(_sf_values(model.sf, np.zeros(1)))[0])
-
-    if at_zero(component.reliability) <= 0.0:
-        return None
-    duration = rbd._preventive[node].duration
-    if at_zero(component.time_to_replace) > 0.0:
-        return (
-            "its life may end at 0 (dead on arrival) while its repairs "
-            "may take no time"
-        )
-    if duration is None or at_zero(duration) > 0.0:
-        return (
-            "its life may end at 0 (dead on arrival) while its block "
-            "replacements may take no time"
-        )
-    return None
 
 
 def _tested_replacements(rbd, node, simulate: str) -> "Tested":

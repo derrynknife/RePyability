@@ -26,7 +26,11 @@ solved without it (see ``RepairableRBD._crew_held_importance``): each is
 the system's availability so held, at each time or over the window. The
 criticality and Fussell-Vesely measures are averages over the chain's
 states: each is ``p(t) v`` for a vector ``v`` over the states (a node's
-being down and critical in each, say), from the chain over time.
+being down and critical in each, say), from the chain over time. A nested
+RBD has crews of its own, so it is independent of the chain, and enters
+by its own curve: the vectors are taken for each pattern of the nested
+RBDs up and down, and averaged with the patterns' probabilities at each
+time (#312, as ``point_availability`` has it).
 """
 
 import math
@@ -44,6 +48,9 @@ RAW = "raw"
 RRW = "rrw"
 CRITICALITY = "criticality"
 FUSSELL_VESELY = "fussell_vesely"
+#: The joint importance of each pair, with common-cause groups (#317):
+#: without them, each node's Birnbaum importance with the other held.
+JOINT = "joint"
 
 #: The measures the crews' chain holds each node for (the others are
 #: averages over its states).
@@ -74,9 +81,7 @@ def measure(
             "Give the times x or a window's length, not both: x evaluates "
             "the measure at each time, window averages it over [0, window)."
         )
-    working = set(working_nodes or ())
-    broken = set(broken_nodes or ())
-    rbd._validate_node_overrides(working, broken)
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     states = _curves._states(rbd, state, working | broken)
     if x is not None:
         times = nonnegative_times(x)
@@ -130,11 +135,14 @@ def _base(rbd, spec: Spec, p: dict, q: dict, weights) -> dict:
     return RBD._fussell_vesely(rbd, p, spec.fv_type, spec.method, weights, q)
 
 
-def _grouped(rbd, spec: Spec, groups: list, p: dict, q: dict, x, weights):
+def _grouped(
+    rbd, spec: Spec, groups: list, p: dict, q: dict, x, weights, held
+):
     """The measure with common-cause groups (their chains over time,
     ``groups``, see ``_ccf_chain.OverTime``) at the times ``x``: averaged
     with ``weights``, or at each time without (see
-    ``RepairableRBD._ccf_measure``)."""
+    ``RepairableRBD._ccf_measure``); ``held`` are the nodes held up or
+    down."""
     from . import _ccf_chain
 
     tables = [
@@ -158,6 +166,7 @@ def _grouped(rbd, spec: Spec, groups: list, p: dict, q: dict, x, weights):
         spec.kind,
         spec.fv_type,
         spec.method,
+        held,
     )
 
 
@@ -193,7 +202,9 @@ def _at(rbd, spec, times, working, broken, states, state) -> dict:
             rbd, horizon, working, broken, "p", states
         )
         p, q = _independent(rbd, grouped.curves, times, working, broken)
-        values = _grouped(rbd, spec, grouped.system.groups, p, q, times, None)
+        values = _grouped(
+            rbd, spec, grouped.system.groups, p, q, times, None, forced
+        )
         return {
             node: np.asarray(value, dtype=float)
             for node, value in values.items()
@@ -295,7 +306,7 @@ def _over(rbd, spec, end, working, broken, states, state) -> dict:
         x, weights = window_points([grouped], end, system, _MISSION_POINTS)
         p, q = _independent(rbd, grouped.curves, x, working, broken)
         return _grouped(
-            rbd, spec, grouped.system.groups, p, q, x, weights / end
+            rbd, spec, grouped.system.groups, p, q, x, weights / end, forced
         )
     curves = _curves._availability_curves(rbd, end, forced, state=states)
 
@@ -359,46 +370,84 @@ def _chain_measure(rbd, spec, working, broken, states, times=None, end=None):
     measure of every node, at the ``times`` or over ``[0, end)``: its
     numerator and denominator are averages over the crews' chain's states
     (as in the long run), so each is ``p(t) v`` for a vector ``v`` over
-    the states, followed over time from the components' ``states``."""
-    from . import _crews, _curves
+    the states, followed over time from the components' ``states``. A
+    nested RBD has crews of its own, so it is independent of the chain
+    (as ``_chain_transient.CrewCurve`` has it): the vectors are taken for
+    each pattern of the nested RBDs up and down, ``v_m``, and the average
+    is ``sum_m p(t) v_m w_m(t)``, ``w_m(t)`` the pattern's probability
+    from their own curves then (see ``_chain_transient.pattern_weights``;
+    with no nested RBD, the one pattern has weight 1). Over a window, the
+    integral is the chain's own where no pattern's weight changes, and by
+    quadrature otherwise."""
+    from . import _chain_transient, _crews, _curves, _windows
+    from ._curves import _MISSION_POINTS
 
     forced = frozenset(working | broken)
     nested = _curves._require_crew_over_time(rbd, forced)
-    if nested:
-        raise NotImplementedError(
-            f"With {rbd.repair_crews} repair crew(s), the criticality and "
-            "Fussell-Vesely measures over time are averages over the "
-            "crews' chain's states, which take no nested RBD's own curve "
-            f"in, as yet: node {nested[0]!r} is one. Their long-run values "
-            "are worked out, and the Birnbaum importance, improvement "
-            "potential and risk worths over time."
-        )
-    p, _ = _crews._chain_probabilities(rbd, working, broken)
-    q = {node: 1.0 - value for node, value in p.items()}
-    importance, works, fails, p, q = rbd._importances(p, q)
-    size = len(works)
-    if spec.name == CRITICALITY:
-        member, system = (p, works) if spec.kind == "success" else (q, fails)
-        numerators = {
-            node: importance[node] * member[node] for node in rbd.nodes
-        }
-    else:
-        numerators = rbd._fv_numerators(p, q, size, spec.fv_type, spec.method)
-        system = fails
-    nodes: List = list(rbd.nodes)
-    columns = np.column_stack([system] + [numerators[n] for n in nodes])
     chain = _crews._crew_chain(rbd, forced)
+    size = len(chain.probabilities)
+    nodes: List = list(rbd.nodes)
+    columns = []
+    for pattern in range(2 ** len(nested)):
+        own = {
+            node: chain.up[:, k].astype(float)
+            for k, node in enumerate(chain.nodes)
+        }
+        for j, node in enumerate(nested):
+            own[node] = np.full(size, float((pattern >> j) & 1))
+        importance, works, fails, p, q = rbd._importances(
+            _windows._filled(rbd, own, size, working, broken)
+        )
+        if spec.name == CRITICALITY:
+            member, system = (
+                (p, works) if spec.kind == "success" else (q, fails)
+            )
+            numerators = {
+                node: importance[node] * member[node] for node in nodes
+            }
+        else:
+            numerators = rbd._fv_numerators(
+                p, q, size, spec.fv_type, spec.method
+            )
+            system = fails
+        columns += [system] + [numerators[node] for node in nodes]
     followed = _curves._uniformized(
         "The repair crews'",
         chain.generator,
         _curves._crew_start(rbd, chain, states),
         chain.probabilities,
-        columns,
+        np.column_stack(columns),
     )
+    horizon = end if times is None else float(times.max(initial=0.0))
+    curves = [
+        _curves._nested_curve(
+            rbd.components[node], horizon, start=states.get(node)
+        )
+        for node in nested
+    ]
+
+    def patterned(x: np.ndarray) -> np.ndarray:
+        """The averages over the chain's states and the nested RBDs'
+        patterns at the times ``x`` (rows), for the system and each
+        node's numerator (columns)."""
+        values = followed.values(x).reshape(len(x), 2 ** len(curves), -1)
+        weights = _chain_transient.pattern_weights(
+            [curve.at(x) for curve in curves]
+        )
+        return np.einsum("tm,tmk->tk", weights, values)
+
     if times is not None:
-        values = followed.values(times)
-    else:
+        values = patterned(times)
+    elif not curves:
         values = followed.integrals(np.array([end])) / end
+    else:
+        x, weights = window_points(
+            [_chain_transient.ChainCurve(followed), *curves],
+            end,
+            lambda x: dict(enumerate(patterned(x).T)),
+            _MISSION_POINTS,
+        )
+        values = (weights @ patterned(x))[None] / end
     total = values[:, 0]
     out: Dict = {}
     with np.errstate(divide="ignore", invalid="ignore"):

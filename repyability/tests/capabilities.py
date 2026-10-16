@@ -355,6 +355,7 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("A junction", "junction in series"),
         ("A beta-factor common-cause group", "common cause"),
         ("An MGL common-cause group", "common cause, MGL"),
+        ("An alpha-factor common-cause group", "common cause, alpha factor"),
         ("Capacities", "capacities"),
         ("A structure too meshed to work out", "too meshed"),
     ],
@@ -387,10 +388,18 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("Tests that can miss a failure", "tested, missing"),
         ("Imperfect repair (Kijima)", "imperfect repair"),
         ("Minimal repair", "minimal repair in no time"),
+        (
+            "Minimal repair, repairs that take time",
+            "minimal repair, repairs that take time",
+        ),
         ("Limited repair crews", "one repair crew"),
         ("A standby group", "standby group"),
         ("A beta-factor group, revealed failures", "common cause, revealed"),
         ("A beta-factor group, tested", "common cause, tested"),
+        (
+            "An alpha-factor group, revealed failures",
+            "common cause, alpha factor",
+        ),
         (
             "A group whose tests take time",
             "common cause, timed tests and repairs",

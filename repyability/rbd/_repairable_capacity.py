@@ -423,13 +423,11 @@ def point_capacity(
 ) -> CapacityDistribution:
     """See ``RepairableRBD.point_capacity``."""
     times = nonnegative_times(x)
-    working_nodes = set() if working_nodes is None else set(working_nodes)
-    broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working_nodes, broken_nodes)
+    working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
     _require_capacity_models(rbd)
     ends = times.ravel()
     horizon = float(ends.max()) if ends.size else 0.0
-    forced = working_nodes | broken_nodes
+    forced = set(working_nodes) | set(broken_nodes)
     if rbd._crews_couple() and _curves._crew_nested(rbd, forced):
         capacity = _crew_capacity_over(
             rbd,
@@ -444,7 +442,7 @@ def point_capacity(
             rbd,
             working_nodes,
             broken_nodes,
-            _curves._states(rbd, state, working_nodes | broken_nodes),
+            _curves._states(rbd, state, forced),
         )
         rows = np.clip(chain.values(ends).T, 0.0, 1.0)
     elif rbd.ccf_groups:
@@ -475,13 +473,11 @@ def mission_capacity(
 ) -> CapacityDistribution:
     """See ``RepairableRBD.mission_capacity``."""
     windows = nonnegative_times(t)
-    working_nodes = set() if working_nodes is None else set(working_nodes)
-    broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working_nodes, broken_nodes)
+    working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
     _require_capacity_models(rbd)
     ends = windows.ravel()
     horizon = float(ends.max()) if ends.size else 0.0
-    forced = working_nodes | broken_nodes
+    forced = set(working_nodes) | set(broken_nodes)
     if rbd._crews_couple() and _curves._crew_nested(rbd, forced):
         capacity = _crew_capacity_over(
             rbd,
@@ -501,7 +497,7 @@ def mission_capacity(
             rbd,
             working_nodes,
             broken_nodes,
-            _curves._states(rbd, state, working_nodes | broken_nodes),
+            _curves._states(rbd, state, forced),
         )
         positive = ends > 0.0
         rows = chain.values(ends).T
