@@ -41,9 +41,9 @@ taking already-fitted lifetime models (from
 - **Live state**: reliability, remaining life and importance given each
   component's current age, and covariate-dependent components.
 - **Redundancy and dependence**: cold, warm and hot standby; repeated nodes;
-  load sharing; junctions (a vote point that never fails); beta-factor,
-  MGL and alpha-factor common-cause groups, splitting a probability or a
-  failure rate, in block diagrams, repairable systems and fault trees.
+  load sharing; junctions (a vote point that never fails); beta-factor and
+  MGL common-cause groups, splitting a probability or a failure rate, in
+  block diagrams, repairable systems and fault trees.
 - **Repairable systems**: exact long-run availability, failure frequency and
   MUT/MDT/MTBF; exact availability over time and over a mission, and the
   unavailability to its own precision (a PFD of 1e-17); simulated
@@ -233,9 +233,9 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | A repeated standby node | N | N | N | N | N | N | S | N | – | S |
 | A nested RBD | E | N | N | E N | E N | N | S | E N | – | S |
 | A junction | E | N | N | E N | E N | N | S | E N | – | S |
-| A beta-factor common-cause group | E | ✗ | N | ✗ | E N; ✗ `joint_importance` | N | S; ✗ `mean_uncertainty` | E N | – | S |
-| An MGL common-cause group | E | ✗ | N | ✗ | E N; ✗ `joint_importance` | N | S; ✗ `mean_uncertainty` | E N | – | S |
-| An alpha-factor common-cause group | E | ✗ | N | ✗ | E N; ✗ `joint_importance` | N | S; ✗ `mean_uncertainty` | E N | – | S |
+| A beta-factor common-cause group | E | ✗ | N | ✗ | E N | N | S; ✗ `mean_uncertainty` | E N | – | S |
+| An MGL common-cause group | E | ✗ | N | ✗ | E N | N | S; ✗ `mean_uncertainty` | E N | – | S |
+| An alpha-factor common-cause group | E | ✗ | N | ✗ | E N | N | S; ✗ `mean_uncertainty` | E N | – | S |
 | Capacities | E | N | N | E N | E N | N | S | E N | E | S |
 | A structure too meshed to work out | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | S |
 
@@ -269,10 +269,10 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | Minimal repair | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 9 of 10 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Limited repair crews | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A standby group | E | E | N | E N | E N | N | S | E | – | ✗ | – | S |
-| A beta-factor group, revealed failures | N | N | N | E | N; ✗ `joint_importance` | N | S | N | – | N | – | S |
-| A beta-factor group, tested | E | E | N | E N | E N; ✗ `joint_importance` | N | S | E | – | N | – | S |
-| An alpha-factor group, revealed failures | E | E | N | E | E N; ✗ `joint_importance` | N | S | E | – | N | – | S |
-| A group whose tests take time | N | N | N | N | N; ✗ `joint_importance` | N | S | N | – | N | – | S |
+| A beta-factor group, revealed failures | N | N | N | E | N | N | S | N | – | N | – | S |
+| A beta-factor group, tested | E | E | N | E N | E N | N | S | E | – | N | – | S |
+| An alpha-factor group, revealed failures | E | E | N | E | E N | N | S | E | – | N | – | S |
+| A group whose tests take time | N | N | N | N | N | N | S | N | – | N | – | S |
 | A structure too meshed to work out | ✗ | ✗ | ✗ | E; ✗ `expected_cost` | ✗ | ✗ | S; ✗ `mean_availability_uncertainty` | ✗ | – | N | – | S |
 
 </details>
@@ -350,7 +350,7 @@ places, nested diagrams):
 | Opportunistic maintenance (renewals at a group's stops) | Simulated | Yes: each member's renewals depend on the others' ages. |
 | Imperfect repair (Kijima), with or without replacement at the *N*-th failure | Simulated; but minimal repair (`q = 1`) in no time is numerical over a window from new (it fails `H(t)` times by `t`), its long run refused | Yes, in general: a repair does not renew the unit. |
 | Replacement on condition by a measured degradation level | Simulated (in Python), from new; the exact and numerical analyses refused | No: between inspections the level is a Markov process, so the long run and the values over time could follow its distribution on a grid of levels, as replacement on condition by age follows ages. |
-| Spares with repair crews, standby groups, opportunistic maintenance or imperfect repair | Refused, pointing to `spares_demand(method="simulate")`. Otherwise numerical, demand and stock: block-replaced components' whether their repairs and block replacements take time or not (from a typical replacement in the long run), one dead on arrival included (with repairs and block replacements in no time, its replacements at one instant are compounded, #322), and tested components', whatever their tests and repairs take and whether their tests miss failures | Yes, in general: a crew's queue, a group's switching or stops and an imperfect repair make the replacements depend on more than each unit's own lives. |
+| Spares with repair crews, standby groups, opportunistic maintenance or imperfect repair | Refused, pointing to `spares_demand(method="simulate")`. Otherwise numerical, demand and stock: block-replaced components' whether their repairs and block replacements take time or not (from a typical replacement in the long run), but for one dead on arrival while they may take none, and tested components', whatever their tests and repairs take and whether their tests miss failures | Yes, in general: a crew's queue, a group's switching or stops and an imperfect repair make the replacements depend on more than each unit's own lives. A unit dead on arrival whose renewals may take no time: no, the replacements at one instant could be counted. |
 
 Where a system's expected values over a window are exact,
 `availability()` and `cost()` give them by default, with no error, and the

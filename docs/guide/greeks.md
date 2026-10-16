@@ -355,5 +355,5 @@ ownership (`discount_rate=`, see [Costs](costs.md#discounting)).
 With limited repair crews or common-cause groups, the measures follow the
 crews' and the groups' Markov chains: theta and the Barlow–Proschan shares
 split the chains' transitions by the component, or common cause, that makes
-each (#199). With common-cause groups `joint_importance` is refused, as
-their members cannot be held.
+each (#199); `joint_importance` conditions on each pair's states through
+the groups' outcomes, as the single-node measures do (#317).

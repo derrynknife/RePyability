@@ -40,7 +40,7 @@ from repyability.rbd._model_utils import (
 )
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import perfect_class
-from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
+from repyability.rbd.rbd import RBD, Pairs, _check_on_infeasible_rbd
 from repyability.rbd.results import (
     AvailabilityAllocation,
     AvailabilityResult,
@@ -902,6 +902,7 @@ class RepairableRBD(RBD):
         kind: str = "failure",
         fv_type: str = "c",
         method: str = "exact",
+        held: Collection[Hashable] = (),
     ) -> dict:
         """An importance measure of every node with the common-cause groups
         (``measure``, one of ``_importance_time``'s names), at the points
@@ -914,11 +915,16 @@ class RepairableRBD(RBD):
         group's, so it is conditioned on: ``A(1_i)`` and ``A(0_i)`` at each
         point are the system's availability given the member up and given
         it down then, from the joint probabilities summed over its group's
-        combinations (see ``_ccf_modules.Tabled.joints``). Birnbaum's
-        measure is the difference between the two, taken from whichever
-        end keeps its precision, the system's unavailability or its
-        availability. Fussell-Vesely sums each combination's numerators,
-        the nodes being independent given it."""
+        combinations (see ``_ccf_modules.Evaluation.given``); where the
+        state has no chance at a point (a member off line for its test),
+        the system with it held so. Birnbaum's measure is the difference
+        between the two, taken from whichever end keeps its precision, the
+        system's unavailability or its availability. The joint importance
+        (``_importance_time.JOINT``) conditions on each pair's states the
+        same way (see ``_ccf_modules.joint_importance``), 0 for a pair
+        with a node in ``held`` (those held up or down). Fussell-Vesely
+        sums each combination's numerators, the nodes being independent
+        given it."""
         one_of("kind", kind, ("failure", "success"))
         if fv_type not in ("c", "p"):
             raise ValueError(
@@ -944,29 +950,24 @@ class RepairableRBD(RBD):
                     self, evaluation, inputs, fv_type, method
                 )
                 return {node: mean(shares[node]) / Q for node in self.nodes}
+            if measure == _importance_time.JOINT:
+                held = set(held)
+                return Pairs.of(
+                    list(self.nodes),
+                    lambda i, j: mean(
+                        0.0 * R_t
+                        if i in held or j in held
+                        else _ccf_modules.joint_importance(evaluation, i, j)
+                    ),
+                )
             for node in self.nodes:
-                values, joint = evaluation.joints(node)
-                works, fails = values["works"], values["fails"]
-                if joint:
-                    # Given its state; where that state has no chance (a
-                    # member off line for its test), the system with it
-                    # held so, as for a node outside the groups.
-                    held = (
-                        evaluation.held(node)
-                        if np.any(works <= 0) or np.any(fails <= 0)
-                        else (np.nan,) * 4
-                    )
-                    r1 = np.where(works > 0, values["up_ok"] / works, held[0])
-                    q1 = np.where(
-                        works > 0, values["down_ok"] / works, held[1]
-                    )
-                    r0 = np.where(fails > 0, values["up_bad"] / fails, held[2])
-                    q0 = np.where(
-                        fails > 0, values["down_bad"] / fails, held[3]
-                    )
-                else:
-                    r1, q1 = values["up_ok"], values["down_ok"]
-                    r0, q0 = values["up_bad"], values["down_bad"]
+                given = evaluation.given((node,))
+                (works, r1, q1), (fails, r0, q0) = (
+                    given[True,],
+                    given[False,],
+                )
+                if node not in evaluation.group_of:
+                    works, fails = evaluation.p[node], evaluation.q[node]
                 change = np.where(Q_t <= R_t, q0 - q1, r1 - r0)
                 if measure == _importance_time.BIRNBAUM:
                     value = mean(change)
@@ -7111,7 +7112,12 @@ class RepairableRBD(RBD):
         other held up, less that with it held down, as
         ``birnbaum_importance`` works them out, with ``x``, ``window`` and
         ``state``; with limited repair crews, each pair held in the crews'
-        chain.
+        chain. With common-cause groups, the system's availability given
+        each of the pair up and down is conditioned on their states, as
+        ``birnbaum_importance`` conditions on one: two members of one
+        group on their joint state, from the group's chain, and a
+        component outside the groups held (see [Common-cause
+        failures](../guide/common-cause.md)).
 
         Parameters
         ----------
@@ -7139,8 +7145,7 @@ class RepairableRBD(RBD):
         ValueError
             As ``birnbaum_importance`` does.
         NotImplementedError
-            With common-cause groups, whose members cannot be held, or as
-            ``birnbaum_importance`` does.
+            As ``birnbaum_importance`` does.
 
         Examples
         --------

@@ -613,7 +613,9 @@ def _ccf_long_run_measure(
     rbd._validate_node_overrides(working, broken)
     _, weights, inputs = _ccf_long_run(rbd, working, broken)
     return _squeeze_values(
-        rbd._ccf_measure(measure, inputs, weights, kind, fv_type, method)
+        rbd._ccf_measure(
+            measure, inputs, weights, kind, fv_type, method, working | broken
+        )
     )
 
 

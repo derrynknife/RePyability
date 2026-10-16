@@ -76,7 +76,12 @@ from .helper_classes import (
 from .load_sharing_node import LoadSharingModel
 from .modular import GraphStructure
 from .node_state import NodeState
-from .rbd import RBD, _check_on_infeasible_rbd, leaves_out_junctions
+from .rbd import (
+    RBD,
+    Pairs,
+    _check_on_infeasible_rbd,
+    leaves_out_junctions,
+)
 from .redundancy_allocation import ComponentOption, active_unreliability
 from .repeated_node import RepeatedNode
 from .repeated_standby_node import RepeatedStandbyNode
@@ -965,43 +970,6 @@ class NonRepairableRBD(RBD):
             )
         return out
 
-    def _ccf_importances(self, x, working_nodes, broken_nodes) -> dict:
-        """With common-cause groups, what the importance measures are worked
-        out from, at ``x``: for each node, the probabilities that it works
-        and that it has failed, and that the system works and fails with
-        it working and with it failed; and the system's own.
-
-        A group member works when neither its own failure nor a shock that
-        strikes it has happened. Given its group's shock outcome (see
-        ``_ccf_modules.group_outcomes``) the member is independent of every
-        other node, so each joint probability is a sum over its group's
-        outcomes of the outcome's probability times the member's and the
-        system's given it, the other groups conditioned on within their
-        modules (#219). A node outside the groups is independent of them,
-        so its "given" values are the system's with it held working or
-        failed. A member of a group written out as shock events (see
-        ``_ccf_modules.Plan``) works while neither its own causes nor its
-        shocks have fired. Every term is a product of probabilities, the
-        system's worked out as for ``ff``, so a small one keeps its
-        precision (see ``_ccf_modules.Evaluation.joints``)."""
-        working, broken = set(working_nodes or ()), set(broken_nodes or ())
-        p, q = self._importance_inputs(x, working, broken)
-        evaluation = self._ccf_evaluation(p, q, working, broken)
-        grouped = {m for group in self.ccf_groups for m in group.members}
-        keys = ("works", "fails", "up_ok", "down_ok", "up_bad", "down_bad")
-        sums: Dict[str, dict] = {key: {} for key in keys}
-        R, Q = evaluation.system()
-        for node in self.nodes:
-            values, _ = evaluation.joints(node)
-            for key in keys:
-                sums[key][node] = values[key]
-        return {
-            **sums,
-            "R": np.atleast_1d(R),
-            "Q": np.atleast_1d(Q),
-            "grouped": grouped,
-        }
-
     def _ccf_measure(
         self,
         measure: str,
@@ -1012,13 +980,27 @@ class NonRepairableRBD(RBD):
         fv_type: str = "c",
         method: str = "exact",
     ) -> Dict[Any, Union[float, np.ndarray]]:
-        """An importance measure with common-cause groups (see
-        ``_ccf_importances``): ``R(1_i)`` and ``R(0_i)`` are the system's
-        reliability given that node ``i`` works and given that it has
-        failed (for a member, conditioned through the shock outcomes),
-        and the measures follow from them as without groups. Fussell-Vesely
-        sums each outcome's numerators (see ``_fv_numerators``), the nodes
-        being independent given it."""
+        """An importance measure with common-cause groups, at ``x``:
+        ``R(1_i)`` and ``R(0_i)`` are the system's reliability given that
+        node ``i`` works and given that it has failed, and the measures
+        follow from them as without groups.
+
+        A group member works when neither its own failure nor a shock that
+        strikes it has happened. Given its group's shock outcome (see
+        ``_ccf_modules.group_outcomes``) the member is independent of every
+        other node, so the system given its state is a sum over its
+        group's outcomes of the outcome's probability times the member's
+        and the system's given it, over the member's own, the other groups
+        conditioned on within their modules (#219). A node outside the
+        groups is independent of them, so its "given" values are the
+        system's with it held working or failed. A member of a group
+        written out as shock events (see ``_ccf_modules.Plan``) works
+        while neither its own causes nor its shocks have fired. Every term
+        is a product of probabilities, the system's worked out as for
+        ``ff``, so a small one keeps its precision (see
+        ``_ccf_modules.Evaluation.given``). Fussell-Vesely sums each
+        outcome's numerators (see ``_fv_numerators``), the nodes being
+        independent given it."""
         one_of("kind", kind, ("failure", "success"))
         if fv_type not in ("c", "p"):
             raise ValueError(
@@ -1026,27 +1008,28 @@ class NonRepairableRBD(RBD):
                 f"fv_type={fv_type!r} was given."
             )
         one_of("method", method, ("exact", "rare_event"))
+        working = set(working_nodes or ())
+        broken = set(broken_nodes or ())
+        p, q = self._importance_inputs(x, working, broken)
         if measure == "fussell_vesely":
-            working = set(working_nodes or ())
-            broken = set(broken_nodes or ())
-            p, q = self._importance_inputs(x, working, broken)
             shares = self._ccf_fv_numerators(
                 p, q, working, broken, fv_type, method
             )
             _, Q = self._ccf_system_pair(p, q, working, broken)
             with np.errstate(divide="ignore", invalid="ignore"):
                 return {node: shares[node] / Q for node in self.nodes}
-        c = self._ccf_importances(x, working_nodes, broken_nodes)
-        R, Q = c["R"], c["Q"]
+        evaluation = self._ccf_evaluation(p, q, working, broken)
+        R, Q = (np.atleast_1d(value) for value in evaluation.system())
         out: Dict[Any, Union[float, np.ndarray]] = {}
         with np.errstate(divide="ignore", invalid="ignore"):
             for node in self.nodes:
-                works, fails = c["works"][node], c["fails"][node]
-                held = node not in c["grouped"]
-                on = 1.0 if held else works
-                off = 1.0 if held else fails
-                r1, q1 = c["up_ok"][node] / on, c["down_ok"][node] / on
-                r0, q0 = c["up_bad"][node] / off, c["down_bad"][node] / off
+                given = evaluation.given((node,))
+                (works, r1, q1), (fails, r0, q0) = (
+                    given[True,],
+                    given[False,],
+                )
+                if node not in evaluation.group_of:
+                    works, fails = evaluation.p[node], evaluation.q[node]
                 # From whichever end keeps its precision.
                 birnbaum = np.where(Q <= R, q0 - q1, r1 - r0)
                 if measure == "birnbaum":
@@ -1063,6 +1046,30 @@ class NonRepairableRBD(RBD):
                     value = birnbaum * works / R
                 out[node] = np.asarray(value, dtype=float)
         return out
+
+    @check_x
+    def _ccf_pairs(self, x, working_nodes, broken_nodes) -> "Pairs":
+        """The joint importance of each pair of nodes with common-cause
+        groups, at ``x`` (#317): the system's reliability given each of
+        the pair working and failed (see ``_ccf_measure``, and
+        ``_ccf_modules.joint_importance``: two members of one group are
+        conditioned on their joint state), ``R(1_i, 1_j) - R(1_i, 0_j) -
+        R(0_i, 1_j) + R(0_i, 0_j)``; 0 for a pair with a node held."""
+        working = set(working_nodes or ())
+        broken = set(broken_nodes or ())
+        p, q = self._importance_inputs(x, working, broken)
+        evaluation = self._ccf_evaluation(p, q, working, broken)
+        held = working | broken
+        junctions = self._junctions()
+        nodes = [node for node in self.nodes if node not in junctions]
+        return Pairs.of(
+            nodes,
+            lambda i, j: (
+                np.zeros(evaluation.shape)
+                if i in held or j in held
+                else _ccf_modules.joint_importance(evaluation, i, j)
+            ),
+        )
 
     def _validate_ccf_groups(self, ccf_groups) -> list:
         """Validate common-cause groups against the RBD structure.
@@ -5165,17 +5172,19 @@ class NonRepairableRBD(RBD):
                 ),
             ),
         )
-        pairs = r.refusal(self._require_no_ccf_pairs)
         give(
             ("joint_importance",),
-            (
-                r.refused(pairs)
-                if pairs
-                else built(
-                    r.EXACT,
-                    "Each node's exact Birnbaum importance with the other "
-                    "node held working, less with it held failed.",
-                )
+            built(
+                r.EXACT,
+                (
+                    "The exact system reliability given each of the pair "
+                    "working and failed, a common-cause group's members "
+                    "conditioned on their states through the groups' "
+                    "outcomes."
+                    if grouped
+                    else "Each node's exact Birnbaum importance with the "
+                    "other node held working, less with it held failed."
+                ),
             ),
         )
         give(
@@ -8492,6 +8501,15 @@ class NonRepairableRBD(RBD):
         less that with it held failed (twice as many evaluations as there
         are nodes, not as pairs).
 
+        With common-cause groups, the system's reliability given each of
+        the pair working and failed is conditioned on their states, as
+        ``birnbaum_importance`` conditions on one: a member's state says
+        something of its group's shocks, so the system given it is a sum
+        over the shock outcomes, and two members of one group are
+        conditioned on their joint state (see [Common-cause
+        failures](guide/common-cause.md)). A node outside the groups is
+        held. ``beta = 0`` gives the values without the group.
+
         Parameters
         ----------
         x : array_like, optional
@@ -8513,7 +8531,7 @@ class NonRepairableRBD(RBD):
         ValueError
             As ``birnbaum_importance`` does.
         NotImplementedError
-            With common-cause groups, whose members cannot be held.
+            If a common-cause group's member is held working or broken.
 
         Examples
         --------
@@ -8530,7 +8548,26 @@ class NonRepairableRBD(RBD):
         ... )
         >>> {pair: round(v, 4) for pair, v in rbd.joint_importance().items()}
         {('p1', 'p2'): -0.9, ('p1', 'v'): 0.2, ('p2', 'v'): 0.2}
+
+        A shared cause striking both pumps (a tenth of their failures)
+        makes one's failure a sign of the other's: with ``p1`` failed,
+        ``p2`` is likelier to have failed too, so the valve is worth less
+        then, and more of a complement of each pump. The pumps' pair is
+        as before: given their states, the valve alone remains.
+
+        >>> from repyability import BetaFactor, CCFGroup
+        >>> grouped = NonRepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {"p1": F(0.2), "p2": F(0.2), "v": F(0.1)},
+        ...     ccf_groups=[CCFGroup(["p1", "p2"], BetaFactor(0.1))],
+        ... )
+        >>> joint = grouped.joint_importance()
+        >>> round(joint[("p1", "p2")], 4), round(joint[("p1", "v")], 4)
+        (-0.9, 0.2635)
         """
+        if self.ccf_groups:
+            return Pairs(self._ccf_pairs(x, working_nodes, broken_nodes))
         return self._joint_pairs(
             lambda working, broken: self.birnbaum_importance(
                 x, working, broken

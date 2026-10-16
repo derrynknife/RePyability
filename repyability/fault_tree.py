@@ -911,26 +911,15 @@ class FaultTree:
         # outside the groups is held, as without them.
         evaluation = self._evaluation(p, q, size)
         _, top_sum = evaluation.system()
-        joint_in: Dict[Hashable, Any] = {}
-        joint_out: Dict[Hashable, Any] = {}
-        chance_in: Dict[Hashable, Any] = {}
-        chance_out: Dict[Hashable, Any] = {}
-        grouped = set()
-        for e in self.events:
-            values, joint = evaluation.joints(e)
-            joint_in[e], joint_out[e] = values["down_bad"], values["down_ok"]
-            if joint:
-                grouped.add(e)
-                chance_in[e], chance_out[e] = values["fails"], values["works"]
         occurred, not_occurred, marginal = {}, {}, dict(q)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            for e in self.events:
-                if e in grouped:
-                    occurred[e] = joint_in[e] / chance_in[e]
-                    not_occurred[e] = joint_out[e] / chance_out[e]
-                    marginal[e] = np.asarray(chance_in[e], dtype=float)
-                else:
-                    occurred[e], not_occurred[e] = joint_in[e], joint_out[e]
+        for e in self.events:
+            given = evaluation.given((e,))
+            (_, _, not_occurred[e]), (chance, _, occurred[e]) = (
+                given[True,],
+                given[False,],
+            )
+            if e in evaluation.group_of:
+                marginal[e] = np.asarray(chance, dtype=float)
         top = np.broadcast_to(np.asarray(top_sum, dtype=float), (size,))
         return top, occurred, not_occurred, marginal, scalar
 
@@ -1251,7 +1240,11 @@ class FaultTree:
         preventing the other worth more. Negative, they are substitutes, as
         under an AND gate: either one prevented keeps the gate from
         occurring. Exact, from the top event probability with both events
-        held, as the tree is multilinear in the events.
+        held, as the tree is multilinear in the events. With common-cause
+        groups, the top event probability given each of the pair occurring
+        and not is conditioned on their states, as ``birnbaum_importance``
+        conditions on one (two members of one group on their joint state),
+        and an event outside the groups is held.
 
         Parameters
         ----------
@@ -1271,8 +1264,6 @@ class FaultTree:
         ValueError
             If ``t`` is left out and an event's probability depends on
             time.
-        NotImplementedError
-            With common-cause groups, whose members cannot be held.
 
         Examples
         --------
@@ -1288,18 +1279,21 @@ class FaultTree:
         >>> round(joint[("pump 1", "valve")], 4)  # complements
         0.1
         """
-        if self.ccf_groups:
-            raise NotImplementedError(
-                "The joint importance holds pairs of events occurring and "
-                "not, which a common-cause group's members cannot be (the "
-                "causes they share would still strike the others): it is "
-                "not worked out with common-cause groups, as yet."
-            )
+        from repyability.rbd.rbd import Pairs
+
         times, scalar = self._times(t)
         p, q = self._event_probabilities(times)
         size = len(times)
-        ones, zeros = np.ones(size), np.zeros(size)
         events = list(self.events)
+        if self.ccf_groups:
+            from repyability.rbd._ccf_modules import joint_importance
+
+            evaluation = self._evaluation(p, q, size)
+            pairs = Pairs.of(
+                events, lambda e, f: joint_importance(evaluation, e, f)
+            )
+            return Pairs(self._out(pairs, scalar))
+        ones, zeros = np.ones(size), np.zeros(size)
 
         def importance(p_: dict, q_: dict, of: list) -> dict:
             out = {}
@@ -1310,8 +1304,6 @@ class FaultTree:
                 p_f[f], q_f[f] = ones, zeros
                 out[f] = occurred - self._top(p_f, q_f, size)
             return out
-
-        from repyability.rbd.rbd import Pairs
 
         pairs = Pairs()
         for k, e in enumerate(events):
