@@ -21,6 +21,7 @@ from repyability import (
     Calendar,
     CCFGroup,
     DegradingNode,
+    FaultTree,
     LoadSharingModel,
     NonRepairable,
     NonRepairableRBD,
@@ -291,6 +292,54 @@ def nonrepairable_kinds():
                 {"a": unit, "b": unit, "c": E([0.002]), "d": unit, "e": unit},
                 capacity={"a": 5.0, "b": 5.0, "c": 5.0, "d": 5.0, "e": 5.0},
             )
+        ),
+    }
+
+
+def fault_tree_kinds():
+    """The fault trees of every kind the tree's analyses are checked on
+    (#314): events given as probabilities, as lifetime models (surpyval
+    distributions, a fit with its covariance) and as both, a repeated
+    event, and common-cause groups of each model and basis."""
+    unit = W([100, 2])
+    gates = {"top": ("or", ["pair", "c"]), "pair": ("and", ["a", "b"])}
+    rest = {"b": W([80, 1.5]), "c": E([0.002])}
+    alike = {"a": unit, "b": unit, "c": E([0.002])}
+    return {
+        "fixed": FaultTree(gates, {"a": 0.1, "b": 0.2, "c": 0.05}),
+        "lifetimes": FaultTree(gates, {"a": unit, **rest}),
+        "mixed": FaultTree(gates, {"a": unit, "b": 0.2, "c": L([4.0, 0.5])}),
+        "fitted": FaultTree(gates, {"a": fitted_life(), **rest}),
+        "repeated": FaultTree(
+            {
+                "top": ("and", ["A", "B"]),
+                "A": ("or", ["s", "a"]),
+                "B": ("or", ["s", "b"]),
+            },
+            {"s": E([0.001]), "a": unit, "b": W([80, 1.5])},
+        ),
+        "common cause": FaultTree(
+            gates, alike, ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))]
+        ),
+        "common cause by rate": FaultTree(
+            gates,
+            alike,
+            ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate"))],
+        ),
+        "common cause, MGL": FaultTree(
+            {
+                "top": ("or", ["vote", "d"]),
+                "vote": ("vote", 2, ["a", "b", "c"]),
+            },
+            {"a": unit, "b": unit, "c": unit, "d": E([0.002])},
+            ccf_groups=[
+                CCFGroup(["a", "b", "c"], MGL(0.1, 0.3, basis="rate"))
+            ],
+        ),
+        "common cause, fixed": FaultTree(
+            gates,
+            {"a": 0.05, "b": 0.05, "c": 0.01},
+            ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
         ),
     }
 

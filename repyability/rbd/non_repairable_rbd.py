@@ -50,12 +50,15 @@ from . import redundancy_allocation
 from ._degradation import check_life, is_degradation
 from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 from ._measures import (
+    barlow_proschan,
+    cumulative_hazard,
     density,
+    density_by_differences,
     difference_steps,
-    integrated_shares,
     invert_reliability,
     life_end,
     model_scale,
+    rate_parts,
 )
 from ._model_utils import (
     MODEL_ERRORS,
@@ -298,6 +301,54 @@ def _system_difference(at, theta, rel_step, base) -> np.ndarray:
     else:
         return np.full(np.shape(works), np.nan)
     return np.where(fails <= works, -d_fails, d_works)
+
+
+def ccf_group_sensitivity(
+    system, group, spec, x: np.ndarray, rel_step: float
+) -> Dict[str, np.ndarray]:
+    """The sensitivities of a system's reliability at ``x`` to a
+    common-cause group's parameters (see
+    ``NonRepairableRBD.parameter_sensitivity``): its members' model's
+    (``spec``, their one model's ``lever_spec``; None for none), each
+    moved for every member at once, and its common-cause model's, named
+    ``ccf_beta``, ``ccf_gamma``, ..., each by a central difference of the
+    system's probabilities with the groups (see ``_system_difference``).
+    ``system(members=None, model=None)`` gives the probabilities that the
+    system works and that it fails, with the members' probabilities of
+    working and of failing at ``members``, or the group's model replaced by
+    ``model``."""
+    base = system()
+    out: Dict[str, np.ndarray] = {}
+    if spec is not None:
+        for j, name in enumerate(spec.names):
+
+            def at_param(value, j=j):
+                trial = list(spec.params)
+                trial[j] = value
+                try:
+                    model = spec.build(trial)
+                    works = np.asarray(model.sf(x), dtype=float)
+                    fails = np.asarray(model.ff(x), dtype=float)
+                except MODEL_ERRORS:
+                    return None
+                return system(members=(works, fails))
+
+            out[name] = _system_difference(
+                at_param, spec.params[j], rel_step, base
+            )
+    for name, value in ccf_parameters(group.model).items():
+
+        def at_letter(value, name=name):
+            try:
+                model = with_ccf_parameters(group.model, {name: value})
+            except ValueError:
+                return None
+            return system(model=model)
+
+        out[f"ccf_{name}"] = _system_difference(
+            at_letter, value, rel_step, base
+        )
+    return out
 
 
 def _check_model(node, model) -> None:
@@ -896,7 +947,7 @@ class NonRepairableRBD(RBD):
         its members' model's, each moved for every member at once (they
         carry one model), and its common-cause model's, named ``ccf_beta``,
         ``ccf_gamma``, ..., each by a central difference of the system's
-        probabilities with the groups (see ``_system_difference``)."""
+        probabilities with the groups (see ``ccf_group_sensitivity``)."""
         p, q = self._importance_inputs(x, working_nodes, broken_nodes)
         groups = list(self.ccf_groups)
         index = next(i for i, g in enumerate(groups) if g is group)
@@ -915,39 +966,13 @@ class NonRepairableRBD(RBD):
                 given, failing, working_nodes, broken_nodes, trial
             )
 
-        base = system()
-        out: Dict[str, np.ndarray] = {}
-        spec = lever_spec(self.reliabilities[group.members[0]])
-        if spec is not None:
-            for j, name in enumerate(spec.names):
-
-                def at_param(value, j=j):
-                    trial = list(spec.params)
-                    trial[j] = value
-                    try:
-                        model = spec.build(trial)
-                        works = np.asarray(model.sf(x), dtype=float)
-                        fails = np.asarray(model.ff(x), dtype=float)
-                    except MODEL_ERRORS:
-                        return None
-                    return system(members=(works, fails))
-
-                out[name] = _system_difference(
-                    at_param, spec.params[j], rel_step, base
-                )
-        for name, value in ccf_parameters(group.model).items():
-
-            def at_letter(value, name=name):
-                try:
-                    model = with_ccf_parameters(group.model, {name: value})
-                except ValueError:
-                    return None
-                return system(model=model)
-
-            out[f"ccf_{name}"] = _system_difference(
-                at_letter, value, rel_step, base
-            )
-        return out
+        return ccf_group_sensitivity(
+            system,
+            group,
+            lever_spec(self.reliabilities[group.members[0]]),
+            x,
+            rel_step,
+        )
 
     def _ccf_measure(
         self,
@@ -4626,11 +4651,9 @@ class NonRepairableRBD(RBD):
         >>> round(rbd.Hf(50), 6)
         0.5
         """
-        sf, ff = self._sf_and_ff(x, working_nodes, broken_nodes, method)
-        with np.errstate(divide="ignore"):
-            return np.where(
-                ff < 0.5, -np.log1p(-np.minimum(ff, 0.5)), -np.log(sf)
-            )
+        return cumulative_hazard(
+            *self._sf_and_ff(x, working_nodes, broken_nodes, method)
+        )
 
     @check_x
     def df(
@@ -4698,19 +4721,11 @@ class NonRepairableRBD(RBD):
         0.006065
         """
         x = np.atleast_1d(np.asarray(x, dtype=float))
-        h = difference_steps(x, dx, self._time_scale)
-        x_hi = x + h
-        x_lo = np.maximum(x - h, 0.0)
-        sf_lo, ff_lo = self._sf_and_ff(
-            x_lo, working_nodes, broken_nodes, method
+        return density_by_differences(
+            lambda t: self._sf_and_ff(t, working_nodes, broken_nodes, method),
+            x,
+            difference_steps(x, dx, self._time_scale),
         )
-        sf_hi, ff_hi = self._sf_and_ff(
-            x_hi, working_nodes, broken_nodes, method
-        )
-        # The change in whichever of the two is the smaller keeps its
-        # precision; that in the other would be lost to rounding.
-        change = np.where(ff_hi <= 0.5, ff_hi - ff_lo, sf_lo - sf_hi)
-        return np.clip(change / (x_hi - x_lo), 0.0, None)
 
     @check_x
     def hf(
@@ -8504,52 +8519,21 @@ class NonRepairableRBD(RBD):
     ) -> Dict[Any, np.ndarray]:
         """Each node's part in the system reliability's rate of change at
         the times ``x`` (see ``reliability_rate``), and each common-cause
-        group's, under the tuple of its members."""
-        importance = self.birnbaum_importance(x, working_nodes, broken_nodes)
-        held = set(working_nodes or ()) | set(broken_nodes or ())
-        members = {m for group in self.ccf_groups for m in group.members}
-        parts: Dict[Any, np.ndarray] = {}
-        for node, value in importance.items():
-            if node in members:
-                continue
-            value = np.asarray(value, dtype=float).reshape(x.shape)
-            if node in held:
-                parts[node] = np.zeros(x.shape)
-                continue
-            with np.errstate(invalid="ignore"):
-                part = -value * self._node_density(node, x)
-            # A node that cannot matter, with an infinite density (a
-            # Weibull life of shape below 1, at 0), takes no part.
-            parts[node] = np.where(value == 0.0, 0.0, part)
-        if self.ccf_groups:
-            # A group's part: the system's change with its members' lives
-            # moved on and the rest held, by central differences.
-            step = difference_steps(x, 1e-6, self._time_scale)
-            hi, lo = x + step, np.maximum(x - step, 0.0)
-            p, q = self._importance_inputs(x, working_nodes, broken_nodes)
-            ends = [
-                self._importance_inputs(t, working_nodes, broken_nodes)
-                for t in (hi, lo)
-            ]
-            for group in self.ccf_groups:
-                downs = []
-                for moved_p, moved_q in ends:
-                    given, failing = dict(p), dict(q)
-                    for member in group.members:
-                        given[member] = moved_p[member]
-                        failing[member] = moved_q[member]
-                    downs.append(
-                        self._ccf_system_pair(
-                            given,
-                            failing,
-                            working_nodes or (),
-                            broken_nodes or (),
-                        )[1].reshape(x.shape)
-                    )
-                parts[tuple(group.members)] = -(downs[0] - downs[1]) / (
-                    hi - lo
-                )
-        return parts
+        group's, under the tuple of its members (see ``rate_parts``)."""
+        return rate_parts(
+            self.birnbaum_importance(x, working_nodes, broken_nodes),
+            self._node_density,
+            x,
+            self.ccf_groups,
+            inputs=lambda t: self._importance_inputs(
+                t, working_nodes, broken_nodes
+            ),
+            fails=lambda p, q: self._ccf_system_pair(
+                p, q, working_nodes or (), broken_nodes or ()
+            )[1],
+            scale=self._time_scale,
+            held=set(working_nodes or ()) | set(broken_nodes or ()),
+        )
 
     def reliability_rate(
         self,
@@ -8706,32 +8690,12 @@ class NonRepairableRBD(RBD):
         >>> {node: round(share, 6) for node, share in shares.items()}
         {'a': 0.25, 'b': 0.75}
         """
-        keys = list(self._rate_parts(np.ones(1), working_nodes, broken_nodes))
-
-        def parts(t: np.ndarray) -> np.ndarray:
-            by_key = self._rate_parts(t, working_nodes, broken_nodes)
-            return -np.column_stack([by_key[key] for key in keys])
-
-        knots = np.concatenate(
-            [np.empty(0)]
-            + [model_knots(m) for m in self.reliabilities.values()]
+        return barlow_proschan(
+            lambda t: self._rate_parts(t, working_nodes, broken_nodes),
+            self.reliabilities.values(),
+            x,
+            lambda knots: self._life_end(knots, working_nodes, broken_nodes),
         )
-        knots = np.unique(knots[np.isfinite(knots) & (knots > 0.0)])
-        if x is None:
-            ends = np.array(
-                [self._life_end(knots, working_nodes, broken_nodes)]
-            )
-        else:
-            ends = np.atleast_1d(np.asarray(x, dtype=float)).ravel()
-            if np.any(~np.isfinite(ends)) or np.any(ends < 0.0):
-                raise ValueError(
-                    f"Times must be finite and non-negative, got {x!r}."
-                )
-        shares = integrated_shares(parts, knots, ends)
-        if x is None or np.ndim(x) == 0:
-            return {key: float(shares[0, j]) for j, key in enumerate(keys)}
-        shape = np.shape(x)
-        return {key: shares[:, j].reshape(shape) for j, key in enumerate(keys)}
 
     def _life_end(
         self, knots: np.ndarray, working_nodes, broken_nodes

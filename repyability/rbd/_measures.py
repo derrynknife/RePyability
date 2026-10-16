@@ -14,11 +14,23 @@ network share: an element's failure density, the Barlow-Proschan shares
 time) and the inversion of the reliability for a B-life.
 """
 
-from typing import Any, Callable, Dict, Hashable, Mapping, Optional
+from typing import (
+    Any,
+    Callable,
+    Collection,
+    Dict,
+    Hashable,
+    Iterable,
+    Mapping,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import numpy as np
 from scipy.optimize import brentq
 
+from repyability.rbd._mean_lifetime import model_knots
 from repyability.rbd._model_utils import (
     MODEL_ERRORS,
     failure_time_scale,
@@ -230,3 +242,118 @@ def invert_reliability(
                 "explicit upper_bound."
             )
     return float(brentq(f, 0.0, hi))
+
+
+def cumulative_hazard(sf, ff) -> np.ndarray:
+    """The cumulative hazard ``-ln R`` from a system's probabilities of
+    working ``sf`` and of failing ``ff`` (see ``NonRepairableRBD.Hf``):
+    ``-log1p(-F)`` while it is more likely to work than not, so that a
+    small one keeps its precision, and ``+inf`` where it cannot work."""
+    sf, ff = np.asarray(sf, dtype=float), np.asarray(ff, dtype=float)
+    with np.errstate(divide="ignore"):
+        return np.where(ff < 0.5, -np.log1p(-np.minimum(ff, 0.5)), -np.log(sf))
+
+
+def density_by_differences(at, x: np.ndarray, h: np.ndarray) -> np.ndarray:
+    """A failure density at the times ``x`` by central differences of
+    step ``h`` of ``at(t)``, the probabilities of working and of failing
+    at the times ``t`` (see ``NonRepairableRBD.df``): the lower point
+    clipped at 0 (the difference is one-sided near 0), the change taken of
+    whichever of the two is the smaller (it keeps its precision), and a
+    negative result (rounding) clipped to 0."""
+    x_hi, x_lo = x + h, np.maximum(x - h, 0.0)
+    sf_lo, ff_lo = at(x_lo)
+    sf_hi, ff_hi = at(x_hi)
+    change = np.where(ff_hi <= 0.5, ff_hi - ff_lo, sf_lo - sf_hi)
+    return np.clip(change / (x_hi - x_lo), 0.0, None)
+
+
+def rate_parts(
+    importance: Mapping[Any, Any],
+    density_of: Callable[[Any, np.ndarray], np.ndarray],
+    x: np.ndarray,
+    groups=(),
+    inputs: Optional[Callable[[np.ndarray], Tuple[dict, dict]]] = None,
+    fails: Optional[Callable[[dict, dict], Any]] = None,
+    scale: Optional[Callable[[], float]] = None,
+    held: Collection[Any] = (),
+) -> Dict[Any, np.ndarray]:
+    """Each element's part in the system reliability's rate of change at
+    the times ``x`` (see ``NonRepairableRBD.reliability_rate``): its
+    Birnbaum ``importance`` times ``density_of(element, x)``, negated; 0
+    for an element ``held``, and for one that cannot matter with an
+    infinite density (a Weibull life of shape below 1, at 0). And each of
+    the common-cause ``groups``' part, under the tuple of its members: the
+    system's change with its members' lives moved on and the rest held,
+    by central differences of ``fails(p, q)``, the system's probability
+    of failing at the elements' probabilities of working and of failing
+    that ``inputs(t)`` gives, the step at 0 sized by ``scale()``, a
+    typical failure time."""
+    members = {m for group in groups for m in group.members}
+    parts: Dict[Any, np.ndarray] = {}
+    for node, value in importance.items():
+        if node in members:
+            continue
+        value = np.asarray(value, dtype=float).reshape(x.shape)
+        if node in held:
+            parts[node] = np.zeros(x.shape)
+            continue
+        with np.errstate(invalid="ignore"):
+            part = -value * density_of(node, x)
+        parts[node] = np.where(value == 0.0, 0.0, part)
+    if groups:
+        assert inputs is not None and fails is not None and scale is not None
+        step = difference_steps(x, 1e-6, scale)
+        hi, lo = x + step, np.maximum(x - step, 0.0)
+        p, q = inputs(x)
+        ends = [inputs(t) for t in (hi, lo)]
+        for group in groups:
+            downs = []
+            for moved_p, moved_q in ends:
+                given, failing = dict(p), dict(q)
+                for member in group.members:
+                    given[member] = moved_p[member]
+                    failing[member] = moved_q[member]
+                downs.append(
+                    np.asarray(fails(given, failing), dtype=float).reshape(
+                        x.shape
+                    )
+                )
+            parts[tuple(group.members)] = -(downs[0] - downs[1]) / (hi - lo)
+    return parts
+
+
+def barlow_proschan(
+    parts: Callable[[np.ndarray], Dict[Any, np.ndarray]],
+    models: Iterable[Any],
+    x,
+    end: Callable[[np.ndarray], float],
+) -> Dict[Any, Union[float, np.ndarray]]:
+    """Each element's (and common-cause group's) Barlow-Proschan
+    importance (see ``NonRepairableRBD.barlow_proschan_importance``): its
+    part of the system's failure density, ``parts(t)`` (see
+    ``rate_parts``), negated and integrated up to each time of ``x``, or
+    over the whole life (``x`` None), which ends at ``end(knots)``, over
+    the sum of the parts (``integrated_shares``); the integrals split at
+    the ``models``' knots (``model_knots``)."""
+    keys = list(parts(np.ones(1)))
+
+    def columns(t: np.ndarray) -> np.ndarray:
+        found = parts(t)
+        return -np.column_stack([found[key] for key in keys])
+
+    knots = np.concatenate([np.empty(0)] + [model_knots(m) for m in models])
+    knots = np.unique(knots[np.isfinite(knots) & (knots > 0.0)])
+    if x is None:
+        ends = np.array([end(knots)])
+    else:
+        ends = np.atleast_1d(np.asarray(x, dtype=float)).ravel()
+        if np.any(~np.isfinite(ends)) or np.any(ends < 0.0):
+            raise ValueError(
+                f"Times must be finite and non-negative, got {x!r}."
+            )
+    shares = integrated_shares(columns, knots, ends)
+    if x is None or np.ndim(x) == 0:
+        return {key: float(shares[0, j]) for j, key in enumerate(keys)}
+    shape = np.shape(x)
+    return {key: shares[:, j].reshape(shape) for j, key in enumerate(keys)}

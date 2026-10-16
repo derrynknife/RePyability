@@ -10,9 +10,11 @@ gates, repeated events and shared gates.
 
 import itertools
 import math
+import warnings
 
 import numpy as np
 import pytest
+import scipy.stats as st
 import surpyval as surv
 from surpyval import FixedEventProbability
 
@@ -1009,3 +1011,512 @@ def test_a_diagrams_groups_become_the_trees():
     tree = FaultTree.from_rbd(unaffected)
     assert tree.ccf_groups == [] and set(tree.events) == {"a"}
     assert tree.top_event_probability() == pytest.approx(unaffected.ff())
+
+
+# -- the lifetime analyses and the remaining measures (#314) -----------------
+#
+# Each against the diagram of the same system (to_rbd), which works them out
+# on its own structure, and against closed forms and the definitions where
+# the tree is small enough to enumerate.
+
+
+def lifetime_tree(seed, probability=False):
+    """A random tree over lifetime events (Weibull, exponential and
+    log-normal models, some shared between events) and, with
+    ``probability``, an event given as a probability."""
+    rng = np.random.default_rng(seed)
+    gates, probabilities, top = random_tree(
+        rng, int(rng.integers(3, 6)), int(rng.integers(2, 4))
+    )
+    models = [
+        W([float(rng.uniform(50, 200)), float(rng.uniform(1.2, 3.0))]),
+        surv.Exponential.from_params([float(rng.uniform(0.002, 0.02))]),
+        surv.LogNormal.from_params(
+            [float(rng.uniform(3.5, 5.0)), float(rng.uniform(0.3, 0.8))]
+        ),
+    ]
+    events = {e: models[i % 3] for i, e in enumerate(probabilities)}
+    if probability:
+        last = list(events)[-1]
+        events[last] = float(rng.uniform(0.02, 0.2))
+    return FaultTree(gates, events, top=top)
+
+
+def lifetime_trees():
+    from repyability.tests.catalogue import fault_tree_kinds
+
+    trees = {name: tree for name, tree in fault_tree_kinds().items()}
+    trees.update({f"random {seed}": lifetime_tree(seed) for seed in range(8)})
+    trees.update(
+        {f"random {seed}, mixed": lifetime_tree(seed, True) for seed in (8, 9)}
+    )
+    return trees
+
+
+LIFETIME_TREES = lifetime_trees()
+
+
+@pytest.mark.filterwarnings("ignore:Common-cause group:UserWarning")
+@pytest.mark.parametrize("name", sorted(LIFETIME_TREES))
+def test_the_lifetime_analyses_agree_with_the_diagram(name):
+    tree = LIFETIME_TREES[name]
+    rbd = tree.to_rbd()
+    routes = tree.analysis_routes()
+    t = np.array([20.0, 60.0, 150.0])
+    if tree.is_fixed:
+        t = np.array([1.0])
+    # The probability's shape, density and hazard.
+    np.testing.assert_allclose(tree.Hf(t), rbd.Hf(t), rtol=1e-12)
+    np.testing.assert_allclose(tree.df(t), rbd.df(t), rtol=1e-8, atol=1e-18)
+    np.testing.assert_allclose(tree.hf(t), rbd.hf(t), rtol=1e-8, atol=1e-18)
+    assert isinstance(tree.df(float(t[0])), float)
+    # The measures from the structure and the probabilities.
+    assert tree.structural_importance() == pytest.approx(
+        rbd.structural_importance(), rel=1e-12
+    )
+    ours, theirs = tree.improvement_potential(t), rbd.improvement_potential(t)
+    for e in tree.events:
+        np.testing.assert_allclose(ours[e], theirs[e], rtol=1e-10, atol=1e-16)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        ours, theirs = tree.parameter_sensitivity(
+            t
+        ), rbd.parameter_sensitivity(t)
+    assert set(ours) == set(theirs)
+    for key, values in ours.items():
+        assert list(values) == list(theirs[key])
+        for name_, value in values.items():
+            np.testing.assert_allclose(
+                value, theirs[key][name_], rtol=1e-7, atol=1e-12
+            )
+    if routes["mean"].route == "refused":
+        with pytest.raises((ValueError, NotImplementedError)):
+            tree.mean()
+        with pytest.raises((ValueError, NotImplementedError)):
+            rbd.mean()
+        return
+    # The lifetime: its mean, the B-lives (to reliabilities the tree
+    # reaches: an event given as a probability keeps some from the start,
+    # or for good), and who causes the top event.
+    assert tree.mean() == pytest.approx(rbd.mean(), rel=1e-8)
+    high, low = tree.sf(0.0), tree.sf(1e7)
+    targets = high - np.array([0.05, 0.1, 0.5]) * (high - low)
+    np.testing.assert_allclose(
+        tree.time_to_reliability(targets),
+        rbd.time_to_reliability(targets),
+        rtol=1e-9,
+    )
+    percent = 100.0 * (1.0 - targets[1])
+    assert tree.bx_life(percent) == pytest.approx(
+        rbd.bx_life(percent), rel=1e-9
+    )
+    ours, theirs = (
+        tree.barlow_proschan_importance(),
+        rbd.barlow_proschan_importance(),
+    )
+    assert set(ours) == set(theirs)
+    for key in ours:
+        assert ours[key] == pytest.approx(theirs[key], rel=1e-6, abs=1e-12)
+    ours, theirs = (
+        tree.barlow_proschan_importance(t),
+        rbd.barlow_proschan_importance(t),
+    )
+    for key in ours:
+        np.testing.assert_allclose(
+            ours[key], theirs[key], rtol=1e-6, atol=1e-12
+        )
+
+
+def test_exponential_events_have_closed_forms():
+    E = surv.Exponential.from_params
+    rates = {"a": 0.01, "b": 0.03, "c": 0.005}
+    either = FaultTree(
+        {"top": ("or", list(rates))}, {e: E([r]) for e, r in rates.items()}
+    )
+    total = sum(rates.values())
+    # Any of them: a failure rate of their sum.
+    assert either.mean() == pytest.approx(1.0 / total, rel=1e-10)
+    t = np.array([10.0, 50.0, 200.0])
+    np.testing.assert_allclose(either.Hf(t), total * t, rtol=1e-12)
+    np.testing.assert_allclose(either.hf(t), total, rtol=1e-6)
+    np.testing.assert_allclose(
+        either.df(t), total * np.exp(-total * t), rtol=1e-6
+    )
+    for x in (1.0, 10.0, 50.0):
+        assert either.bx_life(x) == pytest.approx(
+            -np.log1p(-x / 100.0) / total, rel=1e-9
+        )
+    assert either.time_to_reliability(0.5) == pytest.approx(
+        np.log(2.0) / total, rel=1e-9
+    )
+    # Each causes the top event in proportion to its rate, at any time.
+    shares = either.barlow_proschan_importance()
+    for e, r in rates.items():
+        assert shares[e] == pytest.approx(r / total, rel=1e-8)
+        np.testing.assert_allclose(
+            either.barlow_proschan_importance(t)[e], r / total, rtol=1e-8
+        )
+    # Both of two: the sum of the means less the mean of the first failure.
+    both = FaultTree(
+        {"top": ("and", ["a", "b"])}, {"a": E([0.01]), "b": E([0.03])}
+    )
+    assert both.mean() == pytest.approx(100.0 + 100.0 / 3 - 25.0, rel=1e-10)
+    # The system's sensitivity to a rate: dR/d rate = -t exp(-total t)
+    # (the Birnbaum importance of an event under an OR gate is the
+    # others' survival).
+    sens = either.parameter_sensitivity(t)
+    for e in rates:
+        np.testing.assert_allclose(
+            sens[e]["failure_rate"], -t * np.exp(-total * t), rtol=1e-7
+        )
+
+
+def pivotal_fraction(gates, events, top, e) -> float:
+    """The fraction of the other events' states in which ``e`` is
+    pivotal: the top event occurs with it and not without."""
+    others = [x for x in events if x != e]
+    count = 0
+    for state in itertools.product((False, True), repeat=len(others)):
+        occurred = frozenset(x for x, s in zip(others, state) if s)
+        count += occurs_by_hand(gates, top, occurred | {e}) and not (
+            occurs_by_hand(gates, top, occurred)
+        )
+    return count / 2 ** len(others)
+
+
+@pytest.mark.parametrize("seed", range(25))
+def test_structural_importance_counts_the_pivotal_states(seed):
+    rng = np.random.default_rng(300 + seed)
+    gates, probabilities, top = random_tree(rng)
+    tree = FaultTree(gates, probabilities, top=top)
+    importance = tree.structural_importance()
+    for e in probabilities:
+        assert importance[e] == pytest.approx(
+            pivotal_fraction(gates, probabilities, top, e), abs=1e-12
+        )
+    # The gates alone: the same with any models, or common-cause groups.
+    from repyability import BetaFactor, CCFGroup
+
+    first = list(probabilities)[:2]
+    timed = FaultTree(
+        gates,
+        {e: W([100.0 * (i + 1), 2.0]) for i, e in enumerate(probabilities)},
+        top=top,
+    )
+    assert timed.structural_importance() == importance
+    grouped = FaultTree(
+        gates,
+        {**probabilities, **{e: 0.05 for e in first}},
+        top=top,
+        ccf_groups=[CCFGroup(first, BetaFactor(0.1))],
+    )
+    assert grouped.structural_importance() == importance
+
+
+@pytest.mark.parametrize("seed", range(25))
+def test_improvement_potential_is_the_fall_from_preventing_the_event(seed):
+    rng = np.random.default_rng(400 + seed)
+    gates, probabilities, top = random_tree(rng)
+    tree = FaultTree(gates, probabilities, top=top)
+    total, _, _ = enumerated(gates, probabilities, top)
+    potential = tree.improvement_potential()
+    birnbaum = tree.birnbaum_importance()
+    for e, q in probabilities.items():
+        prevented, _, _ = enumerated(gates, probabilities, top, {e: False})
+        assert potential[e] == pytest.approx(total - prevented, rel=1e-12)
+        assert potential[e] == pytest.approx(birnbaum[e] * q, rel=1e-12)
+
+
+def test_improvement_potential_with_a_group_conditions_the_member():
+    from repyability import BetaFactor
+
+    # A member's potential takes the shared cause with it: preventing a
+    # pump's own failure leaves the cause, which the diagram's potential
+    # counts the same way.
+    tree = cooling_with_ccf(BetaFactor(0.1))
+    rbd = tree.to_rbd()
+    ours, theirs = tree.improvement_potential(), rbd.improvement_potential()
+    for e in tree.events:
+        assert ours[e] == pytest.approx(theirs[e], rel=1e-12)
+    # It is the criticality's numerator, the Birnbaum importance times the
+    # member's marginal probability of having occurred.
+    criticality = tree.criticality_importance()
+    top = tree.top_event_probability()
+    for e in tree.events:
+        assert ours[e] == pytest.approx(criticality[e] * top, rel=1e-12)
+
+
+def test_parameter_sensitivity_matches_differences_of_the_probability():
+    from repyability import MGL, CCFGroup
+
+    unit = W([100.0, 2.0])
+    tree = FaultTree(
+        {
+            "top": ("or", ["vote", "d", "e"]),
+            "vote": ("vote", 2, ["a", "b", "c"]),
+        },
+        {
+            "a": unit,
+            "b": unit,
+            "c": unit,
+            "d": surv.LogNormal.from_params([4.5, 0.5]),
+            "e": 0.02,
+        },
+        ccf_groups=[CCFGroup(["a", "b", "c"], MGL(0.1, 0.3, basis="rate"))],
+    )
+    t = np.array([30.0, 90.0])
+    sens = tree.parameter_sensitivity(t)
+    assert list(sens) == [("a", "b", "c"), "d", "e"]
+    assert list(sens[("a", "b", "c")]) == [
+        "alpha",
+        "beta",
+        "ccf_beta",
+        "ccf_gamma",
+    ]
+    assert list(sens["e"]) == ["p"]
+    h = 1e-6
+    for lever in tree.levers():
+        key, name, value = lever.key, lever.name, lever.value
+        up = tree.with_levers({lever: value * (1 + h)}).sf(t)
+        down = tree.with_levers({lever: value * (1 - h)}).sf(t)
+        np.testing.assert_allclose(
+            sens[key][name],
+            (up - down) / (2 * h * value),
+            rtol=1e-5,
+            atol=1e-10,
+        )
+    # A probability's lever moves the top event by its Birnbaum importance.
+    np.testing.assert_allclose(
+        sens["e"]["p"], -tree.birnbaum_importance(t)["e"], rtol=1e-9
+    )
+    # The same as the diagram's, under the same keys.
+    theirs = tree.to_rbd().parameter_sensitivity(t)
+    for key, values in sens.items():
+        for name, value in values.items():
+            np.testing.assert_allclose(value, theirs[key][name], rtol=1e-7)
+
+
+def test_bx_life_inverts_the_probability():
+    tree = LIFETIME_TREES["lifetimes"]
+    for x in (1.0, 10.0, 63.2):
+        assert tree.sf(tree.bx_life(x)) == pytest.approx(1 - x / 100, abs=1e-9)
+        assert tree.ff(tree.bx_life(x)) == pytest.approx(x / 100, abs=1e-9)
+    times = tree.bx_life(np.array([[1.0, 10.0], [50.0, 90.0]]))
+    assert times.shape == (2, 2)
+    np.testing.assert_allclose(
+        tree.sf(times.ravel()), 1 - np.array([1.0, 10.0, 50.0, 90.0]) / 100
+    )
+    assert tree.sf(tree.time_to_reliability(0.75)) == pytest.approx(0.75)
+    assert tree.time_to_reliability(0.75, upper_bound=1e4) == pytest.approx(
+        tree.time_to_reliability(0.75), rel=1e-9
+    )
+    with pytest.raises(ValueError, match="percentage"):
+        tree.bx_life(0.0)
+    with pytest.raises(ValueError, match="in \\(0, 1\\)"):
+        tree.time_to_reliability(1.0)
+    with pytest.raises(ValueError, match="never reached"):
+        FaultTree(tree.gates, {**tree.events, "c": 0.5}).time_to_reliability(
+            0.6
+        )
+
+
+def test_a_tree_of_probabilities_has_no_lifetime():
+    tree = LIFETIME_TREES["fixed"]
+    for call in (
+        tree.mean,
+        lambda: tree.bx_life(10),
+        lambda: tree.time_to_reliability(0.5),
+    ):
+        with pytest.raises(ValueError, match="does not vary with time"):
+            call()
+    with pytest.raises(ValueError, match="does not vary with time"):
+        tree.mean_uncertainty({"a": {"p": st.uniform(0.05, 0.1)}}, n_draws=3)
+    # Its density is 0, its hazard too, and nothing causes the top event
+    # over time.
+    assert tree.df() == 0.0
+    assert tree.hf() == 0.0
+    assert tree.Hf() == pytest.approx(-np.log(tree.sf()))
+    assert all(np.isnan(v) for v in tree.barlow_proschan_importance().values())
+    # Its sensitivities are to the probabilities, each the Birnbaum
+    # importance, negated: the levers move the probabilities themselves.
+    sens = tree.parameter_sensitivity()
+    birnbaum = tree.birnbaum_importance()
+    for e in tree.events:
+        assert sens[e] == {"p": pytest.approx(-birnbaum[e], rel=1e-9)}
+    moved = tree.with_levers({("a", "p"): 0.3})
+    assert moved.events == {**tree.events, "a": 0.3}
+    assert tree.events["a"] == 0.1
+
+
+@pytest.mark.filterwarnings("ignore:Common-cause group:UserWarning")
+def test_a_group_splitting_a_probability_has_no_mean():
+    tree = LIFETIME_TREES["common cause"]
+    message = "split a failure probability"
+    with pytest.raises(NotImplementedError, match=message):
+        tree.mean()
+    with pytest.raises(NotImplementedError, match=message):
+        tree.mean_uncertainty(
+            {"c": {"failure_rate": st.uniform(0.001, 0.002)}}
+        )
+    # The B-lives, density and hazard hold at a time, as the diagram's.
+    rbd = tree.to_rbd()
+    assert tree.bx_life(10) == pytest.approx(rbd.bx_life(10), rel=1e-9)
+    assert tree.hf(30.0) == pytest.approx(rbd.hf(30.0), rel=1e-8)
+    by_rate = LIFETIME_TREES["common cause by rate"]
+    assert by_rate.mean() == pytest.approx(by_rate.to_rbd().mean(), rel=1e-8)
+
+
+def test_the_uncertainty_draws_are_the_events_models():
+    from repyability import BetaFactor, CCFGroup
+
+    tree = LIFETIME_TREES["lifetimes"]
+    t = np.array([20.0, 60.0])
+    plausible = [W([80.0, 2.0]), W([100.0, 2.0]), W([120.0, 2.0])]
+    result = tree.sf_uncertainty(t, {"a": plausible}, n_draws=12, seed=4)
+    assert result.samples.shape == (12, 2)
+    np.testing.assert_allclose(result.nominal, tree.sf(t), rtol=1e-15)
+    # Each draw's probability is that of the tree with the drawn model.
+    values = [
+        FaultTree(tree.gates, {**tree.events, "a": model}).sf(t)
+        for model in plausible
+    ]
+    for row in result.samples:
+        assert any(np.allclose(row, value, rtol=1e-14) for value in values)
+    assert len({tuple(row) for row in result.samples}) == 3
+    # The same draws as the diagram's with the seed, keyed by the events.
+    theirs = tree.to_rbd().sf_uncertainty(
+        t, {"a": plausible}, n_draws=12, seed=4
+    )
+    np.testing.assert_array_equal(result.samples, theirs.samples)
+    # The mean time too, each draw's the exact mean with the drawn model.
+    means = tree.mean_uncertainty({"a": plausible}, n_draws=6, seed=4)
+    assert means.nominal == pytest.approx(tree.mean(), rel=1e-10)
+    exact = [
+        FaultTree(tree.gates, {**tree.events, "a": model}).mean()
+        for model in plausible
+    ]
+    for sample in means.samples:
+        assert any(sample == pytest.approx(value, rel=1e-8) for value in exact)
+    # A fitted event is drawn from its fit by default, a probability is
+    # not; events of one population share their draws.
+    fitted = LIFETIME_TREES["fitted"]
+    result = fitted.sf_uncertainty(t, n_draws=5, seed=1)
+    assert result.samples.shape == (5, 2)
+    assert np.all(result.samples != fitted.sf(t))
+    with pytest.raises(ValueError, match="No node's model is a surpyval fit"):
+        LIFETIME_TREES["fixed"].sf_uncertainty(n_draws=3)
+    alike = FaultTree(tree.gates, {**tree.events, "b": tree.events["a"]})
+    shared = alike.sf_uncertainty(
+        t, {("a", "b"): {"beta": st.uniform(1.5, 1.0)}}, n_draws=4, seed=2
+    )
+    assert shared.samples.shape == (4, 2)
+    with pytest.raises(ValueError, match="must have the same model"):
+        tree.sf_uncertainty(
+            t, {("a", "b"): {"beta": st.uniform(1.5, 1.0)}}, n_draws=4
+        )
+    # A group's members together, and its model drawn too.
+    grouped = FaultTree(
+        tree.gates,
+        {"a": W([100, 2]), "b": W([100, 2]), "c": tree.events["c"]},
+        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate"))],
+    )
+    group = grouped.ccf_groups[0]
+    drawn = grouped.sf_uncertainty(
+        t,
+        {
+            ("a", "b"): {"alpha": st.uniform(80, 40)},
+            group: {"beta": st.uniform(0.05, 0.1)},
+        },
+        n_draws=5,
+        seed=3,
+    )
+    theirs = grouped.to_rbd().sf_uncertainty(
+        t,
+        {
+            ("a", "b"): {"alpha": st.uniform(80, 40)},
+            group: {"beta": st.uniform(0.05, 0.1)},
+        },
+        n_draws=5,
+        seed=3,
+    )
+    np.testing.assert_array_equal(drawn.samples, theirs.samples)
+    with pytest.raises(ValueError, match="common-cause group"):
+        grouped.sf_uncertainty(
+            t, {"a": {"alpha": st.uniform(80, 40)}}, n_draws=2
+        )
+
+
+@pytest.mark.parametrize("name", sorted(LIFETIME_TREES))
+def test_the_levers_are_those_the_sensitivities_report(name):
+    from repyability import Lever
+
+    tree = LIFETIME_TREES[name]
+    levers = tree.levers()
+    assert all(isinstance(lever, Lever) for lever in levers)
+    assert all(not lever.discrete and not lever.calendar for lever in levers)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        reported = tree.parameter_sensitivity(30.0)
+    assert [(lever.key, lever.name) for lever in levers] == [
+        (key, name_) for key, names in reported.items() for name_ in names
+    ]
+    for lever in levers:
+        low, high = lever.bounds
+        assert low <= lever.value <= high
+    # Each lever moved builds a tree with it moved, and the rest as they
+    # were; a value past the range is refused.
+    for lever in levers:
+        value = lever.value * 1.5 if lever.value else 0.5
+        if value > lever.bounds[1]:
+            value = 0.5 * (lever.value + lever.bounds[1])
+        moved = tree.with_levers({lever: value})
+        assert isinstance(moved, FaultTree)
+        assert moved.gates == tree.gates and moved.top == tree.top
+        values = {(x.key, x.name): x.value for x in moved.levers()}
+        before = {(x.key, x.name): x.value for x in levers}
+        assert values.pop((lever.key, lever.name)) == pytest.approx(value)
+        before.pop((lever.key, lever.name))
+        assert values == before
+    copy = tree.with_levers({})
+    assert copy is not tree and copy.to_dict() == tree.to_dict()
+
+
+def test_with_levers_keeps_what_each_event_is():
+    from repyability import BetaFactor, CCFGroup
+
+    tree = FaultTree(
+        {"top": ("or", ["pair", "c", "d"]), "pair": ("and", ["a", "b"])},
+        {
+            "a": W([100, 2]),
+            "b": W([100, 2]),
+            "c": surv.Exponential.from_params([0.01]),
+            "d": 0.05,
+        },
+        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate"))],
+    )
+    moved = tree.with_levers(
+        {
+            (("a", "b"), "alpha"): 150.0,
+            (("a", "b"), "ccf_beta"): 0.2,
+            ("d", "p"): 0.1,
+        }
+    )
+    # The members' one model for every member, the group's own beta.
+    assert moved.events["a"].params[0] == 150.0
+    assert moved.events["b"].params[0] == 150.0
+    assert moved.events["a"] is moved.events["b"]
+    assert moved.ccf_groups[0].model.beta == 0.2
+    assert moved.ccf_groups[0].model.basis == "rate"
+    assert moved.events["c"] is tree.events["c"]
+    # A probability stays one.
+    assert moved.events["d"] == 0.1 and isinstance(moved.events["d"], float)
+    assert FaultTree.from_json(moved.to_json()).events["d"] == 0.1
+    assert tree.events["d"] == 0.05 and tree.ccf_groups[0].model.beta == 0.1
+    with pytest.raises(ValueError, match="cannot be"):
+        tree.with_levers({(("a", "b"), "ccf_beta"): 1.5})
+    with pytest.raises(ValueError, match="no lever 'gamma'"):
+        tree.with_levers({("c", "gamma"): 1.0})
+    with pytest.raises(ValueError, match="has no levers"):
+        tree.with_levers({("pair", "alpha"): 1.0})
+    with pytest.raises(TypeError, match="number"):
+        tree.with_levers({("d", "p"): "0.1"})
