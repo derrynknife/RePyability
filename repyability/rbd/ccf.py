@@ -388,9 +388,10 @@ class BetaFactor(_Model):
     """
 
     def __init__(self, beta: float, basis: str = "probability"):
-        if not (0.0 <= beta <= 1.0):
-            raise ValueError(f"beta must be in [0, 1], got {beta!r}.")
-        self.beta = float(beta)
+        value = number_or_nan(beta)
+        if not (0.0 <= value <= 1.0):
+            raise ValueError(f"beta must be a number in [0, 1], got {beta!r}.")
+        self.beta = value
         self.basis = _check_basis(basis)
 
     def required_group_size(self) -> Any:
@@ -703,12 +704,13 @@ class MGL(_SpecificSets):
     ):
         if len(letters) < 1:
             raise ValueError("MGL needs at least one parameter (beta).")
-        for value in letters:
-            if not (0.0 <= value <= 1.0):
+        for given in letters:
+            if not (0.0 <= number_or_nan(given) <= 1.0):
                 raise ValueError(
-                    f"MGL parameters must be in [0, 1], got {value!r}."
+                    "MGL parameters must be numbers in [0, 1], got "
+                    f"{given!r}."
                 )
-        self.letters = tuple(float(v) for v in letters)
+        self.letters = tuple(number_or_nan(v) for v in letters)
         super().__init__(basis, shocks)
 
     @property
@@ -1112,6 +1114,13 @@ class CCFGroup:
     """
 
     def __init__(self, members: Collection[Hashable], model: Any):
+        if isinstance(members, (str, bytes)) or not isinstance(
+            members, Collection
+        ):
+            raise ValueError(
+                "CCF group members must be a collection of node names, "
+                f"not one name: got {members!r}."
+            )
         members = tuple(members)
         if len(members) < 2:
             raise ValueError(

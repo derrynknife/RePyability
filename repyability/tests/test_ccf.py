@@ -224,11 +224,22 @@ def test_betafactor_validation():
         BetaFactor(1.5)
     assert BetaFactor(0.2) == BetaFactor(0.2)
     assert BetaFactor(0.2) != BetaFactor(0.3)
+    # A number: not a bool (which would read as 1), nor text (#233).
+    for given in (True, "0.1", None, [0.1]):
+        with pytest.raises(ValueError, match="beta must be a number"):
+            BetaFactor(given)
+    for given in (True, "0.3"):
+        with pytest.raises(ValueError, match="MGL parameters must be num"):
+            MGL(0.1, given)
+    assert MGL(0.1, np.float64(0.3)).letters == (0.1, 0.3)
 
 
 def test_ccfgroup_validation():
     with pytest.raises(ValueError, match="at least 2"):
         CCFGroup(["a"], BetaFactor(0.1))
+    # One name is not a collection of them (it would read as its letters).
+    with pytest.raises(ValueError, match="not one name"):
+        CCFGroup("v1", BetaFactor(0.1))
     with pytest.raises(ValueError, match="distinct"):
         CCFGroup(["a", "a"], BetaFactor(0.1))
     with pytest.raises(ValueError, match="BetaFactor"):

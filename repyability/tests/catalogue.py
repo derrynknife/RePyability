@@ -681,12 +681,7 @@ def repairable_kinds():
                         "reliability": E([0.002]),
                         "repairability": E([0.5]),
                     }
-                    for node in "ab"
-                }
-                | {
-                    "c": unit(
-                        preventive={"interval": 300.0, "policy": "block"}
-                    )
+                    for node in "abc"
                 },
                 ccf_groups=[CCFGroup(["a", "b"], MGL(0.2))],
             ),

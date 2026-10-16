@@ -243,6 +243,74 @@ def test_with_levers_moves_several_and_leaves_the_diagram_as_it_was():
     assert type(rbd.with_levers({})) is RepairableRBD
 
 
+@pytest.mark.parametrize("coverage", [1.0, 0.8])
+def test_a_group_s_members_keep_their_own_offsets(coverage):
+    # A common-cause group's members share their life and repair models,
+    # which are the group's levers, moved in each member's own spec; a
+    # member's test offset (its own place on the calendar) is its own
+    # lever, as without the group, and is kept when the group's levers
+    # move. The sensitivities are then the staggered pair's: central
+    # differences through with_levers.
+    def tested(**more):
+        inspection = {"interval": 100.0, "cost": 1.0, **more}
+        if coverage < 1.0:
+            inspection.update(coverage=coverage, full_test=300.0)
+        return {
+            "reliability": E([1e-3]),
+            "repairability": "instant",
+            "inspection": inspection,
+        }
+
+    group = CCFGroup(["a", "b"], BetaFactor(0.1))
+    staggered = RepairableRBD(
+        PAIR, {"a": tested(), "b": tested(offset=50.0)}, ccf_groups=[group]
+    )
+    together = RepairableRBD(
+        PAIR, {"a": tested(), "b": tested()}, ccf_groups=[group]
+    )
+    levers = named(staggered.levers())
+    assert (("a", "b"), "inspection.interval") in levers
+    assert ("b", "inspection.offset") in levers
+    assert ("a", "inspection.offset") not in levers
+    assert levers.index((("a", "b"), "inspection.interval")) < levers.index(
+        ("b", "inspection.offset")
+    )
+    offset = next(
+        lever
+        for lever in staggered.levers()
+        if (lever.key, lever.name) == ("b", "inspection.offset")
+    )
+    assert (offset.value, offset.bounds) == (50.0, (0.0, 100.0))
+    # The interval's floor is the members' offsets'.
+    interval = next(
+        lever
+        for lever in staggered.levers()
+        if (lever.key, lever.name) == (("a", "b"), "inspection.interval")
+    )
+    assert interval.bounds == (50.0, math.inf)
+    moved = staggered.with_levers({interval: 100.0})
+    assert moved._inspection["b"].offset == 50.0
+    assert moved.mean_unavailability() == staggered.mean_unavailability()
+    assert staggered.mean_unavailability() < together.mean_unavailability()
+    step = 1e-5
+    reported = staggered.parameter_sensitivity(rel_step=step)
+    assert reported[("a", "b")]["inspection.interval"] != pytest.approx(
+        together.parameter_sensitivity(rel_step=step)[("a", "b")][
+            "inspection.interval"
+        ]
+    )
+    for lever in staggered.levers():
+        h = step * abs(lever.value)
+        up = staggered.with_levers({lever: lever.value + h})
+        down = staggered.with_levers({lever: lever.value - h})
+        change = -(up.mean_unavailability() - down.mean_unavailability())
+        change /= 2.0 * h
+        assert reported[lever.key][lever.name] == pytest.approx(
+            change, rel=1e-9, abs=1e-12
+        ), lever
+    assert abs(reported[("a", "b")]["inspection.interval"]) < 1.0
+
+
 def test_a_test_interval_takes_its_full_tests_with_it():
     tested = unit(
         inspection={

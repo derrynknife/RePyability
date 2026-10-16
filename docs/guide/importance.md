@@ -208,6 +208,12 @@ means over it, as `mission_availability` is its mean availability: C's
 criticality over the first 10 time units is its share of the window's
 expected downtime, not the mean of its shares at each time.
 
+At the instant of a test or a scheduled replacement, a measure is of the
+state just after it, as `point_availability` is: a pair tested together is
+just back from its tests, and cannot be down, so its ratio measures there
+(the criticality, the risk worths) are 0/0, NaN. Evaluate just before the
+instant (`8760.0 - 1e-9`, say) for the state before the test.
+
 From a state: with A down now, in repair, B matters more for a while:
 
 ```python
@@ -235,8 +241,9 @@ long-run availability in each lever: each component's life and repair
 models' parameters (`"reliability.<name>"`, `"repairability.<name>"`), its
 preventive maintenance and tests (`"preventive.interval"`,
 `"inspection.coverage"`, ...), a standby group's, a common-cause group's
-(under its members together), and the change one more standby unit or
-repair crew makes:
+(under its members together, but for a member's test offset, its own place
+on the calendar, under the member's name), and the change one more standby
+unit or repair crew makes:
 
 ```python
 levers = plant.parameter_sensitivity()

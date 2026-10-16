@@ -296,6 +296,35 @@ def systems():
     }
 
 
+def test_a_test_a_rounding_short_of_the_period_s_end_is_counted_once():
+    # A staggered pair's tests of 2 hours every 731.3: the period the
+    # counts are extended by ends at 248.642 + 5 * 731.3 + 731.3, and the
+    # test there, worked out as 248.642 + 6 * 731.3, falls a rounding
+    # short of it, in the period, and was counted again in the extension
+    # (a quarter more planned outages). The planned outages are the
+    # system's falls at the tests' instants, no failure falling there.
+    interval, offset = 731.3, 0.34 * 731.3
+
+    def tested(**more):
+        return {
+            "reliability": E([3e-4]),
+            "repairability": X([8.0]),
+            "inspection": {"interval": interval, "duration": X([2.0]), **more},
+        }
+
+    rbd = RepairableRBD(PARALLEL, {"a": tested(), "b": tested(offset=offset)})
+    T = 20.5 * interval
+    tests = np.concatenate(
+        [interval * np.arange(1.0, 21.0), offset + interval * np.arange(21.0)]
+    )
+    tests = np.sort(tests[tests < T])
+    before = rbd.point_availability(np.nextafter(tests, -np.inf))
+    falls = np.sum(before - rbd.point_availability(tests))
+    events = rbd.expected_events(T)
+    assert events.system_planned_outages == pytest.approx(falls, rel=1e-6)
+    assert events.system_planned_outages < 3.4
+
+
 @pytest.mark.parametrize("name", ["block replacement", "tested", "nested"])
 def test_the_counts_settle_at_the_long_run_rates(name):
     rbd = systems()[name]

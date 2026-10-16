@@ -308,30 +308,82 @@ def _levers(rbd) -> List[_Lever]:
             )
     for g, group in enumerate(groups):
         names = tuple(group.members)
-        spec = _as_spec(components[names[0]])
-        if spec is not None:
-            for name, value, moved, discrete, bounds, scale in _spec_levers(
-                spec
+        # Each member's own levers, by name: a lever the members hold at
+        # one value is the group's, moved in each member's own spec (so
+        # that what else differs between them, an offset, is kept); a
+        # member's test offset, its own place on the calendar, and a
+        # lever whose values differ between them, are each member's own,
+        # listed after the group's (the sensitivities report by key).
+        own: Dict[Hashable, Dict[str, tuple]] = {}
+        members_own: List[_Lever] = []
+        for member in names:
+            spec = _as_spec(components[member])
+            own[member] = (
+                {}
+                if spec is None
+                else {lever[0]: lever for lever in _spec_levers(spec)}
+            )
+        order = dict.fromkeys(name for m in names for name in own[m])
+        for name in order:
+            each = {m: own[m][name] for m in names if name in own[m]}
+            values = {lever[1] for lever in each.values()}
+            if (
+                name == "inspection.offset"
+                or len(each) < len(names)
+                or len(values) > 1
             ):
+                for member, (
+                    _,
+                    value,
+                    moved,
+                    discrete,
+                    bounds,
+                    scale,
+                ) in each.items():
 
-                def build_group(v, moved=moved, names=names):
-                    changed = dict(components)
-                    for member in names:
-                        changed[member] = moved(v)
-                    return {**args, "components": changed}
+                    def build_member(v, member=member, moved=moved):
+                        return {
+                            **args,
+                            "components": {**components, member: moved(v)},
+                        }
 
-                out.append(
-                    _Lever(
-                        names,
-                        name,
-                        value,
-                        discrete,
-                        build_group,
-                        None,
-                        bounds,
-                        scale,
+                    members_own.append(
+                        _Lever(
+                            member,
+                            name,
+                            value,
+                            discrete,
+                            build_member,
+                            None,
+                            bounds,
+                            scale,
+                        )
                     )
+                continue
+
+            def build_group(v, each=each):
+                changed = dict(components)
+                for member, (_, _, moved, _, _, _) in each.items():
+                    changed[member] = moved(v)
+                return {**args, "components": changed}
+
+            _, value, _, discrete, _, scale = each[names[0]]
+            bounds = (
+                max(lever[4][0] for lever in each.values()),
+                min(lever[4][1] for lever in each.values()),
+            )
+            out.append(
+                _Lever(
+                    names,
+                    name,
+                    value,
+                    discrete,
+                    build_group,
+                    None,
+                    bounds,
+                    scale,
                 )
+            )
         for letter, value in ccf_parameters(group.model).items():
 
             def build_ccf(v, g=g, letter=letter, group=group):
@@ -352,6 +404,7 @@ def _levers(rbd) -> List[_Lever]:
                     value,
                 )
             )
+        out += members_own
     crews = args.get("repair_crews")
     if crews is not None:
 

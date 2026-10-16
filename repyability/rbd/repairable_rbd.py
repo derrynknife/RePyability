@@ -4182,7 +4182,12 @@ class RepairableRBD(RBD):
         """Simulate the system over ``[0, t_simulation]`` and keep each
         simulation's up/down histories as timelines: every component's and
         the system's, with the component that caused each of the system's
-        changes.
+        changes. A common-cause group's shared cause fails the members it
+        strikes one after another at one instant, each a failure of the
+        member's own, so a system failure it makes is the member's whose
+        fall took the system down (the last the structure could spare),
+        not the group's: ``failures_by_cause`` counts it under that
+        member.
 
         These are the simulations
         [`availability`][repyability.RepairableRBD.availability] runs with
@@ -5509,7 +5514,12 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it.
+            it. At the instant of a test or a scheduled replacement the
+            measure is of the state just after it (as the point
+            availability is): where that state cannot be down (a pair
+            tested together, both just found working), a ratio measure
+            is 0/0, NaN; evaluate just before the instant for the state
+            before it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -5599,7 +5609,12 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it.
+            it. At the instant of a test or a scheduled replacement the
+            measure is of the state just after it (as the point
+            availability is): where that state cannot be down (a pair
+            tested together, both just found working), a ratio measure
+            is 0/0, NaN; evaluate just before the instant for the state
+            before it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -5688,7 +5703,12 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it.
+            it. At the instant of a test or a scheduled replacement the
+            measure is of the state just after it (as the point
+            availability is): where that state cannot be down (a pair
+            tested together, both just found working), a ratio measure
+            is 0/0, NaN; evaluate just before the instant for the state
+            before it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -5781,7 +5801,12 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it.
+            it. At the instant of a test or a scheduled replacement the
+            measure is of the state just after it (as the point
+            availability is): where that state cannot be down (a pair
+            tested together, both just found working), a ratio measure
+            is 0/0, NaN; evaluate just before the instant for the state
+            before it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -5884,7 +5909,12 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it.
+            it. At the instant of a test or a scheduled replacement the
+            measure is of the state just after it (as the point
+            availability is): where that state cannot be down (a pair
+            tested together, both just found working), a ratio measure
+            is 0/0, NaN; evaluate just before the instant for the state
+            before it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -6013,7 +6043,12 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it.
+            it. At the instant of a test or a scheduled replacement the
+            measure is of the state just after it (as the point
+            availability is): where that state cannot be down (a pair
+            tested together, both just found working), a ratio measure
+            is 0/0, NaN; evaluate just before the instant for the state
+            before it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -6784,9 +6819,11 @@ class RepairableRBD(RBD):
             Nodes held failed, likewise.
         x : float or array-like, optional
             Times from new (or from ``state``), as for
-            ``birnbaum_importance``; by default the long run.
-        window : float, optional
-            Over ``[0, window)`` instead, as for ``birnbaum_importance``.
+            ``birnbaum_importance`` (at a test's instant, of the state
+            just after it); by default the long run.
+        window : float or array-like, optional
+            Over ``[0, window)`` instead, as for ``birnbaum_importance``
+            (over the nodes, one share per window of several).
         state : dict or str, optional
             With ``x`` or ``window``, the components' current states.
         over : str, optional
@@ -6812,7 +6849,8 @@ class RepairableRBD(RBD):
         -------
         dict
             The shares, by node, ``(key, lever)`` or group name: floats
-            but for an array ``x`` (NaN where the total is 0).
+            but for an array ``x`` or ``window`` (NaN where the total is
+            0).
 
         Raises
         ------
@@ -7130,7 +7168,8 @@ class RepairableRBD(RBD):
             Components held down, likewise.
         x : float or array-like, optional
             Times from new (or from ``state``), as for
-            ``birnbaum_importance``; by default the long run.
+            ``birnbaum_importance`` (at a test's instant, of the state
+            just after it); by default the long run.
         window : float, optional
             Over ``[0, window)`` instead, as for ``birnbaum_importance``.
         state : dict or str, optional
