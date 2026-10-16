@@ -738,7 +738,7 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
     interval = None
     if inspection is not None:
         interval = inspection.interval
-    elif schedule is not None and schedule.policy != "age":
+    elif schedule is not None and schedule.policy not in ("age", "calendar"):
         interval = schedule.interval
     if state.phase is not None:
         if interval is None:

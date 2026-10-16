@@ -71,3 +71,5 @@
 ::: repyability.NextReplacement
 
 ::: repyability.ReplacementChoice
+
+::: repyability.CalendarPolicy

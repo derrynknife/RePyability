@@ -2,7 +2,11 @@ import numpy as np
 from scipy.optimize import minimize, minimize_scalar
 from surpyval import ExactEventTime, NonParametric, Parametric
 
-from repyability.maintenance import MaintenancePolicy, NextReplacement
+from repyability.maintenance import (
+    CalendarPolicy,
+    MaintenancePolicy,
+    NextReplacement,
+)
 from repyability.rbd._degradation import check_life, is_degradation
 from repyability.rbd._model_utils import (
     distribution_name,
@@ -945,6 +949,184 @@ class NonRepairable:
 
         return optimal_next_replacement(
             self, age, now_cost=now_cost, scheduled_outages=scheduled_outages
+        )
+
+    def optimal_calendar_policy(
+        self,
+        calendar,
+        *,
+        step=None,
+        max_age=None,
+        method="auto",
+        tail="repeat",
+        mc_samples=64,
+        seed=None,
+    ) -> CalendarPolicy:
+        """The long-run optimal replacement policy over a calendar of
+        opportunities: shuts at their own prices, a planned replacement on
+        any day at a dearer one (or none), and a failure at the dearest.
+
+        Age replacement
+        ([`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy])
+        has one planned price at every time, so the state is the age
+        alone. Here the price depends on the time, so the best policy is a
+        threshold age for each time, ``a*(t)``: replace if the part is at
+        least that old. It minimises the long-run average cost a unit of
+        time (opportunity-based age replacement, Dekker et al.). The
+        methods (this package's use case UC-13):
+
+        - ``"dp"``: dynamic programming on a grid of ``step``. Over a
+          periodic calendar whose cycle has at most 20,000 steps, by
+          relative value iteration: the cost rate exact for the grid (low
+          by about ``step / 2`` a failure, as a failure is replaced by the
+          next step). Over a longer one, by a long finite horizon, the
+          cost rate differenced.
+        - ``"integration"``: between opportunities in continuous time, on
+          quadrature nodes; only with no replacement on any day.
+        - ``"sampling"``: for a cycle too long to sweep (co-prime
+          periods), the cost rate is the mean over ``mc_samples`` sampled
+          times of the cycle of a window's differenced rate, with its
+          standard error; the threshold at a time is a solve over a window
+          from it (deterministic).
+        - ``"auto"``: ``"dp"``, or ``"sampling"`` for a periodic calendar
+          whose cycle is too long to sweep.
+
+        A calendar with given dates (a plan) is extended past its last
+        date by ``tail``: ``"repeat"`` repeats the plan (from 0 to its
+        last date and its mean gap), ``"anytime"`` leaves only replacement
+        on any day. Both are solved, and the policy says the first time
+        they differ (``determined_until``); its cost rate is the repeated
+        plan's.
+
+        Parameters
+        ----------
+        calendar : Calendar
+            The opportunities and prices; its ``"part"`` prices are this
+            part's planned and unplanned costs.
+        step : float, optional
+            The grid's step, in the life's time unit. By default about the
+            mean life over 1,000, on the opportunities' own grid where it
+            can be (every period, offset and date a whole number of
+            steps).
+        max_age : float, optional
+            The oldest age on the grid, by default the age a unit outlives
+            with a chance of 1e-9.
+        method : str, optional
+            ``"auto"`` (the default), ``"dp"``, ``"integration"`` or
+            ``"sampling"``.
+        tail : str, optional
+            How a plan of given dates goes on after its last date:
+            ``"repeat"`` (the default) or ``"anytime"``.
+        mc_samples : int, optional
+            The times sampled by ``"sampling"``, by default 64.
+        seed : int, optional
+            Seeds the sampled times.
+
+        Returns
+        -------
+        CalendarPolicy
+            The threshold at each time (``threshold(t)``, ``replace(t,
+            age)``, ``schedule()``), the cost rate, and how it was worked
+            out.
+
+        Raises
+        ------
+        ValueError
+            If a price the calendar takes from the part is not set, or an
+            argument is out of its range.
+        NotImplementedError
+            For ``method="integration"`` with replacement on any day, or
+            ``method="sampling"`` with given dates.
+
+        Examples
+        --------
+        With no opportunities and a planned replacement on any day at the
+        planned cost, it is age replacement:
+
+        >>> import surpyval as surv
+        >>> from repyability import Calendar, NonRepairable
+        >>> unit = NonRepairable(
+        ...     surv.Weibull.from_params([1000, 2.5]),
+        ...     planned_cost=1.0,
+        ...     unplanned_cost=5.0,
+        ... )
+        >>> policy = unit.optimal_calendar_policy(Calendar(), step=1.0)
+        >>> policy.threshold(0.0), round(policy.cost_rate, 6)
+        (493.0, 0.003462)
+        >>> round(unit.optimal_replacement_policy().interval, 1)
+        493.0
+        """
+        from repyability.maintenance._replacement import (
+            optimal_calendar_policy,
+        )
+
+        return optimal_calendar_policy(
+            self,
+            calendar,
+            step=step,
+            max_age=max_age,
+            method=method,
+            tail=tail,
+            mc_samples=mc_samples,
+            seed=seed,
+        )
+
+    def calendar_policy_cost(
+        self, calendar, rule, *, step=None, max_age=None
+    ) -> float:
+        """The long-run average cost a unit of time of a given replacement
+        rule over a calendar of opportunities: to price simple policies
+        against
+        [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+
+        The rule gives, for each kind of replacement it uses (an
+        opportunity's name, or ``"anytime"`` for any day), the age from
+        which it replaces the part; the kinds it leaves out never replace.
+        Where kinds coincide, the one with the youngest age replaces (the
+        cheapest, at a tie). Worked out as the optimal policy's cost rate
+        is, on the same grid, with the decisions fixed (a plan of given
+        dates repeated past its last date).
+
+        Parameters
+        ----------
+        calendar : Calendar
+            The opportunities and prices.
+        rule : dict
+            The age, at least 0 (``inf`` for never), from which each kind
+            replaces: ``{"annual": 0.0}`` replaces at every annual shut,
+            ``{"anytime": 493.0}`` at age 493 on any day, ``{}`` runs to
+            failure.
+        step : float, optional
+            The grid's step, as for ``optimal_calendar_policy``.
+        max_age : float, optional
+            The oldest age on the grid, as for ``optimal_calendar_policy``.
+
+        Returns
+        -------
+        float
+            The rule's long-run cost a unit of time.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import Calendar, NonRepairable
+        >>> unit = NonRepairable(
+        ...     surv.Weibull.from_params([1000, 2.5]),
+        ...     planned_cost=1.0,
+        ...     unplanned_cost=5.0,
+        ... )
+        >>> rate = unit.calendar_policy_cost(
+        ...     Calendar(), {"anytime": 493.0}, step=1.0
+        ... )
+        >>> round(rate, 6)
+        0.003462
+        """
+        from repyability.maintenance._replacement import (
+            calendar_policy_cost,
+        )
+
+        return calendar_policy_cost(
+            self, calendar, rule, step=step, max_age=max_age
         )
 
     def reset(self):

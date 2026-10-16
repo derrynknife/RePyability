@@ -17,10 +17,13 @@ import surpyval as surv
 from repyability import (
     MGL,
     BetaFactor,
+    Calendar,
     CCFGroup,
     DegradingNode,
     LoadSharingModel,
+    NonRepairable,
     NonRepairableRBD,
+    Opportunity,
     PerfectReliability,
     PerfectUnreliability,
     RegressionNode,
@@ -312,6 +315,15 @@ def systems_of_every_kind():
     return systems
 
 
+def calendar_policy(life):
+    """A calendar policy for ``life`` (#319): shuts every 60 at 2, and a
+    failure at 10."""
+    calendar = Calendar(
+        [Opportunity("shut", 2.0, period=60.0)], failure=10.0, anytime=None
+    )
+    return NonRepairable(life).optimal_calendar_policy(calendar, step=1.0)
+
+
 def repairable_kinds():
     life, repair = W([500, 1.5]), E([0.5])
 
@@ -357,6 +369,15 @@ def repairable_kinds():
                         "policy": "condition",
                         "level": 6.0,
                         "inspection_cost": 1.0,
+                    },
+                    replace_cost=10.0,
+                )
+            ),
+            "replaced on a calendar policy": system(
+                unit(
+                    preventive={
+                        "policy": "calendar",
+                        "calendar": calendar_policy(life),
                     },
                     replace_cost=10.0,
                 )

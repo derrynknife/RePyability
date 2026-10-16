@@ -427,6 +427,7 @@ class _Run:
         "_ccf_members",
         "_ccf_pending",
         "_ccf_coins",
+        "_calendar_price",
     )
 
     #: The events to come, in time order.
@@ -473,6 +474,9 @@ class _Run:
     _ccf_members: frozenset
     _ccf_pending: dict
     _ccf_coins: dict
+    #: Each component on a calendar policy: the price of its next planned
+    #: replacement (the opportunity's), charged when it falls.
+    _calendar_price: dict
 
     def __init__(self) -> None:
         self._step_sources = None
@@ -533,8 +537,10 @@ class _Preventive(NamedTuple):
     ``"condition"`` an inspection at every multiple of ``interval`` that
     replaces the unit if it is more likely than ``threshold`` to fail
     before the next (or, with a ``level``, if its measured degradation
-    level is at or past it); a replacement takes a time drawn from
-    ``duration`` (None: no time)."""
+    level is at or past it), or under ``"calendar"`` at the first time
+    its ``calendar`` policy's threshold is reached (``interval`` is then
+    ``inf``); a replacement takes a time drawn from ``duration`` (None:
+    no time)."""
 
     interval: float
     policy: str
@@ -547,6 +553,9 @@ class _Preventive(NamedTuple):
     #: the measured level at or past which an inspection replaces the
     #: unit, in place of the age-based ``threshold``; None for none.
     level: Optional[float] = None
+    #: Under ``"calendar"`` (#319): the ``CalendarPolicy`` whose threshold
+    #: at each time replaces the unit, at its calendar's price there.
+    calendar: Any = None
 
     def due(self, renewed: float) -> float:
         """When the next preventive action (under ``"condition"``, the next
@@ -554,6 +563,8 @@ class _Preventive(NamedTuple):
         ``renewed``, or inspected then."""
         if self.policy == "age":
             return renewed + self.interval
+        if self.policy == "calendar":
+            return self.calendar._next_planned(renewed, renewed)[0]
         # Block, or inspections: the next multiple of the interval after
         # ``renewed`` (a unit renewed on the schedule is not renewed again
         # there).

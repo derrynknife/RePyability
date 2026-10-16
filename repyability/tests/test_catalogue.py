@@ -49,6 +49,8 @@ from repyability.tests.test_simulation_engines import identical, needs_numba
 NOT_NODES = {
     "AnalysisRoute",
     "BetaFactor",
+    # A calendar of opportunities, priced (#319): a calendar policy's input.
+    "Calendar",
     "CCFGroup",
     "ComponentOption",
     "FailureLimitPolicy",
@@ -57,10 +59,13 @@ NOT_NODES = {
     "MaintenancePolicy",
     "Network",
     "NodeState",
+    "Opportunity",
     "PhasedMission",
     "RBD",
     # A component analysed alone: a diagram takes a NonRepairable.
     "Repairable",
+    # A part's replacement plan, analysed alone (#319).
+    "ReplacementPlan",
     "SimulationChunk",
     "Timeline",
     "Timelines",

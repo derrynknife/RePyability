@@ -115,6 +115,97 @@ To price an age- or block-replacement policy for a component in its system
 `"preventive"` schedule in a `RepairableRBD`: see
 [Costs](system-maintenance.md#preventive-maintenance).
 
+## Replacement over a calendar of shuts (`NonRepairable`)
+
+Age replacement has one planned price at every moment. In a plant, the price
+depends on the date: replacing a bearing in the annual shut costs little, in a
+quarterly shut more, at a weekly stop more again, on any other day more still
+(or it is not allowed), and at a failure most of all.
+[`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]
+finds the long-run optimal policy over such a calendar
+(opportunity-based age replacement, after Dekker et al.). The state is the
+date and the part's age, and the policy is a **threshold for each date**:
+replace the part if it is at least `a*(t)` old.
+
+Times are numbers in the life model's unit (days here), from 0: turning dates
+into them is Reliafy's.
+
+```python
+import surpyval as surv
+from repyability import Calendar, NonRepairable, Opportunity
+
+bearing = NonRepairable(surv.Weibull.from_params([1000.0, 2.5]))
+plant = Calendar(
+    [
+        Opportunity("weekly", 3.0, period=7.0),
+        Opportunity("quarterly", 2.0, period=91.0),
+        Opportunity("annual", 1.0, period=364.0),
+    ],
+    failure=20.0,      # by default the part's unplanned_cost
+    anytime=4.0,       # any other day; None: not allowed; by default its planned_cost
+)
+policy = bearing.optimal_calendar_policy(plant, step=1.0)
+
+policy.cost_rate                        # -> 0.006943   a day
+policy.threshold(0.0)                   # -> 88.0       at the annual shut
+policy.replace(364.0, 60.0)             # -> False      a young unit skips it
+policy.schedule(kinds=("quarterly",))   # -> [(91.0, 'quarterly', 222.0),
+                                        #     (182.0, 'quarterly', 324.0),
+                                        #     (273.0, 'quarterly', 574.0)]
+```
+
+An [`Opportunity`][repyability.Opportunity] repeats every `period` from its
+`offset`, or falls on given `dates`. A unit replaced at the annual shut a month
+ago is younger than 88 days, so the next annual shut skips it. The threshold
+at a shut depends on how far the next cheaper one is: the quarterly shut a
+quarter before the annual waits for a unit of 574 days, the one three quarters
+before it replaces one of 222 days. On a day at 4 with a weekly stop at 3 at
+most a week away, no unit the policy keeps is old enough for the dearer day.
+
+![The threshold age at each weekly, quarterly and annual shut over a year](img/calendar-thresholds.svg)
+
+The chart is drawn by `scripts/calendar_policy_chart.py`. The quarterly and
+annual thresholds, with what the simple policies cost over ten years of the
+plant ([`calendar_policy_cost`][repyability.NonRepairable.calendar_policy_cost]
+prices a rule given as the age from which each kind of replacement replaces):
+
+| Policy | Rule | Cost over 10 years |
+|---|---|---|
+| **Optimal** | annual from 88 d; quarterly from 222, 324, 574 d; weekly as charted | **25.27** |
+| Every annual shut | `{"annual": 0.0}` | 25.48 |
+| Age replacement on any day | `{"anytime": 493.0}` (the textbook interval at 4 and 20) | 50.41 |
+| Run to failure | `{}` | 82.05 |
+
+### How it is worked out
+
+`method="auto"` (the default) chooses among these:
+
+- **`"dp"`**: dynamic programming on a grid of `step` (by default about the
+  mean life over 1,000, put on the opportunities' own grid). Over a periodic
+  calendar whose cycle (the least common multiple of its periods) has at
+  most 20,000 steps, relative value iteration gives the cost rate exactly for
+  the grid; a failure renews half a step later on average, so the grid's
+  error is second order in the step. With no opportunities and a planned
+  price on any day, it is age replacement: threshold 493 days, 0.0034620 a
+  day, against the textbook 493.05 and 0.0034620.
+- **`"integration"`**: between opportunities in continuous time, on
+  quadrature nodes (32 a gap); only with no replacement on any day. It agrees
+  with `"dp"` as the step shrinks.
+- **`"sampling"`**: for a cycle too long to sweep (co-prime periods of 7, 93,
+  400 and 1,301 days repeat every 928,000 years). The cost rate is the mean
+  over `mc_samples` sampled times of the cycle of a window's rate, each window
+  an exact solve, with its standard error (`cost_rate_se`); the threshold at a
+  time is a solve over a window from it, deterministic.
+
+`policy.method` and `policy.basis` (`"exact"`, `"differenced"` or
+`"sampled"`) say which was used. A plan of given dates is extended past its
+last date by `tail`: `"repeat"` (repeat it) or `"anytime"` (only the
+replacement on any day). Both are solved, and `policy.determined_until` is the
+first time at which the two differ: the policy before it does not depend on
+what comes after the plan. If at some time the ages that replace are not all
+those from the youngest (a life whose hazard falls), the policy says so
+(`threshold_only` is False) and warns.
+
 ## Overhaul under minimal repair (`Repairable`)
 
 Each failure is minimally repaired at cost `cr`; every `t` the unit is
@@ -229,4 +320,6 @@ It is `alpha · Γ(n + 1/beta) / Γ(n)`.
 Both policy types are small typed results:
 [`MaintenancePolicy`][repyability.MaintenancePolicy] (`interval`,
 `cost_rate`) and [`FailureLimitPolicy`][repyability.FailureLimitPolicy]
-(`failure_count`, `cost_rate`). Costs are per event and undiscounted.
+(`failure_count`, `cost_rate`). A calendar's policy is a
+[`CalendarPolicy`][repyability.CalendarPolicy] (`threshold(t)`,
+`replace(t, age)`, `schedule()`, `cost_rate`). Costs are per event and undiscounted.

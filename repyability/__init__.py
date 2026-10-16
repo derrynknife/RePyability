@@ -42,9 +42,12 @@ from repyability.demonstration import (
 )
 from repyability.fault_tree import FaultTree
 from repyability.maintenance import (
+    Calendar,
+    CalendarPolicy,
     FailureLimitPolicy,
     MaintenancePolicy,
     NextReplacement,
+    Opportunity,
     ReplacementChoice,
     ReplacementPlan,
     ReplacementPolicies,
@@ -148,6 +151,8 @@ __all__ = [
     # Maintenance planning
     "ReplacementPlan",
     "replacement_policies",
+    "Opportunity",
+    "Calendar",
     # Up/down histories
     "Timeline",
     "Timelines",
@@ -180,6 +185,7 @@ __all__ = [
     "ReplacementPolicy",
     "NextReplacement",
     "ReplacementChoice",
+    "CalendarPolicy",
     "MaintenancePlan",
     "RateBreakdown",
     "AvailabilityAllocation",

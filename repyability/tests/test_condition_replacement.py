@@ -335,7 +335,10 @@ def test_the_values_over_time_are_numerical_and_the_spares_simulated():
             {"interval": 10.0, "policy": "block", "inspection_cost": 1.0},
             "only to the 'condition'",
         ),
-        ({"interval": 10.0, "policy": "cbm"}, "'age', 'block' or 'condition'"),
+        (
+            {"interval": 10.0, "policy": "cbm"},
+            "'age', 'block', 'condition' or 'calendar'",
+        ),
     ],
 )
 def test_the_spec_is_checked(preventive, message):

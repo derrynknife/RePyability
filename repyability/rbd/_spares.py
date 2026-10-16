@@ -1868,6 +1868,11 @@ def _replacements(rbd, node, long_run: bool = False):
             f"Component {node!r} is replaced on condition, at "
             f"inspections on a calendar that do not renew it: {simulate}"
         )
+    if schedule is not None and schedule.policy == "calendar":
+        raise NotImplementedError(
+            f"Component {node!r} is replaced on a calendar policy, at "
+            f"times that depend on when each unit was put in: {simulate}"
+        )
     if node in rbd._early_members:
         raise NotImplementedError(
             f"Component {node!r} is renewed early at the stops of its "

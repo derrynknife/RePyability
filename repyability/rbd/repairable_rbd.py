@@ -710,7 +710,10 @@ class RepairableRBD(RBD):
                     )
                     if cost is not None:
                         node_costs["preventive_cost"] = cost
-                    if np.isfinite(schedule.interval):
+                    if (
+                        np.isfinite(schedule.interval)
+                        or schedule.policy == "calendar"
+                    ):
                         self._preventive[name] = schedule
                         if inspecting is not None:
                             node_costs["inspection_cost"] = inspecting
@@ -746,7 +749,12 @@ class RepairableRBD(RBD):
                     )
                     if acquisition:
                         self.acquisition_costs[name] = acquisition
-                if node_costs:
+                calendar = self._preventive.get(name)
+                if node_costs or (
+                    calendar is not None and calendar.policy == "calendar"
+                ):
+                    # A component on a calendar policy is charged its
+                    # calendar's prices, whatever else it declares.
                     self.costs[name] = node_costs
                 repair_model = component["repairability"]
                 if isinstance(repair_model, str):
@@ -980,7 +988,8 @@ class RepairableRBD(RBD):
 
         True if some component declares a non-zero ``"repair_cost"``,
         ``"replace_cost"``, ``"downtime_cost"``, or preventive-maintenance
-        or inspection ``"cost"`` (a cost distribution always counts), a
+        or inspection ``"cost"`` (a cost distribution always counts), is
+        on a ``"calendar"`` policy (charged its calendar's prices), a
         maintenance group has a set-up cost, or ``downtime_cost_rate`` is
         non-zero: whether running the system costs anything. Costs of 0
         price nothing, costs declared inside a nested ``RepairableRBD`` do

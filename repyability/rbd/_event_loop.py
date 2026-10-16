@@ -1063,12 +1063,29 @@ def _keyed_charges(rbd, run: _streams.Run) -> Tuple[
         for node, node_costs in rbd.costs.items()
         if "preventive_cost" in node_costs
     }
+    for node, schedule in rbd._preventive.items():
+        if schedule.policy == "calendar":
+            preventive[node] = _CalendarCharge(rbd, node)
     inspection = {
         node: charges(node, "inspection_cost")
         for node, node_costs in rbd.costs.items()
         if "inspection_cost" in node_costs
     }
     return failures, preventive, inspection
+
+
+class _CalendarCharge:
+    """What a component on a calendar policy is charged at a planned
+    replacement: the price of the opportunity it falls at, kept when it
+    was scheduled (``_renewal``)."""
+
+    __slots__ = ("rbd", "node")
+
+    def __init__(self, rbd, node):
+        self.rbd, self.node = rbd, node
+
+    def draw(self) -> float:
+        return self.rbd._run_state._calendar_price.get(self.node, 0.0)
 
 
 def _context(
@@ -1218,6 +1235,7 @@ def _start_queue(
     # Each working node replaced on condition by its measured level
     # (#271): when its level was last known, and the level then.
     rbd._run_state._levels = {}
+    rbd._run_state._calendar_price = {}
     # Opportunistic maintenance (#108): when each member that can be
     # renewed early was put into service as new, and its pending event;
     # the pending events early renewals have cancelled, and the early
@@ -1585,7 +1603,15 @@ def _renewal(
         # operating time since it was renewed, which age replacement
         # counts.
         start = t - source.operated if node in rbd._imperfect else t
-    due = _due(rbd, node, schedule, start if schedule.policy == "age" else t)
+    if schedule.policy == "calendar":
+        # On the calendar policy's thresholds, from when the unit was put
+        # in; charged its opportunity's price when it falls.
+        due, price = schedule.calendar._next_planned(start, t)
+        rbd._run_state._calendar_price[node] = price
+    else:
+        due = _due(
+            rbd, node, schedule, start if schedule.policy == "age" else t
+        )
     if due < t:
         due = t  # past its age at the start: replaced at once
     if t + life <= due:

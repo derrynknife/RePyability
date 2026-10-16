@@ -20,7 +20,10 @@
   financial years, and the CMMS (work orders, the asset register, the
   history store, the forecast by date) and RCM's records and workflow
   belong to Reliafy, which turns dates into model time, calls
-  RePyability, and turns the answers back into dates. RePyability keeps
+  RePyability, and turns the answers back into dates. A calendar of
+  opportunities in model time (shuts on periods or at given times, each
+  with a price: `maintenance.Calendar`) is RePyability's; laying it on
+  real dates is Reliafy's. RePyability keeps
   the quantitative questions: RCM's per failure mode (run to failure,
   scheduled replacement, failure finding, on-condition, the options at a
   planned replacement), a failure's consequences at system level, and

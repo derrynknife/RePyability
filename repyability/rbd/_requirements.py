@@ -250,7 +250,17 @@ def _require_no_opportunities(rbd, node) -> None:
     """Raise if a component can be renewed early at the stops of its
     maintenance group (an ``"opportunity"`` below its interval): when
     depends on the other members, so its long-run values and its
-    availability over time are known only by simulation."""
+    availability over time are known only by simulation. So too a
+    component on a ``"calendar"`` policy (#319)."""
+    schedule = rbd._preventive.get(node)
+    if schedule is not None and schedule.policy == "calendar":
+        raise NotImplementedError(
+            f"Component {node!r} is replaced on a calendar policy, at "
+            "times that depend on when each unit was put in, so its "
+            "long-run values and its availability over time have no "
+            "exact value here. Estimate them by simulation, with "
+            "availability() or cost()."
+        )
     if node in rbd._early_members:
         raise NotImplementedError(
             f"Component {node!r} is renewed early at the stops of its "

@@ -28,6 +28,7 @@ use cases, under the same numbers.
 | UC-10 | Tasks by use on an operating schedule: calendar only | Reliafy's |
 | UC-11 | A part renewed at every service and at failure: its risk before each service, from its state, in running hours | Answered by hand |
 | UC-12 | When to replace this part next: now, at a scheduled outage, at a planned replacement, or at its failure? | **Built**: `NonRepairable.optimal_next_replacement` |
+| UC-13 | The long-run optimal replacement policy over a calendar of shuts with prices of their own | **Built**: `NonRepairable.optimal_calendar_policy` |
 
 ## How a use case is added
 
@@ -735,3 +736,51 @@ answers back into dates is Reliafy's too.)
     (the best decision for every age and day, worked back from past the
     last scheduled outage), to measure what valuing a new part the same
     whenever it is fitted leaves out.
+
+### UC-13: "Replacing the bearing costs 1 in the annual shut, 2 in a quarterly shut, 3 at a weekly stop, 4 on any other day and 20 at a failure. What is the best replacement policy in the long run?"
+
+- **Status:** built (the maintainer's brief, "long-run optimal replacement
+  policy over an outage calendar"): `NonRepairable.optimal_calendar_policy`,
+  `calendar_policy_cost`, `Opportunity`, `Calendar`, `CalendarPolicy`.
+  Decisions to take or verify: `repyability/maintenance/CALENDAR_DECISIONS.md`.
+- **Who asks, and why:** a reliability engineer setting a part's
+  replacement rule in a plant whose shuts make replacing cheap at some
+  times and dear at others. Age replacement assumes one planned price at
+  every moment; here the price depends on the time.
+- **What they know:** the part's life (Weibull, scale 1000 days, shape
+  2.5); the shuts, each with its period, offset (or dates) and price; the
+  price on any other day (or none); the price at a failure.
+- **What they want back:** the threshold age at each time (replace if at
+  least that old), the long-run cost a day, and what simpler rules cost.
+- **How it is solved:** the state is the time and the age; dynamic
+  programming on a grid (relative value iteration over a periodic
+  calendar's cycle, exact for the grid; a long finite horizon otherwise),
+  integration between opportunities in continuous time (no replacement on
+  any day), and, for a cycle too long to sweep, the cost rate sampled over
+  times of the cycle, each a window solved exactly.
+- **The answer:** 0.006943 a day (25.27 over ten years); the annual shut
+  replaces a unit of 88 days or more, the quarterly shuts one of 222, 324
+  and 574 days (the last a quarter before the annual), the weekly stops
+  older ones still, and no unit kept reaches the age the dearer day would
+  replace it at. Every annual shut costs 25.48 over ten years, age
+  replacement on any day 50.41, running to failure 82.05.
+- **Checks** (`test_maintenance_calendar.py`,
+  `test_maintenance_calendar_methods.py`): age replacement with no
+  opportunities (to 1e-5); the cycle's rate against a long horizon's
+  (to 1e-6); the policy simulated plainly (within 2 standard errors); the
+  phase effect; skipping a young unit; the policy over 10, 20 and 40
+  years (the same) and 5 (within 10 days); the simple policies; a life
+  whose replacing ages are no threshold (flagged); repeated plans against
+  the periodic calendar; integration against the grid, the daily limit
+  (age replacement to 1e-6) and long gaps; sampling against the exact
+  rate, a co-prime calendar, its determinism; the routes; units.
+- **Learned:**
+  - The brief's recursion renews a failed unit at the next step, low by
+    about half a step a failure (1.7e-4 for this bearing at a step of a
+    day). Renewing it half a step on average (as new or a step old, half
+    each) makes the error second order (1.3e-7).
+  - At prices like these the annual shut does nearly all the work: the
+    quarterly and weekly stops matter only for a unit a failure renewed
+    early in the year, so a calendar with a dearer failure (40) is the
+    one that tells the methods apart.
+

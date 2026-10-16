@@ -77,11 +77,13 @@ PREVENTIVE_KEYS = (
     "inspection_cost",
     "opportunity",
     "level",
+    "calendar",
 )
 
 #: The policies a ``"preventive"`` spec can name: replacement at an
-#: age, on a calendar (block), or on the condition an inspection finds.
-PREVENTIVE_POLICIES = ("age", "block", "condition")
+#: age, on a calendar (block), on the condition an inspection finds, or
+#: on a ``CalendarPolicy``'s threshold at each time (#319).
+PREVENTIVE_POLICIES = ("age", "block", "condition", "calendar")
 
 #: The keys of a maintenance group's options.
 GROUP_KEYS = ("setup_cost", "system_down")
@@ -389,6 +391,38 @@ def _validate_component_spec(node, spec: dict) -> None:
             )
 
 
+def _validate_calendar(node, spec: dict, policy: str):
+    """A ``"calendar"`` policy's ``CalendarPolicy`` (#319), checked: given
+    under that policy and no other, with no interval (its thresholds say
+    when) and no cost (its calendar's prices are charged)."""
+    from repyability.maintenance import CalendarPolicy
+
+    given = spec.get("calendar")
+    if policy != "calendar":
+        if given is not None:
+            raise ValueError(
+                f"Component {node!r}: a calendar applies only to the "
+                "'calendar' policy."
+            )
+        return None
+    if not isinstance(given, CalendarPolicy):
+        raise ValueError(
+            f"Component {node!r}: the 'calendar' policy needs a calendar, "
+            "the CalendarPolicy of NonRepairable.optimal_calendar_policy; "
+            f"got {given!r}."
+        )
+    for key, why in (
+        ("interval", "its policy's thresholds say when to replace"),
+        ("cost", "its calendar's price at each opportunity is charged"),
+    ):
+        if spec.get(key) is not None:
+            raise ValueError(
+                f"Component {node!r}: a 'calendar' policy takes no {key}: "
+                f"{why}."
+            )
+    return given
+
+
 def _validate_preventive(
     node, spec, life=None
 ) -> Tuple[_Preventive, Any, Any]:
@@ -408,22 +442,26 @@ def _validate_preventive(
             f"{sorted(map(str, unknown))}. A preventive spec takes "
             f"{', '.join(PREVENTIVE_KEYS)}."
         )
-    try:
-        interval = number_or_nan(spec["interval"])
-    except KeyError:
-        raise ValueError(
-            f"Component {node!r}: a preventive spec needs an interval."
-        ) from None
-    if not interval > 0.0:
-        raise ValueError(
-            f"Component {node!r}: the preventive interval must be a "
-            f"positive number (inf for none), got {spec['interval']!r}."
-        )
     policy = spec.get("policy", "age")
     if policy not in PREVENTIVE_POLICIES:
         raise ValueError(
             f"Component {node!r}: the preventive policy must be 'age', "
-            f"'block' or 'condition', got {policy!r}."
+            f"'block', 'condition' or 'calendar', got {policy!r}."
+        )
+    calendar = _validate_calendar(node, spec, policy)
+    if calendar is not None:
+        interval = math.inf
+    else:
+        try:
+            interval = number_or_nan(spec["interval"])
+        except KeyError:
+            raise ValueError(
+                f"Component {node!r}: a preventive spec needs an interval."
+            ) from None
+    if not interval > 0.0:
+        raise ValueError(
+            f"Component {node!r}: the preventive interval must be a "
+            f"positive number (inf for none), got {spec['interval']!r}."
         )
     threshold = 0.0
     level = _validate_level(node, spec, policy, life)
@@ -494,7 +532,7 @@ def _validate_preventive(
                 cost = None
         costs.append(cost)
     schedule = _Preventive(
-        interval, policy, duration, threshold, opportunity, level
+        interval, policy, duration, threshold, opportunity, level, calendar
     )
     return schedule, costs[0], costs[1]
 
