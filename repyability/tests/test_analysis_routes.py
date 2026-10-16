@@ -19,6 +19,7 @@ from repyability import (
     AnalysisRoute,
     DegradingNode,
     LoadSharingModel,
+    Network,
     NonRepairableRBD,
     PhasedMission,
     RepairableRBD,
@@ -365,6 +366,108 @@ def test_every_analysis_is_called(kinds, calls):
     # The checks above call every analysis the report gives a route (#239).
     report = next(iter(kinds().values())).analysis_routes()
     assert set(calls) == set(report)
+
+
+# -- networks (#315) --------------------------------------------------------
+
+
+def uncertain_element(net):
+    """A link's first parameter known to within 5%."""
+    for name, model in net.models.items():
+        spec = parametric_spec(model)
+        if spec is not None:
+            parameter, value = spec.names[0], spec.params[0]
+            return {name: {parameter: st.uniform(0.95 * value, 0.1 * value)}}
+    raise AssertionError("No element's model has parameters.")
+
+
+NETWORK_CALLS = {
+    **{
+        name: (lambda name: lambda net: getattr(net, name)(X))(name)
+        for name in (
+            "sf",
+            "ff",
+            "birnbaum_importance",
+            "improvement_potential",
+            "risk_achievement_worth",
+            "risk_reduction_worth",
+            "criticality_importance",
+            "fussell_vesely",
+            "differential_importance",
+            "joint_importance",
+            "barlow_proschan_importance",
+        )
+    },
+    "structural_importance": lambda net: net.structural_importance(),
+    "cut_sets": lambda net: net.cut_sets(),
+    "path_sets": lambda net: net.path_sets(),
+    "mean": lambda net: net.mean(),
+    "time_to_reliability": lambda net: net.time_to_reliability(0.5),
+    "bx_life": lambda net: net.bx_life(10),
+    "random": lambda net: net.random(200, seed=1),
+    "sf_uncertainty": lambda net: net.sf_uncertainty(
+        X, uncertain_element(net), n_draws=20, seed=1
+    ),
+    "mean_uncertainty": lambda net: net.mean_uncertainty(
+        uncertain_element(net), n_draws=5, seed=1
+    ),
+}
+
+BRIDGE_LINKS = {
+    "a": ("s", "x"),
+    "b": ("s", "y"),
+    "c": ("x", "y"),
+    "d": ("x", "t"),
+    "e": ("y", "t"),
+}
+
+
+def networks():
+    """Networks of each kind: the bridge with lifetime models and a
+    failing node, and one of fixed probabilities."""
+    return {
+        "bridge": Network(
+            {
+                name: (u, v, W([100 + 10 * i, 1.5]))
+                for i, (name, (u, v)) in enumerate(BRIDGE_LINKS.items())
+            },
+            "s",
+            "t",
+            nodes={"x": E([0.01])},
+        ),
+        "fixed bridge": Network(
+            {
+                name: (u, v, 0.05 + 0.01 * i)
+                for i, (name, (u, v)) in enumerate(BRIDGE_LINKS.items())
+            },
+            "s",
+            "t",
+        ),
+    }
+
+
+@pytest.mark.parametrize("name", sorted(networks()))
+def test_every_network_method_does_what_the_report_says(name):
+    net = networks()[name]
+    report = net.analysis_routes()
+    assert set(NETWORK_CALLS) == set(report)
+    for method, call in NETWORK_CALLS.items():
+        behaves_as_reported(report[method], lambda: call(net))
+
+
+def test_the_network_report_covers_every_public_analysis():
+    public = {
+        name
+        for name, _ in inspect.getmembers(Network, callable)
+        if not name.startswith("_")
+    }
+    assert set(networks()["bridge"].analysis_routes()) == public - {
+        "analysis_routes",
+        "from_dict",
+        "from_json",
+        "to_dict",
+        "to_json",
+    }
 
 
 @pytest.mark.parametrize("cls", [NonRepairableRBD, RepairableRBD])

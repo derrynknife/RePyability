@@ -89,6 +89,26 @@ other release, fixes included, the minor.
   each of the mission's analyses, and the README's capability matrix has
   the new methods. Each phase's own importance, given that the mission
   reaches it, is not offered.
+- **A network's importance measures, B-lives, parameter uncertainty,
+  saving and routes (#315).** `Network` now has, over its links and
+  failing nodes, the measures a `NonRepairableRBD` has beyond Birnbaum's:
+  `improvement_potential`, `risk_achievement_worth`,
+  `risk_reduction_worth`, `criticality_importance`, `fussell_vesely`
+  (`fv_type`, `method`), `structural_importance`,
+  `differential_importance`, `joint_importance` and
+  `barlow_proschan_importance`, with the same definitions
+  (`rbd/_measures.py`, the formulas over the system's values with an
+  element held, which the diagram's methods share for the densities,
+  the Barlow-Proschan shares and the inversion of the reliability), each
+  from the network's decision diagram replayed with an element held, the
+  exact Fussell-Vesely from a decision diagram of each element's cut
+  sets; `bx_life` and `time_to_reliability`; `sf_uncertainty` and
+  `mean_uncertainty`, whose draws are a diagram's with the same seed and
+  sources; `to_dict`, `to_json`, `from_dict` and `from_json`, the links
+  and nodes saved as a diagram's nodes are; and `analysis_routes()`,
+  which refuses every analysis but the simulation for a network too
+  large for its diagram, with the message the methods raise. On the
+  bridge, each measure is the diagram's of the same system to 1e-12.
 - **The long-run optimal replacement policy over a calendar of shuts
   (#319).** `NonRepairable.optimal_calendar_policy(calendar)` finds, for a
   part whose planned replacement costs differently at different times

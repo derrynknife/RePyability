@@ -40,11 +40,12 @@ over the draws, and of the Sobol indices, for the same number of draws.
 import difflib
 import warnings
 from collections.abc import Mapping, Sequence
-from typing import Any, List, Optional
+from typing import Any, Callable, Dict, Hashable, Iterable, List, Optional
 
 import numpy as np
 
 from repyability.rbd._model_utils import is_mixture, parametric_spec
+from repyability.utils.checks import seed as check_seed
 from repyability.utils.wrappers import outside_level
 
 #: The draws of a node's model that ``"fit"`` asks for.
@@ -114,6 +115,45 @@ class SobolPoints:
     def integers(self, high, size) -> np.ndarray:
         u = self._take(1)[:size, 0]
         return np.minimum((u * high).astype(int), int(high) - 1)
+
+
+def check_draws(n_draws) -> int:
+    """``n_draws``, checked: a positive integer."""
+    if isinstance(n_draws, bool) or not isinstance(n_draws, (int, np.integer)):
+        raise ValueError(f"n_draws must be an integer, got {n_draws!r}.")
+    if n_draws < 1:
+        raise ValueError(f"n_draws must be at least 1, got {n_draws}.")
+    return int(n_draws)
+
+
+def draw_with(
+    draw: Callable[[int, Any], Any],
+    n_draws: int,
+    seed,
+    sampling: str = "random",
+    paired: bool = False,
+    join: Optional[Callable[[Any, Any], Any]] = None,
+) -> Any:
+    """``draw(n, source)``'s draws, ``n_draws`` of them, with their
+    randomness from ``seed``: ``sampling="random"``, numpy's generator;
+    ``"sobol"``, the points of a scrambled Sobol sequence, the dimensions
+    the draws take counted first (see the module docstring). ``paired``:
+    two independent sets of ``n_draws``, one after the other, for the
+    Sobol indices: one draw of twice as many, or, from the Sobol points,
+    two draws from dimensions of their own, put together by ``join``."""
+    check_sampling(sampling)
+    rng = np.random.default_rng(check_seed(seed))
+    if sampling == "random":
+        return draw(2 * n_draws if paired else n_draws, rng)
+    counter = Counter()
+    draw(1, counter)
+    width = counter.dimensions
+    table = sobol_table(n_draws, 2 * width if paired else width, rng)
+    first = draw(n_draws, SobolPoints(table[:, :width]))
+    if not paired:
+        return first
+    assert join is not None
+    return join(first, draw(n_draws, SobolPoints(table[:, width:])))
 
 
 def sobol_table(n: int, dimensions: int, rng) -> np.ndarray:
@@ -266,6 +306,39 @@ def is_fit(model) -> bool:
     except (ValueError, TypeError, AttributeError):
         return False
     return True
+
+
+def fitted_together(
+    models: Mapping, joined: Iterable[Iterable[Hashable]] = ()
+) -> Dict[Hashable, str]:
+    """The uncertainty drawn when none is given (#184): ``"fit"`` for each
+    of ``models`` (by name) that is a surpyval fit with a parameter
+    covariance, the names that share one model object, or are ``joined``
+    (a common-cause group's members, say), given together in a tuple, so
+    that they share their draws."""
+    fitted = [name for name, model in models.items() if is_fit(model)]
+    parent = {name: name for name in fitted}
+
+    def root(name):
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    holder: Dict[int, Hashable] = {}
+    for name in fitted:
+        parent[root(name)] = root(holder.setdefault(id(models[name]), name))
+    for names in joined:
+        inside = [name for name in names if name in parent]
+        for name in inside[1:]:
+            parent[root(name)] = root(inside[0])
+    together: Dict[Hashable, list] = {}
+    for name in fitted:
+        together.setdefault(root(name), []).append(name)
+    return {
+        names[0] if len(names) == 1 else tuple(names): FIT
+        for names in together.values()
+    }
 
 
 def _quantiles(

@@ -20,7 +20,8 @@ taking already-fitted lifetime models (from
   reliability from uncertain (fitted) component models.
 - **Networks**: undirected networks whose links fail: the exact
   reliability of the connection between two terminals, by a decision
-  diagram that keeps meshed networks fast.
+  diagram that keeps meshed networks fast, with a diagram's importance
+  measures, B-lives, parameter uncertainty and saving.
 - **Phased missions**: missions through phases (take-off, cruise,
   landing), each with its own diagram over the same components: the exact
   mission reliability and the chance of failing in each phase.
@@ -148,7 +149,7 @@ Which analyses each model type has (the method; — where it has none):
 | Density, hazard, cumulative hazard | `df` | — | — | — | — |
 | Mean time to (first) failure | `mean` | — | — | `mean` | — |
 | Each node's own R(t), F(t) and MTTF | `node_sf` | — | — | — | — |
-| B-life, time to a reliability | `bx_life` | — | — | — | — |
+| B-life, time to a reliability | `bx_life` | — | — | `bx_life` | — |
 | Given the system's age | `cs` | — | — | — | — |
 | Given the components' ages or states | `sf_given_state` | — | — | — | — |
 | Mean residual and remaining life | `mean_residual_life` | — | — | — | — |
@@ -181,26 +182,26 @@ Which analyses each model type has (the method; — where it has none):
 | Convert to and from an RBD | — | — | `to_rbd` | — | — |
 | Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — |
 | Capacity over time | — | `point_capacity` | — | — | — |
-| How each analysis is computed | `analysis_routes` | `analysis_routes` | — | — | `analysis_routes` |
-| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | — | — |
+| How each analysis is computed | `analysis_routes` | `analysis_routes` | — | `analysis_routes` | `analysis_routes` |
+| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | — |
 | **Importance measures** | | | | | |
 | Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` |
-| Structural | `structural_importance` | `structural_importance` | — | — | — |
-| Improvement potential | `improvement_potential` | `improvement_potential` | — | — | `improvement_potential` |
-| Risk achievement worth | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | — | `risk_achievement_worth` |
-| Risk reduction worth | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | — | `risk_reduction_worth` |
-| Criticality | `criticality_importance` | `criticality_importance` | `criticality_importance` | — | `criticality_importance` |
-| Fussell-Vesely | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | — | `fussell_vesely` |
-| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | — | — |
-| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | — | — |
-| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | — | — | — |
+| Structural | `structural_importance` | `structural_importance` | — | `structural_importance` | — |
+| Improvement potential | `improvement_potential` | `improvement_potential` | — | `improvement_potential` | `improvement_potential` |
+| Risk achievement worth | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` |
+| Risk reduction worth | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` |
+| Criticality | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` |
+| Fussell-Vesely | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` |
+| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | — |
+| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | — |
+| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | — | `barlow_proschan_importance` | — |
 | Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — |
 | Uncertainty importance | `uncertainty_importance` | `uncertainty_importance` | — | — | — |
 | All measures given a state | `importances_given_state` | — | — | — | — |
 | Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | — | — | — |
 | **Uncertainty** | | | | | |
-| Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | — | — | `reliability_interval` |
-| Of the MTTF | `mean_uncertainty` | — | — | — | — |
+| Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | — | `sf_uncertainty` | `reliability_interval` |
+| Of the MTTF | `mean_uncertainty` | — | — | `mean_uncertainty` | — |
 | Of the B-life | `bx_life_uncertainty` | — | — | — | — |
 | Of the cost rate | — | `expected_cost_rate_uncertainty` | — | — | — |
 | **Design and maintenance** | | | | | |
@@ -349,7 +350,7 @@ places, nested diagrams):
 | Shared repair crews | For exponential lives and repairs, the long run and importance exact, and the values over time numerical (the same Markov chain, followed by uniformization), but the allocations; other lives simulated. The maintenance and test intervals are chosen as if every repair started at once on request (`assume_unlimited_crews=True`), for a plan to simulate with the crews | Other lives: yes, in general. |
 | Standby groups (a duty unit and its spares, repaired) | For exponential units, the long run and importance exact, and the values over time numerical (the units' Markov chain, followed by uniformization); other units simulated | Other units: yes, in general. |
 | Opportunistic maintenance (renewals at a group's stops) | Simulated | Yes: each member's renewals depend on the others' ages. |
-| Imperfect repair (Kijima), with or without replacement at the *N*-th failure | Simulated; but minimal repair (`q = 1`) is numerical over a window from new, its long run refused: in no time it fails `H(t)` times by `t`, and with repairs that take time its operating age is followed on a grid, each failure's repair convolved in (#318) | Yes, in general: a repair does not renew the unit. Minimal repair's long run, no: its rate of failures need not settle. |
+| Imperfect repair (Kijima), with or without replacement at the *N*-th failure | Simulated; but minimal repair (`q = 1`) in no time is numerical over a window from new (it fails `H(t)` times by `t`), its long run refused | Yes, in general: a repair does not renew the unit. |
 | Replacement on condition by a measured degradation level | Simulated (in Python), from new; the exact and numerical analyses refused | No: between inspections the level is a Markov process, so the long run and the values over time could follow its distribution on a grid of levels, as replacement on condition by age follows ages. |
 | Spares with repair crews, standby groups, opportunistic maintenance or imperfect repair | Refused, pointing to `spares_demand(method="simulate")`. Otherwise numerical, demand and stock: block-replaced components' whether their repairs and block replacements take time or not (from a typical replacement in the long run), but for one dead on arrival while they may take none, and tested components', whatever their tests and repairs take and whether their tests miss failures | Yes, in general: a crew's queue, a group's switching or stops and an imperfect repair make the replacements depend on more than each unit's own lives. A unit dead on arrival whose renewals may take no time: no, the replacements at one instant could be counted. |
 

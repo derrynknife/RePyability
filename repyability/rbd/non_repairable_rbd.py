@@ -32,15 +32,14 @@ from typing import (
 
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.optimize import brentq
 
 from repyability.utils.checks import (
     no_distribution,
     one_of,
     real_array,
+    simulation_options,
+    structure_method,
 )
-from repyability.utils.checks import seed as check_seed
-from repyability.utils.checks import simulation_options, structure_method
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from . import _ccf_modules
@@ -50,10 +49,17 @@ from . import capacity as _capacity
 from . import redundancy_allocation
 from ._degradation import check_life, is_degradation
 from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
+from ._measures import (
+    density,
+    difference_steps,
+    integrated_shares,
+    invert_reliability,
+    life_end,
+    model_scale,
+)
 from ._model_utils import (
     MODEL_ERRORS,
     always_works,
-    failure_time_scale,
     is_fixed_probability,
     is_mixture,
     lever_spec,
@@ -98,13 +104,11 @@ from .results import (
 from .routes import EXACT, NUMERICAL, AnalysisRoute, Refused, model_route
 from .standby_node import StandbyModel
 from .uncertainty import (
-    Counter,
-    SobolPoints,
-    check_sampling,
+    check_draws,
     draw_ccf_models,
     draw_models,
-    is_fit,
-    sobol_table,
+    draw_with,
+    fitted_together,
     varied_ccf_parameters,
     varied_parameters,
 )
@@ -271,31 +275,6 @@ def _dsf_dparam(spec, j, x_arr, rel_step) -> np.ndarray:
     if down is not None:
         return (base - down) / h
     return np.full(x_arr.shape, np.nan)
-
-
-def _model_scale(model) -> float:
-    """A typical failure time of a node's model (see
-    ``failure_time_scale``), or NaN where it has none: a fixed probability,
-    or a model whose mean cannot be worked out."""
-    if is_fixed_probability(model):
-        return float("nan")
-    try:
-        return float(failure_time_scale(model))
-    except (AttributeError, TypeError, ValueError, NotImplementedError):
-        return float("nan")
-
-
-def _difference_steps(x: np.ndarray, dx: float, scale) -> np.ndarray:
-    """The steps of a finite difference at the times ``x``: ``dx`` of each
-    time, and at 0, where there is none to be relative to, ``dx`` of
-    ``scale()``, a typical failure time (1 if there is none), so that the
-    step does not depend on the unit of time."""
-    step = dx * np.abs(x)
-    if np.any(step == 0.0):
-        typical = scale()
-        typical = typical if np.isfinite(typical) and typical > 0 else 1.0
-        step = np.where(step == 0.0, dx * typical, step)
-    return step
 
 
 def _system_difference(at, theta, rel_step, base) -> np.ndarray:
@@ -2615,15 +2594,8 @@ class NonRepairableRBD(RBD):
         scrambled Sobol sequence, a pair's two sets from dimensions of
         their own (see ``uncertainty``)."""
 
-        if isinstance(n_draws, bool) or not isinstance(
-            n_draws, (int, np.integer)
-        ):
-            raise ValueError(f"n_draws must be an integer, got {n_draws!r}.")
-        if n_draws < 1:
-            raise ValueError(f"n_draws must be at least 1, got {n_draws}.")
-        check_sampling(sampling)
+        check_draws(n_draws)
         sources, ccf_specs = self._uncertainty_sources(uncertainty)
-        rng = np.random.default_rng(check_seed(seed))
 
         def draw(n: int, source) -> Tuple[Dict[Hashable, list], list]:
             drawn: Dict[Hashable, list] = {}
@@ -2650,23 +2622,16 @@ class NonRepairableRBD(RBD):
             ]
             return drawn, groups
 
-        if sampling == "random":
-            return draw(2 * n_draws if paired else n_draws, rng)
-        counter = Counter()
-        draw(1, counter)
-        width = counter.dimensions
-        table = sobol_table(n_draws, 2 * width if paired else width, rng)
-        first = draw(n_draws, SobolPoints(table[:, :width]))
-        if not paired:
-            return first
-        second = draw(n_draws, SobolPoints(table[:, width:]))
-        return (
-            {node: first[0][node] + second[0][node] for node in first[0]},
-            [
-                None if a is None else a + b
-                for a, b in zip(first[1], second[1])
-            ],
-        )
+        def join(first, second):
+            return (
+                {node: first[0][node] + second[0][node] for node in first[0]},
+                [
+                    None if a is None else a + b
+                    for a, b in zip(first[1], second[1])
+                ],
+            )
+
+        return draw_with(draw, n_draws, seed, sampling, paired, join)
 
     def _uncertainty_sources(
         self, uncertainty
@@ -2780,40 +2745,15 @@ class NonRepairableRBD(RBD):
         every component whose model is a surpyval fit with a parameter
         covariance, the nodes that share one model object, or one
         common-cause group, given together, so that they share their
-        draws."""
-
-        fitted = [
-            node
-            for node in self.nodes
-            if node not in self.repeated and is_fit(self.reliabilities[node])
-        ]
-        # Join the nodes that share a model object or a common-cause group.
-        parent = {node: node for node in fitted}
-
-        def root(node):
-            while parent[node] != node:
-                parent[node] = parent[parent[node]]
-                node = parent[node]
-            return node
-
-        def join(a, b):
-            parent[root(a)] = root(b)
-
-        holder: Dict[int, Hashable] = {}
-        for node in fitted:
-            first = holder.setdefault(id(self.reliabilities[node]), node)
-            join(node, first)
-        for group in self.ccf_groups:
-            members = [m for m in group.members if m in parent]
-            for member in members[1:]:
-                join(member, members[0])
-        together: Dict[Hashable, list] = {}
-        for node in fitted:
-            together.setdefault(root(node), []).append(node)
-        return {
-            nodes[0] if len(nodes) == 1 else tuple(nodes): "fit"
-            for nodes in together.values()
-        }
+        draws (see ``uncertainty.fitted_together``)."""
+        return fitted_together(
+            {
+                node: self.reliabilities[node]
+                for node in self.nodes
+                if node not in self.repeated
+            },
+            (group.members for group in self.ccf_groups),
+        )
 
     def _drawn_groups(self, drawn_groups: list, i: int) -> Optional[list]:
         """The common-cause groups of draw ``i`` (see ``_uncertain_draws``),
@@ -4758,7 +4698,7 @@ class NonRepairableRBD(RBD):
         0.006065
         """
         x = np.atleast_1d(np.asarray(x, dtype=float))
-        h = _difference_steps(x, dx, self._time_scale)
+        h = difference_steps(x, dx, self._time_scale)
         x_hi = x + h
         x_lo = np.maximum(x - h, 0.0)
         sf_lo, ff_lo = self._sf_and_ff(
@@ -6892,43 +6832,11 @@ class NonRepairableRBD(RBD):
         ``sf_func`` maps a scalar time to a scalar system reliability and is
         monotonically non-increasing, so the solution is unique. Shared by
         :meth:`time_to_reliability` and :meth:`remaining_life`; the target is
-        bracketed automatically (by doubling) unless ``upper_bound`` is given.
+        bracketed automatically (by doubling) unless ``upper_bound`` is given
+        (see ``_measures.invert_reliability``).
         """
-        if np.ndim(target) > 0:
-            targets = np.asarray(target, dtype=float)
-            return np.array(
-                [
-                    self._invert_reliability(sf_func, float(t), upper_bound)
-                    for t in targets.ravel()
-                ]
-            ).reshape(targets.shape)
-        if not 0.0 < target < 1.0:
-            raise ValueError("target reliability must be in (0, 1).")
         self._require_time_varying()
-
-        r0 = float(sf_func(0.0))
-        if target > r0:
-            raise ValueError(
-                f"target reliability {target} exceeds the system reliability "
-                f"at t=0 ({r0:.6g}); it is never reached."
-            )
-
-        def f(t):
-            return float(sf_func(t)) - target
-
-        hi = upper_bound
-        if hi is None:
-            hi = 1.0
-            for _ in range(1000):
-                if f(hi) < 0.0:
-                    break
-                hi *= 2.0
-            else:
-                raise ValueError(
-                    "Could not bracket the target reliability; pass an "
-                    "explicit upper_bound."
-                )
-        return float(brentq(f, 0.0, hi))
+        return invert_reliability(sf_func, target, upper_bound)
 
     def bx_life(self, x, **kwargs):
         """Bx life: the time by which ``x`` percent of systems have failed.
@@ -8578,9 +8486,9 @@ class NonRepairableRBD(RBD):
 
     def _time_scale(self) -> float:
         """The diagram's shortest typical failure time over its nodes (see
-        ``_model_scale``), to size a step at time 0 by; NaN if none has
+        ``model_scale``), to size a step at time 0 by; NaN if none has
         one."""
-        scales = [_model_scale(m) for m in self.reliabilities.values()]
+        scales = [model_scale(m) for m in self.reliabilities.values()]
         scales = [x for x in scales if np.isfinite(x) and x > 0.0]
         return min(scales) if scales else float("nan")
 
@@ -8589,23 +8497,7 @@ class NonRepairableRBD(RBD):
         (``df``) where it has one, else by central differences of its
         probability of failing, as ``df`` takes the system's (one-sided
         near 0)."""
-        model = self.reliabilities[node]
-        try:
-            with np.errstate(all="ignore"):
-                return np.asarray(model.df(x), dtype=float).reshape(x.shape)
-        except (AttributeError, TypeError, ValueError, NotImplementedError):
-            pass
-        step = _difference_steps(x, 1e-6, lambda: _model_scale(model))
-        hi, lo = x + step, np.maximum(x - step, 0.0)
-        if hasattr(model, "ff"):
-            change = np.asarray(model.ff(hi), dtype=float) - np.asarray(
-                model.ff(lo), dtype=float
-            )
-        else:
-            change = np.asarray(model.sf(lo), dtype=float) - np.asarray(
-                model.sf(hi), dtype=float
-            )
-        return np.clip(change.reshape(x.shape) / (hi - lo), 0.0, None)
+        return density(self.reliabilities[node], x)
 
     def _rate_parts(
         self, x: np.ndarray, working_nodes, broken_nodes
@@ -8632,7 +8524,7 @@ class NonRepairableRBD(RBD):
         if self.ccf_groups:
             # A group's part: the system's change with its members' lives
             # moved on and the rest held, by central differences.
-            step = _difference_steps(x, 1e-6, self._time_scale)
+            step = difference_steps(x, 1e-6, self._time_scale)
             hi, lo = x + step, np.maximum(x - step, 0.0)
             p, q = self._importance_inputs(x, working_nodes, broken_nodes)
             ends = [
@@ -8814,13 +8706,11 @@ class NonRepairableRBD(RBD):
         >>> {node: round(share, 6) for node, share in shares.items()}
         {'a': 0.25, 'b': 0.75}
         """
-        from . import _rates
-
         keys = list(self._rate_parts(np.ones(1), working_nodes, broken_nodes))
 
-        def density(t: np.ndarray) -> np.ndarray:
-            parts = self._rate_parts(t, working_nodes, broken_nodes)
-            return -np.column_stack([parts[key] for key in keys])
+        def parts(t: np.ndarray) -> np.ndarray:
+            by_key = self._rate_parts(t, working_nodes, broken_nodes)
+            return -np.column_stack([by_key[key] for key in keys])
 
         knots = np.concatenate(
             [np.empty(0)]
@@ -8837,23 +8727,7 @@ class NonRepairableRBD(RBD):
                 raise ValueError(
                     f"Times must be finite and non-negative, got {x!r}."
                 )
-        order = np.argsort(ends)
-        totals = np.zeros((len(ends), len(keys)))
-        running = np.zeros(len(keys))
-        start = 0.0
-        for k in order:
-            end = float(ends[k])
-            if end > start:
-                running = running + _rates.integral(
-                    density, _filled_edges(knots, start, end)
-                )
-                start = end
-            totals[k] = running
-        whole = totals.sum(axis=1)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            shares = np.where(
-                whole[:, None] > 0.0, totals / whole[:, None], np.nan
-            )
+        shares = integrated_shares(parts, knots, ends)
         if x is None or np.ndim(x) == 0:
             return {key: float(shares[0, j]) for j, key in enumerate(keys)}
         shape = np.shape(x)
@@ -8864,31 +8738,7 @@ class NonRepairableRBD(RBD):
     ) -> float:
         """A time by which what is left of the system's failures is
         negligible: its reliability within ``1e-14`` of what it never
-        loses."""
-
-        def sf(t):
-            return np.asarray(
-                self._sf_and_ff(np.atleast_1d(t), working_nodes, broken_nodes)[
-                    0
-                ],
-                dtype=float,
-            ).ravel()
-
-        never = float(sf(np.array([1e300]))[0])
-        start = float(knots[-1]) if knots.size else 1.0
-        tail = start * 2.0 ** np.arange(int(np.log2(1e300 / start)) + 1)
-        values = sf(tail)
-        ended = np.flatnonzero(values - never <= 1e-14)
-        return float(tail[ended[0]] if ended.size else tail[-1])
-
-
-def _filled_edges(knots: np.ndarray, start: float, end: float) -> np.ndarray:
-    """The pieces of an integral from ``start`` to ``end``: at the
-    ``knots`` within, and at least eight to a decade from the first."""
-    inside = knots[(knots > start) & (knots < end)]
-    low = max(start, float(inside[0]) if inside.size else end * 1e-6)
-    if low <= 0.0:
-        low = end * 1e-6
-    decades = max(np.log10(end / low), 1.0)
-    filler = np.geomspace(low, end, int(np.ceil(decades * 8)) + 1)
-    return np.unique(np.concatenate([[start, end], inside, filler]))
+        loses (see ``_measures.life_end``)."""
+        return life_end(
+            lambda t: self._sf_and_ff(t, working_nodes, broken_nodes)[0], knots
+        )

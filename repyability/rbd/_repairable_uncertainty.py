@@ -49,18 +49,15 @@ from repyability.rbd.results import (
 from repyability.utils.checks import (
     one_of,
 )
-from repyability.utils.checks import seed as check_seed
 from repyability.utils.wrappers import outside_level
 
 from .uncertainty import (
     FIT,
-    Counter,
-    SobolPoints,
-    check_sampling,
+    check_draws,
     draw_ccf_models,
     draw_models,
+    draw_with,
     is_fit,
-    sobol_table,
     varied_ccf_parameters,
     varied_parameters,
 )
@@ -395,12 +392,7 @@ def draws(
     after the other. With ``sampling="sobol"``, from a scrambled Sobol
     sequence's points, a pair's sets from dimensions of their own (as
     ``NonRepairableRBD._uncertain_draws``)."""
-    if isinstance(n, bool) or not isinstance(n, (int, np.integer)):
-        raise ValueError(f"n_draws must be an integer, got {n!r}.")
-    if n < 1:
-        raise ValueError(f"n_draws must be at least 1, got {n}.")
-    check_sampling(sampling)
-    rng = np.random.default_rng(check_seed(seed))
+    check_draws(n)
 
     def draw(count: int, source) -> Tuple[List[Dict[str, list]], list]:
         drawn = []
@@ -431,23 +423,19 @@ def draws(
         ]
         return drawn, drawn_groups
 
-    if sampling == "random":
-        return draw(2 * n if paired else n, rng)
-    counter = Counter()
-    draw(1, counter)
-    width = counter.dimensions
-    table = sobol_table(n, 2 * width if paired else width, rng)
-    first = draw(n, SobolPoints(table[:, :width]))
-    if not paired:
-        return first
-    second = draw(n, SobolPoints(table[:, width:]))
-    return (
-        [
-            {role: a[role] + b[role] for role in a}
-            for a, b in zip(first[0], second[0])
-        ],
-        [None if a is None else a + b for a, b in zip(first[1], second[1])],
-    )
+    def join(first, second):
+        return (
+            [
+                {role: a[role] + b[role] for role in a}
+                for a, b in zip(first[0], second[0])
+            ],
+            [
+                None if a is None else a + b
+                for a, b in zip(first[1], second[1])
+            ],
+        )
+
+    return draw_with(draw, n, seed, sampling, paired, join)
 
 
 def build(rbd, inputs, drawn, drawn_groups, i: int):
