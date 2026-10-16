@@ -49,6 +49,7 @@ from repyability.tests.test_simulation_engines import identical, needs_numba
 NOT_NODES = {
     "AlphaFactor",
     "AnalysisRoute",
+    "AnalysisRoutes",
     "BetaFactor",
     # A calendar of opportunities, priced (#319): a calendar policy's input.
     "Calendar",

@@ -106,6 +106,7 @@ def _repairable():
     spec = {
         "reliability": surv.Exponential.from_params([0.01]),
         "repairability": surv.Exponential.from_params([0.5]),
+        "repair_cost": 1.0,  # priced, so cost() reaches its window check
     }
     return RepairableRBD([("s", "a"), ("a", "t")], {"a": spec})
 
