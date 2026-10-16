@@ -32,8 +32,9 @@ def expected_cost_rate(
     broken_nodes: Optional[Collection[Hashable]],
 ) -> float:
     """See ``RepairableRBD.expected_cost_rate``."""
+    _requirements._require_costs(rbd)
     if not rbd.has_costs:
-        return 0.0
+        return 0.0  # an acquisition cost alone: no running cost
 
     working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
     forced = set(working_nodes) | set(broken_nodes)
@@ -161,6 +162,7 @@ def total_cost(
     discount_rate: float,
 ) -> Union[float, np.ndarray]:
     """See ``RepairableRBD.total_cost``."""
+    _requirements._require_costs(rbd)
     rate = _discount_rate(discount_rate)
     present = _present_horizon(
         _horizons(horizon, rate), rate, partial(_requirements._mean_lives, rbd)

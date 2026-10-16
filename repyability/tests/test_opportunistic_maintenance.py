@@ -376,7 +376,8 @@ def test_the_exact_cost_rate_charges_a_set_up_per_stop():
             maintenance_groups={"train": {"setup_cost": setup}},
         )
         assert rbd.has_costs == bool(setup)
-    assert rbd.expected_cost_rate() == 0.0
+    with pytest.raises(ValueError, match="Nothing is priced"):
+        rbd.expected_cost_rate()
 
 
 def test_replacements_on_a_clock_share_a_set_up():

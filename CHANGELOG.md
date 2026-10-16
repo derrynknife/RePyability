@@ -611,6 +611,59 @@ other release, fixes included, the minor.
   worked it out tens of times over: a staggered search over four
   intervals for a 2oo3 MGL group takes 2.6 s for 13 s, and without the
   group 0.6 s for 6.8 s.
+- **A component with hidden failures repaired minimally was computed as
+  if every repair renewed it.** A spec with `"repair": {"q": 1}` and an
+  `"inspection"` went to the tested unit's curve before the imperfect
+  repair was looked at, so `point_availability`, `mission_availability`,
+  `expected_events` and `expected_cost` returned the renewed (`q = 0`)
+  unit's values (0.45 at 40 for a Weibull life (10, 1.5) tested every 10,
+  against 0.29 simulated), while `analysis_routes()` said they refuse,
+  and `availability()` took that value as its exact mean. They now refuse
+  as the routes say (its failures are found only by its tests), and a
+  run's means fall back to the simulations' own.
+- **The cost analyses refuse a diagram with nothing priced.** With no
+  cost at all, not even an acquisition cost, `cost()` returned `None`
+  (and `.mean` of it failed), `expected_cost` zeros and
+  `expected_cost_rate` and `total_cost` `0.0`, while `analysis_routes()`
+  said `cost` was simulated. They now refuse with `routes.Refused`
+  ("Nothing is priced: give the components a repair_cost, ..."), as
+  every analysis refuses a diagram with nothing it works on, and the
+  routes say so; `compare(quantity="cost")` refuses the same way. With
+  an acquisition cost alone they give the one-off purchase and no
+  running cost, exactly, as before, and `availability()`'s `cost` stays
+  `None` with nothing at all priced.
+- **From the 0.14 persona review of repairable systems.** A nested
+  `RepairableRBD` that carries costs is warned of when the outer diagram
+  is built, naming the node, as the outer one does not count them; in
+  `expected_events` a nested node's `node_preventive` and
+  `node_corrective` are its system's planned outages and failures, as
+  the simulation counts them for the node (its preventive count was 0);
+  `spares_demand` and `spares_stock` refuse by default with a nested RBD,
+  naming the components counted, where they left its components out
+  silently. The parameter uncertainty methods say, by default and given a
+  nested node, that a nested diagram's fits are not drawn here (its own
+  methods take them), the default refuses with `routes.Refused` when no
+  component's model is a fit, and `analysis_routes()` quotes that
+  refusal in the methods' reason (they stay simulated, given the uncertain
+  nodes). `parameter_sensitivity` over time leaves out the `repair.q`
+  lever of a minimally repaired component (`q = 1`), where it reported
+  `nan`, as the values over time take `q = 1` only. One `RepairableRBD`
+  object given for two nodes is refused as the outer diagram is built,
+  naming the nodes, where a simulation failed late. A run's
+  `delivered_fraction` (the production availability) is taken as its
+  `mean_availability` is: exact where `mission_capacity` works it out,
+  given the modules' histories where a conditional run applies, and the
+  simulations' own otherwise (`sample_delivered_fraction`), with the
+  interval's `method` filled in every case. `node_availability()` lists
+  the components alone, as `node_sf` and the importance measures do,
+  without the input and output nodes. `NodeState` and the guide say a
+  state's `age` is on the diagram's clock (a duty component's operating
+  age is `duty * age`). `spares_demand` convolves on a grid once per
+  replacement likely in the horizon, with each distribution's transform
+  taken once (about half the time, to the bit), and its docstring says
+  how the cost grows; a diagram rebuilt with a lever moved reuses the
+  renewal cycles and tested units of the components the lever leaves,
+  for `parameter_sensitivity`.
 - **Spares from new of a block-replaced component dead on arrival, put in
   at a block time in no time (#322).** The unit a block replacement in no
   time puts in may be dead on arrival, and the one put in at its failure,

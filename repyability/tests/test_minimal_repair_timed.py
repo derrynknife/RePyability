@@ -403,3 +403,48 @@ def test_too_long_a_window_is_refused():
     rbd = single(minimal(W([1.0, 2.0]), E([100.0])))
     with pytest.raises(NotImplementedError, match="grid points"):
         rbd.point_availability([1e6])
+
+
+def test_a_tested_minimally_repaired_unit_is_refused_as_the_route_says():
+    # A component with hidden failures repaired minimally: the values over
+    # time are refused (its failures are found only by its tests), as
+    # analysis_routes says, by every method, with the route's message;
+    # they were computed as if every repair renewed it. A run's default
+    # means then fall back to the simulations' own, not a refused value.
+    spec = {
+        "reliability": W([10.0, 1.5]),
+        "repairability": surv.LogNormal.from_params([1.5, 0.5]),
+        "repair": {"model": "kijima1", "q": 1.0},
+        "inspection": {"interval": 10.0},
+    }
+    rbd = RepairableRBD([("s", "A"), ("A", "t")], {"A": spec})
+    report = rbd.analysis_routes()
+    calls = {
+        "point_availability": lambda: rbd.point_availability([5.0, 40.0]),
+        "mission_availability": lambda: rbd.mission_availability(40.0),
+        "expected_events": lambda: rbd.expected_events(40.0),
+        "expected_failures": lambda: rbd.expected_failures(40.0),
+    }
+    for name, call in calls.items():
+        assert report[name].route == r.REFUSED
+        with pytest.raises(NotImplementedError) as error:
+            call()
+        assert str(error.value) == report[name].reason
+        assert "found only by its tests" in report[name].reason
+    result = rbd.availability(40.0, mc_samples=200, seed=3)
+    assert result.mean_availability_interval().method != "exact"
+    assert result.mean_availability == pytest.approx(
+        result.sample_mean_availability, rel=1e-12
+    )
+    assert result.control_variate is None
+    # The renewed unit (q = 0) is what was computed: its values differ.
+    renewed = RepairableRBD(
+        [("s", "A"), ("A", "t")],
+        {"A": {**spec, "repair": {"model": "kijima1", "q": 0.0}}},
+    )
+    assert renewed.analysis_routes()["mission_availability"].route != (
+        r.REFUSED
+    )
+    assert renewed.mission_availability(40.0) != pytest.approx(
+        result.mean_availability, abs=0.02
+    )

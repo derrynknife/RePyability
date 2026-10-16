@@ -60,9 +60,22 @@ def test_the_long_run_average_matches_the_exact_capacity():
     exact = plant.capacity_distribution()
     result = plant.availability(2000, mc_samples=200, seed=2, demand=100)
     assert result.mean_capacity == pytest.approx(exact.mean, rel=2e-3)
+    # The delivered fraction is exact over the window by default (as the
+    # mean availability is), close to the long run; the simulations' own
+    # covers the long run.
     interval = result.delivered_fraction_interval(0.999)
-    assert interval.lower <= exact.delivered_fraction(100) <= interval.upper
+    assert interval.method == "exact" and interval.standard_error == 0.0
     assert result.delivered_fraction == interval.estimate
+    assert result.delivered_fraction == pytest.approx(
+        exact.delivered_fraction(100), rel=1e-4
+    )
+    own = plant.availability(
+        2000, mc_samples=200, seed=2, demand=100, control_variate=False
+    )
+    interval = own.delivered_fraction_interval(0.999)
+    assert interval.method == "simulated"
+    assert interval.lower <= exact.delivered_fraction(100) <= interval.upper
+    assert own.delivered_fraction == result.sample_delivered_fraction
     total = sum(result.capacity_time.values())
     assert total == pytest.approx(200 * 2000)
     assert list(result.capacity_time) == exact.levels.tolist()
@@ -213,8 +226,10 @@ def test_capacities_from_models_are_not_simulated():
     )
     result = given.availability(10, mc_samples=2, seed=0)
     assert result.demand == 80.0
-    # The cost simulation does not follow the capacity.
-    assert staged.cost(10, mc_samples=2, seed=0) is None
+    # The cost simulation does not follow the capacity (and refuses a
+    # diagram with nothing priced).
+    with pytest.raises(ValueError, match="Nothing is priced"):
+        staged.cost(10, mc_samples=2, seed=0)
 
 
 BRIDGE = [
@@ -305,3 +320,43 @@ def test_the_capacity_on_a_grid_is_the_curve_at_its_times(engine):
     )
     assert grid.capacity_time == whole.capacity_time
     np.testing.assert_array_equal(grid.delivered, whole.delivered)
+
+
+def test_the_delivered_fraction_is_exact_where_mission_capacity_is():
+    # By default a run's delivered fraction is the exact expected fraction
+    # of the demand delivered over the window (mission_capacity), as its
+    # mean availability is exact (#187): the sample's with
+    # control_variate=False, and the same from merged chunks.
+    plant = pumps()
+    exact = plant.mission_capacity(50.0).delivered_fraction(100)
+    result = plant.availability(50.0, mc_samples=200, seed=2, demand=100)
+    assert result.delivered_fraction == exact
+    assert result.delivered_control is not None
+    assert result.delivered_control.itself
+    interval = result.delivered_fraction_interval()
+    assert (interval.estimate, interval.lower, interval.upper) == (
+        exact,
+        exact,
+        exact,
+    )
+    assert interval.method == "exact" and interval.standard_error == 0.0
+    assert result.sample_delivered_fraction == pytest.approx(
+        float(np.mean(result.delivered))
+    )
+    assert result.mean_availability_interval().method == "exact"
+    own = plant.availability(
+        50.0, mc_samples=200, seed=2, demand=100, control_variate=False
+    )
+    assert own.delivered_control is None
+    assert own.delivered_fraction == result.sample_delivered_fraction
+    assert own.delivered_fraction_interval().method == "simulated"
+    assert own.delivered_fraction_interval().standard_error > 0.0
+    chunks = [
+        plant.simulate_chunk(50.0, 0, 100, seed=2, demand=100),
+        plant.simulate_chunk(50.0, 100, 200, seed=2, demand=100),
+    ]
+    merged = plant.availability_from_chunks(chunks)
+    assert merged.delivered_fraction == exact
+    assert merged.delivered_fraction_interval().method == "exact"
+    # Through JSON, as every result goes.
+    assert merged.to_dict()["delivered_control"]["exact"] == exact

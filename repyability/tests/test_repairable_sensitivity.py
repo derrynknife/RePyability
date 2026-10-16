@@ -397,3 +397,36 @@ def test_what_it_refuses():
     )
     with pytest.raises(NotImplementedError):
         imperfect.parameter_sensitivity()
+
+
+def test_the_q_of_a_minimally_repaired_unit_is_left_out_over_time():
+    # Minimal repair (q = 1) is the one imperfect repair the values over
+    # time take, so the derivative in q does not exist there: the
+    # sensitivities over time leave the lever out (they reported nan),
+    # while levers() still lists it for with_levers.
+    W = surv.Weibull.from_params
+    rbd = a_b_then_c(
+        a={
+            "reliability": W([10.0, 1.5]),
+            "repairability": surv.LogNormal.from_params([1.5, 0.5]),
+            "repair": {"model": "kijima1", "q": 1.0},
+        },
+        b=exponential(0.01, 0.1),
+        c=exponential(0.02, 0.1),
+    )
+    for asked in ({"x": [20.0]}, {"window": 50.0}):
+        report = rbd.parameter_sensitivity(**asked)
+        assert "repair.q" not in report["a"]
+        assert set(report["a"]) == {
+            "reliability.alpha",
+            "reliability.beta",
+            "repairability.mu",
+            "repairability.sigma",
+        }
+        assert all(
+            np.isfinite(np.ravel(v)).all() for v in report["a"].values()
+        )
+    levers = [lever for lever in rbd.levers() if lever.key == "a"]
+    assert "repair.q" in {lever.name for lever in levers}
+    moved = rbd.with_levers({("a", "repair.q"): 0.9})
+    assert moved.analysis_routes()["point_availability"].route == "refused"

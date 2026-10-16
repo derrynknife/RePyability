@@ -81,8 +81,11 @@ no corrective cost:
 plant.expected_cost_rate(working_nodes=["A"])   # -> 95.1
 ```
 
-With nothing priced, `has_costs` is `False` and the rate is `0.0` without any
-work being done.
+With nothing priced, not even an [acquisition cost](#the-total-cost-of-ownership),
+`has_costs` is `False` and there is no cost model to evaluate:
+`expected_cost_rate`, `total_cost`, `expected_cost` and `cost` refuse (a
+`routes.Refused`, a `ValueError`), as every analysis refuses a diagram with
+nothing it works on.
 
 ## The simulated cost distribution
 
@@ -106,7 +109,7 @@ costs.by_component      # the part of mean each costed component accounts for
 `antithetic`, `n_jobs` and `engine`: see
 [Simulation precision and speed](simulation.md)). The same result comes with
 `availability(...)` as `result.cost`, so one simulation gives both answers.
-With nothing priced, `cost()` returns `None` and `result.cost` is `None`.
+With nothing at all priced, `cost()` refuses, and `result.cost` is `None`.
 
 ### One expected value
 
@@ -180,8 +183,8 @@ group's set-up once per stop (replacements due at one instant are one
 stop). It returns an [`ExpectedCost`][repyability.ExpectedCost], with
 `mean`, `by_category`, `by_component`, `acquisition_cost`, `total` (the two
 added) and `cost_rate`. It covers what the availability over time covers,
-and refuses the rest with the reason; with nothing priced, every category is
-0. For the spread of a window's cost, simulate it with `cost()`.
+and refuses the rest with the reason, as it refuses a diagram with nothing
+priced. For the spread of a window's cost, simulate it with `cost()`.
 
 ## Costs drawn from distributions
 

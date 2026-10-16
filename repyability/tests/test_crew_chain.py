@@ -73,7 +73,7 @@ def test_k_of_n_units_match_the_machine_repair_model(n, lam, mu, crews, k):
         (1 - up) / frequency, rel=1e-8
     )
     unit = sum(p[j] * (n - j) / n for j in range(n + 1))
-    expected = {**{i: unit for i in range(n)}, "s": 1.0, "t": 1.0}
+    expected = {i: unit for i in range(n)}
     assert rbd.node_availability() == pytest.approx(expected, rel=1e-12)
 
 

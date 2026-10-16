@@ -134,6 +134,10 @@ model's parameters (and a component's maintenance options): neither
 `levers()` nor `parameter_sensitivity` descends into a nested diagram or
 into the units of a composite model (a `StandbyModel`, a
 `LoadSharingModel`, a `DegradingNode`), whose parameters are not reached.
+(One lever the sensitivities over time leave out: the `repair.q` of a
+minimally repaired component, `q = 1`, the one imperfect repair the values
+over time take, so the derivative in `q` does not exist there;
+`with_levers` still moves it, to a diagram the simulations take.)
 
 ```python
 valve = {lever.name: lever for lever in station.levers() if lever.key == "valve"}

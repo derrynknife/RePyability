@@ -79,6 +79,20 @@ def _not_a_component(rbd, node, given: str) -> ValueError:
     )
 
 
+def _require_costs(rbd) -> None:
+    """Raise (``Refused``) if nothing is priced, not even an acquisition
+    cost (see ``has_costs``): the cost analyses have no cost model to
+    work on. (With an ``acquisition_cost`` alone they have the one-off
+    purchase, and no running cost, exactly.)"""
+    if not (rbd.has_costs or rbd.acquisition_cost):
+        raise Refused(
+            "Nothing is priced: give the components a repair_cost, "
+            "replace_cost, downtime_cost or acquisition_cost, their "
+            "maintenance or tests a cost, a maintenance group a "
+            "setup_cost, or the system a downtime_cost_rate."
+        )
+
+
 def _require_one_inspected(rbd) -> None:
     """Raise if more than one component has hidden failures, when no
     intervals are given to choose from (``optimal_inspection_intervals``

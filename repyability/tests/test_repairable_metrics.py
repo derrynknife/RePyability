@@ -123,3 +123,16 @@ def test_result_derived_properties_zero_guards():
     assert result.mean_up_time == float("inf")
     assert result.failure_frequency == 0.0
     assert np.isfinite(result.mean_down_time)
+
+
+def test_node_availability_lists_the_components_alone():
+    # As node_sf and the importance measures do: the input and output
+    # nodes are no components.
+    rbd = RepairableRBD(
+        [("s", "a"), ("a", "b"), ("b", "t")],
+        {"a": _comp(0.2, 1.0), "b": _comp(0.5, 2.0)},
+    )
+    availability = rbd.node_availability()
+    assert list(availability) == ["a", "b"]
+    assert availability == pytest.approx({"a": 1 / 1.2, "b": 2 / 2.5})
+    assert set(rbd.node_availability()) == set(rbd.birnbaum_importance())

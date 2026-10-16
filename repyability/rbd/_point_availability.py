@@ -2269,8 +2269,11 @@ class SystemCurve:
 
     def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
         """The nested RBD's expected failures and planned outages before
-        each time ``x`` (see ``RepairableRBD._window_counts``): its own
-        maintenance is not this RBD's to count."""
+        each time ``x`` (see ``RepairableRBD._window_counts``), as the
+        simulation counts them for the node: its planned outages are its
+        preventive actions, its failures its corrective ones, and it has
+        no tests (its own components' maintenance is not this RBD's to
+        count)."""
         from . import _windows
 
         counts = _windows._window_counts(
@@ -2281,7 +2284,9 @@ class SystemCurve:
             set(),
             "p",
         )
-        return _events(counts["failures"], counts["planned"])
+        return _events(
+            counts["failures"], counts["planned"], preventive=counts["planned"]
+        )
 
     def atoms(self, stop: float) -> Atoms:
         """The nested RBD's failures and planned outages at exact times
