@@ -879,7 +879,7 @@ class NonRepairable:
         return MaintenancePolicy(interval=float(interval), cost_rate=rate)
 
     def optimal_next_replacement(
-        self, age, *, now_cost=None, scheduled_outages=()
+        self, age, *, now_cost=None, scheduled_outages=(), policy=None
     ) -> NextReplacement:
         """When to replace the part in service next: now, at one of the
         scheduled outages, at a planned replacement between them, or at
@@ -891,10 +891,14 @@ class NonRepairable:
         package's use case UC-12). Each choice's cost is its expected cost
         until the part is replaced (at the failure price if it fails
         first), less the time the part serves until then, valued at the
-        baseline: the long-run cost a unit of time of the replacement
-        policy (``optimal_replacement_policy().cost_rate``). The cheapest
-        choice is the best. With no outages, replacing now is the best
-        from the optimal replacement age.
+        baseline: the long-run cost a unit of time of how the position is
+        run, ``policy.cost_rate``. By default that is the age
+        replacement's (``optimal_replacement_policy().cost_rate``); where
+        cheap shuts keep coming, give the calendar's policy
+        ([`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]),
+        whose rate is lower, so a part is kept longer. The cheapest
+        choice is the best. With no outages and the default baseline,
+        replacing now is the best from the optimal replacement age.
 
         Parameters
         ----------
@@ -906,6 +910,9 @@ class NonRepairable:
             The scheduled outages (shuts, turnarounds) as (time from now,
             price) pairs: when each is, in the life's time unit, more than
             0, and what replacing the part at it costs, at least 0.
+        policy : CalendarPolicy or MaintenancePolicy, optional
+            The policy whose ``cost_rate`` is the baseline, by default
+            ``optimal_replacement_policy()``.
 
         Returns
         -------
@@ -919,6 +926,8 @@ class NonRepairable:
         ValueError
             If the costs have not been set, or an argument is out of its
             range.
+        TypeError
+            If ``policy`` is not a policy (its cost rate alone is not one).
         NotImplementedError
             For a life with no survival function in closed form (a
             non-parametric estimate or a ``StandbyModel``).
@@ -944,11 +953,32 @@ class NonRepairable:
         (False, 'outage', 150.0)
         >>> round(found.replace_from_age, 1)
         297.6
+
+        With shuts every 180 days at $100 kept coming, the calendar's
+        policy values a day of service at 0.990 rather than 1.117, and
+        replacing now beats the outage in 150 days from a younger age:
+
+        >>> from repyability import Calendar, Opportunity
+        >>> shuts = bearing.optimal_calendar_policy(
+        ...     Calendar([Opportunity("shut", 100.0, period=180.0)])
+        ... )
+        >>> found = bearing.optimal_next_replacement(
+        ...     200.0,
+        ...     scheduled_outages=[(150.0, 100.0), (330.0, 100.0)],
+        ...     policy=shuts,
+        ... )
+        >>> outage = found.choices[1]
+        >>> round(found.cost_rate, 3), round(outage.break_even_age, 1)
+        (0.99, 256.1)
         """
         from repyability.maintenance._next import optimal_next_replacement
 
         return optimal_next_replacement(
-            self, age, now_cost=now_cost, scheduled_outages=scheduled_outages
+            self,
+            age,
+            now_cost=now_cost,
+            scheduled_outages=scheduled_outages,
+            policy=policy,
         )
 
     def optimal_calendar_policy(

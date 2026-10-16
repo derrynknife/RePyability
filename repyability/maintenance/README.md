@@ -613,7 +613,8 @@ answers back into dates is Reliafy's too.)
 ### UC-12: "The bearing is 200 days old. Replacing it now costs $150; a planned replacement any time costs $150 too, and one at a failure $400. Outages are scheduled in 150 and 330 days, at which replacing it costs $100. Do I replace it now?"
 
 - **Status:** built: `NonRepairable.optimal_next_replacement(age,
-  now_cost=, scheduled_outages=)` (see *As built*).
+  now_cost=, scheduled_outages=, policy=)` (see *As built*); `policy=`,
+  the baseline as a `CalendarPolicy`, added by #348.
 - **Who asks, and why:** a planner deciding on one part, today, from its
   age and the outages scheduled. The maintainer asked for this first, as
   the clean starting point for the shut questions (UC-7's policies are
@@ -641,10 +642,13 @@ answers back into dates is Reliafy's too.)
 
   where `S(u) = R(age + u) / R(age)` is the chance it is still working
   `u` from now, and `g`, the **baseline**, is what a day of the part's
-  service is worth: the long-run cost a day of its replacement policy
+  service is worth: the long-run cost a day of how the position is run.
+  By default the age replacement's
   (`optimal_replacement_policy().cost_rate`, 1.117 a day for the
-  bearing). Replacing now costs its price, and serves no days of this
-  part. The best choice is the smallest.
+  bearing); given `policy=`, a `CalendarPolicy` (UC-13) or a
+  `MaintenancePolicy`, its `cost_rate` (#348). Replacing now costs its
+  price, and serves no days of this part. The best choice is the
+  smallest.
 - **Why the days are valued:** keeping the part means a new one, and
   every part after it, starts later; the days the old one serves are days
   a new one would otherwise serve, at the baseline's cost a day. Without
@@ -682,6 +686,27 @@ answers back into dates is Reliafy's too.)
 
   So **replace now from 297.6 days old**, the optimal age (from 288.4,
   a planned replacement within days is cheaper by very little).
+- **When cheap shuts keep coming, the baseline is the calendar policy's
+  (#348).** With a shut every 180 days at $100 (UC-13's
+  `optimal_calendar_policy`), a day of the bearing's service is worth
+  0.990 rather than 1.117, so keeping it is dearer at every age and
+  replacing now beats each later choice from a younger age. At 200 days
+  old the outage in 150 days is still the best (124.6, against 150.0
+  now, 178.5 at the outage in 330 days, 142.8 planned in 64 days and
+  210.4 run to failure); the break-even ages:
+
+  | Replacing now beats... | from age, age replacement's rate | with the shuts' |
+  |---|---|---|
+  | running to failure | 133.3 days | 86.4 days |
+  | the outage in 330 days | 189.3 days | 153.0 days |
+  | the outage in 150 days | 288.4 days | 256.1 days |
+  | a planned replacement later | 297.6 days | 263.9 days |
+
+  So with the shuts kept coming, **replace now from 263.9 days old**.
+  The policy of a calendar with no opportunities (replacement on any
+  day at the planned price) is age replacement, and gives the answer
+  above: its rate is exact for its grid, and the break-even ages agree
+  to 1e-4 days.
 - **As built:**
 
   ```python
@@ -700,18 +725,34 @@ answers back into dates is Reliafy's too.)
   found.choices           # now, each outage, planned (in 97.6 days), failure
   found.replace_from_age  # 297.6: replacing now beats every later choice
   found.cost_rate         # 1.117 a day: the baseline
+
+  from repyability import Calendar, Opportunity
+
+  shuts = bearing.optimal_calendar_policy(
+      Calendar([Opportunity("shut", 100.0, period=180.0)])
+  )
+  found = bearing.optimal_next_replacement(
+      200.0, scheduled_outages=[(150.0, 100.0), (330.0, 100.0)],
+      policy=shuts,
+  )
+  found.cost_rate         # 0.990 a day: the shuts' policy's
+  found.replace_from_age  # 263.9
   ```
 
   - **The maintainer's choices:** the name (`optimal_replacement_policy`
     is the rule for a part in general, a hypothetical one, and
     `optimal_next_replacement` the next replacement of the one in
     service); the outages as `scheduled_outages`, (time from now, price)
-    pairs and nothing else; and the baseline the replacement policy. A
-    first version also took the regular shuts (`shut_every=`,
-    `shut_cost=`) to value a day at `replacement_policies`' best (0.990
-    a day with shuts every 180 days, which moves the break-even against
-    the outage in 150 days to 256 days): that doubled up on the outages,
-    and assumed what comes after the listed ones.
+    pairs and nothing else; and the baseline the optimal policy: the
+    replacement policy's, or the policy given (`policy=`, a
+    `CalendarPolicy` or a `MaintenancePolicy`; its cost rate alone is
+    refused, naming the policy to give; #348). A first version also
+    took the regular shuts (`shut_every=`, `shut_cost=`) to value a day
+    at `replacement_policies`' best (0.990 a day with shuts every 180
+    days, which moves the break-even against the outage in 150 days to
+    256 days): that doubled up on the outages, and assumed what comes
+    after the listed ones; UC-13's calendar policy now says what the
+    shuts are worth, and the outages listed stay the ones scheduled.
   - `now_cost` is the planned price unless given (an outage today, or a
     chance while the machine is apart, is cheaper).
   - **Each choice's break-even age** (`ReplacementChoice.break_even_age`)
@@ -727,7 +768,13 @@ answers back into dates is Reliafy's too.)
   - **Checks** (`test_maintenance_next.py`): the figures above; with no
     outages, the best planned time is the optimal age less the part's,
     and replacing now the best from the optimal age (to 1e-4); every
-    choice against a plain simulation of it; an exponential life (each
+    choice against a plain simulation of it, at either baseline; the
+    policy of a calendar with no opportunities gives the default's
+    answer (to 1e-3), the shuts' policy the figures above, every choice
+    dearer and beaten younger, and a break-even age is where the choice
+    costs what replacing now does; the age replacement policy given is
+    the default; a cost rate, a calendar or anything but a policy is
+    refused; an exponential life (each
     outage's cost `price · exp(-λu)`, running to failure 0 and best);
     replacing now dearer than a planned replacement is never best; a
     cheaper chance now breaks even younger; the answer the same in days

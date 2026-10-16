@@ -9,16 +9,29 @@ import numpy as np
 import pytest
 import surpyval as surv
 
-from repyability import NextReplacement, NonRepairable
+from repyability import (
+    Calendar,
+    MaintenancePolicy,
+    NextReplacement,
+    NonRepairable,
+    Opportunity,
+)
 
 LIFE = surv.Weibull.from_params([365.0, 2.0])
 BEARING = NonRepairable(LIFE, planned_cost=150.0, unplanned_cost=400.0)
 OUTAGES = [(150.0, 100.0), (330.0, 100.0)]
+# The shuts that keep coming: every 180 days, at $100 (#348).
+SHUTS = Calendar([Opportunity("shut", 100.0, period=180.0)])
 
 
 @pytest.fixture(scope="module")
 def uc12():
     return BEARING.optimal_next_replacement(200.0, scheduled_outages=OUTAGES)
+
+
+@pytest.fixture(scope="module")
+def shuts_policy():
+    return BEARING.optimal_calendar_policy(SHUTS)
 
 
 def by_kind(found):
@@ -68,6 +81,88 @@ def test_with_no_outages_it_is_the_age_replacement(age):
     assert older.now
 
 
+def test_the_age_replacement_policy_given_is_the_default(uc12):
+    policy = BEARING.optimal_replacement_policy()
+    assert isinstance(policy, MaintenancePolicy)
+    given = BEARING.optimal_next_replacement(
+        200.0, scheduled_outages=OUTAGES, policy=policy
+    )
+    assert given.to_dict() == uc12.to_dict()
+
+
+def test_a_calendar_with_no_opportunities_gives_the_default_baseline(uc12):
+    # A calendar with no opportunities, replacement on any day at the
+    # planned price and a failure at the unplanned one, is age
+    # replacement. Its policy's cost rate is exact for its grid (a step
+    # of about the mean life over 1,000: 0.32 days here), within about
+    # the square of the step of the continuous one, so the baselines
+    # agree to 1e-6 relative, and with them the costs and break-even
+    # ages to 1e-3 (they agree to 1e-4).
+    policy = BEARING.optimal_calendar_policy(Calendar())
+    found = BEARING.optimal_next_replacement(
+        200.0, scheduled_outages=OUTAGES, policy=policy
+    )
+    assert found.cost_rate == policy.cost_rate
+    assert found.cost_rate == pytest.approx(uc12.cost_rate, rel=1e-6)
+    assert found.best.kind == uc12.best.kind
+    assert found.best.time == uc12.best.time
+    assert found.replace_from_age == pytest.approx(
+        uc12.replace_from_age, abs=1e-3
+    )
+    for mine, theirs in zip(found.choices, uc12.choices):
+        assert (mine.kind, mine.price) == (theirs.kind, theirs.price)
+        assert mine.time == pytest.approx(theirs.time, abs=1e-3)
+        assert mine.cost == pytest.approx(theirs.cost, abs=1e-3)
+        if theirs.break_even_age is None:
+            assert mine.break_even_age is None
+        else:
+            assert mine.break_even_age == pytest.approx(
+                theirs.break_even_age, abs=1e-3
+            )
+
+
+def test_the_shuts_policy_keeps_the_bearing_longer(uc12, shuts_policy):
+    # UC-12 with the shuts' policy as the baseline (#348): a day of the
+    # bearing's service is worth 0.990 rather than 1.117, so keeping it is
+    # dearer and replacing now beats each later choice from a younger
+    # age; the outage in 150 days from 256.1 days old, not 288.4.
+    found = BEARING.optimal_next_replacement(
+        200.0, scheduled_outages=OUTAGES, policy=shuts_policy
+    )
+    assert found.cost_rate == shuts_policy.cost_rate
+    assert found.cost_rate == pytest.approx(0.990, abs=5e-4)
+    choices = by_kind(found)
+    assert choices["now", None].cost == 150.0
+    assert choices["outage", 150.0].cost == pytest.approx(124.6, abs=0.05)
+    assert choices["outage", 330.0].cost == pytest.approx(178.5, abs=0.05)
+    assert choices["planned", None].cost == pytest.approx(142.8, abs=0.05)
+    assert choices["planned", None].time == pytest.approx(63.9, abs=0.05)
+    assert choices["failure", None].cost == pytest.approx(210.4, abs=0.05)
+    assert not found.now
+    assert found.best is choices["outage", 150.0]
+    evens = {key: choice.break_even_age for key, choice in choices.items()}
+    assert evens["outage", 150.0] == pytest.approx(256.13, abs=0.05)
+    assert evens["outage", 330.0] == pytest.approx(152.95, abs=0.05)
+    assert evens["planned", None] == pytest.approx(263.86, abs=0.05)
+    assert evens["failure", None] == pytest.approx(86.35, abs=0.05)
+    assert found.replace_from_age == evens["planned", None]
+    # Every later choice costs more, and is beaten from a younger age.
+    for key, theirs in by_kind(uc12).items():
+        if key != ("now", None):
+            assert choices[key].cost > theirs.cost + 1.0
+            assert evens[key] < theirs.break_even_age - 1.0
+    # A break-even age is where the choice costs what replacing now does.
+    at_even = BEARING.optimal_next_replacement(
+        evens["outage", 150.0], scheduled_outages=OUTAGES, policy=shuts_policy
+    )
+    assert by_kind(at_even)["outage", 150.0].cost == pytest.approx(
+        150.0, abs=1e-6
+    )
+    assert by_kind(at_even)["outage", 150.0].break_even_age == pytest.approx(
+        evens["outage", 150.0], abs=1e-6
+    )
+
+
 def simulated(age, until, price, rate, n=400_000, seed=0):
     """A choice's cost simulated plainly: keep the Weibull(365, 2) part from
     ``age`` to ``until`` from now, then replace it at ``price``, or at 400
@@ -81,9 +176,13 @@ def simulated(age, until, price, rate, n=400_000, seed=0):
     return cost.mean(), cost.std() / math.sqrt(n)
 
 
+@pytest.mark.parametrize("baseline", ["age replacement", "shuts"])
 @pytest.mark.parametrize("age", [50.0, 250.0])
-def test_each_choice_is_its_simulated_cost(age):
-    found = BEARING.optimal_next_replacement(age, scheduled_outages=OUTAGES)
+def test_each_choice_is_its_simulated_cost(age, baseline, shuts_policy):
+    policy = shuts_policy if baseline == "shuts" else None
+    found = BEARING.optimal_next_replacement(
+        age, scheduled_outages=OUTAGES, policy=policy
+    )
     for choice in found.choices[1:]:
         mean, error = simulated(
             age, choice.time, choice.price, found.cost_rate
@@ -200,6 +299,27 @@ def test_the_other_inputs_are_checked():
         NonRepairable(LIFE, unplanned_cost=400.0).optimal_next_replacement(1.0)
     with pytest.raises(TypeError):
         BEARING.optimal_next_replacement(100.0, None)
+
+
+@pytest.mark.parametrize(
+    "policy", [0.99, "0.99", SHUTS, {"cost_rate": 0.99}, (297.6, 1.117)]
+)
+def test_a_policy_is_a_policy(policy):
+    with pytest.raises(TypeError, match="policy must be the policy"):
+        BEARING.optimal_next_replacement(100.0, policy=policy)
+
+
+def test_a_bare_cost_rate_says_to_give_the_policy():
+    with pytest.raises(TypeError, match="not its cost rate"):
+        BEARING.optimal_next_replacement(100.0, policy=0.99)
+
+
+@pytest.mark.parametrize("rate", [-1.0, math.inf, math.nan])
+def test_a_policy_has_a_cost_rate(rate):
+    with pytest.raises(ValueError, match="cost rate of policy"):
+        BEARING.optimal_next_replacement(
+            100.0, policy=MaintenancePolicy(297.6, rate)
+        )
 
 
 def test_a_life_with_no_closed_form_is_refused():
