@@ -80,7 +80,15 @@ eye.
    requires, so that no result depends on the unit of time:
    - about the mean life over 1,000 (`STEPS_PER_LIFE`);
    - reduced to a whole fraction of the largest step on which every
-     period, offset and date lies, so the dates fall on the grid;
+     period (and a plan's repeat) lies, so that a periodic calendar keeps
+     its period on the grid whatever its offsets; the offsets and dates
+     are put on it too, unless that makes it far finer (below a tenth of
+     the life's step), when each is laid at the grid time nearest it
+     (decision 10). Decided in the 0.14 persona review: an offset of
+     0.1234 days (three hours, what a date turned into model time
+     gives) on a period of 180 had made the step life-sized, which does
+     not divide 180, so the calendar lost its period, was sampled (100
+     times slower) and its schedule drifted;
    - for the plant in days this gives 0.875 days.
 
    The tests set it through the internal solver
@@ -107,7 +115,13 @@ eye.
    - `"part"` takes the part's `unplanned_cost` / `planned_cost`;
    - `anytime="part"` on a part with no planned cost allows no replacement
      on any day;
-   - `None` means not allowed.
+   - `None` means not allowed;
+   - a calendar that allows no planned replacement at all (no
+     opportunities, and none on any day either way) is refused by
+     `optimal_calendar_policy`, as `optimal_replacement_policy` refuses
+     with no costs (decided in the 0.14 persona review: it had returned
+     running to failure, silently). `calendar_policy_cost` prices a rule
+     on any calendar.
 
    *Decide:* keep the sentinel, or change the defaults.
 10. **Rounding dates onto the grid.** Each date is rounded to its nearest
@@ -115,8 +129,10 @@ eye.
     step at most. The brief's "warn if a date moved by more than step/2"
     therefore cannot fire. I warn instead when an opportunity's times move by
     more than 1% of the step. For example, an annual shut every 365.25 days
-    on a 1-day grid warns: "moved by up to 0.5". *Decide:* the threshold for
-    the warning, or no warning.
+    on a 1-day grid warns: "moved by up to 0.5". The schedule and
+    `next_replacement` give the grid times the opportunities are laid at
+    (a shut at 0.1234 is listed at 0.0), which the warning says. *Decide:*
+    the threshold for the warning, or no warning.
 11. **`Calendar.planned_cost(times, step=None)` takes a step.** Without one,
     only exact times match an opportunity. With one, an opportunity counts at
     the grid time nearest it, as the policy sees it.
@@ -147,7 +163,15 @@ eye.
 14. **★ How `method="auto"` routes.**
     - A periodic calendar with a short cycle goes to relative value
       iteration (exact on the grid).
-    - A periodic calendar with a long cycle goes to sampling.
+    - A periodic calendar with a long cycle goes to sampling, with a
+      warning that says so (the cycle has more than `MAX_CYCLE` steps, and
+      `mc_samples` sets the cost: each window is an exact solve of a
+      second or more; from the 0.14 persona review, where the docs'
+      co-prime example took 95 s at the default 64 samples with no
+      notice). A sampled policy's rates by kind and the schedule's chances
+      are estimates from a unit run in with no standard error (they moved
+      by 12% between seeds at 8 samples); only `cost_rate_se` has one.
+      The method is unchanged.
     - **A dated plan goes to dynamic programming, not sampling.** The brief
       routes "non-periodic" calendars to sampling, but sampling uniform
       phases fits only periodic schedules; a plan's dates are fixed.
@@ -204,7 +228,14 @@ eye.
     - **`next_replacement(age, now=0)`:** when the unit in service will
       be replaced if it does not fail first, at which opportunity and
       price (`PlannedReplacement`). A unit of age 0 has just been put in,
-      so it is not replaced again at that time.
+      so it is not replaced again at that time. A unit past the oldest
+      age the thresholds were worked out to (`settings["max_age"]`, the
+      age a unit outlives with a chance of 1e-9) is past every threshold,
+      and is replaced at the next opportunity, or on any day now where
+      the calendar allows one (decided in the 0.14 persona review: it had
+      answered `inf`, "the unit all but sure to fail first", for a unit
+      given as in service). `inf` now means no planned replacement comes
+      (after a plan's last date with none on any day).
 
     *Decide:* the names, and whether rates by kind should be given per
     unit of time (as now) or per cycle.
@@ -253,6 +284,12 @@ eye.
     - **The policy is applied as given, not re-optimised.** It was optimised
       for a part replaced at once. If the diagram's repairs or maintenance
       take time, its outages are not what the policy assumed.
+    - **The policy carries the life it was worked out for** (`life`, its
+      saved form as the diagrams save a model, None where the life does
+      not save), and the spec refuses a component whose life's saved form
+      differs, naming both; a policy with no saved form passes. Decided in
+      the 0.14 persona review: a policy worked out for another bearing
+      had been accepted silently, and simulated at a cost rate 19% off.
 
     *Decide:* whether the failure price should come from the calendar.
 25. **★ It is simulation only.**

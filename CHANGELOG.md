@@ -401,6 +401,49 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **A shut at an offset off the grid keeps its period (#319).** The
+  grid's step for `NonRepairable.optimal_calendar_policy` was sized to
+  put every period, offset and date on it, and fell back to the
+  life-sized step when that made it far finer: a shut every 180 days at
+  an offset of 0.1234 days (three hours into the day, what a date turned
+  into model time gives) then had a step that did not divide 180, so the
+  calendar lost its period, `"auto"` sampled it (57 s for 0.5 s, the
+  cost rate 0.04% off, no `period`) and its schedule drifted (0.0,
+  180.17, 360.03). The step is now a whole fraction of the periods (and
+  a plan's repeat), the offsets and dates on it too only where that
+  keeps it near the life's; an offset or date off the grid is laid at
+  the grid time nearest it, within half a step, with the warning that
+  said so already. The policy is the aligned calendar's: the same step,
+  cost rate, thresholds and chances, exact, `period` 180, in the same
+  time.
+- **The maintenance planner, from the 0.14 persona review.**
+  `optimal_calendar_policy` warns when `"auto"` falls to sampling (the
+  cycle has more than 20,000 steps; each window is an exact solve of a
+  second or more, so `mc_samples` sets the cost), and its docs say that
+  a sampled policy's rates by kind and the schedule's chances are
+  estimates from a unit run in, with no standard error (only
+  `cost_rate_se` has one); it refuses a calendar that allows no planned
+  replacement at all (no opportunities, and none on any day), as
+  `optimal_replacement_policy` refuses with no costs, where it returned
+  running to failure; a `CalendarPolicy` carries the saved form of the
+  life it was worked out for (`life`), and a `RepairableRBD` component
+  given a policy worked out for another life is refused, naming both
+  (it was accepted, and simulated at a cost rate 19% off); and
+  `next_replacement` replaces a unit past the oldest age the thresholds
+  were worked out to at the next opportunity (or on any day now), where
+  it answered `inf`. `optimal_next_replacement` takes a planned
+  replacement as one later than now: where no later time beats
+  replacing at once, the planned choice is replacing now, at `now_cost`
+  (it was the planned price at time 0, which `now_cost` contradicted),
+  so `now` is True exactly when the best choice is at time 0.
+  `skip_next_replacement` on a plan that resets warns of a discount
+  rate that discounts the costs away, as the plan on fixed times and
+  `RepairableRBD.expected_cost` do, and gives `replace` and `skip` one
+  meaning, the present value of the whole future under each choice:
+  with no discounting both are endless (`inf`), and only `npv` is
+  finite (they held the first cycles' comparison terms, 0 and -26.33).
+  `MaintenancePolicy` and `FailureLimitPolicy` are result mappings like
+  every other result, with `to_dict()` for JSON.
 - **Spares from new of a block-replaced component dead on arrival, put in
   at a block time in no time (#322).** The unit a block replacement in no
   time puts in may be dead on arrival, and the one put in at its failure,

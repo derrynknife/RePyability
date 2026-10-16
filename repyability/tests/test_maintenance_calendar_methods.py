@@ -4,6 +4,7 @@ sampling for a long cycle (phase 3, section 5), and how ``method="auto"``
 chooses."""
 
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -137,11 +138,13 @@ def test_integration_repeats_a_plan():
         solve(BEARING, plan, method="integration", tail="anytime")
 
 
-def test_integration_with_no_opportunities_runs_to_failure():
-    policy = solve(
-        BEARING, Calendar(failure=20.0, anytime=None), method="integration"
-    )
-    assert policy.cost_rate == pytest.approx(20.0 / LIFE.mean(), rel=1e-12)
+def test_integration_refuses_a_calendar_with_no_planned_replacement():
+    # No opportunities and none on any day: nothing to find but running
+    # to failure, refused as the other methods refuse it.
+    with pytest.raises(ValueError, match="no planned replacement"):
+        solve(
+            BEARING, Calendar(failure=20.0, anytime=None), method="integration"
+        )
 
 
 # Phase 3, test 1: sampling reproduces the exact rate.
@@ -204,8 +207,18 @@ def test_the_sampled_policy_is_deterministic():
 
 def test_auto_chooses_the_method(nested_exact):
     assert nested_exact.method == "dp" and nested_exact.basis == "exact"
-    sampled = solve(BEARING, COPRIME, step=1.0, mc_samples=2, seed=0)
+    # Falling to sampling is said: the cycle is too long, and mc_samples
+    # sets the cost.
+    with pytest.warns(UserWarning, match="mc_samples") as record:
+        sampled = solve(BEARING, COPRIME, step=1.0, mc_samples=2, seed=0)
     assert sampled.method == "sampling"
+    assert f"more than {_replacement.MAX_CYCLE:,}" in str(record[0].message)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        asked = solve(
+            BEARING, COPRIME, step=1.0, method="sampling", mc_samples=2, seed=0
+        )
+    assert asked.cost_rate == sampled.cost_rate
     plan = Calendar([Opportunity("t", 1.0, dates=[400.0, 1130.0])], 20.0, None)
     assert solve(BEARING, plan, step=10.0).method == "dp"
     # Never integration, which is asked for.

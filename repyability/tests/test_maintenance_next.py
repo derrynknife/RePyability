@@ -211,11 +211,59 @@ def test_an_exponential_life_runs_to_failure():
     assert found.replace_from_age == math.inf
 
 
-def test_replacing_now_dearer_than_planned_is_never_best():
+def planned_at_once(found):
+    """The planned choice, as replacing now: at time 0, at now_cost."""
+    planned = by_kind(found)["planned", None]
+    now = by_kind(found)["now", None]
+    return (planned.time, planned.price, planned.cost) == (
+        0.0,
+        now.price,
+        now.cost,
+    )
+
+
+@pytest.mark.parametrize("now_cost", [500.0, 100.0])
+def test_a_planned_replacement_at_once_is_replacing_now(now_cost):
+    # A part past its optimal age (297.6): no later time beats replacing
+    # it at once, which is replacing now, at now_cost, whatever the
+    # planned price. Dearer than the planned price: with no outage to
+    # wait for, running to failure (254.5) is the best, replacing now is
+    # not, and no age makes it so; cheaper: replacing now is the best.
+    found = BEARING.optimal_next_replacement(400.0, now_cost=now_cost)
+    assert planned_at_once(found)
+    assert found.now == (now_cost < 150.0)
+    assert found.best.time == (0.0 if found.now else math.inf)
+    choices = by_kind(found)
+    assert choices["failure", None].cost == pytest.approx(254.5, abs=0.05)
+    assert choices["planned", None].break_even_age == pytest.approx(
+        297.6 if now_cost > 150.0 else 122.7, abs=0.05
+    )
+    if now_cost > 150.0:
+        assert found.best is choices["failure", None]
+        assert found.replace_from_age == math.inf
+    else:
+        assert found.best is choices["now", None]
+        assert found.replace_from_age == pytest.approx(122.7, abs=0.05)
+    # A younger part: a planned replacement later, at the planned price,
+    # whatever replacing now costs.
+    young = BEARING.optimal_next_replacement(100.0, now_cost=now_cost)
+    assert not planned_at_once(young)
+    planned = by_kind(young)["planned", None]
+    assert planned.price == 150.0 and planned.time == pytest.approx(
+        197.6, abs=0.05
+    )
+    assert young.now is (young.best.time == 0.0)
+
+
+def test_now_is_true_exactly_when_the_best_choice_is_now():
+    # Dearer now than planned, far past the optimal age: replacing now
+    # (200) beats running to failure (329.8), and is the best.
     found = BEARING.optimal_next_replacement(1000.0, now_cost=200.0)
-    assert not found.now
-    assert found.best.kind == "planned"
-    assert by_kind(found)["planned", None].break_even_age == math.inf
+    assert planned_at_once(found) and found.now
+    assert found.best.kind == "now" and found.best.cost == 200.0
+    for age, now_cost in ((100.0, 200.0), (400.0, 500.0), (1000.0, 200.0)):
+        found = BEARING.optimal_next_replacement(age, now_cost=now_cost)
+        assert found.now is (found.best.time == 0.0)
 
 
 def test_a_cheap_chance_now_replaces_a_younger_part():

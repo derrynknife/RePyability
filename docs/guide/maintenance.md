@@ -213,15 +213,25 @@ prices a rule given as the age from which each kind of replacement replaces):
   400 and 1,301 days repeat every 928,000 years). The cost rate is the mean
   over `mc_samples` sampled times of the cycle of a window's rate, each window
   an exact solve, with its standard error (`cost_rate_se`); the threshold at a
-  time is a solve over a window from it, deterministic.
+  time is a solve over a window from it, deterministic. Each window takes a
+  second or more, so `mc_samples` (64 by default) sets the cost, and
+  `"auto"` warns when it falls to sampling. A sampled policy's rates by kind
+  (`replacement_rates`, `cost_rates`) and the schedule's chances are
+  estimates from a new unit run in, with no standard error: only the cost
+  rate has one, and the rates by kind move with the seed (by some 10% at
+  8 samples).
 
 `policy.method` and `policy.basis` (`"exact"`, `"differenced"` or
 `"sampled"`) say which was used.
 
 **How exact it is.** The grid's step is not an argument: it is a numerical
-setting, sized from the life and put on the shuts' times (here 0.875 days),
+setting, sized from the life and put on the shuts' periods (here 0.875 days),
 not a choice of when decisions are made, which the calendar says by its
-opportunities. On the grid the cost rate is exact for decisions at its
+opportunities. A periodic calendar keeps its period on the grid whatever
+its offsets: an offset or date off the grid (a shut 0.1234 days, three
+hours, into the day, as dates turned into model time give) is laid at the
+grid time nearest it, within half a step, with a warning, and the policy
+is the aligned calendar's. On the grid the cost rate is exact for decisions at its
 times, and within about the square of the step of deciding at any moment:
 for this plant 2.5272582 a year, against 2.5272583 on a grid four times as
 fine. With no replacement on any day, `method="integration"` works between

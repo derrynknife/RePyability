@@ -4,6 +4,7 @@ UC-13, the brief's deliverable 6): a ``"preventive"`` spec with
 ``NonRepairable.optimal_calendar_policy``, simulated by the Python event
 loop, each replacement charged at its opportunity's price."""
 
+import copy
 import math
 
 import numpy as np
@@ -165,6 +166,21 @@ def test_the_spec_is_checked(plant, preventive, match):
         )
 
 
+def test_a_policy_worked_out_for_another_life_is_refused(plant):
+    # The policy carries the saved form of the life it was worked out
+    # for: a component with another life is refused, naming both.
+    other = surv.Weibull.from_params([365.0, 2.0])
+    with pytest.raises(ValueError, match=r"Weibull \[1000.0, 2.5\]") as found:
+        bearing(plant, reliability=other)
+    assert "Weibull [365.0, 2.0]" in str(found.value)
+    assert "another life" in str(found.value)
+    # The same life, given again, passes; so does a policy with no saved
+    # form (a life that does not save).
+    bearing(plant, reliability=surv.Weibull.from_params([1000.0, 2.5]))
+    assert unsaved(plant).life is None
+    bearing(unsaved(plant), reliability=other)
+
+
 def test_a_failure_cost_is_the_diagrams(plant):
     # The calendar's failure price prices the policy; the diagram charges
     # its own replace_cost at a failure, as for any component.
@@ -204,6 +220,15 @@ def states(rbd, until):
     return changes
 
 
+def unsaved(policy):
+    """The policy with no saved life (as of a life that does not save), so
+    that the timelines below may give it to a unit that never fails in
+    the window, not the bearing it was worked out for."""
+    policy = copy.copy(policy)
+    object.__setattr__(policy, "life", None)
+    return policy
+
+
 def members(policy, opportunity, life=300.0, repair_cost=100.0):
     """A train's members: "a" fails at ``life`` (back 5 later), each
     failure a stop of the train; "b", never failing in the window, is on
@@ -222,7 +247,7 @@ def members(policy, opportunity, life=300.0, repair_cost=100.0):
             "replace_cost": 20.0,
             "preventive": {
                 "policy": "calendar",
-                "calendar": policy,
+                "calendar": unsaved(policy),
                 "opportunity": opportunity,
             },
             "group": "train",
@@ -252,7 +277,10 @@ def test_a_calendar_replacement_is_a_stop_of_its_group(shuts):
                 "reliability": X(1000.0),
                 "repairability": X(5.0),
                 "replace_cost": 20.0,
-                "preventive": {"policy": "calendar", "calendar": shuts},
+                "preventive": {
+                    "policy": "calendar",
+                    "calendar": unsaved(shuts),
+                },
                 "group": "train",
             },
             "b": {

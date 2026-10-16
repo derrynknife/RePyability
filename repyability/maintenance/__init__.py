@@ -8,9 +8,11 @@ answers and how it is solved."""
 
 from dataclasses import dataclass
 
+from repyability.rbd.results import _ResultMapping
+
 
 @dataclass(frozen=True)
-class MaintenancePolicy:
+class MaintenancePolicy(_ResultMapping):
     """An optimal preventive-maintenance policy for a single component.
 
     Returned by the ``optimal_replacement_policy()`` method of
@@ -19,7 +21,8 @@ class MaintenancePolicy:
     ``optimal_overhaul_policy()`` method of
     [`Repairable`][repyability.Repairable] (periodic overhaul: repair each
     failure and renew the unit every ``interval``). It is an immutable
-    (frozen) dataclass.
+    (frozen) dataclass, read as a mapping too, with ``to_dict()`` for
+    JSON.
 
     Attributes
     ----------
@@ -49,13 +52,14 @@ class MaintenancePolicy:
 
 
 @dataclass(frozen=True)
-class FailureLimitPolicy:
+class FailureLimitPolicy(_ResultMapping):
     """An optimal failure-limit (replace-at-N-th-failure) policy.
 
     Returned by the ``optimal_failure_limit_policy()`` method of
     [`Repairable`][repyability.Repairable]: rather than renewing at a
     fixed *age*, the unit is repaired on each failure and replaced at the
-    ``failure_count``-th failure. It is an immutable (frozen) dataclass.
+    ``failure_count``-th failure. It is an immutable (frozen) dataclass,
+    read as a mapping too, with ``to_dict()`` for JSON.
 
     Attributes
     ----------

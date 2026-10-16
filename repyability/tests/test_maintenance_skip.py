@@ -4,6 +4,7 @@
 
 import json
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -261,16 +262,39 @@ def test_with_no_discounting_a_resetting_plan_is_the_classic_comparison():
     value = BEARING.skip_next_replacement(every, resets=True)
     assert value.discount_rate == 0.0
     assert value.npv == pytest.approx(classic, rel=1e-9)
-    assert value.replace == pytest.approx(0.0, abs=1e-9)
-    assert value.skip == pytest.approx(
-        cycle_cost(2 * every) - rate_of_cost * mean_length(2 * every),
-        rel=1e-9,
-    )
+    # Each choice's whole future is endless: only the difference is
+    # finite (with a rate the same fields hold the present values).
+    assert value.replace == value.skip == math.inf
+    assert value.best == "skip"
+    assert json.loads(json.dumps(value.to_dict()))["npv"] == value.npv
     # And a tiny rate is next to it.
     tiny = BEARING.skip_next_replacement(
         every, resets=True, discount_rate=1e-9
     )
     assert tiny.npv == pytest.approx(classic, rel=1e-6)
+
+
+@pytest.mark.parametrize("resets", [True, False])
+def test_a_rate_that_discounts_the_costs_away_is_warned_of(resets):
+    # A rate a year given with a life in days (#231): both plans warn as
+    # a RepairableRBD's costs do, naming the life's mean.
+    with pytest.warns(UserWarning, match="shortest mean life") as record:
+        value = BEARING.skip_next_replacement(
+            180.0,
+            resets=resets,
+            time_to_next=None if resets else 30.0,
+            discount_rate=0.08,
+        )
+    assert "exp(-25.9)" in str(record[0].message)
+    assert math.isfinite(value.npv)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        BEARING.skip_next_replacement(
+            180.0,
+            resets=resets,
+            time_to_next=None if resets else 30.0,
+            discount_rate=per_day(0.08),
+        )
 
 
 def test_the_rate_is_a_unit_of_the_life_and_the_answer_the_same_in_hours():
