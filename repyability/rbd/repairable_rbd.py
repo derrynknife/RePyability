@@ -2171,7 +2171,6 @@ class RepairableRBD(RBD):
         allowed=None,
         min_availability: Optional[float] = None,
         max_cost_rate: Optional[float] = None,
-        offsets=None,
         assume_unlimited_crews: bool = False,
         offset_shares=None,
     ) -> MaintenancePlan:
@@ -2230,10 +2229,6 @@ class RepairableRBD(RBD):
         max_cost_rate : float, optional
             The highest long-run cost rate allowed: the intervals then give
             the highest availability within it.
-        offsets : sequence of float, dict or str, optional
-            Deprecated: ``offset_shares``, which it is renamed, as its
-            values are shares of the interval where ``with_intervals``'
-            and the plan's ``offsets`` are times. Refused in 0.14.
         assume_unlimited_crews : bool, optional
             With limited ``repair_crews``, choose as if every repair started
             at once, as ``optimal_replacement_intervals`` does, by default
@@ -2345,7 +2340,6 @@ class RepairableRBD(RBD):
             allowed=allowed,
             min_availability=min_availability,
             max_cost_rate=max_cost_rate,
-            offsets=offsets,
             assume_unlimited_crews=assume_unlimited_crews,
             offset_shares=offset_shares,
         )

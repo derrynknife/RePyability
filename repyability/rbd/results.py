@@ -18,8 +18,8 @@ method (``mean_availability_interval(confidence)``, ``percentile(q)``,
 ``stock(probability)``), as on the RBDs, where what is given is an
 attribute (``acquisition_cost``) and what is worked out from arguments a
 method (``total_cost(t)``). ``SparesDemand``'s ``mean`` and ``std`` were
-methods until 0.12 (#184): calling them still works, with a
-``FutureWarning``, until 0.13.
+methods until 0.12 (#184), and ``CapacityDistribution``'s ``mean`` until
+0.13 (#235).
 """
 
 import dataclasses
@@ -33,7 +33,6 @@ import numpy as np
 from scipy.special import ndtri
 
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.utils.deprecation import called
 from repyability.utils.wrappers import outside_level
 
 
@@ -2007,9 +2006,7 @@ class CapacityDistribution(_ResultMapping):
 
         In the long run, the average capacity over time. Infinite if the
         capacity can be infinite (see ``levels``). A property, as the other
-        results' values are: it was a method until 0.13, and
-        calling it, ``mean()``, still gives it, with a ``FutureWarning``,
-        until 0.14.
+        results' values are (a method until 0.13, #235).
 
         Returns
         -------
@@ -2023,10 +2020,7 @@ class CapacityDistribution(_ResultMapping):
             parts = np.where(
                 self.probabilities > 0, levels * self.probabilities, 0.0
             )
-        return called(
-            self._per_time(np.sum(parts, axis=0)),
-            "CapacityDistribution.mean",
-        )
+        return self._per_time(np.sum(parts, axis=0))
 
     def delivered_fraction(self, demand: float) -> Any:
         """The expected fraction of a demand the system delivers:

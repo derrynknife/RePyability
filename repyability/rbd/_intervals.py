@@ -29,7 +29,6 @@ from repyability.rbd.results import (
     MaintenancePlan,
 )
 from repyability.rbd.routes import Refused
-from repyability.utils.deprecation import renamed
 
 if TYPE_CHECKING:
     from repyability.rbd.repairable_rbd import RepairableRBD
@@ -502,24 +501,10 @@ def optimal_inspection_intervals(
     allowed,
     min_availability: Optional[float],
     max_cost_rate: Optional[float],
-    offsets,
     assume_unlimited_crews: bool,
     offset_shares,
 ) -> MaintenancePlan:
     """See ``RepairableRBD.optimal_inspection_intervals``."""
-    if offsets is not None:
-        if offset_shares is not None:
-            raise ValueError(
-                "Give offset_shares alone: offsets is its old name."
-            )
-        renamed(
-            "optimal_inspection_intervals",
-            "offsets",
-            "offset_shares",
-            "its values are shares of the interval, where "
-            "with_intervals' and the plan's offsets are times",
-        )
-        offset_shares = offsets
     chosen = _inspected(rbd, nodes)
     min_availability, max_cost_rate = _interval_targets(
         rbd, min_availability, max_cost_rate

@@ -101,7 +101,7 @@ go once the minimum surpyval version has the fix.
 
 A deprecation warns (a `FutureWarning`, through
 `repyability/utils/deprecation.py`) for one minor release, and the next
-removes it. `test_what_0_13_deprecates_goes_in_0_14` and its kind fail once
+removes it. `test_what_0_14_deprecates_goes_in_0_15` and its kind fail once
 the version reaches the removal, as a reminder.
 
 ## Releases (maintainers)

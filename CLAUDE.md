@@ -409,16 +409,17 @@
   deprecated went in 0.13, and `test_removed_in_0_13.py` keeps it gone:
   calling `SparesDemand.mean()`/`std()` (#184) and those models'
   `mc_samples`, `lower` and `seed` raise `TypeError`, and `StandbyModel`'s
-  options after them are given by name. What 0.13 deprecates goes in 0.14
-  (`NEXT_REMOVAL`): `optimal_inspection_intervals(offsets=)`, renamed
-  `offset_shares=` (#222, through `deprecation.renamed`); calling
-  `CapacityDistribution.mean()`, now a property (#235, through
-  `deprecation.called`); and `mc_samples` and `seed` given to the exact
-  `mean` of a `StandbyModel`, `LoadSharingModel` or `DegradingNode`,
-  which ignores them (#233, through `deprecation.ignored` in
-  `standby_node.drawn_mean`), all of which
-  `test_what_0_13_deprecates_goes_in_0_14` holds to: it fails once the
-  version reaches `NEXT_REMOVAL`.
+  options after them are given by name. What 0.13 deprecated went in
+  0.14, and `test_removed_in_0_14.py` keeps it gone:
+  `optimal_inspection_intervals(offsets=)` (#222) raises `TypeError`, for
+  `offset_shares=`; `CapacityDistribution.mean` is a plain number or
+  array, not callable (#235); the exact `mean` of a `StandbyModel`,
+  `LoadSharingModel` or `DegradingNode` refuses `mc_samples` and `seed`
+  (#233, `standby_node.drawn_mean`); and `rbd._sensitivity`'s `levers`
+  and `Lever` are gone (#244). What 0.14 deprecates goes in 0.15
+  (`NEXT_REMOVAL`), through `deprecation.renamed`, `called` or `ignored`;
+  `test_what_0_14_deprecates_goes_in_0_15` fails once the version reaches
+  it.
 - **No result depends on the unit of time (or of a covariate).** A step,
   grid or probe is sized from the models (a typical life,
   `failure_time_scale`), never in absolute time, and a proportional

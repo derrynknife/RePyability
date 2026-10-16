@@ -937,13 +937,6 @@ def with_levers(rbd, values) -> Any:
     return changed
 
 
-#: The names callers used before the levers were public (#244), kept as
-#: they were for 0.13; from 0.14 they may change or go. Use ``levers()``,
-#: ``Lever`` and ``with_levers``.
-Lever = _Lever
-levers = _levers
-
-
 def parameter_sensitivity(
     rbd,
     working_nodes: Optional[Collection[Hashable]],

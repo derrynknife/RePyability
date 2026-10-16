@@ -339,26 +339,3 @@ def test_non_repairable_levers_move_as_the_sensitivity_does():
     down = rbd.with_levers({lever: lever.value - h}).sf(30.0)
     reported = rbd.parameter_sensitivity(30.0, rel_step=step)["a"]["alpha"]
     assert (up - down) / (2.0 * h) == pytest.approx(reported, rel=1e-6)
-
-
-# -- the private names, kept for 0.13 ----------------------------------------
-
-
-def test_the_private_names_callers_used_still_work():
-    rbd = RepairableRBD(
-        SERIES,
-        {
-            "a": unit(preventive={"policy": "block", "interval": 50.0}),
-            "b": unit(preventive={"policy": "block", "interval": 50.0}),
-        },
-    )
-    old = _sensitivity.levers(rbd)
-    assert all(isinstance(lever, _sensitivity.Lever) for lever in old)
-    assert [(lever.key, lever.name, lever.value) for lever in old] == [
-        (lever.key, lever.name, lever.value) for lever in rbd.levers()
-    ]
-    assert all(callable(lever.build) for lever in old)
-    calendar = [_sensitivity._calendar_lever(rbd, lever) for lever in old]
-    assert calendar == [lever.calendar for lever in rbd.levers()]
-    spec = _sensitivity._as_spec(rbd._init_args["components"]["a"])
-    assert spec["preventive"]["interval"] == 50.0

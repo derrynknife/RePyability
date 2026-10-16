@@ -2435,7 +2435,7 @@ class NonRepairableRBD(RBD):
             values = np.asarray(values, dtype=float).reshape(-1)
             if scalar:
                 return float(values[0])
-            return values.reshape(np.shape(x))
+            return values.reshape(np.shape(np.asarray(x)))
 
         return UncertaintyImportance(
             method=method,

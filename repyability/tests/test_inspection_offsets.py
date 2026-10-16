@@ -185,23 +185,6 @@ def test_a_single_share_is_a_number_too():
     assert plan.offsets == {"v1": 0.0, "v2": 4380.0}
 
 
-def test_offsets_is_the_old_name_of_offset_shares():
-    # Its values are shares, where with_intervals' offsets are times (#222).
-    pair = valves([(8760.0, 0.0), (8760.0, 0.0)])
-    plan = pair.optimal_inspection_intervals(
-        allowed=[8760.0], min_availability=0.99, offset_shares=[0.0, 0.5]
-    )
-    with pytest.warns(FutureWarning, match="renamed offset_shares"):
-        old = pair.optimal_inspection_intervals(
-            allowed=[8760.0], min_availability=0.99, offsets=[0.0, 0.5]
-        )
-    assert old == plan
-    with pytest.raises(ValueError, match="offset_shares alone"):
-        pair.optimal_inspection_intervals(
-            allowed=[8760.0], offsets=[0.0], offset_shares=[0.0]
-        )
-
-
 def test_unknown_nodes_are_named():
     pair = valves([(8760.0, 0.0), (8760.0, 0.0)])
     with pytest.raises(ValueError, match=r"names \['V3'\]"):
