@@ -12,6 +12,18 @@ import surpyval as surv
 from repyability import Calendar, NonRepairable, Opportunity
 from repyability.maintenance import _replacement
 
+
+def solve(part, calendar, **options):
+    """The calendar policy, on a grid of a given step where a check needs
+    one (the public method sizes its own)."""
+    return _replacement.optimal_calendar_policy(part, calendar, **options)
+
+
+def price(part, calendar, rule, **options):
+    """A rule's cost rate, likewise."""
+    return _replacement.calendar_policy_cost(part, calendar, rule, **options)
+
+
 LIFE = surv.Weibull.from_params([1000.0, 2.5])
 BEARING = NonRepairable(LIFE)
 
@@ -52,7 +64,7 @@ COPRIME = Calendar(
 
 @pytest.fixture(scope="module")
 def nested_exact():
-    return BEARING.optimal_calendar_policy(NESTED, step=1.0)
+    return solve(BEARING, NESTED, step=1.0)
 
 
 # Phase 2, test 1: it agrees with the grid, ever closer as the grid's step
@@ -60,15 +72,15 @@ def nested_exact():
 
 
 def test_integration_agrees_with_the_grid():
-    integrated = BEARING.optimal_calendar_policy(NESTED, method="integration")
+    integrated = solve(BEARING, NESTED, method="integration")
     assert integrated.method == "integration" and integrated.step is None
     gaps = {}
     for step in (7.0, 1.0):
-        grid = BEARING.optimal_calendar_policy(NESTED, step=step)
+        grid = solve(BEARING, NESTED, step=step)
         gaps[step] = abs(grid.cost_rate - integrated.cost_rate)
         assert grid.cost_rate == pytest.approx(integrated.cost_rate, rel=1e-3)
     assert gaps[1.0] < gaps[7.0]
-    grid = BEARING.optimal_calendar_policy(NESTED, step=1.0)
+    grid = solve(BEARING, NESTED, step=1.0)
     for time, kind, age, _ in integrated.schedule(
         kinds=("quarterly", "annual")
     ):
@@ -82,7 +94,7 @@ def test_daily_opportunities_are_age_replacement():
     unit = NonRepairable(LIFE, planned_cost=1.0, unplanned_cost=5.0)
     classical = unit.optimal_replacement_policy()
     daily = Calendar([Opportunity("daily", 1.0, period=1.0)], anytime=None)
-    policy = unit.optimal_calendar_policy(daily, method="integration")
+    policy = solve(unit, daily, method="integration")
     # Deciding once a day costs a hair more than at any moment.
     assert policy.cost_rate == pytest.approx(classical.cost_rate, rel=1e-6)
     assert policy.cost_rate >= classical.cost_rate * (1 - 1e-9)
@@ -95,7 +107,7 @@ def test_daily_opportunities_are_age_replacement():
 def test_integration_refuses_a_replacement_on_any_day():
     calendar = Calendar(SHUTS.opportunities, failure=20.0, anytime=4.0)
     with pytest.raises(NotImplementedError, match="method='dp'"):
-        BEARING.optimal_calendar_policy(calendar, method="integration")
+        solve(BEARING, calendar, method="integration")
 
 
 # Test 4: long gaps, an annual shut and a life of about three years.
@@ -104,8 +116,8 @@ def test_integration_refuses_a_replacement_on_any_day():
 def test_long_gaps_need_few_nodes():
     unit = NonRepairable(surv.Weibull.from_params([1100.0, 3.0]))
     annual = Calendar([Opportunity("annual", 1.0, period=365.0)], 10.0, None)
-    integrated = unit.optimal_calendar_policy(annual, method="integration")
-    grid = unit.optimal_calendar_policy(annual, step=1.0)
+    integrated = solve(unit, annual, method="integration")
+    grid = solve(unit, annual, step=1.0)
     assert integrated.settings["nodes"] < 365
     assert integrated.cost_rate == pytest.approx(grid.cost_rate, rel=1e-4)
     assert abs(integrated._threshold(0.0) - grid._threshold(0.0)) <= 1.0
@@ -116,20 +128,18 @@ def test_integration_repeats_a_plan():
         [Opportunity("t", 1.0, dates=[364.0, 728.0, 1092.0])], 20.0, None
     )
     annual = Calendar([Opportunity("t", 1.0, period=364.0)], 20.0, None)
-    dated = BEARING.optimal_calendar_policy(plan, method="integration")
-    periodic = BEARING.optimal_calendar_policy(annual, method="integration")
+    dated = solve(BEARING, plan, method="integration")
+    periodic = solve(BEARING, annual, method="integration")
     assert dated.cost_rate == pytest.approx(periodic.cost_rate, rel=1e-9)
     assert dated._threshold(0.0) == math.inf
     assert dated._threshold(364.0) == pytest.approx(periodic._threshold(0.0))
     with pytest.raises(NotImplementedError, match="method='dp'"):
-        BEARING.optimal_calendar_policy(
-            plan, method="integration", tail="anytime"
-        )
+        solve(BEARING, plan, method="integration", tail="anytime")
 
 
 def test_integration_with_no_opportunities_runs_to_failure():
-    policy = BEARING.optimal_calendar_policy(
-        Calendar(failure=20.0, anytime=None), method="integration"
+    policy = solve(
+        BEARING, Calendar(failure=20.0, anytime=None), method="integration"
     )
     assert policy.cost_rate == pytest.approx(20.0 / LIFE.mean(), rel=1e-12)
 
@@ -138,15 +148,15 @@ def test_integration_with_no_opportunities_runs_to_failure():
 
 
 def test_sampling_reproduces_the_exact_rate(nested_exact):
-    sampled = BEARING.optimal_calendar_policy(
-        NESTED, step=1.0, method="sampling", mc_samples=32, seed=1
+    sampled = solve(
+        BEARING, NESTED, step=1.0, method="sampling", mc_samples=32, seed=1
     )
     assert sampled.basis == "sampled"
     assert abs(sampled.cost_rate - nested_exact.cost_rate) < (
         2 * sampled.cost_rate_se
     )
-    fewer = BEARING.optimal_calendar_policy(
-        NESTED, step=1.0, method="sampling", mc_samples=8, seed=1
+    fewer = solve(
+        BEARING, NESTED, step=1.0, method="sampling", mc_samples=8, seed=1
     )
     # The error falls as one over the root of the samples.
     assert 1.2 < fewer.cost_rate_se / sampled.cost_rate_se < 3.5
@@ -156,9 +166,7 @@ def test_sampling_reproduces_the_exact_rate(nested_exact):
 
 
 def test_a_coprime_calendar_is_sampled(monkeypatch):
-    policy = BEARING.optimal_calendar_policy(
-        COPRIME, step=1.0, mc_samples=8, seed=3
-    )
+    policy = solve(BEARING, COPRIME, step=1.0, mc_samples=8, seed=3)
     assert policy.method == "sampling"
     assert np.isfinite(policy.cost_rate) and policy.cost_rate_se > 0.0
     assert policy.period is None
@@ -166,9 +174,7 @@ def test_a_coprime_calendar_is_sampled(monkeypatch):
     monkeypatch.setattr(
         _replacement, "SETTLE_SPANS", 2 * _replacement.SETTLE_SPANS
     )
-    longer = BEARING.optimal_calendar_policy(
-        COPRIME, step=1.0, mc_samples=8, seed=3
-    )
+    longer = solve(BEARING, COPRIME, step=1.0, mc_samples=8, seed=3)
     assert abs(longer.cost_rate - policy.cost_rate) < policy.cost_rate_se
 
 
@@ -176,12 +182,8 @@ def test_a_coprime_calendar_is_sampled(monkeypatch):
 
 
 def test_the_sampled_policy_is_deterministic():
-    one = BEARING.optimal_calendar_policy(
-        COPRIME, step=1.0, mc_samples=2, seed=1
-    )
-    other = BEARING.optimal_calendar_policy(
-        COPRIME, step=1.0, mc_samples=2, seed=2
-    )
+    one = solve(BEARING, COPRIME, step=1.0, mc_samples=2, seed=1)
+    other = solve(BEARING, COPRIME, step=1.0, mc_samples=2, seed=2)
     times = np.array([10.0, 50.0, 200.0, 1450.0])
     assert np.array_equal(one._threshold(times), other._threshold(times))
     assert np.array_equal(one._threshold(times), one._threshold(times))
@@ -202,28 +204,23 @@ def test_the_sampled_policy_is_deterministic():
 
 def test_auto_chooses_the_method(nested_exact):
     assert nested_exact.method == "dp" and nested_exact.basis == "exact"
-    sampled = BEARING.optimal_calendar_policy(
-        COPRIME, step=1.0, mc_samples=2, seed=0
-    )
+    sampled = solve(BEARING, COPRIME, step=1.0, mc_samples=2, seed=0)
     assert sampled.method == "sampling"
     plan = Calendar([Opportunity("t", 1.0, dates=[400.0, 1130.0])], 20.0, None)
-    assert BEARING.optimal_calendar_policy(plan, step=10.0).method == "dp"
+    assert solve(BEARING, plan, step=10.0).method == "dp"
     # Never integration, which is asked for.
     assert all(
-        BEARING.optimal_calendar_policy(c, step=step, mc_samples=2).method
-        != "integration"
+        solve(BEARING, c, step=step, mc_samples=2).method != "integration"
         for c, step in ((SHUTS, 7.0), (plan, 10.0))
     )
     with pytest.raises(NotImplementedError, match="method='dp'"):
-        BEARING.optimal_calendar_policy(plan, method="sampling")
+        solve(BEARING, plan, method="sampling")
 
 
 def test_dp_on_a_long_cycle_differences_a_long_horizon():
-    policy = BEARING.optimal_calendar_policy(COPRIME, step=1.0, method="dp")
+    policy = solve(BEARING, COPRIME, step=1.0, method="dp")
     assert policy.basis == "differenced"
-    sampled = BEARING.optimal_calendar_policy(
-        COPRIME, step=1.0, mc_samples=16, seed=5
-    )
+    sampled = solve(BEARING, COPRIME, step=1.0, mc_samples=16, seed=5)
     assert abs(policy.cost_rate - sampled.cost_rate) < 4 * sampled.cost_rate_se
     times = np.array([10.0, 200.0, 450.0])
     assert np.array_equal(policy._threshold(times), sampled._threshold(times))

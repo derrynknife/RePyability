@@ -51,10 +51,7 @@ from repyability.maintenance import (
     PlannedReplacement,
     ReplacementChoice,
     ReplacementPlan,
-    ReplacementPolicies,
-    ReplacementPolicy,
     SkipValue,
-    replacement_policies,
 )
 from repyability.network import Network
 from repyability.non_repairable import NonRepairable
@@ -151,7 +148,6 @@ __all__ = [
     "ComponentOption",
     # Maintenance planning
     "ReplacementPlan",
-    "replacement_policies",
     "Opportunity",
     "Calendar",
     # Up/down histories
@@ -182,8 +178,6 @@ __all__ = [
     "FailureLimitPolicy",
     "FailureForecast",
     "SkipValue",
-    "ReplacementPolicies",
-    "ReplacementPolicy",
     "NextReplacement",
     "ReplacementChoice",
     "CalendarPolicy",

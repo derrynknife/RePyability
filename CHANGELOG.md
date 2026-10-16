@@ -48,19 +48,6 @@ other release, fixes included, the minor.
   (Weibull, 365 days, shape 2; $150 planned, $400 at a failure, outages
   in 150 and 330 days at $100) is best kept to the outage in 150 days;
   replacing now is the best from 297.6 days old.
-- **The best replacement policy when a shut is the cheapest time to
-  replace (#319).** `replacement_policies(life, shut_every=, shut_cost=,
-  planned_cost=, failure_cost=)` finds, in the long run, the best of
-  four families: run to failure; replacement at an age between shuts (at
-  the planned price); at every *z*-th shut whatever the age; and at every
-  *x*-th shut if at least *y* old (both at the shut price). Each is exact
-  (a renewal cycle, the shut families through replacement on condition
-  with an age rule, `older_than`), searched over its settings, and a
-  planned policy is chosen over running to failure only if it saves more
-  than 0.1% (`ReplacementPolicies`, `ReplacementPolicy`). A bearing with a
-  Weibull life (365 days, shape 2), shuts every 180 days at $100, $150
-  between shuts and $400 at a failure, is best replaced at every shut if
-  at least 138 days old: 0.990 a day, against 1.237 running to failure.
 - **A part's failures over a window, and its costs given by name (#319).**
   `NonRepairable` takes `planned_cost=` and `unplanned_cost=` (each alone
   if need be; both as `set_costs_planned_and_unplanned` sets them), and
