@@ -413,6 +413,11 @@ and `rbd._sensitivity`'s `levers` and `Lever` are gone (use `levers()`,
   (`NodeState(age=300.0, since_scheduled=100.0)`) and what its `repr`
   shows. `phase=` still works and warns (a `FutureWarning`), as does
   reading `.phase`; giving both is refused. Both go in 0.15.
+- **A roadmap and user stories.** `ROADMAP.md` holds the larger ideas and
+  their designs (first among them a net present value simulator for
+  maintenance plans), and `stories/` the questions users and agents should
+  be able to answer, with how we will know they are answered; the README
+  links both. Statuses are as of this release.
 - **The README and the documentation mention Reliafy**, the hosted app built
   on RePyability and SurPyval: the README's new "Related" section, the docs
   home page, and one line at the end of the tutorial and of the repairable
