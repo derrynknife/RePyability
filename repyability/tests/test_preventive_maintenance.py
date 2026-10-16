@@ -138,16 +138,19 @@ def test_maintenance_that_takes_time_is_a_planned_outage():
     assert per_run(result, result.system_restorations) == 9
     assert result.system_failures == 0
     assert result.mean_up_time == 40.0
-    assert result.cost.by_category == {
-        "repair": 0.0,
-        "replace": 0.0,
-        "preventive": 50.0,
-        "inspection": 0.0,
-        "component_downtime": 60.0,
-        "system_downtime": 140.0,
-        "setup": 0.0,
-    }
-    assert result.cost.by_component == {"c": 110.0}
+    # The costs are the exact means, integrated: to rounding.
+    assert result.cost.by_category == pytest.approx(
+        {
+            "repair": 0.0,
+            "replace": 0.0,
+            "preventive": 50.0,
+            "inspection": 0.0,
+            "component_downtime": 60.0,
+            "system_downtime": 140.0,
+            "setup": 0.0,
+        }
+    )
+    assert result.cost.by_component == pytest.approx({"c": 110.0})
     fci = result.criticalities.failure_criticality_index
     # Planned outages are not failures.
     assert fci.per_system_failure.get("c", 0) == 0

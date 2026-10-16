@@ -835,7 +835,9 @@ class ChainDips:
         # numbers about ``top ** 2``, so it is uncertain by a few units of
         # rounding in them (numpy 2.0 sums them to 1e-15 at a top of 5).
         if variance <= (1e-6 * self.top) ** 2:
-            self.fixed = mean
+            # A time known exactly is its atom's, not the mean's rounding.
+            atoms = _atoms(lambda s: 1.0 - sf(s), self.splits, self.top)
+            self.fixed = atoms[0][0] if len(atoms) == 1 else mean
             return
         from scipy.signal import fftconvolve
 
