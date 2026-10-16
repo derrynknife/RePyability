@@ -469,7 +469,7 @@ def test_groups_are_checked(components, groups, message):
         ({"interval": 60.0, "opportunity": "soon"}, "from 0 to the interval"),
         (
             {"interval": 60.0, "policy": "block", "opportunity": 30.0},
-            "only to the 'age' policy",
+            "only to the 'age' and 'calendar' policies",
         ),
     ],
 )

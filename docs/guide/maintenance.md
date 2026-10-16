@@ -234,6 +234,12 @@ what comes after the plan. If at some time the ages that replace are not all
 those from the youngest (a life whose hazard falls), the policy says so
 (`threshold_only` is False) and warns.
 
+The policy prices a part alone. Given to a `RepairableRBD` component (see
+[Replacement on a calendar policy](system-maintenance.md#replacement-on-a-calendar-policy)),
+it is followed as worked out, in a maintenance group too, whose stops are
+then chances to renew the part that the policy did not plan for: it is not
+re-optimised for them.
+
 ## Overhaul under minimal repair (`Repairable`)
 
 Each failure is minimally repaired at cost `cr`; every `t` the unit is

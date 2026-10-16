@@ -493,13 +493,19 @@ def _validate_preventive(
                 )
     opportunity = math.inf
     if spec.get("opportunity") is not None:
-        if policy != "age":
+        if policy not in ("age", "calendar"):
             raise ValueError(
                 f"Component {node!r}: an opportunity applies only to "
-                "the 'age' policy (a unit renewed early at a stop of "
-                "its maintenance group)."
+                "the 'age' and 'calendar' policies (a unit renewed early "
+                "at a stop of its maintenance group)."
             )
         opportunity = spec["opportunity"]
+        # Under a calendar policy (no single interval, #349): any age.
+        within = (
+            "at least 0"
+            if policy == "calendar"
+            else f"from 0 to the interval ({interval:g})"
+        )
         if (
             isinstance(opportunity, bool)
             or not isinstance(opportunity, (int, float, np.number))
@@ -507,8 +513,7 @@ def _validate_preventive(
         ):
             raise ValueError(
                 f"Component {node!r}: the opportunity must be an age "
-                f"from 0 to the interval ({interval:g}), got "
-                f"{opportunity!r}."
+                f"{within}, got {opportunity!r}."
             )
         opportunity = float(opportunity)
     duration = spec.get("duration", "instant")

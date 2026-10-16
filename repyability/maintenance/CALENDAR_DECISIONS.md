@@ -273,12 +273,36 @@ eye.
 
     *Decide:* whether the analyses of a lone calendar component should use
     the policy's `g` (exact) rather than refuse.
-26. **Not done: maintenance groups.** The brief says the hook "ties into the
-    existing opportunistic-maintenance groups". A calendar component can
-    still be given a `"group"`, but nothing makes the other members'
-    stops opportunities for it, or the reverse, and this is untested.
-    *Decide:* what a group should do with a calendar component (its
-    opportunities as the group's stops?).
+26. **Maintenance groups (decided and done, #349).** The brief says the
+    hook "ties into the existing opportunistic-maintenance groups". A
+    calendar component in a group is a member like any other, under the
+    group's existing rules, and its policy is not re-optimised:
+    - Its planned replacements are stops of its group, as an age or block
+      replacement is: each other member working and at least its
+      `"opportunity"` age is renewed early there, and the group's
+      `setup_cost` is charged once a stop.
+    - At a stop another member opens (or the system going down, with
+      `system_down`), it is renewed early if at least its own
+      `"opportunity"` age (allowed under the calendar policy, any
+      finite age from 0: the policy has no single interval to bound it
+      by). The renewal is charged the calendar's price for a planned
+      replacement on the day (`CalendarPolicy._planned_price`: the
+      opportunity's if one falls then, else the price on any day); where
+      the calendar allows none, the component's own `replace_cost`, as a
+      failure's replacement is charged (other members' early renewals
+      are charged their preventive cost, which a calendar component has
+      none of). The new unit's next planned replacement counts from the
+      stop (`_renewal`).
+    - Not re-optimised: the policy's thresholds are those worked out for
+      the part alone, with the calendar's prices; the group's stops are
+      chances it did not plan for. Re-optimising with the stops (random
+      times, at the group's price) would need the other members' failure
+      processes in the policy's state, a different problem.
+    - Checked (`test_maintenance_calendar_rbd.py`): timelines worked by
+      hand on both kinds of stop, the price on the day against
+      `Calendar.planned_cost`, a plain simulation of the grouped rule
+      against the event loop, and that a conditional run and the compiled
+      engine leave the group whole to the Python loop.
 
 ## F. Around the build
 
