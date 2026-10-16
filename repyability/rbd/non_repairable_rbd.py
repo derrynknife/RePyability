@@ -8481,7 +8481,7 @@ class NonRepairableRBD(RBD):
         something of its group's shocks, so the system given it is a sum
         over the shock outcomes, and two members of one group are
         conditioned on their joint state (see [Common-cause
-        failures](guide/common-cause.md)). A node outside the groups is
+        failures](../guide/common-cause.md)). A node outside the groups is
         held. ``beta = 0`` gives the values without the group.
 
         Parameters
