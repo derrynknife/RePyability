@@ -483,9 +483,10 @@ def test_forced_nodes_are_not_maintained():
         ({"interval": float("nan")}, "positive number"),
         ({"interval": "ten"}, "positive number"),
         (
-            {"interval": 10, "policy": "calendar"},
-            "'age', 'block' or 'condition'",
+            {"interval": 10, "policy": "weekly"},
+            "'age', 'block', 'condition' or 'calendar'",
         ),
+        ({"policy": "calendar"}, "needs a calendar"),
         ({"interval": 10, "duration": "quick"}, "time-to-maintain model"),
         ({"interval": 10, "duration": 2.0}, "time-to-maintain model"),
         ({"interval": 10, "cost": -1.0}, "non-negative"),
