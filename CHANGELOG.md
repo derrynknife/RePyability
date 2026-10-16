@@ -132,6 +132,20 @@ other release, fixes included, the minor.
   every method takes. Repairs, maintenance and tests stay on the clock;
   levers, draws and saving keep the life as given. The rescaling rule of
   each distribution is RePyability's until surpyval has one (SurPyval#845).
+- **Criticality and Fussell-Vesely over time with repair crews around a
+  nested RBD (#312).** With limited repair crews, the two measures at
+  times or over a window are averages over the crews' Markov chain's
+  states, and refused a nested RBD, which the Birnbaum importance, the
+  improvement potential, the risk worths and `availability_rate` took
+  in. A nested RBD has crews of its own, so it is independent of the
+  chain: the chain's vectors are now taken for each pattern of the
+  nested RBDs up and down and weighted by their own availabilities at
+  each time, as `point_availability` is; over a window the ratio of the
+  integrals, by quadrature. A nested two-unit group with its own crew in
+  series with a pair sharing a crew: the pair's criticality is 0.317 five
+  time units in, for 0.513 in the long run. Checked against the closed
+  form from the two halves, and against seeded histories where the
+  structure couples them.
 
 ### Changed
 
