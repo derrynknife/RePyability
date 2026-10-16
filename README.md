@@ -20,7 +20,8 @@ taking already-fitted lifetime models (from
   reliability from uncertain (fitted) component models.
 - **Networks**: undirected networks whose links fail: the exact
   reliability of the connection between two terminals, by a decision
-  diagram that keeps meshed networks fast.
+  diagram that keeps meshed networks fast, with a diagram's importance
+  measures, B-lives, parameter uncertainty and saving.
 - **Phased missions**: missions through phases (take-off, cruise,
   landing), each with its own diagram over the same components: the exact
   mission reliability and the chance of failing in each phase.
@@ -148,7 +149,7 @@ Which analyses each model type has (the method; — where it has none):
 | Density, hazard, cumulative hazard | `df` | — | — | — | — |
 | Mean time to (first) failure | `mean` | — | — | `mean` | — |
 | Each node's own R(t), F(t) and MTTF | `node_sf` | — | — | — | — |
-| B-life, time to a reliability | `bx_life` | — | — | — | — |
+| B-life, time to a reliability | `bx_life` | — | — | `bx_life` | — |
 | Given the system's age | `cs` | — | — | — | — |
 | Given the components' ages or states | `sf_given_state` | — | — | — | — |
 | Mean residual and remaining life | `mean_residual_life` | — | — | — | — |
@@ -181,26 +182,26 @@ Which analyses each model type has (the method; — where it has none):
 | Convert to and from an RBD | — | — | `to_rbd` | — | — |
 | Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — |
 | Capacity over time | — | `point_capacity` | — | — | — |
-| How each analysis is computed | `analysis_routes` | `analysis_routes` | — | — | — |
-| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | — | — |
+| How each analysis is computed | `analysis_routes` | `analysis_routes` | — | `analysis_routes` | — |
+| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | — |
 | **Importance measures** | | | | | |
 | Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | — |
-| Structural | `structural_importance` | `structural_importance` | — | — | — |
-| Improvement potential | `improvement_potential` | `improvement_potential` | — | — | — |
-| Risk achievement worth | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | — | — |
-| Risk reduction worth | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | — | — |
-| Criticality | `criticality_importance` | `criticality_importance` | `criticality_importance` | — | — |
-| Fussell-Vesely | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | — | — |
-| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | — | — |
-| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | — | — |
-| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | — | — | — |
+| Structural | `structural_importance` | `structural_importance` | — | `structural_importance` | — |
+| Improvement potential | `improvement_potential` | `improvement_potential` | — | `improvement_potential` | — |
+| Risk achievement worth | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | — |
+| Risk reduction worth | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | — |
+| Criticality | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` | — |
+| Fussell-Vesely | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | — |
+| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | — |
+| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | — |
+| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | — | `barlow_proschan_importance` | — |
 | Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — |
 | Uncertainty importance | `uncertainty_importance` | `uncertainty_importance` | — | — | — |
 | All measures given a state | `importances_given_state` | — | — | — | — |
 | Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | — | — | — |
 | **Uncertainty** | | | | | |
-| Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | — | — | `reliability_interval` |
-| Of the MTTF | `mean_uncertainty` | — | — | — | — |
+| Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | — | `sf_uncertainty` | `reliability_interval` |
+| Of the MTTF | `mean_uncertainty` | — | — | `mean_uncertainty` | — |
 | Of the B-life | `bx_life_uncertainty` | — | — | — | — |
 | Of the cost rate | — | `expected_cost_rate_uncertainty` | — | — | — |
 | **Design and maintenance** | | | | | |
