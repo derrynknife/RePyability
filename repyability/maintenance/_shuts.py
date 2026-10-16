@@ -155,9 +155,12 @@ def replacement_policies(
         unit of ``shut_every`` (days, running hours).
     shut_every : float
         The time from one shut to the next, more than 0.
-    shut_cost, planned_cost, failure_cost : float
-        What a replacement costs at a shut, planned between shuts, and at
-        a failure, each at least 0.
+    shut_cost : float
+        What a replacement at a shut costs, at least 0.
+    planned_cost : float
+        What a planned replacement between shuts costs, at least 0.
+    failure_cost : float
+        What a replacement at a failure costs, at least 0.
 
     Returns
     -------

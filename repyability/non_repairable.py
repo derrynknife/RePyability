@@ -2,7 +2,7 @@ import numpy as np
 from scipy.optimize import minimize, minimize_scalar
 from surpyval import ExactEventTime, NonParametric, Parametric
 
-from repyability.maintenance import MaintenancePolicy
+from repyability.maintenance import MaintenancePolicy, NextReplacement
 from repyability.rbd._degradation import check_life, is_degradation
 from repyability.rbd._model_utils import (
     distribution_name,
@@ -115,12 +115,14 @@ class NonRepairable:
         failure, used by the availability and event methods. By default
         None, or ``"instant"`` as a ``RepairableRBD`` spec takes it:
         instantaneous replacement (``ExactEventTime.from_params(0)``).
-    planned_cost, unplanned_cost : float, optional
-        What a planned (preventive) replacement and one at a failure cost,
-        each at least 0, by name; as ``set_costs_planned_and_unplanned``
-        sets them (``cp`` and ``cu``), which with both given requires the
-        planned to be less. Either may be given alone: ``failures`` needs
-        only the unplanned cost. By default None: not given.
+    planned_cost : float, optional
+        What a planned (preventive) replacement costs, at least 0, by name;
+        as ``set_costs_planned_and_unplanned`` sets it (``cp``). By default
+        None: not given.
+    unplanned_cost : float, optional
+        What a replacement at a failure costs, at least 0, by name (``cu``):
+        with ``planned_cost``, more than it. Either may be given alone:
+        ``failures`` needs only this one. By default None: not given.
 
     Attributes
     ----------
@@ -871,6 +873,98 @@ class NonRepairable:
         else:
             rate = float(self._cost_rate(interval))
         return MaintenancePolicy(interval=float(interval), cost_rate=rate)
+
+    def optimal_next_replacement(
+        self,
+        age,
+        *,
+        now_cost=None,
+        shuts=(),
+        shut_every=None,
+        shut_cost=None,
+    ) -> NextReplacement:
+        """When to replace the part in service next: now, at one of the
+        coming shuts, at a planned replacement between them, or at its
+        failure.
+
+        [`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy]
+        is the rule for a part in general; this is the next replacement of
+        the one in service, from its age and the shuts coming up (this
+        package's use case UC-12). Each choice's cost is its expected cost
+        until the part is replaced (at the failure price if it fails
+        first), less the time the part serves until then, valued at the
+        best long-run cost a unit of time of its position: the age
+        replacement's (``optimal_replacement_policy().cost_rate``), or
+        with regular shuts the best of
+        [`replacement_policies`][repyability.replacement_policies]. The
+        cheapest choice is the best. With no shuts, replacing now is the
+        best from the optimal replacement age.
+
+        Parameters
+        ----------
+        age : float
+            The part's age now, at least 0, in the life's time unit.
+        now_cost : float, optional
+            What replacing it now costs, by default the planned cost.
+        shuts : list of (float, float), optional
+            The coming shuts (or other outages) as (time from now, price)
+            pairs, each time more than 0 and each price at least 0.
+        shut_every : float, optional
+            The regular shuts' interval, given with ``shut_cost``: the best
+            long-run cost is then that of
+            [`replacement_policies`][repyability.replacement_policies]
+            (which takes some seconds) rather than the age replacement's.
+        shut_cost : float, optional
+            What a replacement at a regular shut costs, given with
+            ``shut_every``.
+
+        Returns
+        -------
+        NextReplacement
+            Every choice with its cost and break-even age (the youngest at
+            which replacing now costs no more), the best, and the age from
+            which replacing now is the best.
+
+        Raises
+        ------
+        ValueError
+            If the costs have not been set, or an argument is out of its
+            range.
+        NotImplementedError
+            For a life with no survival function in closed form (a
+            non-parametric estimate or a ``StandbyModel``).
+
+        Examples
+        --------
+        A bearing with a Weibull life (scale 365 days, shape 2), 200 days
+        old, $150 for a planned replacement, $400 at a failure, and shuts
+        in 150 and 330 days at $100:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]),
+        ...     planned_cost=150.0,
+        ...     unplanned_cost=400.0,
+        ... )
+        >>> found = bearing.optimal_next_replacement(
+        ...     200.0, shuts=[(150.0, 100.0), (330.0, 100.0)]
+        ... )
+        >>> found.now, found.best.kind, found.best.time
+        (False, 'shut', 150.0)
+        >>> round(found.replace_from_age, 1)
+        297.6
+        """
+        from repyability.maintenance._next import optimal_next_replacement
+
+        return optimal_next_replacement(
+            self,
+            age,
+            now_cost=now_cost,
+            shuts=shuts,
+            shut_every=shut_every,
+            shut_cost=shut_cost,
+        )
 
     def reset(self):
         """Restart the event sequence with a working, as-new unit.

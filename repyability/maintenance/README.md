@@ -27,7 +27,7 @@ use cases, under the same numbers.
 | UC-9 | The cost in each of a run of windows from a state, and how often each outcome happens | Answered by hand |
 | UC-10 | Tasks by use on an operating schedule: calendar only | Reliafy's |
 | UC-11 | A part renewed at every service and at failure: its risk before each service, from its state, in running hours | Answered by hand |
-| UC-12 | Replace this part now, or keep it until a later shut, a planned replacement or its failure? | Proposed |
+| UC-12 | When to replace this part next: now, at a coming shut, at a planned replacement, or at its failure? | **Built**: `NonRepairable.optimal_next_replacement` |
 
 ## How a use case is added
 
@@ -607,8 +607,8 @@ answers back into dates is Reliafy's too.)
 
 ### UC-12: "The bearing is 200 days old. Replacing it now costs $150; a planned replacement any time costs $150 too, and one at a failure $400. The next shuts are in 150 and 330 days, at $100 each. Do I replace it now?"
 
-- **Status:** proposed, answered by hand; one design choice open (the
-  value of a day, below).
+- **Status:** built: `NonRepairable.optimal_next_replacement(age, now_cost=,
+  shuts=, shut_every=, shut_cost=)` (see *As built*).
 - **Who asks, and why:** a planner deciding on one part, today, from its
   age and the outages coming up. The maintainer asked for this first, as
   the clean starting point for the shut questions (UC-7's policies are
@@ -696,3 +696,58 @@ answers back into dates is Reliafy's too.)
     optimal interval is the age at which a day's added risk,
     (400 - 150) × hazard, reaches it. With shuts, it is the best
     schedule's cost rate with the shuts (UC-7's 0.990).
+- **As built:** the maintainer chose the name: `optimal_replacement_policy`
+  is the rule for a part in general (a hypothetical one), and
+  `optimal_next_replacement` the next replacement of the one in service.
+  The value of a day is not given: it is the best schedule's cost a day,
+  worked out by the method itself, as the optimal interval works out its
+  own.
+
+  ```python
+  import surpyval as surv
+  from repyability import NonRepairable
+
+  bearing = NonRepairable(
+      surv.Weibull.from_params([365.0, 2.0]),
+      planned_cost=150.0, unplanned_cost=400.0,
+  )
+  found = bearing.optimal_next_replacement(
+      200.0,
+      shuts=[(150.0, 100.0), (330.0, 100.0)],  # the next shuts: (time, price)
+      shut_every=180.0, shut_cost=100.0,       # the regular shuts
+  )
+  found.best              # the shut in 150 days, 124.6
+  found.now               # False
+  found.choices           # now, each shut, planned (in 63.9 days), failure
+  found.replace_from_age  # 263.9: replacing now beats every later choice
+  found.cost_rate         # 0.990 a day: replacement_policies' best
+  ```
+
+  - `now_cost` is the planned price unless given (a shut today, or a
+    chance while the machine is apart, is cheaper). Without `shut_every`,
+    the value of a day is `optimal_replacement_policy().cost_rate`; with
+    it, `replacement_policies(...).best.cost_rate`, which takes some
+    seconds.
+  - **Each choice's break-even age** (`ReplacementChoice.break_even_age`)
+    is the youngest at which replacing now costs no more than it, on a
+    grid of 64 ages up to the one a new part reaches with a chance of
+    0.1%, then halved down to; `replace_from_age` is the largest. A
+    planned replacement's best time is found on a grid of 2,001 times up
+    to the time the part outlives with a chance of 0.1%, refined; if none
+    beats running to failure, its time is `inf`.
+  - **Lives:** those with a survival function in closed form (surpyval's
+    parametric distributions, mixtures, degradation processes); a
+    non-parametric estimate or a `StandbyModel` is refused.
+  - **Checks** (`test_maintenance_next.py`): the figures above (the hand
+    answer: 124.6, 178.5, 142.8 in 63.9 days, 210.4; break-even ages
+    256.1, 153.0, 263.9, 86.4); with no shuts, the best planned time is
+    the optimal age less the part's, and replacing now the best from the
+    optimal age (to 1e-4); every choice against a plain simulation of
+    it; an exponential life (each shut's cost `price · exp(-λu)`, running
+    to failure 0 and best); replacing now dearer than a planned
+    replacement is never best; a cheaper chance now breaks even younger;
+    the answer the same in days and in hours; JSON; the input checks.
+  - **Still to check:** the decision against the timeline calculation
+    (the best decision for every age and day, worked back from past the
+    last listed shut), to measure what valuing a new part the same
+    whenever it is fitted leaves out.

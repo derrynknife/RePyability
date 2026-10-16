@@ -80,9 +80,10 @@ class ReplacementPlan:
         ``from_params``.
     every : float
         The plan's interval, in days.
-    planned_cost, unplanned_cost : float
-        What a planned replacement and one at a failure cost, at least 0,
-        in your currency.
+    planned_cost : float
+        What a planned replacement costs, at least 0, in your currency.
+    unplanned_cost : float
+        What a replacement at a failure costs, at least 0.
     resets : bool
         Whether the plan resets at each replacement: True, the next
         planned replacement is ``every`` after the last replacement,
