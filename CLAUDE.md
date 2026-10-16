@@ -277,8 +277,10 @@
   exact-against-simulated checks (`test_catalogue.py`) share. A new node
   class, spec key, policy or diagram option needs a diagram there:
   `test_the_catalogue_has_every_kind` names what no diagram uses.
-  `FaultTree.analysis_routes()` is held to the same (#314): its calls in
-  `FAULT_TREE_CALLS`, on the trees of `catalogue.fault_tree_kinds()`.
+  `FaultTree.analysis_routes()` (#314), `Network.analysis_routes()`
+  (#315) and `PhasedMission.analysis_routes()` (#316) are held to the
+  same: their calls in `FAULT_TREE_CALLS` (on the trees of
+  `catalogue.fault_tree_kinds()`), `NETWORK_CALLS` and `PHASED_CALLS`.
 - **The README's "When is a simulation needed?" table follows the routes.**
   It says, by what is asked, the components and the maintenance, what is
   simulated and whether it must be (or could be exact, with the issue).
@@ -355,6 +357,17 @@
   kinks: without them its bends fall inside pieces, which then take many
   halvings (right, but slow). `test_evaluation_costs.py` checks the
   points an MTTF takes and its accuracy.
+
+- **A measure that is a function of the system's values lives once, in
+  `repyability/rbd/_measures.py`** (#314, #315): the ratios (improvement
+  potential, the risk worths, criticality, Fussell-Vesely from numerators),
+  an element's density, the finite-difference steps, the cumulative
+  hazard, the rate parts and Barlow-Proschan shares, a life's end and the
+  inversion of a reliability for a B-life. A diagram, a fault tree and a
+  network differ in how they work out the system with an element held
+  (a decomposition, the top event conditioned, a decision diagram
+  replayed), not in the measures: a new measure goes there, and each
+  class calls it with its own values.
 
 ## API conventions
 
