@@ -1,10 +1,12 @@
 """When to replace a part in service next (#319, UC-12 of this package's
-``README.md``): now, at one of the coming shuts, at a planned replacement
-between them, or at its failure.
+``README.md``): now, at one of the scheduled outages, at a planned
+replacement between them, or at its failure.
 
 Each choice is costed from the part's age ``a`` to its replacement: its
-expected cost, less the time it serves valued at ``g``, the best long-run
-cost a unit of time of the part's position,
+expected cost, less the time it serves valued at ``g``, the long-run cost
+a unit of time of the part's
+[`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy]
+(the baseline),
 
     cost(u, price) = price S(u) + failure (1 - S(u)) - g ∫₀ᵘ S,
 
@@ -12,11 +14,8 @@ with ``S(u) = R(a + u) / R(a)``, the chance the part is working ``u`` from
 now (replacing now costs its price). The time the part serves is time a
 new part would otherwise serve, which ``g`` values: this is the relative
 value of the renewal-reward process, a new part taken to be worth the same
-whenever it is fitted. ``g`` is the cost rate of the part's
-[`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy],
-or with regular shuts the best of
-[`replacement_policies`][repyability.replacement_policies]. With no shuts,
-replacing now is the best from the optimal replacement age exactly.
+whenever it is fitted. With no outages, replacing now is the best from the
+optimal replacement age exactly.
 
 A planned replacement is costed at its best time, on a grid of ``_GRID``
 times up to the time the part outlives with a chance of ``_FAR``, refined
@@ -57,11 +56,11 @@ class ReplacementChoice(_ResultMapping):
     Attributes
     ----------
     kind : str
-        ``"now"``, ``"shut"`` (at one of the coming shuts), ``"planned"``
-        (a planned replacement at its best time) or ``"failure"`` (run to
-        failure).
+        ``"now"``, ``"outage"`` (at one of the scheduled outages),
+        ``"planned"`` (a planned replacement at its best time) or
+        ``"failure"`` (run to failure).
     time : float
-        When, from now: 0 for now, the shut's time, the planned
+        When, from now: 0 for now, the outage's time, the planned
         replacement's best time (``inf`` if none beats running to
         failure), ``inf`` at failure.
     price : float
@@ -98,14 +97,15 @@ class NextReplacement(_ResultMapping):
     now : bool
         Whether the best is to replace it now.
     choices : list of ReplacementChoice
-        Every choice: now, each shut by its time, a planned replacement at
+        Every choice: now, each outage by its time, a planned replacement at
         its best time, and run to failure.
     replace_from_age : float
         The age from which replacing now beats every later choice: the
         largest break-even age.
     cost_rate : float
-        The value of a unit of the part's service: the best long-run cost
-        a unit of time of its position.
+        The value of a unit of the part's service, the baseline: the
+        long-run cost a unit of time of the part's
+        [`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy].
     """
 
     age: float
@@ -126,25 +126,25 @@ def _time(value, name: str) -> float:
     return float(value)
 
 
-def _coming(shuts) -> list:
-    """The coming shuts as (time, price) pairs, by time."""
-    if isinstance(shuts, (str, bytes)) or not hasattr(shuts, "__iter__"):
+def _coming(outages) -> list:
+    """The scheduled outages as (time, price) pairs, by time."""
+    if isinstance(outages, (str, bytes)) or not hasattr(outages, "__iter__"):
         raise TypeError(
-            "shuts must be a list of (time from now, price) pairs; "
-            f"got {shuts!r}."
+            "scheduled_outages must be a list of (time from now, price) "
+            f"pairs; got {outages!r}."
         )
     coming = []
-    for shut in shuts:
-        pair = () if isinstance(shut, (str, bytes)) else tuple(shut)
+    for outage in outages:
+        pair = () if isinstance(outage, (str, bytes)) else tuple(outage)
         if len(pair) != 2:
             raise TypeError(
-                "each shut must be a (time from now, price) pair; "
-                f"got {shut!r}."
+                "each scheduled outage must be a (time from now, price) "
+                f"pair; got {outage!r}."
             )
         coming.append(
             (
-                _time(pair[0], "a shut's time"),
-                _amount(pair[1], "a shut's price"),
+                _time(pair[0], "the time of a scheduled outage"),
+                _amount(pair[1], "the price at a scheduled outage"),
             )
         )
     return sorted(coming)
@@ -244,10 +244,10 @@ def _break_even(beaten, oldest: float) -> float:
 
 
 def optimal_next_replacement(
-    part, age, *, now_cost=None, shuts=(), shut_every=None, shut_cost=None
+    part, age, *, now_cost=None, scheduled_outages=()
 ) -> NextReplacement:
-    """``NonRepairable.optimal_next_replacement``'s work (see there)."""
-    from repyability.maintenance._shuts import replacement_policies
+    """The work of ``NonRepairable.optimal_next_replacement`` (see
+    there)."""
     from repyability.rbd._model_utils import model_mean
 
     part._require_costs()
@@ -262,24 +262,8 @@ def optimal_next_replacement(
         raise ValueError(f"age must be a number, at least 0; got {age!r}.")
     age = float(age)
     now = part.cp if now_cost is None else _amount(now_cost, "now_cost")
-    coming = _coming(shuts)
-    if (shut_every is None) != (shut_cost is None):
-        raise ValueError(
-            "Give shut_every and shut_cost together (the regular shuts, for "
-            "the best long-run cost), or neither (no regular shuts)."
-        )
-    if shut_every is None:
-        rate = float(part.optimal_replacement_policy().cost_rate)
-    else:
-        rate = float(
-            replacement_policies(
-                part.reliability,
-                shut_every=shut_every,
-                shut_cost=shut_cost,
-                planned_cost=part.cp,
-                failure_cost=part.cu,
-            ).best.cost_rate
-        )
+    coming = _coming(scheduled_outages)
+    rate = float(part.optimal_replacement_policy().cost_rate)
     mean = model_mean(part.reliability)
     life = _Life(part.reliability_function, mean, part.cu, rate)
     if not life.survival(age) > 0.0:
@@ -289,7 +273,7 @@ def optimal_next_replacement(
 
     # Each later choice: its kind, time (a planned replacement's is its
     # best) and price.
-    later = [("shut", time, price) for time, price in coming]
+    later = [("outage", time, price) for time, price in coming]
     later += [("planned", 0.0, part.cp), ("failure", math.inf, part.cu)]
 
     def chosen(kind: str, time: float, price: float, at: float) -> tuple:
