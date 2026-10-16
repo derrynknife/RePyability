@@ -495,8 +495,11 @@ major.minor.
    `[Unreleased]` section into `## [X.Y] - YYYY-MM-DD`, opening with a
    summary paragraph and the behaviour changes (they open the release notes),
    and update the version in `docs/guide/saving.md`. PR to dev, then dev to
-   master, listing "Closes #N" for each finished issue: commit messages'
-   "(#N)" close nothing.
+   master. A pull request into dev lists "Closes #N" for each issue it
+   finishes, and `.github/workflows/close-issues.yml` closes them when it
+   merges, with a comment naming it (GitHub itself closes an issue only on a
+   merge into master): commit messages' "(#N)" close nothing, and the
+   dev-to-master pull request need not list them again.
 2. When the full suite has passed on the pull request from dev into
    master, merge it (a merge commit) and run the workflow with
    `actions_run_trigger`: `run_workflow`, workflow `release.yml`, ref
