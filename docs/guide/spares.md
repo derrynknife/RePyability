@@ -202,9 +202,11 @@ every 1,000 hours, against 1.165), and the same stock fills more of it.
 
 A fleet's systems are taken as on block schedules of their own, out of step
 with each other; two block-replaced components in one part are refused, as
-their block times keep step, and so is a unit that can be dead on arrival
-while its repairs or block replacements may take no time, as its
-replacements can then come several at one instant. A tested component's
+their block times keep step. A unit that can be dead on arrival fails as it
+is put in, so with repairs and block replacements in no time its
+replacements come several at one instant: each replacement of a unit that
+lasts brings a geometric number more, which the lasting units' count is
+compounded with (#322). A tested component's
 spares are counted whatever its tests and repairs take, and whether or not
 its tests can miss a failure: the replacements still fall on the tests that
 find failures (#159).
@@ -288,9 +290,6 @@ place in proportion to its share of the replacements.
 Some components' replacements are not counted this way, and the counts
 refuse, with the reason:
 
-- the stock of a component under **block replacement** that can be dead on
-  arrival while its repairs or block replacements may take no time, as its
-  replacements can then come several at one instant;
 - a component with **hidden failures** whose tests can last as long as
   their interval;
 - a **standby group**, whose units' failures depend on each other;
