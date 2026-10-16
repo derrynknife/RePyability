@@ -44,6 +44,8 @@ from repyability.fault_tree import FaultTree
 from repyability.maintenance import (
     FailureLimitPolicy,
     MaintenancePolicy,
+    NextReplacement,
+    ReplacementChoice,
     ReplacementPlan,
     ReplacementPolicies,
     ReplacementPolicy,
@@ -176,6 +178,8 @@ __all__ = [
     "SkipValue",
     "ReplacementPolicies",
     "ReplacementPolicy",
+    "NextReplacement",
+    "ReplacementChoice",
     "MaintenancePlan",
     "RateBreakdown",
     "AvailabilityAllocation",

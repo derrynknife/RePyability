@@ -67,3 +67,7 @@
 ::: repyability.ReplacementPolicies
 
 ::: repyability.ReplacementPolicy
+
+::: repyability.NextReplacement
+
+::: repyability.ReplacementChoice
