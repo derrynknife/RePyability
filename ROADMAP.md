@@ -6,6 +6,9 @@ issues stay a list of things someone could start this week. The outcomes
 they serve, and how we will know they are met, are the user stories in
 [`stories/`](stories/README.md).
 
+Statuses are as of 0.13 and what is merged on `dev` for 0.14 (16 October
+2026).
+
 ## How this file works
 
 - **An idea starts here**, as a section with the problem, why it matters,
@@ -20,6 +23,18 @@ they serve, and how we will know they are met, are the user stories in
 - **Ideas we have decided against** go under "Not planned", with the
   reason, so they are not raised again.
 
+## Scope: timelines, not calendars
+
+RePyability works in model time: the models' own unit, from 0 or from a
+state, with ages, phases and meter readings as numbers, and it answers in
+plain data. Dates, calendars, operating schedules, meters read by date and
+financial years belong to the application that uses it
+([Reliafy](https://reliafy.com), for one), which turns dates into model
+time, calls RePyability, and turns the answers back into dates. Every
+design below is in model time: an outage is a time on the model's
+timeline, a price curve a function of model time, and a horizon a length
+of it.
+
 ---
 
 ## The NPV simulator: what is a maintenance plan worth?
@@ -31,7 +46,7 @@ MX-17 in [`stories/maintenance-economics.md`](stories/maintenance-economics.md).
 money, at a cost of capital, over an asset's life. RePyability prices a
 plan per hour in the long run; 0.12 added a `discount_rate` to
 `total_cost` and `allocate_redundancy` that discounts that long-run rate.
-It does not value a plan from where the plant is, over a calendar, with
+It does not value a plan from where the plant is, over a horizon, with
 what the plant earns while it runs. The question users and agents ask is
 "which plan creates the most value, at the least cost, and how sure are
 we?", and today they answer it by hand.
@@ -57,27 +72,39 @@ every plan. A prototype on `expected_cost(t)` (two Weibull pumps feeding a
 compressor, 10 years at 8%) moved the best pump PM interval from 10,000 h
 undiscounted to 14,000 h: deferring spend is worth something.
 
-**Design.** Three layers, all plain data so they save and load:
+**What exists for one part (0.14, #319).** The maintenance module answers
+a single part's questions exactly, in model time: its failures and their
+cost over a window from its age (`NonRepairable.failures`), the NPV of
+skipping its next planned replacement (`ReplacementPlan.skip_next`, the
+first discounted answer), the best replacement policy when a shut is the
+cheapest time to replace (`replacement_policies`), and when to replace a
+part in service next, given scheduled outages as times from now
+(`NonRepairable.optimal_next_replacement`). The NPV simulator takes these
+questions to a whole plant.
+
+**Design.** Three layers, all plain data so they save and load, all in
+model time:
 
 - **Plan**: the actions, mixed freely. Periodic maintenance (as today);
-  outages on dated calendars with a duration and a scope (renew some
-  components, restore others to a virtual age, take the system down);
-  recurring campaigns with opportunistic work; upgrades that swap a
-  component's life model at a capital cost; crews and call-out contracts;
-  retirement with a salvage value from each component's age. Dated
-  renewals generalise block replacement from multiples of an interval to
-  any list of times, so the engine work starts from `_block_replacement`.
+  outages at given times on the model's timeline, with a duration and a
+  scope (renew some components, restore others to a virtual age, take the
+  system down); recurring campaigns with opportunistic work; upgrades
+  that swap a component's life model at a capital cost; crews and
+  call-out contracts; retirement with a salvage value from each
+  component's age. Renewals at given times generalise block replacement
+  from multiples of an interval to any list of times.
 - **Cash flows**: value (a rate, capacity times a price curve, any `v(t)`),
   event costs (repair, replace, preventive, inspection, set-up), rate costs
   (downtime, crews, holding spares), capital (acquisition, upgrades,
   salvage), each with its own escalation; real or nominal rates.
-- **Valuation**: the rate, the horizon, a calendar that maps model time to
-  dates, and the method: exact where the curves are (fixed-time events
-  discounted at their exact times, not grid midpoints), simulated where
-  needed (each event discounted at its time, plans compared with common
-  random numbers). The result: NPV, EAC, the undiscounted total, a
-  cash-flow table by year, category and component, how it was computed,
-  and the units.
+- **Valuation**: the rate (per unit of model time), the horizon, and the
+  method: exact where the curves are (fixed-time events discounted at their
+  exact times, not grid midpoints), simulated where needed (each event
+  discounted at its time, plans compared with common random numbers). The
+  result: NPV, EAC, the undiscounted total, a cash-flow table by period of
+  model time, category and component, how it was computed, and the units.
+  Which period is a financial year, and which time is which date, is the
+  application's.
 
 **Phases** (each becomes issues when scheduled; the stories' building
 blocks B1 to B7):
@@ -85,8 +112,10 @@ blocks B1 to B7):
 1. Expected NPV and EAC on the exact curves, with a constant value rate and
    the cash-flow table (B1). Validated against Fox's (1966) closed form
    for discounted age replacement and the `delta -> 0` limit.
-2. Value and prices in time, escalation and the calendar (B2).
-3. Plans on a calendar: dated outages, campaigns, upgrades, salvage (B3).
+2. Value and prices over model time (a price curve `v(t)`), and escalation
+   (B2).
+3. Plans on the timeline: outages at given times, campaigns, upgrades,
+   salvage (B3).
 4. The simulated NPV distribution and non-linear payoffs (B4).
 5. Crews as cash flows and the call-out option, valued in the crews'
    Markov chain with "surge crew active" states (B5).
@@ -113,26 +142,33 @@ to MX-25.*
 reading rises, a pump is replaced, a seal fails, new failure data narrow a
 fit, the forward curve moves. The aim is that RePyability holds the plant
 as it is now and re-values (and, when asked, re-optimises) the plan as each
-event arrives, so that Reliafy can keep every maintenance plan optimal by
-NPV through all the churn of real maintenance work, and an agent can say at
-any moment what the plan is worth, what changed it, and what to do next.
+event arrives, so that an application can keep every maintenance plan
+optimal by NPV through all the churn of real maintenance work, and an agent
+can say at any moment what the plan is worth, what changed it, and what to
+do next.
 
 **What exists.** Every exact analysis of a `RepairableRBD` starts from the
 components' current states (`state=`, `NodeState`: age, up or down, how
-long down, whether in maintenance, the phase on a calendar, or
-stationary), and `simulate_timelines` does too (#163). A `NonRepairableRBD`
-gives the reliability, remaining life and importance given those states.
-What is missing is the state that sensors and repair histories give, the
-events that move it, and a valuation that follows it.
+long down, whether in maintenance, the phase of its schedule, or
+stationary), and `simulate_timelines` does too (#163). The simulations
+also start an imperfectly repaired unit from its virtual age
+(`NodeState(virtual_age=)`, #269), which a fitted `GeneralizedRenewal`'s
+`unit_states()` gives; a fitted repairable-unit model is a component
+(#269), and a fitted gamma or Wiener degradation process a life, with
+replacement on condition by its measured level (#271). A
+`NonRepairableRBD` gives the reliability, remaining life and importance
+given the states. What is missing is the state a sensor reading gives (a
+component's current level), the events that move the state, and a
+valuation that follows it.
 
 **Design.**
 
 - **A live plant object** (working name `Plant`): the `RepairableRBD`, the
   `Plan`, the `Valuation`, each component's current state, and the log of
   events, as of a time. It is event-sourced: the state is the fold of the
-  events, so events can arrive late or out of order (a work order closed a
-  week after the job) and the result is the same as in order, and any past
-  valuation can be rebuilt.
+  events, so events can arrive late or out of order (a work order closed
+  some time after the job) and the result is the same as in order, and any
+  past valuation can be rebuilt. Every event's time is a model time.
 - **Events**:
   - `reading(node, level, at)`: a condition measurement. The component's
     life becomes its remaining-life distribution from that level, from a
@@ -147,10 +183,10 @@ events that move it, and a valuation that follows it.
     condition;
   - `prices(curve)`, `plan(changes)`, `covariates(node, values, at)` (a
     load or temperature change for a covariate-dependent component).
-- **State.** `NodeState` gains what the events need: a condition (the
-  conditioned life model it implies), a virtual age, and a per-node model
-  override; or a richer per-node state object that carries them, so that
-  `age` keeps its single meaning (operating time).
+- **State.** `NodeState` has a virtual age (#269); it gains what the other
+  events need: a condition (the conditioned life model it implies) and a
+  per-node model override, or a richer per-node state object that carries
+  them, so that `age` keeps its single meaning (operating time).
 - **Incremental re-valuation.** Each component's curves (availability,
   expected events) depend only on its own model, state and plan, so they
   are cached by that key and an event recomputes only the components it
@@ -170,10 +206,10 @@ events that move it, and a valuation that follows it.
   availability or PFDavg limits, warm-started from the current plan;
   changes proposed only when they beat the current plan by a margin, so
   the plan does not churn on sensor noise, each with its value ("bring pump
-  2's replacement forward to the March outage: +$45k").
+  2's replacement forward to the next outage: +$45k").
 - **Change report.** For each update: the NPV move, whether it crossed a
   threshold, and whether the recommended next actions changed and why.
-  Reliafy turns that into alerts.
+  The application turns that into alerts.
 - **Reproducibility.** The plant, its events and each valuation save to
   JSON; a saved valuation reproduces exactly (with its seed where it
   simulates).
@@ -186,16 +222,17 @@ events that move it, and a valuation that follows it.
   0.23, #615); cheap refits or sequential updates as failures arrive, with
   the covariance. (See SurPyval's roadmap.)
 - **RePyability**: the plant object, the state, the valuation, the
-  attribution, the re-optimisation, the change report.
-- **Reliafy**: ingesting readings and work orders, keeping each plant,
-  running updates, alerts, and the MCP tools that let agents ask "what is
-  the plan worth now, what changed, what should we do?".
+  attribution, the re-optimisation, the change report, all in model time.
+- **The application**: ingesting readings and work orders, turning their
+  dates (and run hours read by date) into model time and the answers back
+  into dates, keeping each plant, running updates, and alerts.
 
 **Open questions.**
 
-- Time base: calendar time against operating hours (components that run
-  part-time age by their run hours); the plant needs a utilisation per
-  component to map one to the other.
+- Time base: one model clock per plant. A component that runs part of the
+  time takes a `"duty"`, the fraction of the time it operates (#276), so a
+  life fitted in operating time sits on the plant's clock; turning a
+  utilisation measured by date into that clock is the application's.
 - What a live update does when an exact route is refused (a crew-limited
   plant of non-exponential units): simulate with common random numbers to
   a tolerance, and say so.
@@ -215,7 +252,8 @@ events that move it, and a valuation that follows it.
 Questions that become one or two calls once plans have a value:
 
 - **Price-aware outage timing**: place planned outages against a forward
-  price curve, not only choose how often (MX-10, MX-23).
+  price curve (a function of model time), not only choose how often
+  (MX-10, MX-23).
 - **Value of information**: what better data are worth (more teardowns, a
   sensor), from the NPV lost to parameter uncertainty (MX-15; on #196 and
   #200).
@@ -235,18 +273,23 @@ Questions that become one or two calls once plans have a value:
 
 ---
 
-## Simpler implementations
+## The maintenance module
 
-*Status: scheduled. Issues: #204 (umbrella), #205, #206, #207, #208,
-#209.*
+*Status: scheduled (#319). Size: large, one use case at a time.*
 
-Remove the code that is there only for speed where one clean design does
-as well: one copy of a component's events in the compiled loop (#206);
-timelines from the event loop's recording only (#205); one design of the
-decision-diagram search and replay (#207); one implementation of sorting a
-run's changes (#208); random streams whose draws depend only on the seed,
-the stream, the simulation and the draw (#209). Fewer copies that must
-agree means fewer places for the bugs that review rounds keep finding.
+`repyability.maintenance` answers a maintainer's questions about a part:
+run to failure, scheduled replacement, failure finding, on-condition, and
+the options at a planned replacement, with the probabilities a forecast is
+made of (expected failures and costs over a window from a state, and their
+distribution). Each use case is recorded in
+[`repyability/maintenance/README.md`](repyability/maintenance/README.md)
+before it is built: who asks, what they know and want back, how it is
+solved, the answer worked by hand, and the checks. Built so far, for 0.14:
+a part's failures over a window (UC-5), the NPV of skipping the next
+planned replacement (UC-6), the best replacement policy with shuts (UC-7)
+and when to replace a part in service next (UC-12). The maintainer chooses
+which use case is next. Tasks on dates, operating schedules and meters
+read by date are the application's (see "Scope" above).
 
 ---
 
@@ -259,23 +302,27 @@ change is made:
   done as users (and agents) use it: a plant engineer, a safety analyst, a
   statistician, an integrator and a new user following the docs, each
   answer checked independently. Each round files concrete issues, fixed in
-  the next. Rounds so far: 0.11 (#184), 0.12 (#213).
+  the next. Rounds so far: 0.11 (#184), 0.12 (#213), a review of how
+  RePyability uses surpyval 0.24 (#266), and the code and docs review
+  after 0.13 (#277, #278, #279).
 - **Scenario cards in the regular tests.** Each persona's study becomes a
   card in `repyability/tests/scenarios`: its questions answered through
   the public API, checked against an independent oracle (a closed form,
   a Markov chain, an enumeration), with each question not yet answerable
   as a strict xfail citing its story or issue, so a fix shows up as a
-  failing run until the card is updated. They run on every push, so they
-  are small and exact (SurPyval's practitioner cards are the model). The
-  stories in `stories/` are the cards' source.
-- **Every analysis on every kind of diagram.** The routes test covers each
-  node kind and spec key, with a guard that fails when one is missing
-  (#239).
+  failing run until the card is updated. They run with the rest of the
+  suite, so they are small and exact (SurPyval's practitioner cards are
+  the model). The stories in `stories/` are the cards' source.
+- **Every analysis on every kind of diagram.** The routes test runs each
+  analysis on every node kind and spec key of the test catalogue, with a
+  guard that fails when one is missing (#239, 0.13), and the README's
+  capability tables are made from it, with a test that they are current
+  (0.14).
 - **The docs say what the code does.** The docs test checks every shown
-  output, not only `# ->` comments; tests run from the installed wheel
-  (#167).
+  output, not only `# ->` comments; the tests run from the installed wheel
+  (#167, 0.13).
 - **Concurrency.** Simulations on a shared diagram from several threads
-  (#216).
+  give the same seeded results (#216, 0.13).
 
 ---
 
@@ -283,13 +330,31 @@ change is made:
 
 - **Fitting lifetime models in RePyability.** Fitting stays in SurPyval;
   RePyability takes fitted models (CLAUDE.md).
-- **Plotting and dashboards.** These stay in Reliafy; RePyability stays
-  free of plotting dependencies.
+- **Plotting and dashboards.** These stay outside RePyability (the Reliafy
+  app does them); RePyability stays free of plotting dependencies.
+- **Physics of failure.** Lives come from data, through SurPyval's
+  models, not from physical models of a failure mechanism; RePyability
+  does not model them.
+- **Calendars and dates.** Dates, calendars, operating schedules, meters
+  read by date and financial years are the application's (see "Scope"
+  above); RePyability works in model time.
+- **Moving `repyability.maintenance` out.** It stays: a part's
+  maintenance questions (time-based replacement and RCM's quantitative
+  questions) are RePyability's, in model time.
 
 ---
 
 ## Done
 
+- **Simpler implementations** (0.13, #204): timelines from the event
+  loop's recording only (#205), one copy of a component's events in the
+  compiled loop (#206), one design of the decision-diagram search and
+  replay (#207), one implementation of sorting a run's changes (#208), and
+  random streams whose draws depend only on the seed, the stream, the
+  simulation and the draw (#209).
+- **Hardening from the 0.12 persona check** (0.13, #213): among them,
+  every analysis on every kind of diagram (#239), the tests from the
+  installed wheel (#167) and simulations from several threads (#216).
 - **The Greeks** (0.12, #197): the sensitivity measures as one family:
   delta (#191), parameter sensitivity (#192), differential importance
   (#193), gamma (#194), theta and Barlow–Proschan (#195, #199), vega
