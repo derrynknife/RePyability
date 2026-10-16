@@ -283,8 +283,9 @@ of 6 000 for `tolerance=0.0005`.
   on repair crews, and maintenance groups. And, component by component,
   what the exact methods over time do not take: a standby group's switching
   (unless its units are exponential, when its own chain follows it), whose
-  units then operate together; imperfect repair (but minimal repair in no
-  time, which the exact methods take); and inspections they do not take
+  units then operate together; imperfect repair (but minimal repair,
+  which the exact methods take, its repairs taking time or not); and
+  inspections they do not take
   (tests that can last as long as their interval), whose failures are then
   revealed. It
   keeps the rest, age and block replacement and replacement on condition

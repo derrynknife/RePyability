@@ -837,7 +837,8 @@ their repairs are not Kijima's.
   group, or replacement on condition, cannot be repaired imperfectly.
 - **Exact or simulated.** A repair does not renew the unit, so the exact
   long-run values, the availability over time and the spares counts refuse
-  it, with the reason; `availability`, `cost` and `compare` simulate it, in
+  it, with the reason (but minimal repair's values over time, below);
+  `availability`, `cost` and `compare` simulate it, in
   Python, with its own streams (seeds, antithetic pairs and common random
   numbers work as for any component). `q = 0`, and `replace_after=1`
   whatever `q`, are the component renewed at every failure, draw for draw.
@@ -861,6 +862,35 @@ patched = RepairableRBD(
 )
 patched.expected_failures(8760.0)     # -> 227.12   = (8760 / 1000) ** 2.5
 patched.expected_cost(8760.0).mean    # -> 113561   500 a repair
+```
+
+- **Minimal repair whose repairs take time is numerical over a window**
+  (#318). The unit then fails at its life's hazard at its *operating* age,
+  the time it has been up, which its repairs leave as it is, and is down
+  for each repair. Its failures by operating age `a` are Poisson with mean
+  `H(a)`, and the repairs so far make reaching that age take `a` plus
+  their total, a compound Poisson sum: its availability and expected
+  failures at each time are sums over the number of repairs so far of
+  that Poisson probability against the distribution of their total, worked
+  out on a grid of its operating age (about 1,000 steps over a life, to
+  about 1e-7). A fitted Crow-AMSAA, Duane or HPP process with a repair
+  time is this component. The values over a window from new take it in,
+  as numerical as any component's, and a run's means are theirs by
+  default; its long-run values still refuse, as before. The grid is
+  followed to the window's end, a few FFTs of it for each repair the
+  unit can have in the window: a window of a few lives takes well under a
+  second, one of twenty lives of a fast-wearing unit a few.
+
+```python
+repaired = RepairableRBD(
+    [("s", "p"), ("p", "t")],
+    {"p": {"reliability": surv.Weibull.from_params([1000, 2.5]),
+           "repairability": surv.LogNormal.from_params([3.0, 0.5]),
+           "repair": {"model": "kijima1", "q": 1.0},
+           "repair_cost": 500.0}},
+)
+repaired.expected_failures(8760.0)      # -> 103.85   fewer: it is down for each repair
+repaired.mission_availability(8760.0)   # -> 0.7310
 ```
 
 ## Instantly repaired components

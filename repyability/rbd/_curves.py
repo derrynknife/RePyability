@@ -242,6 +242,12 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
         )
         if message:
             return r.REFUSED, message
+        if _requirements._repairs_take_time(component):
+            return (
+                r.NUMERICAL,
+                "minimal repair with repairs that take time: its operating "
+                "age followed on a grid, each failure's repair convolved in",
+            )
         return (
             r.EXACT,
             "minimal repair in no time: up throughout, failing as often "
@@ -1431,6 +1437,66 @@ def _crew_window(
     return curves, counts
 
 
+#: The most grid points for a minimally repaired component's point
+#: availability with repairs that take time (see
+#: ``_minimal_repair_curve``): each power of its repair time summed costs
+#: a few FFTs of the grid.
+_MINIMAL_POINTS = 2**16
+
+
+def _minimal_repair_curve(rbd, node, horizon: float, counts: bool):
+    """A minimally repaired component's point availability and expected
+    failures from new over ``[0, horizon]`` (see ``MinimalRepairCurve``):
+    exact, as its life's cumulative hazard, with repairs in no time; with
+    repairs that take time, on a grid of ``_POINT_STEPS`` steps over its
+    typical up time (no coarser than 1024 steps over the window) to the
+    horizon, as the curve never settles."""
+    _requirements._require_minimal_repair(rbd, node)
+    component = rbd.components[node]
+    life = component.reliability
+    scale = _up_scale(life, None)
+    if not _requirements._repairs_take_time(component):
+        if not (np.isfinite(scale) and scale > 0.0):
+            scale = horizon if horizon > 0.0 else 1.0
+        return MinimalRepairCurve(life, scale, _POINT_STEPS, counts)
+    repair = component.time_to_replace
+    horizon = max(horizon, 0.0)
+    step = horizon / 1024.0 if horizon > 0.0 else np.inf
+    if np.isfinite(scale) and scale > 0.0:
+        step = min(step, scale / _POINT_STEPS)
+    if not np.isfinite(step):
+        step = 1.0
+    n = int(np.ceil(horizon / step))
+    if n > _MINIMAL_POINTS:
+        step = horizon / _MINIMAL_POINTS
+        if np.isfinite(scale) and step > scale / 250.0:
+            raise NotImplementedError(
+                f"Component {node!r} would need more than "
+                f"{_MINIMAL_POINTS} grid points to follow its "
+                f"availability to {horizon} (its typical up time is "
+                f"about {scale:.3g}): estimate it by simulation, "
+                "with availability()."
+            )
+        n = _MINIMAL_POINTS
+    try:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return MinimalRepairCurve(
+                life,
+                scale,
+                _POINT_STEPS,
+                counts,
+                repair_sf=lambda s: _sf_values(repair.sf, s),
+                repair_splits=point_knots(repair),
+                step=step,
+                n=max(n, 1),
+            )
+    except NotImplementedError as error:
+        raise NotImplementedError(
+            f"Component {node!r}: {error}. Estimate its availability "
+            "by simulation, with availability()."
+        ) from None
+
+
 def _unit_curve(
     rbd,
     node,
@@ -1458,13 +1524,7 @@ def _unit_curve(
     _requirements._require_no_opportunities(rbd, node)
     component = rbd.components[node]
     if node in rbd._imperfect:
-        _requirements._require_minimal_repair(rbd, node)
-        scale = _up_scale(component.reliability, None)
-        if not (np.isfinite(scale) and scale > 0.0):
-            scale = horizon if horizon > 0.0 else 1.0
-        return MinimalRepairCurve(
-            component.reliability, scale, _POINT_STEPS, counts
-        )
+        return _minimal_repair_curve(rbd, node, horizon, counts)
     schedule = None if unscheduled else rbd._preventive.get(node)
     if schedule is not None and schedule.policy in ("block", "condition"):
         return _block_curve(rbd, node, horizon, start)

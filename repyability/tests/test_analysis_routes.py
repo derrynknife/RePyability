@@ -654,6 +654,7 @@ def test_the_readme_says_what_is_simulated():
     crew = repairable["one repair crew, exponential"]
     group = repairable["standby group"]
     minimal = repairable["minimal repair in no time"]
+    timed_minimal = repairable["minimal repair, repairs that take time"]
     tested_group = repairable["common cause, tested"]
     revealed_group = repairable["common cause, revealed"]
     timed_group = repairable["common cause, timed tests and repairs"]
@@ -855,6 +856,10 @@ def test_the_readme_says_what_is_simulated():
             (minimal, "point_availability", "numerical"),
             (minimal, "expected_cost", "numerical"),
             (minimal, "mean_availability", "refused"),
+            (timed_minimal, "expected_failures", "numerical"),
+            (timed_minimal, "point_availability", "numerical"),
+            (timed_minimal, "expected_cost", "numerical"),
+            (timed_minimal, "mean_availability", "refused"),
         ],
         "Replacement on condition by a measured degradation level": [
             (repairable["replaced on condition by level"], name, route)
