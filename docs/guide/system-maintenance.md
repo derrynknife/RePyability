@@ -221,6 +221,13 @@ time its age reaches the threshold, charging the calendar's price there; a
 failure is charged the component's own `replace_cost`:
 
 ```python
+from repyability import Calendar, NonRepairable, Opportunity
+
+life = surv.Weibull.from_params([1000.0, 2.5])
+plant = Calendar(
+    [Opportunity("quarterly", 2.0, period=91.0), Opportunity("annual", 1.0, period=364.0)],
+    failure=20.0, anytime=4.0,
+)
 policy = NonRepairable(life).optimal_calendar_policy(plant)
 rbd = RepairableRBD(
     [("s", "bearing"), ("bearing", "t")],
