@@ -2002,6 +2002,7 @@ class MinimalRepairCurve:
     def at(self, x: np.ndarray) -> np.ndarray:
         if self.times is None:
             return np.ones(np.shape(x))
+        assert self.up is not None  # set with times
         return np.interp(x, self.times, self.up)
 
     def knots(self, start: float, stop: float) -> np.ndarray:
@@ -2042,6 +2043,7 @@ class MinimalRepairCurve:
         x = np.asarray(x, dtype=float)
         if self.times is None:
             return _events(cumulative_hazard(self.life, x))
+        assert self.failures is not None  # set with times
         return _events(np.interp(x, self.times, self.failures))
 
     def atoms(self, stop: float) -> Atoms:
