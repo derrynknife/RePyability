@@ -22,6 +22,7 @@ from repyability.rbd import (
     _long_run,
     _repairable_allocation,
     _repairable_capacity,
+    _repairable_uncertainty,
     _requirements,
     _runs,
     _spares,
@@ -187,7 +188,20 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             "moved; at times or over a window, of the values over time.",
         ),
     )
-    if rbd.has_costs:
+    # The cost analyses refuse a diagram with nothing priced (not even
+    # an acquisition cost) first; with an acquisition cost alone there
+    # is no running cost, exactly.
+    unpriced = r.refusal(partial(_requirements._require_costs, rbd))
+    acquisition_only = r.AnalysisRoute(
+        r.EXACT,
+        "No running cost is priced: the cost is the acquisition cost "
+        "alone, exactly.",
+    )
+    if unpriced:
+        give(("expected_cost_rate", "total_cost"), r.refused(unpriced))
+    elif not rbd.has_costs:
+        give(("expected_cost_rate", "total_cost"), acquisition_only)
+    else:
         setups = r.refusal(
             partial(_requirements._require_separate_setups, rbd)
         )
@@ -201,15 +215,6 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                     "The long-run cost rate, from the exact long-run "
                     "values (total_cost multiplies it by the time).",
                 )
-            ),
-        )
-    else:
-        give(
-            ("expected_cost_rate", "total_cost"),
-            r.AnalysisRoute(
-                r.EXACT,
-                "No running cost is priced, so the cost rate is 0 "
-                "(total_cost adds any acquisition costs).",
             ),
         )
     capacity = (
@@ -301,13 +306,9 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
     )
     give(("expected_failures", "expected_events"), window)
     out["expected_cost"] = (
-        window
-        if rbd.has_costs
-        else r.AnalysisRoute(
-            r.EXACT,
-            "No running cost is priced, so the expected cost is 0 (with "
-            "any acquisition costs beside it).",
-        )
+        r.refused(unpriced)
+        if unpriced
+        else (window if rbd.has_costs else acquisition_only)
     )
     # A group's members' MTTF and MTTR are their group's: the
     # availability allocations hold them, and a member's copies join its
@@ -427,6 +428,8 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         ("spares_stock", True),
     ):
         refusal = r.refusal(
+            partial(_spares._spares_nodes, rbd, None)
+        ) or r.refusal(
             partial(
                 _crews._require_unlimited_crews,
                 rbd,
@@ -438,7 +441,7 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             )
         )
         which: Tuple[Hashable, ...] = ()
-        for node in _spares._spares_nodes(rbd, None):
+        for node in [] if refusal else _spares._spares_nodes(rbd, None):
             if refusal:
                 break
             refusal = r.refusal(
@@ -536,17 +539,20 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         )
     )
     engine, why = _runs._engine_choice(rbd, capacity=False)
-    out["cost"] = (
-        r.refused(groups)
-        if groups and rbd.has_costs
-        else r.AnalysisRoute(
+    if unpriced:
+        out["cost"] = r.refused(unpriced)
+    elif not rbd.has_costs:
+        out["cost"] = acquisition_only
+    elif groups:
+        out["cost"] = r.refused(groups)
+    else:
+        out["cost"] = r.AnalysisRoute(
             r.SIMULATED,
             "A discrete-event simulation of the components' failures, "
             "repairs and maintenance, and what they cost." + paired,
             engine=engine,
             engine_reason=why,
         )
-    )
     twin = _runs._twin_report(rbd)
     # The expected values over the window, where the methods over time
     # work them out, need no simulation, and a run takes them (#187).
@@ -657,7 +663,7 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
     )
     # Each component's own values, and the long-run costs but the
     # system's downtime, need no structure; nor the expected cost when
-    # nothing is priced.
+    # no running cost is priced.
     free = {"node_availability", "spares_demand", "spares_stock"}
     if not rbd.downtime_cost_rate:
         free |= {"expected_cost_rate", "total_cost"}
@@ -679,6 +685,9 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
     # Parameter uncertainty (#200): each draw's diagram rebuilt and its
     # value worked out as the diagram's own, so refused where that is
     # (a structure too meshed included).
+    # By default every fitted model is drawn: without one, the uncertain
+    # nodes must be given (a nested RBD's fits are not drawn here).
+    unfitted = r.refusal(partial(_repairable_uncertainty.require_fitted, rbd))
     for name, method in (
         ("mean_availability_uncertainty", "mean_availability"),
         ("point_availability_uncertainty", "point_availability"),
@@ -693,7 +702,12 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                 r.SIMULATED,
                 "The components' models drawn from their uncertainty, "
                 f"and each draw's diagram's {method} worked out as its "
-                f"own ({own.route}).",
+                f"own ({own.route})."
+                + (
+                    f" Given no uncertainty, it refuses: {unfitted}"
+                    if unfitted
+                    else ""
+                ),
             )
         )
     sensitivity = out["parameter_sensitivity"]

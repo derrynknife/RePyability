@@ -51,6 +51,7 @@ from repyability.rbd.results import (
     TimelineSimulation,
     UpDownImportance,
 )
+from repyability.rbd.routes import Refused
 
 if TYPE_CHECKING:
     from repyability.rbd.chunks import SimulationChunk
@@ -839,6 +840,7 @@ def availability_from_chunks(
         bool(settings["antithetic"]),
         _states_from_key(diagram, settings.get("state")),
         chunk.ranges,
+        demand=None if capacity is None else capacity.demand,
         **means,
     )
     return _availability_result(
@@ -867,6 +869,7 @@ def _default_means(
     ranges: List[Tuple[int, int]],
     control_variate: Optional[bool] = None,
     conditional: Optional[bool] = None,
+    demand: Optional[float] = None,
 ) -> Tuple[
     Tuple[Optional[ControlVariate], ...],
     Optional[ConditionalRun],
@@ -879,13 +882,16 @@ def _default_means(
     ``_exact_controls``), or given the histories of its modules,
     simulated again from the run's ``entropy`` (#189, see
     ``_conditioned_run``), with the expected cost's split found so;
-    else none. ``control_variate=False`` takes neither, and
-    ``conditional=False`` not the second (#236), as ``availability``
-    does."""
+    else none. The fraction of the ``demand`` delivered, if one was
+    measured, is taken the same way. ``control_variate=False`` takes
+    neither, and ``conditional=False`` not the second (#236), as
+    ``availability`` does."""
     T = t_simulation
     if control_variate is False:
         return (None, None), None, None
-    exact_means = _exact_means(diagram, T, working, broken, method, state)
+    exact_means = _exact_means(
+        diagram, T, working, broken, method, state, demand
+    )
     if exact_means is not None:
         return (
             _exact_controls(tally, T, exact_means, antithetic),
@@ -909,6 +915,8 @@ def _default_means(
         engine="auto",
         curve_points=1,
         state=state,
+        demand=demand,
+        capacities=demand is not None,
         modules=modules,
     )
     try:
@@ -965,10 +973,7 @@ def compare(
         )
     if quantity == "cost":
         for rbd in (diagram, other):
-            if not (rbd.has_costs or rbd.acquisition_cost):
-                raise ValueError(
-                    "Both systems must be priced to compare their costs."
-                )
+            _requirements._require_costs(rbd)
     if control_variate is None:
         exact = _exact_difference(
             diagram, other, t_simulation, quantity, state
@@ -1091,6 +1096,9 @@ def _twin(diagram) -> Tuple["RepairableRBD", List[str]]:
     for node, value in args["components"].items():
         if isinstance(value, RepairableRBD):
             nested, inner = _twin(value)
+            # Its costs are not the twin's to count, as the system's
+            # construction has said.
+            nested._costs_reported = True
             specs[node] = nested
             changes.extend(f"{what} in {node!r}" for what in inner)
         elif isinstance(value, dict):
@@ -1339,12 +1347,30 @@ def _simulated(
             capacities=target == "availability" and diagram._has_capacity(),
             control_variate=bool(control_variate),
         )
+    capacity = None
+    # Shards follow the capacities whatever the target, as chunks do.
+    if (
+        target == "availability" or shard_map is not None
+    ) and diagram._has_capacity():
+        capacity = _CapacityRecorder(diagram, demand)
+    elif demand is not None:
+        raise ValueError(
+            "A demand is measured against capacities, and no node has "
+            "one: give them with capacity={node: capacity}."
+        )
+    measured = None if capacity is None else capacity.demand
     # By default the expected values are the exact methods', where they
     # work them out (#187): a run to a tolerance stops at once.
     auto = control_variate is None
     exact_means = (
         _exact_means(
-            diagram, t_simulation, working_nodes, broken_nodes, method, state
+            diagram,
+            t_simulation,
+            working_nodes,
+            broken_nodes,
+            method,
+            state,
+            measured,
         )
         if auto
         else None
@@ -1367,6 +1393,7 @@ def _simulated(
             broken_nodes,
             method,
             state,
+            measured if not changes else None,
         )
     # Otherwise, by default, its means are taken given the histories of
     # its modules, where a conditional run applies (#189).
@@ -1375,17 +1402,6 @@ def _simulated(
         if auto and exact_means is None and conditional is None
         else []
     )
-    capacity = None
-    # Shards follow the capacities whatever the target, as chunks do.
-    if (
-        target == "availability" or shard_map is not None
-    ) and diagram._has_capacity():
-        capacity = _CapacityRecorder(diagram, demand)
-    elif demand is not None:
-        raise ValueError(
-            "A demand is measured against capacities, and no node has "
-            "one: give them with capacity={node: capacity}."
-        )
     entropy = sharded = None
     if shard_map is not None:
         _ccf_groups._require_groups_simulated(diagram)
@@ -1409,7 +1425,7 @@ def _simulated(
         step = _shard_size(plan, shard_size)
         sharded = (shard_map, template, step)
     jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
-    controls: Tuple[Optional[ControlVariate], ...] = (None, None)
+    controls: Tuple[Optional[ControlVariate], ...] = (None, None, None)
     # The expected cost's split, where the means are exact (#223).
     breakdown: Optional[_Breakdown] = None
     if modules:
@@ -1521,13 +1537,22 @@ def _exact_means(
     broken: set,
     method: str,
     state,
+    demand: Optional[float] = None,
 ) -> Optional[_Exacts]:
     """The system's own expected values over the window, where the
-    exact methods work them out (#187): its mean availability and, if
-    it is priced, its expected cost (see ``_twin_exact``); else None."""
+    exact methods work them out (#187): its mean availability, if it is
+    priced its expected cost, and against a ``demand`` the fraction of
+    it delivered (see ``_twin_exact``); else None."""
     try:
         return _twin_exact(
-            diagram, diagram, t_simulation, working, broken, method, state
+            diagram,
+            diagram,
+            t_simulation,
+            working,
+            broken,
+            method,
+            state,
+            demand,
         )
     except NotImplementedError:
         return None
@@ -1794,6 +1819,7 @@ def _conditioned_run(
     from . import _event_loop
 
     entropy = _streams.entropy_of(seed)
+    demand = None if capacity is None else capacity.demand
     run = _ModuleRun(
         diagram,
         t_simulation,
@@ -1809,6 +1835,8 @@ def _conditioned_run(
         state=state,
         shard_map=shard_map,
         shard_size=shard_size,
+        demand=demand,
+        capacities=demand is not None,
         modules=modules,
     )
     try:
@@ -1864,12 +1892,15 @@ def _twin_exact(
     broken: set,
     method: str,
     state,
+    demand: Optional[float] = None,
 ) -> _Exacts:
     """The exact ``twin``'s (see ``_twin``) mean availability over the
-    window and, if both systems are priced, its expected cost, by
-    category and by component (else None), building each component's
-    curve once for both (#185)."""
+    window, if both systems are priced its expected cost, by category
+    and by component (else None), and against a ``demand`` the fraction
+    of it delivered (``mission_capacity``; None where that refuses),
+    building each component's curve once for all (#185)."""
     priced = diagram.has_costs and twin.has_costs
+    delivered = None
     # The cost's curves, which count events, serve the availability too.
     with twin._sharing_curves():
         expected = (
@@ -1886,8 +1917,19 @@ def _twin_exact(
                 )
             )[0]
         )
+        if demand is not None:
+            try:
+                delivered = float(
+                    np.ravel(
+                        twin.mission_capacity(
+                            t_simulation, working, broken, state=state
+                        ).delivered_fraction(demand)
+                    )[0]
+                )
+            except (NotImplementedError, Refused):
+                delivered = None
     if expected is None:
-        return _Exacts(exact)
+        return _Exacts(exact, delivered=delivered)
 
     def first(value) -> float:
         return float(np.ravel(value)[0])
@@ -1899,6 +1941,7 @@ def _twin_exact(
             {key: first(v) for key, v in expected.by_category.items()},
             {node: first(v) for node, v in expected.by_component.items()},
         ),
+        delivered,
     )
 
 
@@ -2028,7 +2071,13 @@ def _controlled_run(
         if not more:
             break
         first, count = first + count, more
-    return tally, (control, cost_control)
+    delivered_control = None
+    if itself and exacts.delivered is not None and tally.delivered:
+        delivered = np.asarray(tally.delivered, dtype=float)
+        delivered_control = ControlVariate.of(
+            delivered, delivered, exacts.delivered, antithetic, itself=True
+        )
+    return tally, (control, cost_control, delivered_control)
 
 
 def _simulation_engine(
@@ -2090,14 +2139,14 @@ def _availability_result(
     initial_up: bool,
     antithetic: bool,
     capacity: Optional[_CapacityRecorder] = None,
-    controls: Tuple[Optional[ControlVariate], ...] = (None, None),
+    controls: Tuple[Optional[ControlVariate], ...] = (None, None, None),
     conditional: Optional[ConditionalRun] = None,
     breakdown: Optional[_Breakdown] = None,
 ) -> AvailabilityResult:
     """The ``AvailabilityResult`` of the replications in ``tally``: its
     exact totals rounded, once; with ``controls``, the controls of its
-    fractions up and its costs by an exact twin (see
-    ``_controlled_run``); with ``conditional``, the record of its means
+    fractions up, its costs and its delivered fractions by an exact twin
+    (see ``_controlled_run``); with ``conditional``, the record of its means
     taken given its modules' histories (see ``_conditioned_run``); with
     ``breakdown``, the split of the expected cost its mean is found
     with, exact or given the modules (#223), in place of the
@@ -2237,6 +2286,7 @@ def _availability_result(
                 if capacity.demand is None
                 else np.asarray(tally.delivered, dtype=float)
             ),
+            delivered_control=controls[2] if len(controls) > 2 else None,
         )
 
     return AvailabilityResult(
@@ -2287,16 +2337,18 @@ def cost(
     shard_size: Optional[int],
     control_variate: Optional[bool],
     conditional: Optional[bool],
-) -> Optional[CostResult]:
+) -> CostResult:
     """See ``RepairableRBD.cost``."""
+    _requirements._require_costs(diagram)
     N = 10_000 if mc_samples is None else mc_samples
     t_simulation = simulation_window(t_simulation)
-
     if not diagram.has_costs:
-        if diagram.acquisition_cost:
-            montecarlo.check_count(N, antithetic, "mc_samples")
-        return _acquisition_only(diagram, N, t_simulation, antithetic)
-    return _simulated(
+        # An acquisition cost alone: no running cost, exactly.
+        montecarlo.check_count(N, antithetic, "mc_samples")
+        alone = _acquisition_only(diagram, N, t_simulation, antithetic)
+        assert alone is not None
+        return alone
+    result = _simulated(
         diagram,
         t_simulation,
         working_nodes,
@@ -2320,3 +2372,5 @@ def cost(
         control_variate=control_variate,
         conditional=conditional,
     ).cost
+    assert result is not None  # something is priced
+    return result

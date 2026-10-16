@@ -6,6 +6,7 @@ class's attributes (``RepairableRBD.PREVENTIVE_KEYS``, ...).
 """
 
 import math
+import warnings
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -39,6 +40,7 @@ from repyability.utils.checks import (
     number_or_nan,
     unfitted_distribution,
 )
+from repyability.utils.wrappers import outside_level
 
 #: Optional per-component cost fields accepted in a component spec dict.
 COST_KEYS = ("repair_cost", "replace_cost", "downtime_cost")
@@ -120,6 +122,52 @@ def _mean_cost(cost) -> float:
     if isinstance(cost, float):
         return cost
     return float(np.ravel(cost.mean())[0])
+
+
+def _warn_nested_costs(components: dict) -> None:
+    """Warn of a nested ``RepairableRBD`` that carries costs, which this
+    diagram does not count (its cost analyses price its own components
+    alone), naming the node: once per nested object, so that a diagram
+    rebuilt with the same one (a lever moved, a draw) says nothing new."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    for name, component in components.items():
+        if not isinstance(component, RepairableRBD):
+            continue
+        if component._costs_reported or not (
+            component.has_costs or component.acquisition_cost
+        ):
+            continue
+        component._costs_reported = True
+        warnings.warn(
+            f"Node {name!r} is a nested RBD that carries costs, which this "
+            "diagram does not count: its cost analyses (expected_cost_rate, "
+            "expected_cost, cost, total_cost) price its own components "
+            "alone. Count the nested diagram's costs with its own methods.",
+            UserWarning,
+            stacklevel=outside_level(),
+        )
+
+
+def _refuse_shared_nested(components: dict) -> None:
+    """Raise if one ``RepairableRBD`` object is given for two nodes: a
+    nested diagram carries its simulation state (its event queue), so
+    it is one node's. Give each node its own (``copy.deepcopy`` one
+    for nodes alike)."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    first: dict = {}
+    for name, component in components.items():
+        if not isinstance(component, RepairableRBD):
+            continue
+        other = first.setdefault(id(component), name)
+        if other != name:
+            raise ValueError(
+                f"Nodes {other!r} and {name!r} are given one RepairableRBD "
+                "object: a nested diagram carries its simulation state, "
+                "so it is one node's. Give each node its own "
+                "(copy.deepcopy it for nodes alike)."
+            )
 
 
 def _validate_ccf_groups(rbd, ccf_groups) -> list:

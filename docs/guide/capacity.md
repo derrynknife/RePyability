@@ -261,8 +261,9 @@ follow what the system can deliver, against a `demand`:
 year = pumps.availability(8760, mc_samples=500, seed=1, demand=100)   # a year, in hours
 year.capacity[:3]                   # array([150. , 149.9, 149.8])   the mean capacity curve
 year.mean_capacity                  # -> 144.2     the long run: 144.23
-year.delivered_fraction             # -> 0.99766   the long run: 0.99781
-year.delivered_fraction_interval().upper   # -> 0.99782
+year.delivered_fraction             # -> 0.99782   exact: mission_capacity(8760)'s; the long run: 0.99781
+year.sample_delivered_fraction      # -> 0.99766   the simulations' own
+year.delivered_fraction_interval().method   # 'exact'
 year.capacity_time[100.0] / (500 * 8760)   # -> 0.10732   the time at 100
 ```
 
@@ -275,9 +276,15 @@ year.capacity_time[100.0] / (500 * 8760)   # -> 0.10732   the time at 100
   simulations.
 - `delivered` holds each simulation's delivered fraction: what it delivered
   against the demand, `min(capacity, demand)` over the window, over the
-  demand over the window. `delivered_fraction` is their mean, the
-  production availability over the window, and
-  `delivered_fraction_interval(confidence)` its simulation error.
+  demand over the window. `delivered_fraction` is the run's estimate of
+  the production availability over the window, taken as
+  `mean_availability` is (see [exact or
+  simulated?](simulation.md#exact-or-simulated)): exact where
+  `mission_capacity` works it out, as here, given the modules' histories
+  where those apply, and otherwise the simulations' own, which is
+  `sample_delivered_fraction` whatever the method;
+  `delivered_fraction_interval(confidence)` gives its error, and its
+  `method` says which it is.
 - `demand` defaults to the design capacity, everything up (150 here).
   Contracts usually name a smaller one.
 

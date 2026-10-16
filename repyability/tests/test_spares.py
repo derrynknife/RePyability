@@ -221,7 +221,13 @@ def test_what_is_refused_and_checked():
     assert crewed.analysis_routes()["spares_demand"].route == r.REFUSED
     crewed.spares_demand(100.0, method="simulate", mc_samples=500, seed=1)
     nested = RepairableRBD([("s", "x"), ("x", "t")], {"x": single(PUMP)})
-    assert nested.spares_demand(100.0) == {}
+    # A nested RBD's components' spares are not counted here: by default
+    # it refuses (routes.Refused), naming the components counted.
+    with pytest.raises(ValueError, match="nested RBD") as refused:
+        nested.spares_demand(100.0)
+    assert nested.analysis_routes()["spares_demand"].reason == str(
+        refused.value
+    )
     with pytest.raises(ValueError, match="nested RBD"):
         nested.spares_demand(100.0, nodes=["x"])
     never = single(

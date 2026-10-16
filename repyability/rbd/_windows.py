@@ -435,6 +435,7 @@ def expected_cost(
     discount_rate: float,
 ) -> ExpectedCost:
     """See ``RepairableRBD.expected_cost``."""
+    _requirements._require_costs(rbd)
     rate = _discount_rate(discount_rate)
     if rate > 0.0 and rbd.has_costs:
         _present_horizon(
@@ -444,6 +445,7 @@ def expected_cost(
             rbd, t, rate, working_nodes, broken_nodes, method, state
         )
     if not rbd.has_costs:
+        # An acquisition cost alone: no running cost, exactly.
         windows = nonnegative_times(t)
         zero = _shaped(np.zeros(windows.size), t, windows)
         return ExpectedCost(

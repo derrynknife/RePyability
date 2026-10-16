@@ -305,14 +305,7 @@ def mean_availability(
 
 def node_availability(rbd) -> dict[Hashable, float]:
     """See ``RepairableRBD.node_availability``."""
-    node_av: dict[Hashable, float] = {}
-    for node_name in rbd.components:
-        node_av[node_name] = _node_availability(rbd, node_name)
-
-    for node_name in rbd.in_or_out:
-        node_av[node_name] = 1.0
-
-    return node_av
+    return {node: _node_availability(rbd, node) for node in rbd.components}
 
 
 def _node_availability(rbd, node) -> float:

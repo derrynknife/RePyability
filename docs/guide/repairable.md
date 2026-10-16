@@ -89,7 +89,10 @@ it operates. `"duty"`, the fraction `d` of the time it operates (in
 life over `d`, `R(d t)`, the same kind of distribution with its scale
 moved, which every exact method and simulation then takes. Its repairs,
 maintenance and tests stay on the calendar, and its levers and saved spec
-keep the life as given, in operating time.
+keep the life as given, in operating time. So is a
+[state](#from-the-plant-as-it-is-now)'s `age`: on the diagram's clock,
+the calendar time since it was put into service (an operating age `a`
+is `NodeState(age=a / d)`).
 
 ```python
 pump = {"reliability": surv.Weibull.from_params([1000, 2]),       # operating hours
@@ -560,7 +563,7 @@ them with common random numbers, far more precisely than two separate runs
 | `n_simulations`, `time_simulated_to` | `mc_samples` and `t_simulation`. |
 | `criticalities` | The criticality measures (below). |
 | `cost` | The simulated costs, or `None` when nothing is priced (see [Costs](costs.md#the-simulated-cost-distribution)). |
-| `capacity_timeline`, `capacity`, `capacity_time`, `mean_capacity`, `demand`, `delivered`, `delivered_fraction`, `delivered_fraction_interval(confidence)` | With node capacities: the mean capacity over time, the time at each capacity, and the fraction of the demand delivered (see [System capacity](capacity.md#over-a-window-simulated)). `None` without capacities. |
+| `capacity_timeline`, `capacity`, `capacity_time`, `mean_capacity`, `demand`, `delivered`, `delivered_fraction`, `sample_delivered_fraction`, `delivered_fraction_interval(confidence)`, `delivered_control` | With node capacities: the mean capacity over time, the time at each capacity, and the fraction of the demand delivered, exact where `mission_capacity` works it out, as `mean_availability` is (see [System capacity](capacity.md#over-a-window-simulated)). `None` without capacities. |
 
 ```python
 result.mean_up_time      # -> 28.08    against the exact 27.27
@@ -932,10 +935,21 @@ nested.system_failure_frequency()  # -> 0.03497
 nested.availability(t_simulation=100.0, mc_samples=2_000, seed=0).availability[-1]   # -> 0.959
 ```
 
-Use one `RepairableRBD` object per place it appears: the same object used for
-two nodes shares one simulation state and raises `ValueError` during
-`availability()`. (One `NonRepairable` object *can* be reused; each node gets
-its own copy.)
+What does not recurse: the outer diagram counts its own components' costs
+alone (a nested diagram that carries any is warned of when the outer one is
+built), its `spares_demand` and `spares_stock` refuse by default with a
+nested RBD, naming the components counted, and its levers and parameter
+uncertainty are its own components' (a nested diagram's fits are not
+drawn). Count those with the nested diagram's own methods. In
+`expected_events` a nested node's failures and preventive actions are its
+system's failures and planned outages, as the simulation counts them for
+the node.
+
+Use one `RepairableRBD` object per place it appears: a nested diagram
+carries its simulation state, so the same object given for two nodes is
+refused when the outer diagram is built (`copy.deepcopy` it for nodes
+alike). (One `NonRepairable` object *can* be reused; each node gets its own
+copy.)
 
 ```python
 pump = NonRepairable(surv.Weibull.from_params([30, 1.5]), surv.Exponential.from_params([0.5]))

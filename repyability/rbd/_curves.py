@@ -539,7 +539,10 @@ def _node_curve(
         return _nested_curve(component, horizon, counts, stages, start)
     if node in rbd._standby:
         return _standby_curve(rbd, node, start)
-    if node not in rbd._inspection:
+    if node in rbd._imperfect or node not in rbd._inspection:
+        # An imperfectly repaired component's goes through
+        # _minimal_repair_curve, which refuses one whose failures are
+        # found only by its tests (as _node_over_time does).
         return _unit_curve(rbd, node, horizon, counts, degrading, start)
     unit = _requirements._tested_unit(rbd, node)
     if unit is not None:

@@ -9,12 +9,15 @@ is exact arithmetic; the simulation is checked against the same arithmetic.
 """
 
 import json
+import warnings
 
 import numpy as np
 import pytest
 import surpyval as surv
 
 from repyability import RepairableRBD
+from repyability.rbd import routes
+from repyability.rbd.routes import Refused
 
 # MTTF = 10, MTTR = 1  ->  A = 10/11, omega = 1/11
 RELIABILITY = surv.Exponential.from_params([0.1])
@@ -66,17 +69,19 @@ def test_terms_sum():
 # -- everything is optional ------------------------------------------------
 
 
-def test_no_costs_is_zero_and_reports_unpriced():
+def test_no_costs_reports_unpriced_and_refuses():
     rbd = one_component()
     assert rbd.has_costs is False
-    assert rbd.expected_cost_rate() == 0.0
+    with pytest.raises(Refused, match="Nothing is priced"):
+        rbd.expected_cost_rate()
 
 
 def test_zero_costs_are_not_a_cost_model():
     # Explicit zeros price nothing, so there is still no cost model to run.
     rbd = one_component({"repair_cost": 0.0}, downtime_cost_rate=0.0)
     assert rbd.has_costs is False
-    assert rbd.expected_cost_rate() == 0.0
+    with pytest.raises(Refused, match="Nothing is priced"):
+        rbd.expected_cost_rate()
 
 
 def test_any_single_cost_is_enough():
@@ -189,7 +194,8 @@ def test_uncosted_rbd_still_round_trips():
     rbd = one_component()
     restored = RepairableRBD.from_json(rbd.to_json())
     assert restored.has_costs is False
-    assert restored.expected_cost_rate() == 0.0
+    with pytest.raises(Refused, match="Nothing is priced"):
+        restored.expected_cost_rate()
 
 
 # -- instant repair (zero repair time) -------------------------------------
@@ -347,9 +353,27 @@ def test_cost_rides_along_on_availability():
     assert result.cost.mean > 0.0
 
 
-def test_cost_is_none_when_nothing_is_priced():
+def test_the_cost_analyses_refuse_when_nothing_is_priced():
+    # A diagram with nothing priced has no cost model to evaluate: the
+    # cost analyses refuse, as every analysis refuses a diagram with
+    # nothing it works on (routes.Refused), and the routes say so.
     rbd = one_component()
-    assert rbd.cost(t_simulation=100.0, mc_samples=10, seed=0) is None
+    assert not rbd.has_costs
+    report = rbd.analysis_routes()
+    calls = {
+        "cost": lambda: rbd.cost(t_simulation=100.0, mc_samples=10, seed=0),
+        "expected_cost": lambda: rbd.expected_cost(100.0),
+        "expected_cost_rate": lambda: rbd.expected_cost_rate(),
+        "total_cost": lambda: rbd.total_cost(100.0),
+    }
+    for name, call in calls.items():
+        with pytest.raises(Refused, match="Nothing is priced") as error:
+            call()
+        assert report[name].route == routes.REFUSED
+        assert report[name].reason == str(error.value)
+    with pytest.raises(Refused, match="Nothing is priced"):
+        rbd.compare(rbd, 100.0, mc_samples=10, seed=0, quantity="cost")
+    # The availability simulation still runs, with no cost result.
     assert (
         rbd.availability(t_simulation=100.0, mc_samples=10, seed=0).cost
         is None
@@ -452,3 +476,25 @@ def test_cost_distributions_survive_a_json_round_trip():
     a = rbd.cost(t_simulation=100.0, mc_samples=20, seed=1)
     b = restored.cost(t_simulation=100.0, mc_samples=20, seed=1)
     assert np.array_equal(a.samples, b.samples)
+
+
+def test_a_nested_rbd_that_carries_costs_is_warned_of():
+    # The outer diagram does not count a nested diagram's costs: it says
+    # so once, as it is built, naming the node; a nested diagram with
+    # nothing priced is not warned of, and a diagram rebuilt with the
+    # same nested one (a lever moved) says nothing new.
+    inner = one_component({"repair_cost": 100.0}, downtime_cost_rate=7.0)
+    plain = one_component()
+    edges = [("s", "x"), ("x", "C"), ("C", "t")]
+    spec = {"reliability": RELIABILITY, "repairability": REPAIRABILITY}
+    with pytest.warns(
+        UserWarning, match="Node 'x' is a nested RBD that"
+    ) as record:
+        outer = RepairableRBD(edges, {"x": inner, "C": spec})
+    assert len(record) == 1
+    assert not outer.has_costs
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        RepairableRBD(edges, {"x": plain, "C": spec})
+        outer.with_levers({("C", "reliability.failure_rate"): 0.2})
+        outer.parameter_sensitivity(x=[10.0])

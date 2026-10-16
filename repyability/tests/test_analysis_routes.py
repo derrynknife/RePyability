@@ -674,10 +674,14 @@ def test_the_engine_is_the_one_auto_would_run(monkeypatch):
     assert "not installed" in route.engine_reason
     monkeypatch.setattr(_compiled, "available", lambda: True)
     assert plain.analysis_routes()["availability"].engine == "numba"
-    capacities = repairable_kinds()["capacities"].analysis_routes()
+    with_capacities = repairable_kinds()["capacities"]
+    capacities = with_capacities.analysis_routes()
     # numba's own loop follows capacities (#155).
     assert capacities["availability"].engine == "numba"
-    assert capacities["cost"].engine == "numba"
+    priced = RepairableRBD(
+        **{**with_capacities._init_args, "downtime_cost_rate": 1.0}
+    )
+    assert priced.analysis_routes()["cost"].engine == "numba"
 
 
 def test_a_load_sharing_group_is_simulated_only_with_different_units():
@@ -719,6 +723,7 @@ def test_the_guide_s_table_agrees_with_the_report():
             EDGES,
             {n: {"reliability": life, "repairability": repair} for n in "abc"},
             capacity=capacity,
+            downtime_cost_rate=1.0,  # priced: the cost analyses refuse else
         ),
     }
     reports = {cls: rbd.analysis_routes() for cls, rbd in plain.items()}

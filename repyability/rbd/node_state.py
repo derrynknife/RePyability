@@ -59,7 +59,10 @@ class NodeState:
         The component's current age / accumulated operating time (``>= 0``),
         by default ``0.0``. Age 0 is the same as no conditioning whenever the
         component's reliability at time 0 is 1, as for ordinary lifetime
-        distributions.
+        distributions. In a ``RepairableRBD`` it is on the diagram's
+        clock: for a component that operates part of the time (a spec's
+        ``"duty"``), the calendar time since it was put into service,
+        its operating age being ``duty * age``.
     alive : bool, optional
         Whether the component is currently working, by default ``True``.
     down_for : float, optional

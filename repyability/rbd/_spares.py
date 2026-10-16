@@ -180,6 +180,7 @@ from repyability.rbd.results import (
     SparesDemand,
     SparesStock,
 )
+from repyability.rbd.routes import Refused
 from repyability.utils.checks import (
     one_of,
 )
@@ -245,33 +246,64 @@ class Tested(NamedTuple):
     position: int = 0
 
 
-class _Dist(NamedTuple):
+class _Dist:
     """A distribution on the grid, rounded one way: its continuous part as
-    masses on the grid points, and its atoms (on grid points), exactly."""
+    masses on the grid points, and its atoms (on grid points), exactly.
+    Its Fourier transforms, for the convolutions of ``_sum``, are kept
+    once taken (``spectrum``): one convolved with many (a cycle with
+    each count's sum so far) is transformed once. Its masses are not
+    changed once a transform is taken."""
 
-    rest: np.ndarray
-    atoms: np.ndarray
+    __slots__ = ("rest", "atoms", "_spectra")
 
-    def __add__(self, other):  # type: ignore[override]
+    def __init__(self, rest: np.ndarray, atoms: np.ndarray):
+        self.rest = rest
+        self.atoms = atoms
+        self._spectra: Dict[Tuple[bool, int], np.ndarray] = {}
+
+    def __add__(self, other: "_Dist") -> "_Dist":
         return _Dist(self.rest + other.rest, self.atoms + other.atoms)
 
     def scaled(self, factor: float) -> "_Dist":
         return _Dist(factor * self.rest, factor * self.atoms)
 
+    def spectrum(self, atoms: bool, size: int) -> np.ndarray:
+        """The real FFT of length ``size`` of its atoms, or of all its
+        masses, taken once."""
+        from scipy.fft import rfft
 
-def _fft(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    from scipy.signal import fftconvolve
+        found = self._spectra.get((atoms, size))
+        if found is None:
+            values = self.atoms if atoms else self.rest + self.atoms
+            found = self._spectra[(atoms, size)] = rfft(values, size)
+        return found
 
-    if not a.any() or not b.any():
-        return np.zeros(len(a))
-    return np.maximum(fftconvolve(a, b)[: len(a)], 0.0)
+
+def _fft(a: _Dist, b: _Dist, atoms: bool) -> np.ndarray:
+    """The convolution of the masses of ``a`` and ``b`` (their atoms, or
+    all their masses), on the grid: by FFT, as ``scipy.signal.fftconvolve``
+    does it, with each distribution's transform taken once."""
+    from scipy.fft import irfft, next_fast_len
+
+    n = len(a.rest)
+    if atoms:
+        empty = not (a.atoms.any() and b.atoms.any())
+    else:
+        empty = not (
+            (a.rest.any() or a.atoms.any()) and (b.rest.any() or b.atoms.any())
+        )
+    if empty:
+        return np.zeros(n)
+    size = next_fast_len(2 * n - 1, True)
+    product = a.spectrum(atoms, size) * b.spectrum(atoms, size)
+    return np.maximum(irfft(product, size)[:n], 0.0)
 
 
 def _sum(a: _Dist, b: _Dist) -> _Dist:
     """The distribution of the sum of two independent ones: its atoms are
     sums of atoms, the rest continuous."""
-    total = _fft(a.rest + a.atoms, b.rest + b.atoms)
-    atoms = _fft(a.atoms, b.atoms)
+    total = _fft(a, b, False)
+    atoms = _fft(a, b, True)
     return _Dist(np.maximum(total - atoms, 0.0), atoms)
 
 
@@ -530,10 +562,9 @@ def _block_step(
         rest, atoms = start.rest[lo:hi], start.atoms[lo:hi]
         if not (rest.any() or atoms.any()):
             continue
-        part = _Dist(
-            np.pad(rest, (0, width - len(rest))),
-            np.pad(atoms, (0, width - len(atoms))),
-        )
+        part = _Dist(np.zeros(width), np.zeros(width))
+        part.rest[: len(rest)] = rest
+        part.atoms[: len(atoms)] = atoms
         out = _sum(part, cut)
         keep = width if up else width - 1
         stop = min(lo + keep, size)
@@ -1788,15 +1819,25 @@ _STOCK_CREWS = (
 
 def _spares_nodes(rbd, nodes, given: str = "nodes") -> list:
     """The components whose spares are counted: ``nodes`` (given in
-    ``given``) checked, or every component that is not a nested RBD."""
+    ``given``) checked, or every component; refused when none is given
+    and one is a nested RBD, whose components' spares are not counted
+    here (its own ``spares_demand`` counts them)."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     if nodes is None:
-        return [
+        nested = [
             node
             for node, component in rbd.components.items()
-            if not isinstance(component, RepairableRBD)
+            if isinstance(component, RepairableRBD)
         ]
+        if nested:
+            raise Refused(
+                f"Node {nested[0]!r} is a nested RBD, whose components' "
+                "spares are not counted here (its own spares_demand and "
+                "spares_stock count them): give the components counted, "
+                f"nodes={[n for n in rbd.components if n not in nested]!r}."
+            )
+        return list(rbd.components)
     chosen = list(dict.fromkeys(nodes))
     for node in chosen:
         _requirements._require_component(rbd, node, given)

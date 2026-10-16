@@ -613,6 +613,20 @@ class _Cache:
                 setattr(out, name, getattr(self, name))
         return out
 
+    def copied(self, *names: str) -> "_Cache":
+        """A cache with copies of this one's dictionaries ``names``, for a
+        diagram rebuilt with most of this one's models (a lever moved):
+        what those keep is keyed by the models' identities (and a node's
+        schedule), so the rebuilt diagram reuses what was worked out for
+        the models it shares, works out the rest for itself, and keeps
+        that to itself."""
+        out = _Cache()
+        for name in names:
+            kept = getattr(self, name)
+            if kept is not None:
+                setattr(out, name, dict(kept))
+        return out
+
 
 class RBD:
     """Reliability block diagram structure: the base of the RBD classes.

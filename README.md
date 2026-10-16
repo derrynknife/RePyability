@@ -248,33 +248,33 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | | Long run | Frequency | Over time | Costs | Importance | Sensitivity | Uncertainty | Allocation | Intervals | Spares | Capacity | Simulation |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | Any life and repair | E | E | N | E N | E N | N | S | E | – | N | – | S |
-| A fitted life | E | E | N | E | E N | N | S | E | – | N | – | S |
+| A fitted life | E | E | N | – | E N | N | S | E | – | N | – | S |
 | A fitted Crow-AMSAA process | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 9 of 10 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
-| A probability per demand | ✗ | ✗ | ✗ | E | ✗ | ✗ | S; ✗ `mean_availability_uncertainty` | ✗ | – | N | ✗ `capacity_distribution` | S |
+| A probability per demand | ✗ | ✗ | ✗ | – | ✗ | ✗ | ✗ `mean_availability_uncertainty` | ✗ | – | N | ✗ `capacity_distribution` | S |
 | A mixture life | E | E | N | E N | E N | N | S | E | – | N | – | S |
-| A fitted degradation process life | E | E | N | E | E N | N | S | E | – | N | – | S |
-| Operated part of the time (duty) | N | N | N | E | N | N | S | N | – | N | – | S |
-| A standby or load-sharing life, simulated | ✗ | ✗ | ✗ | E | ✗ | ✗ | S; ✗ `mean_availability_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
-| k-out-of-n | E | E | N | E | E N | N | S | E | – | N | – | S |
-| A nested RBD | E | E | N | E N | E N | N | S | E | – | N | – | S |
+| A fitted degradation process life | E | E | N | – | E N | N | S | E | – | N | – | S |
+| Operated part of the time (duty) | N | N | N | – | N | N | S | N | – | N | – | S |
+| A standby or load-sharing life, simulated | ✗ | ✗ | ✗ | – | ✗ | ✗ | ✗ `mean_availability_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| k-out-of-n | E | E | N | – | E N | N | S | E | – | N | – | S |
+| A nested RBD | E | E | N | E N | E N | N | S | E | – | – | – | S |
 | A junction | E | E | N | E N | E N | N | S | E | – | N | – | S |
-| Capacities | E | E | N | E | E N | N | S | E | – | N | E N | S |
+| Capacities | E | E | N | – | E N | N | S | E | – | N | E N | S |
 | Age replacement | N | N | N | N | N | N | S | N | N | N | – | S |
-| Block replacement | N | N | N | E | N | N | S | N | – | N | – | S |
+| Block replacement | N | N | N | – | N | N | S | N | – | N | – | S |
 | Opportunistic maintenance | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ `optimal_replacement_intervals` | ✗ | ✗ `capacity_distribution` | S |
 | Replacement on condition | N | N | N | N | N | N | S | N | – | ✗ | – | S |
 | Replacement on condition by level | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
-| Hidden failures, tested | N | N | N | E | N | N | S | N | – | N | – | S |
-| Tests that take time | N | N | N | E | N | N | S | N | – | N | – | S |
-| Tests that can miss a failure | N | N | N | E | N | N | S | N | – | N | – | S |
+| Hidden failures, tested | N | N | N | – | N | N | S | N | – | N | – | S |
+| Tests that take time | N | N | N | – | N | N | S | N | – | N | – | S |
+| Tests that can miss a failure | N | N | N | – | N | N | S | N | – | N | – | S |
 | Imperfect repair (Kijima) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Minimal repair | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 9 of 10 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Minimal repair, repairs that take time | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 9 of 10 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Limited repair crews | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A standby group | E | E | N | E N | E N | N | S | E | – | ✗ | – | S |
-| A beta-factor group, revealed failures | N | N | N | E | N | N | S | N | – | N | – | S |
+| A beta-factor group, revealed failures | N | N | N | – | N | N | S | N | – | N | – | S |
 | A beta-factor group, tested | E | E | N | E N | E N | N | S | E | – | N | – | S |
-| An alpha-factor group, revealed failures | E | E | N | E | E N | N | S | E | – | N | – | S |
+| An alpha-factor group, revealed failures | E | E | N | – | E N | N | S | E | – | N | – | S |
 | A group whose tests take time | N | N | N | N | N | N | S | N | – | N | – | S |
 | A structure too meshed to work out | ✗ | ✗ | ✗ | E; ✗ `expected_cost` | ✗ | ✗ | S; ✗ `mean_availability_uncertainty` | ✗ | – | N | – | S |
 

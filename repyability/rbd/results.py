@@ -825,6 +825,11 @@ class ConditionalRun(_ResultMapping):
     costs : numpy.ndarray, optional
         With ``whole``, each simulation's expected cost given them, in
         order, if anything is priced; None otherwise.
+    delivered : numpy.ndarray, optional
+        With ``whole``, each simulation's expected fraction of the demand
+        delivered given them, in order, if a demand was given; None
+        otherwise (with ``conditional=True`` they are the result's own
+        ``delivered``).
     """
 
     modules: Tuple[Hashable, ...]
@@ -833,6 +838,7 @@ class ConditionalRun(_ResultMapping):
     whole: bool = False
     uptimes: Optional[np.ndarray] = None
     costs: Optional[np.ndarray] = None
+    delivered: Optional[np.ndarray] = None
 
     def __repr__(self) -> str:
         # A summary (#235): each simulation's values are in the arrays.
@@ -1289,10 +1295,14 @@ class ExpectedEvents(_ResultMapping):
     node_corrective : dict
         Each component's expected number of corrective actions, at each of
         which ``repair_cost`` and ``replace_cost`` are charged: its failures,
-        or for hidden failures, those found by a test in the window.
+        or for hidden failures, those found by a test in the window (a
+        nested RBD's: its system failures).
     node_preventive : dict
         Each component's expected number of preventive replacements (age or
-        block), at each of which its preventive cost is charged.
+        block), at each of which its preventive cost is charged (a nested
+        RBD's: its planned outages, as the simulation counts them for the
+        node; its own components' maintenance is counted by its own
+        ``expected_events``).
     node_inspections : dict
         Each component's expected number of tests (of hidden failures).
     node_downtime : dict
@@ -2125,7 +2135,12 @@ class AvailabilityResult(_ResultMapping):
     simulations' own (``"simulated"``). The simulations' own average,
     ``system_uptime / (n_simulations * time_simulated_to)``, is
     ``sample_mean_availability`` whatever the method, as the curve, the
-    totals and the counts are theirs. Its repr summarises the run.
+    totals and the counts are theirs. Against a demand, the
+    ``delivered_fraction`` is taken the same way (exact where
+    ``mission_capacity`` works it out, given the modules' histories, or
+    the simulations' own, ``sample_delivered_fraction``), and
+    ``delivered_fraction_interval`` says which. Its repr summarises the
+    run.
 
     The properties ``mean_up_time``, ``mean_down_time`` and
     ``failure_frequency`` are simulation *estimates* derived from the fields
@@ -2218,6 +2233,12 @@ class AvailabilityResult(_ResultMapping):
         Each simulation's delivered fraction, in order: the integral of
         ``min(capacity, demand)`` over the window, over ``demand`` times
         its length. None without a demand.
+    delivered_control : ControlVariate, optional
+        With a demand, the control of the delivered fractions by the
+        system itself where ``mission_capacity`` works out the expected
+        fraction delivered (as ``control_variate`` controls the
+        availability's): ``delivered_fraction`` is then that exact value.
+        None otherwise.
     opportunistic_renewals : dict, optional
         With maintenance groups (see ``RepairableRBD``): each component's
         early renewals at another's stop, summed over the simulations.
@@ -2297,6 +2318,7 @@ class AvailabilityResult(_ResultMapping):
     opportunistic_renewals: Optional[Dict[Hashable, int]] = None
     control_variate: Optional[ControlVariate] = None
     conditional: Optional[ConditionalRun] = None
+    delivered_control: Optional[ControlVariate] = None
 
     @property
     def mean_capacity(self) -> Optional[float]:
@@ -2320,10 +2342,14 @@ class AvailabilityResult(_ResultMapping):
 
     @property
     def delivered_fraction(self) -> Optional[float]:
-        """Simulation estimate of the fraction of the demand delivered over
-        the window: the production availability. The mean of
-        ``delivered``; over a long window it approaches the exact long-run
-        ``capacity_distribution().delivered_fraction(demand)``.
+        """The run's estimate of the expected fraction of the demand
+        delivered over the window: the production availability, the
+        estimate ``delivered_fraction_interval`` gives, exact where
+        ``mission_capacity`` works it out, given the modules' histories
+        where those apply, and otherwise the simulations' own,
+        ``sample_delivered_fraction`` (as ``mean_availability`` is taken,
+        see the class's notes). Over a long window it approaches the
+        exact long-run ``capacity_distribution().delivered_fraction(demand)``.
 
         Returns
         -------
@@ -2333,7 +2359,48 @@ class AvailabilityResult(_ResultMapping):
         """
         if self.delivered is None:
             return None
+        return self._delivered_estimate()[0]
+
+    @property
+    def sample_delivered_fraction(self) -> Optional[float]:
+        """The simulations' own delivered fraction over the window, the
+        mean of ``delivered``, whatever ``delivered_fraction`` is.
+
+        Returns
+        -------
+        float or None
+            The fraction of the demand the simulated systems delivered,
+            or None without a demand.
+        """
+        if self.delivered is None:
+            return None
         return float(np.mean(self.delivered))
+
+    def _delivered_estimate(self) -> Tuple[float, float, str]:
+        """The run's estimate of the expected delivered fraction over the
+        window, its standard error and how it was found (see
+        ``delivered_fraction_interval``), as ``_estimate`` finds the
+        availability's."""
+        control, conditional = self.delivered_control, self.conditional
+        if control is not None and control.itself:
+            return control.exact, 0.0, "exact"
+        fractions = np.asarray(self.delivered, dtype=float)
+        method = "simulated"
+        if conditional is not None and (
+            conditional.informative or not conditional.whole
+        ):
+            if not conditional.whole:
+                # A run of the modules alone: its own values are theirs.
+                method = "conditional"
+            elif conditional.delivered is not None:
+                method = "conditional"
+                fractions = np.asarray(conditional.delivered, dtype=float)
+        error = (
+            math.nan
+            if conditional is not None and conditional.unknown
+            else montecarlo.standard_error(fractions, self.antithetic)
+        )
+        return float(np.mean(fractions)), error, method
 
     def delivered_fraction_interval(
         self, confidence: float = 0.95
@@ -2341,11 +2408,18 @@ class AvailabilityResult(_ResultMapping):
         """Confidence interval for the expected delivered fraction over the
         window.
 
-        As ``mean_availability_interval`` is for the availability: the
-        estimate is the mean of the simulations' delivered fractions, with
-        standard error ``std / sqrt(n)`` (of antithetic pairs' means, for an
-        antithetic run), and the interval, clipped to [0, 1], describes the
-        simulation error.
+        Around ``delivered_fraction``, as ``mean_availability_interval``
+        is around the availability: an exact one has no error, and the
+        interval is that value; otherwise it is the mean of the
+        simulations' delivered fractions (the conditional ones, given the
+        modules' histories, where those apply), with standard error ``std
+        / sqrt(n)`` (of antithetic pairs' means, for an antithetic run),
+        and the interval, clipped to [0, 1], describes the simulation
+        error. Its ``method`` says how the estimate was found:
+        ``"exact"`` (``mission_capacity`` works it out, see
+        ``delivered_control``), ``"conditional"`` (see
+        [`ConditionalRun`][repyability.ConditionalRun]) or
+        ``"simulated"``, the simulations' own.
 
         Parameters
         ----------
@@ -2355,7 +2429,8 @@ class AvailabilityResult(_ResultMapping):
         Returns
         -------
         ConfidenceInterval
-            The estimate, bounds, standard error and number of simulations.
+            The estimate, bounds, standard error, number of simulations and
+            method.
 
         Raises
         ------
@@ -2370,9 +2445,7 @@ class AvailabilityResult(_ResultMapping):
                 "This result has no delivered fractions: the RBD had no "
                 "capacities, or no demand to measure them against."
             )
-        fractions = np.asarray(self.delivered, dtype=float)
-        estimate = float(np.mean(fractions))
-        se = montecarlo.standard_error(fractions, self.antithetic)
+        estimate, se, method = self._delivered_estimate()
         z = montecarlo.z_value(confidence)
         return ConfidenceInterval(
             estimate=estimate,
@@ -2380,7 +2453,8 @@ class AvailabilityResult(_ResultMapping):
             upper=min(1.0, estimate + z * se),
             confidence=confidence,
             standard_error=se,
-            n_samples=len(fractions),
+            n_samples=len(self.delivered),
+            method=method,
         )
 
     def _estimate(self) -> Tuple[float, float, str]:

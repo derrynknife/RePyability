@@ -813,6 +813,7 @@ class RepairableRBD(RBD):
                 if not isinstance(spec, RepairableRBD)
             }
         )
+        _spec._refuse_shared_nested(components)
 
         super().__init__(
             edges,
@@ -842,7 +843,11 @@ class RepairableRBD(RBD):
         self.repairability = copy(repairability)
         self._maintenance = _spec._validate_groups(self, maintenance_groups)
         self.ccf_groups = _spec._validate_ccf_groups(self, ccf_groups)
+        _spec._warn_nested_costs(components)
 
+    #: Whether a diagram this one is nested in has warned that it carries
+    #: costs the parent does not count (see ``_spec._warn_nested_costs``).
+    _costs_reported = False
     #: The junctions are folded out of the structure (see ``RBD``).
     _FOLDS_JUNCTIONS = True
     _SIMULATE_INSTEAD = (
@@ -998,14 +1003,16 @@ class RepairableRBD(RBD):
         maintenance group has a set-up cost, or ``downtime_cost_rate`` is
         non-zero: whether running the system costs anything. Costs of 0
         price nothing, costs declared inside a nested ``RepairableRBD`` do
-        not count, and neither does an
+        not count (a nested diagram that carries any is warned of when
+        this one is built), and neither does an
         ``"acquisition_cost"`` (a one-off cost, see ``total_cost``). When
-        nothing is priced there is no cost model to evaluate, so the cost
-        methods short-circuit rather than doing the work:
-        ``expected_cost_rate`` returns 0.0, and ``cost`` and the ``cost`` of
-        ``availability``'s result have no running cost, exactly, with the
-        acquisition cost beside it, or are None if that is not
-        given either.
+        nothing is priced, not even an acquisition cost, there is no cost
+        model to evaluate: the cost analyses (``expected_cost_rate``,
+        ``total_cost``, ``expected_cost`` and ``cost``) refuse, as
+        ``routes.Refused``, and the ``cost`` of ``availability``'s result
+        is None. With an acquisition cost alone, ``expected_cost_rate``
+        is 0.0, and ``cost`` and that result's ``cost`` have no running
+        cost, exactly, with the acquisition cost beside it.
 
         Returns
         -------
@@ -1079,11 +1086,14 @@ class RepairableRBD(RBD):
         and it fails at its constant rate while it is up.
 
         Every cost is optional and defaults to 0, so any subset can be
-        priced; with nothing priced (see ``has_costs``) this is 0.0. Costs
+        priced; with nothing priced, not even an acquisition cost (see
+        ``has_costs``), there is no cost model to evaluate, and this
+        refuses (with an acquisition cost alone it is 0.0). Costs
         are undiscounted, and only this RBD's own costs count: costs
-        declared inside a nested ``RepairableRBD`` are left out. The
-        simulated counterpart is ``cost``, whose ``cost_rate`` converges to
-        this value as the window grows.
+        declared inside a nested ``RepairableRBD`` are left out (a nested
+        diagram that carries any is warned of when this one is built).
+        The simulated counterpart is ``cost``, whose ``cost_rate``
+        converges to this value as the window grows.
 
         Parameters
         ----------
@@ -1103,16 +1113,17 @@ class RepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If something is priced and a working/broken node is unknown, is
-            the input or output node, or is in both sets. (With nothing
-            priced this returns 0.0 without any checks.)
+            If nothing is priced, not even an acquisition cost (see
+            ``has_costs``; as ``routes.Refused``), or a working/broken
+            node is unknown, is the input or output node, or is in both
+            sets.
         NotImplementedError
-            If something is priced and a component is under block
-            replacement with models its exact values do not cover (see
-            ``node_availability``), or has hidden failures its numerical
-            values do not cover (see ``mean_availability``); or, while a
-            component can wait for a repair crew, as for
-            ``mean_availability``: simulate it with ``cost``.
+            If a component is under block replacement with models its
+            exact values do not cover (see ``node_availability``), or has
+            hidden failures its numerical values do not cover (see
+            ``mean_availability``); or, while a component can wait for a
+            repair crew, as for ``mean_availability``: simulate it with
+            ``cost``.
 
         Examples
         --------
@@ -1202,9 +1213,10 @@ class RepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If ``horizon`` is negative, or infinite without a
-            ``discount_rate``; if ``discount_rate`` is not a finite,
-            non-negative number; or as for ``expected_cost_rate``.
+            As for ``expected_cost_rate`` (nothing priced, as
+            ``routes.Refused``, first); if ``horizon`` is negative, or
+            infinite without a ``discount_rate``; or if ``discount_rate``
+            is not a finite, non-negative number.
         NotImplementedError
             As for ``expected_cost_rate``.
 
@@ -1297,14 +1309,22 @@ class RepairableRBD(RBD):
         each simulation). Its components may differ, one under age
         replacement and the others not.
 
+        The exact count convolves a component's replacement times on a
+        grid, once for each replacement likely in the horizon, so it
+        grows with the horizon over the component's life (a few seconds
+        for some hundreds of replacements), and under block replacement
+        with the number of block intervals too: count a long horizon by
+        simulation.
+
         Parameters
         ----------
         horizon : float
             The time counted over, from new.
         nodes : Collection[Hashable], optional
-            The components to count for, by default every component but a
-            nested RBD (whose own ``spares_demand`` counts its components'),
-            or none when ``parts`` are given.
+            The components to count for, by default every component, or
+            none when ``parts`` are given. A nested RBD's components'
+            spares are not counted here (its own ``spares_demand`` counts
+            them): with one, give the components counted.
         fleet : int, optional
             How many systems, by default 1.
         method : str, optional
@@ -1332,7 +1352,9 @@ class RepairableRBD(RBD):
             If ``horizon`` is negative or not finite, ``fleet`` is not a
             whole number of at least 1, ``method`` is unknown, ``nodes`` or
             a part names a node that is not a component, or a nested RBD,
-            or ``parts`` is not as above.
+            or ``parts`` is not as above; and, as ``routes.Refused``, when
+            no ``nodes`` are given and a component is a nested RBD, whose
+            components' spares are not counted here.
         NotImplementedError
             For a part with two members in one common-cause group; and
             with ``method="exact"``, for a standby group, a component with
@@ -1450,8 +1472,10 @@ class RepairableRBD(RBD):
             At least one of the two targets must be given; the stock meets
             both.
         nodes : Collection[Hashable], optional
-            The components, by default every component but a nested RBD
-            (none when ``parts`` are given).
+            The components, by default every component (none when
+            ``parts`` are given); with a nested RBD, whose components'
+            spares are not counted here, give them, as for
+            ``spares_demand``.
         fleet : int, optional
             How many systems share the stock, by default 1.
         parts : dict, optional
@@ -1471,7 +1495,8 @@ class RepairableRBD(RBD):
             given or one is not in ``(0, 1)``, ``fleet`` is not a whole
             number of at least 1, ``nodes`` or a part names a node that is
             not a component, or a nested RBD, or ``parts`` is not as for
-            ``spares_demand``.
+            ``spares_demand``; and, as ``routes.Refused``, when no
+            ``nodes`` are given and a component is a nested RBD.
         NotImplementedError
             For a part with two members in one common-cause group, or two
             under block replacement, a component under block replacement
@@ -3352,8 +3377,10 @@ class RepairableRBD(RBD):
 
         Every cost is optional, and a cost given as a distribution enters
         through its mean. Only this RBD's own costs count, not those inside
-        a nested ``RepairableRBD``. With nothing priced (see
-        ``has_costs``), every category is 0, without any checks.
+        a nested ``RepairableRBD``. With nothing priced, not even an
+        acquisition cost (see ``has_costs``), there is no cost model to
+        evaluate, and this refuses; with an acquisition cost alone every
+        category is 0, exactly.
 
         With a ``discount_rate`` ``r`` each value is its present value,
         the costs discounted continuously from when they fall:
@@ -3401,8 +3428,12 @@ class RepairableRBD(RBD):
 
         Raises
         ------
-        ValueError, NotImplementedError
-            When something is priced, as for ``point_availability``.
+        ValueError
+            If nothing is priced, not even an acquisition cost (see
+            ``has_costs``; as ``routes.Refused``), or as for
+            ``point_availability``.
+        NotImplementedError
+            As for ``point_availability``.
 
         Examples
         --------
@@ -4749,8 +4780,8 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If ``quantity``, ``mc_samples``, ``confidence``, ``n_jobs`` or
-            ``engine`` is invalid, or a system to compare by cost has no
-            costs.
+            ``engine`` is invalid, or (as ``routes.Refused``) a system to
+            compare by cost has no costs.
         NotImplementedError
             If a component's draws cannot be replayed from a stream of its
             own (a model sampled its own way), or, with
@@ -4931,7 +4962,7 @@ class RepairableRBD(RBD):
         shard_size: Optional[int] = None,
         control_variate: Optional[bool] = None,
         conditional: Optional[bool] = None,
-    ) -> Optional[CostResult]:
+    ) -> CostResult:
         """Simulate the cost of running the system for ``t_simulation``.
 
         Runs the ``availability`` simulation with cost accumulation and
@@ -4952,11 +4983,11 @@ class RepairableRBD(RBD):
 
         When nothing is priced but the components' ``acquisition_cost``
         (see ``has_costs``), the result has no running cost, exactly, and
-        the acquisition beside it, without a simulation; when
-        nothing at all is priced, it is None: there is no cost model to
-        evaluate. (The same result is available as ``availability(...).cost``
+        the acquisition beside it, without a simulation; when nothing at
+        all is priced there is no cost model to evaluate, and this
+        refuses. (The same result is available as ``availability(...).cost``
         if you also want the availability outputs from the same
-        simulations.)
+        simulations; there it is None when nothing at all is priced.)
 
         Parameters
         ----------
@@ -5043,16 +5074,15 @@ class RepairableRBD(RBD):
 
         Returns
         -------
-        CostResult or None
-            The simulated costs, or None if nothing is priced (not even an
-            ``acquisition_cost``).
+        CostResult
+            The simulated costs.
 
         Raises
         ------
         ValueError
-            As for ``availability``, when something is priced. (With nothing
-            priced this returns None without any checks; with only an
-            ``acquisition_cost``, only ``mc_samples`` is checked.)
+            If nothing at all is priced (see ``has_costs``; as
+            ``routes.Refused``), or as for ``availability`` (with only an
+            ``acquisition_cost``, only ``mc_samples`` is checked).
         NotImplementedError
             As for ``availability``.
         ImportError
@@ -5112,9 +5142,11 @@ class RepairableRBD(RBD):
         """Returns each node's long-run (steady-state) availability.
 
         Exact: ``MTTF / (MTTF + MTTR)`` for each component (1.0 if it is
-        repaired instantly), a nested ``RepairableRBD``'s own
-        ``mean_availability``, and 1.0 for the input and output nodes. These
-        are the availabilities the importance measures are evaluated at.
+        repaired instantly), and a nested ``RepairableRBD``'s own
+        ``mean_availability``; the components alone, as ``node_sf`` and
+        the importance measures list them (the input and output nodes
+        are no components). These are the availabilities the importance
+        measures are evaluated at.
 
         A component under age replacement at ``T`` renews at a failure or
         at a preventive replacement, whichever comes first. By the
@@ -5179,7 +5211,7 @@ class RepairableRBD(RBD):
         ... )
         >>> availability = rbd.node_availability()
         >>> {node: round(a, 4) for node, a in availability.items()}
-        {'a': 0.8333, 'b': 1.0, 's': 1.0, 't': 1.0}
+        {'a': 0.8333, 'b': 1.0}
         """
         return _long_run.node_availability(self)
 
@@ -6181,7 +6213,12 @@ class RepairableRBD(RBD):
             ``{key: {lever: sensitivity}}``, the key a node, a
             common-cause group's tuple of members, or None for the repair
             crews; floats, but for an array ``x`` arrays in its shape.
-            With a tuple ``of``, a dict of these by quantity.
+            With a tuple ``of``, a dict of these by quantity. Over time
+            (``x`` or ``window``) the ``repair.q`` lever of a minimally
+            repaired component (``q = 1``, the one imperfect repair the
+            values over time take) is left out: the derivative in ``q``
+            does not exist there (``levers()`` still lists it, for
+            ``with_levers``).
 
         Raises
         ------
@@ -6370,7 +6407,9 @@ class RepairableRBD(RBD):
             By default, every model that is a fit with a parameter
             covariance, drawn once for all the nodes holding that fitted
             object in that role, and for one common-cause group's members
-            together.
+            together. The models inside a nested ``RepairableRBD`` are
+            not drawn, by default or given: the nested diagram's own
+            uncertainty methods take them.
         n_draws : int, optional
             The number of draws, by default 1000: one evaluation each.
         seed : int, optional
@@ -6394,9 +6433,11 @@ class RepairableRBD(RBD):
             If ``uncertainty`` names an unknown node, a nested RBD or a
             junction, a node twice, nodes of a population with different
             models, a model a node does not have, or a common-cause group's
-            members apart; if a model's uncertainty cannot be drawn; if
-            ``n_draws`` or ``sampling`` is invalid; or as
-            ``mean_availability`` does for a draw.
+            members apart; if no ``uncertainty`` is given and no
+            component's model is a fit (as ``routes.Refused``); if a
+            model's uncertainty cannot be drawn; if ``n_draws`` or
+            ``sampling`` is invalid; or as ``mean_availability`` does for
+            a draw.
 
         Examples
         --------

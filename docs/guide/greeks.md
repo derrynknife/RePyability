@@ -129,7 +129,11 @@ order, each a `Lever`: whose it is and its name, its value now, the range
 of values it can take, whether it is discrete (one more standby unit or
 crew), and whether it moves a calendar that its component shares with
 others. Nothing is worked out, so a report can name the levers and show
-their values without the sensitivities:
+their values without the sensitivities. (One lever the sensitivities over
+time leave out: the `repair.q` of a minimally repaired component, `q = 1`,
+the one imperfect repair the values over time take, so the derivative in
+`q` does not exist there; `with_levers` still moves it, to a diagram the
+simulations take.)
 
 ```python
 valve = {lever.name: lever for lever in station.levers() if lever.key == "valve"}

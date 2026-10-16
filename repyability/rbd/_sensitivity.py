@@ -569,13 +569,22 @@ def _difference(at: Callable, lever: _Lever, rel_step: float, base):
     return np.full_like(base, np.nan)
 
 
+#: What a diagram keeps that a diagram rebuilt with a lever moved reuses
+#: for the components it shares (see ``_rebuilt``): the cycles and tested
+#: units keyed by their models' identities and their own schedules.
+_REUSED = ("age_cycles", "block_cycles", "tested_lives", "tested_units")
+
+
 def _rebuilt(rbd, lever: _Lever, value: float):
     """The diagram with the lever at ``value``, or None if that is not a
-    valid value."""
+    valid value. It reuses what ``rbd`` has worked out for the
+    components the lever leaves as they are (``_REUSED``)."""
     try:
-        return type(rbd)(**lever.build(value))
+        changed = type(rbd)(**lever.build(value))
     except (ValueError, TypeError):
         return None
+    changed.__dict__["_kept"] = rbd._cache.copied(*_REUSED)
+    return changed
 
 
 def _system_at(rbd, lever: _Lever, quantities, asked: _Asked):
@@ -649,7 +658,8 @@ def _apart_at(rbd, lever: _Lever, quantity: str, importance: float):
             )
             part = importance * float(alone.mean_unavailability())
             if quantity == "cost_rate":
-                part = float(alone.expected_cost_rate()) + rate * part
+                own = alone.expected_cost_rate() if alone.has_costs else 0.0
+                part = float(own) + rate * part
         except (ValueError, TypeError, NotImplementedError):
             return None
         return np.atleast_1d(part)
@@ -844,6 +854,11 @@ def sensitivity(
         pinned = lever.key in held or (
             isinstance(lever.key, tuple) and bool(held & set(lever.key))
         )
+        if timed and lever.name == "repair.q" and lever.value >= 1.0:
+            # Minimal repair (q = 1) is the one imperfect repair the
+            # values over time take: the derivative in q does not exist
+            # there, so the lever is left out of the report.
+            continue
         system = None
         for quantity in quantities:
             if pinned:
