@@ -1,5 +1,14 @@
 # RePyability — project notes for Claude
 
+Setup, branches, the checks a change needs, where tests go, pull requests,
+deprecations and releases are in [CONTRIBUTING.md](CONTRIBUTING.md); read it
+first. This file adds the internals and conventions it does not cover.
+
+**Versions (17 Oct 2026):** 0.13 is the latest release (PyPI, `v0.13`). 0.14
+is prepared on `dev` (`_version.py`, CHANGELOG dated 2026-10-16) and waits on
+the release pull request from `dev` into `master`. `dev` needs surpyval 0.24
+or later.
+
 ## Architecture & scope
 
 - **Distribution/lifetime fitting stays in surpyval, not RePyability.** surpyval
@@ -9,8 +18,8 @@
   "from data to system reliability" workflow is wanted, do the fitting in
   surpyval and pass the resulting models in — do not add fitting logic here.
 
-- **Visualization stays out of RePyability.** The Reliafy app (separate,
-  open source) handles plotting/dashboards/reporting. RePyability is the
+- **Visualization stays out of RePyability.** The Reliafy app (separate)
+  handles plotting/dashboards/reporting. RePyability is the
   computational reliability engine; keep it free of plotting dependencies.
 
 - **RePyability is about timelines; Reliafy is about calendars.**
@@ -38,8 +47,8 @@
 
 - **surpyval releases reach RePyability users at once.** surpyval is
   required with no upper bound, so its next release is what a fresh install
-  gets. No automated run tests surpyval's `develop` (the maintainer wants
-  one automated test run, below): before surpyval releases, run
+  gets. No automated run tests surpyval's `develop` (there is one automated
+  test run, on the release pull request): before surpyval releases, run
   RePyability's tests against its `develop` by hand (`pip install
   "surpyval @ git+https://github.com/derrynknife/SurPyval@develop"`), and
   when they fail, fix RePyability (working with both the released surpyval
@@ -423,38 +432,25 @@
   that `levers()` lists what `parameter_sensitivity` reports, in its
   order, that each value lies in its range, and that `with_levers`
   refuses a value past it.
-- **A deprecation gives one minor release's notice.** It warns in one
-  minor release and the next removes it, with a `FutureWarning` (always
-  shown) through `repyability/utils/deprecation.py`. What 0.11 deprecated
-  went in 0.12 (#149), and `test_removed_in_0_12.py` keeps it gone: the
-  old names and ignored arguments raise `TypeError`, a diagram refuses a
-  non-parametric node, and a standby or load-sharing model with no exact
-  or numerical reliability refuses one (`is_simulated`), where a fit to
-  simulated lifetimes stood in, and is left to the simulations. What 0.12
-  deprecated went in 0.13, and `test_removed_in_0_13.py` keeps it gone:
-  calling `SparesDemand.mean()`/`std()` (#184) and those models'
-  `mc_samples`, `lower` and `seed` raise `TypeError`, and `StandbyModel`'s
-  options after them are given by name. What 0.13 deprecated went in
-  0.14, and `test_removed_in_0_14.py` keeps it gone:
-  `optimal_inspection_intervals(offsets=)` (#222) raises `TypeError`, for
-  `offset_shares=`; `CapacityDistribution.mean` is a plain number or
-  array, not callable (#235); the exact `mean` of a `StandbyModel`,
-  `LoadSharingModel` or `DegradingNode` refuses `mc_samples` and `seed`
-  (#233, `standby_node.drawn_mean`); and `rbd._sensitivity`'s `levers`
-  and `Lever` are gone (#244). What 0.14 deprecates goes in 0.15
-  (`NEXT_REMOVAL`): `NodeState`'s `phase`, renamed `since_scheduled`
-  (#350, through `deprecation.renamed` for the argument and
-  `renamed_attribute` for reading it); a new deprecation warns through
-  those, `called` or `ignored`. `test_what_0_14_deprecates_goes_in_0_15`
-  fails once the version reaches it.
+- **Deprecations** follow CONTRIBUTING (one minor release's notice, a
+  `FutureWarning` through `repyability/utils/deprecation.py`). Each
+  release's removals stay gone through `test_removed_in_0_12.py`,
+  `_0_13.py` and `_0_14.py`: a removed argument raises `TypeError`. What
+  0.14 deprecates goes in 0.15 (`NEXT_REMOVAL`): `NodeState`'s `phase`,
+  renamed `since_scheduled` (#350, through `deprecation.renamed` for the
+  argument and `renamed_attribute` for reading it). A new deprecation
+  warns through those, `called` or `ignored`;
+  `test_what_0_14_deprecates_goes_in_0_15` fails once the version reaches
+  it.
 - **No result depends on the unit of time (or of a covariate).** A step,
   grid or probe is sized from the models (a typical life,
   `failure_time_scale`), never in absolute time, and a proportional
   change of a lever is of its scale (`_sensitivity._proportional_scale`:
   1 for a log-scale parameter, none for a covariate). `test_units.py`
   checks results scale with the unit, from 1e-6 to 1e6. A model's unit
-  is surpyval's to carry (SurPyval#845); until it does, every node is
-  taken to be in one unit, unchecked.
+  is surpyval's to carry: its next release labels a model with one
+  (`model.unit`, SurPyval#845, not converted or checked). Until RePyability
+  reads it, every node is taken to be in one unit, unchecked.
 - **Exact by default, simulation on request.** Where an analysis can be
   computed exactly or numerically, that is the default, and the Monte-Carlo
   estimate is a `method="simulate"` away (as for `NonRepairableRBD.mean`).
@@ -471,44 +467,19 @@
   them (a renewal sum, a band of a grid) then runs hundreds of times
   slower. Matrix products are left to BLAS.
 
-## Testing
+## Testing and releasing
 
-- **One automated test run: the full suite on the pull request from dev
-  into master.** `actions.yml` runs on nothing else: not on pushes, not on
-  pull requests into dev, not on a schedule, and there is no other test
-  workflow. Work going into dev is checked locally by the tests of what it
-  changes (the files that exercise the code touched, and new tests for
-  it), and is merged without waiting for CI. Do not start, re-run or add
-  other automated test runs; run the full suite locally only when the
-  maintainer asks.
+The checks, the one automated test run and the release steps are in
+CONTRIBUTING.md. What it leaves to the maintainer's say:
 
-## Releasing
-
-Releases are cut from master by `.github/workflows/release.yml`, which this
-session can run: it cannot push tags or create GitHub Releases itself. Every
-merge and release needs the maintainer's go-ahead.
-
-Versions have two parts, major.minor, from 0.11 (they had three until
-0.10.1): from 1.0, a release that breaks compatibility raises the major
-number, and any other release, fixes included, the minor. There are no
-patch releases, and `release.yml` refuses a version that isn't
-major.minor.
-
-1. On the working branch, bump `repyability/_version.py`. Roll the CHANGELOG
-   `[Unreleased]` section into `## [X.Y] - YYYY-MM-DD`, opening with a
-   summary paragraph and the behaviour changes (they open the release notes),
-   and update the version in `docs/guide/saving.md`. PR to dev, then dev to
-   master. A pull request into dev lists "Closes #N" for each issue it
-   finishes, and `.github/workflows/close-issues.yml` closes them when it
-   merges, with a comment naming it (GitHub itself closes an issue only on a
-   merge into master): commit messages' "(#N)" close nothing, and the
-   dev-to-master pull request need not list them again.
-2. When the full suite has passed on the pull request from dev into
-   master, merge it (a merge commit) and run the workflow with
-   `actions_run_trigger`: `run_workflow`, workflow `release.yml`, ref
-   `master`, inputs `{"version": "X.Y", "dry_run": "true"}`. If that
-   passes, run it again with `"dry_run": "false"`. Then check the run, the
-   tag, the GitHub Release and `https://pypi.org/pypi/repyability/X.Y/json`.
+- Do not start, re-run or add automated test runs, and run the full suite
+  locally only when the maintainer asks. Work going into `dev` is checked
+  locally by the tests of what it changes (`scripts/check.sh <tests>`) and
+  merged without waiting for CI.
+- Every merge and every release needs the maintainer's go-ahead. Merge the
+  release pull request with a merge commit (`release.yml` finds CI's pass
+  on the merged `dev` commit), run `release.yml` with `dry_run` first, and afterwards check the run, the tag
+  `vX.Y`, the GitHub Release and `https://pypi.org/pypi/repyability/X.Y/json`.
 
 ## surpyval workarounds to remove
 
@@ -521,8 +492,8 @@ limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
 - **A mixture's quantile** (surpyval #821). surpyval 0.24's `MixtureModel`
   has a `qf` (#651), but it inverts `F` in the upper tail, losing the long
   lives' precision (about 1e-4), and takes some 200 times as long as
-  RePyability's. `_sampling.mixture_quantile` inverts the distribution
-  (with its components' `sf` summed above the median), which
+  RePyability's (fixed on surpyval's `develop`, for its next release).
+  `_sampling.mixture_quantile` inverts the distribution (with its components' `sf` summed above the median), which
   `stream_sampler` gives a `RepairableRBD`'s streams (a change to it
   changes seeded results). Take the mixture's own `qf` once the minimum
   surpyval's is as precise and fast.
@@ -544,11 +515,19 @@ limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
   change to it changes seeded results). Take surpyval's once the minimum
   surpyval has it.
 
-- **Rescaling a model's time for a duty cycle** (surpyval #845).
-  A spec's `"duty"` puts a life in operating time on the calendar,
-  `R(d t)`, by `_duty._SCALED`, one rule per surpyval distribution (a new
+- **Rescaling a model's time for a duty cycle.** surpyval has no
+  rescaling (#845 gave models only a unit label). A spec's `"duty"` puts a
+  life in operating time on the calendar, `R(d t)`, by `_duty._SCALED`, one rule per surpyval distribution (a new
   one needs its rule there, which `test_units` checks against `R(d t)`).
   Take surpyval's rescaling once the minimum surpyval has it.
+- **A fit's offset under parameter uncertainty** (surpyval #830).
+  surpyval's `covariance()` leaves an offset fit's `gamma` out, so
+  `rbd/uncertainty.py` holds it where it was fitted, with a warning. Draw it
+  once the minimum surpyval's covariance includes it.
+
+Refused until surpyval has it: an ARA, ARI or G1 renewal model as a life,
+whose next failure surpyval cannot draw yet (surpyval #833,
+`rbd/_processes.py`).
 
 List each new workaround here with its surpyval issue and where it lives,
 so it can go once the minimum surpyval in `pyproject.toml` includes the
