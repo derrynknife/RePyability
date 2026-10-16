@@ -16,8 +16,18 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
+from repyability.utils.deprecation import renamed, renamed_attribute
 
-@dataclass(frozen=True)
+#: The release that refuses ``phase``, renamed ``since_scheduled`` in 0.14
+#: (#350).
+_PHASE_REMOVAL = "0.15"
+_PHASE_WHY = (
+    "it is the time since the last scheduled replacement or test, and a "
+    "phased mission has phases of its own"
+)
+
+
+@dataclass(frozen=True, init=False)
 class NodeState:
     """The current condition of a single RBD node.
 
@@ -37,11 +47,11 @@ class NodeState:
     up is ``age`` since it was last put into service as new; one down has
     been down for ``down_for``, in a repair, or (``maintenance=True``) in
     its preventive maintenance; one on a calendar (block replacement, or
-    tests of hidden failures) is ``phase`` past its last scheduled
-    replacement or test; one repaired imperfectly has the ``virtual_age``
-    it had at its last repair; and ``stationary=True`` puts it in its
-    long-run state instead, for a component long in service whose state is
-    not known.
+    tests of hidden failures) is ``since_scheduled`` past its last
+    scheduled replacement or test; one repaired imperfectly has the
+    ``virtual_age`` it had at its last repair; and ``stationary=True``
+    puts it in its long-run state instead, for a component long in
+    service whose state is not known.
 
     Parameters
     ----------
@@ -60,16 +70,16 @@ class NodeState:
         For a repairable component that is down: whether it is down for
         its preventive maintenance rather than for a repair, by default
         ``False``.
-    phase : float, optional
+    since_scheduled : float, optional
         For a repairable component on a calendar: the time since its last
         block replacement, or its last test (of hidden failures, at which
-        it was found working; with an ``age`` below the phase, it was put
-        into service since, and has not been tested), by default None: 0,
-        as from new.
+        it was found working; with an ``age`` below it, it was put into
+        service since, and has not been tested), by default None: 0, as
+        from new.
     stationary : bool, optional
         For a repairable component: start it in its long-run state, by
-        default ``False``. Its ``phase`` still places it on its calendar;
-        the other fields must be left at their defaults.
+        default ``False``. Its ``since_scheduled`` still places it on its
+        calendar; the other fields must be left at their defaults.
     virtual_age : float, optional
         For a repairable component repaired imperfectly (a spec's
         ``"repair"``, or a fitted ``GeneralizedRenewal`` or Poisson
@@ -80,14 +90,19 @@ class NodeState:
         ``virtual_age`` now and ``since_failure``: give ``age=
         since_failure`` and ``virtual_age=virtual_age - since_failure``.
         The simulations take it.
+    phase : float, optional
+        Deprecated: ``since_scheduled``, which it is renamed (#350), as a
+        phased mission has phases of its own. Refused in 0.15.
 
     Raises
     ------
     ValueError
-        If ``age``, ``down_for``, ``phase`` or ``virtual_age`` is negative
-        or not finite, ``down_for`` or ``maintenance`` is given for a
-        component that is alive, or another field is given with
+        If ``age``, ``down_for``, ``since_scheduled`` or ``virtual_age``
+        is negative or not finite, ``down_for`` or ``maintenance`` is given
+        for a component that is alive, or another field is given with
         ``stationary``.
+    TypeError
+        If ``since_scheduled`` is given under both names.
 
     Notes
     -----
@@ -125,28 +140,79 @@ class NodeState:
     >>> round(rbd.sf_given_state(20, state), 4)
     0.7866
 
-    A repairable pump down for 2 hours of a repair, and one 300 hours old:
+    A repairable pump down for 2 hours of a repair, one 300 hours old,
+    and one tested weekly, last tested 100 hours ago:
 
     >>> NodeState(alive=False, down_for=2.0)
     NodeState(age=0.0, alive=False, down_for=2.0)
     >>> NodeState(age=300.0)
     NodeState(age=300.0, alive=True)
+    >>> NodeState(age=300.0, since_scheduled=100.0)
+    NodeState(age=300.0, alive=True, since_scheduled=100.0)
     """
 
     age: float = 0.0
     alive: bool = True
     down_for: float = 0.0
     maintenance: bool = False
-    phase: Optional[float] = None
+    since_scheduled: Optional[float] = None
     stationary: bool = False
     virtual_age: Optional[float] = None
+
+    def __init__(
+        self,
+        age: float = 0.0,
+        alive: bool = True,
+        down_for: float = 0.0,
+        maintenance: bool = False,
+        since_scheduled: Optional[float] = None,
+        stationary: bool = False,
+        virtual_age: Optional[float] = None,
+        *,
+        phase: Optional[float] = None,
+    ) -> None:
+        if phase is not None:
+            if since_scheduled is not None:
+                raise TypeError(
+                    "NodeState takes since_scheduled alone: phase is its "
+                    "old name."
+                )
+            renamed(
+                "NodeState",
+                "phase",
+                "since_scheduled",
+                _PHASE_WHY,
+                removal=_PHASE_REMOVAL,
+            )
+            since_scheduled = phase
+        object.__setattr__(self, "age", age)
+        object.__setattr__(self, "alive", alive)
+        object.__setattr__(self, "down_for", down_for)
+        object.__setattr__(self, "maintenance", maintenance)
+        object.__setattr__(self, "since_scheduled", since_scheduled)
+        object.__setattr__(self, "stationary", stationary)
+        object.__setattr__(self, "virtual_age", virtual_age)
+        self.__post_init__()
+
+    @property
+    def phase(self) -> Optional[float]:
+        """``since_scheduled``, by its old name: deprecated, and refused in
+        0.15 (#350)."""
+        renamed_attribute(
+            "NodeState",
+            "phase",
+            "since_scheduled",
+            _PHASE_WHY,
+            removal=_PHASE_REMOVAL,
+        )
+        return self.since_scheduled
 
     def __post_init__(self) -> None:
         if self.age < 0:
             raise ValueError(
                 f"NodeState.age must be non-negative, got {self.age!r}."
             )
-        for name in ("age", "down_for", "phase", "virtual_age"):
+        for name in ("age", "down_for", "since_scheduled", "virtual_age"):
             value = getattr(self, name)
             if value is not None and not (math.isfinite(value) and value >= 0):
                 raise ValueError(
@@ -167,7 +233,8 @@ class NodeState:
         ):
             raise ValueError(
                 "A stationary NodeState is in its long-run state, which "
-                "decides its age and whether it is up: give only its phase."
+                "decides its age and whether it is up: give only its "
+                "since_scheduled."
             )
 
     def __repr__(self) -> str:
@@ -176,8 +243,8 @@ class NodeState:
             fields.append(f"down_for={self.down_for!r}")
         if self.maintenance:
             fields.append("maintenance=True")
-        if self.phase is not None:
-            fields.append(f"phase={self.phase!r}")
+        if self.since_scheduled is not None:
+            fields.append(f"since_scheduled={self.since_scheduled!r}")
         if self.stationary:
             fields.append("stationary=True")
         if self.virtual_age is not None:
@@ -192,6 +259,6 @@ class NodeState:
             self.alive
             and not self.age
             and not self.stationary
-            and not self.phase
+            and not self.since_scheduled
             and not self.virtual_age
         )

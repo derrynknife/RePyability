@@ -21,7 +21,7 @@ use cases, under the same numbers.
 | UC-1 | A system's expected maintenance work in each of a run of windows from its state | Answered by hand |
 | UC-2, UC-3, UC-4 | Tasks on dates and monthly rules: calendar only | Reliafy's |
 | UC-5 | A part's chance of failing, expected failures and their cost over a window, from its age | **Built**: `NonRepairable.failures` |
-| UC-6 | Right after a failure, the value of skipping the next planned replacement | **Built**: `ReplacementPlan.skip_next`, to be reworked |
+| UC-6 | Right after a failure, the value of skipping the next planned replacement | **Built**: `NonRepairable.skip_next_replacement` |
 | UC-7 | The cheapest replacement policy when replacing at a shut is cheaper than between shuts | Built as `replacement_policies`, then removed: UC-13 answers it |
 | UC-8 | Each policy's cost over a window from a state, and its spread | Answered by hand |
 | UC-9 | The cost in each of a run of windows from a state, and how often each outcome happens | Answered by hand |
@@ -123,8 +123,8 @@ window of 730 hours stands for a month here.)
   )
   state = {
       "pump": NodeState(age=5200.0),
-      "valve": NodeState(age=7000.0, phase=7000.0),
-      "sensor": NodeState(age=3000.0, phase=3000.0),
+      "valve": NodeState(age=7000.0, since_scheduled=7000.0),
+      "sensor": NodeState(age=3000.0, since_scheduled=3000.0),
   }
   ends = window * np.arange(1, 13)
   events = rbd.expected_events(ends, state=state)
@@ -216,8 +216,8 @@ question here is the model-time one it becomes.)
 
 ### UC-6: "Right after a failure, what's the NPV of skipping the next planned replacement?"
 
-- **Status:** built: `ReplacementPlan` and `SkipValue`
-  (`repyability/maintenance/_plans.py`).
+- **Status:** built: `NonRepairable.skip_next_replacement` and
+  `SkipValue` (`repyability/maintenance/_skip.py`, #350).
 - **Who asks, and why:** the planner of UC-5, now replacing the bearing on
   a plan as well as when it fails. A planned replacement costs less than
   an unplanned one, but replaces a working bearing. Right after a
@@ -228,7 +228,8 @@ question here is the model-time one it becomes.)
   for a planned replacement and $400 for one at a failure; a discount
   rate of 8% a year. It is asked right after a failure, a new bearing
   just in.
-- **What they want back:** the NPV of skipping, as what it saves
+- **What they want back:** the two options compared, each a
+  present-value cost, and the NPV of skipping, as what it saves
   (positive: skip it), net of the failures it adds.
 - **The option the maintainer named: does the plan reset?**
   - **The plan resets** (age replacement): the next planned replacement
@@ -274,52 +275,81 @@ question here is the model-time one it becomes.)
     F(d))`, `d` the days to the next planned replacement and `F(t)` the expected
     discounted cost of a new bearing's failures (and its replacements')
     in `[0, t)`: `RepairableRBD.expected_cost(t, discount_rate=r)`.
-  - **The discount rate** is a rate a year, `i`; costs are discounted
-    continuously at `r = log(1 + i) / 365.25` a day, so a cost a year
-    away is worth `1 / (1 + i)`.
+  - **The two costs compared.** On fixed intervals, each choice's cost
+    to the following planned replacement: done, `planned exp(-r d) +
+    exp(-r d) F(T) + F(d)`; skipped, `F(d + T)`. On a resetting plan with
+    a discount rate, the present value of the whole future under each:
+    done, the plan from new, `A(T) / (r M(T))`; skipped, the longer first
+    cycle and then the plan from new, `A(2T) + (1 - r M(2T)) A(T) / (r
+    M(T))`. Undiscounted those are infinite, and the comparison is the
+    classic one: each first cycle's cost less its length at the plan's
+    cost rate `g = A(T) / M(T)`, `A(T) - g M(T)` (0, the plan's own)
+    against `A(2T) - g M(2T)`. Either way the difference is the NPV
+    above.
+  - **The discount rate** is continuous, per unit of the life's time, as
+    `RepairableRBD.expected_cost` takes it (0 by default): for 8% a year
+    with a life in days, `r = log(1.08) / 365.25`, so a cost a year away
+    is worth `1 / 1.08`. Reliafy turns a rate a year into it.
 - **Today (before this use case):** the fixed-interval plan by hand from three
   `expected_cost` calls and the formula above; the resetting plan not
   at all (`NonRepairable` prices age replacement only in the long run,
   undiscounted).
-- **Design, as built:**
+- **Design, as built:** a method of the part, in the life's time unit,
+  with the part's own costs:
 
   ```python
-  from repyability.maintenance import ReplacementPlan
+  import math
+  from repyability import NonRepairable
 
-  life = surv.Weibull.from_params([365.0, 2.0])
-  resetting = ReplacementPlan(life, every=180, planned_cost=150, unplanned_cost=400, resets=True)
-  resetting.skip_next(discount_rate=0.08).npv                    # 26.56
+  bearing = NonRepairable(surv.Weibull.from_params([365.0, 2.0]), planned_cost=150, unplanned_cost=400)
+  a_day = math.log(1.08) / 365.25
+  value = bearing.skip_next_replacement(180, resets=True, discount_rate=a_day)
+  value.replace, value.skip, value.npv, value.best      # 5735.39, 5708.84, 26.56, "skip"
 
-  fixed = ReplacementPlan(life, every=180, planned_cost=150, unplanned_cost=400, resets=False)
-  fixed.skip_next(discount_rate=0.08, days_to_next=30).npv    # 123.08
+  value = bearing.skip_next_replacement(180, resets=False, time_to_next=30, discount_rate=a_day)
+  value.npv                                             # 123.08
   ```
 
   `resets` has no default: the two plans answer differently, so it is
-  always said. A plan on fixed intervals needs `days_to_next`; a resetting one
-  refuses it (its next planned replacement is always `every` away).
-- **Checks:** `test_maintenance_plans.py` checks:
+  always said. A plan on fixed intervals needs `time_to_next`; a
+  resetting one refuses it (its next planned replacement is always
+  `every` away). `SkipValue` carries `resets`, `every`, `time_to_next`,
+  `discount_rate`, `replace`, `skip`, `npv = replace - skip` and `best`.
+  It was first built as a `ReplacementPlan(life, every, planned_cost,
+  unplanned_cost, resets=)` with a `skip_next(discount_rate,
+  days_to_next=)` in days and a rate a year, and reworked before release
+  (#350): UC-12's `optimal_next_replacement` answers the long-run,
+  undiscounted question of a part with no plan in force, and UC-6 the
+  discounted one about a plan in force, so each keeps a method of the
+  part.
+- **Checks:** `test_maintenance_skip.py` checks:
   - the answers against plain simulations of both plans (the resetting
-    one over 300 years);
+    one over 300 years, each choice's present value too);
+  - the two costs of a fixed plan against the part's failures over the
+    windows, and of a resetting plan against an exponential life's closed
+    forms;
   - an exponential life against both plans' closed forms, at 0%, 8% and
     50% a year;
   - the resetting plan with no discounting against the classic
     undiscounted comparison, and a tiny rate next to it;
-  - the 180-day plan's NPVs falling with the days to the next one, and
+  - the 180-day plan's NPVs falling with the time to the next one, and
     the 365-day plan's change of sign;
-  - the input checks.
+  - the same answer with the life in hours and the rate an hour;
+  - the input checks, and that the costs are the part's own.
 - **Learned / open questions:**
   - **The plan itself may be the question.** With these costs a 180-day
     plan is too frequent, so skipping always pays. Comparing the plan
     with the best one (discounted), or the latest day at which skipping
     a fixed-interval replacement still pays, are natural next use cases.
-  - **Days, not dates.** "Right after a failure" needs only the days to
-    the next planned replacement; dates are Reliafy's.
+  - **Model time, not dates.** "Right after a failure" needs only the
+    time to the next planned replacement; dates, and a rate a year, are
+    Reliafy's.
   - **Replacements take no time.**
-  - **The API is being reworked** (the maintainer does not like
-    `skip_next`): a comparison of the options at a planned replacement
-    (replace, skip, defer, move to a shut), each a present-value cost,
-    from an explicit state, on the part (`NonRepairable`), as the first of
-    the RCM calculators.
+  - **The API** (#350): the maintainer did not like `skip_next` on a plan
+    object of its own. It is now a comparison of the two options, each a
+    present-value cost, from an explicit state (right after a failure),
+    on the part (`NonRepairable`). Deferring, or moving to a shut, are
+    UC-12's and UC-13's.
 
 ### UC-7: "Replacing the bearing at a shut (every 180 days) costs $100, a planned replacement between shuts $150, and one at a failure $400. Which replacement policy is cheapest in the long run?"
 
@@ -460,7 +490,7 @@ from now to the end of each quarter, as Reliafy would turn them.)
   - **The best policy lowers the mean more than the spread.**
 - **How it is solved:**
   - **the mean:** `RepairableRBD.expected_cost(t, state=...)`, exact, from
-    `NodeState(age=224, phase=159)`;
+    `NodeState(age=224, since_scheduled=159)`;
   - **the spread:** simulated, as a spread must be:
     `RepairableRBD.cost(t, state=..., seed=...)` for each window with one
     seed. Simulation *r* draws the same lives whatever the window, so the
@@ -566,7 +596,7 @@ answers back into dates is Reliafy's too.)
   - the expected failures, planned replacements and cost: a
     one-component `RepairableRBD` with a block replacement every 500 h
     (`"preventive": {"interval": 500, "policy": "block", "cost": 200}`),
-    `replace_cost` 900, started from `NodeState(age=340, phase=340)`:
+    `replace_cost` 900, started from `NodeState(age=340, since_scheduled=340)`:
     `expected_events(944, state=...)` and `expected_cost(944, state=...)`,
     exact;
   - the long-run cost: its `expected_cost_rate()`.
@@ -583,7 +613,7 @@ answers back into dates is Reliafy's too.)
                 "replace_cost": 900.0,
                 "preventive": {"interval": 500.0, "policy": "block", "cost": 200.0}}},
   )
-  state = {"seal": NodeState(age=340.0, phase=340.0)}
+  state = {"seal": NodeState(age=340.0, since_scheduled=340.0)}
   rbd.expected_events(944.0, state=state).node_failures      # {'seal': 0.0078}
   rbd.expected_cost(944.0, state=state).mean                 # 407.06
   1 - life.sf(500) / life.sf(340)                            # 0.0024, before the next service
@@ -607,8 +637,8 @@ answers back into dates is Reliafy's too.)
     service costs over three times the best age replacement, which is
     the question to ask next (UC-7's shape, at services).
   - **History in, risk out:** Reliafy's history gives the age and the
-    phase in running hours, RePyability the risk and cost in running
-    hours, and the schedule turns them into dates.
+    time since the last service in running hours, RePyability the risk
+    and cost in running hours, and the schedule turns them into dates.
 
 ### UC-12: "The bearing is 200 days old. Replacing it now costs $150; a planned replacement any time costs $150 too, and one at a failure $400. Outages are scheduled in 150 and 330 days, at which replacing it costs $100. Do I replace it now?"
 

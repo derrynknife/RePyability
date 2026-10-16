@@ -57,12 +57,19 @@ other release, fixes included, the minor.
   `time_to_replace`; exact, with no simulation) and their expected cost
   (`FailureForecast`). A bearing with a Weibull life (scale 365 days,
   shape 2), 224 days old, fails in the next 82 days with a chance of
-  27.8%, with 0.283 replacements expected. A `ReplacementPlan` replaces a
-  unit when it fails and on a plan, which resets at each replacement
-  (age) or keeps to fixed dates (calendar); its `skip_next(discount_rate,
-  days_to_next=)` gives the NPV of skipping the next planned replacement
-  right after a failure (`SkipValue`), exactly. Built one use case at a
-  time (`repyability/maintenance/README.md`); its calendar side (tasks on
+  27.8%, with 0.283 replacements expected. Right after a failure, a new
+  unit just in, `skip_next_replacement(every, resets=, time_to_next=,
+  discount_rate=)` says whether to skip the next planned replacement of
+  a plan in force (#350): the plan resets at each replacement (age) or
+  keeps to fixed times (block, the next `time_to_next` away), and the
+  result (`SkipValue`) is the present-value cost of doing the
+  replacement against that of skipping it, their difference (the NPV of
+  skipping) and the best, exactly, at a continuous discount rate per
+  unit of the life's time (0 by default). The bearing on a plan every
+  180 days, at 8% a year, is best left: skipping saves $26.56 on a plan
+  that resets, and $123.08 on fixed times with the next replacement 30
+  days away. Built one use case at a time
+  (`repyability/maintenance/README.md`); its calendar side (tasks on
   dates, operating schedules, meters read by date) went to Reliafy, as
   RePyability is about timelines and Reliafy about calendars.
 - **The failure frequency, MUT and MDT with common-cause groups whose
@@ -129,6 +136,13 @@ other release, fixes included, the minor.
 
 ### Changed
 
+- **`NodeState.phase` is `since_scheduled` (#350).** The time since a
+  component's last block replacement or test placed it on its calendar as
+  its "phase", a word a phased mission uses for its own phases: the field
+  is `since_scheduled`, and so is the keyword
+  (`NodeState(age=300.0, since_scheduled=100.0)`) and what its `repr`
+  shows. `phase=` still works and warns (a `FutureWarning`), as does
+  reading `.phase`; giving both is refused. Both go in 0.15.
 - **The README and the documentation mention Reliafy**, the hosted app built
   on RePyability and SurPyval: the README's new "Related" section, the docs
   home page, and one line at the end of the tutorial and of the repairable

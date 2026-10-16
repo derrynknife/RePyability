@@ -1,5 +1,5 @@
-"""Maintenance: the single-unit optimisers' result types, and the choice
-at a planned replacement (#319).
+"""Maintenance: the single-unit optimisers' result types, and the choices
+about a part's next replacement (#319).
 
 RePyability is about timelines: the calendar side of maintenance planning
 (tasks on dates, operating schedules, meters read by date) is Reliafy's.
@@ -98,11 +98,8 @@ from repyability.maintenance._next import (  # noqa: E402
     NextReplacement,
     ReplacementChoice,
 )
-from repyability.maintenance._plans import (  # noqa: E402
-    ReplacementPlan,
-    SkipValue,
-)
 from repyability.maintenance._replacement import (  # noqa: E402
     CalendarPolicy,
     PlannedReplacement,
 )
+from repyability.maintenance._skip import SkipValue  # noqa: E402
