@@ -1336,7 +1336,8 @@ def test_a_tree_of_probabilities_has_no_lifetime():
     assert tree.df() == 0.0
     assert tree.hf() == 0.0
     assert tree.Hf() == pytest.approx(-np.log(tree.sf()))
-    assert all(np.isnan(v) for v in tree.barlow_proschan_importance().values())
+    with pytest.raises(ValueError, match="no lifetimes"):
+        tree.barlow_proschan_importance()
     # Its sensitivities are to the probabilities, each the Birnbaum
     # importance, negated: the levers move the probabilities themselves.
     sens = tree.parameter_sensitivity()
@@ -1520,3 +1521,184 @@ def test_with_levers_keeps_what_each_event_is():
         tree.with_levers({("pair", "alpha"): 1.0})
     with pytest.raises(TypeError, match="number"):
         tree.with_levers({("d", "p"): "0.1"})
+
+
+# -- the 0.14 persona review --------------------------------------------------
+
+BRIDGE_EDGES = [
+    ("s", "a"),
+    ("s", "b"),
+    ("a", "c"),
+    ("b", "c"),
+    ("c", "d"),
+    ("c", "e"),
+    ("a", "d"),
+    ("b", "e"),
+    ("d", "t"),
+    ("e", "t"),
+]
+
+
+def bridge_models():
+    return {
+        "a": W([100, 2]),
+        "b": W([120, 1.5]),
+        "c": W([80, 3]),
+        "d": W([150, 1.2]),
+        "e": W([90, 2.5]),
+    }
+
+
+def same(found: dict, expected: dict, rel=1e-9) -> None:
+    assert set(found) == set(expected)
+    for key, value in expected.items():
+        assert found[key] == pytest.approx(value, rel=rel, nan_ok=True), key
+
+
+def test_kind_and_fv_type_agree_with_the_diagram():
+    from repyability import BetaFactor, CCFGroup
+
+    diagram = NonRepairableRBD(BRIDGE_EDGES, bridge_models())
+    tree = FaultTree.from_rbd(diagram)
+    for kind in ("failure", "success"):
+        same(
+            tree.criticality_importance(50.0, kind=kind),
+            diagram.criticality_importance(50.0, kind=kind),
+        )
+        same(
+            tree.differential_importance(
+                50.0, change="proportional", kind=kind
+            ),
+            diagram.differential_importance(
+                50.0, change="proportional", kind=kind
+            ),
+        )
+    for fv_type in ("c", "p"):
+        for method in ("exact", "rare_event"):
+            same(
+                tree.fussell_vesely(50.0, fv_type=fv_type, method=method),
+                diagram.fussell_vesely(50.0, fv_type=fv_type, method=method),
+            )
+    # A series system has one path set, every event: each event's path-set
+    # share is the probability that both have occurred, over the top
+    # event's.
+    chain = FaultTree(
+        {"top": ("or", ["a", "b"])}, {"a": W([100, 2]), "b": W([80, 1.5])}
+    )
+    both = float(W([100, 2]).ff(30.0) * W([80, 1.5]).ff(30.0))
+    assert chain.fussell_vesely(30.0, fv_type="p") == pytest.approx(
+        {"a": both / chain.ff(30.0), "b": both / chain.ff(30.0)}
+    )
+    # The success-oriented criticality is 1 for every event in series.
+    assert chain.criticality_importance(30.0, kind="success") == (
+        pytest.approx({"a": 1.0, "b": 1.0})
+    )
+    # With a common-cause group, as the diagram conditions on it.
+    grouped = NonRepairableRBD(
+        [
+            ("s", "a"),
+            ("s", "b"),
+            ("s", "c"),
+            ("a", "j"),
+            ("b", "j"),
+            ("c", "j"),
+            ("j", "t"),
+        ],
+        {n: W([100, 2]) for n in "abc"} | {"j": PerfectReliability},
+        k={"j": 2},
+        ccf_groups=[CCFGroup(["a", "b", "c"], BetaFactor(0.1, basis="rate"))],
+    )
+    grouped_tree = FaultTree.from_rbd(grouped)
+    for method in ("exact", "rare_event"):
+        same(
+            grouped_tree.fussell_vesely(50.0, fv_type="p", method=method),
+            grouped.fussell_vesely(50.0, fv_type="p", method=method),
+        )
+    same(
+        grouped_tree.criticality_importance(50.0, kind="success"),
+        grouped.criticality_importance(50.0, kind="success"),
+    )
+    with pytest.raises(ValueError, match="kind must be"):
+        tree.criticality_importance(50.0, kind="bogus")
+    with pytest.raises(ValueError, match="kind must be"):
+        tree.differential_importance(50.0, kind="bogus")
+    with pytest.raises(ValueError, match="fv_type must be"):
+        tree.fussell_vesely(50.0, fv_type="bogus")
+
+
+def test_mean_by_simulation_and_random_are_the_diagram_s():
+    tree = FaultTree(
+        {"top": ("or", ["a", "g"]), "g": ("and", ["b", "c"])},
+        {"a": W([100, 2]), "b": W([80, 1.5]), "c": W([120, 2.5])},
+    )
+    diagram = tree.to_rbd()
+    assert np.array_equal(tree.random(50, seed=3), diagram.random(50, seed=3))
+    estimate = tree.mean(method="simulate", mc_samples=4000, seed=1)
+    assert estimate == diagram.mean(method="simulate", mc_samples=4000, seed=1)
+    lifetimes = tree.random(4000, seed=1)
+    assert estimate == pytest.approx(lifetimes.mean())
+    assert abs(estimate - tree.mean()) < 3 * lifetimes.std() / np.sqrt(4000)
+    for call in (
+        lambda: tree.mean(mc_samples=5),
+        lambda: tree.mean(seed=1),
+    ):
+        with pytest.raises(ValueError, match="only with method='simulate'"):
+            call()
+    with pytest.raises(ValueError, match="'exact' or 'simulate'"):
+        tree.mean(method="guess")
+    with pytest.raises(ValueError, match="size must be a positive"):
+        tree.random(0)
+    report = tree.analysis_routes()
+    assert report["random"].route == "simulated"
+    assert "method='simulate'" in report["mean"].reason
+
+
+def test_from_rbd_warns_of_capacities_left_out():
+    capped = NonRepairableRBD(
+        [("s", "p1"), ("s", "p2"), ("p1", "t"), ("p2", "t")],
+        {"p1": W([100, 2]), "p2": W([120, 1.5])},
+        capacity={"p1": 60, "p2": 40},
+    )
+    with pytest.warns(UserWarning, match="capacities are left out") as caught:
+        tree = FaultTree.from_rbd(capped)
+    assert caught[0].filename == __file__
+    assert tree.sf(50.0) == pytest.approx(capped.sf(50.0))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        FaultTree.from_rbd(NonRepairableRBD(BRIDGE_EDGES, bridge_models()))
+
+
+def test_times_of_any_shape():
+    tree = FaultTree.from_rbd(NonRepairableRBD(BRIDGE_EDGES, bridge_models()))
+    grid = np.array([[10.0, 20.0, 30.0], [40.0, 50.0, 60.0]])
+    flat = grid.ravel()
+    for name in ("sf", "ff", "top_event_probability", "Hf", "df", "hf"):
+        assert np.array_equal(
+            getattr(tree, name)(grid), getattr(tree, name)(flat).reshape(2, 3)
+        )
+    for name in ("birnbaum_importance", "fussell_vesely", "joint_importance"):
+        shaped, rows = getattr(tree, name)(grid), getattr(tree, name)(flat)
+        for key in shaped:
+            assert np.array_equal(shaped[key], rows[key].reshape(2, 3)), name
+    assert isinstance(tree.sf(np.array(10.0)), float)
+    assert tree.sf(np.array(10.0)) == tree.sf(10.0)
+    with pytest.raises(ValueError, match="this fault tree is time-varying"):
+        tree.sf()
+    with pytest.raises(TypeError, match="x must be numbers, got '10'"):
+        tree.bx_life("10")
+
+
+def test_every_event_a_probability_has_no_failures_over_time():
+    tree = FaultTree({"top": ("and", ["a", "b"])}, {"a": 0.1, "b": 0.2})
+    with pytest.raises(ValueError, match="no lifetimes") as error:
+        tree.barlow_proschan_importance()
+    report = tree.analysis_routes()["barlow_proschan_importance"]
+    assert report.route == "refused" and report.reason == str(error.value)
+    # One event with a life keeps the measure: the probability has no part.
+    mixed = FaultTree(
+        {"top": ("and", ["a", "b"])}, {"a": 0.1, "b": W([100, 2])}
+    )
+    assert mixed.barlow_proschan_importance() == {"a": 0.0, "b": 1.0}
+    assert mixed.analysis_routes()["barlow_proschan_importance"].route == (
+        "numerical"
+    )

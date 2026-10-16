@@ -171,7 +171,10 @@ class ConfidenceInterval(_ResultMapping):
         histories (see
         [`ConditionalRun`][repyability.ConditionalRun]). Where the method
         chooses how to simulate (``NonRepairableRBD.unreliability_interval``),
-        the way it chose; None otherwise.
+        the way it chose; ``"simulated"`` for the other simulated intervals
+        (``mean_time_to_failure_interval``,
+        ``PhasedMission.reliability_interval``), and ``"exact"`` where
+        ``compare`` works the difference out exactly.
 
     Examples
     --------

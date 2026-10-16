@@ -97,9 +97,7 @@ def mean_unavailability(
 ) -> float:
     """See ``RepairableRBD.mean_unavailability``."""
     method = structure_method(method)
-    working_nodes = set() if working_nodes is None else set(working_nodes)
-    broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working_nodes, broken_nodes)
+    working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
     if rbd.ccf_groups:
         # Each group conditioned on within its module (#218).
         _, weights, inputs = _ccf_groups._ccf_long_run(
@@ -280,9 +278,7 @@ def mean_availability(
     """See ``RepairableRBD.mean_availability``."""
     # Good reference on the Availability of a system
     # https://www.diva-portal.org/smash/get/diva2:986067/FULLTEXT01.pdf
-    working_nodes = set() if working_nodes is None else set(working_nodes)
-    broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working_nodes, broken_nodes)
+    working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
 
     if rbd.ccf_groups:
         # Each group conditioned on within its module (#218).

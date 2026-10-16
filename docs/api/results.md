@@ -2,6 +2,8 @@
 
 ::: repyability.AnalysisRoute
 
+::: repyability.AnalysisRoutes
+
 ::: repyability.AvailabilityResult
 
 ::: repyability.CapacityDistribution

@@ -75,7 +75,7 @@ from repyability.rbd.non_repairable_rbd import (
     _times,
     check_x,
 )
-from repyability.rbd.rbd import Pairs
+from repyability.rbd.rbd import Pairs, _set_order
 from repyability.rbd.results import UncertaintyResult
 from repyability.rbd.routes import AnalysisRoute, Refused
 from repyability.rbd.shannon import _minimal_cut_sets, _shannon_plan
@@ -85,7 +85,12 @@ from repyability.rbd.uncertainty import (
     draw_with,
     fitted_together,
 )
-from repyability.utils.checks import one_of, real_array
+from repyability.utils.checks import (
+    no_distribution,
+    one_of,
+    real_array,
+    simulation_options,
+)
 from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.json_io import read_json, write_json
 from repyability.utils.wrappers import numpy_seed
@@ -203,6 +208,9 @@ class Network:
     [['a', 'c', 'e'], ['a', 'd'], ['b', 'c', 'd'], ['b', 'e']]
     """
 
+    # The kind of diagram, as the messages name it (see ``check_x``).
+    _KIND = "network"
+
     def __init__(
         self,
         links: Dict[Hashable, Tuple[Hashable, Hashable, Any]],
@@ -278,6 +286,7 @@ class Network:
             from surpyval import FixedEventProbability
 
             return FixedEventProbability.from_params(float(model))
+        no_distribution(model, what)
         if not (hasattr(model, "sf") and hasattr(model, "ff")):
             raise ValueError(
                 f"{what}: the model must have sf and ff (a lifetime "
@@ -336,8 +345,10 @@ class Network:
         return paths
 
     def path_sets(self) -> Set[frozenset]:
-        """The minimal path sets: for each simple path between the
-        terminals, the set of its links and of its nodes that can fail.
+        """The minimal path sets, as a set: for each simple path between
+        the terminals, the set of its links and of its nodes that can fail
+        ([`minimal_path_sets`][repyability.Network.minimal_path_sets]
+        lists them, smallest first).
 
         Returns
         -------
@@ -352,8 +363,10 @@ class Network:
         return set(self._simple_paths())
 
     def cut_sets(self) -> Set[frozenset]:
-        """The minimal cut sets: the smallest sets of links and nodes whose
-        failure parts the terminals.
+        """The minimal cut sets, as a set: the smallest sets of links and
+        nodes whose failure parts the terminals
+        ([`minimal_cut_sets`][repyability.Network.minimal_cut_sets] lists
+        them, smallest first).
 
         Returns
         -------
@@ -368,6 +381,62 @@ class Network:
             more than ``MAX_PATHS`` paths).
         """
         return set(_minimal_cut_sets(self._decomposition().steps()))
+
+    def minimal_path_sets(self) -> List[frozenset]:
+        """The minimal path sets, listed smallest first (then by name), as
+        a diagram's [`minimal_path_sets`][repyability.RBD.minimal_path_sets]
+        and a tree's list them: the sets of ``path_sets()``.
+
+        Returns
+        -------
+        list[frozenset]
+            The minimal path sets, each a frozenset of link and node names.
+
+        Raises
+        ------
+        NotImplementedError
+            As for ``path_sets``.
+
+        Examples
+        --------
+        >>> from repyability import Network
+        >>> fork = Network(
+        ...     {"a": ("s", "x", 0.1), "b": ("x", "t", 0.1),
+        ...      "c": ("s", "t", 0.2)},
+        ...     "s", "t",
+        ... )
+        >>> [sorted(path) for path in fork.minimal_path_sets()]
+        [['c'], ['a', 'b']]
+        """
+        return sorted(self.path_sets(), key=_set_order)
+
+    def minimal_cut_sets(self) -> List[frozenset]:
+        """The minimal cut sets, listed smallest first (then by name), as
+        a diagram's [`minimal_cut_sets`][repyability.RBD.minimal_cut_sets]
+        and a tree's list them: the sets of ``cut_sets()``.
+
+        Returns
+        -------
+        list[frozenset]
+            The minimal cut sets, each a frozenset of link and node names.
+
+        Raises
+        ------
+        NotImplementedError
+            As for ``cut_sets``.
+
+        Examples
+        --------
+        >>> from repyability import Network
+        >>> fork = Network(
+        ...     {"a": ("s", "x", 0.1), "b": ("x", "t", 0.1),
+        ...      "c": ("s", "t", 0.2)},
+        ...     "s", "t",
+        ... )
+        >>> [sorted(cut) for cut in fork.minimal_cut_sets()]
+        [['a', 'c'], ['b', 'c']]
+        """
+        return sorted(self.cut_sets(), key=_set_order)
 
     def _decomposition(self) -> "_Plan":
         """The plan of the probability that the terminals are joined (see
@@ -420,11 +489,17 @@ class Network:
         models = self.models if models is None else models
         p: Dict[Hashable, np.ndarray] = {}
         q: Dict[Hashable, np.ndarray] = {}
+        # A model takes a row of times; the values are shaped as ``x`` is.
+        times = x.ravel()
         for name in names:
             model = models[name]
             with np.errstate(all="ignore"):
-                p[name] = np.asarray(model.sf(x), dtype=float).reshape(x.shape)
-                q[name] = np.asarray(model.ff(x), dtype=float).reshape(x.shape)
+                p[name] = np.asarray(model.sf(times), dtype=float).reshape(
+                    x.shape
+                )
+                q[name] = np.asarray(model.ff(times), dtype=float).reshape(
+                    x.shape
+                )
         return p, q
 
     def _inputs(
@@ -469,6 +544,7 @@ class Network:
         works, up = _value_and_gradient(plan, p, q, x.shape)
         fails, down = _value_and_gradient(plan, p, q, x.shape, _PARTED)
         zero = np.zeros(x.shape)
+        # ``+ 0.0``: a negated zero (an element in no path) prints as 0.0.
         return {
             name: np.where(
                 np.asarray(fails) <= np.asarray(works),
@@ -476,6 +552,7 @@ class Network:
                 np.asarray(up.get(name, zero)),
             )
             * np.ones(x.shape)
+            + 0.0
             for name in self.models
         }
 
@@ -489,19 +566,26 @@ class Network:
             )
 
     def _require_lifetimes(self, what: str) -> None:
-        """Raise if an element is a fixed probability, which has no
-        lifetime: the network then has no mean lifetime, and no failure
-        density over time."""
-        if any(is_fixed_probability(m) for m in self.models.values()):
+        """Raise if every element is a fixed probability: the network then
+        parts at the start or never, so it has no lifetimes, no mean
+        lifetime and no failure density over time (as a diagram of fixed
+        nodes has none). A fixed element among others that age is a
+        part that fails at the start or never: it has no density, so no
+        part in the failures over time, and the mean is ``inf`` where it
+        keeps the terminals joined for good."""
+        if self.is_fixed:
             raise Refused(
-                f"A fixed probability has no lifetime, so the network has "
-                f"no {what}."
+                "The reliability does not vary with time (every model is a "
+                f"fixed probability): the network has no lifetimes, so no "
+                f"{what}."
             )
 
-    def _method(self, method: str, mc_samples) -> str:
+    def _method(self, method: str, mc_samples, seed, name: str) -> str:
         one_of("method", method, ("exact", "simulate"))
-        if method == "exact" and mc_samples is not None:
-            raise ValueError("mc_samples applies only to method='simulate'.")
+        if method == "exact":
+            simulation_options(
+                f"{name}()", {"mc_samples": mc_samples, "seed": seed}
+            )
         return method
 
     @check_x
@@ -539,18 +623,21 @@ class Network:
         ------
         ValueError
             If ``x`` is left out of a network whose models depend on time,
-            or ``method`` or ``mc_samples`` is invalid.
+            or ``method`` is unknown, or ``mc_samples`` or ``seed`` is
+            given with ``method="exact"``.
         NotImplementedError
             With ``method="exact"``, if the network's decision diagram would
             have more than ``MAX_STATES`` states (with ``METHOD = "paths"``,
             if there are more than ``MAX_PATHS`` paths between the
             terminals).
         """
-        if self._method(method, mc_samples) == "simulate":
+        if self._method(method, mc_samples, seed, "sf") == "simulate":
             lives = self.random(
                 10_000 if mc_samples is None else mc_samples, seed
             )
-            return np.mean(lives[:, None] > x[None, :], axis=0)
+            return np.mean(
+                lives[:, None] > x.ravel()[None, :], axis=0
+            ).reshape(x.shape)
         return self._value(x)
 
     @check_x
@@ -582,11 +669,13 @@ class Network:
         float or numpy.ndarray
             The unreliability.
         """
-        if self._method(method, mc_samples) == "simulate":
+        if self._method(method, mc_samples, seed, "ff") == "simulate":
             lives = self.random(
                 10_000 if mc_samples is None else mc_samples, seed
             )
-            return np.mean(~(lives[:, None] > x[None, :]), axis=0)
+            return np.mean(
+                ~(lives[:, None] > x.ravel()[None, :]), axis=0
+            ).reshape(x.shape)
         return self._value(x, _PARTED)
 
     @check_x
@@ -1140,8 +1229,10 @@ class Network:
         Raises
         ------
         ValueError
-            For a negative time, or if an element is a fixed probability
-            (which has no lifetime).
+            For a negative time, or if every element is a fixed probability
+            (the network then has no lifetimes). A fixed element among
+            others has no density, so no share: it has failed from the
+            start, or never does.
         NotImplementedError
             As for ``sf``.
 
@@ -1255,7 +1346,8 @@ class Network:
         Parameters
         ----------
         x : float or array_like
-            The percentage failed, in (0, 100), or several.
+            The percentage failed (10 for the B10 life, not a fraction), in
+            (0, 100), or several.
         upper_bound : float, optional
             As for ``time_to_reliability``.
 
@@ -1450,8 +1542,8 @@ class Network:
         Raises
         ------
         ValueError
-            As for ``sf_uncertainty``, or if an element is a fixed
-            probability (which has no lifetime).
+            As for ``sf_uncertainty``, or if every element is a fixed
+            probability (the network then has no lifetimes).
         NotImplementedError
             As for ``sf``.
 
@@ -1621,16 +1713,19 @@ class Network:
         Returns
         -------
         float
-            The mean lifetime: ``inf`` if some networks never part.
+            The mean lifetime: ``inf`` if some networks never part (a
+            fixed probability that keeps the terminals joined, say, as a
+            diagram's ``mean`` gives it).
 
         Raises
         ------
         ValueError
-            If a model is a fixed probability (it has no lifetime), or
-            ``method`` or ``mc_samples`` is invalid.
+            If every model is a fixed probability (the network then has
+            no lifetimes), ``method`` is unknown, or ``mc_samples`` or
+            ``seed`` is given with ``method="exact"``.
         """
         self._require_lifetimes("mean lifetime")
-        if self._method(method, mc_samples) == "simulate":
+        if self._method(method, mc_samples, seed, "mean") == "simulate":
             lives = self.random(
                 10_000 if mc_samples is None else mc_samples, seed
             )
@@ -1992,16 +2087,21 @@ class Network:
         out["structural_importance"] = AnalysisRoute(
             r.EXACT, "From the structure alone."
         )
-        out["cut_sets"] = AnalysisRoute(
-            r.EXACT, "Read off the decision diagram."
+        give(
+            ("cut_sets", "minimal_cut_sets"),
+            AnalysisRoute(r.EXACT, "Read off the decision diagram."),
         )
         paths = r.refusal(self._simple_paths)
-        out["path_sets"] = (
-            r.refused(paths)
-            if paths
-            else AnalysisRoute(
-                r.EXACT, "Every simple path between the terminals, listed."
-            )
+        give(
+            ("path_sets", "minimal_path_sets"),
+            (
+                r.refused(paths)
+                if paths
+                else AnalysisRoute(
+                    r.EXACT,
+                    "Every simple path between the terminals, listed.",
+                )
+            ),
         )
         fixed = r.refusal(self._require_time_varying)
         give(
@@ -2065,9 +2165,9 @@ class Network:
         too_large = r.refusal(self._decomposition)
         if too_large:
             for name in out:
-                if name not in ("random", "path_sets"):
+                if name not in ("random", "path_sets", "minimal_path_sets"):
                     out[name] = r.refused(too_large)
-        return out
+        return r.AnalysisRoutes(sorted(out.items()))
 
     def __repr__(self) -> str:
         return (
@@ -2230,12 +2330,19 @@ def _plan_from_steps(steps: list, root: int) -> _Plan:
 _EVALUATION_SIZE = 16_000_000
 
 
-def _rows(plan: _Plan, values: dict, size: int) -> np.ndarray:
-    """Each of the plan's variables' ``values`` (of ``size`` elements once
-    broadcast), as the rows of one array."""
+def _rows(plan: _Plan, values: dict, shape: tuple) -> np.ndarray:
+    """Each of the plan's variables' ``values`` (of ``shape``, or as many
+    in a row, or one for all), as the rows of one array, a column per
+    evaluation."""
+    size = int(np.prod(shape, dtype=np.int64))
     out = np.empty((len(plan.names), size))
     for i, name in enumerate(plan.names):
-        out[i] = np.broadcast_to(np.asarray(values[name], float), (size,))
+        value = np.asarray(values[name], float)
+        out[i] = (
+            value.reshape(-1)
+            if value.size == size
+            else np.broadcast_to(value, shape).ravel()
+        )
     return out
 
 
@@ -2273,7 +2380,7 @@ def _evaluate(
     size = int(np.prod(shape, dtype=np.int64))
     if plan.root < 2:
         return np.full(shape, terminals[plan.root], dtype=float)
-    p_rows, q_rows = _rows(plan, p, size), _rows(plan, q, size)
+    p_rows, q_rows = _rows(plan, p, shape), _rows(plan, q, shape)
     out = np.empty(size)
     for start, end in _chunks(plan, size):
         values = _forward(
@@ -2292,7 +2399,7 @@ def _value_and_gradient(
     size = int(np.prod(shape, dtype=np.int64))
     if plan.root < 2:
         return np.full(shape, terminals[plan.root], dtype=float), {}
-    p_rows, q_rows = _rows(plan, p, size), _rows(plan, q, size)
+    p_rows, q_rows = _rows(plan, p, shape), _rows(plan, q, shape)
     value = np.empty(size)
     gradient = np.zeros((len(plan.names), size))
     for start, end in _chunks(plan, size):

@@ -39,7 +39,9 @@ len(grid.path_sets())    # -> 7
   simple path between the terminals (its links, and its nodes that can
   fail); `cut_sets()` the smallest sets of links whose failure parts the
   terminals. Here two pairs of lines cut the load off on their own,
-  `{"BL", "CL"}` and `{"GA", "GB"}`.
+  `{"BL", "CL"}` and `{"GA", "GB"}`. `minimal_path_sets()` and
+  `minimal_cut_sets()` list the same sets smallest first, as a diagram's
+  and a fault tree's do.
 - **Importance.** `birnbaum_importance(x)` gives, per link, the
   reliability with it working less that with it failed: the two lines out
   of the generator and the cable into the load matter most.

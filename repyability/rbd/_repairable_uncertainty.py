@@ -58,6 +58,7 @@ from .uncertainty import (
     draw_models,
     draw_with,
     is_fit,
+    split_group_levers,
     varied_ccf_parameters,
     varied_parameters,
 )
@@ -294,8 +295,27 @@ def sources(
             (i for i, g in enumerate(rbd.ccf_groups) if key is g), None
         )
         if index is not None:
+            if index in groups:
+                raise ValueError(
+                    f"Common-cause group {list(key.members)!r} is given an "
+                    "uncertainty twice: under the CCFGroup and under its "
+                    "members."
+                )
             groups[index] = (key, spec)
             continue
+        # A group's own parameters under its members' tuple, named as its
+        # levers are (ccf_beta, ...), go to its model.
+        index, own, spec = split_group_levers(key, spec, rbd.ccf_groups)
+        if index is not None and own:
+            if index in groups:
+                raise ValueError(
+                    f"Common-cause group {list(key)!r} is given an "
+                    "uncertainty twice: under the CCFGroup and as "
+                    f"{list(own)!r} under its members."
+                )
+            groups[index] = (rbd.ccf_groups[index], own)
+            if not spec:
+                continue
         members = (
             key
             if isinstance(key, tuple) and key not in rbd.components

@@ -213,7 +213,7 @@ def test_an_exact_mean_warns_of_options_it_ignores(model):
     exact = node.mean()
     with pytest.warns(FutureWarning, match="ignores mc_samples, seed.*0.14"):
         assert node.mean(mc_samples=10, seed=1) == exact
-    with pytest.raises(TypeError, match="only with method='simulate'"):
+    with pytest.raises(ValueError, match="only with method='simulate'"):
         node.mean(method="exact", mc_samples=10)
     with warnings.catch_warnings():
         warnings.simplefilter("error")

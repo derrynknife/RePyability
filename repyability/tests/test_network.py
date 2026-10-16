@@ -3,6 +3,7 @@ nodes (#104)."""
 
 import itertools
 import re
+import warnings
 
 import numpy as np
 import pytest
@@ -577,7 +578,7 @@ def test_the_methods_are_checked():
         net.sf()
     with pytest.raises(ValueError, match="'exact' or 'simulate'"):
         net.sf(1.0, method="guess")
-    with pytest.raises(ValueError, match="only to method='simulate'"):
+    with pytest.raises(ValueError, match="only with method='simulate'"):
         net.sf(1.0, mc_samples=10)
     with pytest.raises(ValueError, match="no lifetime"):
         bridge({n: F(0.1) for n in "abcde"}).mean()
@@ -913,6 +914,8 @@ CALLS = {
     "structural_importance": lambda net: net.structural_importance(),
     "cut_sets": lambda net: net.cut_sets(),
     "path_sets": lambda net: net.path_sets(),
+    "minimal_cut_sets": lambda net: net.minimal_cut_sets(),
+    "minimal_path_sets": lambda net: net.minimal_path_sets(),
     "mean": lambda net: net.mean(),
     "time_to_reliability": lambda net: net.time_to_reliability(0.5),
     "bx_life": lambda net: net.bx_life(10),
@@ -964,7 +967,7 @@ def test_the_routes_say_how_each_analysis_is_worked_out(monkeypatch):
     large = bridge({n: W([100.0, 1.5]) for n in "abcde"})
     report = large.analysis_routes()
     for name, route in report.items():
-        if name in ("random", "path_sets"):
+        if name in ("random", "path_sets", "minimal_path_sets"):
             assert route.route != "refused"
             CALLS[name](large)
             continue
@@ -999,3 +1002,144 @@ def test_the_new_methods_are_checked():
         bridge({n: F(0.1) for n in "abcde"}).barlow_proschan_importance()
     with pytest.raises(ValueError, match="does not vary"):
         bridge({n: F(0.1) for n in "abcde"}).time_to_reliability(0.5)
+
+
+# -- the 0.14 persona review --------------------------------------------------
+
+
+def test_a_distribution_itself_is_refused():
+    with pytest.raises(TypeError, match="Weibull distribution itself"):
+        Network({"a": ("s", "t", surv.Weibull)}, "s", "t")
+    with pytest.raises(TypeError, match="Node 'x' is surpyval's Weibull"):
+        Network(
+            {"a": ("s", "x", E([0.1])), "b": ("x", "t", E([0.1]))},
+            "s",
+            "t",
+            nodes={"x": surv.Weibull},
+        )
+
+
+def test_a_fixed_element_among_lives_has_no_lifetime_of_its_own():
+    # The link fails at the start with probability 0.1, or never: the
+    # chain lasts 0 then, else as long as the Weibull link, so its mean is
+    # 0.9 of the Weibull's, its failures over time all the Weibull's.
+    life = W([100.0, 2.0])
+    chain = Network({"a": ("s", 1, 0.1), "b": (1, "t", life)}, "s", "t")
+    assert chain.mean() == pytest.approx(0.9 * float(life.mean()), rel=1e-9)
+    assert chain.mean(method="simulate", mc_samples=20_000, seed=1) == (
+        pytest.approx(chain.mean(), rel=0.03)
+    )
+    assert chain.barlow_proschan_importance() == {"a": 0.0, "b": 1.0}
+    assert chain.barlow_proschan_importance(50.0) == {"a": 0.0, "b": 1.0}
+    assert chain.mean_uncertainty(
+        {"b": {"alpha": st.uniform(90, 20)}}, n_draws=5, seed=1
+    ).nominal == pytest.approx(chain.mean())
+    diagram = NonRepairableRBD(
+        [("s", "a"), ("a", "b"), ("b", "t")], {"a": F(0.1), "b": life}
+    )
+    assert chain.mean() == pytest.approx(diagram.mean(), rel=1e-9)
+    # A fixed survivor in parallel keeps the terminals joined for good.
+    pair = Network({"a": ("s", "t", 0.1), "b": ("s", "t", life)}, "s", "t")
+    assert pair.mean() == np.inf
+    assert pair.barlow_proschan_importance() == {"a": 0.0, "b": 1.0}
+    assert pair.analysis_routes()["mean"].route == "numerical"
+    # With every element fixed there are no lifetimes at all.
+    fixed = Network({"a": ("s", "t", 0.1), "b": ("s", "t", 0.2)}, "s", "t")
+    report = fixed.analysis_routes()
+    for name, call in (
+        ("mean", fixed.mean),
+        ("barlow_proschan_importance", fixed.barlow_proschan_importance),
+        (
+            "mean_uncertainty",
+            lambda: fixed.mean_uncertainty(
+                {"a": {"p": st.uniform(0.05, 0.1)}}, n_draws=5, seed=1
+            ),
+        ),
+    ):
+        with pytest.raises(ValueError, match="no lifetimes") as error:
+            call()
+        assert report[name].route == "refused"
+        assert report[name].reason == str(error.value)
+
+
+def test_minimal_sets_are_listed_smallest_first():
+    models = {n: W([100.0 + 10 * i, 1.5]) for i, n in enumerate("abcde")}
+    net = bridge(models)
+    diagram = NonRepairableRBD(BRIDGE, models)
+    assert net.minimal_cut_sets() == diagram.minimal_cut_sets()
+    assert net.minimal_path_sets() == diagram.minimal_path_sets()
+    assert set(net.minimal_cut_sets()) == net.cut_sets()
+    assert set(net.minimal_path_sets()) == net.path_sets()
+    sizes = [len(s) for s in net.minimal_cut_sets()]
+    assert sizes == sorted(sizes)
+    report = net.analysis_routes()
+    assert report["minimal_cut_sets"] == report["cut_sets"]
+    assert report["minimal_path_sets"] == report["path_sets"]
+
+
+def test_simulation_options_need_method_simulate():
+    net = bridge({n: E([0.01]) for n in "abcde"})
+    for call in (
+        lambda: net.sf(1.0, seed=1),
+        lambda: net.ff(1.0, mc_samples=10),
+        lambda: net.mean(seed=1),
+        lambda: net.mean(mc_samples=10),
+    ):
+        with pytest.raises(ValueError, match="only with method='simulate'"):
+            call()
+    assert net.sf(1.0, method="simulate", mc_samples=10, seed=1) <= 1.0
+
+
+def test_times_of_any_shape():
+    net = bridge({n: W([100.0 + 10 * i, 1.5]) for i, n in enumerate("abcde")})
+    grid = np.array([[10.0, 20.0, 30.0], [40.0, 50.0, 60.0]])
+    flat = grid.ravel()
+    for name in ("sf", "ff"):
+        assert np.array_equal(
+            getattr(net, name)(grid), getattr(net, name)(flat).reshape(2, 3)
+        )
+        assert np.array_equal(
+            getattr(net, name)(grid, method="simulate", mc_samples=50, seed=1),
+            getattr(net, name)(
+                flat, method="simulate", mc_samples=50, seed=1
+            ).reshape(2, 3),
+        )
+    for name in (
+        "birnbaum_importance",
+        "fussell_vesely",
+        "criticality_importance",
+        "barlow_proschan_importance",
+    ):
+        shaped, rows = getattr(net, name)(grid), getattr(net, name)(flat)
+        for key in shaped:
+            assert np.array_equal(shaped[key], rows[key].reshape(2, 3)), name
+    assert isinstance(net.sf(np.array(10.0)), float)
+
+
+def test_no_negative_zero_and_no_warning_at_zero():
+    # A link in no path has an importance of 0, printed so, and at t = 0
+    # the ratios over an unreliability of 0 are nan silently.
+    net = Network(
+        {"a": ("s", "t", E([0.01])), "b": ("s", "x", E([0.01]))},
+        "s",
+        "t",
+    )
+    assert str(net.birnbaum_importance(10.0)["b"]) == "0.0"
+    assert str(net.improvement_potential(10.0)["b"]) == "0.0"
+    assert str(net.birnbaum_importance(0.0)["b"]) == "0.0"
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        at_zero = net.risk_achievement_worth(0.0)
+        assert np.isinf(at_zero["a"])
+        assert np.isnan(net.fussell_vesely(0.0)["a"])
+        assert np.isnan(net.criticality_importance(0.0)["a"])
+
+
+def test_x_is_required_names_the_network():
+    net = bridge({n: E([0.01]) for n in "abcde"})
+    with pytest.raises(ValueError, match="this network is time-varying"):
+        net.sf()
+    with pytest.raises(TypeError, match="unexpected keyword argument 't'"):
+        net.sf(t=1.0)
+    with pytest.raises(TypeError, match="x must be numbers, got '10'"):
+        net.bx_life("10")

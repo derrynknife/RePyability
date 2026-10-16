@@ -40,7 +40,16 @@ over the draws, and of the Sobol indices, for the same number of draws.
 import difflib
 import warnings
 from collections.abc import Mapping, Sequence
-from typing import Any, Callable, Dict, Hashable, Iterable, List, Optional
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Hashable,
+    Iterable,
+    List,
+    Optional,
+    Tuple,
+)
 
 import numpy as np
 
@@ -574,6 +583,44 @@ def varied_parameters(model, spec: Any, label: str):
         f"{label}: the uncertainty must be 'fit', a dict of parameter "
         f"distributions or a list of models, got {spec!r}."
     )
+
+
+def split_group_levers(key, spec, groups) -> Tuple[Optional[int], dict, Any]:
+    """An uncertainty given under the tuple of a common-cause group's
+    members (``groups``), with the group's own parameters named as its
+    levers are (``ccf_beta``, ``ccf_alpha_2``, ..., as ``levers()`` and
+    ``parameter_sensitivity`` key them): the group's index, its own
+    parameters' distributions by their names (``beta``, ...), and what is
+    left of ``spec`` for the members' one model. ``(None, {}, spec)`` for
+    any other key or spec."""
+    if not (isinstance(key, tuple) and isinstance(spec, Mapping)):
+        return None, {}, spec
+    index = next(
+        (i for i, g in enumerate(groups) if set(g.members) == set(key)), None
+    )
+    if index is None:
+        return None, {}, spec
+    from .ccf import parameters
+
+    own = {
+        name[len("ccf_") :]: prior
+        for name, prior in spec.items()
+        if isinstance(name, str) and name.startswith("ccf_")
+    }
+    levers = [f"ccf_{name}" for name in parameters(groups[index].model)]
+    unknown = [f"ccf_{name}" for name in own if f"ccf_{name}" not in levers]
+    if unknown:
+        raise ValueError(
+            f"Common-cause group {list(key)!r}: {unknown} are not levers of "
+            f"its model, {groups[index].model!r}, whose levers are "
+            f"{levers}.{_closest(unknown, levers)}"
+        )
+    rest = {
+        name: prior
+        for name, prior in spec.items()
+        if not (isinstance(name, str) and name.startswith("ccf_"))
+    }
+    return index, own, rest
 
 
 def varied_ccf_parameters(group, spec: Any):

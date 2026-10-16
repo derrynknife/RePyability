@@ -287,6 +287,24 @@ class NonRepairable:
         elif unplanned is not None:
             self.cu = float(unplanned)
 
+    def __repr__(self) -> str:
+        """A short summary: the life model's distribution, how a
+        replacement takes its time, and the costs given."""
+        parts = [
+            distribution_name(self.reliability)
+            or type(self.reliability).__name__
+        ]
+        if self.time_to_replace is not None:
+            replace = distribution_name(self.time_to_replace)
+            parts.append(
+                f"replaced in {replace or type(self.time_to_replace).__name__}"
+            )
+        if hasattr(self, "cp"):
+            parts.append(f"planned_cost={self.cp:g}")
+        if hasattr(self, "cu"):
+            parts.append(f"unplanned_cost={self.cu:g}")
+        return f"NonRepairable({', '.join(parts)})"
+
     def failures(self, t, age: float = 0.0) -> FailureForecast:
         """The failures over a window ``t`` from now, with the current unit
         ``age`` old and working, each failure replaced by a new unit.

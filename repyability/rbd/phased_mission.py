@@ -55,7 +55,7 @@ from repyability.rbd._ordered_bdd import FALSE, TRUE, OrderedBDD
 from repyability.rbd._sampling import lifetime_sampler
 from repyability.rbd.results import ConfidenceInterval
 from repyability.rbd.shannon import _plan_rows, replay, room
-from repyability.utils.checks import one_of
+from repyability.utils.checks import one_of, simulation_options
 from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.wrappers import numpy_seed
 
@@ -181,12 +181,13 @@ def _phase_diagram(
     manager: OrderedBDD, rbd, j: int, rank: Dict[Hashable, int], count: int
 ) -> int:
     """Phase ``j``'s structure as a decision diagram over the segments:
-    built from its diagram's modules and core (see ``modular.py``), each
-    component working when its first ``j + 1`` segments are survived.
-    Component ``c``'s ``k``-th segment is variable ``rank[c] * count + k``,
-    so a component's segments are decided together, in phase order."""
+    built from its diagram's modules and core (see ``modular.py``, the
+    junctions folded in as always working), each component working when
+    its first ``j + 1`` segments are survived. Component ``c``'s ``k``-th
+    segment is variable ``rank[c] * count + k``, so a component's segments
+    are decided together, in phase order."""
     try:
-        decomposition = rbd._decomposition()
+        decomposition = rbd._set_structure()
     except ValueError:
         return FALSE  # no set of working nodes makes the phase work
     if decomposition.always_works:
@@ -369,8 +370,10 @@ class PhasedMission:
                     f"Phase {name!r} has common-cause groups, which a phased "
                     "mission does not model."
                 )
-            ends = {rbd.input_node, rbd.output_node}
-            used = tuple(n for n in rbd._components() if n not in ends)
+            # A junction (a PerfectReliability node, such as a vote point)
+            # is no component: the diagram folds it out of its structure.
+            left_out = {rbd.input_node, rbd.output_node} | rbd._junctions()
+            used = tuple(n for n in rbd._components() if n not in left_out)
             for node in used:
                 model = rbd.reliabilities[node]
                 known = self.components.setdefault(node, model)
@@ -460,7 +463,7 @@ class PhasedMission:
         order: Dict[Hashable, None] = {}
         for phase in self.phases:
             try:
-                decomposition = phase.rbd._decomposition()
+                decomposition = phase.rbd._set_structure()
             except ValueError:
                 continue  # the phase cannot work: it uses no component
             terms = decomposition.terms
@@ -740,7 +743,7 @@ class PhasedMission:
                 for n in rbd._components()
             }
             lifetime = np.asarray(
-                rbd._decomposition().lifetime(nodes, size), dtype=float
+                rbd._set_structure().lifetime(nodes, size), dtype=float
             )
             failed[~(lifetime > phase.end)] = j
         return failed
@@ -753,10 +756,12 @@ class PhasedMission:
         tolerance=None,
         confidence: float = 0.95,
         max_samples=None,
+        least: int = 1,
     ) -> np.ndarray:
-        """The failure phases of ``mc_samples`` simulated missions, then
-        more while a run to ``tolerance`` needs them."""
-        montecarlo.check_count(mc_samples, antithetic, "mc_samples")
+        """The failure phases of ``mc_samples`` simulated missions (at
+        least ``least``), then more while a run to ``tolerance`` needs
+        them."""
+        montecarlo.check_count(mc_samples, antithetic, "mc_samples", least)
         montecarlo.check_confidence(confidence)
         limit = montecarlo.sample_limit(
             mc_samples,
@@ -819,8 +824,9 @@ class PhasedMission:
         Raises
         ------
         ValueError
-            If ``method`` is unknown, or ``mc_samples`` is given with
-            ``method="exact"`` or is not a positive integer.
+            If ``method`` is unknown, or ``mc_samples`` or ``seed`` is
+            given with ``method="exact"``, or ``mc_samples`` is not a
+            positive integer.
         NotImplementedError
             If the mission's decision diagram needs more than
             ``MAX_NODES`` nodes (with ``METHOD = "paths"``, the
@@ -844,7 +850,7 @@ class PhasedMission:
         >>> round(mission.reliability(), 10) == round(float(pair.sf(50.0)), 10)
         True
         """
-        return self._outcome(method, mc_samples, seed)[0]
+        return self._outcome(method, mc_samples, seed, "reliability")[0]
 
     def unreliability(
         self,
@@ -871,7 +877,7 @@ class PhasedMission:
         float
             The mission's unreliability.
         """
-        return self._outcome(method, mc_samples, seed)[1]
+        return self._outcome(method, mc_samples, seed, "unreliability")[1]
 
     #: The mission's reliability, by the name the diagrams give it (#179).
     sf = reliability
@@ -915,7 +921,9 @@ class PhasedMission:
         >>> {name: round(chance, 5) for name, chance in failing.items()}
         {'out': 0.09516, 'back': 0.08611}
         """
-        method = self._method(method, mc_samples)
+        method = self._method(
+            method, mc_samples, seed, "phase_failure_probabilities"
+        )
         names = [phase.name for phase in self.phases]
         if method == "simulate":
             failed = self._simulated(
@@ -978,8 +986,9 @@ class PhasedMission:
         Raises
         ------
         ValueError
-            If ``mc_samples``, ``confidence``, ``tolerance`` or
-            ``max_samples`` is invalid.
+            If ``mc_samples`` is not a whole number of at least 2 (an
+            interval needs two missions; even, with ``antithetic``), or
+            ``confidence``, ``tolerance`` or ``max_samples`` is invalid.
         NotImplementedError
             If ``antithetic`` is asked for and a component's lives cannot
             be drawn from uniforms.
@@ -996,7 +1005,13 @@ class PhasedMission:
         True
         """
         failed = self._simulated(
-            mc_samples, seed, antithetic, tolerance, confidence, max_samples
+            mc_samples,
+            seed,
+            antithetic,
+            tolerance,
+            confidence,
+            max_samples,
+            least=2,
         )
         succeeded = (failed == len(self.phases)).astype(float)
         estimate = float(succeeded.mean())
@@ -1009,6 +1024,7 @@ class PhasedMission:
             confidence=confidence,
             standard_error=error,
             n_samples=len(succeeded),
+            method="simulated",
         )
 
     def birnbaum_importance(self) -> Dict[Hashable, float]:
@@ -1487,14 +1503,19 @@ class PhasedMission:
         components' segments, and refuse when it would need more than
         ``MAX_NODES`` nodes (the diagram is built, and kept for the
         analyses; the Fussell-Vesely importance's cut sets' diagram too).
-        The refusal is the message the method would raise.
+        They are as exact as the components' reliabilities: a component
+        whose reliability is numerical makes them numerical, and one with
+        none (a ``StandbyModel`` only simulations take) makes them refuse,
+        as the diagrams' routes have it. The refusal is the message the
+        method would raise.
 
         Returns
         -------
         dict[str, AnalysisRoute]
             For each public analysis, by method name: its ``route``
-            (``"exact"``, ``"simulated"`` or ``"refused"``) and the
-            ``reason`` (see [`AnalysisRoute`][repyability.AnalysisRoute]).
+            (``"exact"``, ``"numerical"``, ``"simulated"`` or
+            ``"refused"``), the ``reason`` and the components that decide
+            it (see [`AnalysisRoute`][repyability.AnalysisRoute]).
 
         Examples
         --------
@@ -1508,14 +1529,19 @@ class PhasedMission:
         ('exact', 'simulated')
         """
         r = routes
+        # A component whose model has no exact or numerical reliability
+        # refuses what is built on it, as the diagrams' routes have it.
+        nodes = {n: r.model_route(m) for n, m in self.components.items()}
         refused = r.refusal(lambda: self._plan(len(self.phases)))
         diagram = (
             r.refused(refused)
             if refused
-            else r.AnalysisRoute(
+            else r.with_nodes(
                 r.EXACT,
                 "The phases' decision diagram over the components' "
                 "segments (Esary and Ziehms), replayed.",
+                nodes,
+                "reliabilities",
             )
         )
         out = {
@@ -1537,26 +1563,33 @@ class PhasedMission:
         out["fussell_vesely"] = (
             r.refused(cuts)
             if cuts
-            else r.AnalysisRoute(
+            else r.with_nodes(
                 r.EXACT,
                 "The mission's minimal cut sets, their occurrence a "
                 "decision diagram over the components' segments.",
+                nodes,
+                "reliabilities",
             )
         )
         out["reliability_interval"] = r.AnalysisRoute(
             r.SIMULATED, "Each component's life drawn once per mission."
         )
-        return out
+        return r.AnalysisRoutes(out)
 
-    def _method(self, method: str, mc_samples) -> str:
+    def _method(self, method: str, mc_samples, seed, name: str) -> str:
         one_of("method", method, ("exact", "simulate"))
-        if method == "exact" and mc_samples is not None:
-            raise ValueError("mc_samples applies only to method='simulate'.")
+        if method == "exact":
+            simulation_options(
+                f"{name}()", {"mc_samples": mc_samples, "seed": seed}
+            )
         return method
 
-    def _outcome(self, method: str, mc_samples, seed) -> Tuple[float, float]:
-        """The mission's reliability and unreliability."""
-        method = self._method(method, mc_samples)
+    def _outcome(
+        self, method: str, mc_samples, seed, name: str
+    ) -> Tuple[float, float]:
+        """The mission's reliability and unreliability, as ``name`` asks
+        for them."""
+        method = self._method(method, mc_samples, seed, name)
         if method == "simulate":
             failed = self._simulated(
                 10_000 if mc_samples is None else mc_samples, seed

@@ -656,7 +656,7 @@ the mean be overrun, and is 1.138 million the worst case?
 
     ```python
     np.mean(year.samples > year.percentile(90))   # -> 0.1
-    np.mean(year.samples > year.mean)             # -> 0.5
+    np.mean(year.samples > year.mean)             # -> 0.48
     year.samples.max()                            # -> 1195381.3
     ```
 

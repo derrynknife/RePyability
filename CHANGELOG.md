@@ -401,6 +401,104 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **A junction is no component of a phased mission (from the 0.14 persona
+  review).** A `PerfectReliability` node of a phase's diagram (a vote
+  point, or one `FaultTree.to_rbd()` draws) was a component of the
+  mission that could fail: it had a Birnbaum importance (the mission's
+  reliability), a risk achievement worth and a place in every measure's
+  dict, where the diagram's measures leave it out. The mission's
+  `components` now leave the junctions out, as the diagram folds them out
+  of its structure, so the measures have the real components alone, and
+  the mission of one phase gives the diagram's values at the phase's end.
+  `PhasedMission.analysis_routes()` also said every analysis was exact
+  for a mission with a component that has no exact or numerical
+  reliability (a `StandbyModel` only simulations take), while `sf()`
+  raised: the exact analyses are now routed as refused with that
+  component's message, and as numerical when a component's reliability
+  is, as the diagrams' routes have it.
+- **An irrelevant node behind a junction is found (from the 0.14 persona
+  review).** `find_irrelevant_components()` and
+  `structure_check["irrelevant_nodes"]` missed a node in parallel with a
+  path through a `PerfectReliability` junction alone (`s-a-j-t` with
+  `a-x-t`): `x` is in no minimal path set and has a Birnbaum importance
+  of 0, but the structure was read before the junction was folded in.
+  They now read the structure with the junctions folded in, as the path
+  and cut sets do; a junction itself is no component and is never listed.
+- **A network refuses surpyval's distribution itself (from the 0.14
+  persona review).** `Network` took `surv.Weibull` (the class, not a
+  model of it) for a link or node, and failed later with surpyval's own
+  error; it now refuses it where it is given, as the diagrams and trees
+  do, saying to fit it or give its parameters.
+- **A fixed probability among lives, in a network (from the 0.14 persona
+  review).** `Network.mean()`, `barlow_proschan_importance()` and
+  `mean_uncertainty()` refused a network with any fixed-probability
+  element, even a perfect link given as `0.0`, where a diagram and a
+  tree give the finite answer: a fixed element fails at the start or
+  never, so it has no density (no share of the failures over time) and
+  the mean is `inf` where it keeps the terminals joined. They now refuse
+  only when every element is fixed, and `mean(method="simulate")` is
+  taken likewise. With every element fixed, a diagram's and a tree's
+  `barlow_proschan_importance()` gave `{node: nan}` silently where the
+  network refused: all three now refuse it, with the mean's reason (no
+  lifetimes), and `analysis_routes()` says so.
+- **The classes' methods take the same arguments (from the 0.14 persona
+  review).** `FaultTree.criticality_importance(t, kind=)` and
+  `differential_importance(t, kind=)` take the success-oriented form,
+  and `fussell_vesely(t, fv_type=, method=)` the path-set form, as
+  `NonRepairableRBD` and `Network` do, agreeing with `to_rbd()` with and
+  without common-cause groups. `FaultTree.mean(method="simulate",
+  mc_samples=, seed=)` and `FaultTree.random(size, seed=)` estimate and
+  draw the times to the top event through the tree's diagram (the draws
+  are `to_rbd()`'s), where a tree had no simulation at all. `Network`
+  has `minimal_cut_sets()` and `minimal_path_sets()`, lists smallest
+  first as every other class gives them (`cut_sets()` and `path_sets()`
+  stay, as sets), and the README's table shows them. A simulation
+  option given to an exact call (`mean(mc_samples=100)`,
+  `sf(50.0, seed=1)`) is refused the same way everywhere, a
+  `ValueError` saying it applies only to `method="simulate"`: a diagram
+  raised `TypeError`, a network and a mission `ValueError` for
+  `mc_samples` and nothing for `seed`. `mc_samples` and `size` are
+  checked in `NonRepairableRBD.mean(method="simulate")` and `random()`
+  (0 gave `nan` with numpy's warnings, 1.5 a numpy error), and an
+  interval (`mean_time_to_failure_interval`,
+  `PhasedMission.reliability_interval`) refuses fewer than two
+  samples, where it returned a `nan` interval silently; both say
+  `method="simulated"` in their `ConfidenceInterval`. A common-cause
+  group's own parameters can be given to the uncertainty under its
+  members' tuple by their lever names (`{("a", "b"): {"ccf_beta":
+  dist}}`, as `levers()` keys them), which was refused as not a
+  parameter of the members' model ("Did you mean 'beta'?"), besides
+  under the `CCFGroup` as before.
+- **Messages and printing (from the 0.14 persona review).** A misspelt
+  keyword (`rbd.sf(t=50)`) is Python's `TypeError` for it, where the
+  time check said "x is required", and that message names the kind of
+  diagram ("this network", "this fault tree"). `RBD.from_dict` of a
+  document with no `"type"` says so. `bx_life("10")` is refused as not
+  a number, and a B-life the reliability never falls to (a fixed
+  survivor in parallel keeps it at 0.9) says the target is never
+  reached and what the reliability never falls below, where it asked
+  for an `upper_bound`. A number landing in `working_nodes` or
+  `broken_nodes` (`mission_availability(0, 100)`) is refused naming the
+  argument, where it was "'int' object is not iterable", through one
+  check every method that holds nodes shares. `analysis_routes()`
+  returns an `AnalysisRoutes` dict that prints one method a line,
+  `name: route -- reason`, with `to_dict()` for JSON, in every class.
+  `NonRepairable` prints its life model, its replacement and its costs.
+  The measures at `Q = 0` (`t = 0`) give their documented `nan` without
+  numpy's warnings; a network's measure of an irrelevant link prints
+  `0.0`, not `-0.0`. `with_levers` names the kind of diagram in its
+  message for an unknown key (a diagram no longer mentions the repair
+  crews). `path_set_probabilities` refuses a missing node with a
+  `ValueError` naming it, and a time in place of the probabilities, and
+  its values are in `minimal_path_sets()`'s order, as documented.
+  `FaultTree.from_rbd` warns that a diagram's capacities are left out.
+  `FaultTree.sf` and `Network.sf` (and their measures) take a 2-D array
+  of times, shaped as given, as a diagram's do. `levers()` and the
+  Greeks guide say that nested diagrams' and composite models' units are
+  not reached. The tutorial's controller criticality reads 0.916 (it
+  said 0.922), the costs lesson's share of years above the mean 0.48,
+  and the quickstart uses `minimal_path_sets()` and
+  `minimal_cut_sets()`.
 - **Spares from new of a block-replaced component dead on arrival, put in
   at a block time in no time (#322).** The unit a block replacement in no
   time puts in may be dead on arrival, and the one put in at its failure,

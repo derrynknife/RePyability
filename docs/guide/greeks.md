@@ -129,7 +129,11 @@ order, each a `Lever`: whose it is and its name, its value now, the range
 of values it can take, whether it is discrete (one more standby unit or
 crew), and whether it moves a calendar that its component shares with
 others. Nothing is worked out, so a report can name the levers and show
-their values without the sensitivities:
+their values without the sensitivities. The levers are each node's own
+model's parameters (and a component's maintenance options): neither
+`levers()` nor `parameter_sensitivity` descends into a nested diagram or
+into the units of a composite model (a `StandbyModel`, a
+`LoadSharingModel`, a `DegradingNode`), whose parameters are not reached.
 
 ```python
 valve = {lever.name: lever for lever in station.levers() if lever.key == "valve"}
