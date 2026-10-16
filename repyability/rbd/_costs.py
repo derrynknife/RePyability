@@ -35,10 +35,8 @@ def expected_cost_rate(
     if not rbd.has_costs:
         return 0.0
 
-    working_nodes = set() if working_nodes is None else set(working_nodes)
-    broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working_nodes, broken_nodes)
-    forced = working_nodes | broken_nodes
+    working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
+    forced = set(working_nodes) | set(broken_nodes)
     setups = [group for group in rbd._maintenance.values() if group.setup_cost]
     if setups:
         _requirements._require_separate_setups(rbd)

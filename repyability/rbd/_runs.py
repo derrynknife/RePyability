@@ -526,9 +526,7 @@ def simulate_chunk(
             "the chunk holds whole pairs."
         )
     means = _chunk_means(control_variate, conditional)
-    working = set() if working_nodes is None else set(working_nodes)
-    broken = set() if broken_nodes is None else set(broken_nodes)
-    diagram._validate_node_overrides(working, broken)
+    working, broken = diagram._held_nodes(working_nodes, broken_nodes)
     states = _curves._simulation_states(diagram, state, working | broken)
     chunk = _chunk(
         diagram,
@@ -653,9 +651,7 @@ def shards(
 
     N = 10_000 if mc_samples is None else mc_samples
     montecarlo.check_count(N, antithetic, "mc_samples")
-    working = set() if working_nodes is None else set(working_nodes)
-    broken = set() if broken_nodes is None else set(broken_nodes)
-    diagram._validate_node_overrides(working, broken)
+    working, broken = diagram._held_nodes(working_nodes, broken_nodes)
     states = _curves._simulation_states(diagram, state, working | broken)
     capacity = _chunk_capacity(diagram, broken, method, demand)
     _ccf_groups._require_free_members(diagram, working, broken)
@@ -1281,9 +1277,9 @@ def _simulated(
     from . import _event_loop
 
     t_simulation = simulation_window(t_simulation)
-    working_nodes = set() if working_nodes is None else set(working_nodes)
-    broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-    diagram._validate_node_overrides(working_nodes, broken_nodes)
+    working_nodes, broken_nodes = diagram._held_nodes(
+        working_nodes, broken_nodes
+    )
     states = _curves._simulation_states(
         diagram, state, working_nodes | broken_nodes
     )

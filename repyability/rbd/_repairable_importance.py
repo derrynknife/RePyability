@@ -113,9 +113,7 @@ def _crew_held_importance(
     is ``U(0_i) - U(1_i)``, ``"improvement"`` ``U - U(1_i)``, ``"raw"``
     ``U(0_i) / U`` and ``"rrw"`` ``U / U(1_i)``. A node already held
     is held the other way for its own measure."""
-    working = set(working_nodes or ())
-    broken = set(broken_nodes or ())
-    rbd._validate_node_overrides(working, broken)
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     base = np.float64(rbd.mean_unavailability(working, broken))
     out: dict = {}
     for node in rbd.nodes:
@@ -738,9 +736,7 @@ def availability_rate(
 ) -> RateBreakdown:
     """See ``RepairableRBD.availability_rate``."""
     times = nonnegative_times(x)
-    working = set() if working_nodes is None else set(working_nodes)
-    broken = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working, broken)
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     forced = working | broken
     states = _curves._states(rbd, state, forced)
     flat = times.ravel()

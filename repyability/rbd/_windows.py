@@ -106,9 +106,7 @@ def _point(rbd, x, working_nodes, broken_nodes, method, state, down=False):
     """``point_availability``, or with ``down``, ``point_unavailability``
     (#237)."""
     times = nonnegative_times(x)
-    working_nodes = set() if working_nodes is None else set(working_nodes)
-    broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working_nodes, broken_nodes)
+    working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
     horizon = float(times.max()) if times.size else 0.0
     states = _curves._states(rbd, state, working_nodes | broken_nodes)
     system_at, _, _ = _system_at(
@@ -188,9 +186,7 @@ def _mission(rbd, t, working_nodes, broken_nodes, method, state, down=False):
     """``mission_availability``, or with ``down``,
     ``mission_unavailability`` (#237)."""
     windows = nonnegative_times(t)
-    working_nodes = set() if working_nodes is None else set(working_nodes)
-    broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working_nodes, broken_nodes)
+    working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
     ends = windows.ravel()
     horizon = float(ends.max()) if ends.size else 0.0
     states = _curves._states(rbd, state, working_nodes | broken_nodes)
@@ -323,9 +319,7 @@ def _window(
     causes."""
     method = structure_method(method)
     windows = nonnegative_times(t)
-    working = set() if working_nodes is None else set(working_nodes)
-    broken = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working, broken)
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     forced = working | broken
     ends = windows.ravel()
     horizon = float(ends.max()) if ends.size else 0.0

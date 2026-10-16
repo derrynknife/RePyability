@@ -81,9 +81,7 @@ def measure(
             "Give the times x or a window's length, not both: x evaluates "
             "the measure at each time, window averages it over [0, window)."
         )
-    working = set(working_nodes or ())
-    broken = set(broken_nodes or ())
-    rbd._validate_node_overrides(working, broken)
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     states = _curves._states(rbd, state, working | broken)
     if x is not None:
         times = nonnegative_times(x)

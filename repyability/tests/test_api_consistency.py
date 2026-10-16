@@ -482,3 +482,71 @@ def test_the_shocks_are_kept():
             np.random.default_rng(0),
         )
     assert all(m.shocks == "independent" for m in drawn)
+
+
+# -- the routes print one method a line (0.14 persona review) ----------------
+
+
+def test_the_routes_print_one_method_a_line():
+    import json
+
+    from repyability import AnalysisRoutes, FaultTree
+    from repyability.rbd.routes import AnalysisRoute
+
+    unit = {"reliability": W([100, 2]), "repairability": E([0.5])}
+    diagrams = [
+        NonRepairableRBD(BRIDGE, {n: W([100, 2]) for n in "abcde"}),
+        RepairableRBD(BRIDGE, {n: dict(unit) for n in "abcde"}),
+        FaultTree({"top": ("and", ["a", "b"])}, {"a": W([100, 2]), "b": 0.1}),
+        Network(
+            {"a": ("s", "t", W([100, 2])), "b": ("s", "t", 0.1)}, "s", "t"
+        ),
+        PhasedMission(
+            [
+                (
+                    "p",
+                    10.0,
+                    NonRepairableRBD(
+                        BRIDGE, {n: W([100, 2]) for n in "abcde"}
+                    ),
+                )
+            ]
+        ),
+    ]
+    for diagram in diagrams:
+        report = diagram.analysis_routes()
+        assert isinstance(report, AnalysisRoutes)
+        assert isinstance(report, dict)
+        assert all(isinstance(r, AnalysisRoute) for r in report.values())
+        lines = str(report).splitlines()
+        assert repr(report) == str(report)
+        assert len(lines) == len(report)
+        for line, (name, route) in zip(lines, report.items()):
+            head, rest = line.split(": ", 1)
+            assert head == name
+            assert rest.startswith(route.route + " -- ")
+            assert "\n" not in rest
+            assert route.reason.startswith(rest[len(route.route) + 4 :])
+        plain = report.to_dict()
+        assert plain == json.loads(json.dumps(plain))
+        first = next(iter(report))
+        assert plain[first] == report[first].to_dict()
+        assert dict(report) == {k: v for k, v in report.items()}
+    # A long refusal is cut to its first sentence.
+    long = AnalysisRoutes(
+        {
+            "mean": AnalysisRoute(
+                "refused", "First sentence. Then more.\nAnd more."
+            )
+        }
+    )
+    assert str(long) == "mean: refused -- First sentence."
+
+
+def test_simulated_intervals_say_so():
+    rbd = NonRepairableRBD(BRIDGE, {n: W([100, 2]) for n in "abcde"})
+    assert rbd.mean_time_to_failure_interval(mc_samples=50, seed=1).method == (
+        "simulated"
+    )
+    mission = PhasedMission([("p", 10.0, rbd)])
+    assert mission.reliability_interval(50, seed=1).method == "simulated"

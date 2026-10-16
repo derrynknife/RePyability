@@ -99,7 +99,7 @@ from repyability.rbd.results import (
     UncertaintyResult,
     UpDownImportance,
 )
-from repyability.rbd.routes import AnalysisRoute
+from repyability.rbd.routes import AnalysisRoute, AnalysisRoutes
 from repyability.rbd.shards import run_shard
 from repyability.rbd.standby_node import StandbyModel
 from repyability.repairable import (
@@ -154,6 +154,7 @@ __all__ = [
     "Timelines",
     # Result types
     "AnalysisRoute",
+    "AnalysisRoutes",
     "AvailabilityResult",
     "CapacityDistribution",
     "ConditionalRun",

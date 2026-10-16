@@ -389,7 +389,7 @@ def test_the_methods_are_checked():
     mission = PhasedMission([("up", 1.0, SERIES)])
     with pytest.raises(ValueError, match="'exact' or 'simulate'"):
         mission.reliability(method="guess")
-    with pytest.raises(ValueError, match="only to method='simulate'"):
+    with pytest.raises(ValueError, match="only with method='simulate'"):
         mission.reliability(mc_samples=10)
     with pytest.raises(ValueError):
         mission.reliability_interval(0)
@@ -786,3 +786,100 @@ def test_the_cut_sets_diagram_has_its_own_limit(monkeypatch):
     assert mission.analysis_routes()["fussell_vesely"].route == "refused"
     assert mission.analysis_routes()["birnbaum_importance"].route == "exact"
     assert mission.fussell_vesely(method="rare_event")["a"] > 0.0
+
+
+# -- the 0.14 persona review --------------------------------------------------
+
+
+def test_a_junction_is_no_component_of_a_mission():
+    # A PerfectReliability vote point never fails: it is folded out of the
+    # structure, so it is no component and has no importance. A mission of
+    # one phase is the diagram at the phase's end.
+    from repyability import PerfectReliability
+
+    vote = NonRepairableRBD(
+        [
+            ("s", "a"),
+            ("s", "b"),
+            ("s", "c"),
+            ("a", "j"),
+            ("b", "j"),
+            ("c", "j"),
+            ("j", "d"),
+            ("d", "t"),
+        ],
+        {"a": UNITS["a"], "b": UNITS["b"], "c": UNITS["c"], "d": UNITS["d"]}
+        | {"j": PerfectReliability},
+        k={"j": 2},
+    )
+    mission = PhasedMission([("p", 50.0, vote)])
+    assert list(mission.components) == ["a", "b", "c", "d"]
+    assert mission.sf() == pytest.approx(vote.sf(50.0), rel=1e-12)
+    assert mission.sf(method="simulate", mc_samples=4000, seed=1) == (
+        pytest.approx(vote.sf(50.0), abs=0.03)
+    )
+    checks = {
+        "birnbaum_importance": vote.birnbaum_importance(50.0),
+        "improvement_potential": vote.improvement_potential(50.0),
+        "risk_achievement_worth": vote.risk_achievement_worth(50.0),
+        "risk_reduction_worth": vote.risk_reduction_worth(50.0),
+        "criticality_importance": vote.criticality_importance(50.0),
+        "fussell_vesely": vote.fussell_vesely(50.0),
+    }
+    for name, expected in checks.items():
+        found = getattr(mission, name)()
+        assert set(found) == {"a", "b", "c", "d"}, name
+        for node, value in expected.items():
+            assert found[node] == pytest.approx(value, rel=1e-9), (name, node)
+    assert set(mission.minimal_cut_sets()) == {
+        frozenset((node, "p") for node in cut)
+        for cut in vote.minimal_cut_sets()
+    }
+
+
+def test_a_component_with_no_reliability_refuses_the_exact_analyses():
+    from repyability import StandbyModel
+
+    warm = StandbyModel(
+        [W([100, 2]), W([120, 1.5]), W([90, 3])], k=2, dormancy_factor=0.3
+    )
+    assert warm.is_simulated
+    diagram = NonRepairableRBD(
+        [("s", "g"), ("g", "v"), ("v", "t")], {"g": warm, "v": W([200, 1.5])}
+    )
+    mission = PhasedMission([("p", 60.0, diagram)])
+    report = mission.analysis_routes()
+    with pytest.raises(NotImplementedError) as error:
+        mission.sf()
+    for name in ("sf", "birnbaum_importance", "fussell_vesely"):
+        assert report[name].route == "refused"
+        assert report[name].reason == str(error.value)
+        assert report[name].nodes == ("g",)
+    assert report["reliability_interval"].route == "simulated"
+    estimate = mission.reliability_interval(4000, seed=1)
+    assert estimate.method == "simulated"
+    simulated = mission.sf(method="simulate", mc_samples=4000, seed=1)
+    assert estimate.lower < simulated < estimate.upper or (
+        simulated == pytest.approx(estimate.estimate)
+    )
+
+
+def test_an_interval_needs_two_missions():
+    mission = PhasedMission([("up", 10.0, SERIES)])
+    with pytest.raises(ValueError, match="mc_samples must be at least 2"):
+        mission.reliability_interval(1, seed=1)
+    with pytest.raises(ValueError, match="mc_samples must be at least 4"):
+        mission.reliability_interval(2, seed=1, antithetic=True)
+    assert mission.reliability_interval(2, seed=1).method == "simulated"
+
+
+def test_simulation_options_need_method_simulate():
+    mission = PhasedMission([("up", 10.0, SERIES)])
+    for name in ("reliability", "unreliability", "sf", "ff"):
+        with pytest.raises(ValueError, match="only with method='simulate'"):
+            getattr(mission, name)(seed=1)
+        with pytest.raises(ValueError, match="only with method='simulate'"):
+            getattr(mission, name)(mc_samples=10)
+    with pytest.raises(ValueError, match="only with method='simulate'"):
+        mission.phase_failure_probabilities(seed=1)
+    assert mission.sf(method="simulate", mc_samples=10, seed=1) <= 1.0

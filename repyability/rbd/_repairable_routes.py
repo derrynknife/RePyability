@@ -708,4 +708,4 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             "instead).",
         )
     )
-    return dict(sorted(out.items()))
+    return r.AnalysisRoutes(sorted(out.items()))

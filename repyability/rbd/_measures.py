@@ -37,6 +37,10 @@ from repyability.rbd._model_utils import (
     is_fixed_probability,
 )
 
+#: A time past every finite life: what a system's reliability is there, it
+#: never loses.
+LATE = 1e300
+
 
 def improvement_potential(
     birnbaum: Mapping, q: Mapping
@@ -52,8 +56,10 @@ def risk_achievement_worth(
 ) -> Dict[Hashable, Any]:
     """Each element's risk achievement worth: the system's probability of
     failing with the element held failed, over its probability of failing
-    as it is (inf or nan, with numpy's warning, where that is 0)."""
-    return {name: value / fails for name, value in fails_held.items()}
+    as it is (inf, or nan at 0/0, where that is 0: a system that cannot
+    fail, no cause for a warning)."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return {name: value / fails for name, value in fails_held.items()}
 
 
 def risk_reduction_worth(
@@ -187,9 +193,9 @@ def life_end(
     its reliability ``sf`` (of an array of times) within ``1e-14`` of
     what it never loses, found by doubling from the last of the
     ``knots``."""
-    never = float(np.ravel(sf(np.array([1e300])))[0])
+    never = float(np.ravel(sf(np.array([LATE])))[0])
     start = float(knots[-1]) if knots.size else 1.0
-    tail = start * 2.0 ** np.arange(int(np.log2(1e300 / start)) + 1)
+    tail = start * 2.0 ** np.arange(int(np.log2(LATE / start)) + 1)
     values = np.ravel(sf(tail))
     ended = np.flatnonzero(values - never <= 1e-14)
     return float(tail[ended[0]] if ended.size else tail[-1])
@@ -206,8 +212,9 @@ def invert_reliability(
     solution is unique: the crossing is bracketed between 0 and
     ``upper_bound``, found by doubling from 1 unless given, and found with
     Brent's method. Raises ``ValueError`` if ``target`` is not in (0, 1),
-    exceeds the reliability at 0 (so it is never reached), or cannot be
-    bracketed.
+    exceeds the reliability at 0 or what the reliability never falls below
+    (a part of the system that never fails: it is then never reached), or
+    cannot be bracketed below ``upper_bound``.
     """
     if np.ndim(target) > 0:
         targets = np.asarray(target, dtype=float)
@@ -237,9 +244,13 @@ def invert_reliability(
                 break
             hi *= 2.0
         else:
+            # Doubled past every finite time: the reliability never falls
+            # that far (a part of the system never fails).
+            floor = float(sf(LATE))
             raise ValueError(
-                "Could not bracket the target reliability; pass an "
-                "explicit upper_bound."
+                f"target reliability {target} is never reached: the system "
+                f"reliability never falls below {floor:.6g} (a part of the "
+                "system never fails)."
             )
     return float(brentq(f, 0.0, hi))
 

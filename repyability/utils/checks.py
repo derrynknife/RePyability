@@ -50,14 +50,16 @@ def structure_method(method) -> str:
 def simulation_options(method: str, given: dict) -> None:
     """Refuse the simulation options in ``given`` (those passed: not None
     or False) to ``method``, whose answer is exact unless
-    ``method="simulate"``: they would do nothing."""
+    ``method="simulate"``: they would do nothing. A ``ValueError``, as
+    for any argument whose value does not fit the call, from every class
+    that simulates on request."""
     passed = [
         name
         for name, value in given.items()
         if value is not None and value is not False
     ]
     if passed:
-        raise TypeError(
+        raise ValueError(
             f"{method} takes {', '.join(passed)} only with "
             "method='simulate': its answer is otherwise exact."
         )

@@ -608,9 +608,7 @@ def _ccf_long_run_measure(
 ) -> dict:
     """An importance measure of every node in the long run, with the
     common-cause groups (see ``_ccf_measure``)."""
-    working = set(working_nodes or ())
-    broken = set(broken_nodes or ())
-    rbd._validate_node_overrides(working, broken)
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     _, weights, inputs = _ccf_long_run(rbd, working, broken)
     return _squeeze_values(
         rbd._ccf_measure(

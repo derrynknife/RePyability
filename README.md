@@ -154,7 +154,7 @@ Which analyses each model type has (the method; — where it has none):
 | Given the system's age | `cs` | — | — | — | — |
 | Given the components' ages or states | `sf_given_state` | — | — | — | — |
 | Mean residual and remaining life | `mean_residual_life` | — | — | — | — |
-| Random lifetimes | `random` | — | — | `random` | — |
+| Random lifetimes | `random` | — | `random` | `random` | — |
 | Top event probability | — | — | `top_event_probability` | — | — |
 | Each phase's failure probability | — | — | — | — | `phase_failure_probabilities` |
 | **Availability and outages** | | | | | |
@@ -176,7 +176,7 @@ Which analyses each model type has (the method; — where it has none):
 | Total cost of ownership | — | `total_cost` | — | — | — |
 | Spares demand and stock | — | `spares_demand` | — | — | — |
 | **Structure** | | | | | |
-| Minimal path and cut sets | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `cut_sets` | `minimal_cut_sets` |
+| Minimal path and cut sets | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` |
 | Each path set's probability | `path_set_probabilities` | `path_set_probabilities` | — | — | — |
 | Cut sets ranked by probability | — | — | `ranked_cut_sets` | — | — |
 | Irrelevant components | `find_irrelevant_components` | `find_irrelevant_components` | — | — | — |
@@ -223,7 +223,7 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | A surpyval model | E | N | N | E N | E N | N | S | E N | – | S |
 | A fitted model (with its covariance) | E | N | N | E N | E N | N | S | E N | – | S |
 | A fit with a cure share and zero-inflation | E | N | N | E N | E N | N | S | E N | – | S |
-| A probability per demand | E | – | – | E | E N | N | S | E N | – | S |
+| A probability per demand | E | – | – | E | E | N | S | E N | – | S |
 | A mixture (`MixtureModel`) | E | N | N | E N | E N | N | S | E N | – | S |
 | A regression node (covariates) | E | N | N | E N | E N | N | S | E N | – | S |
 | A degrading node | N | N | N | N | N | N | S | N | N | S |

@@ -403,6 +403,8 @@ NETWORK_CALLS = {
     "structural_importance": lambda net: net.structural_importance(),
     "cut_sets": lambda net: net.cut_sets(),
     "path_sets": lambda net: net.path_sets(),
+    "minimal_cut_sets": lambda net: net.minimal_cut_sets(),
+    "minimal_path_sets": lambda net: net.minimal_path_sets(),
     "mean": lambda net: net.mean(),
     "time_to_reliability": lambda net: net.time_to_reliability(0.5),
     "bx_life": lambda net: net.bx_life(10),
@@ -1065,6 +1067,7 @@ FAULT_TREE_CALLS = {
     "time_to_reliability": lambda tree: tree.time_to_reliability(0.5),
     "bx_life": lambda tree: tree.bx_life(10),
     "mean": lambda tree: tree.mean(),
+    "random": lambda tree: tree.random(200, seed=1),
     "structural_importance": lambda tree: tree.structural_importance(),
     "sf_uncertainty": lambda tree: tree.sf_uncertainty(
         X, uncertain_event(tree), n_draws=2, seed=1

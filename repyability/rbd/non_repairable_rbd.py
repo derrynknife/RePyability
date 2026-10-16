@@ -6,6 +6,7 @@ uses (``check_x`` and the ``NodeFailure`` simulation event).
 """
 
 import functools
+import inspect
 import math
 import pickle
 import zlib
@@ -89,6 +90,7 @@ from .rbd import (
     RBD,
     Pairs,
     _check_on_infeasible_rbd,
+    _node_collection,
     leaves_out_junctions,
 )
 from .redundancy_allocation import ComponentOption, active_unreliability
@@ -112,6 +114,7 @@ from .uncertainty import (
     draw_models,
     draw_with,
     fitted_together,
+    split_group_levers,
     varied_ccf_parameters,
     varied_parameters,
 )
@@ -212,10 +215,17 @@ def check_x(func):
         ``wrap(self, x=None, *args, **kwargs)``.
     """
 
+    signature = inspect.signature(func)
+
     @functools.wraps(func)
-    def wrap(obj, x=None, *args, **kwargs):
-        x, scalar_in = _times(obj, x)
-        result = func(obj, x, *args, **kwargs)
+    def wrap(obj, *args, **kwargs):
+        # Bound first, so that a misspelt keyword is the TypeError Python
+        # raises for it, not a complaint that ``x`` is missing.
+        bound = signature.bind(obj, *args, **kwargs)
+        bound.apply_defaults()
+        x, scalar_in = _times(obj, bound.arguments["x"])
+        bound.arguments["x"] = x
+        result = func(*bound.args, **bound.kwargs)
         if scalar_in:
             if isinstance(result, dict):
                 return {k: np.asarray(v).item() for k, v in result.items()}
@@ -229,14 +239,14 @@ def _times(obj, x) -> tuple:
     """The time argument of an RBD method as a float array of at least one
     dimension, and whether it was a scalar. ``x=None`` stands for any time
     (1.0) in a fixed-probability RBD, and is refused in a time-varying
-    one."""
+    one (``obj._KIND`` names the kind of diagram in the message)."""
     if x is None:
         if obj.is_fixed:
             x = 1.0
         else:
             raise ValueError(
-                "x is required: this RBD is time-varying (at least one "
-                "node model's probability depends on time)."
+                f"x is required: this {obj._KIND} is time-varying (at least "
+                "one model's probability depends on time)."
             )
     scalar_in = np.ndim(x) == 0
     return np.atleast_1d(real_array(x, "x")), scalar_in
@@ -672,6 +682,14 @@ class NonRepairableRBD(RBD):
         # with the names given models, which it checks against the edges.
         self._aliases = dict(repeated)
         self._models_given = list(reliabilities) + list(repeated)
+        # The junctions (see ``_junctions``), known before the base class
+        # works out the structure: its irrelevant nodes are found with them
+        # folded in.
+        self._junctions_given = frozenset(
+            name
+            for name, model in reliabilities.items()
+            if model is PerfectReliability
+        )
         self._perfect_given = frozenset(
             name
             for name, model in reliabilities.items()
@@ -756,12 +774,10 @@ class NonRepairableRBD(RBD):
 
     def _junctions(self) -> frozenset:
         """The ``PerfectReliability`` nodes: drawing devices, such as a
-        k-out-of-n vote (see ``RBD._junctions``)."""
-        reliabilities = getattr(self, "reliabilities", {})
+        k-out-of-n vote (see ``RBD._junctions``), among the nodes drawn
+        (known as the base class works out the structure)."""
         return frozenset(
-            node
-            for node in self.nodes
-            if reliabilities.get(node) is PerfectReliability
+            node for node in self.nodes if node in self._junctions_given
         )
 
     def _validate_node_overrides(self, working_nodes, broken_nodes) -> None:
@@ -772,7 +788,7 @@ class NonRepairableRBD(RBD):
             ("working_nodes", working_nodes),
             ("broken_nodes", broken_nodes),
         ):
-            for node in nodes:
+            for node in _node_collection(label, nodes):
                 if node in self.repeated:
                     raise ValueError(
                         f"Node {node}, given to {label}, is a repeat of node "
@@ -862,9 +878,9 @@ class NonRepairableRBD(RBD):
         0.9
         """
         # Normalise the (optional) node overrides into sets for O(1) lookup.
-        working_nodes = set() if working_nodes is None else set(working_nodes)
-        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-        self._validate_node_overrides(working_nodes, broken_nodes)
+        working_nodes, broken_nodes = self._held_nodes(
+            working_nodes, broken_nodes
+        )
 
         node_probabilities = self._base_node_probabilities(
             x, working_nodes, broken_nodes
@@ -1012,8 +1028,7 @@ class NonRepairableRBD(RBD):
                 f"fv_type={fv_type!r} was given."
             )
         one_of("method", method, ("exact", "rare_event"))
-        working = set(working_nodes or ())
-        broken = set(broken_nodes or ())
+        working, broken = self._held_nodes(working_nodes, broken_nodes)
         p, q = self._importance_inputs(x, working, broken)
         if measure == "fussell_vesely":
             shares = self._ccf_fv_numerators(
@@ -1059,8 +1074,7 @@ class NonRepairableRBD(RBD):
         ``_ccf_modules.joint_importance``: two members of one group are
         conditioned on their joint state), ``R(1_i, 1_j) - R(1_i, 0_j) -
         R(0_i, 1_j) + R(0_i, 0_j)``; 0 for a pair with a node held."""
-        working = set(working_nodes or ())
-        broken = set(broken_nodes or ())
+        working, broken = self._held_nodes(working_nodes, broken_nodes)
         p, q = self._importance_inputs(x, working, broken)
         evaluation = self._ccf_evaluation(p, q, working, broken)
         held = working | broken
@@ -1548,9 +1562,9 @@ class NonRepairableRBD(RBD):
         summed over their outcomes as for ``sf`` (``method`` changes
         nothing here)."""
         method = structure_method(method)
-        working_nodes = set() if working_nodes is None else set(working_nodes)
-        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-        self._validate_node_overrides(working_nodes, broken_nodes)
+        working_nodes, broken_nodes = self._held_nodes(
+            working_nodes, broken_nodes
+        )
 
         node_probabilities = self._base_node_probabilities(
             x, working_nodes, broken_nodes
@@ -1650,9 +1664,9 @@ class NonRepairableRBD(RBD):
         113.13
         """
         x, scalar = _times(self, x)
-        working_nodes = set() if working_nodes is None else set(working_nodes)
-        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-        self._validate_node_overrides(working_nodes, broken_nodes)
+        working_nodes, broken_nodes = self._held_nodes(
+            working_nodes, broken_nodes
+        )
         self._require_capacity()
         own = {}
         for node, model in self._capacity_models().items():
@@ -2693,8 +2707,27 @@ class NonRepairableRBD(RBD):
                 (i for i, g in enumerate(self.ccf_groups) if key is g), None
             )
             if index is not None:
+                if index in ccf_specs:
+                    raise ValueError(
+                        f"Common-cause group {list(key.members)!r} is given "
+                        "an uncertainty twice: under the CCFGroup and under "
+                        "its members."
+                    )
                 ccf_specs[index] = (key, spec)
                 continue
+            # A group's own parameters under its members' tuple, named as
+            # its levers are (ccf_beta, ...), go to its model.
+            index, own, spec = split_group_levers(key, spec, self.ccf_groups)
+            if index is not None and own:
+                if index in ccf_specs:
+                    raise ValueError(
+                        f"Common-cause group {list(key)!r} is given an "
+                        "uncertainty twice: under the CCFGroup and as "
+                        f"{list(own)!r} under its members."
+                    )
+                ccf_specs[index] = (self.ccf_groups[index], own)
+                if not spec:
+                    continue
             if key in components or not isinstance(key, tuple):
                 members = (key,)
             else:
@@ -5180,14 +5213,20 @@ class NonRepairableRBD(RBD):
                 ),
             ),
         )
-        give(
-            ("barlow_proschan_importance",),
-            built(
+        densities = r.refusal(
+            lambda: self._require_varying_lifetimes(
+                "lifetimes, so no failure density over time to share out"
+            )
+        )
+        out["barlow_proschan_importance"] = (
+            r.refused(densities)
+            if densities
+            else built(
                 r.NUMERICAL,
                 "Each node's part of the system's failure density (see "
                 "reliability_rate), integrated over time by adaptive "
                 "Gauss-Legendre quadrature (to about 1e-9).",
-            ),
+            )
         )
         out["parameter_sensitivity"] = built(
             r.NUMERICAL,
@@ -5567,8 +5606,7 @@ class NonRepairableRBD(RBD):
         ------
         ValueError
             If ``size`` is not a positive integer (even, with
-            ``antithetic``) when ``antithetic`` or ``n_jobs`` is given, or
-            ``n_jobs`` is not a positive integer or -1.
+            ``antithetic``), or ``n_jobs`` is not a positive integer or -1.
         NotImplementedError
             If ``antithetic`` is asked for and a node's draws cannot be
             replayed from uniforms (a node model sampled its own way).
@@ -5588,10 +5626,10 @@ class NonRepairableRBD(RBD):
         >>> bool((lifetimes == rbd.random(5, seed=1)).all())
         True
         """
+        montecarlo.check_count(size, antithetic, "size")
         if not antithetic and n_jobs is None:
             with numpy_seed(seed):
                 return self._draw(size)
-        montecarlo.check_count(size, antithetic, "size")
         jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
         return self._simulate_lifetimes(size, seed, antithetic, jobs, None)
 
@@ -6111,13 +6149,16 @@ class NonRepairableRBD(RBD):
             [model_kinks(m) for m in models],
         )
 
-    def _require_varying_lifetimes(self) -> None:
+    def _require_varying_lifetimes(
+        self, what: str = "lifetimes to average"
+    ) -> None:
         """Raise if every node is a fixed probability: the system then fails
-        at the start or never, and has no lifetimes to average."""
+        at the start or never, so it has no lifetimes (no ``what``: none to
+        average, no failure density over time)."""
         if self.is_fixed:
             raise Refused(
                 "System reliability does not vary with time (all nodes are "
-                "fixed-probability): the system has no lifetimes to average."
+                f"fixed-probability): the system has no {what}."
             )
 
     def _require_lifetimes(self) -> None:
@@ -6501,8 +6542,9 @@ class NonRepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If ``confidence`` is not in (0, 1), or another option is invalid
-            (see ``mean``).
+            If ``confidence`` is not in (0, 1), ``mc_samples`` is fewer
+            than 2 (an interval needs two lifetimes; two pairs, with
+            ``antithetic``), or another option is invalid (see ``mean``).
         NotImplementedError
             With ``antithetic``, if a node's draws cannot be replayed from
             uniforms.
@@ -6537,6 +6579,7 @@ class NonRepairableRBD(RBD):
             max_samples,
             antithetic,
             n_jobs,
+            least=2,
         )
         estimate = float(samples.mean())
         standard_error = montecarlo.standard_error(samples, antithetic)
@@ -6548,6 +6591,7 @@ class NonRepairableRBD(RBD):
             confidence=confidence,
             standard_error=standard_error,
             n_samples=len(samples),
+            method="simulated",
         )
 
     def _mttf_samples(
@@ -6559,9 +6603,12 @@ class NonRepairableRBD(RBD):
         max_samples,
         antithetic: bool,
         n_jobs,
+        least: int = 1,
     ) -> np.ndarray:
-        """The simulated lifetimes an MTTF estimate is the mean of."""
+        """The simulated lifetimes an MTTF estimate is the mean of (at
+        least ``least`` of them)."""
         self._require_varying_lifetimes()
+        montecarlo.check_count(mc_samples, antithetic, "mc_samples", least)
         if (
             tolerance is None
             and max_samples is None
@@ -6569,7 +6616,6 @@ class NonRepairableRBD(RBD):
             and n_jobs is None
         ):
             return self.random(mc_samples, seed=seed)
-        montecarlo.check_count(mc_samples, antithetic, "mc_samples")
         montecarlo.check_confidence(confidence)
         limit = montecarlo.sample_limit(
             mc_samples,
@@ -6863,7 +6909,8 @@ class NonRepairableRBD(RBD):
         Parameters
         ----------
         x : float or array_like
-            The percentage failed, in (0, 100), or several.
+            The percentage failed (10 for the B10 life, not a fraction), in
+            (0, 100), or several.
         **kwargs
             Keyword arguments of ``time_to_reliability`` (``upper_bound``)
             and ``sf`` (``working_nodes``, ``broken_nodes``, ``method``).
@@ -6895,7 +6942,7 @@ class NonRepairableRBD(RBD):
         >>> round(rbd.bx_life(10), 2)
         32.46
         """
-        x = np.asarray(x, dtype=float) if np.ndim(x) else x
+        x = real_array(x, "x")
         if not np.all((0.0 < x) & (x < 100.0)):
             raise ValueError("x must be a percentage in (0, 100).")
         return self.time_to_reliability(1.0 - x / 100.0, **kwargs)
@@ -8169,6 +8216,10 @@ class NonRepairableRBD(RBD):
         values. Nothing is worked out, so a report can name the parameters
         and show their values without the sensitivities;
         [`with_levers`][repyability.NonRepairableRBD.with_levers] sets them.
+        The levers are the nodes' models' own parameters: those of the
+        units inside a composite model (a ``StandbyModel``, a
+        ``LoadSharingModel``, a ``DegradingNode``) or of a nested diagram
+        are not reached (see the guide's Greeks).
 
         Returns
         -------
@@ -8672,7 +8723,9 @@ class NonRepairableRBD(RBD):
         Raises
         ------
         ValueError
-            For a negative time, or as ``birnbaum_importance`` does.
+            For a negative time, if every node is a fixed probability (the
+            system then has no lifetimes), or as ``birnbaum_importance``
+            does.
 
         Examples
         --------
@@ -8690,6 +8743,9 @@ class NonRepairableRBD(RBD):
         >>> {node: round(share, 6) for node, share in shares.items()}
         {'a': 0.25, 'b': 0.75}
         """
+        self._require_varying_lifetimes(
+            "lifetimes, so no failure density over time to share out"
+        )
         return barlow_proschan(
             lambda t: self._rate_parts(t, working_nodes, broken_nodes),
             self.reliabilities.values(),

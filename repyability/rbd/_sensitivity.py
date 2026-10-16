@@ -808,9 +808,7 @@ def sensitivity(
                 f"window must be a positive, finite length, got {window!r}."
             )
         window = float(window)
-    working = set(working_nodes or ())
-    broken = set(broken_nodes or ())
-    rbd._validate_node_overrides(working, broken)
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     held = working | broken
     asked = _Asked(x, window, state, working, broken)
     found = _levers(rbd)
@@ -908,11 +906,14 @@ def _named(lever) -> Tuple[Hashable, str]:
     )
 
 
-def _no_lever(key, name: str, found: dict) -> ValueError:
-    """The error for a lever the diagram does not have, with the closest
-    name if one is close (#232): of the levers of ``key``, or else of the
-    keys."""
+def _no_lever(rbd, key, name: str, found: dict) -> ValueError:
+    """The error for a lever ``rbd`` does not have, with the closest name
+    if one is close (#232): of the levers of ``key``, or else of the keys,
+    which are named by the kind of diagram."""
+    from repyability.fault_tree import FaultTree
+
     from .rbd import _close_name
+    from .repairable_rbd import RepairableRBD
 
     names = [n for k, n in found if k == key]
     if names:
@@ -924,10 +925,17 @@ def _no_lever(key, name: str, found: dict) -> ValueError:
     keys = list(dict.fromkeys(k for k, _ in found))
     close = _close_name(key, keys)
     hint = "" if close is None else f" Did you mean {close!r}?"
+    if isinstance(rbd, FaultTree):
+        holders = "event with a model or common-cause group"
+    elif isinstance(rbd, RepairableRBD):
+        holders = (
+            "node with a model, common-cause group or the repair crews (None)"
+        )
+    else:
+        holders = "node with a model or common-cause group"
     return ValueError(
-        f"{key!r} has no levers: it is no node with a model, common-cause "
-        f"group or the repair crews (None).{hint} The keys with levers are: "
-        f"{keys}."
+        f"{key!r} has no levers: it is no {holders}.{hint} The keys with "
+        f"levers are: {keys}."
     )
 
 
@@ -947,7 +955,7 @@ def with_levers(rbd, values) -> Any:
             (lever.key, lever.name): lever for lever in _levers_of(changed)
         }
         if (key, name) not in found:
-            raise _no_lever(key, name, found)
+            raise _no_lever(rbd, key, name, found)
         lever = found[(key, name)]
         if not is_number(value):
             raise TypeError(

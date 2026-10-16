@@ -6241,6 +6241,10 @@ class RepairableRBD(RBD):
         others. Nothing is worked out, so a report can name the levers and
         show their values without the sensitivities;
         [`with_levers`][repyability.RepairableRBD.with_levers] sets them.
+        The levers are the components' own models' parameters and
+        options: those of the units inside a composite life model (a
+        ``StandbyModel``, a ``LoadSharingModel``, a ``DegradingNode``) or
+        of a nested diagram are not reached (see the guide's Greeks).
 
         Returns
         -------
