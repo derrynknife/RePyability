@@ -1063,9 +1063,21 @@ def _keyed_charges(rbd, run: _streams.Run) -> Tuple[
         for node, node_costs in rbd.costs.items()
         if "preventive_cost" in node_costs
     }
+    replace = _CATEGORIES.index("replace")
     for node, schedule in rbd._preventive.items():
         if schedule.policy == "calendar":
-            preventive[node] = _CalendarCharge(rbd, node)
+            preventive[node] = _CalendarCharge(
+                rbd,
+                node,
+                next(
+                    (
+                        c
+                        for category, c in failures[node]
+                        if category == replace
+                    ),
+                    None,
+                ),
+            )
     inspection = {
         node: charges(node, "inspection_cost")
         for node, node_costs in rbd.costs.items()
@@ -1077,15 +1089,22 @@ def _keyed_charges(rbd, run: _streams.Run) -> Tuple[
 class _CalendarCharge:
     """What a component on a calendar policy is charged at a planned
     replacement: the price of the opportunity it falls at, kept when it
-    was scheduled (``_renewal``)."""
+    was scheduled (``_renewal``); renewed early at a stop of its
+    maintenance group (#349), the calendar's price for a planned
+    replacement then (``_stop``), or where the calendar allows none
+    (``inf``), its own ``replace_cost`` (``replace``, as a failure's
+    replacement is charged; nothing without one)."""
 
-    __slots__ = ("rbd", "node")
+    __slots__ = ("rbd", "node", "replace")
 
-    def __init__(self, rbd, node):
-        self.rbd, self.node = rbd, node
+    def __init__(self, rbd, node, replace):
+        self.rbd, self.node, self.replace = rbd, node, replace
 
     def draw(self) -> float:
-        return self.rbd._run_state._calendar_price.get(self.node, 0.0)
+        price = self.rbd._run_state._calendar_price.get(self.node, 0.0)
+        if math.isinf(price):
+            return 0.0 if self.replace is None else self.replace.draw()
+        return price
 
 
 def _context(
@@ -1673,8 +1692,11 @@ def _stop(rbd, group, t: float, trigger=None) -> List[Event]:
     least its opportunity age, is renewed now, as its scheduled
     replacement would renew it, and the failure or replacement it had
     ahead of it is cancelled. A member whose own failure or replacement
-    is due at ``t`` keeps it: that joins the stop. Returns the renewals
-    to queue."""
+    is due at ``t`` keeps it: that joins the stop. A member on a
+    calendar policy is one like any other (#349): renewed now, it is
+    charged the calendar's price for a planned replacement at ``t``
+    (see ``_CalendarCharge``), and its new unit's next planned
+    replacement counts from ``t``. Returns the renewals to queue."""
     out: List[Event] = []
     for member in rbd._maintenance[group].members:
         if (
@@ -1694,6 +1716,10 @@ def _stop(rbd, group, t: float, trigger=None) -> List[Event]:
         rbd._run_state._pending_event.pop(member, None)
         if pending is not None and pending.time < rbd._run_state.t_simulation:
             rbd._run_state._cancelled[id(pending)] = pending
+        if schedule.policy == "calendar":
+            rbd._run_state._calendar_price[member] = (
+                schedule.calendar._planned_price(t)
+            )
         renewal = Event(t, member, schedule.duration is None, True)
         rbd._run_state._early[id(renewal)] = renewal
         rbd._run_state._renewing.add(member)

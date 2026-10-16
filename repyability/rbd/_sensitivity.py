@@ -155,14 +155,15 @@ def _proportional_scale(spec, name: str, value: float) -> Optional[float]:
 def _option_bounds(key: str, option: str, options: dict) -> tuple:
     """The range of a maintenance option (as the constructor checks it):
     an interval past its offset or opportunity, an offset or opportunity
-    within the interval, a coverage or threshold a probability."""
+    within the interval (any age under a calendar policy, which has
+    none), a coverage or threshold a probability."""
     if option == "interval":
         floor = number_or_nan(
             options.get("offset" if key == "inspection" else "opportunity")
         )
         return (0.0 if math.isnan(floor) else floor, math.inf)
     if option in ("offset", "opportunity"):
-        return (0.0, float(options["interval"]))
+        return (0.0, float(options.get("interval", math.inf)))
     return _UNIT
 
 

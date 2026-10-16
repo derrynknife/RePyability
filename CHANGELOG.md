@@ -89,8 +89,14 @@ other release, fixes included, the minor.
   policy}` replaces each unit at the first time its age reaches the
   policy's threshold, charged the calendar's price there: simulated (in
   the Python loop), refused by the exact and numerical analyses, and not
-  saved. Decisions to take on all of it:
-  `repyability/maintenance/CALENDAR_DECISIONS.md`.
+  saved. In a maintenance group it is a member like any other (#349):
+  its planned replacements are stops of the group, and it takes an
+  `"opportunity"` age (any age: the policy has no interval) from which a
+  stop renews it early, charged the calendar's price for a planned
+  replacement on the day (where the calendar allows none, its
+  `replace_cost`), its next replacement then counted from the new unit;
+  the policy is not re-optimised for the group's stops. Decisions to
+  take on all of it: `repyability/maintenance/CALENDAR_DECISIONS.md`.
 - **When to replace a part in service next (#319).**
   `NonRepairable.optimal_next_replacement(age, now_cost=,
   scheduled_outages=)` compares replacing it now, at each scheduled

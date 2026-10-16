@@ -475,7 +475,10 @@ class _Run:
     _ccf_pending: dict
     _ccf_coins: dict
     #: Each component on a calendar policy: the price of its next planned
-    #: replacement (the opportunity's), charged when it falls.
+    #: replacement (the opportunity's), charged when it falls; of its
+    #: early renewal at a stop of its maintenance group, once queued
+    #: (``inf``: the calendar allows none then, see
+    #: ``_event_loop._CalendarCharge``).
     _calendar_price: dict
 
     def __init__(self) -> None:
@@ -546,8 +549,9 @@ class _Preventive(NamedTuple):
     policy: str
     duration: Any
     threshold: float = 0.0
-    #: Under ``"age"``, the age from which the unit is renewed early at a
-    #: stop of its maintenance group (#108); ``inf`` for never.
+    #: Under ``"age"`` or ``"calendar"``, the age from which the unit is
+    #: renewed early at a stop of its maintenance group (#108, #349);
+    #: ``inf`` for never.
     opportunity: float = math.inf
     #: Under ``"condition"`` with a degradation process for a life (#271):
     #: the measured level at or past which an inspection replaces the

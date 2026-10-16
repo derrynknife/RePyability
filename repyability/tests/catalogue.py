@@ -414,6 +414,30 @@ def repairable_kinds():
                     "train": {"setup_cost": 50.0, "system_down": True}
                 },
             ),
+            # A calendar component in a maintenance group (#349): renewed
+            # early at the age-replaced member's stops, its own
+            # replacements stops that renew that member early.
+            "calendar policy in a maintenance group": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={
+                            "policy": "calendar",
+                            "calendar": calendar_policy(life),
+                            "opportunity": 100.0,
+                        },
+                        group="train",
+                        replace_cost=10.0,
+                    ),
+                    "b": unit(
+                        preventive={"interval": 300.0, "opportunity": 200.0},
+                        group="train",
+                        replace_cost=10.0,
+                    ),
+                    "c": unit(),
+                },
+                maintenance_groups={"train": {"setup_cost": 50.0}},
+            ),
             "grouped, no opportunities": RepairableRBD(
                 EDGES,
                 {

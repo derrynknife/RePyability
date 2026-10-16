@@ -614,6 +614,20 @@ class CalendarPolicy(_ResultMapping):
             n += _CHUNK
         return math.inf, 0.0, None
 
+    def _planned_price(self, t: float) -> float:
+        """The price of a planned replacement at time ``t``, whatever the
+        unit's age: the opportunity's if one falls there (on a grid, the
+        one laid at the grid time nearest ``t``), else the calendar's
+        price on any day; ``inf`` where the calendar allows none. What a
+        ``RepairableRBD`` component on a ``"calendar"`` preventive policy
+        is charged when a stop of its maintenance group renews it early
+        (#349)."""
+        if self._grid is None:
+            return self._table.price_at(t)
+        step = cast(float, self.step)
+        price, _ = self._grid.prices(int(np.rint(t / step)), 1)
+        return float(price[0])
+
     def _threshold(self, t):
         """The threshold age at time (or times) ``t``: ``inf`` where no
         replacement is open, or none pays (for the tests and the
