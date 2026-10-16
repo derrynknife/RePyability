@@ -68,6 +68,27 @@ other release, fixes included, the minor.
   node or a pair, on the model's outcomes and the chains' tables alike, in
   place of a method a node and a method a table.
 
+- **A phased mission's importance measures and cut sets (#316).**
+  `PhasedMission` has `birnbaum_importance()`, `improvement_potential()`,
+  `risk_achievement_worth()`, `risk_reduction_worth()`,
+  `criticality_importance(kind=)` and `fussell_vesely(method=)`, each
+  component held across every phase, working throughout or failed from
+  the start, by replaying the mission's decision diagram with its
+  segments so held: exact, at the mission's end, a small measure keeping
+  its precision in a reliable mission. The criticality is the share of
+  the mission's failures a component accounts for (given a failure, that
+  it would have succeeded with the component working throughout), which
+  is the diagrams' form for one phase. `minimal_cut_sets()` gives the
+  sets of events `(component, phase)`, the component failed by the end of
+  that phase, that together fail the mission, the phases' own cut sets
+  less those another implies (a failure by one phase is one by every
+  later phase); the exact Fussell-Vesely importance takes the probability
+  that some cut set naming a component has occurred from a decision
+  diagram of those events over the segments, and `method="rare_event"`
+  sums the cut sets' probabilities instead. `analysis_routes()` reports
+  each of the mission's analyses, and the README's capability matrix has
+  the new methods. Each phase's own importance, given that the mission
+  reaches it, is not offered.
 - **The long-run optimal replacement policy over a calendar of shuts
   (#319).** `NonRepairable.optimal_calendar_policy(calendar)` finds, for a
   part whose planned replacement costs differently at different times

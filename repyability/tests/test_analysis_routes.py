@@ -20,6 +20,7 @@ from repyability import (
     DegradingNode,
     LoadSharingModel,
     NonRepairableRBD,
+    PhasedMission,
     RepairableRBD,
     RepeatedNode,
     RepeatedStandbyNode,
@@ -405,6 +406,69 @@ def test_the_report_covers_every_public_analysis(cls):
         )
     )
     assert set(rbd.analysis_routes()) == public - not_analyses
+
+
+PHASED_CALLS = {
+    **{
+        name: (lambda name: lambda mission: getattr(mission, name)())(name)
+        for name in (
+            "reliability",
+            "unreliability",
+            "sf",
+            "ff",
+            "phase_failure_probabilities",
+            "birnbaum_importance",
+            "improvement_potential",
+            "risk_achievement_worth",
+            "risk_reduction_worth",
+            "criticality_importance",
+            "fussell_vesely",
+        )
+    },
+    "reliability_interval": (
+        lambda mission: mission.reliability_interval(200, seed=1)
+    ),
+}
+
+
+def mission():
+    """A mission of a bridge then a vote (see ``test_phased_mission``)."""
+    from repyability.tests.test_phased_mission import BRIDGE, VOTE
+
+    return PhasedMission([("up", 30.0, BRIDGE), ("on", 30.0, VOTE)])
+
+
+@pytest.mark.parametrize(
+    "limit, expected",
+    [(None, {"exact", "simulated"}), (5, {"refused", "simulated"})],
+    ids=["worked out", "too large"],
+)
+def test_every_mission_method_does_what_the_report_says(
+    limit, expected, monkeypatch
+):
+    # A mission's analyses are exact, or refused once its decision diagram
+    # passes the limit, and its interval simulated (#316).
+    if limit is not None:
+        monkeypatch.setattr(phased_mission, "MAX_NODES", limit)
+    phased = mission()
+    report = phased.analysis_routes()
+    assert {route.route for route in report.values()} == expected
+    for method, call in PHASED_CALLS.items():
+        behaves_as_reported(report[method], lambda: call(phased))
+    assert set(PHASED_CALLS) == set(report)
+
+
+def test_the_mission_report_covers_every_public_analysis():
+    # Everything public but the report itself and the structure.
+    public = {
+        name
+        for name, _ in inspect.getmembers(PhasedMission, callable)
+        if not name.startswith("_")
+    }
+    assert set(mission().analysis_routes()) == public - {
+        "analysis_routes",
+        "minimal_cut_sets",
+    }
 
 
 def test_nodes_are_routed_by_how_their_reliability_is_found():
