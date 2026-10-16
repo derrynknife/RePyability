@@ -1,7 +1,7 @@
 name: docs
 
 # Build the MkDocs site and publish it to GitHub Pages on every push to
-# master. Pull requests are validated by the strict docs build in
+# main. Pull requests are validated by the strict docs build in
 # actions.yml; this workflow does the actual deployment.
 #
 # One-time repository setup (Settings -> Pages -> Build and deployment):
@@ -9,7 +9,7 @@ name: docs
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   workflow_dispatch:
 
 # Grant the GITHUB_TOKEN the permissions the Pages deployment needs.
