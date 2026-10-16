@@ -40,7 +40,7 @@ from repyability.rbd._model_utils import (
 )
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import perfect_class
-from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
+from repyability.rbd.rbd import RBD, Pairs, _check_on_infeasible_rbd
 from repyability.rbd.results import (
     AvailabilityAllocation,
     AvailabilityResult,
@@ -253,11 +253,14 @@ class RepairableRBD(RBD):
           A preventive replacement renews the unit, and age replacement
           counts its operating time since it was renewed. The exact
           methods refuse such a component, and the simulations follow it,
-          in Python; but minimally repaired (``q = 1``) in no time, with no
-          ``"replace_after"``, maintenance or tests, it is up throughout
-          and fails ``H(t)`` times by ``t`` on average (``H`` its life's
-          cumulative hazard), which the values over a window from new
-          (``expected_failures`` and the others) take in exactly.
+          in Python; but minimally repaired (``q = 1``), with no
+          ``"replace_after"``, maintenance or tests, it fails at its
+          life's hazard at its operating age, the time it has been up:
+          in no time it is up throughout and fails ``H(t)`` times by
+          ``t`` on average (``H`` its life's cumulative hazard), which
+          the values over a window from new (``expected_failures`` and
+          the others) take in exactly, and with repairs that take time
+          its operating age is followed on a grid, numerically.
           ``"duty"``, a fraction ``d`` in (0, 1], is the share of the time
           the component operates, for a ``"reliability"`` fitted in
           operating time: it ages only while it operates, so its life on
@@ -376,8 +379,9 @@ class RepairableRBD(RBD):
     ccf_groups : list of CCFGroup, optional
         Common-cause groups (see [`CCFGroup`][repyability.CCFGroup]), by
         default none: identical components (the same life and repair
-        models) that fail together. A group's model (a ``BetaFactor`` or
-        ``MGL``) splits the members' failure rate between causes, each
+        models) that fail together. A group's model (a ``BetaFactor``,
+        ``MGL`` or ``AlphaFactor``) splits the members' failure rate
+        between causes, each
         member's own and shared ones, and each cause fails the members it
         names that are up, at once (whatever the model's ``basis``: a
         repairable component's failures are a rate). Each member alone
@@ -710,7 +714,10 @@ class RepairableRBD(RBD):
                     )
                     if cost is not None:
                         node_costs["preventive_cost"] = cost
-                    if np.isfinite(schedule.interval):
+                    if (
+                        np.isfinite(schedule.interval)
+                        or schedule.policy == "calendar"
+                    ):
                         self._preventive[name] = schedule
                         if inspecting is not None:
                             node_costs["inspection_cost"] = inspecting
@@ -746,7 +753,12 @@ class RepairableRBD(RBD):
                     )
                     if acquisition:
                         self.acquisition_costs[name] = acquisition
-                if node_costs:
+                calendar = self._preventive.get(name)
+                if node_costs or (
+                    calendar is not None and calendar.policy == "calendar"
+                ):
+                    # A component on a calendar policy is charged its
+                    # calendar's prices, whatever else it declares.
                     self.costs[name] = node_costs
                 repair_model = component["repairability"]
                 if isinstance(repair_model, str):
@@ -801,6 +813,7 @@ class RepairableRBD(RBD):
                 if not isinstance(spec, RepairableRBD)
             }
         )
+        _spec._refuse_shared_nested(components)
 
         super().__init__(
             edges,
@@ -830,7 +843,11 @@ class RepairableRBD(RBD):
         self.repairability = copy(repairability)
         self._maintenance = _spec._validate_groups(self, maintenance_groups)
         self.ccf_groups = _spec._validate_ccf_groups(self, ccf_groups)
+        _spec._warn_nested_costs(components)
 
+    #: Whether a diagram this one is nested in has warned that it carries
+    #: costs the parent does not count (see ``_spec._warn_nested_costs``).
+    _costs_reported = False
     #: The junctions are folded out of the structure (see ``RBD``).
     _FOLDS_JUNCTIONS = True
     _SIMULATE_INSTEAD = (
@@ -893,6 +910,7 @@ class RepairableRBD(RBD):
         kind: str = "failure",
         fv_type: str = "c",
         method: str = "exact",
+        held: Collection[Hashable] = (),
     ) -> dict:
         """An importance measure of every node with the common-cause groups
         (``measure``, one of ``_importance_time``'s names), at the points
@@ -905,11 +923,16 @@ class RepairableRBD(RBD):
         group's, so it is conditioned on: ``A(1_i)`` and ``A(0_i)`` at each
         point are the system's availability given the member up and given
         it down then, from the joint probabilities summed over its group's
-        combinations (see ``_ccf_modules.Tabled.joints``). Birnbaum's
-        measure is the difference between the two, taken from whichever
-        end keeps its precision, the system's unavailability or its
-        availability. Fussell-Vesely sums each combination's numerators,
-        the nodes being independent given it."""
+        combinations (see ``_ccf_modules.Evaluation.given``); where the
+        state has no chance at a point (a member off line for its test),
+        the system with it held so. Birnbaum's measure is the difference
+        between the two, taken from whichever end keeps its precision, the
+        system's unavailability or its availability. The joint importance
+        (``_importance_time.JOINT``) conditions on each pair's states the
+        same way (see ``_ccf_modules.joint_importance``), 0 for a pair
+        with a node in ``held`` (those held up or down). Fussell-Vesely
+        sums each combination's numerators, the nodes being independent
+        given it."""
         one_of("kind", kind, ("failure", "success"))
         if fv_type not in ("c", "p"):
             raise ValueError(
@@ -935,29 +958,24 @@ class RepairableRBD(RBD):
                     self, evaluation, inputs, fv_type, method
                 )
                 return {node: mean(shares[node]) / Q for node in self.nodes}
+            if measure == _importance_time.JOINT:
+                held = set(held)
+                return Pairs.of(
+                    list(self.nodes),
+                    lambda i, j: mean(
+                        0.0 * R_t
+                        if i in held or j in held
+                        else _ccf_modules.joint_importance(evaluation, i, j)
+                    ),
+                )
             for node in self.nodes:
-                values, joint = evaluation.joints(node)
-                works, fails = values["works"], values["fails"]
-                if joint:
-                    # Given its state; where that state has no chance (a
-                    # member off line for its test), the system with it
-                    # held so, as for a node outside the groups.
-                    held = (
-                        evaluation.held(node)
-                        if np.any(works <= 0) or np.any(fails <= 0)
-                        else (np.nan,) * 4
-                    )
-                    r1 = np.where(works > 0, values["up_ok"] / works, held[0])
-                    q1 = np.where(
-                        works > 0, values["down_ok"] / works, held[1]
-                    )
-                    r0 = np.where(fails > 0, values["up_bad"] / fails, held[2])
-                    q0 = np.where(
-                        fails > 0, values["down_bad"] / fails, held[3]
-                    )
-                else:
-                    r1, q1 = values["up_ok"], values["down_ok"]
-                    r0, q0 = values["up_bad"], values["down_bad"]
+                given = evaluation.given((node,))
+                (works, r1, q1), (fails, r0, q0) = (
+                    given[True,],
+                    given[False,],
+                )
+                if node not in evaluation.group_of:
+                    works, fails = evaluation.p[node], evaluation.q[node]
                 change = np.where(Q_t <= R_t, q0 - q1, r1 - r0)
                 if measure == _importance_time.BIRNBAUM:
                     value = mean(change)
@@ -980,18 +998,21 @@ class RepairableRBD(RBD):
 
         True if some component declares a non-zero ``"repair_cost"``,
         ``"replace_cost"``, ``"downtime_cost"``, or preventive-maintenance
-        or inspection ``"cost"`` (a cost distribution always counts), a
+        or inspection ``"cost"`` (a cost distribution always counts), is
+        on a ``"calendar"`` policy (charged its calendar's prices), a
         maintenance group has a set-up cost, or ``downtime_cost_rate`` is
         non-zero: whether running the system costs anything. Costs of 0
         price nothing, costs declared inside a nested ``RepairableRBD`` do
-        not count, and neither does an
+        not count (a nested diagram that carries any is warned of when
+        this one is built), and neither does an
         ``"acquisition_cost"`` (a one-off cost, see ``total_cost``). When
-        nothing is priced there is no cost model to evaluate, so the cost
-        methods short-circuit rather than doing the work:
-        ``expected_cost_rate`` returns 0.0, and ``cost`` and the ``cost`` of
-        ``availability``'s result have no running cost, exactly, with the
-        acquisition cost beside it, or are None if that is not
-        given either.
+        nothing is priced, not even an acquisition cost, there is no cost
+        model to evaluate: the cost analyses (``expected_cost_rate``,
+        ``total_cost``, ``expected_cost`` and ``cost``) refuse, as
+        ``routes.Refused``, and the ``cost`` of ``availability``'s result
+        is None. With an acquisition cost alone, ``expected_cost_rate``
+        is 0.0, and ``cost`` and that result's ``cost`` have no running
+        cost, exactly, with the acquisition cost beside it.
 
         Returns
         -------
@@ -1065,11 +1086,14 @@ class RepairableRBD(RBD):
         and it fails at its constant rate while it is up.
 
         Every cost is optional and defaults to 0, so any subset can be
-        priced; with nothing priced (see ``has_costs``) this is 0.0. Costs
+        priced; with nothing priced, not even an acquisition cost (see
+        ``has_costs``), there is no cost model to evaluate, and this
+        refuses (with an acquisition cost alone it is 0.0). Costs
         are undiscounted, and only this RBD's own costs count: costs
-        declared inside a nested ``RepairableRBD`` are left out. The
-        simulated counterpart is ``cost``, whose ``cost_rate`` converges to
-        this value as the window grows.
+        declared inside a nested ``RepairableRBD`` are left out (a nested
+        diagram that carries any is warned of when this one is built).
+        The simulated counterpart is ``cost``, whose ``cost_rate``
+        converges to this value as the window grows.
 
         Parameters
         ----------
@@ -1089,16 +1113,17 @@ class RepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If something is priced and a working/broken node is unknown, is
-            the input or output node, or is in both sets. (With nothing
-            priced this returns 0.0 without any checks.)
+            If nothing is priced, not even an acquisition cost (see
+            ``has_costs``; as ``routes.Refused``), or a working/broken
+            node is unknown, is the input or output node, or is in both
+            sets.
         NotImplementedError
-            If something is priced and a component is under block
-            replacement with models its exact values do not cover (see
-            ``node_availability``), or has hidden failures its numerical
-            values do not cover (see ``mean_availability``); or, while a
-            component can wait for a repair crew, as for
-            ``mean_availability``: simulate it with ``cost``.
+            If a component is under block replacement with models its
+            exact values do not cover (see ``node_availability``), or has
+            hidden failures its numerical values do not cover (see
+            ``mean_availability``); or, while a component can wait for a
+            repair crew, as for ``mean_availability``: simulate it with
+            ``cost``.
 
         Examples
         --------
@@ -1188,9 +1213,10 @@ class RepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If ``horizon`` is negative, or infinite without a
-            ``discount_rate``; if ``discount_rate`` is not a finite,
-            non-negative number; or as for ``expected_cost_rate``.
+            As for ``expected_cost_rate`` (nothing priced, as
+            ``routes.Refused``, first); if ``horizon`` is negative, or
+            infinite without a ``discount_rate``; or if ``discount_rate``
+            is not a finite, non-negative number.
         NotImplementedError
             As for ``expected_cost_rate``.
 
@@ -1283,14 +1309,22 @@ class RepairableRBD(RBD):
         each simulation). Its components may differ, one under age
         replacement and the others not.
 
+        The exact count convolves a component's replacement times on a
+        grid, once for each replacement likely in the horizon, so it
+        grows with the horizon over the component's life (a few seconds
+        for some hundreds of replacements), and under block replacement
+        with the number of block intervals too: count a long horizon by
+        simulation.
+
         Parameters
         ----------
         horizon : float
             The time counted over, from new.
         nodes : Collection[Hashable], optional
-            The components to count for, by default every component but a
-            nested RBD (whose own ``spares_demand`` counts its components'),
-            or none when ``parts`` are given.
+            The components to count for, by default every component, or
+            none when ``parts`` are given. A nested RBD's components'
+            spares are not counted here (its own ``spares_demand`` counts
+            them): with one, give the components counted.
         fleet : int, optional
             How many systems, by default 1.
         method : str, optional
@@ -1318,7 +1352,9 @@ class RepairableRBD(RBD):
             If ``horizon`` is negative or not finite, ``fleet`` is not a
             whole number of at least 1, ``method`` is unknown, ``nodes`` or
             a part names a node that is not a component, or a nested RBD,
-            or ``parts`` is not as above.
+            or ``parts`` is not as above; and, as ``routes.Refused``, when
+            no ``nodes`` are given and a component is a nested RBD, whose
+            components' spares are not counted here.
         NotImplementedError
             For a part with two members in one common-cause group; and
             with ``method="exact"``, for a standby group, a component with
@@ -1409,9 +1445,11 @@ class RepairableRBD(RBD):
         interval or a block replacement, each followed block interval by
         block interval, the replacements before one as those after it,
         and from a random time by Campbell's formula; on grids of the
-        interval, extrapolated, to about 1e-6. A unit dead on arrival is
-        refused while its repairs or block replacements may take no time,
-        as replacements could then come several at one instant. A fleet's
+        interval, extrapolated, to about 1e-6. A unit dead on arrival
+        fails as it is put in: with repairs and block replacements in no
+        time, each replacement brings a geometric number more at its
+        instant, which the lasting units' count is compounded with
+        (#322); taking time, they are followed on the grid. A fleet's
         systems are taken as on block schedules of their own, out of step
         with each other.
 
@@ -1434,8 +1472,10 @@ class RepairableRBD(RBD):
             At least one of the two targets must be given; the stock meets
             both.
         nodes : Collection[Hashable], optional
-            The components, by default every component but a nested RBD
-            (none when ``parts`` are given).
+            The components, by default every component (none when
+            ``parts`` are given); with a nested RBD, whose components'
+            spares are not counted here, give them, as for
+            ``spares_demand``.
         fleet : int, optional
             How many systems share the stock, by default 1.
         parts : dict, optional
@@ -1455,7 +1495,8 @@ class RepairableRBD(RBD):
             given or one is not in ``(0, 1)``, ``fleet`` is not a whole
             number of at least 1, ``nodes`` or a part names a node that is
             not a component, or a nested RBD, or ``parts`` is not as for
-            ``spares_demand``.
+            ``spares_demand``; and, as ``routes.Refused``, when no
+            ``nodes`` are given and a component is a nested RBD.
         NotImplementedError
             For a part with two members in one common-cause group, or two
             under block replacement, a component under block replacement
@@ -1622,8 +1663,9 @@ class RepairableRBD(RBD):
             a component can wait for a repair crew (see ``repair_crews``):
             the search assumes that none does. Or if a common-cause group's
             chain does not cover it (see ``ccf_groups``), a member given
-            copies is in an ``MGL`` group (its letters are for its group's
-            size), or a train holds a member.
+            copies is in an ``MGL`` or ``AlphaFactor`` group (its
+            parameters are for its group's size), or a train holds a
+            member.
 
         Examples
         --------
@@ -3329,8 +3371,10 @@ class RepairableRBD(RBD):
 
         Every cost is optional, and a cost given as a distribution enters
         through its mean. Only this RBD's own costs count, not those inside
-        a nested ``RepairableRBD``. With nothing priced (see
-        ``has_costs``), every category is 0, without any checks.
+        a nested ``RepairableRBD``. With nothing priced, not even an
+        acquisition cost (see ``has_costs``), there is no cost model to
+        evaluate, and this refuses; with an acquisition cost alone every
+        category is 0, exactly.
 
         With a ``discount_rate`` ``r`` each value is its present value,
         the costs discounted continuously from when they fall:
@@ -3378,8 +3422,12 @@ class RepairableRBD(RBD):
 
         Raises
         ------
-        ValueError, NotImplementedError
-            When something is priced, as for ``point_availability``.
+        ValueError
+            If nothing is priced, not even an acquisition cost (see
+            ``has_costs``; as ``routes.Refused``), or as for
+            ``point_availability``.
+        NotImplementedError
+            As for ``point_availability``.
 
         Examples
         --------
@@ -4159,7 +4207,12 @@ class RepairableRBD(RBD):
         """Simulate the system over ``[0, t_simulation]`` and keep each
         simulation's up/down histories as timelines: every component's and
         the system's, with the component that caused each of the system's
-        changes.
+        changes. A common-cause group's shared cause fails the members it
+        strikes one after another at one instant, each a failure of the
+        member's own, so a system failure it makes is the member's whose
+        fall took the system down (the last the structure could spare),
+        not the group's: ``failures_by_cause`` counts it under that
+        member.
 
         These are the simulations
         [`availability`][repyability.RepairableRBD.availability] runs with
@@ -4726,8 +4779,8 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If ``quantity``, ``mc_samples``, ``confidence``, ``n_jobs`` or
-            ``engine`` is invalid, or a system to compare by cost has no
-            costs.
+            ``engine`` is invalid, or (as ``routes.Refused``) a system to
+            compare by cost has no costs.
         NotImplementedError
             If a component's draws cannot be replayed from a stream of its
             own (a model sampled its own way), or, with
@@ -4908,7 +4961,7 @@ class RepairableRBD(RBD):
         shard_size: Optional[int] = None,
         control_variate: Optional[bool] = None,
         conditional: Optional[bool] = None,
-    ) -> Optional[CostResult]:
+    ) -> CostResult:
         """Simulate the cost of running the system for ``t_simulation``.
 
         Runs the ``availability`` simulation with cost accumulation and
@@ -4929,11 +4982,11 @@ class RepairableRBD(RBD):
 
         When nothing is priced but the components' ``acquisition_cost``
         (see ``has_costs``), the result has no running cost, exactly, and
-        the acquisition beside it, without a simulation; when
-        nothing at all is priced, it is None: there is no cost model to
-        evaluate. (The same result is available as ``availability(...).cost``
+        the acquisition beside it, without a simulation; when nothing at
+        all is priced there is no cost model to evaluate, and this
+        refuses. (The same result is available as ``availability(...).cost``
         if you also want the availability outputs from the same
-        simulations.)
+        simulations; there it is None when nothing at all is priced.)
 
         Parameters
         ----------
@@ -5020,16 +5073,15 @@ class RepairableRBD(RBD):
 
         Returns
         -------
-        CostResult or None
-            The simulated costs, or None if nothing is priced (not even an
-            ``acquisition_cost``).
+        CostResult
+            The simulated costs.
 
         Raises
         ------
         ValueError
-            As for ``availability``, when something is priced. (With nothing
-            priced this returns None without any checks; with only an
-            ``acquisition_cost``, only ``mc_samples`` is checked.)
+            If nothing at all is priced (see ``has_costs``; as
+            ``routes.Refused``), or as for ``availability`` (with only an
+            ``acquisition_cost``, only ``mc_samples`` is checked).
         NotImplementedError
             As for ``availability``.
         ImportError
@@ -5089,9 +5141,11 @@ class RepairableRBD(RBD):
         """Returns each node's long-run (steady-state) availability.
 
         Exact: ``MTTF / (MTTF + MTTR)`` for each component (1.0 if it is
-        repaired instantly), a nested ``RepairableRBD``'s own
-        ``mean_availability``, and 1.0 for the input and output nodes. These
-        are the availabilities the importance measures are evaluated at.
+        repaired instantly), and a nested ``RepairableRBD``'s own
+        ``mean_availability``; the components alone, as ``node_sf`` and
+        the importance measures list them (the input and output nodes
+        are no components). These are the availabilities the importance
+        measures are evaluated at.
 
         A component under age replacement at ``T`` renews at a failure or
         at a preventive replacement, whichever comes first. By the
@@ -5156,7 +5210,7 @@ class RepairableRBD(RBD):
         ... )
         >>> availability = rbd.node_availability()
         >>> {node: round(a, 4) for node, a in availability.items()}
-        {'a': 0.8333, 'b': 1.0, 's': 1.0, 't': 1.0}
+        {'a': 0.8333, 'b': 1.0}
         """
         return _long_run.node_availability(self)
 
@@ -5486,7 +5540,12 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it.
+            it. At the instant of a test or a scheduled replacement the
+            measure is of the state just after it (as the point
+            availability is): where that state cannot be down (a pair
+            tested together, both just found working), a ratio measure
+            is 0/0, NaN; evaluate just before the instant for the state
+            before it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -5576,7 +5635,12 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it.
+            it. At the instant of a test or a scheduled replacement the
+            measure is of the state just after it (as the point
+            availability is): where that state cannot be down (a pair
+            tested together, both just found working), a ratio measure
+            is 0/0, NaN; evaluate just before the instant for the state
+            before it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -5665,7 +5729,12 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it.
+            it. At the instant of a test or a scheduled replacement the
+            measure is of the state just after it (as the point
+            availability is): where that state cannot be down (a pair
+            tested together, both just found working), a ratio measure
+            is 0/0, NaN; evaluate just before the instant for the state
+            before it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -5758,7 +5827,12 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it.
+            it. At the instant of a test or a scheduled replacement the
+            measure is of the state just after it (as the point
+            availability is): where that state cannot be down (a pair
+            tested together, both just found working), a ratio measure
+            is 0/0, NaN; evaluate just before the instant for the state
+            before it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -5861,7 +5935,12 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it.
+            it. At the instant of a test or a scheduled replacement the
+            measure is of the state just after it (as the point
+            availability is): where that state cannot be down (a pair
+            tested together, both just found working), a ratio measure
+            is 0/0, NaN; evaluate just before the instant for the state
+            before it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -5990,7 +6069,12 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it.
+            it. At the instant of a test or a scheduled replacement the
+            measure is of the state just after it (as the point
+            availability is): where that state cannot be down (a pair
+            tested together, both just found working), a ratio measure
+            is 0/0, NaN; evaluate just before the instant for the state
+            before it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -6158,7 +6242,12 @@ class RepairableRBD(RBD):
             ``{key: {lever: sensitivity}}``, the key a node, a
             common-cause group's tuple of members, or None for the repair
             crews; floats, but for an array ``x`` arrays in its shape.
-            With a tuple ``of``, a dict of these by quantity.
+            With a tuple ``of``, a dict of these by quantity. Over time
+            (``x`` or ``window``) the ``repair.q`` lever of a minimally
+            repaired component (``q = 1``, the one imperfect repair the
+            values over time take) is left out: the derivative in ``q``
+            does not exist there (``levers()`` still lists it, for
+            ``with_levers``).
 
         Raises
         ------
@@ -6218,6 +6307,10 @@ class RepairableRBD(RBD):
         others. Nothing is worked out, so a report can name the levers and
         show their values without the sensitivities;
         [`with_levers`][repyability.RepairableRBD.with_levers] sets them.
+        The levers are the components' own models' parameters and
+        options: those of the units inside a composite life model (a
+        ``StandbyModel``, a ``LoadSharingModel``, a ``DegradingNode``) or
+        of a nested diagram are not reached (see the guide's Greeks).
 
         Returns
         -------
@@ -6347,7 +6440,9 @@ class RepairableRBD(RBD):
             By default, every model that is a fit with a parameter
             covariance, drawn once for all the nodes holding that fitted
             object in that role, and for one common-cause group's members
-            together.
+            together. The models inside a nested ``RepairableRBD`` are
+            not drawn, by default or given: the nested diagram's own
+            uncertainty methods take them.
         n_draws : int, optional
             The number of draws, by default 1000: one evaluation each.
         seed : int, optional
@@ -6371,9 +6466,11 @@ class RepairableRBD(RBD):
             If ``uncertainty`` names an unknown node, a nested RBD or a
             junction, a node twice, nodes of a population with different
             models, a model a node does not have, or a common-cause group's
-            members apart; if a model's uncertainty cannot be drawn; if
-            ``n_draws`` or ``sampling`` is invalid; or as
-            ``mean_availability`` does for a draw.
+            members apart; if no ``uncertainty`` is given and no
+            component's model is a fit (as ``routes.Refused``); if a
+            model's uncertainty cannot be drawn; if ``n_draws`` or
+            ``sampling`` is invalid; or as ``mean_availability`` does for
+            a draw.
 
         Examples
         --------
@@ -6761,9 +6858,11 @@ class RepairableRBD(RBD):
             Nodes held failed, likewise.
         x : float or array-like, optional
             Times from new (or from ``state``), as for
-            ``birnbaum_importance``; by default the long run.
-        window : float, optional
-            Over ``[0, window)`` instead, as for ``birnbaum_importance``.
+            ``birnbaum_importance`` (at a test's instant, of the state
+            just after it); by default the long run.
+        window : float or array-like, optional
+            Over ``[0, window)`` instead, as for ``birnbaum_importance``
+            (over the nodes, one share per window of several).
         state : dict or str, optional
             With ``x`` or ``window``, the components' current states.
         over : str, optional
@@ -6789,7 +6888,8 @@ class RepairableRBD(RBD):
         -------
         dict
             The shares, by node, ``(key, lever)`` or group name: floats
-            but for an array ``x`` (NaN where the total is 0).
+            but for an array ``x`` or ``window`` (NaN where the total is
+            0).
 
         Raises
         ------
@@ -7092,7 +7192,12 @@ class RepairableRBD(RBD):
         other held up, less that with it held down, as
         ``birnbaum_importance`` works them out, with ``x``, ``window`` and
         ``state``; with limited repair crews, each pair held in the crews'
-        chain.
+        chain. With common-cause groups, the system's availability given
+        each of the pair up and down is conditioned on their states, as
+        ``birnbaum_importance`` conditions on one: two members of one
+        group on their joint state, from the group's chain, and a
+        component outside the groups held (see [Common-cause
+        failures](../guide/common-cause.md)).
 
         Parameters
         ----------
@@ -7102,7 +7207,8 @@ class RepairableRBD(RBD):
             Components held down, likewise.
         x : float or array-like, optional
             Times from new (or from ``state``), as for
-            ``birnbaum_importance``; by default the long run.
+            ``birnbaum_importance`` (at a test's instant, of the state
+            just after it); by default the long run.
         window : float, optional
             Over ``[0, window)`` instead, as for ``birnbaum_importance``.
         state : dict or str, optional
@@ -7120,8 +7226,7 @@ class RepairableRBD(RBD):
         ValueError
             As ``birnbaum_importance`` does.
         NotImplementedError
-            With common-cause groups, whose members cannot be held, or as
-            ``birnbaum_importance`` does.
+            As ``birnbaum_importance`` does.
 
         Examples
         --------

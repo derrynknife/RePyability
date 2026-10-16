@@ -20,7 +20,10 @@
   financial years, and the CMMS (work orders, the asset register, the
   history store, the forecast by date) and RCM's records and workflow
   belong to Reliafy, which turns dates into model time, calls
-  RePyability, and turns the answers back into dates. RePyability keeps
+  RePyability, and turns the answers back into dates. A calendar of
+  opportunities in model time (shuts on periods or at given times, each
+  with a price: `maintenance.Calendar`) is RePyability's; laying it on
+  real dates is Reliafy's. RePyability keeps
   the quantitative questions: RCM's per failure mode (run to failure,
   scheduled replacement, failure finding, on-condition, the options at a
   planned replacement), a failure's consequences at system level, and
@@ -225,7 +228,14 @@
   repaired once the test is over; a test in a member's own test or repair
   is not done. A change to one goes into the other: `test_ccf_timed.py`
   checks the chain against the simulation, and against the members' own
-  model (`_hidden_tests`) where no cause is shared.
+  model (`_hidden_tests`) where no cause is shared. Over a window, a
+  member's test that takes time is a planned outage of the system at an
+  exact time (`OverTime.jump_times`, which `_windows._atom_groups` counts
+  from the chain just before and at it, as a node's scheduled outages),
+  and the chain's bends (`OverTime._bends`: the tests, the fixed ends,
+  geometric offsets at an exponential length's scale) are the integrals'
+  pieces' edges, with the integral of the unavailability refined to those
+  scales (`_ccf_groups._timing_rates`).
 - **A tested unit's numerical model (`repyability/rbd/_hidden_tests.py`,
   #159) copies the simulation's inspections** (`_event_loop._inspected_follow_up`,
   `_event_loop._inspected_next`): a test takes a working unit off line without ageing
@@ -274,6 +284,10 @@
   exact-against-simulated checks (`test_catalogue.py`) share. A new node
   class, spec key, policy or diagram option needs a diagram there:
   `test_the_catalogue_has_every_kind` names what no diagram uses.
+  `FaultTree.analysis_routes()` (#314), `Network.analysis_routes()`
+  (#315) and `PhasedMission.analysis_routes()` (#316) are held to the
+  same: their calls in `FAULT_TREE_CALLS` (on the trees of
+  `catalogue.fault_tree_kinds()`), `NETWORK_CALLS` and `PHASED_CALLS`.
 - **The README's "When is a simulation needed?" table follows the routes.**
   It says, by what is asked, the components and the maintenance, what is
   simulated and whether it must be (or could be exact, with the issue).
@@ -351,6 +365,17 @@
   halvings (right, but slow). `test_evaluation_costs.py` checks the
   points an MTTF takes and its accuracy.
 
+- **A measure that is a function of the system's values lives once, in
+  `repyability/rbd/_measures.py`** (#314, #315): the ratios (improvement
+  potential, the risk worths, criticality, Fussell-Vesely from numerators),
+  an element's density, the finite-difference steps, the cumulative
+  hazard, the rate parts and Barlow-Proschan shares, a life's end and the
+  inversion of a reliability for a B-life. A diagram, a fault tree and a
+  network differ in how they work out the system with an element held
+  (a decomposition, the top event conditioned, a decision diagram
+  replayed), not in the measures: a new measure goes there, and each
+  class calls it with its own values.
+
 ## API conventions
 
 - **One name for the number of simulations**: `mc_samples`, and `max_samples`
@@ -417,9 +442,11 @@
   `LoadSharingModel` or `DegradingNode` refuses `mc_samples` and `seed`
   (#233, `standby_node.drawn_mean`); and `rbd._sensitivity`'s `levers`
   and `Lever` are gone (#244). What 0.14 deprecates goes in 0.15
-  (`NEXT_REMOVAL`), through `deprecation.renamed`, `called` or `ignored`;
-  `test_what_0_14_deprecates_goes_in_0_15` fails once the version reaches
-  it.
+  (`NEXT_REMOVAL`): `NodeState`'s `phase`, renamed `since_scheduled`
+  (#350, through `deprecation.renamed` for the argument and
+  `renamed_attribute` for reading it); a new deprecation warns through
+  those, `called` or `ignored`. `test_what_0_14_deprecates_goes_in_0_15`
+  fails once the version reaches it.
 - **No result depends on the unit of time (or of a covariate).** A step,
   grid or probe is sized from the models (a typical life,
   `failure_time_scale`), never in absolute time, and a proportional
@@ -434,6 +461,10 @@
 
 ## Performance
 
+- **A model's constant failure rate is kept while the model lives**
+  (`_common._constant_rate`, a `WeakKeyDictionary` by model): the checks
+  and the chains ask for it tens of times per diagram, and a search over
+  intervals builds hundreds of diagrams around the same models.
 - **In a loop, a dot product of long vectors goes through
   `repyability.utils.vectors.dot`, not `@`.** OpenBLAS threads one of more
   than about 10,000 terms, at milliseconds a call; a loop of thousands of
@@ -467,8 +498,11 @@ major.minor.
    `[Unreleased]` section into `## [X.Y] - YYYY-MM-DD`, opening with a
    summary paragraph and the behaviour changes (they open the release notes),
    and update the version in `docs/guide/saving.md`. PR to dev, then dev to
-   master, listing "Closes #N" for each finished issue: commit messages'
-   "(#N)" close nothing.
+   master. A pull request into dev lists "Closes #N" for each issue it
+   finishes, and `.github/workflows/close-issues.yml` closes them when it
+   merges, with a comment naming it (GitHub itself closes an issue only on a
+   merge into master): commit messages' "(#N)" close nothing, and the
+   dev-to-master pull request need not list them again.
 2. When the full suite has passed on the pull request from dev into
    master, merge it (a merge commit) and run the workflow with
    `actions_run_trigger`: `run_workflow`, workflow `release.yml`, ref

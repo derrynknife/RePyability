@@ -12,6 +12,7 @@ nodes are independent: the values worked out module by module must be
 its, to rounding.
 """
 
+import itertools
 import random
 import time
 
@@ -21,6 +22,7 @@ import surpyval as surv
 
 from repyability import (
     MGL,
+    AlphaFactor,
     BetaFactor,
     CCFGroup,
     PerfectReliability,
@@ -95,6 +97,76 @@ def members_measure(rbd, measure, p, q, weights, index, kind="failure"):
     return out
 
 
+def pair_measure(rbd, pair, p, q, weights, index, held=()):
+    """A pair's joint importance over the split points: conditioned on
+    the pair's states at each time (a member's by its state in the
+    points, a node outside the groups held), the system with the pair
+    held where their states have no chance at a time; 0 for a pair with
+    a node held."""
+    if set(held) & set(pair):
+        return 0.0
+    pairs_p, pairs_q, _ = rbd._node_pairs(p, q)
+    grouped = {m for g in rbd.ccf_groups for m in g.members}
+    times = int(index.max()) + 1
+
+    def per_time(values):
+        return np.bincount(index, weights=weights * values, minlength=times)
+
+    up, down = rbd._system_probabilities(pairs_p, pairs_q)
+    R_t, Q_t = per_time(up), per_time(down)
+    weight = per_time(np.ones_like(weights))
+    given = {}
+    for combo in itertools.product((True, False), repeat=2):
+        hold_p, hold_q = dict(pairs_p), dict(pairs_q)
+        chance = np.ones_like(weights)
+        for node, state in zip(pair, combo):
+            if node in grouped:
+                chance = chance * (pairs_p if state else pairs_q)[node]
+            hold_p[node] = np.where(state, 1.0, 0.0) * np.ones_like(weights)
+            hold_q[node] = 1.0 - hold_p[node]
+        u, d = rbd._system_probabilities(hold_p, hold_q)
+        some = per_time(chance) > 0.0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            given[combo] = (
+                np.where(some, per_time(chance * u) / per_time(chance), 0.0)
+                + np.where(some, 0.0, per_time(u) / weight),
+                np.where(some, per_time(chance * d) / per_time(chance), 0.0)
+                + np.where(some, 0.0, per_time(d) / weight),
+            )
+
+    def second(k):
+        return (
+            given[True, True][k]
+            - given[True, False][k]
+            - given[False, True][k]
+            + given[False, False][k]
+        )
+
+    change = np.where(Q_t <= R_t, -second(1), second(0))
+    return float(weight @ change)
+
+
+def chosen_pairs(rbd) -> list:
+    """Pairs of nodes of each kind there is: two members of one group,
+    members of two groups, a member and a node outside the groups, and two
+    outside; the first of each."""
+    group_of = {m: k for k, g in enumerate(rbd.ccf_groups) for m in g.members}
+    kinds: dict = {}
+    for i, j in itertools.combinations(rbd.nodes, 2):
+        a, b = group_of.get(i), group_of.get(j)
+        kind = (
+            "outside"
+            if a is None and b is None
+            else (
+                "mixed"
+                if a is None or b is None
+                else "within" if a == b else "across"
+            )
+        )
+        kinds.setdefault(kind, (i, j))
+    return list(kinds.values())
+
+
 BASE = {
     "birnbaum": RBD._birnbaum_importance,
     "improvement": RBD._improvement_potential,
@@ -167,6 +239,16 @@ def _agree(rbd, working, broken, rel):
                 assert got[node] == pytest.approx(
                     float(want[node][0]), rel=1e-9, abs=1e-13
                 ), ("fv", fv_type, method, node)
+    joint = rbd.joint_importance(working, broken)
+    assert {frozenset(pair) for pair in joint} == {
+        frozenset(pair) for pair in itertools.combinations(rbd.nodes, 2)
+    }
+    for pair in chosen_pairs(rbd):
+        assert joint[pair] == pytest.approx(
+            pair_measure(rbd, pair, p, q, weights, index, working | broken),
+            rel=1e-9,
+            abs=1e-13,
+        ), ("joint", pair)
 
 
 def pairs(n, **options):
@@ -341,6 +423,13 @@ def random_diagram(rng: random.Random):
         models = [BetaFactor(rng.uniform(0.05, 0.4))]
         if size == 3:
             models.append(MGL(rng.uniform(0.05, 0.3), rng.uniform(0.1, 0.5)))
+            shared = rng.uniform(0.05, 0.3)
+            models.append(
+                AlphaFactor(
+                    [1.0 - shared, 0.7 * shared, 0.3 * shared],
+                    testing=rng.choice(["staggered", "non-staggered"]),
+                )
+            )
         groups.append(CCFGroup(members, rng.choice(models)))
     rate = {v: rng.uniform(1e-4, 3e-3) for v in nodes}
     for group in groups:
@@ -376,6 +465,28 @@ def test_over_time_agrees_with_every_combination():
         system = curve.system
         importance, up, down, rate, own = system.evaluate(values, x)
         probabilities, weights, index, _ = system._split(values, x)
+        # The joint importance at the times, each pair conditioned on its
+        # states in the split (#317), the curves followed to the last time
+        # as the measure follows them.
+        joint = rbd.joint_importance(x=x)
+        to_last = _ccf_groups._groups_curve(rbd, float(x.max()))
+        at_x = {n: c.at(x) for n, c in to_last.curves.items()}
+        p, w, i, _ = to_last.system._split(at_x, x)
+        q = {n: 1.0 - v for n, v in p.items()}
+        for pair in chosen_pairs(rbd):
+            for k in range(len(x)):
+                at = i == k
+                want = pair_measure(
+                    rbd,
+                    pair,
+                    {n: v[at] for n, v in p.items()},
+                    {n: v[at] for n, v in q.items()},
+                    w[at],
+                    np.zeros(int(at.sum()), dtype=int),
+                )
+                assert joint[pair][k] == pytest.approx(
+                    want, rel=1e-9, abs=1e-13
+                ), ("joint", pair, k)
 
         def total(v):
             v = np.broadcast_to(np.asarray(v, dtype=float), weights.shape)

@@ -106,9 +106,7 @@ def _point(rbd, x, working_nodes, broken_nodes, method, state, down=False):
     """``point_availability``, or with ``down``, ``point_unavailability``
     (#237)."""
     times = nonnegative_times(x)
-    working_nodes = set() if working_nodes is None else set(working_nodes)
-    broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working_nodes, broken_nodes)
+    working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
     horizon = float(times.max()) if times.size else 0.0
     states = _curves._states(rbd, state, working_nodes | broken_nodes)
     system_at, _, _ = _system_at(
@@ -188,9 +186,7 @@ def _mission(rbd, t, working_nodes, broken_nodes, method, state, down=False):
     """``mission_availability``, or with ``down``,
     ``mission_unavailability`` (#237)."""
     windows = nonnegative_times(t)
-    working_nodes = set() if working_nodes is None else set(working_nodes)
-    broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working_nodes, broken_nodes)
+    working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
     ends = windows.ravel()
     horizon = float(ends.max()) if ends.size else 0.0
     states = _curves._states(rbd, state, working_nodes | broken_nodes)
@@ -206,18 +202,16 @@ def _mission(rbd, t, working_nodes, broken_nodes, method, state, down=False):
         scale = None
         if down:
             # To the unavailability's own size, and the time scale of
-            # the fastest closed form in it (see _closed_form_down); a
-            # unit repaired at once is never down, and sets none.
+            # the fastest closed form in it (see _closed_form_down, and
+            # the common-cause groups' chains' tests and repairs of an
+            # exponential length, #220); a unit repaired at once is never
+            # down, and sets none.
+            rates = list(_curves._closed_form_rates(rbd, states).values())
+            rates += _ccf_groups._timing_rates(rbd)
             scale = (
                 min(
                     [horizon or 1.0]
-                    + [
-                        1.0 / rate
-                        for rate in _curves._closed_form_rates(
-                            rbd, states
-                        ).values()
-                        if 0.0 < rate < math.inf
-                    ]
+                    + [1.0 / rate for rate in rates if 0.0 < rate < math.inf]
                 )
                 / 4.0
             )
@@ -323,9 +317,7 @@ def _window(
     causes."""
     method = structure_method(method)
     windows = nonnegative_times(t)
-    working = set() if working_nodes is None else set(working_nodes)
-    broken = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working, broken)
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     forced = working | broken
     ends = windows.ravel()
     horizon = float(ends.max()) if ends.size else 0.0
@@ -435,6 +427,7 @@ def expected_cost(
     discount_rate: float,
 ) -> ExpectedCost:
     """See ``RepairableRBD.expected_cost``."""
+    _requirements._require_costs(rbd)
     rate = _discount_rate(discount_rate)
     if rate > 0.0 and rbd.has_costs:
         _present_horizon(
@@ -444,6 +437,7 @@ def expected_cost(
             rbd, t, rate, working_nodes, broken_nodes, method, state
         )
     if not rbd.has_costs:
+        # An acquisition cost alone: no running cost, exactly.
         windows = nonnegative_times(t)
         zero = _shaped(np.zeros(windows.size), t, windows)
         return ExpectedCost(
@@ -638,14 +632,16 @@ def _atom_groups(
     rbd,
     curves: dict,
     atoms: dict,
+    stop: float,
     working_nodes,
     broken_nodes,
     crew=None,
     causes: bool = False,
 ) -> _Jumps:
-    """The system at the times its nodes fail or are taken down at
-    exact times (their ``atoms``): a unit dead on arrival at 0, an exact
-    lifetime, a replacement at its age or at a block time.
+    """The system at the times before ``stop`` at which its nodes fail
+    or are taken down at exact times (their ``atoms``): a unit dead on
+    arrival at 0, an exact lifetime, a replacement at its age or at a
+    block time.
 
     Nodes due at one time go down together, so the system fails there
     if it is up just before and down just after: since they only go
@@ -660,12 +656,19 @@ def _atom_groups(
     failure times its Birnbaum importance there. With limited repair
     crews (``crew``, see ``_chain_transient.CrewSystem``), the nodes are
     the nested RBDs, and the system is worked out over the crews' chain
-    at those times. With ``causes``, the failures are split among the
+    at those times; with common-cause groups (a
+    ``_ccf_chain.GroupsSystem``), over the groups' chains, whose own
+    jumps (``jump_times``, the tests that take a working member off
+    line, #220) are planned outages too: the chains are taken just
+    before those times for the values before, and at them for the
+    values after. With ``causes``, the failures are split among the
     nodes failing together as ``_rates.split_jumps`` splits the fall
     in availability from just before to just after their failures."""
     down = [
         a.times[(a.failure > 0.0) | (a.planned > 0.0)] for a in atoms.values()
     ]
+    if crew is not None:
+        down.append(crew.jump_times(stop))
     times = np.unique(np.concatenate(down)) if down else np.empty(0)
     if not times.size:
         empty = np.empty(0)
@@ -688,15 +691,19 @@ def _atom_groups(
         failed[node] = np.clip(before[node] - failing, 0.0, 1.0)
         planned[node] = np.clip(failed[node] - stopping, 0.0, 1.0)
 
-    def unreliability(values: dict) -> np.ndarray:
+    # The chains just before the times, for the values before (and the
+    # failures, which they take no part in), and at them for the rest.
+    just = np.nextafter(times, -np.inf)
+
+    def unreliability(values: dict, when: np.ndarray) -> np.ndarray:
         if crew is not None:
-            return crew.probabilities(values, times)[1]
+            return crew.probabilities(values, when)[1]
         return rbd._system_unreliability(
             _filled(rbd, values, len(times), working_nodes, broken_nodes)
         )
 
-    now, first = unreliability(at), unreliability(before)
-    after, last = unreliability(failed), unreliability(planned)
+    now, first = unreliability(at, times), unreliability(before, just)
+    after, last = unreliability(failed, just), unreliability(planned, times)
     caused = None
     if causes:
 
@@ -705,7 +712,7 @@ def _atom_groups(
             if crew is not None:
                 # Each jump's time, for each point of its path.
                 points = size // len(times)
-                return crew.importance(values, np.repeat(times, points))
+                return crew.importance(values, np.repeat(just, points))
             return rbd._importances(
                 _filled(rbd, values, size, working_nodes, broken_nodes)
             )[0]
@@ -726,7 +733,7 @@ def _system_atoms(rbd, curves: dict, stop: float, crew=None) -> Atoms:
     ``stop``, from its nodes' ``curves`` (and its crews' chain,
     ``crew``), as a node of another (see ``Atoms``)."""
     atoms = {node: curve.atoms(stop) for node, curve in curves.items()}
-    jumps = _atom_groups(rbd, curves, atoms, set(), set(), crew)
+    jumps = _atom_groups(rbd, curves, atoms, stop, set(), set(), crew)
     return Atoms(
         jumps.times,
         jumps.failures,
@@ -734,6 +741,21 @@ def _system_atoms(rbd, curves: dict, stop: float, crew=None) -> Atoms:
         np.zeros(len(jumps.times)),
         jumps.drop,
     )
+
+
+def _before_period_end(reach: float, curves: dict, crew=None) -> float:
+    """``reach``, the end of the period the counts are extended by, moved
+    down to an event at an exact time worked out a rounding short of it
+    (a test's time as a curve adds it up, against the settling time plus
+    the period): the event is the next period's first, and would
+    otherwise be counted in this one and again in the extension."""
+    near = [
+        times[np.isclose(times, reach, rtol=1e-12, atol=0.0)]
+        for times in [c.atoms(reach).times for c in curves.values()]
+        + ([crew.jump_times(reach)] if crew is not None else [])
+    ]
+    found = np.concatenate(near) if near else np.empty(0)
+    return float(found.min()) if found.size else reach
 
 
 def _window_counts(
@@ -790,10 +812,12 @@ def _window_counts(
     followed = list(curves.values()) + ([crew.curve] if crew else [])
     settle, period = _settling(followed)
     reach = min(horizon, settle if period is None else settle + period)
+    if period is not None:
+        reach = _before_period_end(reach, curves, crew)
     beyond = ends > reach
     atoms = {node: curve.atoms(reach) for node, curve in curves.items()}
     jumps = _atom_groups(
-        rbd, curves, atoms, working_nodes, broken_nodes, crew, causes
+        rbd, curves, atoms, reach, working_nodes, broken_nodes, crew, causes
     )
     # The events at exact times start pieces; the ends need not (see
     # ``totals_at``), so that a nested RBD counted at many times costs
@@ -876,7 +900,7 @@ def _window_counts(
 
     try:
         edges, finest = _quadrature.pieces(
-            curves.values(), np.concatenate(fixed), reach, _MISSION_POINTS
+            followed, np.concatenate(fixed), reach, _MISSION_POINTS
         )
         edges, integrals = _quadrature.refined(
             estimate,

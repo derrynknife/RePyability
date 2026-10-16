@@ -157,9 +157,9 @@ def test_the_exact_mttf_does_not_touch_the_global_rng():
 
 def test_simulation_options_without_simulate_are_refused():
     rbd = series(E([0.01]))
-    with pytest.raises(TypeError, match="mc_samples, seed"):
+    with pytest.raises(ValueError, match="mc_samples, seed"):
         rbd.mean(1000, seed=1)
-    with pytest.raises(TypeError, match="tolerance"):
+    with pytest.raises(ValueError, match="tolerance"):
         rbd.mean_time_to_failure(tolerance=0.1)
     with warnings.catch_warnings():
         warnings.simplefilter("error")

@@ -864,7 +864,7 @@ def test_a_maintained_run_from_a_state_stays_in_python(upkeep, monkeypatch):
         rbd = maintained_rbds()["block, priced"]
     else:
         rbd = inspected_rbds()["staggered, priced"]
-    state = {"a": NodeState(age=0.0, phase=10.0)}
+    state = {"a": NodeState(age=0.0, since_scheduled=10.0)}
     with pytest.raises(NotImplementedError, match="started from a state"):
         rbd.availability(
             100.0, mc_samples=5, seed=2, state=state, engine="numba"
@@ -1568,7 +1568,7 @@ def test_what_numba_does_not_run_inside_a_nested_rbd():
         assert _compiled.unsupported(rbd, plan, None) == "nested RBDs"
     rbd = nested_rbds()["maintained inside"]
     plan, _ = _event_loop._stream_plan(rbd, 100.0, 1, False)
-    state = {"c": NodeState(age=0.0, phase=1.0)}
+    state = {"c": NodeState(age=0.0, since_scheduled=1.0)}
     assert "started from a state" in _compiled.unsupported(
         rbd, plan, None, numba=True, states=state
     )

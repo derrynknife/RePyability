@@ -481,3 +481,22 @@ def test_repairable_rbd_availability_two_series_components_1N():
 
     assert pytest.approx(exp_t) == actual_t[:-1]
     assert pytest.approx(exp_availability) == actual_availability[:-1]
+
+
+def test_one_nested_rbd_object_for_two_nodes_is_refused_when_built():
+    # A nested diagram carries its simulation state, so one object given
+    # for two nodes is refused as the diagram is built, naming the nodes
+    # (it failed late, in a simulation); a deep copy is its own.
+    import copy
+
+    E = surv.Exponential.from_params
+    inner = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {"a": {"reliability": E([0.2]), "repairability": E([1.0])}},
+    )
+    edges = [("s", "x"), ("s", "y"), ("x", "t"), ("y", "t")]
+    with pytest.raises(ValueError, match="'x' and 'y' are given one"):
+        RepairableRBD(edges, {"x": inner, "y": inner})
+    twice = RepairableRBD(edges, {"x": inner, "y": copy.deepcopy(inner)})
+    assert twice.mean_availability() == pytest.approx(1 - (1 / 6) ** 2)
+    twice.availability(10.0, mc_samples=10, seed=0)

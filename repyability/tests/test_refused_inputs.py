@@ -211,9 +211,9 @@ MODELS = [standby, load_sharing, degrading]
 def test_an_exact_mean_refuses_options_it_would_ignore(model):
     node = model()
     exact = node.mean()
-    with pytest.raises(TypeError, match=r"mean\(\) takes mc_samples, seed"):
+    with pytest.raises(ValueError, match=r"mean\(\) takes mc_samples, seed"):
         node.mean(mc_samples=10, seed=1)
-    with pytest.raises(TypeError, match="only with method='simulate'"):
+    with pytest.raises(ValueError, match="only with method='simulate'"):
         node.mean(method="exact", mc_samples=10)
     with warnings.catch_warnings():
         warnings.simplefilter("error")

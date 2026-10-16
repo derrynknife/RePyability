@@ -2,6 +2,8 @@
 
 ::: repyability.AnalysisRoute
 
+::: repyability.AnalysisRoutes
+
 ::: repyability.AvailabilityResult
 
 ::: repyability.CapacityDistribution
@@ -64,10 +66,10 @@
 
 ::: repyability.SkipValue
 
-::: repyability.ReplacementPolicies
-
-::: repyability.ReplacementPolicy
-
 ::: repyability.NextReplacement
 
 ::: repyability.ReplacementChoice
+
+::: repyability.CalendarPolicy
+
+::: repyability.PlannedReplacement

@@ -40,11 +40,21 @@ over the draws, and of the Sobol indices, for the same number of draws.
 import difflib
 import warnings
 from collections.abc import Mapping, Sequence
-from typing import Any, List, Optional
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Hashable,
+    Iterable,
+    List,
+    Optional,
+    Tuple,
+)
 
 import numpy as np
 
 from repyability.rbd._model_utils import is_mixture, parametric_spec
+from repyability.utils.checks import seed as check_seed
 from repyability.utils.wrappers import outside_level
 
 #: The draws of a node's model that ``"fit"`` asks for.
@@ -114,6 +124,45 @@ class SobolPoints:
     def integers(self, high, size) -> np.ndarray:
         u = self._take(1)[:size, 0]
         return np.minimum((u * high).astype(int), int(high) - 1)
+
+
+def check_draws(n_draws) -> int:
+    """``n_draws``, checked: a positive integer."""
+    if isinstance(n_draws, bool) or not isinstance(n_draws, (int, np.integer)):
+        raise ValueError(f"n_draws must be an integer, got {n_draws!r}.")
+    if n_draws < 1:
+        raise ValueError(f"n_draws must be at least 1, got {n_draws}.")
+    return int(n_draws)
+
+
+def draw_with(
+    draw: Callable[[int, Any], Any],
+    n_draws: int,
+    seed,
+    sampling: str = "random",
+    paired: bool = False,
+    join: Optional[Callable[[Any, Any], Any]] = None,
+) -> Any:
+    """``draw(n, source)``'s draws, ``n_draws`` of them, with their
+    randomness from ``seed``: ``sampling="random"``, numpy's generator;
+    ``"sobol"``, the points of a scrambled Sobol sequence, the dimensions
+    the draws take counted first (see the module docstring). ``paired``:
+    two independent sets of ``n_draws``, one after the other, for the
+    Sobol indices: one draw of twice as many, or, from the Sobol points,
+    two draws from dimensions of their own, put together by ``join``."""
+    check_sampling(sampling)
+    rng = np.random.default_rng(check_seed(seed))
+    if sampling == "random":
+        return draw(2 * n_draws if paired else n_draws, rng)
+    counter = Counter()
+    draw(1, counter)
+    width = counter.dimensions
+    table = sobol_table(n_draws, 2 * width if paired else width, rng)
+    first = draw(n_draws, SobolPoints(table[:, :width]))
+    if not paired:
+        return first
+    assert join is not None
+    return join(first, draw(n_draws, SobolPoints(table[:, width:])))
 
 
 def sobol_table(n: int, dimensions: int, rng) -> np.ndarray:
@@ -268,6 +317,39 @@ def is_fit(model) -> bool:
     return True
 
 
+def fitted_together(
+    models: Mapping, joined: Iterable[Iterable[Hashable]] = ()
+) -> Dict[Hashable, str]:
+    """The uncertainty drawn when none is given (#184): ``"fit"`` for each
+    of ``models`` (by name) that is a surpyval fit with a parameter
+    covariance, the names that share one model object, or are ``joined``
+    (a common-cause group's members, say), given together in a tuple, so
+    that they share their draws."""
+    fitted = [name for name, model in models.items() if is_fit(model)]
+    parent = {name: name for name in fitted}
+
+    def root(name):
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    holder: Dict[int, Hashable] = {}
+    for name in fitted:
+        parent[root(name)] = root(holder.setdefault(id(models[name]), name))
+    for names in joined:
+        inside = [name for name in names if name in parent]
+        for name in inside[1:]:
+            parent[root(name)] = root(inside[0])
+    together: Dict[Hashable, list] = {}
+    for name in fitted:
+        together.setdefault(root(name), []).append(name)
+    return {
+        names[0] if len(names) == 1 else tuple(names): FIT
+        for names in together.values()
+    }
+
+
 def _quantiles(
     prior, n: int, rng: np.random.Generator, label: str, name
 ) -> np.ndarray:
@@ -366,11 +448,14 @@ def draw_ccf_models(
 ) -> List[Any]:
     """``n`` plausible common-cause models of a ``CCFGroup``, as ``spec``
     says: ``{parameter name: distribution}`` over its model's parameters
-    (``beta``, and an MGL model's ``gamma``, ``delta``, ...; see
-    ``ccf.parameters``), each drawn independently and in ``[0, 1]``, the
-    others kept; or a list of models (``BetaFactor`` or ``MGL``, for the
-    group's size and with its model's basis), drawn with replacement."""
-    from .ccf import MGL, BetaFactor, parameters, with_parameters
+    (``beta``, an MGL model's ``gamma``, ``delta``, ..., an alpha-factor
+    model's ``alpha_2``, ...; see ``ccf.parameters``), each drawn
+    independently and in ``[0, 1]``, the others kept (alpha factors
+    drawn to sum past 1 are refused, ``alpha_1`` being the remainder);
+    or a list of models (``BetaFactor``, ``MGL`` or ``AlphaFactor``, for
+    the group's size and with its model's basis), drawn with
+    replacement."""
+    from .ccf import _Model, parameters, with_parameters
 
     model = group.model
     label = f"Common-cause group {list(group.members)!r}"
@@ -401,20 +486,17 @@ def draw_ccf_models(
         if not spec:
             raise ValueError(f"{label}: the list of models is empty.")
         for m in spec:
-            size = (
-                m.required_group_size()
-                if isinstance(m, (BetaFactor, MGL))
-                else None
-            )
+            size = m.required_group_size() if isinstance(m, _Model) else None
             if (
-                not isinstance(m, (BetaFactor, MGL))
+                not isinstance(m, _Model)
                 or size not in (None, len(group.members))
                 or m.basis != model.basis
                 or m.shocks != model.shocks
             ):
                 raise ValueError(
                     f"{label}: every alternative model must be a "
-                    f"BetaFactor or an MGL model for {len(group.members)} "
+                    "BetaFactor or an MGL or AlphaFactor model for "
+                    f"{len(group.members)} "
                     f"members, splitting the {model.basis} as its model "
                     f"does, with {model.shocks} shocks; got {m!r}."
                 )
@@ -501,6 +583,44 @@ def varied_parameters(model, spec: Any, label: str):
         f"{label}: the uncertainty must be 'fit', a dict of parameter "
         f"distributions or a list of models, got {spec!r}."
     )
+
+
+def split_group_levers(key, spec, groups) -> Tuple[Optional[int], dict, Any]:
+    """An uncertainty given under the tuple of a common-cause group's
+    members (``groups``), with the group's own parameters named as its
+    levers are (``ccf_beta``, ``ccf_alpha_2``, ..., as ``levers()`` and
+    ``parameter_sensitivity`` key them): the group's index, its own
+    parameters' distributions by their names (``beta``, ...), and what is
+    left of ``spec`` for the members' one model. ``(None, {}, spec)`` for
+    any other key or spec."""
+    if not (isinstance(key, tuple) and isinstance(spec, Mapping)):
+        return None, {}, spec
+    index = next(
+        (i for i, g in enumerate(groups) if set(g.members) == set(key)), None
+    )
+    if index is None:
+        return None, {}, spec
+    from .ccf import parameters
+
+    own = {
+        name[len("ccf_") :]: prior
+        for name, prior in spec.items()
+        if isinstance(name, str) and name.startswith("ccf_")
+    }
+    levers = [f"ccf_{name}" for name in parameters(groups[index].model)]
+    unknown = [f"ccf_{name}" for name in own if f"ccf_{name}" not in levers]
+    if unknown:
+        raise ValueError(
+            f"Common-cause group {list(key)!r}: {unknown} are not levers of "
+            f"its model, {groups[index].model!r}, whose levers are "
+            f"{levers}.{_closest(unknown, levers)}"
+        )
+    rest = {
+        name: prior
+        for name, prior in spec.items()
+        if not (isinstance(name, str) and name.startswith("ccf_"))
+    }
+    return index, own, rest
 
 
 def varied_ccf_parameters(group, spec: Any):

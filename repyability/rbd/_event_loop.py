@@ -1063,12 +1063,48 @@ def _keyed_charges(rbd, run: _streams.Run) -> Tuple[
         for node, node_costs in rbd.costs.items()
         if "preventive_cost" in node_costs
     }
+    replace = _CATEGORIES.index("replace")
+    for node, schedule in rbd._preventive.items():
+        if schedule.policy == "calendar":
+            preventive[node] = _CalendarCharge(
+                rbd,
+                node,
+                next(
+                    (
+                        c
+                        for category, c in failures[node]
+                        if category == replace
+                    ),
+                    None,
+                ),
+            )
     inspection = {
         node: charges(node, "inspection_cost")
         for node, node_costs in rbd.costs.items()
         if "inspection_cost" in node_costs
     }
     return failures, preventive, inspection
+
+
+class _CalendarCharge:
+    """What a component on a calendar policy is charged at a planned
+    replacement: the price of the opportunity it falls at, kept when it
+    was scheduled (``_renewal``); renewed early at a stop of its
+    maintenance group (#349), the calendar's price for a planned
+    replacement then (``_stop``), or where the calendar allows none
+    (``inf``), its own ``replace_cost`` (``replace``, as a failure's
+    replacement is charged; nothing without one)."""
+
+    __slots__ = ("rbd", "node", "replace")
+
+    def __init__(self, rbd, node, replace):
+        self.rbd, self.node, self.replace = rbd, node, replace
+
+    def draw(self) -> float:
+        price = self.rbd._run_state._calendar_price.get(self.node, 0.0)
+        if math.isinf(price):
+            return 0.0 if self.replace is None else self.replace.draw()
+        return price
 
 
 def _context(
@@ -1182,17 +1218,17 @@ def _start_queue(
     # The window's end, which the first events already look to (see
     # _replaced_at).
     rbd._run_state.t_simulation = t_simulation
-    # Each calendar a state's phase shifts: by node, the time since its
-    # last scheduled replacement or test (see _due).
+    # Each calendar a state shifts: by node, its since_scheduled, the
+    # time since its last scheduled replacement or test (see _due).
     rbd._run_state._phases = {
-        node: start.phase
+        node: start.since_scheduled
         for node, start in states.items()
         if isinstance(start, NodeState)
         and (
-            start.phase
+            start.since_scheduled
             or (
                 # On a calendar from 0, not at its offset.
-                start.phase is not None
+                start.since_scheduled is not None
                 and node in rbd._inspection
                 and rbd._inspection[node].offset
             )
@@ -1218,6 +1254,7 @@ def _start_queue(
     # Each working node replaced on condition by its measured level
     # (#271): when its level was last known, and the level then.
     rbd._run_state._levels = {}
+    rbd._run_state._calendar_price = {}
     # Opportunistic maintenance (#108): when each member that can be
     # renewed early was put into service as new, and its pending event;
     # the pending events early renewals have cancelled, and the early
@@ -1332,12 +1369,13 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
     maintenance given how long it has taken so far, or of its life
     given its age (``_aged_life``: ``S(a + x) / S(a)`` is the chance
     of more than ``x`` left). Up at age 0 it is new, and draws its life
-    as a new unit does. Its calendar is shifted by the state's phase
-    (see ``_due``); under age replacement, its replacement is due when
-    it reaches the age, at once if it has. A unit with hidden failures
-    is known to have been up only at its last test (or when put into
-    service, if since): its life left is drawn from then, and if it
-    has run out it failed unseen, and the next test finds it. After
+    as a new unit does. Its calendar is shifted by the state's
+    ``since_scheduled`` (see ``_due``); under age replacement, its
+    replacement is due when it reaches the age, at once if it has. A
+    unit with hidden failures is known to have been up only at its last
+    test (or when put into service, if since): its life left is drawn
+    from then, and if it has run out it failed unseen, and the next test
+    finds it. After
     the first, its units are new, as from new.
     """
     component = rbd.components[node]
@@ -1372,7 +1410,7 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
     since = 0.0
     if inspection is not None:
         # Last known up at its last test, or when put into service.
-        since = min(start.age, start.phase or 0.0)
+        since = min(start.age, start.since_scheduled or 0.0)
     life = (
         _aged_life(
             component.reliability,
@@ -1585,7 +1623,15 @@ def _renewal(
         # operating time since it was renewed, which age replacement
         # counts.
         start = t - source.operated if node in rbd._imperfect else t
-    due = _due(rbd, node, schedule, start if schedule.policy == "age" else t)
+    if schedule.policy == "calendar":
+        # On the calendar policy's thresholds, from when the unit was put
+        # in; charged its opportunity's price when it falls.
+        due, price, _ = schedule.calendar._next_planned(start, t)
+        rbd._run_state._calendar_price[node] = price
+    else:
+        due = _due(
+            rbd, node, schedule, start if schedule.policy == "age" else t
+        )
     if due < t:
         due = t  # past its age at the start: replaced at once
     if t + life <= due:
@@ -1646,8 +1692,11 @@ def _stop(rbd, group, t: float, trigger=None) -> List[Event]:
     least its opportunity age, is renewed now, as its scheduled
     replacement would renew it, and the failure or replacement it had
     ahead of it is cancelled. A member whose own failure or replacement
-    is due at ``t`` keeps it: that joins the stop. Returns the renewals
-    to queue."""
+    is due at ``t`` keeps it: that joins the stop. A member on a
+    calendar policy is one like any other (#349): renewed now, it is
+    charged the calendar's price for a planned replacement at ``t``
+    (see ``_CalendarCharge``), and its new unit's next planned
+    replacement counts from ``t``. Returns the renewals to queue."""
     out: List[Event] = []
     for member in rbd._maintenance[group].members:
         if (
@@ -1667,6 +1716,10 @@ def _stop(rbd, group, t: float, trigger=None) -> List[Event]:
         rbd._run_state._pending_event.pop(member, None)
         if pending is not None and pending.time < rbd._run_state.t_simulation:
             rbd._run_state._cancelled[id(pending)] = pending
+        if schedule.policy == "calendar":
+            rbd._run_state._calendar_price[member] = (
+                schedule.calendar._planned_price(t)
+            )
         renewal = Event(t, member, schedule.duration is None, True)
         rbd._run_state._early[id(renewal)] = renewal
         rbd._run_state._renewing.add(member)

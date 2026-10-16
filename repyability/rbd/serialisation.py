@@ -332,6 +332,12 @@ def _serialise_schedule(spec: dict) -> dict:
     # interval (and policy, and a condition policy's threshold or level) as
     # they are, the duration ("instant" or a model) and the costs (each a
     # number or a distribution).
+    if spec.get("policy") == "calendar":
+        raise NotImplementedError(
+            "Cannot save a 'calendar' preventive policy: a CalendarPolicy "
+            "is worked out from its part and calendar, not saved. Save the "
+            "diagram without it, and work the policy out again."
+        )
     out: dict[str, Any] = {"interval": float(spec["interval"])}
     if "policy" in spec:
         out["policy"] = spec["policy"]
@@ -459,7 +465,7 @@ def _capacity_from_list(capacity_list):
 
 
 def _ccf_to_list(ccf_groups):
-    from repyability.rbd.ccf import MGL, BetaFactor
+    from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor
 
     if not ccf_groups:
         return None
@@ -469,6 +475,12 @@ def _ccf_to_list(ccf_groups):
             model = {"kind": "beta_factor", "beta": group.model.beta}
         elif isinstance(group.model, MGL):
             model = {"kind": "mgl", "letters": list(group.model.letters)}
+        elif isinstance(group.model, AlphaFactor):
+            model = {
+                "kind": "alpha_factor",
+                "alphas": list(group.model.alphas),
+                "testing": group.model.testing,
+            }
         else:
             raise NotImplementedError(
                 f"Cannot serialise CCF model {type(group.model).__name__}."
@@ -484,7 +496,7 @@ def _ccf_to_list(ccf_groups):
 
 
 def _ccf_from_list(ccf_list):
-    from repyability.rbd.ccf import MGL, BetaFactor, CCFGroup
+    from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor, CCFGroup
 
     if not ccf_list:
         return None
@@ -498,6 +510,13 @@ def _ccf_from_list(ccf_list):
         elif kind == "mgl":
             model = MGL(
                 *model_dict["letters"],
+                basis=basis,
+                shocks=model_dict.get("shocks"),
+            )
+        elif kind == "alpha_factor":
+            model = AlphaFactor(
+                model_dict["alphas"],
+                testing=model_dict["testing"],
                 basis=basis,
                 shocks=model_dict.get("shocks"),
             )

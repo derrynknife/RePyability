@@ -427,6 +427,7 @@ class _Run:
         "_ccf_members",
         "_ccf_pending",
         "_ccf_coins",
+        "_calendar_price",
     )
 
     #: The events to come, in time order.
@@ -465,7 +466,7 @@ class _Run:
     #: What the components draw their events from, when the diagram
     #: started the run itself (None when the caller passed them).
     _step_sources: Optional[dict]
-    #: Each calendar a state's phase shifts: by node, the time since its
+    #: Each calendar a state shifts: by node, the time since its
     #: last scheduled replacement or test.
     _phases: dict
     #: Common-cause groups: their members, each member's next event,
@@ -473,6 +474,12 @@ class _Run:
     _ccf_members: frozenset
     _ccf_pending: dict
     _ccf_coins: dict
+    #: Each component on a calendar policy: the price of its next planned
+    #: replacement (the opportunity's), charged when it falls; of its
+    #: early renewal at a stop of its maintenance group, once queued
+    #: (``inf``: the calendar allows none then, see
+    #: ``_event_loop._CalendarCharge``).
+    _calendar_price: dict
 
     def __init__(self) -> None:
         self._step_sources = None
@@ -533,20 +540,26 @@ class _Preventive(NamedTuple):
     ``"condition"`` an inspection at every multiple of ``interval`` that
     replaces the unit if it is more likely than ``threshold`` to fail
     before the next (or, with a ``level``, if its measured degradation
-    level is at or past it); a replacement takes a time drawn from
-    ``duration`` (None: no time)."""
+    level is at or past it), or under ``"calendar"`` at the first time
+    its ``calendar`` policy's threshold is reached (``interval`` is then
+    ``inf``); a replacement takes a time drawn from ``duration`` (None:
+    no time)."""
 
     interval: float
     policy: str
     duration: Any
     threshold: float = 0.0
-    #: Under ``"age"``, the age from which the unit is renewed early at a
-    #: stop of its maintenance group (#108); ``inf`` for never.
+    #: Under ``"age"`` or ``"calendar"``, the age from which the unit is
+    #: renewed early at a stop of its maintenance group (#108, #349);
+    #: ``inf`` for never.
     opportunity: float = math.inf
     #: Under ``"condition"`` with a degradation process for a life (#271):
     #: the measured level at or past which an inspection replaces the
     #: unit, in place of the age-based ``threshold``; None for none.
     level: Optional[float] = None
+    #: Under ``"calendar"`` (#319): the ``CalendarPolicy`` whose threshold
+    #: at each time replaces the unit, at its calendar's price there.
+    calendar: Any = None
 
     def due(self, renewed: float) -> float:
         """When the next preventive action (under ``"condition"``, the next
@@ -554,6 +567,8 @@ class _Preventive(NamedTuple):
         ``renewed``, or inspected then."""
         if self.policy == "age":
             return renewed + self.interval
+        if self.policy == "calendar":
+            return self.calendar._next_planned(renewed, renewed)[0]
         # Block, or inspections: the next multiple of the interval after
         # ``renewed`` (a unit renewed on the schedule is not renewed again
         # there).
@@ -650,7 +665,7 @@ class _Inspection(NamedTuple):
 
     def without_offset(self) -> "_Inspection":
         """The schedule on a calendar from 0 (a start from a state, whose
-        phase places it)."""
+        ``since_scheduled`` places it)."""
         return self._replace(offset=0.0) if self.offset else self
 
 

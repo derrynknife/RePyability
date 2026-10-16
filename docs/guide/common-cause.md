@@ -20,7 +20,7 @@ and pass the groups with `ccf_groups=`:
 ```python
 import surpyval as surv
 from surpyval import FixedEventProbability
-from repyability import BetaFactor, CCFGroup, MGL, NonRepairableRBD, PerfectReliability
+from repyability import AlphaFactor, BetaFactor, CCFGroup, MGL, NonRepairableRBD, PerfectReliability
 
 # Two redundant pumps, each failing with probability 0.01 on demand
 edges = [("s", "p1"), ("s", "p2"), ("p1", "t"), ("p2", "t")]
@@ -39,7 +39,7 @@ coupled.ff()       # -> 0.001081  ten times worse: the shared cause dominates
 The system unreliability is ten times the independent estimate, because one
 shared cause (probability `β · Q = 0.001`) now fails both pumps at once.
 
-## The two models
+## The three models
 
 [`BetaFactor(beta)`][repyability.BetaFactor]: a fraction `beta` of each
 member's failure probability `Q` comes from a cause shared by the **whole**
@@ -63,6 +63,24 @@ at least three, and so on. A group of `m` members takes exactly `m − 1`
 letters (`MGL(0.1, 0.3).group_size == 3`), and `MGL(beta)` on two members is
 exactly `BetaFactor(beta)`.
 
+[`AlphaFactor(alphas)`][repyability.AlphaFactor]: the alpha-factor model
+describes the same partial causes by the shares of a group's failure
+events that failed exactly one, two, ..., all `m` members, `alpha_1, ...,
+alpha_m` (summing to 1). Each share is a count of events over the total,
+so it is what common-cause data sources publish (NUREG/CR-5485, the
+NRC's CCF parameter estimates), where MGL's letters cannot be counted.
+The probability that a cause fails a specific set of `k` members is
+`alpha_k / C(m − 1, k − 1) · Q` for members tested one after another
+(`testing="staggered"`, the default) and `k / C(m − 1, k − 1) · alpha_k /
+alpha_t · Q`, with `alpha_t = Σ k alpha_k`, for members tested all at
+once (`testing="non-staggered"`), as the two schemes count a multiple
+failure differently: use the scheme the estimates were published for. A
+group of `m` members takes `m` alpha factors, and the model is the `MGL`
+model with the letters those probabilities give, so everything below
+holds for it as for `MGL`. Its levers (for `parameter_sensitivity`,
+`levers()` and the parameter uncertainty) are `alpha_2, ..., alpha_m`,
+named `ccf_alpha_2`, ..., with `alpha_1` the remainder.
+
 Partial causes matter for *k*-out-of-*n* groups. For three units where two
 must work, a cause that fails a pair is enough to fail the system:
 
@@ -84,6 +102,8 @@ def two_of_three(model=None):
 two_of_three().ff()                  # -> 0.000298   independent
 two_of_three(BetaFactor(0.1)).ff()   # -> 0.001241   every shared cause takes all three
 two_of_three(MGL(0.1, 0.3)).ff()     # -> 0.001591   70% of shared causes take a pair
+two_of_three(AlphaFactor([0.95, 0.04, 0.01])).ff()                           # -> 0.000969
+two_of_three(AlphaFactor([0.95, 0.04, 0.01], testing="non-staggered")).ff()  # -> 0.001654
 ```
 
 With the same `beta`, the MGL group is *worse* here: a cause that fails two
@@ -144,7 +164,7 @@ always strike independently.
 - **Disjoint.** A node can be in at most one group.
 - Members must be component nodes of the RBD: not the input or output node,
   and not a [repeated component](building.md#one-component-in-several-places).
-- An `MGL` model must match its group's size.
+- An `MGL` or `AlphaFactor` model must match its group's size.
 
 ## Time-dependent members
 
@@ -258,6 +278,19 @@ with_valve.fussell_vesely()["v"]           # -> 0.4808   independent: 0.9092
 with_valve.risk_achievement_worth()["p1"]  # -> 52.45    independent: 9.99
 ```
 
+The joint importance of a pair conditions on both states the same way:
+`R(1_i, 0_j)` is the system's reliability given member `i` works and `j`
+has failed, two members of one group conditioned on their joint state,
+and a node outside the groups held. With `p1` failed, `p2` is likelier to
+have failed too, so the valve is worth less then, and more of a
+complement of each pump; the pumps' pair is as without the group, the
+valve alone remaining given their states:
+
+```python
+with_valve.joint_importance()[("p1", "v")]    # -> 0.1082   independent: 0.01
+with_valve.joint_importance()[("p1", "p2")]   # -> -0.999   independent: -0.999
+```
+
 A member held working or broken (`working_nodes`, `broken_nodes`) is
 refused, as it is for `sf`.
 
@@ -265,7 +298,8 @@ refused, as it is for `sf`.
 of its members. They carry one model, so each value is the derivative of
 the system reliability as the parameter moves for all of them at once. The
 parameters of the group's own model come with them, named `ccf_beta` (and,
-for an `MGL` model, `ccf_gamma`, `ccf_delta`, ...):
+for an `MGL` model, `ccf_gamma`, `ccf_delta`, ...; for an `AlphaFactor`
+model, `ccf_alpha_2`, `ccf_alpha_3`, ..., `alpha_1` being the remainder):
 
 ```python
 sensitivity = with_valve.parameter_sensitivity()
@@ -302,8 +336,8 @@ In `allocate_redundancy` and `redundancy_front` a copy of a member joins its
 group, as it would in the plant: the shared cause fails it too. A
 `BetaFactor` group's `beta` holds at any size, so its members can be copied:
 active copies of their own model, with any number of them required. An
-`MGL` model's letters are for its group's size, so copying its member is
-refused, as are options and cold spares for a member. The shared cause can
+`MGL` or `AlphaFactor` model's parameters are for its group's size, so
+copying its member is refused, as are options and cold spares for a member. The shared cause can
 change what is worth buying. With two pumps that fail with probability 0.05
 and a valve that fails with 0.002, a third pump is the better buy if the
 pumps are independent, and a second valve if a fifth of their failures are
@@ -339,7 +373,7 @@ group's.
 | The importance measures (Birnbaum, improvement potential, RAW, RRW, criticality, Fussell–Vesely) | Include the groups, exactly: a member conditioned on its state through the shock outcomes, a node outside them held. |
 | `parameter_sensitivity` | A group's parameters, and its model's (`ccf_beta`, ...), reported once, under the tuple of its members. |
 | `sf_uncertainty`, `time_to_reliability_uncertainty`, `bx_life_uncertainty`, `mean_uncertainty` | Each draw worked out with the groups; the members drawn together, and the group's model too if it is given. `mean_uncertainty` refuses a group splitting a probability, as `mean` does. |
-| `allocate_redundancy`, `redundancy_front` | A member's copies join its group: a `BetaFactor` group's, active copies of the member's own model. Copies of an `MGL` group's member, and options or cold spares for a member, raise `NotImplementedError`. |
+| `allocate_redundancy`, `redundancy_front` | A member's copies join its group: a `BetaFactor` group's, active copies of the member's own model. Copies of an `MGL` or `AlphaFactor` group's member, and options or cold spares for a member, raise `NotImplementedError`. |
 | `allocate_reliability_redundancy` | Includes the groups; a member in `uses` raises `NotImplementedError` (its reliability is the group's). |
 | The condition-based methods (`sf_given_state`, `remaining_life`, `importances_given_state`) | Raise `NotImplementedError`: they would need members of different ages. |
 | `working_nodes` / `broken_nodes` naming a group member | Raises `NotImplementedError`. |
@@ -350,8 +384,8 @@ pair.mean(method="simulate", seed=0)       # -> 1147.4
 pair.mean()                                # -> 1145.8   exact, without the group
 ```
 
-Groups are saved with the RBD, their basis with them. An *alpha-factor*
-model, a data-estimable reparameterisation of MGL, is a planned extension.
+Groups are saved with the RBD, their basis with them (and an alpha-factor
+model's testing scheme).
 
 ### Many groups
 
@@ -363,9 +397,10 @@ that share a module, as a group of each kind of component across redundant
 trains does, would multiply their outcomes: past 64 combinations, their
 shared causes are written out as events of their own, each repeated under
 every member it strikes, which the diagram's decision diagram works out
-with the rest (#219). A beta factor's cause, and an MGL model's by rate or
-with `shocks="independent"`, are such events as they stand; an MGL
-model's exclusive shocks are taken as independent causes that fail the
+with the rest (#219). A beta factor's cause, and an MGL or alpha-factor
+model's by rate or with `shocks="independent"`, are such events as they
+stand; the exclusive shocks of an MGL or alpha-factor model are taken as
+independent causes that fail the
 same sets of members as often, which exist unless the model leaves out a
 set that two pair shocks would fail together (a `gamma` of 0, say), when
 the groups are conditioned on together, as before. The values are the
@@ -514,8 +549,8 @@ drawn.interval(0.9)   # (0.9783, 0.9886)
 In `allocate_redundancy` a member's copies join its group, as for a
 non-repairable diagram: a `BetaFactor` group's, each copy alike in every way,
 struck by the shared cause too, and tested with its member when its failures
-are hidden. Copies of an `MGL` group's member, or of a train holding one, are
-refused. Each design is scored exactly by its groups' chains, which count
+are hidden. Copies of an `MGL` or `AlphaFactor` group's member, or of a
+train holding one, are refused. Each design is scored exactly by its groups' chains, which count
 how many of a member's copies are down rather than telling them apart, so a
 design with many copies is quick to score. The copies are repaired at once
 (the allocations assume as many repair crews as jobs), so a shared failure

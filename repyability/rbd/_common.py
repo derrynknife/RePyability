@@ -8,8 +8,10 @@ import functools
 import math
 import numbers
 import warnings
+import weakref
 from fractions import Fraction
 from typing import (
+    Any,
     Callable,
     Iterable,
     List,
@@ -37,9 +39,33 @@ def _safe_mean(model) -> float:
         return float("nan")
 
 
+#: Each model's constant rate (see ``_constant_rate``), kept while the
+#: model lives: the checks and the chains ask for it many times over, on
+#: every diagram built around the same model (a search over intervals
+#: builds hundreds).
+_CONSTANT_RATES: "weakref.WeakKeyDictionary[Any, Optional[float]]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
 def _constant_rate(model) -> Optional[float]:
     """The failure rate of a model whose rate is constant (an exponential
     life, or a Weibull of shape 1), or None."""
+    try:
+        return _CONSTANT_RATES[model]
+    except (KeyError, TypeError):  # not kept yet, or not a model
+        pass
+    rate = _worked_out_rate(model)
+    try:
+        _CONSTANT_RATES[model] = rate
+    except TypeError:  # not weakly referenced (text, say)
+        pass
+    return rate
+
+
+def _worked_out_rate(model) -> Optional[float]:
+    """See ``_constant_rate``: worked out from the model's hazard and
+    survival at a few times."""
     try:
         t = model_mean(model) * np.array([0.01, 0.5, 1.0, 3.0])
         hazard = np.asarray(model.hf(t), dtype=float).ravel()

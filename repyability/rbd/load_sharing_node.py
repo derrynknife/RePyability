@@ -418,9 +418,8 @@ class LoadSharingModel:
             If the group has no exact mean and neither ``mc_samples`` nor
             ``seed`` is given (or ``method="exact"``).
         ValueError
-            If ``method`` is not one of these.
-        TypeError
-            If ``mc_samples`` or ``seed`` is given to an exact mean.
+            If ``method`` is not one of these, or ``mc_samples`` or ``seed``
+            is given to an exact mean.
         """
 
         def exact() -> float:

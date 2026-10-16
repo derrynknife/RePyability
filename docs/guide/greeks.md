@@ -129,7 +129,15 @@ order, each a `Lever`: whose it is and its name, its value now, the range
 of values it can take, whether it is discrete (one more standby unit or
 crew), and whether it moves a calendar that its component shares with
 others. Nothing is worked out, so a report can name the levers and show
-their values without the sensitivities:
+their values without the sensitivities. The levers are each node's own
+model's parameters (and a component's maintenance options): neither
+`levers()` nor `parameter_sensitivity` descends into a nested diagram or
+into the units of a composite model (a `StandbyModel`, a
+`LoadSharingModel`, a `DegradingNode`), whose parameters are not reached.
+(One lever the sensitivities over time leave out: the `repair.q` of a
+minimally repaired component, `q = 1`, the one imperfect repair the values
+over time take, so the derivative in `q` does not exist there;
+`with_levers` still moves it, to a diagram the simulations take.)
 
 ```python
 valve = {lever.name: lever for lever in station.levers() if lever.key == "valve"}
@@ -344,16 +352,16 @@ ownership (`discount_rate=`, see [Costs](costs.md#discounting)).
 | Measure | `NonRepairableRBD` | `RepairableRBD` | `FaultTree` |
 |---|---|---|---|
 | `birnbaum_importance` | at `x` | long run, `x`, `window`, `state` | at `t` |
-| `parameter_sensitivity` | at `x` | long run, `x`, `window`, `state`; `of="cost_rate"` | |
-| `levers`, `with_levers` | the parameters | every lever | |
+| `parameter_sensitivity` | at `x` | long run, `x`, `window`, `state`; `of="cost_rate"` | at `t` |
+| `levers`, `with_levers` | the parameters | every lever | the parameters |
 | `differential_importance` | at `x` | long run, `x`, `window`, `state` | at `t` |
 | `joint_importance` | at `x` | long run, `x`, `window`, `state` | at `t` |
 | Theta | `reliability_rate(x)` | `availability_rate(x)`, from new or `state` | |
-| `barlow_proschan_importance` | whole life, or by `x` | long run, `window`, `state` | |
+| `barlow_proschan_importance` | whole life, or by `x` | long run, `window`, `state` | whole life, or by `t` |
 | `uncertainty_importance` | at `x`; `of=` the MTTF, a B-life, a time to a reliability | long run; `of=` the availability at `x` or over missions `x`, from new or `state`, or the cost rate | |
 
 With limited repair crews or common-cause groups, the measures follow the
 crews' and the groups' Markov chains: theta and the Barlow–Proschan shares
 split the chains' transitions by the component, or common cause, that makes
-each (#199). With common-cause groups `joint_importance` is refused, as
-their members cannot be held.
+each (#199); `joint_importance` conditions on each pair's states through
+the groups' outcomes, as the single-node measures do (#317).

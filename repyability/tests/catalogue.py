@@ -16,11 +16,16 @@ import surpyval as surv
 
 from repyability import (
     MGL,
+    AlphaFactor,
     BetaFactor,
+    Calendar,
     CCFGroup,
     DegradingNode,
+    FaultTree,
     LoadSharingModel,
+    NonRepairable,
     NonRepairableRBD,
+    Opportunity,
     PerfectReliability,
     PerfectUnreliability,
     RegressionNode,
@@ -226,6 +231,23 @@ def nonrepairable_kinds():
             {"a": unit, "b": unit, "c": E([0.002])},
             ccf_groups=[CCFGroup(["a", "b"], MGL(0.1))],
         ),
+        "common cause, alpha factor": NonRepairableRBD(
+            VOTE,
+            {
+                "a": unit,
+                "b": unit,
+                "d": unit,
+                "c": E([0.002]),
+                "j": PerfectReliability,
+            },
+            k={"j": 2},
+            ccf_groups=[
+                CCFGroup(
+                    ["a", "b", "d"],
+                    AlphaFactor([0.95, 0.04, 0.01], testing="non-staggered"),
+                )
+            ],
+        ),
         "a branch that never works": NonRepairableRBD(
             EDGES, {"a": unit, "b": PerfectUnreliability, "c": E([0.002])}
         ),
@@ -274,6 +296,54 @@ def nonrepairable_kinds():
     }
 
 
+def fault_tree_kinds():
+    """The fault trees of every kind the tree's analyses are checked on
+    (#314): events given as probabilities, as lifetime models (surpyval
+    distributions, a fit with its covariance) and as both, a repeated
+    event, and common-cause groups of each model and basis."""
+    unit = W([100, 2])
+    gates = {"top": ("or", ["pair", "c"]), "pair": ("and", ["a", "b"])}
+    rest = {"b": W([80, 1.5]), "c": E([0.002])}
+    alike = {"a": unit, "b": unit, "c": E([0.002])}
+    return {
+        "fixed": FaultTree(gates, {"a": 0.1, "b": 0.2, "c": 0.05}),
+        "lifetimes": FaultTree(gates, {"a": unit, **rest}),
+        "mixed": FaultTree(gates, {"a": unit, "b": 0.2, "c": L([4.0, 0.5])}),
+        "fitted": FaultTree(gates, {"a": fitted_life(), **rest}),
+        "repeated": FaultTree(
+            {
+                "top": ("and", ["A", "B"]),
+                "A": ("or", ["s", "a"]),
+                "B": ("or", ["s", "b"]),
+            },
+            {"s": E([0.001]), "a": unit, "b": W([80, 1.5])},
+        ),
+        "common cause": FaultTree(
+            gates, alike, ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))]
+        ),
+        "common cause by rate": FaultTree(
+            gates,
+            alike,
+            ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate"))],
+        ),
+        "common cause, MGL": FaultTree(
+            {
+                "top": ("or", ["vote", "d"]),
+                "vote": ("vote", 2, ["a", "b", "c"]),
+            },
+            {"a": unit, "b": unit, "c": unit, "d": E([0.002])},
+            ccf_groups=[
+                CCFGroup(["a", "b", "c"], MGL(0.1, 0.3, basis="rate"))
+            ],
+        ),
+        "common cause, fixed": FaultTree(
+            gates,
+            {"a": 0.05, "b": 0.05, "c": 0.01},
+            ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+        ),
+    }
+
+
 def systems_of_every_kind():
     """The repairable systems every simulation is checked on: those of
     ``test_performance_equivalence``, with draws that cannot be streamed
@@ -310,6 +380,15 @@ def systems_of_every_kind():
         },
     )
     return systems
+
+
+def calendar_policy(life):
+    """A calendar policy for ``life`` (#319): shuts every 60 at 2, and a
+    failure at 10."""
+    calendar = Calendar(
+        [Opportunity("shut", 2.0, period=60.0)], failure=10.0, anytime=None
+    )
+    return NonRepairable(life).optimal_calendar_policy(calendar)
 
 
 def repairable_kinds():
@@ -361,6 +440,15 @@ def repairable_kinds():
                     replace_cost=10.0,
                 )
             ),
+            "replaced on a calendar policy": system(
+                unit(
+                    preventive={
+                        "policy": "calendar",
+                        "calendar": calendar_policy(life),
+                    },
+                    replace_cost=10.0,
+                )
+            ),
             "opportunistic maintenance": RepairableRBD(
                 EDGES,
                 {
@@ -374,6 +462,30 @@ def repairable_kinds():
                 maintenance_groups={
                     "train": {"setup_cost": 50.0, "system_down": True}
                 },
+            ),
+            # A calendar component in a maintenance group (#349): renewed
+            # early at the age-replaced member's stops, its own
+            # replacements stops that renew that member early.
+            "calendar policy in a maintenance group": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={
+                            "policy": "calendar",
+                            "calendar": calendar_policy(life),
+                            "opportunity": 100.0,
+                        },
+                        group="train",
+                        replace_cost=10.0,
+                    ),
+                    "b": unit(
+                        preventive={"interval": 300.0, "opportunity": 200.0},
+                        group="train",
+                        replace_cost=10.0,
+                    ),
+                    "c": unit(),
+                },
+                maintenance_groups={"train": {"setup_cost": 50.0}},
             ),
             "grouped, no opportunities": RepairableRBD(
                 EDGES,
@@ -411,6 +523,9 @@ def repairable_kinds():
                     "repair_cost": 1.0,
                     "replace_cost": 10.0,
                 }
+            ),
+            "minimal repair, repairs that take time": system(
+                unit(repair={"model": "kijima1", "q": 1.0}, repair_cost=1.0)
             ),
             "imperfect repair, replaced and maintained": system(
                 unit(
@@ -566,14 +681,24 @@ def repairable_kinds():
                         "reliability": E([0.002]),
                         "repairability": E([0.5]),
                     }
-                    for node in "ab"
-                }
-                | {
-                    "c": unit(
-                        preventive={"interval": 300.0, "policy": "block"}
-                    )
+                    for node in "abc"
                 },
                 ccf_groups=[CCFGroup(["a", "b"], MGL(0.2))],
+            ),
+            "common cause, alpha factor": RepairableRBD(
+                VOTE,
+                {
+                    node: {
+                        "reliability": E([0.002]),
+                        "repairability": E([0.5]),
+                    }
+                    for node in "abdc"
+                }
+                | {"j": PerfectReliability},
+                k={"j": 2},
+                ccf_groups=[
+                    CCFGroup(["a", "b", "d"], AlphaFactor([0.95, 0.04, 0.01]))
+                ],
             ),
             "common cause, Weibull": system(
                 unit(), ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))]

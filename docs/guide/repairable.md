@@ -89,7 +89,10 @@ it operates. `"duty"`, the fraction `d` of the time it operates (in
 life over `d`, `R(d t)`, the same kind of distribution with its scale
 moved, which every exact method and simulation then takes. Its repairs,
 maintenance and tests stay on the calendar, and its levers and saved spec
-keep the life as given, in operating time.
+keep the life as given, in operating time. So is a
+[state](#from-the-plant-as-it-is-now)'s `age`: on the diagram's clock,
+the calendar time since it was put into service (an operating age `a`
+is `NodeState(age=a / d)`).
 
 ```python
 pump = {"reliability": surv.Weibull.from_params([1000, 2]),       # operating hours
@@ -306,8 +309,9 @@ availability, failures, cost and capacity over the next month?* Pass
   down so far, in a repair or (`maintenance=True`) in its preventive
   maintenance. What is left of that has the survival function
   `G(r + s) / G(r)`, and the unit is then new;
-- **on a calendar:** `phase`, the time since its last block replacement or
-  test, so that the next falls `interval - phase` from now. A unit with
+- **on a calendar:** `since_scheduled`, the time since its last block
+  replacement or test, so that the next falls `interval - since_scheduled`
+  from now. A unit with
   hidden failures is known to have been up only at its last test (or when
   put into service, if that was since): it may have failed since, unseen,
   and the next test finds it;
@@ -323,8 +327,9 @@ availability, failures, cost and capacity over the next month?* Pass
   `replace_after`, maintenance or tests;
 - **a nested RBD:** a dict of its own components' states;
 - **long in service, state unknown:** `state="stationary"` puts every
-  component in its long-run state (one on a calendar at its phase; for one
-  component, `NodeState(stationary=True, phase=...)`).
+  component in its long-run state (one on a calendar at its
+  `since_scheduled`; for one component, `NodeState(stationary=True,
+  since_scheduled=...)`).
 
 A component left out starts new, and every component's later units are new,
 as from new.
@@ -558,7 +563,7 @@ them with common random numbers, far more precisely than two separate runs
 | `n_simulations`, `time_simulated_to` | `mc_samples` and `t_simulation`. |
 | `criticalities` | The criticality measures (below). |
 | `cost` | The simulated costs, or `None` when nothing is priced (see [Costs](costs.md#the-simulated-cost-distribution)). |
-| `capacity_timeline`, `capacity`, `capacity_time`, `mean_capacity`, `demand`, `delivered`, `delivered_fraction`, `delivered_fraction_interval(confidence)` | With node capacities: the mean capacity over time, the time at each capacity, and the fraction of the demand delivered (see [System capacity](capacity.md#over-a-window-simulated)). `None` without capacities. |
+| `capacity_timeline`, `capacity`, `capacity_time`, `mean_capacity`, `demand`, `delivered`, `delivered_fraction`, `sample_delivered_fraction`, `delivered_fraction_interval(confidence)`, `delivered_control` | With node capacities: the mean capacity over time, the time at each capacity, and the fraction of the demand delivered, exact where `mission_capacity` works it out, as `mean_availability` is (see [System capacity](capacity.md#over-a-window-simulated)). `None` without capacities. |
 
 ```python
 result.mean_up_time      # -> 28.08    against the exact 27.27
@@ -835,7 +840,8 @@ their repairs are not Kijima's.
   group, or replacement on condition, cannot be repaired imperfectly.
 - **Exact or simulated.** A repair does not renew the unit, so the exact
   long-run values, the availability over time and the spares counts refuse
-  it, with the reason; `availability`, `cost` and `compare` simulate it, in
+  it, with the reason (but minimal repair's values over time, below);
+  `availability`, `cost` and `compare` simulate it, in
   Python, with its own streams (seeds, antithetic pairs and common random
   numbers work as for any component). `q = 0`, and `replace_after=1`
   whatever `q`, are the component renewed at every failure, draw for draw.
@@ -859,6 +865,35 @@ patched = RepairableRBD(
 )
 patched.expected_failures(8760.0)     # -> 227.12   = (8760 / 1000) ** 2.5
 patched.expected_cost(8760.0).mean    # -> 113561   500 a repair
+```
+
+- **Minimal repair whose repairs take time is numerical over a window**
+  (#318). The unit then fails at its life's hazard at its *operating* age,
+  the time it has been up, which its repairs leave as it is, and is down
+  for each repair. Its failures by operating age `a` are Poisson with mean
+  `H(a)`, and the repairs so far make reaching that age take `a` plus
+  their total, a compound Poisson sum: its availability and expected
+  failures at each time are sums over the number of repairs so far of
+  that Poisson probability against the distribution of their total, worked
+  out on a grid of its operating age (about 1,000 steps over a life, to
+  about 1e-7). A fitted Crow-AMSAA, Duane or HPP process with a repair
+  time is this component. The values over a window from new take it in,
+  as numerical as any component's, and a run's means are theirs by
+  default; its long-run values still refuse, as before. The grid is
+  followed to the window's end, a few FFTs of it for each repair the
+  unit can have in the window: a window of a few lives takes well under a
+  second, one of twenty lives of a fast-wearing unit a few.
+
+```python
+repaired = RepairableRBD(
+    [("s", "p"), ("p", "t")],
+    {"p": {"reliability": surv.Weibull.from_params([1000, 2.5]),
+           "repairability": surv.LogNormal.from_params([3.0, 0.5]),
+           "repair": {"model": "kijima1", "q": 1.0},
+           "repair_cost": 500.0}},
+)
+repaired.expected_failures(8760.0)      # -> 103.85   fewer: it is down for each repair
+repaired.mission_availability(8760.0)   # -> 0.7310
 ```
 
 ## Instantly repaired components
@@ -900,10 +935,21 @@ nested.system_failure_frequency()  # -> 0.03497
 nested.availability(t_simulation=100.0, mc_samples=2_000, seed=0).availability[-1]   # -> 0.959
 ```
 
-Use one `RepairableRBD` object per place it appears: the same object used for
-two nodes shares one simulation state and raises `ValueError` during
-`availability()`. (One `NonRepairable` object *can* be reused; each node gets
-its own copy.)
+What does not recurse: the outer diagram counts its own components' costs
+alone (a nested diagram that carries any is warned of when the outer one is
+built), its `spares_demand` and `spares_stock` refuse by default with a
+nested RBD, naming the components counted, and its levers and parameter
+uncertainty are its own components' (a nested diagram's fits are not
+drawn). Count those with the nested diagram's own methods. In
+`expected_events` a nested node's failures and preventive actions are its
+system's failures and planned outages, as the simulation counts them for
+the node.
+
+Use one `RepairableRBD` object per place it appears: a nested diagram
+carries its simulation state, so the same object given for two nodes is
+refused when the outer diagram is built (`copy.deepcopy` it for nodes
+alike). (One `NonRepairable` object *can* be reused; each node gets its own
+copy.)
 
 ```python
 pump = NonRepairable(surv.Weibull.from_params([30, 1.5]), surv.Exponential.from_params([0.5]))

@@ -256,7 +256,7 @@ def test_a_tested_unit_whose_tests_miss_failures_starts_new():
         SINGLE,
         {"a": hidden(1e-3, 100.0, coverage=0.5, full_test=300.0)},
     )
-    for state in (NodeState(age=20.0), NodeState(phase=10.0)):
+    for state in (NodeState(age=20.0), NodeState(since_scheduled=10.0)):
         with pytest.raises(NotImplementedError, match="leave it out"):
             rbd.point_availability([50.0], state={"a": state})
         with pytest.raises(NotImplementedError, match="leave it out"):
@@ -270,7 +270,7 @@ def test_a_state_places_a_staggered_calendar():
         SINGLE, {"a": hidden(rate, interval, offset=60.0)}
     )
     plain = RepairableRBD(SINGLE, {"a": hidden(rate, interval)})
-    state = {"a": NodeState(phase=10.0)}
+    state = {"a": NodeState(since_scheduled=10.0)}
     x = np.array([5.0, 50.0, 95.0, 250.0])
     np.testing.assert_allclose(
         staggered.point_availability(x, state=state),
@@ -287,7 +287,7 @@ def test_a_state_places_a_staggered_calendar():
     ]
     assert simulated[0] == simulated[1]
     # From a test at 0 too.
-    state = {"a": NodeState(phase=0.0)}
+    state = {"a": NodeState(since_scheduled=0.0)}
     np.testing.assert_allclose(
         staggered.point_availability(x, state=state),
         plain.point_availability(x, state=state),

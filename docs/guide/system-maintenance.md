@@ -20,10 +20,11 @@ between preventive and corrective maintenance:
 
 | Key | Meaning |
 |---|---|
-| `interval` | Required: the replacement interval `T` (`inf`: never). |
-| `policy` | `"age"` (the default): `T` after the unit was last put into service as new, so a failure restarts the clock. `"block"`: at `T, 2T, 3T, …` whatever the unit's age, skipped while it is down. `"condition"`: inspected at `T, 2T, 3T, …`, and replaced if likely to fail before the next inspection (see [below](#replacement-on-condition)). |
+| `interval` | Required (but under `"calendar"`): the replacement interval `T` (`inf`: never). |
+| `policy` | `"age"` (the default): `T` after the unit was last put into service as new, so a failure restarts the clock. `"block"`: at `T, 2T, 3T, …` whatever the unit's age, skipped while it is down. `"condition"`: inspected at `T, 2T, 3T, …`, and replaced if likely to fail before the next inspection (see [below](#replacement-on-condition)). `"calendar"`: at the first time the unit's age reaches a calendar policy's threshold (see [below](#replacement-on-a-calendar-policy)). |
+| `calendar` | Under `"calendar"`: the [`CalendarPolicy`][repyability.CalendarPolicy] of [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]. |
 | `duration` | `"instant"` (the default): renewed in place, never down. Or a time-to-maintain model: the unit is down meanwhile, a *planned outage*. |
-| `cost` | Charged at each preventive replacement: a number or a distribution. |
+| `cost` | Charged at each preventive replacement: a number or a distribution (under `"calendar"`, none: the calendar's price is charged). |
 
 A replacement renews the unit, so the failure it was heading for never
 happens. A failure due at the same time as a replacement comes first.
@@ -209,6 +210,42 @@ year.system_planned_outages / year.n_simulations   # -> 11.95
 year.cost.by_category["preventive"]                # -> 11886.8   1000 each, expected
 ```
 
+### Replacement on a calendar policy
+
+A part whose replacement costs differently at different times (cheap in a
+shut, dearer on any other day) is best replaced on a threshold for each
+time: the policy [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]
+works out (see [Maintenance policies](maintenance.md#replacement-over-a-calendar-of-shuts-nonrepairable)).
+Give it to the component, and the simulation replaces each unit at the first
+time its age reaches the threshold, charging the calendar's price there; a
+failure is charged the component's own `replace_cost`:
+
+```python
+from repyability import Calendar, NonRepairable, Opportunity
+
+life = surv.Weibull.from_params([1000.0, 2.5])
+plant = Calendar(
+    [Opportunity("quarterly", 2.0, period=91.0), Opportunity("annual", 1.0, period=364.0)],
+    failure=20.0, anytime=4.0,
+)
+policy = NonRepairable(life).optimal_calendar_policy(plant)
+rbd = RepairableRBD(
+    [("s", "bearing"), ("bearing", "t")],
+    {"bearing": {
+        "reliability": life, "repairability": "instant", "replace_cost": 20.0,
+        "preventive": {"policy": "calendar", "calendar": policy},
+    }},
+)
+rbd.cost(t_simulation=3640.0, mc_samples=500)   # simulated, in Python
+```
+
+Only the simulations take it (in the Python loop): the exact and numerical
+analyses refuse a component on a calendar policy, as its replacements depend
+on when each unit was put in, and a diagram with one is not saved. In a
+maintenance group (with a `"group"`, and an `"opportunity"` age of any size)
+it is a member like any other: see
+[Opportunistic maintenance](#opportunistic-maintenance).
+
 ### Replacement on condition
 
 `"policy": "condition"` inspects the unit at every multiple of `interval`,
@@ -282,7 +319,7 @@ already 600 hours old, 100 hours after its last inspection:
 from repyability import NodeState
 
 inspected.expected_cost(8760.0).total     # -> 114491   new: less than a year at the rate, 117139
-worn = {"p": NodeState(age=600.0, phase=100.0)}
+worn = {"p": NodeState(age=600.0, since_scheduled=100.0)}
 inspected.expected_cost(720.0, state=worn).total   # -> 10265   against 8517 new
 ```
 
@@ -350,7 +387,7 @@ its own scheduled replacement would replace it:
 | Key | Meaning |
 |---|---|
 | `"group"` (component) | The component's maintenance group: any hashable name. |
-| `opportunity` (`"preventive"`, age policy) | The age, from 0 to `interval`, from which the unit is replaced early at a stop of its group. Left out, it never is. |
+| `opportunity` (`"preventive"`, age or calendar policy) | The age, from 0 to `interval` (any age under a calendar policy), from which the unit is replaced early at a stop of its group. Left out, it never is. |
 | `setup_cost` (`maintenance_groups`) | Charged once per stop, however many members it renews. |
 | `system_down` (`maintenance_groups`) | `True`: every outage of the system is a stop of the group as well. |
 
@@ -408,6 +445,17 @@ down less (12.0 an hour of lost production against 16.7).
   renewals, summed over the simulations; the set-ups are under
   `by_category["setup"]`, and each early renewal is charged the member's
   preventive cost and uses a spare.
+- **A component on a [calendar policy](#replacement-on-a-calendar-policy)
+  is a member like any other.** Each of its planned replacements is a stop
+  of its group, and at a stop it is renewed early from its `opportunity`
+  age, charged the calendar's price for a planned replacement on that day
+  (the opportunity's if one falls then, else the price on any day; where
+  the calendar allows none, its own `replace_cost`, as a failure is); the
+  new unit's next planned replacement then counts from that day. The
+  policy is the one worked out for the part alone: it is not re-optimised
+  with the group's stops as opportunities, so the thresholds assume the
+  calendar's prices, and the group's stops are extra chances it did not
+  plan for.
 - **Exact or simulated.** A component that can be renewed early depends on
   the others, so the exact long-run values, the availability over time and
   the spares counts refuse it; `availability`, `cost` and `compare`

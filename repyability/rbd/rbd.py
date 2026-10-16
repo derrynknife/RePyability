@@ -104,6 +104,21 @@ def leaves_out_junctions(method):
     return wrapper
 
 
+def _node_collection(label: str, nodes) -> set:
+    """The nodes given as ``label`` (``working_nodes`` or
+    ``broken_nodes``) as a set (none for None), or a TypeError when they
+    are no collection of node names (a number, say, from an argument given
+    out of place; text is one name, not a collection of its letters)."""
+    if nodes is None:
+        return set()
+    if isinstance(nodes, (str, bytes)) or not isinstance(nodes, Iterable):
+        raise TypeError(
+            f"{label} takes a collection of node names (a list or a set), "
+            f"got {nodes!r}."
+        )
+    return set(nodes)
+
+
 def _set_order(nodes: frozenset) -> tuple:
     """Path and cut sets' order in a list: smallest first, then by name (as
     a ``FaultTree`` lists them)."""
@@ -517,6 +532,15 @@ class Pairs(dict):
         """The pair as it is kept: its names in order as text."""
         return (j, i) if str(j) < str(i) else (i, j)
 
+    @classmethod
+    def of(cls, nodes, value: Callable) -> "Pairs":
+        """Each pair of ``nodes`` once, with ``value(i, j)``."""
+        out = cls()
+        for k, i in enumerate(nodes):
+            for j in nodes[k + 1 :]:  # noqa: E203
+                out[cls.oriented(i, j)] = value(i, j)
+        return out
+
     def _swapped(self, key):
         if isinstance(key, tuple) and len(key) == 2:
             return (key[1], key[0])
@@ -602,6 +626,20 @@ class _Cache:
         for name in self.__slots__:
             if name not in redone:
                 setattr(out, name, getattr(self, name))
+        return out
+
+    def copied(self, *names: str) -> "_Cache":
+        """A cache with copies of this one's dictionaries ``names``, for a
+        diagram rebuilt with most of this one's models (a lever moved):
+        what those keep is keyed by the models' identities (and a node's
+        schedule), so the rebuilt diagram reuses what was worked out for
+        the models it shares, works out the rest for itself, and keeps
+        that to itself."""
+        out = _Cache()
+        for name in names:
+            kept = getattr(self, name)
+            if kept is not None:
+                setattr(out, name, dict(kept))
         return out
 
 
@@ -830,6 +868,8 @@ class RBD:
     _FOLDS_JUNCTIONS = False
     # What simulates a diagram too meshed to work out exactly.
     _SIMULATE_INSTEAD = "Simulate it instead."
+    # The kind of diagram, as the messages name it.
+    _KIND = "RBD"
 
     def __init__(
         self,
@@ -1031,11 +1071,15 @@ class RBD:
 
         A node is irrelevant when it is in no minimal path set, e.g. a node
         in parallel with a direct edge, which is a connection that never
-        fails. Whether such a node works never changes whether the system
-        works, so its Birnbaum and structural importance are zero. They are
-        found by the reduction to modules, without listing the path sets.
-        An irrelevant node is still a node of the RBD (it is in
-        [`node_names`][repyability.RBD.node_names]). The same set is found on
+        fails, or with a path through junctions alone (a
+        ``PerfectReliability`` node, such as a vote point, never fails
+        either). Whether such a node works never changes whether the
+        system works, so its Birnbaum and structural importance are zero.
+        They are found by the reduction to modules, with the junctions
+        folded in as always working, without listing the path sets. An
+        irrelevant node is still a node of the RBD (it is in
+        [`node_names`][repyability.RBD.node_names]); a junction is no
+        component, so it is never listed. The same set is found on
         construction and stored in ``structure_check["irrelevant_nodes"]``,
         with ``structure_check["has_irrelevant_nodes"]``.
 
@@ -1058,10 +1102,10 @@ class RBD:
         >>> rbd.find_irrelevant_components()
         {'b'}
         """
-        decomposition = self._decomposition()
-        if isinstance(decomposition, GraphStructure):
-            raise NotImplementedError(decomposition.reason)
-        return set(self.nodes) - decomposition.nodes
+        structure = self._set_structure()
+        if isinstance(structure, GraphStructure):
+            raise NotImplementedError(structure.reason)
+        return set(self.nodes) - structure.nodes - self._junctions()
 
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
         """Iterate over every path from the input node to the output node.
@@ -1407,22 +1451,24 @@ class RBD:
         Parameters
         ----------
         node_probabilities : dict
-            The probability that each node works, keyed by node name, as
-            floats or numpy arrays of equal length (not lists). Every node
-            in a minimal path set needs an entry; other keys are ignored.
+            The probability that each node works (not a time: a
+            reliability at some time, or an availability), keyed by node
+            name, as floats or numpy arrays of equal length (not lists).
+            Every node in a minimal path set needs an entry; other keys are
+            ignored.
 
         Returns
         -------
         np.ndarray
-            One value per minimal path set, in no particular order and with
-            no labels (to pair values with path sets, take the products over
-            ``get_min_path_sets(include_in_out_nodes=False)`` directly).
-            The shape is ``(n_path_sets,)`` for float probabilities and
+            One value per minimal path set, in the order
+            [`minimal_path_sets`][repyability.RBD.minimal_path_sets] lists
+            them (smallest first, then by name), so the two pair up. The
+            shape is ``(n_path_sets,)`` for float probabilities and
             ``(n_path_sets, n)`` for arrays of length ``n``.
 
         Raises
         ------
-        KeyError
+        ValueError
             If a node in a minimal path set has no entry.
 
         Examples
@@ -1438,7 +1484,23 @@ class RBD:
         >>> sorted(round(float(p), 4) for p in probs)
         [0.76, 0.855]
         """
-        path_sets = self.get_min_path_sets(include_in_out_nodes=False)
+        if not isinstance(node_probabilities, Mapping):
+            raise TypeError(
+                "path_set_probabilities takes a dict of the probability "
+                "that each node works, by node name (not a time), got "
+                f"{node_probabilities!r}."
+            )
+        path_sets = self.minimal_path_sets()
+        missing = sorted(
+            {n for path in path_sets for n in path} - set(node_probabilities),
+            key=str,
+        )
+        if missing:
+            raise ValueError(
+                "path_set_probabilities takes the probability that each "
+                "node works, by node name (not a time); none given for "
+                f"{_names(missing)}."
+            )
         out = []
         for path in path_sets:
             path_prob = 1
@@ -1745,20 +1807,7 @@ class RBD:
                     route.route in (r.EXACT, r.NUMERICAL) and name not in free
                 ) or (route.route == r.SIMULATED and name in drawn):
                     out[name] = r.refused(meshed)
-        return dict(sorted(out.items()))
-
-    def _require_no_ccf_pairs(self) -> None:
-        """Raise if the diagram has common-cause groups: the joint
-        importance holds pairs of nodes working and failed, which a group's
-        members cannot be (the causes they share would still strike the
-        others)."""
-        if getattr(self, "ccf_groups", None):
-            raise NotImplementedError(
-                "The joint importance holds pairs of nodes working and "
-                "failed, which a common-cause group's members cannot be "
-                "(the causes they share would still strike the others): it "
-                "is not worked out with common-cause groups, as yet."
-            )
+        return r.AnalysisRoutes(sorted(out.items()))
 
     def _joint_pairs(self, birnbaum: Callable, working_nodes, broken_nodes):
         """The joint importance of each pair of nodes (see
@@ -1766,10 +1815,9 @@ class RBD:
         broken)``, every node's Birnbaum importance with those nodes held:
         node ``j``'s with node ``i`` held working, less with it held
         failed, for each pair once (see ``Pairs``); 0 for a pair with a
-        node already held."""
-        self._require_no_ccf_pairs()
-        working = set(working_nodes or ())
-        broken = set(broken_nodes or ())
+        node already held. (With common-cause groups, see
+        ``_ccf_modules.joint_importance``.)"""
+        working, broken = self._held_nodes(working_nodes, broken_nodes)
         base = birnbaum(working, broken)
         nodes = list(base)
         held = working | broken
@@ -1778,14 +1826,14 @@ class RBD:
             if node not in held:
                 up[node] = birnbaum(working | {node}, broken)
                 down[node] = birnbaum(working, broken | {node})
-        out = Pairs()
-        for k, i in enumerate(nodes):
-            for j in nodes[k + 1 :]:  # noqa: E203
-                if i in held or j in held:
-                    out[Pairs.oriented(i, j)] = 0.0 * base[j]
-                else:
-                    out[Pairs.oriented(i, j)] = up[i][j] - down[i][j]
-        return out
+        return Pairs.of(
+            nodes,
+            lambda i, j: (
+                0.0 * base[j]
+                if i in held or j in held
+                else up[i][j] - down[i][j]
+            ),
+        )
 
     def _too_meshed(self) -> Optional[str]:
         """Why the diagram cannot be worked out exactly, if its core is too
@@ -3042,10 +3090,18 @@ class RBD:
         """
         from repyability.rbd.serialisation import rbd_from_dict
 
-        if cls is not RBD and cls.__name__ != d.get("type"):
+        kind = d.get("type") if isinstance(d, Mapping) else None
+        if kind is None:
             raise ValueError(
-                f"{cls.__name__}.from_dict got a {d.get('type')!r} document; "
-                f"use {d.get('type')}.from_dict or RBD.from_dict."
+                f"{cls.__name__}.from_dict takes a diagram's to_dict() "
+                'document, which names its class under "type" '
+                "('NonRepairableRBD' or 'RepairableRBD'); this one has no "
+                '"type".'
+            )
+        if cls is not RBD and cls.__name__ != kind:
+            raise ValueError(
+                f"{cls.__name__}.from_dict got a {kind!r} document; "
+                f"use {kind}.from_dict or RBD.from_dict."
             )
         return rbd_from_dict(d)
 
@@ -3111,9 +3167,9 @@ class RBD:
         """Returns a copy of ``node_probabilities`` with any forced nodes set
         to probability 1 (working) or 0 (broken), validating the overrides
         first. Shared by the importance measures and steady-state metrics."""
-        working_nodes = set() if working_nodes is None else set(working_nodes)
-        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-        self._validate_node_overrides(working_nodes, broken_nodes)
+        working_nodes, broken_nodes = self._held_nodes(
+            working_nodes, broken_nodes
+        )
         out = dict(node_probabilities)
         for node in working_nodes:
             out[node] = np.ones_like(
@@ -3125,16 +3181,28 @@ class RBD:
             )
         return out
 
+    def _held_nodes(self, working_nodes, broken_nodes) -> Tuple[set, set]:
+        """The nodes held working and the nodes held failed, as sets (none
+        for None), checked (see ``_validate_node_overrides``): what every
+        method that takes ``working_nodes`` and ``broken_nodes`` starts
+        with."""
+        working = _node_collection("working_nodes", working_nodes)
+        broken = _node_collection("broken_nodes", broken_nodes)
+        self._validate_node_overrides(working, broken)
+        return working, broken
+
     def _validate_node_overrides(self, working_nodes, broken_nodes) -> None:
         """Validate the working/broken node override sets.
 
-        Raises a ValueError on invalid input rather than silently ignoring it:
-        the same node in both sets, the input/output node, or an unknown node
-        name (e.g. a typo, which would otherwise silently have no effect and
+        Raises on invalid input rather than silently ignoring it: a
+        TypeError for a set that is no collection of nodes (a number, say,
+        from an argument given out of place), and a ValueError for the same
+        node in both sets, the input/output node, or an unknown node name
+        (e.g. a typo, which would otherwise silently have no effect and
         return a plausible-but-wrong result).
         """
-        working_nodes = set(working_nodes)
-        broken_nodes = set(broken_nodes)
+        working_nodes = _node_collection("working_nodes", working_nodes)
+        broken_nodes = _node_collection("broken_nodes", broken_nodes)
 
         both = working_nodes & broken_nodes
         if both:
@@ -3298,7 +3366,9 @@ class RBD:
             when_failed = self._system_unreliability(
                 {**p, node: zero}, {**q, node: one}
             )
-            node_importance[node] = _averaged(when_failed, weights) / as_is
+            # 0/0 (nan) where the system cannot fail: no cause for a warning.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                node_importance[node] = _averaged(when_failed, weights) / as_is
         return node_importance
 
     def _risk_reduction_worth(
@@ -3464,10 +3534,12 @@ class RBD:
         # The system unreliability, the denominator for every node.
         system_ff = _averaged(self._system_unreliability(p, q), weights)
         numerators = self._fv_numerators(p, q, size, fv_type, method)
-        return {
-            node: _averaged(numerators[node], weights) / system_ff
-            for node in self.nodes
-        }
+        # 0/0 (nan) where the system cannot fail: no cause for a warning.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return {
+                node: _averaged(numerators[node], weights) / system_ff
+                for node in self.nodes
+            }
 
     def _fv_numerators(
         self, p: dict, q: dict, size: int, fv_type: str, method: str

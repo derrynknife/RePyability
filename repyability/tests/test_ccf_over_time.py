@@ -12,7 +12,14 @@ import pytest
 from scipy import integrate, linalg
 from surpyval import Exponential, Weibull
 
-from repyability import MGL, BetaFactor, CCFGroup, NodeState, RepairableRBD
+from repyability import (
+    MGL,
+    AlphaFactor,
+    BetaFactor,
+    CCFGroup,
+    NodeState,
+    RepairableRBD,
+)
 from repyability.rbd import routes as r
 
 E, W = Exponential.from_params, Weibull.from_params
@@ -184,6 +191,16 @@ def test_a_pair_tested_together_in_closed_form():
             ccf_groups=[CCFGroup(["a", "b", "d"], MGL(0.2, 0.4))],
         ),
         RepairableRBD(
+            THREE_THEN_C,
+            {n: revealed(0.01, 0.2) for n in "abd"} | {"c": OTHER},
+            ccf_groups=[
+                CCFGroup(
+                    ["a", "b", "d"],
+                    AlphaFactor([0.8, 0.12, 0.08], testing="non-staggered"),
+                )
+            ],
+        ),
+        RepairableRBD(
             PAIR,
             {
                 "a": hidden(1e-4, 1000.0),
@@ -192,7 +209,7 @@ def test_a_pair_tested_together_in_closed_form():
             ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
         ),
     ],
-    ids=["revealed", "MGL", "staggered tests"],
+    ids=["revealed", "MGL", "alpha factor", "staggered tests"],
 )
 def test_it_settles_into_the_long_run(rbd):
     late = 1e6 + np.array([0.0, 125.0, 250.0, 625.0, 900.0])

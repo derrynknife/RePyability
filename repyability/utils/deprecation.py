@@ -3,9 +3,12 @@
 A deprecation gives one minor release's notice: what 0.14 deprecates goes
 in 0.15 (``NEXT_REMOVAL``). Each warns with a ``FutureWarning``, which
 Python always shows, as the notice is short: an argument renamed
-(``renamed``), a result's value called that is now a property
-(``called``), or arguments a method ignores (``ignored``). 0.14
-deprecates nothing so far.
+(``renamed``; an attribute, ``renamed_attribute``), a result's value
+called that is now a property (``called``), or arguments a method ignores
+(``ignored``). 0.14 deprecates:
+
+- ``NodeState``'s ``phase``, renamed ``since_scheduled`` (``renamed`` for
+  the argument, ``renamed_attribute`` for reading it, #350).
 
 What 0.13 deprecated went in 0.14: ``optimal_inspection_intervals``'
 ``offsets``, renamed ``offset_shares`` (#222); calling
@@ -123,12 +126,29 @@ def ignored(
         )
 
 
-def renamed(method: str, old: str, new: str, why: str) -> None:
+def renamed(
+    method: str, old: str, new: str, why: str, removal: str = NEXT_REMOVAL
+) -> None:
     """Warn that ``method``'s argument ``old`` is renamed ``new``, for the
-    reason ``why``: refused in ``NEXT_REMOVAL``."""
+    reason ``why``: deprecated, it is refused in ``removal``
+    (``NEXT_REMOVAL`` by default)."""
     warnings.warn(
         f"{method}'s {old}= is renamed {new}=, as {why}. Passing {old}= is "
-        f"deprecated, and {NEXT_REMOVAL} will refuse it.",
+        f"deprecated, and {removal} will refuse it.",
+        FutureWarning,
+        stacklevel=outside_level(),
+    )
+
+
+def renamed_attribute(
+    owner: str, old: str, new: str, why: str, removal: str = NEXT_REMOVAL
+) -> None:
+    """Warn that ``owner``'s attribute ``old`` (read as ``owner.old``) is
+    renamed ``new``, for the reason ``why``: deprecated, reading it is
+    refused in ``removal`` (``NEXT_REMOVAL`` by default)."""
+    warnings.warn(
+        f"{owner}.{old} is renamed {new}, as {why}. Reading {old} is "
+        f"deprecated, and {removal} will refuse it.",
         FutureWarning,
         stacklevel=outside_level(),
     )

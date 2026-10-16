@@ -79,7 +79,7 @@ def aft():
 @pytest.mark.parametrize("name", ["mc_samples", "seed"])
 def test_an_exact_means_simulation_options_are_refused(build, name):
     node = build()
-    with pytest.raises(TypeError, match=f"takes {name} only with"):
+    with pytest.raises(ValueError, match=f"takes {name} only with"):
         node.mean(**{name: 10})
     assert node.mean(method="simulate", mc_samples=200, seed=1) > 0.0
 

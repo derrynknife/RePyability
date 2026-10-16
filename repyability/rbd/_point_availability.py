@@ -53,8 +53,9 @@ which the grid holds.
 A unit under block replacement is followed interval by interval instead
 (``_block_replacement.block_availability``, a ``BlockCurve``), a unit
 with hidden failures by its closed form (an ``InspectionCurve``), and a
-unit minimally repaired in no time by its life's cumulative hazard (a
-``MinimalRepairCurve``). Every
+unit minimally repaired by its life's cumulative hazard, exactly in no
+time and on a grid of its operating age where its repairs take time (a
+``MinimalRepairCurve``, by ``minimal_repair_lattice``). Every
 curve is constant (``period`` None) or repeats with ``period`` after
 ``settle``, which is what lets a mission average over many years integrate
 one period and repeat it.
@@ -1831,63 +1832,217 @@ class SteadyCurve:
         return self.fractions[:, None] * self.at(np.atleast_1d(x))[None, :]
 
 
-class MinimalRepairCurve:
-    """A unit minimally repaired in no time (Kijima's models with ``q = 1``
-    and an instant repair): up throughout, and its failures a
-    non-homogeneous Poisson process whose intensity is its life's hazard at
-    its age, so that it fails ``H(x)`` times before ``x`` on average, ``H``
-    the life's cumulative hazard, exactly.
+def cumulative_hazard(life, x: np.ndarray) -> np.ndarray:
+    """``life``'s cumulative hazard at each time ``x`` (from its survival
+    function where the model gives no hazard, or a NaN one), never below
+    0."""
+    x = np.asarray(x, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        hazard = np.asarray(life.Hf(x), dtype=float).reshape(x.shape)
+        missing = np.isnan(hazard)
+        if missing.any():
+            survival = np.asarray(life.sf(x[missing]), dtype=float)
+            hazard[missing] = -np.log(np.clip(survival, 0.0, 1.0))
+    return np.maximum(hazard, 0.0)
 
-    Its counts never settle (with a wearing-out life they grow ever faster),
-    so it is followed to the horizon; for the integrals of its counts it
-    declares a grid of ``steps`` steps over its first ``scale`` past the
-    life's ``offset``, whose step doubles each time that span does
-    (``grids``): a piece then spans the same share of the time it starts at
-    however far on it is, as many pieces for each doubling of the window.
-    The offset, before which the unit cannot fail, is a break. ``counts``
-    False, only its availability is asked for, which is 1 from the start.
+
+#: The most powers of its repair time a minimally repaired unit's curve
+#: sums (see ``minimal_repair_lattice``): about as many failures as the
+#: unit can have in the window.
+_MINIMAL_TERMS = 20_000
+#: The powers' sum is cut once what is left of it is below this.
+_NEGLIGIBLE = 1e-17
+
+
+def minimal_repair_lattice(
+    hazard: np.ndarray, repair: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
+    """A minimally repaired unit's point availability, and its expected
+    failures before each point, on a grid ``k h`` from new (see
+    ``MinimalRepairCurve``): ``hazard`` is its life's cumulative hazard
+    ``H`` at the grid's points and ``repair`` its repair time as a measure
+    on them (see ``_lattice``).
+
+    The unit's operating age ``a`` is the time it has been up, and it
+    fails at its life's hazard at that age: its failures by operating age
+    ``a`` are Poisson with mean ``H(a)``, and each is followed by a repair
+    time ``S``, independent of them all. Reaching operating age ``a``
+    takes calendar time ``a + D(a)``, ``D(a)`` the repairs so far, a
+    compound Poisson sum. The unit is up at calendar time ``t`` at the
+    operating age ``a`` with ``a + D(a) = t``, and has had its ``(k +
+    1)``-th failure by ``t`` if the ``k + 1``-th point of its failures'
+    Poisson process in operating time, plus the ``k`` repairs before it,
+    comes by ``t``, so that, with ``N(a)`` the failures by operating age
+    ``a`` and ``G`` the repair time's distribution,
+
+    ``A(t) = sum_k integral P(N(t - s) = k) G^{*k}(ds)``, and
+    ``E[N(t)] = sum_k integral P(N(t - s) > k) G^{*k}(ds)``,
+
+    ``G^{*k}`` the distribution of ``k`` repairs' total. Each term is a
+    smooth function of the operating age integrated against a measure,
+    which the grid keeps the mass and mean of in each cell (``_lattice``,
+    the powers by FFT convolution): the error falls as the square of the
+    step, as a renewal unit's. The sum is cut once the failures past
+    ``k`` are negligible (the Poisson tail at the grid's end, for a
+    hazard finite throughout) or ``k`` repairs no longer fit in the
+    window.
+    With repairs in no time every ``G^{*k}`` is the atom at 0, and the
+    sums are 1 and ``H(t)``: the closed form ``MinimalRepairCurve`` takes
+    as it is.
+    """
+    from scipy import fft
+    from scipy.special import gammaln, pdtrc
+
+    size = len(hazard)
+    length = fft.next_fast_len(2 * size - 1, real=True)
+    finite = np.isfinite(hazard)
+    most = float(hazard[finite].max()) if finite.any() else 0.0
+    with np.errstate(divide="ignore"):
+        log_hazard = np.log(hazard)
+    spectrum = fft.rfft(repair, length)
+    # G^{*k}: the atom at 0 first.
+    power = np.zeros(size)
+    power[0] = 1.0
+    up = np.zeros(len(spectrum), dtype=complex)
+    failed = np.zeros(len(spectrum), dtype=complex)
+    # P(N(a) > k) at each grid age, less each P(N(a) = k) in turn: a life
+    # whose hazard is infinite there has failed more than any k times.
+    more = np.ones(size)
+    k = 0
+    while True:
+        with np.errstate(invalid="ignore"):
+            count = np.where(
+                finite,
+                np.exp(
+                    (k * log_hazard if k else 0.0) - hazard - gammaln(k + 1.0)
+                ),
+                0.0,
+            )
+        more = np.maximum(more - count, 0.0)
+        transformed = fft.rfft(power, length)
+        up += fft.rfft(count, length) * transformed
+        failed += fft.rfft(more, length) * transformed
+        if (
+            finite.all() and pdtrc(k, most) < _NEGLIGIBLE
+        ) or power.sum() < _NEGLIGIBLE:
+            break
+        k += 1
+        if k > _MINIMAL_TERMS:
+            raise NotImplementedError(
+                f"minimally repaired, it may fail more than {_MINIMAL_TERMS} "
+                "times in the window, more than its curve follows"
+            )
+        power = fft.irfft(spectrum * transformed, length)[:size]
+    available = fft.irfft(up, length)[:size]
+    failures = fft.irfft(failed, length)[:size]
+    # New at 0 (its life works there), to rounding.
+    available[0], failures[0] = 1.0, 0.0
+    return np.clip(available, 0.0, 1.0), np.maximum(failures, 0.0)
+
+
+class MinimalRepairCurve:
+    """A unit minimally repaired (Kijima's models with ``q = 1``): its
+    failures are a non-homogeneous Poisson process in its operating time
+    whose intensity is its life's hazard at its age, the time it has been
+    up, which its repairs leave as it is.
+
+    Repaired in no time it is up throughout, and fails ``H(x)`` times
+    before ``x`` on average, ``H`` the life's cumulative hazard, exactly.
+    Its counts never settle (with a wearing-out life they grow ever
+    faster), so it is followed to the horizon; for the integrals of its
+    counts it declares a grid of ``steps`` steps over its first ``scale``
+    past the life's ``offset``, whose step doubles each time that span
+    does (``grids``): a piece then spans the same share of the time it
+    starts at however far on it is, as many pieces for each doubling of
+    the window. The offset, before which the unit cannot fail, is a break.
+    ``counts`` False, only its availability is asked for, which is 1 from
+    the start.
+
+    With repairs that take time (``repair_sf`` their survival function,
+    ``repair_splits`` its quantiles) its availability and its expected
+    failures are worked out on the grid ``k step``, ``k`` up to ``n``, by
+    ``minimal_repair_lattice``, and are linear between the grid's points;
+    the curve then never settles, and is followed to the horizon.
     """
 
     period = None
 
-    def __init__(self, life, scale: float, steps: int, counts: bool):
+    def __init__(
+        self,
+        life,
+        scale: float,
+        steps: int,
+        counts: bool,
+        repair_sf: Optional[Callable] = None,
+        repair_splits=(),
+        step: Optional[float] = None,
+        n: Optional[int] = None,
+    ):
         self.life = life
         self.offset = max(float(getattr(life, "gamma", 0.0) or 0.0), 0.0)
         self.scale = float(scale)
         self.steps = int(steps)
         self.counts = counts
-        self.settle = np.inf if counts else 0.0
+        self.times: Optional[np.ndarray] = None
+        self.up: Optional[np.ndarray] = None
+        self.failures: Optional[np.ndarray] = None
+        if repair_sf is not None:
+            assert step is not None and n is not None
+            self.times = float(step) * np.arange(int(n) + 1)
+            repair = _lattice(
+                *_cells(
+                    lambda s: 1.0 - repair_sf(s), self.times, repair_splits
+                )
+            )
+            self.up, self.failures = minimal_repair_lattice(
+                cumulative_hazard(life, self.times), repair
+            )
+        self.settle = np.inf if counts or self.times is not None else 0.0
 
     def at(self, x: np.ndarray) -> np.ndarray:
-        return np.ones(np.shape(x))
+        if self.times is None:
+            return np.ones(np.shape(x))
+        return np.interp(x, self.times, self.up)
 
     def knots(self, start: float, stop: float) -> np.ndarray:
-        return self.breaks(start, stop)
+        """The times in ``[start, stop]`` between which the curve is
+        smooth: its breaks, and its grid's points, if it has one."""
+        breaks = self.breaks(start, stop)
+        if self.times is None:
+            return breaks
+        times = np.concatenate([self.times, breaks])
+        return times[(times >= start) & (times <= stop)]
 
     def breaks(self, start: float, stop: float) -> np.ndarray:
+        """The offset, and the grid's ends, if it has one (see
+        ``curve_breaks``)."""
         times = np.array([self.offset]) if self.offset > 0.0 else np.empty(0)
+        if self.times is not None:
+            times = np.concatenate([times, self.times[[0, -1]]])
         return times[(times >= start) & (times <= stop)]
 
     def grids(self) -> list:
-        """Its grids (see ``curve_grids``): to the offset plus ``scale``
-        doubled ``k`` times, a step of that time over ``steps``."""
+        """Its grids (see ``curve_grids``): its grid, to its end, with
+        repairs that take time; else, for its counts, to the offset plus
+        ``scale`` doubled ``k`` times, a step of that time over
+        ``steps``."""
+        if self.times is not None:
+            if len(self.times) < 2:
+                return []
+            return [(float(self.times[1]), float(self.times[-1]))]
         if not self.counts:
             return []
         ends = self.offset + self.scale * 2.0 ** np.arange(64)
         return [(float(end) / self.steps, float(end)) for end in ends]
 
     def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
-        """The unit's expected failures before each time ``x``: its life's
-        cumulative hazard there (from its survival function where the
-        model gives no hazard, or a NaN one), each a repair."""
+        """The unit's expected failures before each time ``x``, each a
+        repair: its life's cumulative hazard there with repairs in no
+        time, its grid's values otherwise."""
         x = np.asarray(x, dtype=float)
-        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-            hazard = np.asarray(self.life.Hf(x), dtype=float).reshape(x.shape)
-            missing = np.isnan(hazard)
-            if missing.any():
-                survival = np.asarray(self.life.sf(x[missing]), dtype=float)
-                hazard[missing] = -np.log(np.clip(survival, 0.0, 1.0))
-        return _events(np.maximum(hazard, 0.0))
+        if self.times is None:
+            return _events(cumulative_hazard(self.life, x))
+        return _events(np.interp(x, self.times, self.failures))
 
     def atoms(self, stop: float) -> Atoms:
         return Atoms.none()
@@ -2114,8 +2269,11 @@ class SystemCurve:
 
     def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
         """The nested RBD's expected failures and planned outages before
-        each time ``x`` (see ``RepairableRBD._window_counts``): its own
-        maintenance is not this RBD's to count."""
+        each time ``x`` (see ``RepairableRBD._window_counts``), as the
+        simulation counts them for the node: its planned outages are its
+        preventive actions, its failures its corrective ones, and it has
+        no tests (its own components' maintenance is not this RBD's to
+        count)."""
         from . import _windows
 
         counts = _windows._window_counts(
@@ -2126,7 +2284,9 @@ class SystemCurve:
             set(),
             "p",
         )
-        return _events(counts["failures"], counts["planned"])
+        return _events(
+            counts["failures"], counts["planned"], preventive=counts["planned"]
+        )
 
     def atoms(self, stop: float) -> Atoms:
         """The nested RBD's failures and planned outages at exact times

@@ -126,8 +126,9 @@ def _require_groups_allocated(rbd, chosen, drawn) -> dict:
                 f"Node {node!r} is in a common-cause group whose model, "
                 f"{group.model!r}, is for a group of "
                 f"{len(group.members)}: its copies would join the group, "
-                "and an MGL model's letters for a larger group are not "
-                "known. Give the group a BetaFactor model, whose beta "
+                "and an MGL model's letters (an AlphaFactor model's "
+                "alpha factors) for a larger group are not known. Give "
+                "the group a BetaFactor model, whose beta "
                 "holds at any size, or leave its members out of nodes."
             )
     for train in drawn:

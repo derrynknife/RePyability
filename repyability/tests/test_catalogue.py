@@ -47,8 +47,12 @@ from repyability.tests.test_simulation_engines import identical, needs_numba
 #: the catalogue: a new export is either here or a node of the diagrams
 #: that take it (below).
 NOT_NODES = {
+    "AlphaFactor",
     "AnalysisRoute",
+    "AnalysisRoutes",
     "BetaFactor",
+    # A calendar of opportunities, priced (#319): a calendar policy's input.
+    "Calendar",
     "CCFGroup",
     "ComponentOption",
     "FailureLimitPolicy",
@@ -57,6 +61,7 @@ NOT_NODES = {
     "MaintenancePolicy",
     "Network",
     "NodeState",
+    "Opportunity",
     "PhasedMission",
     "RBD",
     # A component analysed alone: a diagram takes a NonRepairable.
@@ -245,6 +250,7 @@ def required_repairable() -> set:
         | {
             "BetaFactor common cause, probability basis",
             "MGL common cause, probability basis",
+            "AlphaFactor common cause, probability basis",
             "common cause among tested components",
         }
         | {"a structure too meshed to work out", "StandbyModel, simulated"}
@@ -265,6 +271,7 @@ def required_nonrepairable() -> set:
             "BetaFactor common cause, probability basis",
             "BetaFactor common cause, rate basis",
             "MGL common cause, probability basis",
+            "AlphaFactor common cause, probability basis",
         }
         | {"a structure too meshed to work out", "StandbyModel, simulated"}
     )

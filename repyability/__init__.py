@@ -42,19 +42,19 @@ from repyability.demonstration import (
 )
 from repyability.fault_tree import FaultTree
 from repyability.maintenance import (
+    Calendar,
+    CalendarPolicy,
     FailureLimitPolicy,
     MaintenancePolicy,
     NextReplacement,
+    Opportunity,
+    PlannedReplacement,
     ReplacementChoice,
-    ReplacementPlan,
-    ReplacementPolicies,
-    ReplacementPolicy,
     SkipValue,
-    replacement_policies,
 )
 from repyability.network import Network
 from repyability.non_repairable import NonRepairable
-from repyability.rbd.ccf import MGL, BetaFactor, CCFGroup
+from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor, CCFGroup
 from repyability.rbd.chunks import SimulationChunk
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
@@ -99,7 +99,7 @@ from repyability.rbd.results import (
     UncertaintyResult,
     UpDownImportance,
 )
-from repyability.rbd.routes import AnalysisRoute
+from repyability.rbd.routes import AnalysisRoute, AnalysisRoutes
 from repyability.rbd.shards import run_shard
 from repyability.rbd.standby_node import StandbyModel
 from repyability.repairable import (
@@ -132,6 +132,7 @@ __all__ = [
     "RegressionNode",
     "BetaFactor",
     "MGL",
+    "AlphaFactor",
     "CCFGroup",
     "minimal_repair_time_to_nth_failure",
     # Demonstration test planning
@@ -146,13 +147,14 @@ __all__ = [
     "mtbf_demonstration_plan",
     "ComponentOption",
     # Maintenance planning
-    "ReplacementPlan",
-    "replacement_policies",
+    "Opportunity",
+    "Calendar",
     # Up/down histories
     "Timeline",
     "Timelines",
     # Result types
     "AnalysisRoute",
+    "AnalysisRoutes",
     "AvailabilityResult",
     "CapacityDistribution",
     "ConditionalRun",
@@ -176,10 +178,10 @@ __all__ = [
     "FailureLimitPolicy",
     "FailureForecast",
     "SkipValue",
-    "ReplacementPolicies",
-    "ReplacementPolicy",
     "NextReplacement",
     "ReplacementChoice",
+    "CalendarPolicy",
+    "PlannedReplacement",
     "MaintenancePlan",
     "RateBreakdown",
     "AvailabilityAllocation",

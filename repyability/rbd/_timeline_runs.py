@@ -239,9 +239,7 @@ def simulate(
             f"record histories), got {engine!r}."
         )
     jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
-    working = set() if working_nodes is None else set(working_nodes)
-    broken = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working, broken)
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     # The components' states at 0, as availability takes them (#163).
     states = _curves._simulation_states(rbd, state, working | broken)
     rng = np.random.get_state()

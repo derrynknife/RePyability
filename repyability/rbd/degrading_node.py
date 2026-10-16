@@ -235,7 +235,7 @@ class DegradingNode(StandbyModel):
 
         Raises
         ------
-        TypeError
+        ValueError
             If ``mc_samples`` or ``seed`` is given to the exact mean.
         """
         return drawn_mean(

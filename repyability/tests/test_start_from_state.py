@@ -259,7 +259,7 @@ def test_a_stationary_calendar_starts_at_its_phase():
     }
     rbd = RepairableRBD(ONE, {"a": unit})
     phase = 30.0
-    state = {"a": NodeState(stationary=True, phase=phase)}
+    state = {"a": NodeState(stationary=True, since_scheduled=phase)}
     x = np.array([0.0, 10.0, 69.0, 71.0, 150.0, 290.0])
     # Long in service: as far from new as it has settled, at the phase.
     far = rbd.point_availability(5000.0 + phase + x)
@@ -282,14 +282,14 @@ def test_a_tested_unit_was_last_known_up_at_its_last_test():
     rbd = RepairableRBD(ONE, {"a": tested})
     x = np.array([0.0, 30.0, 69.0, 71.0, 150.0])
     since_test = np.where(x < 70.0, 30.0 + x, x - 70.0)
-    state = {"a": NodeState(age=1000.0, phase=30.0)}
+    state = {"a": NodeState(age=1000.0, since_scheduled=30.0)}
     np.testing.assert_allclose(
         rbd.point_availability(x, state=state),
         np.exp(-lam * since_test),
         atol=1e-12,
     )
     # Put into service 10 ago, after its last test, 30 ago.
-    renewed = {"a": NodeState(age=10.0, phase=30.0)}
+    renewed = {"a": NodeState(age=10.0, since_scheduled=30.0)}
     since = np.where(x < 70.0, 10.0 + x, x - 70.0)
     np.testing.assert_allclose(
         rbd.point_availability(x, state=renewed),
@@ -380,10 +380,12 @@ def test_maintained_pumps_are_what_the_simulation_estimates(state):
 @pytest.mark.parametrize(
     "start",
     [
-        NodeState(age=40.0, phase=40.0),
-        NodeState(age=0.0, phase=30.0),
-        NodeState(alive=False, down_for=4.0, phase=95.0),
-        NodeState(alive=False, down_for=2.0, maintenance=True, phase=2.0),
+        NodeState(age=40.0, since_scheduled=40.0),
+        NodeState(age=0.0, since_scheduled=30.0),
+        NodeState(alive=False, down_for=4.0, since_scheduled=95.0),
+        NodeState(
+            alive=False, down_for=2.0, maintenance=True, since_scheduled=2.0
+        ),
     ],
 )
 def test_block_replacement_from_a_state_is_what_the_simulation_estimates(
@@ -544,7 +546,9 @@ def test_a_run_from_a_state_is_simulated_in_python():
 def test_what_a_state_cannot_be():
     rbd = maintained_pair()
     with pytest.raises(ValueError, match="not on a calendar"):
-        rbd.point_availability(1.0, state={"a": NodeState(phase=1.0)})
+        rbd.point_availability(
+            1.0, state={"a": NodeState(since_scheduled=1.0)}
+        )
     with pytest.raises(ValueError, match="not a component"):
         rbd.point_availability(1.0, state={"z": NodeState()})
     with pytest.raises(ValueError, match="held working or broken"):
@@ -561,7 +565,7 @@ def test_what_a_state_cannot_be():
         preventive={"policy": "block", "interval": 100.0},
     )
     with pytest.raises(ValueError, match="less than its interval"):
-        block.availability(1.0, state={"a": NodeState(phase=100.0)})
+        block.availability(1.0, state={"a": NodeState(since_scheduled=100.0)})
     with pytest.raises(ValueError, match="no preventive maintenance"):
         block.availability(
             1.0, state={"a": NodeState(alive=False, maintenance=True)}
@@ -618,6 +622,6 @@ def test_what_a_state_is_not_taken_for():
         repairability=E([0.5]),
         inspection={"interval": 100.0},
     )
-    down = {"a": NodeState(alive=False, down_for=1.0, phase=10.0)}
+    down = {"a": NodeState(alive=False, down_for=1.0, since_scheduled=10.0)}
     run = tested.availability(50.0, mc_samples=50, seed=0, state=down)
     assert run.availability[0] == 0.0
