@@ -164,7 +164,7 @@ eye.
     (7/93/400/1,301 days), a sample takes about 0.2 s, and doubling the
     settling length changes the rate by less than its standard error.
 16. **How a sampled or long-horizon policy gives its thresholds.**
-    `threshold(t)` is worked out in cached blocks of steps, each solved over
+    The threshold at a time is worked out in cached blocks of steps, each solved over
     a window long enough for its end not to reach the block. No random
     numbers are involved, so it is deterministic.
 17. **★ Pricing a given rule (`calendar_policy_cost`).** A rule is a dict of
@@ -180,16 +180,39 @@ eye.
 
     *Decide:* the name, the dict form, and whether it should return a result
     that carries its basis.
-18. **`schedule(kinds=(), until=None)`.**
-    - By default it lists the opportunities but not the days on which only
-      the any-day replacement is open; name `"anytime"` in `kinds` to include
-      those.
-    - `until` defaults to the period, or to the plan's end. A sampled policy
-      needs it given.
+18. **What the policy gives (revised after review).**
+    - **No per-time `threshold(t)` or `replace(t, age)`:** dropped as of
+      no use. Most of their values, at the weekly stops and on ordinary
+      days, are never reached.
+    - **`replacement_rates` and `cost_rates`:** by kind, the long-run
+      replacements and cost a unit of time, failures as `"failure"`. The
+      costs sum to `cost_rate`.
+      - On a periodic calendar, both are exact for the grid. They come
+        from the long-run share of units at each age, carried forward
+        from a new unit until the ages at the start of a cycle settle.
+      - For a sampled, long or dated calendar, they are estimated from a
+        new unit run in over a settling length.
+    - **`schedule(kinds=(), until=None)`:** lists `(time, kind, threshold,
+      chance)`, where `chance` is the long-run chance of a replacement
+      there, or from a new unit at 0 where the calendar does not repeat.
+      A shut the policy never uses has a chance of 0.
+      - By default it lists the opportunities, not the days on which only
+        the any-day replacement is open.
+      - `until` defaults to the period, or to the plan's end; a sampled
+        policy needs it given.
+    - **`next_replacement(age, now=0)`:** when the unit in service will
+      be replaced if it does not fail first, at which opportunity and
+      price (`PlannedReplacement`). A unit of age 0 has just been put in,
+      so it is not replaced again at that time.
+
+    *Decide:* the names, and whether rates by kind should be given per
+    unit of time (as now) or per cycle.
 19. **A replace set that is not a threshold.** When the ages that replace
     are not all those from the youngest (for example a log-normal life),
-    `threshold(t)` is the youngest age that replaces, `threshold_only` is
-    False, and a warning is given.
+    the schedule's threshold is the youngest age that replaces,
+    `threshold_only` is False, and a warning is given. The rates by kind
+    then take every age from the youngest, so they no longer sum exactly
+    to the cost rate.
 20. **The NPV hook.** `_sweep` takes `beta`, a discount per step that
     defaults to 1. There is no public API yet, as the brief asks.
 

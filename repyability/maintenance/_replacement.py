@@ -302,6 +302,73 @@ def _window(grid: _Grid, start: int, n: int, ages: _Ages, failure: float):
     return record, first, kinds, upper
 
 
+def _propagate(share: np.ndarray, first: np.ndarray, p: np.ndarray):
+    """Forward over the steps of ``first`` (each step's first replacing
+    age index, -1 for none) from ``share``, the chance of the unit in
+    place being of each age index: the share at the end, the chance of a
+    planned replacement at each step, and the expected failures. A failed
+    unit is renewed as the backward sweep has it: by the next step, as
+    new or a step old, half each."""
+    share = share.copy()
+    replaced = np.zeros(first.size)
+    failures = 0.0
+    later = np.empty_like(share)
+    for n in range(first.size):
+        i = first[n]
+        if i >= 0:
+            moved = float(share[i:].sum())
+            share[i:] = 0.0
+            share[0] += moved
+            replaced[n] = moved
+        failed = share * (1.0 - p)
+        lost = float(failed.sum())
+        failures += lost
+        later[0] = 0.0
+        later[1:] = share[:-1] * p[:-1]
+        later[-1] += share[-1] * p[-1]
+        later[0] += 0.5 * lost
+        later[1] += 0.5 * lost
+        share, later = later, share
+    return share, replaced, failures
+
+
+def _stationary(first: np.ndarray, ages: _Ages):
+    """The long-run chance of a planned replacement at each step of a
+    cycle, and the expected failures over it: forward over the cycle from
+    a new unit until the ages at its start settle (within
+    ``TOLERANCE``)."""
+    share = np.zeros(ages.size + 1)
+    share[0] = 1.0
+    limit = max(1, int(MAX_LIVES * (ages.size + 1) / first.size))
+    for _ in range(limit):
+        later, _, _ = _propagate(share, first, ages.p)
+        settled = float(np.abs(later - share).sum()) <= TOLERANCE
+        share = later
+        if settled:
+            break
+    _, replaced, failures = _propagate(share, first, ages.p)
+    return replaced, failures
+
+
+def _summary(names, anytime, kinds, costs, replaced, failures, failure, time):
+    """Each kind of replacement's rate and cost a unit of time, failures
+    as ``"failure"``: from the chance of a planned replacement at each
+    step (``replaced``), the steps' kinds and prices, and the failures,
+    over ``time``."""
+    shown = [n for n in names if n != ANYTIME or anytime is not None]
+    rates = dict.fromkeys(shown, 0.0)
+    spent = dict.fromkeys(shown, 0.0)
+    for k, name in enumerate(names):
+        if name not in rates:
+            continue
+        here = kinds == k
+        rates[name] = float(replaced[here].sum() / time)
+        spent[name] = float((replaced[here] * costs[here]).sum() / time)
+    rates["failure"] = float(failures / time)
+    spent["failure"] = float(failures * failure / time)
+    return rates, spent
+
+
 class _Thresholds:
     """Where a policy's thresholds come from: ``at(index)`` gives the
     first replacing age index and the kind of replacement at grid
@@ -312,10 +379,14 @@ class _Thresholds:
 
 
 class _CycleTable(_Thresholds):
-    """Thresholds repeating every cycle."""
+    """Thresholds repeating every cycle, and the long-run chance of a
+    planned replacement at each step."""
 
-    def __init__(self, first, kinds):
-        self.first, self.kinds = first, kinds
+    def __init__(self, first, kinds, chance):
+        self.first, self.kinds, self.chance = first, kinds, chance
+
+    def chances(self, n: int) -> np.ndarray:
+        return self.chance[np.mod(np.arange(n), self.first.size)]
 
     def at(self, index):
         where = np.mod(index, self.first.size)
@@ -346,6 +417,14 @@ class _WindowTable(_Thresholds):
             self.blocks[b] = (f[: self.block], k[: self.block])
         return self.blocks[b]
 
+    def chances(self, n: int) -> np.ndarray:
+        """The chance of a planned replacement at each of the first ``n``
+        steps, from a new unit at 0."""
+        first, _ = self.at(np.arange(n))
+        start = np.zeros(self.ages.size + 1)
+        start[0] = 1.0
+        return _propagate(start, first, self.ages.p)[1]
+
     def at(self, index):
         index = np.asarray(index, np.int64)
         first = np.empty(index.shape, np.int64)
@@ -371,16 +450,41 @@ _CHUNK = 1024
 
 
 @dataclass(frozen=True)
+class PlannedReplacement(_ResultMapping):
+    """A unit's next planned replacement on a calendar policy: returned by
+    [`CalendarPolicy.next_replacement`][repyability.CalendarPolicy.next_replacement].
+
+    Attributes
+    ----------
+    time : float
+        When, in the calendar's time (``inf``: none, the unit all but
+        sure to fail first).
+    kind : str or None
+        The opportunity it falls at (``"anytime"`` for a day with no
+        shut); None if none.
+    price : float or None
+        What the replacement costs there; None if none.
+    """
+
+    time: float
+    kind: Optional[str]
+    price: Optional[float]
+
+
+@dataclass(frozen=True)
 class CalendarPolicy(_ResultMapping):
     """The long-run optimal replacement policy of a part over a calendar
-    of opportunities: at each time ``t``, replace the part if its age is
-    at least the threshold ``a*(t)``. Returned by
+    of opportunities. Returned by
     [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
 
-    The threshold is ``inf`` where no planned replacement is open, or
-    where none pays at any age. A part replaced at a shut a month ago is
-    young, below the threshold, so the shut is skipped; a shut shortly
-    before a cheaper one has a higher threshold than one long before it.
+    At each opportunity the policy replaces the part if it is at least a
+    threshold age, which depends on the time: a shut shortly before a
+    cheaper one waits for an older part than one long before it.
+    ``schedule()`` lists the thresholds with the long-run chance of a
+    replacement at each, ``next_replacement(age)`` says when a unit in
+    service will be replaced, and ``replacement_rates`` and
+    ``cost_rates`` say what the policy does and costs in the long run,
+    by kind.
 
     Attributes
     ----------
@@ -390,14 +494,23 @@ class CalendarPolicy(_ResultMapping):
     cost_rate_se : float or None
         Its standard error, where it is estimated by sampling (None where
         it is worked out).
+    replacement_rates : dict
+        Replacements a unit of time in the long run, by kind: each
+        opportunity's name, ``"anytime"`` (a day with no shut, where the
+        calendar allows one) and ``"failure"``. A kind the policy never
+        uses has 0.
+    cost_rates : dict
+        What each kind costs a unit of time in the long run (its rate
+        times its price); they sum to ``cost_rate``.
     method : str
         ``"dp"`` (dynamic programming on the grid), ``"integration"``
         (between opportunities in continuous time) or ``"sampling"``
         (sampled windows of a long cycle).
     basis : str
-        ``"exact"`` (the cost rate exact for the grid, or for the
-        quadrature), ``"differenced"`` (from a long finite horizon) or
-        ``"sampled"``.
+        ``"exact"`` (exact for the grid, or for the quadrature),
+        ``"differenced"`` (from a long finite horizon) or ``"sampled"``;
+        the rates by kind are estimated from a new unit run in, where the
+        cost rate is not exact.
     step : float or None
         The grid's step (None for integration, which has none).
     period : float or None
@@ -411,7 +524,8 @@ class CalendarPolicy(_ResultMapping):
     threshold_only : bool
         Whether, at every time worked out, the ages that replace are all
         those from the first (else the threshold is the youngest that
-        replaces, and some older ones do not: a life whose hazard falls).
+        replaces, and some older ones do not: a life whose hazard falls;
+        the rates by kind then take every age from the youngest).
     settings : dict
         How it was worked out: the calendar's tail, sweeps, bounds,
         samples, windows.
@@ -436,10 +550,12 @@ class CalendarPolicy(_ResultMapping):
     >>> policy = bearing.optimal_calendar_policy(calendar, step=7.0)
     >>> policy.method, policy.basis, policy.period
     ('dp', 'exact', 364.0)
-    >>> round(policy.cost_rate, 5)
-    0.00694
-    >>> policy.replace(364.0, 70.0), policy.replace(364.0, 400.0)
-    (False, True)
+    >>> round(policy.cost_rate * 364, 3)
+    2.527
+    >>> {k: round(v * 364, 3) for k, v in policy.replacement_rates.items()}
+    {'quarterly': 0.0, 'annual': 0.962, 'failure': 0.078}
+    >>> policy.next_replacement(age=300.0, now=200.0)
+    PlannedReplacement(time=364.0, kind='annual', price=1.0)
     """
 
     # Bound after construction (``_bind``), not fields: where the
@@ -452,6 +568,8 @@ class CalendarPolicy(_ResultMapping):
 
     cost_rate: float
     cost_rate_se: Optional[float]
+    replacement_rates: Dict[str, float]
+    cost_rates: Dict[str, float]
     method: str
     basis: str
     step: Optional[float]
@@ -469,11 +587,11 @@ class CalendarPolicy(_ResultMapping):
 
     def _next_planned(self, installed: float, after: float):
         """When a unit put in at ``installed`` is next replaced on the
-        policy, at or after ``after`` (strictly after, if put in then),
-        and at what price: ``(inf, 0.0)`` if it would outlive the oldest
-        age the policy was worked out to first. What a ``RepairableRBD``
-        component on a ``"calendar"`` preventive policy asks at each of
-        its renewals."""
+        policy, at or after ``after`` (strictly after, if put in then):
+        its time, price and kind, ``(inf, 0.0, None)`` if it would outlive
+        the oldest age the policy was worked out to first. What a
+        ``RepairableRBD`` component on a ``"calendar"`` preventive policy
+        asks at each of its renewals."""
         if self._grid is None:
             return self._table.next_planned(installed, after, self._oldest)
         step = cast(float, self.step)
@@ -488,62 +606,60 @@ class CalendarPolicy(_ResultMapping):
             ages = index * step - installed
             due = (first >= 0) & (ages >= first * step - 1e-9 * step)
             if due.any():
-                i = int(index[np.argmax(due)])
+                at = int(np.argmax(due))
+                i = int(index[at])
                 price, _ = self._grid.prices(i, 1)
-                return i * step, float(price[0])
+                return i * step, float(price[0]), self._names[kinds[at]]
             n += _CHUNK
-        return math.inf, 0.0
+        return math.inf, 0.0, None
 
-    def _index(self, t) -> np.ndarray:
+    def _threshold(self, t):
+        """The threshold age at time (or times) ``t``: ``inf`` where no
+        replacement is open, or none pays (for the tests and the
+        diagrams)."""
         times = checks.real_array(t, "t")
-        if not np.all(np.isfinite(times)):
-            raise ValueError(f"t must be finite; got {t!r}.")
-        if self.step is None:
-            return times
-        return np.rint(times / self.step).astype(np.int64)
-
-    def threshold(self, t):
-        """The threshold age ``a*(t)`` at time (or times) ``t``.
-
-        Parameters
-        ----------
-        t : float or array_like
-            The time (or times), in the life's unit, from 0.
-
-        Returns
-        -------
-        float or numpy.ndarray
-            Replace the part if it is at least this old; ``inf`` where no
-            replacement is open, or none pays.
-        """
-        index = self._index(t)
+        index = (
+            times
+            if self.step is None
+            else np.rint(times / self.step).astype(np.int64)
+        )
         values, _ = self._table.at(np.ravel(index))
         if self.step is not None:
             values = np.where(values >= 0, values * self.step, math.inf)
         out = np.asarray(values, float).reshape(np.shape(index))
         return float(out) if out.ndim == 0 else out
 
-    def replace(self, t, age) -> bool:
-        """Whether to replace a part ``age`` old at time ``t``.
+    def next_replacement(self, age, now=0.0) -> PlannedReplacement:
+        """When the unit in service, ``age`` old at time ``now``, will be
+        replaced on the policy, if it does not fail first.
 
         Parameters
         ----------
-        t : float
-            The time, in the life's unit.
         age : float
-            The part's age then, at least 0.
+            The unit's age now, at least 0 (0: just put in, so not
+            replaced again now).
+        now : float, optional
+            The time now, in the calendar's time, by default 0.
 
         Returns
         -------
-        bool
-            Whether its age is at least the threshold at ``t``.
+        PlannedReplacement
+            When, at which opportunity, and at what price.
         """
         if not (checks.is_number(age) and 0.0 <= float(age) < math.inf):
             raise ValueError(f"age must be a number, at least 0; got {age!r}.")
-        return bool(float(age) >= self.threshold(float(t)))
+        if not (checks.is_number(now) and math.isfinite(float(now))):
+            raise ValueError(f"now must be a finite number; got {now!r}.")
+        now = float(now)
+        time, price, kind = self._next_planned(now - float(age), now)
+        if kind is None:
+            return PlannedReplacement(math.inf, None, None)
+        return PlannedReplacement(float(time), kind, float(price))
 
     def schedule(self, kinds=(), until=None) -> list:
-        """The planned replacements open from time 0 up to ``until``.
+        """The planned replacements open from time 0 up to ``until``, with
+        each one's threshold and the chance the policy replaces the unit
+        there.
 
         Parameters
         ----------
@@ -558,8 +674,12 @@ class CalendarPolicy(_ResultMapping):
 
         Returns
         -------
-        list of (float, str, float)
-            Each as ``(time, kind, threshold)``.
+        list of (float, str, float, float)
+            Each as ``(time, kind, threshold, chance)``: replace the unit
+            there if it is at least ``threshold`` old, which happens with
+            ``chance`` in the long run (a periodic calendar's), or from a
+            new unit at 0 (given dates, or a cycle too long to keep). An
+            opportunity the policy never uses has a chance of 0.
         """
         if until is None:
             until = self.period or self.settings.get("table_until")
@@ -583,6 +703,7 @@ class CalendarPolicy(_ResultMapping):
             return self._table.schedule(float(until), wanted)
         n = int(math.ceil(float(until) / self.step - 1e-9))
         first, kind = self._table.at(np.arange(n))
+        chance = self._table.chances(n)
         out = []
         for i in np.flatnonzero(kind >= 0):
             name = self._names[kind[i]]
@@ -591,7 +712,9 @@ class CalendarPolicy(_ResultMapping):
             if wanted is not None and name not in wanted:
                 continue
             age = first[i] * self.step if first[i] >= 0 else math.inf
-            out.append((float(i * self.step), name, float(age)))
+            out.append(
+                (float(i * self.step), name, float(age), float(chance[i]))
+            )
         return out
 
 
@@ -694,16 +817,23 @@ def _cycle_policy(grid, ages, failure, names, calendar) -> CalendarPolicy:
     costs, kinds = grid.prices(0, grid.cycle)
     cycle = _relative_values(costs, ages, failure)
     _warn_not_threshold(cycle.upper)
+    replaced, failures = _stationary(cycle.first, ages)
+    length = grid.cycle * grid.step
+    rates, spent = _summary(
+        names, grid.anytime, kinds, costs, replaced, failures, failure, length
+    )
     policy = CalendarPolicy(
-        cycle.rate,
-        None,
-        "dp",
-        "exact",
-        grid.step,
-        grid.cycle * grid.step,
-        None,
-        cycle.upper,
-        {
+        cost_rate=cycle.rate,
+        cost_rate_se=None,
+        replacement_rates=rates,
+        cost_rates=spent,
+        method="dp",
+        basis="exact",
+        step=grid.step,
+        period=length,
+        determined_until=None,
+        threshold_only=cycle.upper,
+        settings={
             "sweeps": cycle.sweeps,
             "converged": cycle.converged,
             "cost_rate_bounds": (cycle.low, cycle.high),
@@ -711,42 +841,72 @@ def _cycle_policy(grid, ages, failure, names, calendar) -> CalendarPolicy:
             "max_age": ages.size * ages.step,
         },
     )
-    return policy._bind(
-        _CycleTable(cycle.first, kinds), names, grid, ages.size * ages.step
-    )
+    table = _CycleTable(cycle.first, kinds, replaced)
+    return policy._bind(table, names, grid, ages.size * ages.step)
 
 
 def _differenced(record, n1: int, n2: int, step: float) -> float:
     return float((record[n1] - record[n2]) / ((n2 - n1) * step))
 
 
+def _run_in(grid, ages, failure, start, settle, span):
+    """A window from grid index ``start``: a new unit run in over
+    ``settle`` steps, then ``span`` steps, and a settling length for the
+    end. The cost rate differenced over the ``span`` steps, and each kind's
+    replacements and failures over them (from the new unit run in)."""
+    record, first, kinds, upper = _window(
+        grid, start, settle + span + settle, ages, failure
+    )
+    rate = _differenced(record, settle, settle + span, grid.step)
+    new = np.zeros(ages.size + 1)
+    new[0] = 1.0
+    settled, _, _ = _propagate(new, first[:settle], ages.p)
+    window = slice(settle, settle + span)
+    _, replaced, failures = _propagate(settled, first[window], ages.p)
+    costs, _ = grid.prices(start + settle, span)
+    return rate, replaced, failures, kinds[window], costs, upper
+
+
 def _differenced_policy(grid, ages, failure, settle, names) -> CalendarPolicy:
     """A periodic calendar too long to sweep, by a long finite horizon:
-    the cost rate differenced over ``settle`` steps, from 0."""
-    span = max(settle, 1)
-    record, first, kinds, upper = _window(
-        grid, 0, 2 * span + settle, ages, failure
+    the cost rate differenced over ``2 * settle`` steps, after a settling
+    length."""
+    span = 2 * max(settle, 1)
+    rate, replaced, failures, kinds, costs, upper = _run_in(
+        grid, ages, failure, 0, settle, span
     )
     _warn_not_threshold(upper)
-    rate = _differenced(record, 0, 2 * span, grid.step)
+    rates, spent = _summary(
+        names,
+        grid.anytime,
+        kinds,
+        costs,
+        replaced,
+        failures,
+        failure,
+        span * grid.step,
+    )
     policy = CalendarPolicy(
-        rate,
-        None,
-        "dp",
-        "differenced",
-        grid.step,
-        None,
-        None,
-        upper,
-        {
-            "differenced_over": 2 * span * grid.step,
+        cost_rate=rate,
+        cost_rate_se=None,
+        replacement_rates=rates,
+        cost_rates=spent,
+        method="dp",
+        basis="differenced",
+        step=grid.step,
+        period=None,
+        determined_until=None,
+        threshold_only=upper,
+        settings={
+            "differenced_over": span * grid.step,
             "settle": settle * grid.step,
-            "table_until": 2 * span * grid.step,
+            "table_until": span * grid.step,
             "max_age": ages.size * ages.step,
         },
     )
+    _, first, kinds, _ = _window(grid, 0, span + settle, ages, failure)
     table = _WindowTable(
-        grid, ages, failure, settle, first[: 2 * span], kinds[: 2 * span]
+        grid, ages, failure, settle, first[:span], kinds[:span]
     )
     return policy._bind(table, names, grid, ages.size * ages.step)
 
@@ -754,8 +914,9 @@ def _differenced_policy(grid, ages, failure, settle, names) -> CalendarPolicy:
 def _sampled_rate(grid, ages, failure, settle, samples, rng):
     """The cost rate as the mean, over uniformly sampled times of the
     cycle, of the rate differenced over a window from each (the cost to
-    go of a new part at the start, less at ``span`` steps on, over the
-    time between), and its standard error."""
+    go of a new part there, less at ``span`` steps on, over the time
+    between), and its standard error; and each kind's rate, from a new
+    unit run in before each window."""
     calendar = grid.calendar
     longest = max(
         [o.period for o in calendar.opportunities if o.periodic] + [ages.mean]
@@ -763,29 +924,61 @@ def _sampled_rate(grid, ages, failure, settle, samples, rng):
     span = int(math.ceil(longest / grid.step))
     cycle = grid.cycle if grid.cycle is not None else 2**62
     rates = np.empty(samples)
+    by_kind = np.zeros(len(grid.names))
+    spent = np.zeros(len(grid.names))
+    failures = 0.0
     for i in range(samples):
-        start = int(rng.integers(0, cycle))
-        record, _, _, _ = _window(grid, start, span + settle, ages, failure)
-        rates[i] = _differenced(record, 0, span, grid.step)
-    return float(rates.mean()), float(rates.std(ddof=1) / math.sqrt(samples))
+        start = int(rng.integers(0, cycle)) - settle
+        rate, replaced, failed, kinds, costs, _ = _run_in(
+            grid, ages, failure, start, settle, span
+        )
+        rates[i] = rate
+        open_ = kinds >= 0
+        np.add.at(by_kind, kinds[open_], replaced[open_])
+        np.add.at(spent, kinds[open_], replaced[open_] * costs[open_])
+        failures += failed
+    time = samples * span * grid.step
+    shown = [n for n in grid.names if n != ANYTIME or grid.anytime is not None]
+    kinds_rates = {
+        n: float(by_kind[k] / time)
+        for k, n in enumerate(grid.names)
+        if n in shown
+    }
+    kinds_costs = {
+        n: float(spent[k] / time)
+        for k, n in enumerate(grid.names)
+        if n in shown
+    }
+    kinds_rates["failure"] = float(failures / time)
+    kinds_costs["failure"] = float(failures * failure / time)
+    return (
+        float(rates.mean()),
+        float(rates.std(ddof=1) / math.sqrt(samples)),
+        kinds_rates,
+        kinds_costs,
+    )
 
 
 def _sampled_policy(
     grid, ages, failure, settle, samples, seed, names
 ) -> CalendarPolicy:
     rng = np.random.default_rng(checks.seed(seed))
-    rate, error = _sampled_rate(grid, ages, failure, settle, samples, rng)
+    rate, error, rates, spent = _sampled_rate(
+        grid, ages, failure, settle, samples, rng
+    )
     _, first, kinds, upper = _window(grid, 0, 1 + settle, ages, failure)
     policy = CalendarPolicy(
-        rate,
-        error,
-        "sampling",
-        "sampled",
-        grid.step,
-        None,
-        None,
-        upper,
-        {
+        cost_rate=rate,
+        cost_rate_se=error,
+        replacement_rates=rates,
+        cost_rates=spent,
+        method="sampling",
+        basis="sampled",
+        step=grid.step,
+        period=None,
+        determined_until=None,
+        threshold_only=upper,
+        settings={
             "mc_samples": samples,
             "settle": settle * grid.step,
             "cycle": None if grid.cycle is None else grid.cycle * grid.step,
@@ -801,8 +994,8 @@ def _dated_policy(
 ) -> CalendarPolicy:
     """A calendar with given dates: the policy over the plan and a
     settling length past it, solved with the chosen tail; with the other
-    tail too, for the first time the two differ. The cost rate is the
-    repeated plan's."""
+    tail too, for the first time the two differ. The cost rate, and each
+    kind's, are the repeated plan's."""
     step = ages.step
     end = max(calendar.plan_end, 0.0)
     table = int(math.ceil(end / step)) + settle
@@ -819,26 +1012,36 @@ def _dated_policy(
     until = (differ[0] if differ.size else table) * step
     repeated = tables["repeat"][0]
     if repeated.cycle is not None and repeated.cycle <= MAX_CYCLE:
-        costs, _ = repeated.prices(repeated.cycle_start, repeated.cycle)
-        cycle = _relative_values(costs, ages, failure)
-        rate, basis = cycle.rate, "exact"
-    else:
-        span = max(settle, 1)
-        record, _, _, _ = _window(
-            repeated, 0, 2 * span + settle, ages, failure
+        costs, cycle_kinds = repeated.prices(
+            repeated.cycle_start, repeated.cycle
         )
-        rate, basis = _differenced(record, 0, 2 * span, step), "differenced"
+        cycle = _relative_values(costs, ages, failure)
+        replaced, failures = _stationary(cycle.first, ages)
+        rate, basis = cycle.rate, "exact"
+        time = repeated.cycle * step
+    else:
+        span = 2 * max(settle, 1)
+        rate, replaced, failures, cycle_kinds, costs, _ = _run_in(
+            repeated, ages, failure, 0, settle, span
+        )
+        basis = "differenced"
+        time = span * step
+    rates, spent = _summary(
+        names, anytime, cycle_kinds, costs, replaced, failures, failure, time
+    )
     _warn_not_threshold(upper)
     policy = CalendarPolicy(
-        rate,
-        None,
-        "dp",
-        basis,
-        step,
-        None,
-        float(until),
-        upper,
-        {
+        cost_rate=rate,
+        cost_rate_se=None,
+        replacement_rates=rates,
+        cost_rates=spent,
+        method="dp",
+        basis=basis,
+        step=step,
+        period=None,
+        determined_until=float(until),
+        threshold_only=upper,
+        settings={
             "tail": tail,
             "repeat": repeated.repeat,
             "table_until": end + step,

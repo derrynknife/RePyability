@@ -16,8 +16,11 @@ other release, fixes included, the minor.
   part whose planned replacement costs differently at different times
   (shuts on periods or dates, each `Opportunity` with its own price; a
   dearer day, or none; a failure), the threshold age at each time and the
-  long-run cost rate (`CalendarPolicy`: `threshold(t)`, `replace(t, age)`,
-  `schedule()`). Dynamic programming on a grid (exact for the grid over a
+  long-run cost rate (`CalendarPolicy`): what it does and costs by kind
+  of replacement (`replacement_rates`, `cost_rates`, failures included),
+  each shut's threshold and long-run chance of a replacement
+  (`schedule()`), and when a unit in service will next be replaced
+  (`next_replacement(age, now)`, a `PlannedReplacement`). Dynamic programming on a grid (exact for the grid over a
   periodic calendar's cycle), integration between opportunities in
   continuous time, or, for a cycle too long to sweep, a sampled cost rate
   with its standard error. `calendar_policy_cost(calendar, rule)` prices

@@ -179,7 +179,7 @@ def test_it_collapses_to_age_replacement():
     classical = unit.optimal_replacement_policy()
     policy = unit.optimal_calendar_policy(Calendar(), step=1.0)
     assert policy.method == "dp" and policy.basis == "exact"
-    assert abs(policy.threshold(10.0) - classical.interval) <= 1.0
+    assert abs(policy._threshold(10.0) - classical.interval) <= 1.0
     assert policy.cost_rate == pytest.approx(classical.cost_rate, rel=1e-5)
 
 
@@ -210,7 +210,7 @@ def simulated(policy, calendar, step, years, n=4000, seed=0):
     burn = int(364 * 5 / step)
     times = np.arange(days) * step
     prices = calendar.planned_cost(times, step=step)
-    limits = policy.threshold(times)
+    limits = policy._threshold(times)
     scale, shape = 1000.0, 2.5
     age = np.zeros(n)
     life = scale * rng.weibull(shape, n)
@@ -245,15 +245,101 @@ def test_the_simulated_policy_costs_its_rate(plant):
     assert abs(mean - plant.cost_rate) < 2 * error
 
 
+# What the policy does, by kind: its rates and costs.
+
+
+def test_the_costs_by_kind_sum_to_the_rate(plant):
+    assert sum(plant.cost_rates.values()) == pytest.approx(
+        plant.cost_rate, rel=1e-9
+    )
+    for kind, rate in plant.replacement_rates.items():
+        price = {"failure": 20.0, "anytime": 4.0}.get(kind)
+        if price is None:
+            price = {o.name: o.cost for o in PLANT.opportunities}[kind]
+        assert plant.cost_rates[kind] == pytest.approx(rate * price)
+    # At these prices the annual shut does all the planned work.
+    year = {k: v * 364 for k, v in plant.replacement_rates.items()}
+    assert year["annual"] == pytest.approx(0.9619, abs=1e-4)
+    assert year["failure"] == pytest.approx(0.0783, abs=1e-4)
+    assert year["weekly"] == year["quarterly"] == year["anytime"] == 0.0
+
+
+def counted(policy, calendar, years=20, n=4000, seed=1):
+    """Each kind's replacements a day, simulated plainly as ``simulated``
+    does, after five years to settle."""
+    rng = np.random.default_rng(seed)
+    times = np.arange(364 * (years + 5), dtype=float)
+    burn = 364 * 5
+    prices = calendar.planned_cost(times, step=1.0)
+    limits = policy._threshold(times)
+    names = {o.cost: o.name for o in calendar.opportunities}
+    names[calendar.anytime] = "anytime"
+    age, life = np.zeros(n), 1000.0 * rng.weibull(2.5, n)
+    count = dict.fromkeys(list(names.values()) + ["failure"], 0.0)
+    for d, t in enumerate(times):
+        replaced = age >= limits[d] - 1e-9
+        if d >= burn and np.isfinite(prices[d]):
+            count[names[prices[d]]] += replaced.sum()
+        age[replaced] = 0.0
+        life[replaced] = 1000.0 * rng.weibull(2.5, replaced.sum())
+        failing = life < age + 1.0
+        while failing.any():
+            if d >= burn:
+                count["failure"] += failing.sum()
+            age[failing] -= life[failing]
+            life[failing] = 1000.0 * rng.weibull(2.5, failing.sum())
+            failing = life < age + 1.0
+        age += 1.0
+    return {k: v / (n * 364 * years) for k, v in count.items()}
+
+
+def test_the_rates_by_kind_are_simulated():
+    calendar = Calendar(
+        [
+            Opportunity("quarterly", 2.0, period=91.0),
+            Opportunity("annual", 1.0, period=364.0),
+        ],
+        failure=60.0,
+        anytime=4.0,
+    )
+    policy = BEARING.optimal_calendar_policy(calendar, step=1.0)
+    simulated_rates = counted(policy, calendar)
+    for kind, rate in policy.replacement_rates.items():
+        assert simulated_rates[kind] == pytest.approx(rate, rel=0.03, abs=2e-6)
+    # Dearer failures: the quarterly shuts are used too.
+    assert policy.replacement_rates["quarterly"] > 0.0
+
+
+def test_the_schedule_says_which_shuts_are_used(plant):
+    by_kind = {}
+    for _, kind, _, chance in plant.schedule():
+        by_kind.setdefault(kind, []).append(chance)
+    # The long-run chance of a replacement at each shut: the annual
+    # shut's is its rate over the year; the others are never used.
+    assert by_kind["annual"] == [
+        pytest.approx(plant.replacement_rates["annual"] * 364, rel=1e-9)
+    ]
+    assert max(by_kind["quarterly"] + by_kind["weekly"]) == 0.0
+
+
+def test_the_next_replacement_is_checked(plant):
+    with pytest.raises(ValueError, match="age"):
+        plant.next_replacement(-1.0)
+    with pytest.raises(ValueError, match="age"):
+        plant.next_replacement(True)
+    with pytest.raises(ValueError, match="now"):
+        plant.next_replacement(10.0, now=math.inf)
+
+
 # Test 4: the phase effect, and the dearer day never used.
 
 
 def test_a_shut_shortly_before_the_annual_waits_longer(plant):
-    quarterly = {t: a for t, _, a in plant.schedule(kinds=("quarterly",))}
+    quarterly = {t: a for t, _, a, _ in plant.schedule(kinds=("quarterly",))}
     # The quarterly shut a quarter before the annual waits for it longer
     # than the one three quarters before it.
     assert quarterly[273.0] > quarterly[91.0]
-    weekly = [a for t, _, a in plant.schedule(kinds=("weekly",))]
+    weekly = [a for t, _, a, _ in plant.schedule(kinds=("weekly",))]
     assert weekly[-1] > weekly[0]
 
 
@@ -261,21 +347,27 @@ def test_the_dearer_day_is_never_used(plant):
     # Any day at 4, a weekly stop at 3 within a week: no unit the policy
     # keeps reaches the age the dearer day would replace it at. The
     # oldest is one the annual shut kept, a year on.
-    annual = plant.threshold(0.0)
+    annual = plant._threshold(0.0)
     oldest = annual + 364.0
     days = np.arange(364.0)
     kinds = PLANT.planned_cost(days, step=1.0)
     anytime = days[kinds == 4.0]
-    assert np.all(plant.threshold(anytime) > oldest)
+    assert np.all(plant._threshold(anytime) > oldest)
 
 
 # Test 5: skipping the annual shut for a young unit.
 
 
 def test_a_young_unit_skips_the_annual_shut(plant):
-    assert not plant.replace(364.0, 60.0)
-    assert plant.replace(364.0, 300.0)
-    assert plant.replace(0.0, plant.threshold(0.0))
+    # 60 days old at the annual shut: kept to the next; 300: replaced.
+    kept = plant.next_replacement(age=60.0, now=364.0)
+    assert (kept.time, kept.kind, kept.price) == (728.0, "annual", 1.0)
+    replaced = plant.next_replacement(age=300.0, now=364.0)
+    assert (replaced.time, replaced.kind) == (364.0, "annual")
+    # Just put in at the shut: not replaced again there.
+    assert plant.next_replacement(age=0.0, now=364.0).time == 728.0
+    # Put in on day 200 after a failure: 164 days old at the next shut.
+    assert plant.next_replacement(age=100.0, now=300.0).time == 364.0
 
 
 # Test 6: the policy does not depend on the horizon, but near its end.
@@ -321,7 +413,7 @@ def test_it_beats_the_simple_policies(plant):
     assert run_to_failure == pytest.approx(20.0 / 887.3 * TEN_YEARS, rel=1e-3)
     assert optimal < every_annual < any_day < run_to_failure
     # The optimal policy itself, as a rule, costs its rate.
-    rule = {"annual": plant.threshold(0.0)}
+    rule = {"annual": plant._threshold(0.0)}
     assert ten_years(rule) >= optimal
 
 
@@ -341,7 +433,7 @@ def test_a_set_that_is_no_threshold_is_flagged():
             calendar, step=1.0, max_age=20000.0
         )
     assert not policy.threshold_only
-    assert np.isfinite(policy.threshold(0.0))
+    assert np.isfinite(policy._threshold(0.0))
 
 
 def test_a_threshold_is_not_flagged(plant):
@@ -370,8 +462,8 @@ def test_a_repeated_plan_is_the_periodic_calendar():
     assert dated.cost_rate == pytest.approx(periodic.cost_rate, rel=1e-12)
     assert dated.settings["repeat"] == 1092.0
     # Repeated forward only: nothing at 0, before the plan.
-    assert dated.threshold(0.0) == math.inf
-    assert dated.threshold(364.0) == periodic.threshold(364.0)
+    assert dated._threshold(0.0) == math.inf
+    assert dated._threshold(364.0) == periodic._threshold(364.0)
 
 
 def test_a_plan_says_until_when_its_tail_does_not_matter():
@@ -381,10 +473,12 @@ def test_a_plan_says_until_when_its_tail_does_not_matter():
     until = repeat.determined_until
     assert 0.0 < until <= PLAN.plan_end
     before = np.arange(0.0, until)
-    assert np.array_equal(repeat.threshold(before), anytime.threshold(before))
-    assert repeat.threshold(until) != anytime.threshold(until)
+    assert np.array_equal(
+        repeat._threshold(before), anytime._threshold(before)
+    )
+    assert repeat._threshold(until) != anytime._threshold(until)
     assert repeat.cost_rate == anytime.cost_rate
-    assert [t for t, _, _ in repeat.schedule(kinds=("turnaround",))] == [
+    assert [t for t, _, _, _ in repeat.schedule(kinds=("turnaround",))] == [
         400.0,
         1130.0,
         1860.0,
@@ -402,17 +496,17 @@ def test_the_policy_reads_and_goes_through_json(plant):
         plant.cost_rate = 0.0
     plain = json.loads(json.dumps(plant.to_dict()))
     assert plain["method"] == "dp" and plain["basis"] == "exact"
-    thresholds = plant.threshold(np.array([0.0, 7.0, 3.0]))
+    thresholds = plant._threshold(np.array([0.0, 7.0, 3.0]))
     assert thresholds.shape == (3,)
-    assert thresholds[0] == plant.threshold(0.0)
+    assert thresholds[0] == plant._threshold(0.0)
     # The thresholds repeat with the calendar.
-    assert plant.threshold(364.0 * 7 + 91.0) == plant.threshold(91.0)
+    assert plant._threshold(364.0 * 7 + 91.0) == plant._threshold(91.0)
 
 
 def test_the_schedule(plant):
     shuts = plant.schedule()
     assert len(shuts) == 52
-    assert shuts[0] == (0.0, "annual", plant.threshold(0.0))
+    assert shuts[0][:3] == (0.0, "annual", plant._threshold(0.0))
     days = plant.schedule(kinds=("anytime",))
     assert len(days) == 364 - 52
     with pytest.raises(ValueError, match="Unknown"):
@@ -439,8 +533,8 @@ def test_the_answer_is_the_same_in_hours():
     )
     assert hours.step == pytest.approx(days.step * 24, rel=1e-12)
     assert hours.cost_rate == pytest.approx(days.cost_rate / 24, rel=1e-9)
-    assert hours.threshold(91 * 24.0) == pytest.approx(
-        days.threshold(91.0) * 24, rel=1e-9
+    assert hours._threshold(91 * 24.0) == pytest.approx(
+        days._threshold(91.0) * 24, rel=1e-9
     )
 
 

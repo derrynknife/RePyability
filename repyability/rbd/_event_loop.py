@@ -1606,7 +1606,7 @@ def _renewal(
     if schedule.policy == "calendar":
         # On the calendar policy's thresholds, from when the unit was put
         # in; charged its opportunity's price when it falls.
-        due, price = schedule.calendar._next_planned(start, t)
+        due, price, _ = schedule.calendar._next_planned(start, t)
         rbd._run_state._calendar_price[node] = price
     else:
         due = _due(

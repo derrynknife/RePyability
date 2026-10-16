@@ -146,21 +146,38 @@ plant = Calendar(
 )
 policy = bearing.optimal_calendar_policy(plant, step=1.0)
 
-policy.cost_rate                        # -> 0.006943   a day
-policy.threshold(0.0)                   # -> 88.0       at the annual shut
-policy.replace(364.0, 60.0)             # -> False      a young unit skips it
-policy.schedule(kinds=("quarterly",))   # -> [(91.0, 'quarterly', 222.0),
-                                        #     (182.0, 'quarterly', 324.0),
-                                        #     (273.0, 'quarterly', 574.0)]
+policy.cost_rate             # -> 0.006943   a day (2.53 a year)
+policy.replacement_rates     # a day; a year:  annual 0.962, failure 0.078,
+                             #   weekly, quarterly and any day 0
+policy.cost_rates            # a day; a year:  annual 0.962, failure 1.565
+policy.schedule(kinds=("quarterly", "annual"))
+# -> [(0.0,   'annual',    88.0, 0.962),     (time, kind, threshold, chance)
+#     (91.0,  'quarterly', 222.0, 0.0),
+#     (182.0, 'quarterly', 324.0, 0.0),
+#     (273.0, 'quarterly', 574.0, 0.0)]
+policy.next_replacement(age=60.0, now=364.0)
+# -> PlannedReplacement(time=728.0, kind='annual', price=1.0)
 ```
 
 An [`Opportunity`][repyability.Opportunity] repeats every `period` from its
-`offset`, or falls on given `dates`. A unit replaced at the annual shut a month
-ago is younger than 88 days, so the next annual shut skips it. The threshold
-at a shut depends on how far the next cheaper one is: the quarterly shut a
-quarter before the annual waits for a unit of 574 days, the one three quarters
-before it replaces one of 222 days. On a day at 4 with a weekly stop at 3 at
-most a week away, no unit the policy keeps is old enough for the dearer day.
+`offset`, or falls on given `dates`.
+
+- **What the policy does, and costs.** `replacement_rates` and `cost_rates`
+  give, by kind, the replacements and the cost a unit of time in the long
+  run; the costs sum to `cost_rate`. Here the annual shut does all the
+  planned work: 0.96 replacements a year at 1, with 0.08 failures a year at
+  20, and no other kind is ever used.
+- **Each shut's threshold, and whether it is used.** `schedule()` lists each
+  opportunity of a cycle as `(time, kind, threshold, chance)`: replace the
+  unit there if it is at least `threshold` old, which happens with `chance`
+  in the long run. The threshold at a shut depends on how far the next
+  cheaper one is (the quarterly shut a quarter before the annual waits for a
+  unit of 574 days, the one three quarters before it for one of 222), but at
+  these prices the annual shut replaces units before they reach any of them,
+  so each quarterly shut's chance is 0.
+- **The unit in service.** `next_replacement(age, now)` says when it will be
+  replaced, if it does not fail first: a unit 60 days old at the annual shut
+  is younger than its threshold, 88 days, so it is kept to the next one.
 
 ![The threshold age at each weekly, quarterly and annual shut over a year](img/calendar-thresholds.svg)
 
@@ -198,7 +215,17 @@ prices a rule given as the age from which each kind of replacement replaces):
   time is a solve over a window from it, deterministic.
 
 `policy.method` and `policy.basis` (`"exact"`, `"differenced"` or
-`"sampled"`) say which was used. A plan of given dates is extended past its
+`"sampled"`) say which was used.
+
+**How exact it is.** On a grid the decisions are made at the grid's times
+(every day, with `step=1.0`), so the answer is exact for decisions made
+daily: if the plant decides once a day, that is the problem. As the step
+shrinks it tends to decisions at any moment, with an error of the order of
+the step squared; for this plant the cost a year is 2.5272587 at a day,
+2.5272583 at a quarter of a day. Leaving `step` out takes a step from the
+life and the calendar (here 0.875 days), not an exact solution. With no
+replacement on any day, `method="integration"` works between the shuts in
+continuous time, exact but for its quadrature (2.5272576 a year here). A plan of given dates is extended past its
 last date by `tail`: `"repeat"` (repeat it) or `"anytime"` (only the
 replacement on any day). Both are solved, and `policy.determined_until` is the
 first time at which the two differ: the policy before it does not depend on
@@ -321,5 +348,5 @@ Both policy types are small typed results:
 [`MaintenancePolicy`][repyability.MaintenancePolicy] (`interval`,
 `cost_rate`) and [`FailureLimitPolicy`][repyability.FailureLimitPolicy]
 (`failure_count`, `cost_rate`). A calendar's policy is a
-[`CalendarPolicy`][repyability.CalendarPolicy] (`threshold(t)`,
-`replace(t, age)`, `schedule()`, `cost_rate`). Costs are per event and undiscounted.
+[`CalendarPolicy`][repyability.CalendarPolicy] (`cost_rate`,
+`replacement_rates`, `cost_rates`, `schedule()`, `next_replacement()`). Costs are per event and undiscounted.

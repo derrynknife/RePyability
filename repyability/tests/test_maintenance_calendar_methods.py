@@ -69,8 +69,10 @@ def test_integration_agrees_with_the_grid():
         assert grid.cost_rate == pytest.approx(integrated.cost_rate, rel=1e-3)
     assert gaps[1.0] < gaps[7.0]
     grid = BEARING.optimal_calendar_policy(NESTED, step=1.0)
-    for time, kind, age in integrated.schedule(kinds=("quarterly", "annual")):
-        assert abs(grid.threshold(time) - age) <= 2.0, (time, kind)
+    for time, kind, age, _ in integrated.schedule(
+        kinds=("quarterly", "annual")
+    ):
+        assert abs(grid._threshold(time) - age) <= 2.0, (time, kind)
 
 
 # Test 2: opportunities every day at the planned price are age replacement.
@@ -84,7 +86,7 @@ def test_daily_opportunities_are_age_replacement():
     # Deciding once a day costs a hair more than at any moment.
     assert policy.cost_rate == pytest.approx(classical.cost_rate, rel=1e-6)
     assert policy.cost_rate >= classical.cost_rate * (1 - 1e-9)
-    assert abs(policy.threshold(0.0) - classical.interval) <= 1.0
+    assert abs(policy._threshold(0.0) - classical.interval) <= 1.0
 
 
 # Test 3: it refuses a replacement on any day.
@@ -106,7 +108,7 @@ def test_long_gaps_need_few_nodes():
     grid = unit.optimal_calendar_policy(annual, step=1.0)
     assert integrated.settings["nodes"] < 365
     assert integrated.cost_rate == pytest.approx(grid.cost_rate, rel=1e-4)
-    assert abs(integrated.threshold(0.0) - grid.threshold(0.0)) <= 1.0
+    assert abs(integrated._threshold(0.0) - grid._threshold(0.0)) <= 1.0
 
 
 def test_integration_repeats_a_plan():
@@ -117,8 +119,8 @@ def test_integration_repeats_a_plan():
     dated = BEARING.optimal_calendar_policy(plan, method="integration")
     periodic = BEARING.optimal_calendar_policy(annual, method="integration")
     assert dated.cost_rate == pytest.approx(periodic.cost_rate, rel=1e-9)
-    assert dated.threshold(0.0) == math.inf
-    assert dated.threshold(364.0) == pytest.approx(periodic.threshold(0.0))
+    assert dated._threshold(0.0) == math.inf
+    assert dated._threshold(364.0) == pytest.approx(periodic._threshold(0.0))
     with pytest.raises(NotImplementedError, match="method='dp'"):
         BEARING.optimal_calendar_policy(
             plan, method="integration", tail="anytime"
@@ -181,16 +183,16 @@ def test_the_sampled_policy_is_deterministic():
         COPRIME, step=1.0, mc_samples=2, seed=2
     )
     times = np.array([10.0, 50.0, 200.0, 1450.0])
-    assert np.array_equal(one.threshold(times), other.threshold(times))
-    assert np.array_equal(one.threshold(times), one.threshold(times))
+    assert np.array_equal(one._threshold(times), other._threshold(times))
+    assert np.array_equal(one._threshold(times), one._threshold(times))
     shuts = one.schedule(until=500.0, kinds=("p400", "p1301"))
-    assert [(t, k) for t, k, _ in shuts] == [
+    assert [(t, k) for t, k, _, _ in shuts] == [
         (50.0, "p400"),
         (200.0, "p1301"),
         (450.0, "p400"),
     ]
-    for time, _, age in shuts:
-        assert one.threshold(time) == age
+    for time, _, age, _ in shuts:
+        assert one._threshold(time) == age
     with pytest.raises(ValueError, match="until"):
         one.schedule()
 
@@ -224,4 +226,4 @@ def test_dp_on_a_long_cycle_differences_a_long_horizon():
     )
     assert abs(policy.cost_rate - sampled.cost_rate) < 4 * sampled.cost_rate_se
     times = np.array([10.0, 200.0, 450.0])
-    assert np.array_equal(policy.threshold(times), sampled.threshold(times))
+    assert np.array_equal(policy._threshold(times), sampled._threshold(times))

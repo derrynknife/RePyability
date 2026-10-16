@@ -104,6 +104,7 @@ from repyability.maintenance._plans import (  # noqa: E402
 )
 from repyability.maintenance._replacement import (  # noqa: E402
     CalendarPolicy,
+    PlannedReplacement,
 )
 from repyability.maintenance._shuts import (  # noqa: E402
     ReplacementPolicies,

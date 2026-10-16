@@ -750,8 +750,10 @@ answers back into dates is Reliafy's too.)
 - **What they know:** the part's life (Weibull, scale 1000 days, shape
   2.5); the shuts, each with its period, offset (or dates) and price; the
   price on any other day (or none); the price at a failure.
-- **What they want back:** the threshold age at each time (replace if at
-  least that old), the long-run cost a day, and what simpler rules cost.
+- **What they want back:** the long-run cost a day and what it is made
+  of (replacements and cost by kind of shut, and failures), which shuts
+  the policy uses and the age from which each replaces, when the unit in
+  service will be replaced, and what simpler rules cost.
 - **How it is solved:** the state is the time and the age; dynamic
   programming on a grid (relative value iteration over a periodic
   calendar's cycle, exact for the grid; a long finite horizon otherwise),
@@ -783,4 +785,17 @@ answers back into dates is Reliafy's too.)
     quarterly and weekly stops matter only for a unit a failure renewed
     early in the year, so a calendar with a dearer failure (40) is the
     one that tells the methods apart.
+  - **What the policy does, rather than a threshold for every time** (the
+    maintainer, after seeing it used): `threshold(t)` and `replace(t,
+    age)` were dropped as of no use (most times' thresholds, the weekly
+    stops' and the dearer day's, are never reached). In their place:
+    `replacement_rates` and `cost_rates` by kind (the long-run chance of
+    each step's replacement, forward from a new unit until the ages at a
+    cycle's start settle; exact for the grid, the costs summing to the
+    cost rate to 1e-11, and for the quadrature with integration);
+    `schedule()` gives each shut's long-run chance of a replacement (0 for
+    a shut never used); and `next_replacement(age, now)` says when the
+    unit in service will be replaced, at which shut and price. For the
+    plant: 0.962 replacements a year at the annual shut, 0.078 failures,
+    no other kind used.
 
