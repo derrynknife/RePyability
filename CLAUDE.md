@@ -6,7 +6,7 @@ first. This file adds the internals and conventions it does not cover.
 
 **Versions (17 Oct 2026):** 0.13 is the latest release (PyPI, `v0.13`). 0.14
 is prepared on `dev` (`_version.py`, CHANGELOG dated 2026-10-16) and waits on
-the release pull request from `dev` into `master`. `dev` needs surpyval 0.24
+the release pull request from `dev` into `main`. `dev` needs surpyval 0.24
 or later.
 
 ## Architecture & scope
@@ -47,12 +47,12 @@ or later.
 
 - **surpyval releases reach RePyability users at once.** surpyval is
   required with no upper bound, so its next release is what a fresh install
-  gets. No automated run tests surpyval's `develop` (there is one automated
+  gets. No automated run tests surpyval's `dev` (there is one automated
   test run, on the release pull request): before surpyval releases, run
-  RePyability's tests against its `develop` by hand (`pip install
-  "surpyval @ git+https://github.com/derrynknife/SurPyval@develop"`), and
+  RePyability's tests against its `dev` by hand (`pip install
+  "surpyval @ git+https://github.com/derrynknife/SurPyval@dev"`), and
   when they fail, fix RePyability (working with both the released surpyval
-  and `develop`) and release that first. CI's `test (minimum dependencies)`
+  and `dev`) and release that first. CI's `test (minimum dependencies)`
   job tests the oldest surpyval `pyproject.toml` allows (and every other
   dependency at its floor); raise that minimum,
   rather than keep code for older versions, once RePyability needs what a
@@ -492,7 +492,7 @@ limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
 - **A mixture's quantile** (surpyval #821). surpyval 0.24's `MixtureModel`
   has a `qf` (#651), but it inverts `F` in the upper tail, losing the long
   lives' precision (about 1e-4), and takes some 200 times as long as
-  RePyability's (fixed on surpyval's `develop`, for its next release).
+  RePyability's (fixed on surpyval's `dev`, for its next release).
   `_sampling.mixture_quantile` inverts the distribution (with its components' `sf` summed above the median), which
   `stream_sampler` gives a `RepairableRBD`'s streams (a change to it
   changes seeded results). Take the mixture's own `qf` once the minimum
