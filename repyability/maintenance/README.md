@@ -650,11 +650,30 @@ answers back into dates is Reliafy's too.)
   | Planned, at the best time ($150) | 104.9 (in 164 days) | 142.8 (in 64) | 150.0 (now) |
   | Run to failure | 158.8 | 210.4 | 245.7 |
 
-  At 200 days old: **keep it to the shut in 150 days**. Replacing now
-  becomes the best choice at **256 days old**.
+  At 200 days old: **keep it to the shut in 150 days**.
+
+  Each later choice has its own break-even age, past which replacing now
+  beats it; replacing now is the best once it beats them all:
+
+  | Replacing now beats... | from age |
+  |---|---|
+  | running to failure | 86 days |
+  | the shut in 330 days | 153 days |
+  | the shut in 150 days | 256 days |
+  | a planned replacement later | 264 days |
+
+  So **replace now from 264 days old** (from 256 to 264, a planned
+  replacement a few days later is cheaper by very little).
+- **Why the value of a day is needed** (at 6 days old, against the shut in
+  150 days): keeping it, 83% reach the shut ($100) and 17% fail ($400),
+  $150 on average, the same as replacing now. But kept, the old bearing
+  serves 141 of those days, which a new one would otherwise serve: worth
+  141 × 0.990 = $140. So keeping costs $10 net against $150, and the
+  bearing is kept. Without `g`, the sums would replace it from 6 days
+  old.
 - **The design choice open: where `g` comes from.** The answer depends on
-  it: the break-even age is 208 days with `g` = 0.8, 256 with 0.990, 288
-  with 1.117 (UC-7's best age replacement between shuts), 319 with 1.237
+  it: against the shut in 150 days, the break-even age is 208 days with
+  `g` = 0.8, 256 with 0.990, 288 with 1.117 (UC-7's best age replacement between shuts), 319 with 1.237
   (running to failure). It should be the long-run cost a day of how this
   position will be run, which UC-7's `replacement_policies` gives for
   regular shuts; for irregular ones, a timeline calculation would.
@@ -665,6 +684,6 @@ answers back into dates is Reliafy's too.)
   part fitted now meets the coming shuts at a different age, which `g`
   treats as the same).
 - **Learned / open questions:**
-  - Time must be valued: with `g` = 0, replacing now would be best from
-    6 days old.
-
+  - It is a break-even age for each later choice, as the maintainer
+    framed it: the decision is "replace now" once the part is older than
+    the largest.
