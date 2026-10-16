@@ -84,10 +84,20 @@ def test_a_threshold_of_0_replaces_at_every_inspection(duration):
 
 
 def test_a_threshold_no_inspection_reaches_runs_to_failure():
-    never = RepairableRBD(PAIR, {"a": unit(threshold=1.0), "b": unit()})
+    # Priced, as the cost analyses refuse a diagram with nothing priced.
+    never = RepairableRBD(
+        PAIR, {"a": unit(threshold=1.0, repair_cost=100.0), "b": unit()}
+    )
     plain = RepairableRBD(
         PAIR,
-        {"a": {"reliability": LIFE, "repairability": REPAIR}, "b": unit()},
+        {
+            "a": {
+                "reliability": LIFE,
+                "repairability": REPAIR,
+                "repair_cost": 100.0,
+            },
+            "b": unit(),
+        },
     )
     for name in LONG_RUN:
         assert getattr(never, name)() == pytest.approx(
