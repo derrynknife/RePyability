@@ -366,11 +366,14 @@ def draw_ccf_models(
 ) -> List[Any]:
     """``n`` plausible common-cause models of a ``CCFGroup``, as ``spec``
     says: ``{parameter name: distribution}`` over its model's parameters
-    (``beta``, and an MGL model's ``gamma``, ``delta``, ...; see
-    ``ccf.parameters``), each drawn independently and in ``[0, 1]``, the
-    others kept; or a list of models (``BetaFactor`` or ``MGL``, for the
-    group's size and with its model's basis), drawn with replacement."""
-    from .ccf import MGL, BetaFactor, parameters, with_parameters
+    (``beta``, an MGL model's ``gamma``, ``delta``, ..., an alpha-factor
+    model's ``alpha_2``, ...; see ``ccf.parameters``), each drawn
+    independently and in ``[0, 1]``, the others kept (alpha factors
+    drawn to sum past 1 are refused, ``alpha_1`` being the remainder);
+    or a list of models (``BetaFactor``, ``MGL`` or ``AlphaFactor``, for
+    the group's size and with its model's basis), drawn with
+    replacement."""
+    from .ccf import _Model, parameters, with_parameters
 
     model = group.model
     label = f"Common-cause group {list(group.members)!r}"
@@ -401,20 +404,17 @@ def draw_ccf_models(
         if not spec:
             raise ValueError(f"{label}: the list of models is empty.")
         for m in spec:
-            size = (
-                m.required_group_size()
-                if isinstance(m, (BetaFactor, MGL))
-                else None
-            )
+            size = m.required_group_size() if isinstance(m, _Model) else None
             if (
-                not isinstance(m, (BetaFactor, MGL))
+                not isinstance(m, _Model)
                 or size not in (None, len(group.members))
                 or m.basis != model.basis
                 or m.shocks != model.shocks
             ):
                 raise ValueError(
                     f"{label}: every alternative model must be a "
-                    f"BetaFactor or an MGL model for {len(group.members)} "
+                    "BetaFactor or an MGL or AlphaFactor model for "
+                    f"{len(group.members)} "
                     f"members, splitting the {model.basis} as its model "
                     f"does, with {model.shocks} shocks; got {m!r}."
                 )

@@ -21,6 +21,7 @@ import surpyval as surv
 
 from repyability import (
     MGL,
+    AlphaFactor,
     BetaFactor,
     CCFGroup,
     PerfectReliability,
@@ -341,6 +342,13 @@ def random_diagram(rng: random.Random):
         models = [BetaFactor(rng.uniform(0.05, 0.4))]
         if size == 3:
             models.append(MGL(rng.uniform(0.05, 0.3), rng.uniform(0.1, 0.5)))
+            shared = rng.uniform(0.05, 0.3)
+            models.append(
+                AlphaFactor(
+                    [1.0 - shared, 0.7 * shared, 0.3 * shared],
+                    testing=rng.choice(["staggered", "non-staggered"]),
+                )
+            )
         groups.append(CCFGroup(members, rng.choice(models)))
     rate = {v: rng.uniform(1e-4, 3e-3) for v in nodes}
     for group in groups:

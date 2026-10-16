@@ -2,7 +2,8 @@
 members are down together, in the long run.
 
 A group's members are identical units with a constant failure rate. Its
-model (a ``BetaFactor`` or ``MGL``, see ``ccf.py``) splits that rate
+model (a ``BetaFactor``, ``MGL`` or ``AlphaFactor``, see ``ccf.py``)
+splits that rate
 between causes: each member's own, and shared ones, each a set of members
 that one cause fails at once, with a share of the rate (``_causes``). Each
 cause strikes as a Poisson process, and fails the members it names that

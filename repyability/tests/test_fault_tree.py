@@ -720,19 +720,25 @@ GROUP_MODELS = [
     "mgl",
     "mgl-independent",
     "mgl-rate",
+    "alpha",
+    "alpha-rate",
 ]
 
 
 def group_model(kind, size):
-    from repyability import MGL, BetaFactor
+    from repyability import MGL, AlphaFactor, BetaFactor
 
     letters = (0.15, 0.4, 0.5)[: size - 1]
+    alphas = [0.85, 0.1, 0.03, 0.02][:size]
+    alphas[0] = 1.0 - sum(alphas[1:])
     return {
         "beta": lambda: BetaFactor(0.1),
         "beta-rate": lambda: BetaFactor(0.2, basis="rate"),
         "mgl": lambda: MGL(*letters),
         "mgl-independent": lambda: MGL(*letters, shocks="independent"),
         "mgl-rate": lambda: MGL(*letters, basis="rate"),
+        "alpha": lambda: AlphaFactor(alphas, testing="non-staggered"),
+        "alpha-rate": lambda: AlphaFactor(alphas, basis="rate"),
     }[kind]()
 
 

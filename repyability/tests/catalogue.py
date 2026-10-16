@@ -16,6 +16,7 @@ import surpyval as surv
 
 from repyability import (
     MGL,
+    AlphaFactor,
     BetaFactor,
     Calendar,
     CCFGroup,
@@ -228,6 +229,23 @@ def nonrepairable_kinds():
             EDGES,
             {"a": unit, "b": unit, "c": E([0.002])},
             ccf_groups=[CCFGroup(["a", "b"], MGL(0.1))],
+        ),
+        "common cause, alpha factor": NonRepairableRBD(
+            VOTE,
+            {
+                "a": unit,
+                "b": unit,
+                "d": unit,
+                "c": E([0.002]),
+                "j": PerfectReliability,
+            },
+            k={"j": 2},
+            ccf_groups=[
+                CCFGroup(
+                    ["a", "b", "d"],
+                    AlphaFactor([0.95, 0.04, 0.01], testing="non-staggered"),
+                )
+            ],
         ),
         "a branch that never works": NonRepairableRBD(
             EDGES, {"a": unit, "b": PerfectUnreliability, "c": E([0.002])}
@@ -595,6 +613,21 @@ def repairable_kinds():
                     )
                 },
                 ccf_groups=[CCFGroup(["a", "b"], MGL(0.2))],
+            ),
+            "common cause, alpha factor": RepairableRBD(
+                VOTE,
+                {
+                    node: {
+                        "reliability": E([0.002]),
+                        "repairability": E([0.5]),
+                    }
+                    for node in "abdc"
+                }
+                | {"j": PerfectReliability},
+                k={"j": 2},
+                ccf_groups=[
+                    CCFGroup(["a", "b", "d"], AlphaFactor([0.95, 0.04, 0.01]))
+                ],
             ),
             "common cause, Weibull": system(
                 unit(), ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))]

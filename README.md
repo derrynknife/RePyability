@@ -41,9 +41,9 @@ taking already-fitted lifetime models (from
 - **Live state**: reliability, remaining life and importance given each
   component's current age, and covariate-dependent components.
 - **Redundancy and dependence**: cold, warm and hot standby; repeated nodes;
-  load sharing; junctions (a vote point that never fails); beta-factor and
-  MGL common-cause groups, splitting a probability or a failure rate, in
-  block diagrams, repairable systems and fault trees.
+  load sharing; junctions (a vote point that never fails); beta-factor,
+  MGL and alpha-factor common-cause groups, splitting a probability or a
+  failure rate, in block diagrams, repairable systems and fault trees.
 - **Repairable systems**: exact long-run availability, failure frequency and
   MUT/MDT/MTBF; exact availability over time and over a mission, and the
   unavailability to its own precision (a PFD of 1e-17); simulated
@@ -235,6 +235,7 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | A junction | E | N | N | E N | E N | N | S | E N | – | S |
 | A beta-factor common-cause group | E | ✗ | N | ✗ | E N; ✗ `joint_importance` | N | S; ✗ `mean_uncertainty` | E N | – | S |
 | An MGL common-cause group | E | ✗ | N | ✗ | E N; ✗ `joint_importance` | N | S; ✗ `mean_uncertainty` | E N | – | S |
+| An alpha-factor common-cause group | E | ✗ | N | ✗ | E N; ✗ `joint_importance` | N | S; ✗ `mean_uncertainty` | E N | – | S |
 | Capacities | E | N | N | E N | E N | N | S | E N | E | S |
 | A structure too meshed to work out | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | S |
 
@@ -270,6 +271,7 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | A standby group | E | E | N | E N | E N | N | S | E | – | ✗ | – | S |
 | A beta-factor group, revealed failures | N | N | N | E | N; ✗ `joint_importance` | N | S | N | – | N | – | S |
 | A beta-factor group, tested | E | E | N | E N | E N; ✗ `joint_importance` | N | S | E | – | N | – | S |
+| An alpha-factor group, revealed failures | E | E | N | E | E N; ✗ `joint_importance` | N | S | E | – | N | – | S |
 | A group whose tests take time | N | N | N | N | N; ✗ `joint_importance` | N | S | N | – | N | – | S |
 | A structure too meshed to work out | ✗ | ✗ | ✗ | E; ✗ `expected_cost` | ✗ | ✗ | S; ✗ `mean_availability_uncertainty` | ✗ | – | N | – | S |
 

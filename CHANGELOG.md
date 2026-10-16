@@ -11,6 +11,26 @@ other release, fixes included, the minor.
 
 ### Added
 
+- **The alpha-factor common-cause model (#311).**
+  `AlphaFactor(alphas, testing=)` takes the shares `alpha_1, ..., alpha_m`
+  of a group's failure events that failed exactly one, two, ..., all `m`
+  members, the parameters common-cause data sources publish
+  (NUREG/CR-5485, the NRC's CCF parameter estimates) because event counts
+  estimate them directly, where MGL's letters cannot be counted. It gives
+  each specific set of `k` members the standard basic-event probability
+  `Q_k`: `alpha_k / C(m-1, k-1) · Q` for staggered testing (the default)
+  and `k alpha_k / (alpha_t C(m-1, k-1)) · Q`, `alpha_t = Σ k alpha_k`,
+  for non-staggered, so it is the `MGL` model with the letters those
+  `Q_k` give, and goes everywhere a group's model goes: non-repairable
+  diagrams and fault trees, conditioned on module by module; repairable
+  diagrams, through the groups' chains; `basis="rate"` and
+  `shocks="independent"`; saved with the diagram, its testing scheme with
+  it. Its levers, for `levers()`, `parameter_sensitivity` and the
+  parameter uncertainty, are `alpha_2, ..., alpha_m` (`ccf_alpha_2`,
+  ...), `alpha_1` being the remainder; `testing` is not a lever. A
+  rounded table's alpha factors, summing to within 1% of 1, are scaled to
+  1. A `CCFGroup` refuses any other model naming the three it takes,
+  where it said alpha-factor was not supported yet.
 - **The long-run optimal replacement policy over a calendar of shuts
   (#319).** `NonRepairable.optimal_calendar_policy(calendar)` finds, for a
   part whose planned replacement costs differently at different times

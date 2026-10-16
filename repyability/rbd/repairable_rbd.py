@@ -376,8 +376,9 @@ class RepairableRBD(RBD):
     ccf_groups : list of CCFGroup, optional
         Common-cause groups (see [`CCFGroup`][repyability.CCFGroup]), by
         default none: identical components (the same life and repair
-        models) that fail together. A group's model (a ``BetaFactor`` or
-        ``MGL``) splits the members' failure rate between causes, each
+        models) that fail together. A group's model (a ``BetaFactor``,
+        ``MGL`` or ``AlphaFactor``) splits the members' failure rate
+        between causes, each
         member's own and shared ones, and each cause fails the members it
         names that are up, at once (whatever the model's ``basis``: a
         repairable component's failures are a rate). Each member alone
@@ -1631,8 +1632,9 @@ class RepairableRBD(RBD):
             a component can wait for a repair crew (see ``repair_crews``):
             the search assumes that none does. Or if a common-cause group's
             chain does not cover it (see ``ccf_groups``), a member given
-            copies is in an ``MGL`` group (its letters are for its group's
-            size), or a train holds a member.
+            copies is in an ``MGL`` or ``AlphaFactor`` group (its
+            parameters are for its group's size), or a train holds a
+            member.
 
         Examples
         --------

@@ -19,6 +19,7 @@ import surpyval as surv
 
 from repyability import (
     MGL,
+    AlphaFactor,
     BetaFactor,
     CCFGroup,
     FaultTree,
@@ -137,6 +138,14 @@ X = np.array([10.0, 200.0, 900.0])
         (3, lambda i: MGL(0.1, 0.3, basis="rate")),
         (3, lambda i: MGL(0.1, 0.3) if i % 2 else BetaFactor(0.15)),
         (3, lambda i: MGL(0.1, 0.0)),  # no independent equivalent
+        (3, lambda i: AlphaFactor([0.9, 0.07, 0.03])),
+        (3, lambda i: AlphaFactor([0.9, 0.07, 0.03], testing="non-staggered")),
+        (3, lambda i: AlphaFactor([0.9, 0.07, 0.03], shocks="independent")),
+        (3, lambda i: AlphaFactor([0.9, 0.07, 0.03], basis="rate")),
+        (
+            3,
+            lambda i: AlphaFactor([0.9, 0.1, 0.0]),
+        ),  # no independent equivalent
     ],
 )
 def test_trains_agree_with_every_combination(kinds, model):
@@ -197,6 +206,7 @@ def random_diagram(rng: random.Random):
             models += [
                 MGL(rng.uniform(0.05, 0.3), rng.uniform(0.1, 0.5)),
                 MGL(0.2, 0.3, shocks="independent"),
+                AlphaFactor([0.9, 0.07, 0.03], testing="non-staggered"),
             ]
         groups.append(CCFGroup(members, rng.choice(models)))
     rate = {v: rng.uniform(0.002, 0.03) for v in nodes}
@@ -276,6 +286,11 @@ def test_many_groups_across_trains_are_quick(model):
     [
         (MGL(0.1, 0.3), ("a", "b", "c")),
         (MGL(0.2, 0.5, 0.4), ("a", "b", "c", "d")),
+        (AlphaFactor([0.9, 0.07, 0.03]), ("a", "b", "c")),
+        (
+            AlphaFactor([0.8, 0.1, 0.06, 0.04], testing="non-staggered"),
+            ("a", "b", "c", "d"),
+        ),
     ],
 )
 def test_exclusive_causes_as_independent_ones(model, members, Q):

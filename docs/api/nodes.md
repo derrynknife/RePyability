@@ -34,6 +34,8 @@ models provided here (see [Building an RBD](../guide/building.md) and
 
 ::: repyability.MGL
 
+::: repyability.AlphaFactor
+
 ## Condition-based evaluation
 
 ::: repyability.NodeState
