@@ -256,6 +256,16 @@ def test_a_repairable_diagram_s_components_over_time():
     )
     total = sum(birnbaum.values())
     assert state == pytest.approx({n: v / total for n, v in birnbaum.items()})
+    # Several windows: one share each, as the other measures give.
+    windows = np.array([50.0, 100.0])
+    several = rbd.differential_importance(window=windows)
+    for node, share in several.items():
+        assert share.shape == windows.shape
+        for k, length in enumerate(windows):
+            assert share[k] == pytest.approx(
+                rbd.differential_importance(window=float(length))[node],
+                rel=1e-12,
+            )
 
 
 def test_a_repairable_diagram_s_lives_against_its_repairs():

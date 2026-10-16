@@ -18,7 +18,7 @@ import pytest
 import surpyval as surv
 
 from repyability import CostResult, RepairableRBD, TotalCostAllocation
-from repyability.rbd import redundancy_allocation
+from repyability.rbd import _costs, redundancy_allocation
 from repyability.rbd.redundancy_allocation import lowest_total_cost
 
 E = surv.Exponential.from_params
@@ -107,9 +107,12 @@ def test_acquisition_cost_alone_prices_no_running_cost():
         assert result.by_category["repair"] == 0.0
     assert rbd.expected_cost(10.0).total == 7.0
     assert rbd.total_cost(1e6) == 7.0
-    # With nothing priced at all, there is no cost to give.
+    # With nothing priced at all, there is no cost to give: it refuses.
     unpriced = RepairableRBD(SERIES, {"pump": spec(1e-3, 0.1)})
-    assert unpriced.cost(t_simulation=10.0, mc_samples=5, seed=0) is None
+    with pytest.raises(ValueError, match="Nothing is priced"):
+        unpriced.cost(t_simulation=10.0, mc_samples=5, seed=0)
+    with pytest.raises(ValueError, match="Nothing is priced"):
+        unpriced.total_cost(10.0)
     # A cost of 0 is left out.
     free = RepairableRBD(SERIES, {"pump": spec(1e-3, 0.1, acquisition_cost=0)})
     assert free.acquisition_costs == {}
@@ -807,7 +810,8 @@ def test_nodes_in_series_with_an_imperfect_rest(target):
             nx * (900.0 + H * 40.0 * failures(0.01, 0.2))
             + ny * (400.0 + H * 10.0 * failures(0.03, 0.5))
             + H * 500.0 * (1 - availability)
-            + H * rbd._node_cost_rate("a", 1.0)  # the bridge costs nothing
+            + H
+            * _costs._node_cost_rate(rbd, "a", 1.0)  # the bridge costs nothing
         )
         return total, availability
 
@@ -853,7 +857,7 @@ def test_nodes_in_series_with_inspected_nodes_elsewhere():
 
 
 def test_the_series_program_is_used_exactly_when_it_applies(monkeypatch):
-    from repyability.rbd import repairable_rbd
+    from repyability.rbd import _repairable_allocation
 
     calls = []
 
@@ -861,7 +865,7 @@ def test_the_series_program_is_used_exactly_when_it_applies(monkeypatch):
         calls.append(args[7])
         return lowest_total_cost(*args)
 
-    monkeypatch.setattr(repairable_rbd, "lowest_total_cost", recording)
+    monkeypatch.setattr(_repairable_allocation, "lowest_total_cost", recording)
     inspected = {
         "reliability": E([0.01]),
         "repairability": "instant",

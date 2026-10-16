@@ -30,9 +30,11 @@ from repyability import MGL, CCFGroup, Network, NonRepairableRBD, RepairableRBD
 from repyability import network as network_module
 from repyability.rbd import (
     _ccf_chain,
+    _ccf_groups,
     _hidden_tests,
+    _intervals,
+    _long_run,
     _ordered_bdd,
-    repairable_rbd,
 )
 from repyability.rbd._mean_lifetime import (
     mean_lifetime,
@@ -249,13 +251,13 @@ def two_out_of_three():
 def test_a_chain_s_kept_steps_give_what_its_series_gives():
     rbd = two_out_of_three()
     group = rbd.ccf_groups[0]
-    times, _ = rbd._long_run_grid()
-    kept = rbd._group_states(group, times).probabilities
+    times, _ = _long_run._long_run_grid(rbd)
+    kept = _ccf_groups._group_states(rbd, group, times).probabilities
     # The same chain with each step's series summed for the vector alone.
     original = _ccf_chain._Hidden.evolve
     try:
         _ccf_chain._Hidden.evolve = _ccf_chain._Hidden._uniformized
-        again = rbd._group_states(group, times).probabilities
+        again = _ccf_groups._group_states(rbd, group, times).probabilities
     finally:
         _ccf_chain._Hidden.evolve = original
     np.testing.assert_allclose(kept, again, rtol=1e-11, atol=1e-15)
@@ -263,12 +265,12 @@ def test_a_chain_s_kept_steps_give_what_its_series_gives():
 
 def test_a_plan_keeps_its_groups_tables_and_its_copies_do_not():
     rbd = two_out_of_three()
-    plan = rbd._with_intervals(inspection={"a": 4380.0})
+    plan = _intervals._with_intervals(rbd, inspection={"a": 4380.0})
     cost = plan.expected_cost_rate()
-    assert "_ccf_tables" in plan.__dict__
+    assert plan._cache.ccf_tables is not None
     availability = plan.mean_availability()
-    other = plan._with_intervals(inspection={"b": 26280.0})
-    assert "_ccf_tables" not in other.__dict__
+    other = _intervals._with_intervals(plan, inspection={"b": 26280.0})
+    assert other._cache.ccf_tables is None
     fresh = RepairableRBD(**{**rbd._init_args}).with_intervals({"a": 4380.0})
     assert cost == pytest.approx(fresh.expected_cost_rate(), rel=1e-12)
     assert availability == pytest.approx(fresh.mean_availability(), rel=1e-12)
@@ -294,10 +296,10 @@ def test_the_walk_s_convolutions_are_scipy_s(n, m):
 @pytest.fixture(params=["every combination", "local search"])
 def search(request, monkeypatch):
     if request.param == "local search":
-        monkeypatch.setattr(repairable_rbd, "_MAX_COMBINATIONS", 1)
+        monkeypatch.setattr(_intervals, "_MAX_COMBINATIONS", 1)
 
     def choose(options, evaluate, **target):
-        return repairable_rbd._choose_from(
+        return _intervals._choose_from(
             list(options),
             options,
             evaluate,

@@ -254,11 +254,11 @@ class _Restart:
         masses[:, :-1] += left
         masses[:, 1:] += right
         # The intervals it can fall in.
-        total = masses.sum(axis=1)
-        last = np.flatnonzero(total > 0.0)
+        in_each = masses.sum(axis=1)
+        last = np.flatnonzero(in_each > 0.0)
         count = int(last[-1]) + 1 if last.size else 1
         self.masses = masses[:count]
-        share = total[:count]
+        share = in_each[:count]
         self._pending = np.concatenate([np.cumsum(share[::-1])[::-1], [0.0]])
         #: Its CDF at the long grid's points.
         self.P = np.concatenate([[0.0], np.cumsum((left + right).ravel())])[
@@ -1565,6 +1565,7 @@ class TestedUnit:
             before = float(_interpolated(failures0, [0], [frame], h)[0])
 
             def head_up(x):
+                assert first_restart is not None
                 s = frame + np.asarray(x, dtype=float)
                 index = np.zeros(len(s), dtype=int)
                 up = first_restart.cdf(0, s)

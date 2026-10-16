@@ -16,7 +16,9 @@ Scope notes:
   fit your failure data in surpyval and pass the models in.
 - **Visualisation lives in the Reliafy app, not here.** RePyability returns
   numbers and typed result objects; plotting and dashboards are a separate
-  layer.
+  layer. [Reliafy](https://reliafy.com) is a hosted, browser-based app built
+  on RePyability and SurPyval, for building reliability block diagrams and
+  analysing their reliability and availability without writing code.
 
 ## Install
 
@@ -52,11 +54,13 @@ rbd.mean_time_to_failure()          # -> 93.82    mean time to failure, exactly
 rbd.birnbaum_importance(50)         # per-node Birnbaum importance at t = 50
 ```
 
-Minimal path and cut sets are available too:
+Minimal path and cut sets are available too, listed smallest first:
 
 ```python
-rbd.get_min_path_sets(include_in_out_nodes=False)
-rbd.get_min_cut_sets()
+rbd.minimal_path_sets()
+# [frozenset({'pump1', 'valve'}), frozenset({'pump2', 'valve'})]
+rbd.minimal_cut_sets()
+# [frozenset({'valve'}), frozenset({'pump1', 'pump2'})]
 ```
 
 You can force nodes working or failed to explore conditional behaviour:
@@ -114,7 +118,8 @@ result.criticalities.iou.up  # intersection-over-union importance (system up)
 | Dependence | Beta-factor and Multiple Greek Letter common-cause groups, splitting a probability or a failure rate, in block diagrams, repairable systems and fault trees | [Common-cause failures](guide/common-cause.md) |
 | Availability | Long-run availability, failure frequency, MUT/MDT/MTBF; exact availability over time and over a mission, and the unavailability to its own precision; simulated histories with criticality measures; shared repair crews, exact for exponential components in the long run and numerical over time; repairable standby groups | [Repairable systems](guide/repairable.md) |
 | Capacity | The exact distribution of how much a system can deliver, from its components' capacities (with several levels, or degrading through stages over time), at a time or in the long run; the probability of meeting a demand, the expected capacity and the production availability | [System capacity](guide/capacity.md) |
-| Cost | Exact long-run cost rate; simulated cost distributions with percentiles; costs drawn from distributions; scheduled preventive maintenance (age or block replacement) priced exactly at system level, and its intervals chosen for a cost or availability target; replacement on condition at periodic inspections, numerical in the long run and over time; hidden failures found by periodic inspection (PFDavg); total cost of ownership, discounted to a present value, and the redundancy that minimises it, whole trains among it | [Costs](guide/costs.md) |
+| Cost | Exact long-run cost rate; simulated cost distributions with percentiles; costs drawn from distributions; total cost of ownership, discounted to a present value, and the redundancy that minimises it, whole trains among it | [Costs](guide/costs.md) |
+| Maintaining a system | Scheduled preventive maintenance (age or block replacement) priced exactly at system level, and its intervals chosen for a cost or availability target; replacement on condition at periodic inspections, numerical in the long run and over time; opportunistic maintenance; hidden failures found by periodic inspection (PFDavg) | [Maintaining a system](guide/system-maintenance.md) |
 | Spares | The distribution of each component's replacements over a horizon, for a system or a fleet, and the stock that meets a fill rate or a stock-out target for a replenishment lead time; interchangeable components' spares pooled on one shelf | [Spares](guide/spares.md) |
 | Design | Optimal redundancy allocation within a budget (of one or several resources) or to a target, with a choice of component types, k-out-of-n nodes and cold standby spares, and the whole cost-reliability trade-off; reliability-redundancy allocation; reliability allocation by equal and ARINC-style apportionment, minimum effort (Albert) and cost-based (Mettas) methods; availability allocation, to MTTF and MTTR targets or the cheapest mix of the two | [Design and allocation](guide/design.md) |
 | Maintenance | Age replacement; overhaul under minimal or imperfect repair; replace at the *N*-th failure | [Maintenance policies](guide/maintenance.md) |
@@ -137,4 +142,4 @@ result.criticalities.iou.up  # intersection-over-union importance (system up)
 - **[Concepts](concepts.md)**: the theory: path and cut sets, the exact engine,
   choosing an importance measure, conditioning, standby and load sharing,
   common cause, availability, cost, allocation and maintenance models.
-- **[API reference](api.md)**: every public class and method.
+- **[API reference](api/index.md)**: every public class and method.

@@ -11,10 +11,14 @@ RePyability does not fit models: the draws come from what the fit, done
 in surpyval, already provides. A node's uncertainty is one of
 
 - ``"fit"``: the parameters are drawn from the normal approximation of the
-  fitted model's maximum-likelihood estimate (surpyval's ``hess_inv``, the
-  inverse Hessian of the negative log-likelihood), on the log scale for a
+  fitted model's maximum-likelihood estimate (surpyval's ``covariance()``,
+  the inverse of the observed information), on the log scale for a
   parameter that must be positive and the logit scale for one in (0, 1),
-  so that every draw is valid;
+  so that every draw is valid. They are every parameter the fit
+  estimated: the distribution's, and a limited failure population's share
+  that ever fails (``lfp_p``) and a zero-inflated one's share dead on
+  arrival (``f0``) (#267). An offset is held where it was fitted, since
+  surpyval's covariance leaves it out (SurPyval#830), with a warning;
 - a mapping ``{parameter name: distribution}``: each named parameter is
   drawn independently from its distribution (anything with ``qf`` or
   ``ppf``, such as a surpyval or scipy.stats distribution), the others
@@ -36,11 +40,22 @@ over the draws, and of the Sobol indices, for the same number of draws.
 import difflib
 import warnings
 from collections.abc import Mapping, Sequence
-from typing import Any, List, Optional
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Hashable,
+    Iterable,
+    List,
+    Optional,
+    Tuple,
+)
 
 import numpy as np
 
-from repyability.rbd._model_utils import is_mixture
+from repyability.rbd._model_utils import is_mixture, parametric_spec
+from repyability.utils.checks import seed as check_seed
+from repyability.utils.wrappers import outside_level
 
 #: The draws of a node's model that ``"fit"`` asks for.
 FIT = "fit"
@@ -111,6 +126,45 @@ class SobolPoints:
         return np.minimum((u * high).astype(int), int(high) - 1)
 
 
+def check_draws(n_draws) -> int:
+    """``n_draws``, checked: a positive integer."""
+    if isinstance(n_draws, bool) or not isinstance(n_draws, (int, np.integer)):
+        raise ValueError(f"n_draws must be an integer, got {n_draws!r}.")
+    if n_draws < 1:
+        raise ValueError(f"n_draws must be at least 1, got {n_draws}.")
+    return int(n_draws)
+
+
+def draw_with(
+    draw: Callable[[int, Any], Any],
+    n_draws: int,
+    seed,
+    sampling: str = "random",
+    paired: bool = False,
+    join: Optional[Callable[[Any, Any], Any]] = None,
+) -> Any:
+    """``draw(n, source)``'s draws, ``n_draws`` of them, with their
+    randomness from ``seed``: ``sampling="random"``, numpy's generator;
+    ``"sobol"``, the points of a scrambled Sobol sequence, the dimensions
+    the draws take counted first (see the module docstring). ``paired``:
+    two independent sets of ``n_draws``, one after the other, for the
+    Sobol indices: one draw of twice as many, or, from the Sobol points,
+    two draws from dimensions of their own, put together by ``join``."""
+    check_sampling(sampling)
+    rng = np.random.default_rng(check_seed(seed))
+    if sampling == "random":
+        return draw(2 * n_draws if paired else n_draws, rng)
+    counter = Counter()
+    draw(1, counter)
+    width = counter.dimensions
+    table = sobol_table(n_draws, 2 * width if paired else width, rng)
+    first = draw(n_draws, SobolPoints(table[:, :width]))
+    if not paired:
+        return first
+    assert join is not None
+    return join(first, draw(n_draws, SobolPoints(table[:, width:])))
+
+
 def sobol_table(n: int, dimensions: int, rng) -> np.ndarray:
     """``n`` points of a scrambled Sobol sequence in ``dimensions``
     dimensions, scrambled by ``rng`` (numpy's generator). Its balance is
@@ -126,9 +180,9 @@ def sobol_table(n: int, dimensions: int, rng) -> np.ndarray:
         return engine.random(n)
 
 
-def _parametric(model, label: str):
-    """The model's distribution, or a ValueError for a model whose
-    parameters cannot be redrawn."""
+def _spec(model, label: str):
+    """The model's parameters (``parametric_spec``), or a ValueError for a
+    model whose parameters cannot be redrawn."""
     if is_mixture(model):
         # Its dist is its components' alone (#227).
         raise ValueError(
@@ -138,14 +192,14 @@ def _parametric(model, label: str):
             "so they cannot be drawn. Give a list of alternative models "
             "instead (fitted to resampled data, say)."
         )
-    dist = getattr(model, "dist", None)
-    if dist is None or not hasattr(dist, "from_params"):
+    spec = parametric_spec(model)
+    if spec is None:
         raise ValueError(
             f"{label}: its model has no parameters to draw (it is not a "
             "surpyval parametric distribution). Give a list of alternative "
             "models instead."
         )
-    return dist
+    return spec
 
 
 class _Scale:
@@ -187,20 +241,24 @@ class _Scale:
         return a + (b - a) / (1.0 + np.exp(-z))
 
 
-def _fit_covariance(model, label: str):
-    """The fitted model's distribution, parameters, parameter covariance
-    (surpyval's ``hess_inv``) and the parameters' bounds, checked."""
-    dist = _parametric(model, label)
-    covariance = getattr(model, "hess_inv", None)
-    params = np.atleast_1d(np.asarray(model.params, dtype=float))
+def _fit_covariance(model, label: str, warn: bool = False):
+    """The fitted model's parameters (``parametric_spec``), their
+    covariance (surpyval's ``covariance()``) and their bounds, checked;
+    with ``warn``, a warning that an offset is held where it was fitted."""
+    spec = _spec(model, label)
+    try:
+        covariance = model.covariance()
+    except (AttributeError, TypeError, ValueError):
+        covariance = None
     if covariance is None:
         raise ValueError(
             f"{label}: 'fit' draws from the fitted model's parameter "
-            "covariance (surpyval's hess_inv, from a maximum-likelihood "
+            "covariance (surpyval's covariance(), from a maximum-likelihood "
             "fit), which this model does not have. Fit it with surpyval, or "
             "give distributions over its parameters or a list of models."
         )
     covariance = np.atleast_2d(np.asarray(covariance, dtype=float))
+    params = np.asarray(spec.params, dtype=float)
     k = len(params)
     if covariance.shape != (k, k) or not np.all(np.isfinite(covariance)):
         raise ValueError(
@@ -208,8 +266,7 @@ def _fit_covariance(model, label: str):
             f"finite {k} x {k} matrix; give distributions over its "
             "parameters or a list of models instead."
         )
-    bounds = list(getattr(dist, "bounds", [(None, None)] * k))[:k]
-    for (lower, upper), value in zip(bounds, params):
+    for (lower, upper), value in zip(spec.bounds, params):
         if (lower is not None and value <= lower) or (
             upper is not None and value >= upper
         ):
@@ -219,11 +276,21 @@ def _fit_covariance(model, label: str):
                 "approximation there; give distributions over its "
                 "parameters or a list of models instead."
             )
-    return dist, params, covariance, bounds
+    if warn and getattr(model, "offset", False):
+        warnings.warn(
+            f"{label}: its model was fitted with an offset, gamma = "
+            f"{spec.extras.get('gamma')!r}, which surpyval's parameter "
+            "covariance leaves out (SurPyval#830), so 'fit' holds it where "
+            "it was fitted and the spread drawn is too narrow. For the "
+            "offset's uncertainty give a list of models (refits to "
+            "resampled data, say).",
+            stacklevel=outside_level(),
+        )
+    return spec, params, covariance, list(spec.bounds)
 
 
 def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
-    _, params, covariance, bounds = _fit_covariance(model, label)
+    spec, params, covariance, bounds = _fit_covariance(model, label, n > 0)
     k = len(params)
     scales = [_Scale(lower, upper) for lower, upper in bounds]
     # The delta method: the covariance on the unbounded scale.
@@ -237,7 +304,7 @@ def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
     drawn = np.column_stack(
         [sc.inverse(z[:, j]) for j, sc in enumerate(scales)]
     )
-    return [model.with_params(list(row)) for row in drawn]
+    return [spec.build(row) for row in drawn]
 
 
 def is_fit(model) -> bool:
@@ -248,6 +315,39 @@ def is_fit(model) -> bool:
     except (ValueError, TypeError, AttributeError):
         return False
     return True
+
+
+def fitted_together(
+    models: Mapping, joined: Iterable[Iterable[Hashable]] = ()
+) -> Dict[Hashable, str]:
+    """The uncertainty drawn when none is given (#184): ``"fit"`` for each
+    of ``models`` (by name) that is a surpyval fit with a parameter
+    covariance, the names that share one model object, or are ``joined``
+    (a common-cause group's members, say), given together in a tuple, so
+    that they share their draws."""
+    fitted = [name for name, model in models.items() if is_fit(model)]
+    parent = {name: name for name in fitted}
+
+    def root(name):
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    holder: Dict[int, Hashable] = {}
+    for name in fitted:
+        parent[root(name)] = root(holder.setdefault(id(models[name]), name))
+    for names in joined:
+        inside = [name for name in names if name in parent]
+        for name in inside[1:]:
+            parent[root(name)] = root(inside[0])
+    together: Dict[Hashable, list] = {}
+    for name in fitted:
+        together.setdefault(root(name), []).append(name)
+    return {
+        names[0] if len(names) == 1 else tuple(names): FIT
+        for names in together.values()
+    }
 
 
 def _quantiles(
@@ -280,22 +380,20 @@ def _closest(unknown: list, names: list) -> str:
 def _parameter_draws(
     model, priors: Mapping, n: int, rng: np.random.Generator, label: str
 ) -> list:
-    dist = _parametric(model, label)
-    names = list(getattr(dist, "parameter_names", []))
+    spec = _spec(model, label)
+    names = spec.names
     unknown = [p for p in priors if p not in names]
     if unknown:
         raise ValueError(
             f"{label}: {sorted(map(str, unknown))} are not parameters of its "
-            f"{getattr(dist, 'name', 'model')} model, whose parameters are "
-            f"{names}.{_closest(unknown, names)}"
+            f"{getattr(model.dist, 'name', 'model')} model, whose parameters "
+            f"are {names}.{_closest(unknown, names)}"
         )
-    params = np.atleast_1d(np.asarray(model.params, dtype=float))
-    bounds = list(getattr(dist, "bounds", [(None, None)] * len(names)))
-    columns = np.tile(params, (n, 1))
+    columns = np.tile(np.asarray(spec.params, dtype=float), (n, 1))
     for name, prior in priors.items():
         values = _quantiles(prior, n, rng, label, name)
         j = names.index(name)
-        lower, upper = bounds[j] if j < len(bounds) else (None, None)
+        lower, upper = spec.bounds[j]
         if not np.all(np.isfinite(values)) or (
             (lower is not None and np.any(values <= lower))
             or (upper is not None and np.any(values >= upper))
@@ -305,7 +403,7 @@ def _parameter_draws(
                 f"outside its range ({lower}, {upper})."
             )
         columns[:, j] = values
-    return [model.with_params(list(row)) for row in columns]
+    return [spec.build(row) for row in columns]
 
 
 def _ensemble_draws(
@@ -350,11 +448,14 @@ def draw_ccf_models(
 ) -> List[Any]:
     """``n`` plausible common-cause models of a ``CCFGroup``, as ``spec``
     says: ``{parameter name: distribution}`` over its model's parameters
-    (``beta``, and an MGL model's ``gamma``, ``delta``, ...; see
-    ``ccf.parameters``), each drawn independently and in ``[0, 1]``, the
-    others kept; or a list of models (``BetaFactor`` or ``MGL``, for the
-    group's size and with its model's basis), drawn with replacement."""
-    from .ccf import MGL, BetaFactor, parameters, with_parameters
+    (``beta``, an MGL model's ``gamma``, ``delta``, ..., an alpha-factor
+    model's ``alpha_2``, ...; see ``ccf.parameters``), each drawn
+    independently and in ``[0, 1]``, the others kept (alpha factors
+    drawn to sum past 1 are refused, ``alpha_1`` being the remainder);
+    or a list of models (``BetaFactor``, ``MGL`` or ``AlphaFactor``, for
+    the group's size and with its model's basis), drawn with
+    replacement."""
+    from .ccf import _Model, parameters, with_parameters
 
     model = group.model
     label = f"Common-cause group {list(group.members)!r}"
@@ -385,20 +486,17 @@ def draw_ccf_models(
         if not spec:
             raise ValueError(f"{label}: the list of models is empty.")
         for m in spec:
-            size = (
-                m.required_group_size()
-                if isinstance(m, (BetaFactor, MGL))
-                else None
-            )
+            size = m.required_group_size() if isinstance(m, _Model) else None
             if (
-                not isinstance(m, (BetaFactor, MGL))
+                not isinstance(m, _Model)
                 or size not in (None, len(group.members))
                 or m.basis != model.basis
                 or m.shocks != model.shocks
             ):
                 raise ValueError(
                     f"{label}: every alternative model must be a "
-                    f"BetaFactor or an MGL model for {len(group.members)} "
+                    "BetaFactor or an MGL or AlphaFactor model for "
+                    f"{len(group.members)} "
                     f"members, splitting the {model.basis} as its model "
                     f"does, with {model.shocks} shocks; got {m!r}."
                 )
@@ -439,9 +537,9 @@ def _quantiles_at(prior, u: np.ndarray, label: str, name) -> np.ndarray:
 
 
 def varied_parameters(model, spec: Any, label: str):
-    """For the delta method (#196): the parameters a node's uncertainty
+    """For the delta method: the parameters a node's uncertainty
     varies, as their positions among the model's parameters, their values,
-    their covariance (a fit's ``hess_inv``, or the variances of the
+    their covariance (a fit's ``covariance()``, or the variances of the
     distributions given) and their bounds. A list of models has no
     parameters to vary."""
     if isinstance(spec, str):
@@ -450,22 +548,22 @@ def varied_parameters(model, spec: Any, label: str):
                 f"{label}: unknown uncertainty {spec!r}; give 'fit', a dict "
                 "of parameter distributions or a list of models."
             )
-        _, params, covariance, bounds = _fit_covariance(model, label)
+        _, params, covariance, bounds = _fit_covariance(model, label, True)
         return list(range(len(params))), params, covariance, bounds
     if isinstance(spec, Mapping):
         if not spec:
             raise ValueError(f"{label}: no parameter distributions given.")
-        dist = _parametric(model, label)
-        names = list(getattr(dist, "parameter_names", []))
+        parameters = _spec(model, label)
+        names = parameters.names
         unknown = [p for p in spec if p not in names]
         if unknown:
             raise ValueError(
                 f"{label}: {sorted(map(str, unknown))} are not parameters of "
-                f"its {getattr(dist, 'name', 'model')} model, whose "
+                f"its {getattr(model.dist, 'name', 'model')} model, whose "
                 f"parameters are {names}."
             )
-        params = np.atleast_1d(np.asarray(model.params, dtype=float))
-        bounds = list(getattr(dist, "bounds", [(None, None)] * len(names)))
+        params = np.asarray(parameters.params, dtype=float)
+        bounds = parameters.bounds
         positions = [names.index(name) for name in spec]
         covariance = np.diag(
             [_variance(prior, label, name) for name, prior in spec.items()]
@@ -474,10 +572,7 @@ def varied_parameters(model, spec: Any, label: str):
             positions,
             params[positions],
             covariance,
-            [
-                bounds[j] if j < len(bounds) else (None, None)
-                for j in positions
-            ],
+            [bounds[j] for j in positions],
         )
     if isinstance(spec, Sequence):
         raise ValueError(
@@ -488,6 +583,44 @@ def varied_parameters(model, spec: Any, label: str):
         f"{label}: the uncertainty must be 'fit', a dict of parameter "
         f"distributions or a list of models, got {spec!r}."
     )
+
+
+def split_group_levers(key, spec, groups) -> Tuple[Optional[int], dict, Any]:
+    """An uncertainty given under the tuple of a common-cause group's
+    members (``groups``), with the group's own parameters named as its
+    levers are (``ccf_beta``, ``ccf_alpha_2``, ..., as ``levers()`` and
+    ``parameter_sensitivity`` key them): the group's index, its own
+    parameters' distributions by their names (``beta``, ...), and what is
+    left of ``spec`` for the members' one model. ``(None, {}, spec)`` for
+    any other key or spec."""
+    if not (isinstance(key, tuple) and isinstance(spec, Mapping)):
+        return None, {}, spec
+    index = next(
+        (i for i, g in enumerate(groups) if set(g.members) == set(key)), None
+    )
+    if index is None:
+        return None, {}, spec
+    from .ccf import parameters
+
+    own = {
+        name[len("ccf_") :]: prior
+        for name, prior in spec.items()
+        if isinstance(name, str) and name.startswith("ccf_")
+    }
+    levers = [f"ccf_{name}" for name in parameters(groups[index].model)]
+    unknown = [f"ccf_{name}" for name in own if f"ccf_{name}" not in levers]
+    if unknown:
+        raise ValueError(
+            f"Common-cause group {list(key)!r}: {unknown} are not levers of "
+            f"its model, {groups[index].model!r}, whose levers are "
+            f"{levers}.{_closest(unknown, levers)}"
+        )
+    rest = {
+        name: prior
+        for name, prior in spec.items()
+        if not (isinstance(name, str) and name.startswith("ccf_"))
+    }
+    return index, own, rest
 
 
 def varied_ccf_parameters(group, spec: Any):

@@ -318,7 +318,7 @@ class CrewSystem:
     each state, then for each pattern the rate of its failures by the
     chain's components in each state, then whether each of the chain's
     ``served`` components is up; with ``causes``, then for each pattern
-    the rate of its failures by each of them (#199). The nested RBDs have
+    the rate of its failures by each of them. The nested RBDs have
     crews of their own, so they are independent of the chain: at a time,
     the system is up with probability ``sum_m p(t) u_m w_m(t)``, ``w_m``
     the pattern's probability from their availabilities then, and a nested
@@ -335,6 +335,13 @@ class CrewSystem:
         self.cause_keys = list(self.served) if causes else []
         #: For the pieces of the integrals: the chain's knots and settling.
         self.curve = ChainCurve(chain)
+
+    def jump_times(self, stop: float) -> np.ndarray:
+        """The times in ``(0, stop)`` at which the chain's states jump
+        down at exact times: none, as its components fail and are
+        repaired at rates (a common-cause group's chain jumps at its
+        members' tests, see ``_ccf_chain.GroupsSystem.jump_times``)."""
+        return np.empty(0)
 
     def evaluate(self, values: dict, x: np.ndarray):
         """At the times ``x``, with each nested RBD up with the probability
@@ -414,10 +421,10 @@ class CrewCurve:
     RBDs, its integrals give the system's uptime and failures from 0
     exactly (``integral``, ``events``); with them, its events are counted
     as another RBD counts its nodes', with the nested RBDs' importance
-    taken over the chain (#162)."""
+    taken over the chain."""
 
     def __init__(self, rbd, chain: Uniformized, nested: dict):
-        from .repairable_rbd import _settling
+        from ._curves import _settling
 
         self.rbd = rbd
         self.chain = chain
@@ -425,7 +432,7 @@ class CrewCurve:
         self.patterns = 2 ** len(nested)
         self.system = CrewSystem(chain, list(nested))
         #: As a node with capacities of another RBD, its capacity over time
-        #: (``repairable_rbd._CrewCapacity``, set by ``_nested_curve``).
+        #: (``_repairable_capacity._CrewCapacity``, set by ``_nested_curve``).
         self.capacity: Any = None
         self.settle, self.period = _settling(
             [ChainCurve(chain), *nested.values()]
@@ -451,10 +458,18 @@ class CrewCurve:
         """The system's expected failures before each time ``x``, and its
         planned outages: the chain's components have no scheduled
         maintenance, but its nested RBDs may."""
+        from . import _windows
+
         x = np.asarray(x, dtype=float)
         if self.nested:
-            counts = self.rbd._window_counts(
-                self.nested, x.ravel(), set(), set(), "p", crew=self.system
+            counts = _windows._window_counts(
+                self.rbd,
+                self.nested,
+                x.ravel(),
+                set(),
+                set(),
+                "p",
+                crew=self.system,
             )
             return _events(
                 counts["failures"].reshape(x.shape),
@@ -468,9 +483,13 @@ class CrewCurve:
         """The system's failures and planned outages at exact times before
         ``stop``: its nested RBDs', which the chain's do not share (it
         moves only at random times)."""
+        from . import _windows
+
         if not self.nested:
             return Atoms.none()
-        return self.rbd._system_atoms(self.nested, stop, crew=self.system)
+        return _windows._system_atoms(
+            self.rbd, self.nested, stop, crew=self.system
+        )
 
     def knots(self, start: float, stop: float) -> np.ndarray:
         parts = [self.chain.knots(start, stop)]

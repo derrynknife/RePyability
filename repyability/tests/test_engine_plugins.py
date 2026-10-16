@@ -12,7 +12,7 @@ from importlib import metadata
 
 import pytest
 
-from repyability.rbd import _compiled, engines, repairable_rbd
+from repyability.rbd import _compiled, _event_loop, engines
 from repyability.tests.test_simulation_engines import (
     identical,
     needs_numba,
@@ -64,9 +64,7 @@ class Engine:
             plan.entropy,
             plan.antithetic,
         )
-        return repairable_rbd._PythonRunner(
-            rbd, tally, progress, context, jobs
-        )
+        return _event_loop._PythonRunner(rbd, tally, progress, context, jobs)
 
 
 @pytest.fixture(autouse=True)

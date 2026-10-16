@@ -53,7 +53,7 @@ from scipy.optimize import minimize_scalar
 from scipy.special import gammaln
 
 from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
-from repyability.rbd._model_utils import failure_time_scale
+from repyability.rbd._model_utils import MODEL_ERRORS, failure_time_scale
 from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.wrappers import numpy_seed, outside_level
 
@@ -523,7 +523,7 @@ class Repairable:
                 m = failure_time_scale(baseline)
                 if np.isfinite(m) and m > 0.0:
                     return m
-            except Exception:
+            except MODEL_ERRORS:
                 pass
         return 1.0
 
@@ -542,7 +542,7 @@ class Repairable:
             return None
         try:
             age = float(np.ravel(baseline.qf(1.0 - 1e-10))[0])
-        except Exception:
+        except MODEL_ERRORS:
             return None
         return age if np.isfinite(age) and age > 0.0 else None
 

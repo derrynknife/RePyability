@@ -12,7 +12,7 @@ from surpyval.recurrent.renewal.renewal_model import conditional_gaps
 
 from repyability import RepairableRBD
 from repyability.rbd import routes as r
-from repyability.rbd.repairable_rbd import _aged_life
+from repyability.rbd._event_loop import _aged_life
 
 E, W, L = (
     surv.Exponential.from_params,
@@ -480,10 +480,6 @@ def test_minimal_repair_in_a_system_agrees_with_the_simulation():
             "replaced at its failure 3",
         ),
         (
-            dict(minimal(W([100.0, 2.0])), repairability=E([0.5])),
-            "repairs take time",
-        ),
-        (
             minimal(W([100.0, 2.0]), preventive={"interval": 50.0}),
             "preventive maintenance",
         ),
@@ -492,12 +488,13 @@ def test_minimal_repair_in_a_system_agrees_with_the_simulation():
     ids=[
         "q below 1",
         "replaced",
-        "timed repairs",
         "maintained",
         "dead on arrival",
     ],
 )
 def test_other_imperfect_repair_is_simulated_over_time(spec, blocker):
+    # Minimal repair with repairs that take time is numerical over a
+    # window too (#318): see test_minimal_repair_timed.py.
     rbd = single(spec)
     for call in (
         lambda: rbd.expected_failures(50.0),

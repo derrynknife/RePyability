@@ -13,7 +13,7 @@ from scipy import integrate
 from surpyval import Exponential, Gamma, LogNormal, Weibull
 
 from repyability import NodeState, RepairableRBD
-from repyability.rbd import _hidden_life, routes
+from repyability.rbd import _hidden_life, _intervals, routes
 from repyability.rbd._point_availability import InspectionCurve
 
 E = Exponential.from_params
@@ -184,7 +184,7 @@ def test_the_long_run_profile_by_its_definition(name):
         atol=1e-15,
     )
     # Its last test 0.3 intervals before 0.
-    later = {"a": NodeState(stationary=True, phase=0.3 * interval)}
+    later = {"a": NodeState(stationary=True, since_scheduled=0.3 * interval)}
     np.testing.assert_allclose(
         rbd.point_availability(u, state=later),
         profile(model, interval, np.mod(u + 0.3 * interval, interval)),
@@ -330,8 +330,8 @@ def test_the_best_test_interval_for_a_wearing_life():
     assert plan.intervals["a"] == pytest.approx(best, rel=2e-3)
     assert plan.cost_rate == pytest.approx(cost_rate(best), rel=1e-6)
     assert plan.cost_rate == pytest.approx(
-        rbd._with_intervals(
-            inspection={"a": plan.intervals["a"]}
+        _intervals._with_intervals(
+            rbd, inspection={"a": plan.intervals["a"]}
         ).expected_cost_rate(),
         rel=1e-12,
     )
@@ -402,7 +402,7 @@ def test_from_a_state(age, phase):
     # or, younger than that, put into service since, and not yet tested.
     model, interval = W([200.0, 2.5]), 50.0
     rbd = RepairableRBD(SINGLE, {"a": hidden(model, interval)})
-    state = {"a": NodeState(age=age, phase=phase)}
+    state = {"a": NodeState(age=age, since_scheduled=phase)}
     known = max(age - phase, 0.0)
     first = interval - phase if phase else interval
     reference = Units(

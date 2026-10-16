@@ -1,11 +1,12 @@
 from queue import PriorityQueue
+from typing import Any
 
 import numpy as np
 from surpyval import Hypoexponential
 
 from repyability.utils.checks import simulation_options, whole_number
-from repyability.utils.deprecation import ignored, refuse_removed_names
-from repyability.utils.wrappers import numpy_seed
+from repyability.utils.deprecation import refuse_removed_names
+from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from ._dependent_lifetimes import (
     ColdPairSurvival,
@@ -23,13 +24,13 @@ from .numerical_convolution import (
 
 
 def drawn_mean(model, name: str, exact, mc_samples, seed, method) -> float:
-    """A node model's ``mean(mc_samples, seed, method=...)`` (#233):
+    """A node model's ``mean(mc_samples, seed, method=...)``:
     ``exact()``, its exact or numerical mean (a NotImplementedError where it
     has none), by default and with ``method="exact"``; with
     ``method="simulate"``, or by default where it has no exact mean and
     the draws' options are given, the mean of ``mc_samples`` draws of
-    ``random`` (10_000 by default). Options given to an exact mean by
-    default are ignored, with a ``FutureWarning``: 0.14 refuses them."""
+    ``random`` (10_000 by default). An exact mean refuses the draws'
+    options, as it draws nothing (they warned in 0.13, #233)."""
     if method not in (None, "exact", "simulate"):
         raise ValueError(
             f"method must be 'exact' or 'simulate' (or None), got {method!r}."
@@ -44,15 +45,8 @@ def drawn_mean(model, name: str, exact, mc_samples, seed, method) -> float:
         if method == "exact" or (mc_samples is None and seed is None):
             raise
         return float(model.random(count, seed=seed).mean())
-    if method == "exact":
-        simulation_options(f"{name}.mean(method='exact')", options)
-    else:
-        ignored(
-            f"{name}.mean()",
-            "the mean is worked out exactly (or numerically), so nothing is "
-            "drawn; method='simulate' estimates it from draws instead.",
-            options,
-        )
+    shown = "mean(method='exact')" if method == "exact" else "mean()"
+    simulation_options(f"{name}.{shown}", options)
     return value
 
 
@@ -307,7 +301,7 @@ class StandbyModel:
                     "switching_probability is only supported for cold "
                     "standby (dormancy_factor == 0)."
                 )
-            closed_form = None
+            closed_form: Any = None
             if rate is not None:
                 # Identical Exponential units: with j units alive, k operate
                 # at rate `rate` and j - k sit dormant at `dormancy_factor *
@@ -656,8 +650,9 @@ class StandbyModel:
         be replayed. Columns follow the order ``random(1)`` draws in: one per
         unit, and under imperfect k=1 switching a switch draw before each
         spare's."""
-        units = [inverse_sampler(m) for m in self.reliabilities]
-        if any(unit is None for unit in units):
+        found = [inverse_sampler(m) for m in self.reliabilities]
+        units = [unit for unit in found if unit is not None]
+        if len(units) < len(found):
             return None
 
         if self.dormancy_factor > 0.0:
@@ -735,18 +730,17 @@ class StandbyModel:
         ``is_simulated``) has no exact mean, and refuses, unless asked for
         an estimate: the mean of ``mc_samples`` new draws of ``random``.
         ``method="simulate"`` estimates it so whatever the arrangement, to
-        check the exact mean against draws, say (#233).
+        check the exact mean against draws, say.
 
         Parameters
         ----------
         mc_samples : int, optional
             The number of draws to estimate the mean from, 10_000 by
             default: with ``method="simulate"``, or for an arrangement with
-            no exact mean. An exact mean draws nothing, and ignores it with
-            a ``FutureWarning`` (0.14 will refuse it).
+            no exact mean. An exact mean draws nothing, and refuses it.
         seed : int or None, optional
             Seed for those draws (see ``random``), by default None.
-            Ignored as ``mc_samples`` is.
+            Refused as ``mc_samples`` is.
         method : {None, "exact", "simulate"}, optional
             None (the default): the exact or numerical mean, or for an
             arrangement with neither, the draws' estimate when
@@ -765,9 +759,8 @@ class StandbyModel:
             If the arrangement has no exact mean and neither ``mc_samples``
             nor ``seed`` is given (or ``method="exact"``).
         ValueError
-            If ``method`` is not one of these.
-        TypeError
-            If ``method="exact"`` is given with ``mc_samples`` or ``seed``.
+            If ``method`` is not one of these, or ``mc_samples`` or ``seed``
+            is given to an exact mean.
 
         Examples
         --------
@@ -906,6 +899,5 @@ class StandbyModel:
         >>> round(StandbyModel([unit, unit]).cs(50.0, 100.0), 4)
         0.7582
         """
-        from repyability.utils.wrappers import conditional_survival
 
         return conditional_survival(self, x, X)

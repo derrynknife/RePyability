@@ -21,14 +21,21 @@ from scipy.special import ndtri
 from repyability.utils.wrappers import outside_level
 
 
-def check_count(n, antithetic: bool, name: str) -> None:
+def check_count(n, antithetic: bool, name: str, least: int = 1) -> None:
     """A ValueError unless ``n`` is a positive integer (and even, for
-    antithetic pairs)."""
+    antithetic pairs), of at least ``least`` independent samples (pairs,
+    with ``antithetic``): two for a standard error."""
     if isinstance(n, bool) or not isinstance(n, (int, np.integer)) or n < 1:
         raise ValueError(f"{name} must be a positive integer, got {n!r}.")
     if antithetic and n % 2:
         raise ValueError(
             f"Antithetic samples come in pairs: {name} must be even, got {n}."
+        )
+    fewest = least * (2 if antithetic else 1)
+    if n < fewest:
+        raise ValueError(
+            f"{name} must be at least {fewest} (a standard error needs two "
+            f"independent samples), got {n}."
         )
 
 
@@ -125,7 +132,7 @@ def more_samples(
     infinite (or NaN) value stops the run at once: the mean is infinite
     (or undefined) however many more are taken. With ``unjudged``, why
     the values do not show the error yet (a run of modules that have not
-    changed state, #215): the run goes on, to the limit."""
+    changed state): the run goes on, to the limit."""
     if not np.all(np.isfinite(values)):
         return 0
     if (

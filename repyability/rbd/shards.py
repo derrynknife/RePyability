@@ -69,8 +69,11 @@ def run_shard(shard) -> bytes:
     >>> merged.system_uptime == whole.system_uptime
     True
     """
-    from repyability.rbd.repairable_rbd import RepairableRBD, _states_from_key
+    from repyability.rbd._runs import _states_from_key
+    from repyability.rbd.repairable_rbd import RepairableRBD
     from repyability.rbd.serialisation import _node_name
+
+    from . import _runs
 
     data = _shard(shard)
     rbd = RepairableRBD.from_dict(data["system"])
@@ -80,7 +83,8 @@ def run_shard(shard) -> bytes:
         return _modules_partial(rbd, data)
     working = {_node_name(node) for node in data["working_nodes"]}
     broken = {_node_name(node) for node in data["broken_nodes"]}
-    chunk = rbd._chunk(
+    chunk = _runs._chunk(
+        rbd,
         float(data["t_simulation"]),
         int(data["start"]),
         int(data["stop"]),
@@ -105,7 +109,7 @@ def _modules_partial(rbd, data: Dict[str, Any]) -> bytes:
     ``_conditional.partial_bytes``), ``rbd`` being the modules' own
     diagram (``RepairableRBD._modules_rbd``)."""
     from repyability.rbd import _conditional, _timeline_runs
-    from repyability.rbd.repairable_rbd import _states_from_key
+    from repyability.rbd._runs import _states_from_key
 
     start, stop = int(data["start"]), int(data["stop"])
     histories, tally = _timeline_runs.with_costs(

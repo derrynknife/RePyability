@@ -15,7 +15,7 @@ from surpyval import Exponential, Weibull
 
 from repyability import NodeState, PerfectReliability, RepairableRBD
 from repyability.rbd import routes as r
-from repyability.rbd.repairable_rbd import _ModuleRun
+from repyability.rbd._tally import _ModuleRun
 
 E, W = Exponential.from_params, Weibull.from_params
 LIFE, REPAIR = 0.004, 0.25  # y's failure and repair rates
@@ -922,3 +922,52 @@ def test_modules_that_changed_state_give_the_conditional_error():
     assert cost.mean_se == interval.standard_error
     assert cost.sample_mean == pytest.approx(np.mean(cost.samples))
     assert math.fsum(cost.by_category.values()) == pytest.approx(cost.mean)
+
+
+def test_the_delivered_fraction_is_taken_given_the_modules():
+    # A line with a standby group (a module) and capacities: by default a
+    # plain run's delivered fraction is each simulation's expected
+    # fraction given the modules' histories, the same values a run of the
+    # modules alone gives from the same seed, and the simulations' own
+    # stays as sample_delivered_fraction.
+    line = {
+        f"u{i}": {
+            "reliability": W([40.0 + 5 * i, 1.8]),
+            "repairability": E([0.5]),
+        }
+        for i in range(3)
+    }
+    pumps = {
+        "reliability": W([8.0, 2.0]),
+        "repairability": E([0.5]),
+        "standby": {"units": 2},
+    }
+    names = [*line, "pumps"]
+    rbd = RepairableRBD(
+        [("s", names[0])] + list(zip(names, names[1:])) + [(names[-1], "t")],
+        {**line, "pumps": pumps},
+        capacity={n: 100 for n in names},
+    )
+    options = dict(mc_samples=300, seed=1, demand=80.0)
+    alone = rbd.availability(100.0, conditional=True, **options)
+    plain = rbd.availability(100.0, **options)
+    own = rbd.availability(100.0, conditional=False, **options)
+    assert alone.delivered_fraction_interval().method == "conditional"
+    assert plain.delivered_fraction_interval().method == "conditional"
+    assert own.delivered_fraction_interval().method == "simulated"
+    assert plain.conditional is not None and plain.conditional.whole
+    np.testing.assert_allclose(
+        plain.conditional.delivered, alone.delivered, rtol=1e-12
+    )
+    assert plain.delivered_fraction == pytest.approx(
+        alone.delivered_fraction, rel=1e-12
+    )
+    assert plain.sample_delivered_fraction == own.delivered_fraction
+    assert plain.delivered_fraction != plain.sample_delivered_fraction
+    # The expected values vary less than the simulations' own.
+    assert plain.delivered_fraction_interval().standard_error < (
+        own.delivered_fraction_interval().standard_error
+    )
+    # Within a few standard errors of each other, both being unbiased.
+    spread = own.delivered_fraction_interval().standard_error
+    assert abs(plain.delivered_fraction - own.delivered_fraction) < 4 * spread

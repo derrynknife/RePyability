@@ -6,7 +6,8 @@ name: release
 #    `gh workflow run release.yml --ref master -f version=X.Y`; or the REST
 #    API). It checks that the version typed in matches
 #    repyability/_version.py, that CHANGELOG.md has a dated section for it,
-#    that the tag vX.Y does not exist yet, that CI passed on the commit and
+#    that the tag vX.Y does not exist yet, that the full suite passed on
+#    these files (on the pull request from dev into master) and
 #    that PyPI does not have the version. It then builds, publishes to PyPI,
 #    and last creates the tag vX.Y and a GitHub Release. The release notes
 #    open with the CHANGELOG section's summary, followed by GitHub's
@@ -87,11 +88,26 @@ jobs:
             echo "::error::The tag v$version already exists."
             exit 1
           fi
-          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/actions.yml/runs?head_sha=$GITHUB_SHA&status=success" --jq '.total_count')
-          if [ "$passed" -eq 0 ]; then
-            echo "::error::CI (actions.yml) has not passed on $GITHUB_SHA; wait for it, or fix it."
+          # The full suite runs on the pull request from dev into master
+          # (actions.yml), whose run is recorded against dev's commit. The
+          # merge commit on master holds the same files, so a pass on this
+          # commit, or on a parent with the same files, counts.
+          repo="repos/$GITHUB_REPOSITORY"
+          tree=$(gh api "$repo/git/commits/$GITHUB_SHA" --jq '.tree.sha')
+          passed=""
+          for sha in "$GITHUB_SHA" $(gh api "$repo/git/commits/$GITHUB_SHA" --jq '.parents[].sha'); do
+            [ "$(gh api "$repo/git/commits/$sha" --jq '.tree.sha')" = "$tree" ] || continue
+            runs=$(gh api "$repo/actions/workflows/actions.yml/runs?head_sha=$sha&status=success" --jq '.total_count')
+            if [ "$runs" -gt 0 ]; then
+              passed=$sha
+              break
+            fi
+          done
+          if [ -z "$passed" ]; then
+            echo "::error::The full suite (actions.yml) has not passed on these files: on $GITHUB_SHA or the dev commit it merged. Open the pull request from dev into master and wait for it."
             exit 1
           fi
+          echo "The full suite passed on $passed, with the same files as $GITHUB_SHA."
           pypi=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/repyability/$version/json")
           if [ "$pypi" = 200 ]; then
             echo "::error::repyability $version is already on PyPI."

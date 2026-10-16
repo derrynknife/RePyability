@@ -14,7 +14,8 @@ import surpyval as surv
 from scipy.integrate import quad
 
 from repyability import RBD, RepairableRBD
-from repyability.rbd.repairable_rbd import Event
+from repyability.rbd import _long_run
+from repyability.rbd._events import Event
 
 X = surv.ExactEventTime.from_params
 E = surv.Exponential.from_params
@@ -299,8 +300,9 @@ def test_importance_is_averaged_over_the_interval():
     # Every system failure has both failed and both critical.
     assert rbd.criticality_importance()["a"] == pytest.approx(1.0)
     assert rbd.fussell_vesely()["a"] == pytest.approx(1.0)
-    # Held working, "a" makes the system perfect.
-    assert rbd.mean_availability(working_nodes=["a"]) == 1.0
+    # Held working, "a" makes the system perfect (to rounding: the mean is
+    # worked out numerically, and some numpy builds sum it a unit short).
+    assert rbd.mean_availability(working_nodes=["a"]) == pytest.approx(1.0)
 
 
 def test_the_cost_rate_trades_tests_against_hidden_downtime():
@@ -379,7 +381,7 @@ def test_tests_and_repairs_that_take_time_are_numerical():
         (1.0 - kept) / interval, rel=1e-8
     )
     # Each test takes the unit, working then, off line: planned outages.
-    assert timed._outage_frequencies()[1] == pytest.approx(
+    assert _long_run._outage_frequencies(timed)[1] == pytest.approx(
         kept / interval, rel=1e-8
     )
     timed.birnbaum_importance()

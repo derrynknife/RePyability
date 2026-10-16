@@ -68,7 +68,21 @@ Two kinds of component are counted otherwise (#147):
   end, the block replacement there and ``C`` past it; after a block
   replacement, ``C``; over ``M(T) + 1`` replacements an interval. The
   life's sums are kept as the bands of grid points that hold their mass,
-  as a block interval may hold many lives.
+  as a block interval may hold many lives. A unit dead on arrival (its
+  life ending at 0 with probability ``q``) put in at a replacement fails
+  at its instant, and its replacement is put in there too (#322): each
+  replacement of the units that last, a failure or a block replacement,
+  brings ``G`` more at its instant, ``P(G = g) = q^g (1 - q)``,
+  independent of everything else, so the count above is that of the
+  lasting lives (the life given that it lasts) compounded
+  (``_compounded``): ``s`` or more if, of the units put in one after
+  another, the ``s``-th has fewer than that count lasting before it (a
+  binomial). A typical replacement is one of its instant's, with ``d``
+  of them before it as often as ``q^d (1 - q)``, so before a replacement
+  it is one more lasting replacement compounded, less one. (With repairs
+  or block replacements that take time, a unit dead on arrival after one
+  that took time fails on its own, and its replacement goes on as the
+  recursion below has it: on the grid, where it follows the atoms.)
 
   With repairs or block replacements that take time (#160), a unit down
   at a block time is not replaced there, and an interval need not start
@@ -121,14 +135,55 @@ Two kinds of component are counted otherwise (#147):
   ``l`` tests back from a place ``q`` with probability ``pi_q' P(C_q' =
   l) / pi_q``, ``q'`` the place ``l`` tests before and ``pi`` the long-run
   shares of the places.
+
+``spares_demand`` and ``spares_stock`` here are the bodies of
+``RepairableRBD``'s methods of those names, which call them.
 """
 
+import dataclasses
 import functools
 import math
-from typing import Any, Callable, List, NamedTuple, Optional, Tuple
+from collections.abc import Mapping
+from typing import (
+    Any,
+    Callable,
+    Collection,
+    Dict,
+    Hashable,
+    Iterable,
+    List,
+    NamedTuple,
+    Optional,
+    Tuple,
+)
 
 import numpy as np
 
+from repyability.rbd import _crews
+from repyability.rbd import _montecarlo as montecarlo
+from repyability.rbd import _requirements
+from repyability.rbd._common import (
+    _cdf,
+    _fleet,
+    _fractions,
+    _horizon,
+    _safe_mean,
+    _sf_values,
+    _summed,
+    _whole,
+)
+from repyability.rbd._hidden_life import (
+    TestedLife,
+)
+from repyability.rbd._hidden_tests import check as check_tested
+from repyability.rbd.results import (
+    SparesDemand,
+    SparesStock,
+)
+from repyability.rbd.routes import Refused
+from repyability.utils.checks import (
+    one_of,
+)
 from repyability.utils.vectors import dot
 
 #: How closely the counts' probabilities are computed.
@@ -191,33 +246,64 @@ class Tested(NamedTuple):
     position: int = 0
 
 
-class _Dist(NamedTuple):
+class _Dist:
     """A distribution on the grid, rounded one way: its continuous part as
-    masses on the grid points, and its atoms (on grid points), exactly."""
+    masses on the grid points, and its atoms (on grid points), exactly.
+    Its Fourier transforms, for the convolutions of ``_sum``, are kept
+    once taken (``spectrum``): one convolved with many (a cycle with
+    each count's sum so far) is transformed once. Its masses are not
+    changed once a transform is taken."""
 
-    rest: np.ndarray
-    atoms: np.ndarray
+    __slots__ = ("rest", "atoms", "_spectra")
 
-    def __add__(self, other):  # type: ignore[override]
+    def __init__(self, rest: np.ndarray, atoms: np.ndarray):
+        self.rest = rest
+        self.atoms = atoms
+        self._spectra: Dict[Tuple[bool, int], np.ndarray] = {}
+
+    def __add__(self, other: "_Dist") -> "_Dist":
         return _Dist(self.rest + other.rest, self.atoms + other.atoms)
 
     def scaled(self, factor: float) -> "_Dist":
         return _Dist(factor * self.rest, factor * self.atoms)
 
+    def spectrum(self, atoms: bool, size: int) -> np.ndarray:
+        """The real FFT of length ``size`` of its atoms, or of all its
+        masses, taken once."""
+        from scipy.fft import rfft
 
-def _fft(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    from scipy.signal import fftconvolve
+        found = self._spectra.get((atoms, size))
+        if found is None:
+            values = self.atoms if atoms else self.rest + self.atoms
+            found = self._spectra[(atoms, size)] = rfft(values, size)
+        return found
 
-    if not a.any() or not b.any():
-        return np.zeros(len(a))
-    return np.maximum(fftconvolve(a, b)[: len(a)], 0.0)
+
+def _fft(a: _Dist, b: _Dist, atoms: bool) -> np.ndarray:
+    """The convolution of the masses of ``a`` and ``b`` (their atoms, or
+    all their masses), on the grid: by FFT, as ``scipy.signal.fftconvolve``
+    does it, with each distribution's transform taken once."""
+    from scipy.fft import irfft, next_fast_len
+
+    n = len(a.rest)
+    if atoms:
+        empty = not (a.atoms.any() and b.atoms.any())
+    else:
+        empty = not (
+            (a.rest.any() or a.atoms.any()) and (b.rest.any() or b.atoms.any())
+        )
+    if empty:
+        return np.zeros(n)
+    size = next_fast_len(2 * n - 1, True)
+    product = a.spectrum(atoms, size) * b.spectrum(atoms, size)
+    return np.maximum(irfft(product, size)[:n], 0.0)
 
 
 def _sum(a: _Dist, b: _Dist) -> _Dist:
     """The distribution of the sum of two independent ones: its atoms are
     sums of atoms, the rest continuous."""
-    total = _fft(a.rest + a.atoms, b.rest + b.atoms)
-    atoms = _fft(a.atoms, b.atoms)
+    total = _fft(a, b, False)
+    atoms = _fft(a, b, True)
     return _Dist(np.maximum(total - atoms, 0.0), atoms)
 
 
@@ -456,7 +542,10 @@ def _block_step(
     (an atom there). Rounded up, a failure on the block time itself came
     before it; rounded down, after it. ``before`` holds units put into
     service on a block time but just before it (rounded up onto it), which
-    are replaced there unless dead on arrival."""
+    are replaced there unless dead on arrival, a failure just before it
+    too (rounded up onto it). The failures that are atoms are those at
+    the instant of a start that is one: of units dead on arrival put in
+    at a block time, after its replacement (#322)."""
     size = len(start.rest)
     failed = _Dist(np.zeros(size), np.zeros(size))
     blocks = np.zeros(size)
@@ -468,15 +557,14 @@ def _block_step(
     for lo in range(0, size, period):
         hi = lo + period
         if hi < size and before[hi]:
-            failed.atoms[hi] += before[hi] * dead
+            failed.rest[hi] += before[hi] * dead
             blocks[hi] += before[hi] * (1.0 - dead)
         rest, atoms = start.rest[lo:hi], start.atoms[lo:hi]
         if not (rest.any() or atoms.any()):
             continue
-        part = _Dist(
-            np.pad(rest, (0, width - len(rest))),
-            np.pad(atoms, (0, width - len(atoms))),
-        )
+        part = _Dist(np.zeros(width), np.zeros(width))
+        part.rest[: len(rest)] = rest
+        part.atoms[: len(atoms)] = atoms
         out = _sum(part, cut)
         keep = width if up else width - 1
         stop = min(lo + keep, size)
@@ -501,8 +589,10 @@ def _block_starts(
     """The next units' starts: after each failure's repair and each block
     replacement's. Rounded up, a start on a block time is before it (its
     true time is at most the grid's), unless it is the unit put in there
-    by that block's replacement in no time (or, split, in under a step):
-    those are kept apart."""
+    by that block's replacement in no time (or, split, in under a step),
+    or by the repair in no time (or in under a step) of a failure at the
+    block time itself, the atoms (a unit dead on arrival after that
+    block's replacement, #322): those are kept apart, as atoms."""
     start = _sum(failed, repair) + _sum(blocks, maintenance)
     size = len(start.rest)
     before = np.zeros(size)
@@ -510,12 +600,12 @@ def _block_starts(
         return start, before
     on = np.arange(period, size, period)
     total = start.rest[on] + start.atoms[on]
-    renewed = blocks.atoms[on] * float(
-        maintenance.atoms[0] + maintenance.rest[0]
-    )
-    before[on] = np.maximum(total - renewed, 0.0)
+    after = failed.atoms[on] * float(
+        repair.atoms[0] + repair.rest[0]
+    ) + blocks.atoms[on] * float(maintenance.atoms[0] + maintenance.rest[0])
+    before[on] = np.maximum(total - after, 0.0)
     start.rest[on] = 0.0
-    start.atoms[on] = np.minimum(renewed, total)
+    start.atoms[on] = np.minimum(after, total)
     return start, before
 
 
@@ -964,12 +1054,61 @@ def _assembled(
 
 def carries_over(model: Block) -> bool:
     """Whether a block-replaced unit's repairs or block replacements take
-    time, so that an interval need not start with a new unit (#160)."""
+    time, so that an interval need not start with a new unit."""
     zero = np.zeros(1)
     if float(np.ravel(model.repair(zero))[0]) < 1.0:
         return True
     return model.maintenance is not None and (
         float(np.ravel(model.maintenance(zero))[0]) < 1.0
+    )
+
+
+def _alive(model: Block) -> Tuple[Block, float]:
+    """``model`` with its life given that it lasts, and the share of its
+    units dead on arrival (#322): with repairs and block replacements in
+    no time, a replacement is followed at its instant by the failure of
+    a unit dead on arrival, whose replacement is too, and so on; the
+    replacements of the units that last are the lasting lives' alone."""
+    dead = float(np.ravel(model.life(np.zeros(1)))[0])
+    if dead <= 0.0:
+        return model, 0.0
+    life = model.life
+
+    def alive(x: np.ndarray) -> np.ndarray:
+        return np.maximum(life(x) - dead, 0.0) / (1.0 - dead)
+
+    return model._replace(life=alive), dead
+
+
+def _compounded(tails: np.ndarray, dead: float, kind: str) -> np.ndarray:
+    """``P(N >= s)``, ``s = 1, 2, ...``, for the replacements ``N`` when
+    each of the lasting units' replacements, counted by ``tails`` (their
+    ``P(B >= s)``), brings ``G`` more at its instant, ``P(G = g) = dead^g
+    (1 - dead)``: the units dead on arrival put in one after another
+    there. ``N`` is ``s`` or more if the ``s``-th of the units put in, in
+    ``s - 1`` Bernoulli trials with the chance ``1 - dead`` of lasting,
+    has fewer than ``B`` lasting before it (#322). Before a replacement
+    (``"arrival"``), the ones before it at its instant count too: as
+    often as it has ``d`` of its instant's before it, ``P(d) = dead^d (1 -
+    dead)``, so ``N + 1`` is ``B + 1`` replacements compounded."""
+    if dead <= 0.0:
+        return tails
+    from scipy.stats import binom
+
+    chances = -np.diff(np.concatenate(([1.0], tails, [0.0])))
+    counts = np.arange(len(chances))
+    more = 1 if kind == "arrival" else 0
+    out: List[float] = []
+    for s in range(1, MAX_COUNT + 1):
+        tail = float(
+            chances @ binom.cdf(counts - 1 + more, s - 1 + more, 1.0 - dead)
+        )
+        out.append(min(max(tail, 0.0), 1.0))
+        if tail < _TAIL:
+            return np.array(out)
+    raise NotImplementedError(
+        f"More than {MAX_COUNT} replacements are likely in the time: count "
+        "them by simulation instead."
     )
 
 
@@ -1029,7 +1168,7 @@ def _rows_step(
     for lo in range(0, size, period):
         hi = lo + period
         if hi < size:
-            failed_atoms[:, hi] += before[:, hi] * dead
+            failed_rest[:, hi] += before[:, hi] * dead
             blocks[:, hi] += before[:, hi] * (1.0 - dead)
         part_rest, part_atoms = rest[:, lo:hi], atoms[:, lo:hi]
         if not (part_rest.any() or part_atoms.any()):
@@ -1086,10 +1225,12 @@ def _rows_starts(
         return start_rest, start_atoms, before
     on = np.arange(period, size, period)
     total = start_rest[:, on] + start_atoms[:, on]
-    renewed = blocks[:, on] * float(maintenance.atoms[0] + maintenance.rest[0])
-    before[:, on] = np.maximum(total - renewed, 0.0)
+    after = failed_atoms[:, on] * float(
+        repair.atoms[0] + repair.rest[0]
+    ) + blocks[:, on] * float(maintenance.atoms[0] + maintenance.rest[0])
+    before[:, on] = np.maximum(total - after, 0.0)
     start_rest[:, on] = 0.0
-    start_atoms[:, on] = np.minimum(renewed, total)
+    start_atoms[:, on] = np.minimum(after, total)
     return start_rest, start_atoms, before
 
 
@@ -1636,7 +1777,10 @@ def count(model, end: float, kind: str) -> np.ndarray:
         if isinstance(model, Block):
             if kind == "new":
                 return _block_tails(model, end, steps)
-            return _block_lead_tails(model, end, kind, steps)
+            alive, dead = _alive(model)
+            return _compounded(
+                _block_lead_tails(alive, end, kind, steps), dead, kind
+            )
         return _count_tails(model, end, kind, steps)
 
     steps = FIRST_STEPS
@@ -1656,3 +1800,464 @@ def count(model, end: float, kind: str) -> np.ndarray:
             break
     tails = np.minimum.accumulate(np.clip(previous, 0.0, 1.0))
     return -np.diff(np.concatenate(([1.0], tails, [0.0])))
+
+
+#: What the spares counts say when a component can wait for a repair crew.
+_SPARES_CREWS = (
+    "the spares counts assume",
+    "Count them by simulation: spares_demand(method='simulate').",
+)
+#: What the stock levels say then: they have no simulation of their own to
+#: point to (#232).
+_STOCK_CREWS = (
+    "the stock levels assume",
+    "spares_stock has no simulation to fall back on; the diagram without "
+    "the limit (repair_crews=None) gives the stock when a crew is always "
+    "free.",
+)
+
+
+def _spares_nodes(rbd, nodes, given: str = "nodes") -> list:
+    """The components whose spares are counted: ``nodes`` (given in
+    ``given``) checked, or every component; refused when none is given
+    and one is a nested RBD, whose components' spares are not counted
+    here (its own ``spares_demand`` counts them)."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    if nodes is None:
+        nested = [
+            node
+            for node, component in rbd.components.items()
+            if isinstance(component, RepairableRBD)
+        ]
+        if nested:
+            raise Refused(
+                f"Node {nested[0]!r} is a nested RBD, whose components' "
+                "spares are not counted here (its own spares_demand and "
+                "spares_stock count them): give the components counted, "
+                f"nodes={[n for n in rbd.components if n not in nested]!r}."
+            )
+        return list(rbd.components)
+    chosen = list(dict.fromkeys(nodes))
+    for node in chosen:
+        _requirements._require_component(rbd, node, given)
+        if isinstance(rbd.components[node], RepairableRBD):
+            raise ValueError(
+                f"Node {node!r} is a nested RBD: its spares are its "
+                "components', which its own spares_demand counts."
+            )
+    return chosen
+
+
+def _spares_parts(rbd, parts) -> Dict[Hashable, Tuple[Hashable, ...]]:
+    """The parts whose spares are pooled (#183), ``{part: members}``,
+    checked: each a collection of components (no nested RBD), a node
+    in one part at most, a part's name no component's, and no two
+    members in one common-cause group, whose shared causes replace
+    them together."""
+    if parts is None:
+        return {}
+    if not isinstance(parts, Mapping) or not parts:
+        raise ValueError(
+            "parts must be a dict of part name: the components that use "
+            f"it, e.g. {{'seal': ['seal1', 'seal2']}}; got {parts!r}."
+        )
+    out: Dict[Hashable, Tuple[Hashable, ...]] = {}
+    owner: Dict[Hashable, Hashable] = {}
+    for part, members in parts.items():
+        if part in rbd.components:
+            raise ValueError(
+                f"Part {part!r} has the name of a component: name the "
+                "part apart, as both can be counted."
+            )
+        if isinstance(members, (str, bytes)) or not isinstance(
+            members, Iterable
+        ):
+            raise ValueError(
+                f"Part {part!r}: give the components that use it as a "
+                f"list, got {members!r}."
+            )
+        listed = list(members)
+        twice = sorted(
+            {repr(n) for n in listed if listed.count(n) > 1}, key=str
+        )
+        if twice:
+            raise ValueError(
+                f"Part {part!r} lists {', '.join(twice)} more than once: "
+                "name each component that uses it once."
+            )
+        chosen = _spares_nodes(rbd, listed, f"part {part!r}")
+        if not chosen:
+            raise ValueError(f"Part {part!r} has no components.")
+        for node in chosen:
+            if node in owner:
+                raise ValueError(
+                    f"Node {node!r} is in parts {owner[node]!r} and "
+                    f"{part!r}: its spares come from one shelf."
+                )
+            owner[node] = part
+        for group in rbd.ccf_groups:
+            shared = [m for m in group.members if m in chosen]
+            if len(shared) > 1:
+                raise NotImplementedError(
+                    f"Part {part!r}: {shared} are a common-cause group, "
+                    "whose shared causes replace them together, so "
+                    "their pooled demand is not the sum of independent "
+                    "ones: count them apart."
+                )
+        out[part] = tuple(chosen)
+    return out
+
+
+def _spares_counted(rbd, nodes, parts) -> Tuple[list, dict, list]:
+    """The components counted on their own (``nodes``, or every one
+    but a nested RBD; none when only ``parts`` are asked for), the
+    parts (see ``_spares_parts``), and every component either counts,
+    in order."""
+    pools = _spares_parts(rbd, parts)
+    chosen = [] if (nodes is None and pools) else _spares_nodes(rbd, nodes)
+    if nodes is not None:
+        for part, members in pools.items():
+            both = [node for node in chosen if node in members]
+            if both:
+                raise ValueError(
+                    f"Node {both[0]!r} is in nodes and in part {part!r}: "
+                    "its spares come from one shelf, the part's or its "
+                    "own."
+                )
+    counted = list(
+        dict.fromkeys(
+            [*chosen, *(m for members in pools.values() for m in members)]
+        )
+    )
+    return chosen, pools, counted
+
+
+def _replacements(rbd, node, long_run: bool = False):
+    """What a component's replacements follow, for counting them
+    exactly (see ``_spares``): a renewal process, a block schedule's
+    (``Block``) or a test lattice's (``Tested``); raise
+    if they are not counted exactly. ``long_run``: for the counts in a
+    lead time, which need a demand that goes on."""
+    simulate = (
+        # The stock in a lead time has no simulation of its own to
+        # point to (#232).
+        "spares_stock has no simulation to count them by; "
+        "spares_demand(method='simulate') counts the spares used over a "
+        "window from new."
+        if long_run
+        else "count its spares by simulation: "
+        "spares_demand(method='simulate')."
+    )
+    _requirements._require_reliabilities(rbd, node)
+    if node in rbd._standby:
+        raise NotImplementedError(
+            f"Component {node!r} is a standby group, whose units' "
+            f"failures depend on each other: {simulate}"
+        )
+    if node in rbd._inspection:
+        return _tested_replacements(rbd, node, simulate)
+    schedule = rbd._preventive.get(node)
+    if schedule is not None and schedule.policy == "block":
+        component = rbd.components[node]
+        duration = schedule.duration
+        return Block(
+            _cdf(component.reliability),
+            _cdf(component.time_to_replace),
+            None if duration is None else _cdf(duration),
+            float(schedule.interval),
+        )
+    if schedule is not None and schedule.policy == "condition":
+        raise NotImplementedError(
+            f"Component {node!r} is replaced on condition, at "
+            f"inspections on a calendar that do not renew it: {simulate}"
+        )
+    if schedule is not None and schedule.policy == "calendar":
+        raise NotImplementedError(
+            f"Component {node!r} is replaced on a calendar policy, at "
+            f"times that depend on when each unit was put in: {simulate}"
+        )
+    if node in rbd._early_members:
+        raise NotImplementedError(
+            f"Component {node!r} is renewed early at the stops of its "
+            f"maintenance group, which depend on the other members: "
+            f"{simulate}"
+        )
+    if node in rbd._imperfect:
+        raise NotImplementedError(
+            f"Component {node!r} is repaired imperfectly "
+            f"({_requirements._imperfect_phrase(rbd, node)}), so its "
+            "replacements are "
+            f"not a renewal process of lives as new: {simulate}"
+        )
+    component = rbd.components[node]
+    life, repair = component.reliability, component.time_to_replace
+    age = math.inf if schedule is None else float(schedule.interval)
+    maintenance = None if schedule is None else schedule.duration
+    if math.isinf(age):
+        up = _safe_mean(life)
+        fails = 1.0
+    else:
+        up = float(component.avg_replacement_time(age))
+        fails = float(np.ravel(_cdf(life)(np.array([age])))[0])
+    down = fails * _safe_mean(repair) + (1.0 - fails) * (
+        0.0 if maintenance is None else _safe_mean(maintenance)
+    )
+    mean_cycle = up + down
+    if long_run and not (0.0 < mean_cycle < math.inf):
+        raise NotImplementedError(
+            f"The life of component {node!r} may never end, or has no "
+            "mean, "
+            "so its demand has no long run: it has no stock level."
+        )
+    return Replacements(
+        _cdf(life),
+        _cdf(repair),
+        None if maintenance is None else _cdf(maintenance),
+        age,
+        mean_cycle,
+    )
+
+
+def _tested_replacements(rbd, node, simulate: str) -> "Tested":
+    """A component with hidden failures: its replacements fall on its
+    tests (see ``Tested``): exactly, tested and repaired in no
+    time by tests that find every failure, or from its cycle on a grid
+    when its tests or repairs take time or its tests can miss a failure
+    (#159); raise if they cannot be counted so."""
+    inspection = rbd._inspection[node]
+    component = rbd.components[node]
+    if inspection.partial or _requirements._tested_kind(rbd, node) == "unit":
+        # The replacements still fall on the tests that find failures,
+        # whatever the tests and repairs take; with tests that can miss
+        # a failure, a cycle depends on the place in the full tests'
+        # period of the test that starts it (#159).
+        instead = simulate[0].upper() + simulate[1:]
+        check_tested(
+            component.reliability,
+            component.time_to_replace,
+            inspection.duration,
+            inspection.interval,
+            node,
+            instead,
+        )
+        unit = _requirements._tested_unit(rbd, node, any_kind=True)
+        assert unit is not None
+        first = float(inspection.offset or inspection.interval)
+        # The full tests are at the offset and every full test's
+        # interval from it: the first test is one, or the first after
+        # 0, an interval on, is the one after it.
+        position = 0 if inspection.offset else 1 % unit.per
+        found_at, cycle = unit.renewals(first, position, instead)
+        return Tested(
+            first, float(inspection.interval), found_at, cycle, position
+        )
+    life = _requirements._tested_life(rbd, node) or TestedLife(
+        component.reliability, inspection.interval
+    )
+    cycle = np.where(
+        life.down[:-1] <= 0.5,
+        np.diff(life.down),
+        life.up[:-1] - life.up[1:],
+    )
+    model = component.reliability
+    first = float(inspection.offset or inspection.interval)
+    interval = float(inspection.interval)
+
+    def found(tests: int) -> np.ndarray:
+        # The unit new at 0 fails before the first test, or between two.
+        times = first + interval * np.arange(tests)
+        failed = np.clip(_cdf(model)(times), 0.0, 1.0)
+        survive = np.clip(_sf_values(model.sf, times), 0.0, 1.0)
+        before = np.concatenate([[0.0], failed[:-1]])
+        alive = np.concatenate([[1.0], survive[:-1]])
+        return np.maximum(
+            np.where(before <= 0.5, failed - before, alive - survive),
+            0.0,
+        )
+
+    return Tested(first, interval, found, np.maximum(cycle, 0.0))
+
+
+def spares_demand(
+    rbd,
+    horizon: float,
+    *,
+    nodes: Optional[Collection[Hashable]],
+    fleet: int,
+    method: str,
+    mc_samples: Optional[int],
+    seed,
+    parts: Optional[Mapping[Hashable, Collection[Hashable]]],
+) -> Dict[Hashable, SparesDemand]:
+    """See ``RepairableRBD.spares_demand``."""
+    end = _horizon(horizon)
+    fleet = _whole("fleet", fleet)
+    one_of("method", method, ("exact", "simulate"))
+    chosen, pools, counted = _spares_counted(rbd, nodes, parts)
+    if method == "simulate":
+        runs = _simulated_replacements(
+            rbd,
+            end,
+            counted,
+            10_000 if mc_samples is None else mc_samples,
+            seed,
+        )
+        counts = {node: _fractions(runs[node]) for node in chosen}
+        pooled = {
+            part: _fractions(np.sum([runs[m] for m in members], axis=0))
+            for part, members in pools.items()
+        }
+    else:
+        _crews._require_unlimited_crews(rbd, *_SPARES_CREWS)
+        models = {node: _replacements(rbd, node) for node in counted}
+        each = {
+            node: count(model, end, "new") for node, model in models.items()
+        }
+        counts = {node: each[node] for node in chosen}
+        pooled = {
+            part: _summed(each[m] for m in members)
+            for part, members in pools.items()
+        }
+    out = {
+        node: SparesDemand(_fleet(number, fleet), end, fleet, method)
+        for node, number in counts.items()
+    }
+    for part, number in pooled.items():
+        out[part] = SparesDemand(
+            _fleet(number, fleet), end, fleet, method, pools[part]
+        )
+    return out
+
+
+def _simulated_replacements(
+    rbd, horizon: float, nodes: list, mc_samples: int, seed
+) -> Dict[Any, np.ndarray]:
+    """How many times each of ``nodes`` was replaced in each of
+    ``mc_samples`` simulations of ``[0, horizon)``."""
+    from . import _event_loop
+
+    montecarlo.check_count(mc_samples, False, "mc_samples")
+    if horizon == 0.0:
+        # Nothing is replaced in no time (as the exact count says).
+        return {node: np.zeros(mc_samples, dtype=np.int64) for node in nodes}
+    tally = _event_loop._run(
+        rbd,
+        horizon,
+        set(),
+        set(),
+        "p",
+        mc_samples,
+        False,
+        seed,
+        replacements=True,
+    )
+    counts = np.array(tally.replacements, dtype=np.int64)
+    column = {node: c for c, node in enumerate(rbd.components)}
+    return {node: counts[:, column[node]] for node in nodes}
+
+
+def spares_stock(
+    rbd,
+    lead_time: float,
+    *,
+    fill_rate: Optional[float],
+    stockout_probability: Optional[float],
+    nodes: Optional[Collection[Hashable]],
+    fleet: int,
+    parts: Optional[Mapping[Hashable, Collection[Hashable]]],
+) -> Dict[Hashable, SparesStock]:
+    """See ``RepairableRBD.spares_stock``."""
+    tau = _horizon(lead_time)
+    fleet = _whole("fleet", fleet)
+    if fill_rate is None and stockout_probability is None:
+        raise ValueError("Give a fill_rate, a stockout_probability, or both.")
+    for name, target in (
+        ("fill_rate", fill_rate),
+        ("stockout_probability", stockout_probability),
+    ):
+        if target is not None and not 0.0 < target < 1.0:
+            raise ValueError(f"{name} must be in (0, 1), got {target!r}.")
+    chosen, pools, counted = _spares_counted(rbd, nodes, parts)
+    _crews._require_unlimited_crews(rbd, *_STOCK_CREWS)
+    models = {node: _replacements(rbd, node, True) for node in counted}
+    for part, members in pools.items():
+        blocks = [m for m in members if isinstance(models[m], Block)]
+        if len(blocks) > 1:
+            raise NotImplementedError(
+                f"Part {part!r}: {blocks} are replaced on block "
+                "schedules, which keep step with each other, so their "
+                "demands in a lead time are not independent: count "
+                "them apart."
+            )
+    random = {
+        node: count(model, tau, "random") for node, model in models.items()
+    }
+    arrival = {
+        node: count(model, tau, "arrival") for node, model in models.items()
+    }
+
+    def stocked(members: Tuple[Hashable, ...]) -> SparesStock:
+        if len(members) == 1:
+            node = members[0]
+            on_order = _fleet(random[node], fleet)
+            at_demand = (
+                arrival[node]
+                if fleet == 1
+                else _fleet(
+                    np.convolve(
+                        arrival[node], _fleet(random[node], fleet - 1)
+                    ),
+                    1,
+                )
+            )
+        else:
+            # A demand finds its own component's replacements as they
+            # come (``arrival``), and the others' as at a random time,
+            # each component's share of the demands its share of the
+            # long-run rates.
+            one = _summed(random[m] for m in members)
+            others = _fleet(one, fleet - 1)
+            rates = np.array([rate(models[m]) for m in members])
+            on_order = _fleet(one, fleet)
+            at_demand = np.zeros(1)
+            for i, member in enumerate(members):
+                seen = _summed(
+                    [arrival[member], others]
+                    + [random[m] for j, m in enumerate(members) if j != i]
+                )
+                size = max(len(at_demand), len(seen))
+                at_demand = np.pad(at_demand, (0, size - len(at_demand)))
+                at_demand += (
+                    rates[i]
+                    / rates.sum()
+                    * np.pad(seen, (0, size - len(seen)))
+                )
+            at_demand = at_demand / at_demand.sum()
+        result = SparesStock(0, 0.0, 1.0, tau, fleet, on_order, at_demand)
+        stock = 0
+        while not (
+            (
+                fill_rate is None
+                or result.fill_rate_for(stock) >= fill_rate - 1e-12
+            )
+            and (
+                stockout_probability is None
+                or result.stockout_probability_for(stock)
+                <= stockout_probability + 1e-12
+            )
+        ):
+            stock += 1
+        return dataclasses.replace(
+            result,
+            stock=stock,
+            fill_rate=result.fill_rate_for(stock),
+            stockout_probability=result.stockout_probability_for(stock),
+        )
+
+    out: Dict[Hashable, SparesStock] = {
+        node: stocked((node,)) for node in chosen
+    }
+    for part, members in pools.items():
+        out[part] = dataclasses.replace(stocked(members), members=members)
+    return out

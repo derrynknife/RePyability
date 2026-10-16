@@ -86,7 +86,7 @@ def unsupported(
     components; with numba, numba's own loop also simulates age and
     block replacement, inspections of hidden failures, repair crews,
     standby groups, nested RBDs and the
-    capacity of a system of up to MAX_TRACED components (#155), from new
+    capacity of a system of up to MAX_TRACED components, from new
     for maintenance, inspections and nested RBDs (a run from the
     components' states shifts their calendars)."""
     if capacity is not None:
@@ -126,12 +126,14 @@ def _unsupported_level(
     from repyability.non_repairable import NonRepairable
     from repyability.rbd.repairable_rbd import RepairableRBD
 
+    from . import _crews
+
     if rbd._too_meshed() is not None:
         # Its structure is the graph itself (modular.GraphStructure).
         return "a structure too meshed to work out"
     if rbd.ccf_groups:
         return "common-cause groups"
-    if rbd._crews_limited() and not numba:
+    if _crews._crews_limited(rbd) and not numba:
         return "repair crews"
     if rbd._standby and not numba:
         return "standby groups"
@@ -177,12 +179,15 @@ def _unsupported_maintenance(
     rbd, plan: _streams.Plan, prefix: tuple = ()
 ) -> Optional[str]:
     """What in a run's preventive maintenance numba's loop cannot simulate:
-    replacement on condition, and a maintenance time whose draws cannot be
+    replacement on condition or on a calendar policy, and a maintenance
+    time whose draws cannot be
     streamed. (A component whose own draws cannot be is refused for that,
     and every drawn cost is streamed.)"""
     for node, schedule in rbd._preventive.items():
         if schedule.policy == "condition":
             return "replacement on condition"
+        if schedule.policy == "calendar":
+            return "replacement on a calendar policy"
         path = prefix + (node,)
         if (
             schedule.duration is not None
@@ -326,24 +331,15 @@ def _continued(total, values: np.ndarray):
     return float(np.cumsum(np.concatenate(([total], values)))[-1])
 
 
-def _continued_rows(totals: list, values: np.ndarray) -> list:
-    """``_continued`` for each column of ``values`` (one row per
-    simulation) and its total in ``totals``."""
-    from repyability.rbd._exact import ExactSum, add_columns
-
-    if totals and isinstance(totals[0], ExactSum):
-        add_columns(totals, values)
-        return totals
-    stacked = np.vstack((np.asarray(totals, dtype=float)[None, :], values))
-    return np.cumsum(stacked, axis=0)[-1].tolist()
-
-
 class _System:
     """A run's system as arrays for the compiled loop: the components'
     streams and initial states, the charges, and the structure function."""
 
     def __init__(self, rbd, plan, working, broken, method: str):
-        from repyability.rbd.repairable_rbd import _CATEGORIES, RepairableRBD
+        from repyability.rbd._tally import _CATEGORIES
+        from repyability.rbd.repairable_rbd import RepairableRBD
+
+        from . import _crews
 
         nodes = list(rbd.components)
         index = {node: c for c, node in enumerate(nodes)}
@@ -552,7 +548,7 @@ class _System:
         #: the lowest rank first).
         level_crews = np.array(
             [
-                here.repair_crews if here._crews_limited() else -1
+                here.repair_crews if _crews._crews_limited(here) else -1
                 for here in level_rbds
             ],
             np.int64,
@@ -973,7 +969,7 @@ class Runner:
     def _outputs(self, size: int) -> tuple:
         """The output arrays of a batch of ``size`` simulations (each
         simulation's row is written whole by the loop)."""
-        from repyability.rbd.repairable_rbd import _CATEGORIES
+        from repyability.rbd._tally import _CATEGORIES
 
         model = self._model
         out = self._out
@@ -1212,7 +1208,7 @@ class Runner:
         as ``_Tally.add`` adds each simulation's: its exact totals the
         same in any order."""
         from repyability.rbd._exact import ExactSum
-        from repyability.rbd.repairable_rbd import _add_at
+        from repyability.rbd._time_order import _add_at
 
         kept = np.arange(times.shape[1]) < counts[:, None]
         visited = np.unique(np.concatenate([starts, masks[kept]]))

@@ -365,7 +365,7 @@ discrete-event simulation:
 result = rep.availability(t_simulation=20000, mc_samples=2000, seed=0)
 result.availability[-1]   # -> 0.999    availability at 20 000 h
 result.criticalities.failure_criticality_index.per_system_failure["ctrl"]
-# -> 0.922   the controller caused 92% of the outages
+# -> 0.916   the controller caused 92% of the outages
 ```
 
 The controller again: a second one (step 6) is the obvious investment. See
@@ -396,4 +396,7 @@ transient input you supply at evaluation time.
 - **[Concepts](concepts.md)**: the theory behind these numbers: path and cut
   sets, the importance-measure family and when to use each, conditioning,
   availability and cost, and the dependent-failure models from step 9.
-- **[API reference](api.md)**: the generated signatures and docstrings.
+- **[API reference](api/index.md)**: the generated signatures and docstrings.
+
+The same kind of diagram can be built and analysed in the browser in
+[Reliafy](https://reliafy.com/guides/build-an-rbd).

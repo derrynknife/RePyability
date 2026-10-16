@@ -58,10 +58,11 @@ from repyability import (
 )
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
+    _event_loop,
+    _events,
     _sampling,
     _streams,
     non_repairable_rbd,
-    repairable_rbd,
     standby_node,
 )
 from repyability.rbd.helper_classes import (
@@ -76,6 +77,7 @@ from repyability.rbd.regression_node import RegressionNode
 from repyability.rbd.repeated_node import RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.results import CostResult
+from repyability.tests import timeline_reference
 from repyability.utils.wrappers import numpy_seed
 
 W = surv.Weibull.from_params
@@ -97,7 +99,7 @@ def no_fast_path(monkeypatch):
     monkeypatch.setattr(non_repairable_rbd, "row_sampler", lambda model: None)
     monkeypatch.setattr(standby_node, "inverse_sampler", lambda model: None)
     # A repairable diagram's streams sample through stream_sampler (#227).
-    monkeypatch.setattr(repairable_rbd, "stream_sampler", lambda model: None)
+    monkeypatch.setattr(_event_loop, "stream_sampler", lambda model: None)
 
 
 def assert_same(a, b, path="result"):
@@ -928,9 +930,11 @@ def test_subclassed_components_keep_their_own_event_methods():
                 "sub": component,
             },
         )
-        plan, complete = rbd._stream_plan(200.0, 1, False)
+        plan, complete = _event_loop._stream_plan(rbd, 200.0, 1, False)
         assert not complete
-        sources = rbd._streamed_components(_streams.Run(plan, reseed=True))
+        sources = _event_loop._streamed_components(
+            rbd, _streams.Run(plan, reseed=True)
+        )
         assert sources["sub"] is rbd.components["sub"]
         calls.clear()
         rbd.availability(200.0, mc_samples=5, seed=30)
@@ -965,11 +969,11 @@ def test_nested_rbds_step_by_hand_as_before_after_a_simulation():
 def test_event_queue_pops_in_priority_queue_order():
     # Equal times are where two heaps could disagree; use many.
     rng = np.random.default_rng(27)
-    ours = repairable_rbd._EventQueue()
+    ours = _events._EventQueue()
     theirs: queue.PriorityQueue = queue.PriorityQueue()
     for step in range(2000):
         if rng.random() < 0.6 or theirs.empty():
-            event = repairable_rbd.Event(
+            event = _events.Event(
                 float(rng.integers(0, 20)), step, bool(rng.random() < 0.5)
             )
             ours.put(event)
@@ -1193,16 +1197,16 @@ def overlaps_one_at_a_time(starts, events, system_timeline, t_end):
     for c, start in enumerate(starts):
         own = [(t, e) for t, node, e in events if node == c]
         timeline = [(0.0, start)] + own + [(t_end, 0)]
-        joint_t, joint = repairable_rbd.combined_timeline(
+        joint_t, joint = timeline_reference.combined_timeline(
             timeline, system_timeline
         )
         out.append(
             (
-                repairable_rbd.time_at_status(timeline, 1),
-                repairable_rbd.intersection(joint_t, joint),
-                repairable_rbd.intersection(joint_t, 2 - joint),
-                repairable_rbd.union(joint_t, joint),
-                repairable_rbd.union(joint_t, 2 - joint),
+                timeline_reference.time_at_status(timeline, 1),
+                timeline_reference.intersection(joint_t, joint),
+                timeline_reference.intersection(joint_t, 2 - joint),
+                timeline_reference.union(joint_t, joint),
+                timeline_reference.union(joint_t, 2 - joint),
             )
         )
     return out

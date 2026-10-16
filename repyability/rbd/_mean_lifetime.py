@@ -28,6 +28,7 @@ import numpy as np
 
 from repyability.utils.wrappers import outside_level
 
+from ._model_utils import MODEL_ERRORS
 from ._point_availability import knots as quantile_knots
 
 #: The Gauss-Kronrod (7, 15) rule on [-1, 1] (QUADPACK's): its 15 points,
@@ -307,9 +308,10 @@ def _collect(
         inner = [model.model, getattr(model, "_sf_model", None)]
     elif isinstance(model, RegressionNode):
         try:
-            kinks.append(_thinned(model._survival_grid()[0]))
-        except Exception:  # a model whose grid cannot be built
+            hints.append(model._knots())
+        except MODEL_ERRORS:  # a model whose quantiles cannot be taken
             pass
+        kinks.append(model._kinks())
         return
     else:
         quantiles = quantile_knots(model)

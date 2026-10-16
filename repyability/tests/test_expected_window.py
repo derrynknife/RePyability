@@ -17,7 +17,7 @@ import surpyval as surv
 from scipy.integrate import quad
 
 from repyability import ExpectedCost, ExpectedEvents, RepairableRBD
-from repyability.rbd import routes
+from repyability.rbd import _long_run, _spares, routes
 
 E = surv.Exponential.from_params
 W = surv.Weibull.from_params
@@ -207,7 +207,9 @@ def test_a_replacement_due_at_the_window_s_end_falls_after_it():
     jump = np.diff(events.node_preventive["c"])[0]
     survive = float(np.ravel(life.sf(500.0))[0])
     assert jump == pytest.approx(survive**2, rel=1e-6)
-    simulated = rbd._simulated_replacements(1000.0, ["c"], 2000, 3)["c"]
+    simulated = _spares._simulated_replacements(rbd, 1000.0, ["c"], 2000, 3)[
+        "c"
+    ]
     exact = events.node_failures["c"][0] + events.node_preventive["c"][0]
     assert simulated.mean() == pytest.approx(exact, abs=0.04)
     assert rbd.spares_demand(1000.0)["c"].mean == pytest.approx(
@@ -294,13 +296,42 @@ def systems():
     }
 
 
+def test_a_test_a_rounding_short_of_the_period_s_end_is_counted_once():
+    # A staggered pair's tests of 2 hours every 731.3: the period the
+    # counts are extended by ends at 248.642 + 5 * 731.3 + 731.3, and the
+    # test there, worked out as 248.642 + 6 * 731.3, falls a rounding
+    # short of it, in the period, and was counted again in the extension
+    # (a quarter more planned outages). The planned outages are the
+    # system's falls at the tests' instants, no failure falling there.
+    interval, offset = 731.3, 0.34 * 731.3
+
+    def tested(**more):
+        return {
+            "reliability": E([3e-4]),
+            "repairability": X([8.0]),
+            "inspection": {"interval": interval, "duration": X([2.0]), **more},
+        }
+
+    rbd = RepairableRBD(PARALLEL, {"a": tested(), "b": tested(offset=offset)})
+    T = 20.5 * interval
+    tests = np.concatenate(
+        [interval * np.arange(1.0, 21.0), offset + interval * np.arange(21.0)]
+    )
+    tests = np.sort(tests[tests < T])
+    before = rbd.point_availability(np.nextafter(tests, -np.inf))
+    falls = np.sum(before - rbd.point_availability(tests))
+    events = rbd.expected_events(T)
+    assert events.system_planned_outages == pytest.approx(falls, rel=1e-6)
+    assert events.system_planned_outages < 3.4
+
+
 @pytest.mark.parametrize("name", ["block replacement", "tested", "nested"])
 def test_the_counts_settle_at_the_long_run_rates(name):
     rbd = systems()[name]
     t = np.array([1e6, 2e6])
     cost = rbd.expected_cost(t)
     events = rbd.expected_events(t)
-    failures, planned = rbd._outage_frequencies()
+    failures, planned = _long_run._outage_frequencies(rbd)
 
     def slope(values):
         return np.diff(values)[0] / 1e6
@@ -375,12 +406,22 @@ def test_a_nested_rbd_counts_as_the_flat_one_does():
     np.testing.assert_allclose(
         left.system_downtime, right.system_downtime, rtol=1e-7
     )
-    # The nested RBD's failures are its own system's; its replacements are
-    # not this RBD's to count.
+    # The nested RBD's failures are its own system's, and its preventive
+    # actions its own system's planned outages, as the simulation counts
+    # them for the node (its components' replacements are its own
+    # expected_events' to count).
+    own = inner.expected_events(t)
     np.testing.assert_allclose(
-        left.node_failures["n"], inner.expected_failures(t), rtol=1e-12
+        left.node_failures["n"], own.system_failures, rtol=1e-6
     )
-    assert not np.any(left.node_preventive["n"])
+    np.testing.assert_allclose(
+        left.node_corrective["n"], own.system_failures, rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        left.node_preventive["n"], own.system_planned_outages, rtol=1e-6
+    )
+    assert np.all(left.node_preventive["n"] > 0.0)
+    assert not np.any(left.node_inspections["n"])
 
 
 def test_forced_nodes_do_nothing():
@@ -436,7 +477,7 @@ def test_the_cost_result_adds_up():
     assert dict(cost)["mean"] is cost.mean
 
 
-def test_nothing_priced_costs_nothing_without_any_checks():
+def test_an_acquisition_cost_alone_costs_nothing_without_any_checks():
     rbd = RepairableRBD(
         PARALLEL,
         {
@@ -451,6 +492,15 @@ def test_nothing_priced_costs_nothing_without_any_checks():
     assert cost.acquisition_cost == 100.0
     np.testing.assert_array_equal(cost.total, [100.0, 100.0])
     assert rbd.analysis_routes()["expected_cost"].route == routes.EXACT
+    # With nothing priced at all, there is no cost model: it refuses.
+    unpriced = RepairableRBD(
+        PARALLEL, {n: unit(0.01, 0.5) for n in "ab"}, repair_crews=1
+    )
+    with pytest.raises(ValueError, match="Nothing is priced"):
+        unpriced.expected_cost([10.0, 20.0])
+    assert unpriced.analysis_routes()["expected_cost"].route == (
+        routes.REFUSED
+    )
     # The counts themselves come from the crews' chain (#146; see
     # test_chains_over_time.py).
     route = rbd.analysis_routes()["expected_events"]
@@ -479,7 +529,7 @@ def test_the_routes_report_the_counts():
     for name in ("expected_failures", "expected_events"):
         assert report[name].route == routes.NUMERICAL
         assert "Birnbaum/Vesely" in report[name].reason
-    assert report["expected_cost"].route == routes.EXACT
+    assert report["expected_cost"].route == routes.REFUSED  # unpriced
     priced = RepairableRBD(
         PARALLEL,
         {n: unit(0.01, 0.5, repair_cost=1.0) for n in "ab"},
@@ -518,3 +568,58 @@ def test_the_routes_report_the_counts():
     with pytest.raises(NotImplementedError) as error:
         slow.expected_failures(100.0)
     assert str(error.value) == route.reason
+
+
+def test_a_nested_node_counts_as_the_simulation_counts_it():
+    # A nested RBD maintained inside: the outer expected_events counts
+    # the node's failures and preventive actions as the simulation's
+    # node counts do (its system's failures and planned outages), where
+    # its preventive count was 0.
+    sub = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {
+            "a": {
+                "reliability": W([10.0, 2.0]),
+                "repairability": L([1.5, 0.5]),
+                "preventive": {
+                    "interval": 8.0,
+                    "duration": E([2.0]),
+                    "cost": 10.0,
+                },
+                "repair_cost": 100.0,
+            }
+        },
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # its costs are not counted
+        top = RepairableRBD(
+            [("s", "sub"), ("sub", "C"), ("C", "t")],
+            {
+                "sub": sub,
+                "C": {
+                    "reliability": W([50.0, 2.0]),
+                    "repairability": L([1.5, 0.5]),
+                },
+            },
+        )
+    T = 40.0
+    events = top.expected_events(T)
+    assert (
+        events.node_preventive["C"] == 0.0
+        and events.node_preventive["sub"] > 1.0
+    )
+    timelines = top.simulate_timelines(T, mc_samples=3000, seed=3)
+    for name, counts in (
+        ("node_failures", timelines.components["sub"].failures),
+        ("node_preventive", timelines.components["sub"].planned_outages),
+    ):
+        exact = getattr(events, name)["sub"]
+        error = np.std(counts) / np.sqrt(len(counts))
+        assert abs(exact - np.mean(counts)) < 4 * error, (name, exact)
+    own = sub.expected_events(T)
+    assert events.node_preventive["sub"] == pytest.approx(
+        own.system_planned_outages, rel=1e-6
+    )
+    assert events.node_corrective["sub"] == pytest.approx(
+        own.system_failures, rel=1e-6
+    )

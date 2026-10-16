@@ -514,15 +514,6 @@ def module_totals(
     return uptime, n * float(end) - uptime
 
 
-def curve_se(curve: np.ndarray, square: np.ndarray, n: int) -> np.ndarray:
-    """The pointwise standard error of a conditional curve: of the mean
-    of the simulations' values, from their mean square."""
-    if n < 2:
-        return np.zeros_like(curve)
-    variance = np.maximum(square - curve * curve, 0.0) * n / (n - 1)
-    return np.sqrt(variance / n)
-
-
 def steps(curve_points: Optional[int], end: float) -> np.ndarray:
     """The curve's times: ``curve_points`` steps (by default ``CURVE``)."""
     points = CURVE if curve_points is None else int(curve_points)
@@ -553,7 +544,7 @@ def partial_bytes(
     nodes: List[Any],
     priced: bool,
 ) -> bytes:
-    """A module shard's partial (#189): the modules' histories in its
+    """A module shard's partial: the modules' histories in its
     simulations ``start`` to ``stop - 1``, each simulation's own cost (if
     ``priced``), and the costs by category and by module (in the order of
     ``nodes``), as the bytes of a NumPy ``.npz`` file, read without

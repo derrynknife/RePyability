@@ -14,7 +14,8 @@ import surpyval as surv
 from repyability import NonRepairableRBD, RepairableRBD, SimulationChunk
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd._exact import ExactSum, expansion
-from repyability.rbd.repairable_rbd import _group_totals, _Tally
+from repyability.rbd._tally import _Tally
+from repyability.rbd._time_order import _group_totals
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
 

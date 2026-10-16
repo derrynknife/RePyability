@@ -82,6 +82,8 @@ def _identical_exponential_stage_rates(models, load, k, baselines, phi_table):
             lam = rate
         elif not np.isclose(rate, lam):
             return None
+    if lam is None:
+        return None
     # phi must be identical across units at every stage for the closed form.
     rates = []
     for s in range(n, k - 1, -1):
@@ -242,7 +244,7 @@ class LoadSharingModel:
         # The hypoexponential closed form needs distinct stage rates. If a
         # load effect collides two of them, surpyval rejects the rates; fall
         # back to the simulation path rather than fail.
-        self._sf_model: object = None
+        self._sf_model: Any = None
         if rates is not None and _all_distinct(rates):
             try:
                 self._sf_model = Hypoexponential.from_params(rates)
@@ -320,8 +322,9 @@ class LoadSharingModel:
         """``random(1)`` as a :class:`~._sampling.RowSampler` (one threshold
         draw per unit, in unit order), so an RBD with this node batches its
         draws; ``None`` unless every baseline's draws can be replayed."""
-        baselines = [inverse_sampler(base) for base in self._baselines]
-        if any(base is None for base in baselines):
+        found = [inverse_sampler(base) for base in self._baselines]
+        baselines = [base for base in found if base is not None]
+        if len(baselines) < len(found):
             return None
 
         def draw(u):
@@ -390,18 +393,17 @@ class LoadSharingModel:
         integral of the survival function). A group of different units has
         neither (see ``is_simulated``), and refuses, unless asked for an
         estimate: the mean of ``mc_samples`` new draws of ``random``.
-        ``method="simulate"`` estimates it so whatever the group (#233).
+        ``method="simulate"`` estimates it so whatever the group.
 
         Parameters
         ----------
         mc_samples : int, optional
             The number of draws to estimate the mean from, 10_000 by
             default: with ``method="simulate"``, or for a group with no
-            exact mean. An exact mean draws nothing, and ignores it with a
-            ``FutureWarning`` (0.14 will refuse it).
+            exact mean. An exact mean draws nothing, and refuses it.
         seed : int or None, optional
             Seed for those draws (see ``random``), by default None.
-            Ignored as ``mc_samples`` is.
+            Refused as ``mc_samples`` is.
         method : {None, "exact", "simulate"}, optional
             As for ``StandbyModel.mean``.
 
@@ -416,9 +418,8 @@ class LoadSharingModel:
             If the group has no exact mean and neither ``mc_samples`` nor
             ``seed`` is given (or ``method="exact"``).
         ValueError
-            If ``method`` is not one of these.
-        TypeError
-            If ``method="exact"`` is given with ``mc_samples`` or ``seed``.
+            If ``method`` is not one of these, or ``mc_samples`` or ``seed``
+            is given to an exact mean.
         """
 
         def exact() -> float:

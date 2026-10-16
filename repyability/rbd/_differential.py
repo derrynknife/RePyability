@@ -108,3 +108,20 @@ def shares(
     if scalar:
         return {key: float(np.ravel(value)[0]) for key, value in out.items()}
     return out
+
+
+def proportional_scales(levers, keys) -> Dict[Hashable, float]:
+    """What a proportional change moves each of ``keys`` (``(key, name)``
+    of ``levers``) by, per unit of the change (see
+    ``_sensitivity._proportional_scale``): raise for a lever that has no
+    such change, a regression node's covariate."""
+    scales = {(lever.key, lever.name): lever.scale for lever in levers}
+    unitless = [key for key in keys if scales[key] is None]
+    if unitless:
+        raise ValueError(
+            f"Lever(s) {unitless} are covariates, whose zero is their "
+            "unit's (0 degrees C is not 0 K), so a proportional change of "
+            "them depends on the unit they are given in: take "
+            "change='uniform', or the parameters of a diagram without them."
+        )
+    return {key: float(scales[key]) for key in keys}

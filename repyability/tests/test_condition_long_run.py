@@ -13,6 +13,7 @@ import surpyval as surv
 
 from repyability import RepairableRBD
 from repyability.rbd import _condition_replacement as condition
+from repyability.rbd import _curves, _long_run
 from repyability.rbd import routes as r
 
 W, E, LN = (
@@ -83,16 +84,26 @@ def test_a_threshold_of_0_replaces_at_every_inspection(duration):
 
 
 def test_a_threshold_no_inspection_reaches_runs_to_failure():
-    never = RepairableRBD(PAIR, {"a": unit(threshold=1.0), "b": unit()})
+    # Priced, as the cost analyses refuse a diagram with nothing priced.
+    never = RepairableRBD(
+        PAIR, {"a": unit(threshold=1.0, repair_cost=100.0), "b": unit()}
+    )
     plain = RepairableRBD(
         PAIR,
-        {"a": {"reliability": LIFE, "repairability": REPAIR}, "b": unit()},
+        {
+            "a": {
+                "reliability": LIFE,
+                "repairability": REPAIR,
+                "repair_cost": 100.0,
+            },
+            "b": unit(),
+        },
     )
     for name in LONG_RUN:
         assert getattr(never, name)() == pytest.approx(
             getattr(plain, name)(), rel=1e-6
         )
-    cycle = never._block_cycle("a")
+    cycle = _long_run._block_cycle(never, "a")
     assert cycle.replaced == 0.0
 
 
@@ -144,7 +155,7 @@ def test_the_simulation_agrees():
     assert cost.mean() == pytest.approx(rbd.expected_cost_rate(), rel=0.015)
     # Each inspection the unit is up at is charged.
     inspections = result.cost.by_category["inspection"]
-    cycle = rbd._block_cycle("a")
+    cycle = _long_run._block_cycle(rbd, "a")
     assert inspections / result.time_simulated_to == pytest.approx(
         2.0 * cycle.before / 30.0, rel=0.015
     )
@@ -160,6 +171,6 @@ def test_the_routes():
     # Over time too (#161): followed from one inspection to the next.
     over = report["point_availability"]
     assert over.route == r.NUMERICAL
-    route, reason = rbd._node_over_time("a", "availability")
+    route, reason = _curves._node_over_time(rbd, "a", "availability")
     assert route == r.NUMERICAL and "replacement on condition" in reason
     assert 0.0 < float(np.ravel(rbd.point_availability(10.0))[0]) < 1.0

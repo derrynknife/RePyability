@@ -9,6 +9,7 @@ import pytest
 import surpyval as surv
 
 from repyability import RepairableRBD
+from repyability.rbd import _long_run
 from repyability.rbd import routes as r
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
@@ -353,7 +354,7 @@ def test_the_exact_cost_rate_charges_a_set_up_per_stop():
     # stop, charged one set-up.
     priced = pair(setup=500.0)
     plain = pair(group=None)
-    frequencies = [priced._node_frequencies(node) for node in "ab"]
+    frequencies = [_long_run._node_frequencies(priced, node) for node in "ab"]
     actions = sum(
         failure + maintained for failure, maintained, _ in frequencies
     )
@@ -375,7 +376,8 @@ def test_the_exact_cost_rate_charges_a_set_up_per_stop():
             maintenance_groups={"train": {"setup_cost": setup}},
         )
         assert rbd.has_costs == bool(setup)
-    assert rbd.expected_cost_rate() == 0.0
+    with pytest.raises(ValueError, match="Nothing is priced"):
+        rbd.expected_cost_rate()
 
 
 def test_replacements_on_a_clock_share_a_set_up():
@@ -468,7 +470,7 @@ def test_groups_are_checked(components, groups, message):
         ({"interval": 60.0, "opportunity": "soon"}, "from 0 to the interval"),
         (
             {"interval": 60.0, "policy": "block", "opportunity": 30.0},
-            "only to the 'age' policy",
+            "only to the 'age' and 'calendar' policies",
         ),
     ],
 )

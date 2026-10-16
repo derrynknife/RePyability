@@ -37,7 +37,7 @@ _STRUCTURE_METHODS = {"p": "p", "paths": "p", "c": "c", "cuts": "c"}
 def structure_method(method) -> str:
     """``"p"`` or ``"c"``, from a structure ``method``: ``"p"`` or
     ``"paths"`` for the minimal path sets, ``"c"`` or ``"cuts"`` for the
-    minimal cut sets (#179); else a ``ValueError``."""
+    minimal cut sets; else a ``ValueError``."""
     try:
         return _STRUCTURE_METHODS[method]
     except (KeyError, TypeError):
@@ -50,23 +50,60 @@ def structure_method(method) -> str:
 def simulation_options(method: str, given: dict) -> None:
     """Refuse the simulation options in ``given`` (those passed: not None
     or False) to ``method``, whose answer is exact unless
-    ``method="simulate"``: they would do nothing."""
+    ``method="simulate"``: they would do nothing. A ``ValueError``, as
+    for any argument whose value does not fit the call, from every class
+    that simulates on request."""
     passed = [
         name
         for name, value in given.items()
         if value is not None and value is not False
     ]
     if passed:
-        raise TypeError(
+        raise ValueError(
             f"{method} takes {', '.join(passed)} only with "
             "method='simulate': its answer is otherwise exact."
         )
 
 
+def simulation_window(t_simulation) -> float:
+    """A simulation's window, ``t_simulation``, as a float: a positive and
+    finite time."""
+    if (
+        isinstance(t_simulation, bool)
+        or not isinstance(t_simulation, (int, float, np.integer, np.floating))
+        or not (math.isfinite(t_simulation) and t_simulation > 0.0)
+    ):
+        raise ValueError(
+            f"t_simulation must be a positive, finite time, got "
+            f"{t_simulation!r}."
+        )
+    return float(t_simulation)
+
+
+def nonnegative_times(x) -> np.ndarray:
+    """``x`` as a 1-d float array of times, all finite and non-negative:
+    numbers, not text that reads as them (#233)."""
+    times = np.atleast_1d(real_array(x, "The times"))
+    if not np.all(np.isfinite(times)) or np.any(times < 0.0):
+        raise ValueError(f"Times must be finite and non-negative, got {x!r}.")
+    return times
+
+
+def one_of(name: str, value, choices: tuple) -> None:
+    """Refuse ``value`` for the option ``name`` unless it is one of
+    ``choices``: "name must be 'a' or 'b', got 'c'."."""
+    if value not in choices:
+        named = [repr(c) for c in choices]
+        listed = " or ".join(
+            [", ".join(named[:-1]), named[-1]] if len(named) > 1 else named
+        )
+        raise ValueError(f"{name} must be {listed}, got {value!r}.")
+
+
 def is_number(value) -> bool:
     """Whether ``value`` is a real number: an int or a float (numpy's
     too, or any ``numbers.Real``), but not a bool, nor text that reads as
-    a number (#233)."""
+    a number."""
     if isinstance(value, (bool, np.bool_)):
         return False
     if isinstance(value, Real):
@@ -82,7 +119,7 @@ def number_or_nan(value) -> float:
     """``value`` as a float if it is a real number (see ``is_number``),
     else NaN: for a check that then refuses it in its own words. Text such
     as ``"8760"``, which ``float`` would read, and booleans, which it would
-    read as 1 and 0, are not numbers here (#233)."""
+    read as 1 and 0, are not numbers here."""
     return float(value) if is_number(value) else math.nan
 
 
@@ -90,7 +127,7 @@ def real_array(value, name: str) -> np.ndarray:
     """``value`` (a number or an array of them) as a float array, or a
     TypeError naming ``name``: text, which numpy would read as a number
     (``"8760"``), and booleans, which it would read as 1 and 0, are not
-    numbers here (#233)."""
+    numbers here."""
     array = np.asarray(value)
     kind = array.dtype.kind
     if kind == "O" and not any(
@@ -112,7 +149,7 @@ SEEDS = (
 
 def seed(value):
     """``value``, a seed, if it is one (see ``SEEDS``), else a TypeError
-    or ValueError saying what one is (#232). A numpy ``Generator`` is no
+    or ValueError saying what one is. A numpy ``Generator`` is no
     seed: the simulations draw from streams of their own, which one number
     seeds."""
     if value is None:
@@ -144,7 +181,7 @@ def seed(value):
 def unfitted_distribution(model) -> "str | None":
     """The name of the surpyval distribution ``model`` is, where it is
     the distribution itself (``surv.Weibull``) rather than a model of it
-    (fitted, or made with ``from_params``); None otherwise (#233)."""
+    (fitted, or made with ``from_params``); None otherwise."""
     if not type(model).__module__.startswith("surpyval"):
         return None
     if not (hasattr(model, "fit") and hasattr(model, "from_params")):
@@ -157,7 +194,7 @@ def unfitted_distribution(model) -> "str | None":
 
 def no_distribution(model, what: str) -> None:
     """Raise if ``model``, given as ``what``, is a surpyval distribution
-    itself rather than a model of it, saying how to make one (#233)."""
+    itself rather than a model of it, saying how to make one."""
     name = unfitted_distribution(model)
     if name is not None:
         raise TypeError(

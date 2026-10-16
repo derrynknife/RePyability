@@ -17,6 +17,7 @@ from typing import List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
+from repyability.rbd import _ccf_groups, _curves
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import _streams
 from repyability.timelines import Timelines, _Data
@@ -197,10 +198,12 @@ def simulate(
 ):
     """``simulate_timelines``: validated, run, and returned as a
     ``TimelineSimulation``."""
-    from repyability.rbd.repairable_rbd import _UNSTREAMED
+    from repyability.rbd._runs import _UNSTREAMED
     from repyability.rbd.results import TimelineSimulation
 
-    rbd._require_groups_simulated()
+    from . import _event_loop
+
+    _ccf_groups._require_groups_simulated(rbd)
     if (
         isinstance(t_simulation, bool)
         or not isinstance(t_simulation, (int, float, np.integer, np.floating))
@@ -236,24 +239,23 @@ def simulate(
             f"record histories), got {engine!r}."
         )
     jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
-    working = set() if working_nodes is None else set(working_nodes)
-    broken = set() if broken_nodes is None else set(broken_nodes)
-    rbd._validate_node_overrides(working, broken)
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     # The components' states at 0, as availability takes them (#163).
-    states = rbd._simulation_states(state, working | broken)
+    states = _curves._simulation_states(rbd, state, working | broken)
     rng = np.random.get_state()
     after = rng
     try:
         entropy = _streams.entropy_of(seed)
         if seed is None:
             after = np.random.get_state()
-        plan, complete = rbd._stream_plan(
-            t_simulation, entropy, antithetic, states=states
+        plan, complete = _event_loop._stream_plan(
+            rbd, t_simulation, entropy, antithetic, states=states
         )
         if antithetic and not complete:
             raise NotImplementedError(_UNSTREAMED)
         chosen = _engine(rbd, plan, engine, N, states)
-        tally = rbd._run(
+        tally = _event_loop._run(
+            rbd,
             t_simulation,
             working,
             broken,
@@ -269,6 +271,7 @@ def simulate(
             states=states,
             histories=True,
         )
+        assert tally.histories is not None
         parts, recorded = tally.histories.data(t_simulation)
         data = dict(zip(rbd.components, parts))
         system = _named(rbd, recorded)
@@ -309,7 +312,9 @@ def with_costs(
     see ``RepairableRBD._conditional_run``). With ``common``, every draw
     must come from a stream, for common random numbers with another
     system's run."""
-    from repyability.rbd.repairable_rbd import _UNSTREAMED
+    from repyability.rbd._runs import _UNSTREAMED
+
+    from . import _event_loop
 
     if engine not in ("auto", "python", "numba"):
         raise ValueError(
@@ -320,12 +325,13 @@ def with_costs(
     if entropy is None:
         entropy = _streams.entropy_of(seed)
     states = states or {}
-    plan, complete = rbd._stream_plan(
-        t_simulation, entropy, antithetic, states
+    plan, complete = _event_loop._stream_plan(
+        rbd, t_simulation, entropy, antithetic, states
     )
     if antithetic and not complete:
         raise NotImplementedError(_UNSTREAMED)
-    tally = rbd._run(
+    tally = _event_loop._run(
+        rbd,
         t_simulation,
         set(),
         set(),
@@ -342,6 +348,7 @@ def with_costs(
         states=states,
         histories=True,
     )
+    assert tally.histories is not None
     parts, _ = tally.histories.data(t_simulation)
     return dict(zip(rbd.components, parts)), tally
 
@@ -353,10 +360,14 @@ def _engine(rbd, plan: _streams.Plan, engine: str, N: int, states=None) -> str:
     histories)."""
     from repyability.rbd import _compiled
 
+    from . import _runs
+
     if engine == "python":
         return engine
     if engine == "numba":
-        return rbd._simulation_engine("numba", plan, None, N, states=states)
+        return _runs._simulation_engine(
+            rbd, "numba", plan, None, N, states=states
+        )
     if (
         _compiled.available()
         and _compiled.unsupported(rbd, plan, None, numba=True, states=states)

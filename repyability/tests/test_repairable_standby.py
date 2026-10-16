@@ -11,7 +11,7 @@ import pytest
 import surpyval as surv
 
 from repyability import RBD, RepairableRBD
-from repyability.rbd import _compiled
+from repyability.rbd import _compiled, _event_loop
 from repyability.rbd import routes as r
 
 E, W, L = (
@@ -321,7 +321,7 @@ def test_runs_with_groups_are_reproducible_and_compiled(monkeypatch):
     # numba's own loop runs them (#155), not an engine of the interface's
     # version.
     alone = group(0.02, 0.25, units=3)
-    plan = alone._stream_plan(1.0, 0, False)[0]
+    plan = _event_loop._stream_plan(alone, 1.0, 0, False)[0]
     assert _compiled.unsupported(alone, plan, None) == "standby groups"
     assert _compiled.unsupported(alone, plan, None, numba=True) is None
     with monkeypatch.context() as patched:

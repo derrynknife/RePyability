@@ -2,7 +2,13 @@ import numpy as np
 from scipy.optimize import minimize, minimize_scalar
 from surpyval import ExactEventTime, NonParametric, Parametric
 
-from repyability.maintenance import MaintenancePolicy
+from repyability.maintenance import (
+    CalendarPolicy,
+    MaintenancePolicy,
+    NextReplacement,
+    SkipValue,
+)
+from repyability.rbd._degradation import check_life, is_degradation
 from repyability.rbd._model_utils import (
     distribution_name,
     is_exponential,
@@ -11,8 +17,9 @@ from repyability.rbd._model_utils import (
     never_fails,
 )
 from repyability.rbd.helper_classes import PerfectReliability, perfect_class
+from repyability.rbd.results import FailureForecast
 from repyability.rbd.standby_node import StandbyModel
-from repyability.utils.checks import no_distribution
+from repyability.utils.checks import is_number, no_distribution, real_array
 
 FAILURE = 1
 REPLACE = 0
@@ -113,6 +120,14 @@ class NonRepairable:
         failure, used by the availability and event methods. By default
         None, or ``"instant"`` as a ``RepairableRBD`` spec takes it:
         instantaneous replacement (``ExactEventTime.from_params(0)``).
+    planned_cost : float, optional
+        What a planned (preventive) replacement costs, at least 0, by name;
+        as ``set_costs_planned_and_unplanned`` sets it (``cp``). By default
+        None: not given.
+    unplanned_cost : float, optional
+        What a replacement at a failure costs, at least 0, by name (``cu``):
+        with ``planned_cost``, more than it. Either may be given alone:
+        ``failures`` needs only this one. By default None: not given.
 
     Attributes
     ----------
@@ -167,7 +182,14 @@ class NonRepairable:
     0.9804
     """
 
-    def __init__(self, reliability, time_to_replace=None):
+    def __init__(
+        self,
+        reliability,
+        time_to_replace=None,
+        *,
+        planned_cost=None,
+        unplanned_cost=None,
+    ):
         reliability = perfect_class(reliability)
         no_distribution(reliability, "A NonRepairable's life")
         no_distribution(time_to_replace, "A NonRepairable's time_to_replace")
@@ -201,6 +223,12 @@ class NonRepairable:
             self.reliability_function, self._knots = _piecewise_linear_sf(
                 reliability
             )
+        elif is_degradation(reliability):
+            # A fitted Wiener or gamma degradation process (#271): its life
+            # is the time its level first reaches its threshold.
+            check_life(reliability, "A NonRepairable's life")
+            self.model_parameterization = "degradation"
+            self.reliability_function = reliability.sf
         elif isinstance(reliability, StandbyModel):
             # Whatever the arrangement's survival function is (a closed
             # form or a numerical method), its sf gives it; one with neither
@@ -218,7 +246,8 @@ class NonRepairable:
             raise ValueError(
                 "A NonRepairable's life must be a surpyval parametric "
                 "distribution or MixtureModel (fitted, or built with "
-                "from_params), a surpyval non-parametric estimate or a "
+                "from_params), a surpyval Wiener or gamma degradation "
+                "process, a surpyval non-parametric estimate or a "
                 f"StandbyModel; got a {type(reliability).__name__}."
             )
 
@@ -234,6 +263,126 @@ class NonRepairable:
             ),
         )
         self.__next_event_type = FAILURE
+        self._set_costs(planned_cost, unplanned_cost)
+
+    def _set_costs(self, planned, unplanned) -> None:
+        """Keep the costs given to the constructor (``cp``, ``cu``): each
+        a finite number at least 0, and with both, the planned less."""
+        for name, cost in (
+            ("planned_cost", planned),
+            ("unplanned_cost", unplanned),
+        ):
+            if cost is not None and not (
+                is_number(cost) and 0.0 <= float(cost) < np.inf
+            ):
+                raise ValueError(
+                    f"{name} must be a number, at least 0; got {cost!r}."
+                )
+        if planned is not None and unplanned is not None:
+            self.set_costs_planned_and_unplanned(
+                float(planned), float(unplanned)
+            )
+        elif planned is not None:
+            self.cp = float(planned)
+        elif unplanned is not None:
+            self.cu = float(unplanned)
+
+    def __repr__(self) -> str:
+        """A short summary: the life model's distribution, how a
+        replacement takes its time, and the costs given."""
+        parts = [
+            distribution_name(self.reliability)
+            or type(self.reliability).__name__
+        ]
+        if self.time_to_replace is not None:
+            replace = distribution_name(self.time_to_replace)
+            parts.append(
+                f"replaced in {replace or type(self.time_to_replace).__name__}"
+            )
+        if hasattr(self, "cp"):
+            parts.append(f"planned_cost={self.cp:g}")
+        if hasattr(self, "cu"):
+            parts.append(f"unplanned_cost={self.cu:g}")
+        return f"NonRepairable({', '.join(parts)})"
+
+    def failures(self, t, age: float = 0.0) -> FailureForecast:
+        """The failures over a window ``t`` from now, with the current unit
+        ``age`` old and working, each failure replaced by a new unit.
+
+        The chance the current unit fails in the window is its life
+        conditioned on the age reached, ``1 - R(age + t) / R(age)``. The
+        expected number of failures counts its replacements' too: the
+        renewal count of the part as a
+        [`RepairableRBD`][repyability.RepairableRBD]'s component started
+        from that age (its ``expected_events``, exact, with no
+        simulation), each replacement taking its ``time_to_replace``.
+
+        Parameters
+        ----------
+        t : float or array_like
+            The window's length (or lengths), at least 0, in the models'
+            time unit.
+        age : float, optional
+            The current unit's age, at least 0, by default 0 (new).
+
+        Returns
+        -------
+        FailureForecast
+            The chance the current unit fails, the expected failures, and
+            their expected cost (with an ``unplanned_cost``).
+
+        Examples
+        --------
+        A bearing with a Weibull life (scale 365 days, shape 2), 224 days
+        old, over the next 82 days, at 400 a failure:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]), unplanned_cost=400.0
+        ... )
+        >>> forecast = bearing.failures(82.0, age=224.0)
+        >>> round(forecast.probability, 4)
+        0.2784
+        >>> round(forecast.expected_failures, 4)
+        0.283
+        >>> round(forecast.expected_cost, 2)
+        113.2
+        """
+        from repyability.rbd.node_state import NodeState
+        from repyability.rbd.repairable_rbd import RepairableRBD
+
+        window = real_array(t, "t")
+        if not np.all(np.isfinite(window) & (window >= 0.0)):
+            raise ValueError(f"t must be at least 0, and finite; got {t!r}.")
+        if not (is_number(age) and 0.0 <= float(age) < np.inf):
+            raise ValueError(f"age must be a number, at least 0; got {age!r}.")
+        age = float(age)
+        surviving = float(np.ravel(self.reliability_function(age))[0])
+        if not surviving > 0.0:
+            raise ValueError(
+                f"The life gives no chance of a unit working at age {age:g}."
+            )
+        reached = np.asarray(self.reliability_function(age + window), float)
+        probability = 1.0 - reached.reshape(window.shape) / surviving
+        unit = RepairableRBD([("s", "unit"), ("unit", "t")], {"unit": self})
+        events = unit.expected_events(
+            window if window.ndim else float(window),
+            state={"unit": NodeState(age=age)},
+        )
+        failures = np.asarray(events.node_failures["unit"], float)
+        cost = None if not hasattr(self, "cu") else failures * self.cu
+
+        def shaped(values):
+            return float(values) if np.ndim(values) == 0 else values
+
+        return FailureForecast(
+            shaped(window),
+            age,
+            shaped(probability),
+            shaped(failures),
+            None if cost is None else shaped(cost),
+        )
 
     def set_costs_planned_and_unplanned(self, cp, cu):
         """Set the planned and unplanned replacement costs.
@@ -267,10 +416,10 @@ class NonRepairable:
         self.cu = cu
 
     def _require_costs(self) -> None:
-        if not hasattr(self, "cp"):
+        if not (hasattr(self, "cp") and hasattr(self, "cu")):
             raise ValueError(
-                "costs not set: call set_costs_planned_and_unplanned"
-                "(cp, cu) first"
+                "costs not set: give planned_cost and unplanned_cost, or "
+                "call set_costs_planned_and_unplanned(cp, cu) first"
             )
 
     def avg_replacement_time(self, t):
@@ -747,6 +896,403 @@ class NonRepairable:
         else:
             rate = float(self._cost_rate(interval))
         return MaintenancePolicy(interval=float(interval), cost_rate=rate)
+
+    def optimal_next_replacement(
+        self, age, *, now_cost=None, scheduled_outages=(), policy=None
+    ) -> NextReplacement:
+        """When to replace the part in service next: now, at one of the
+        scheduled outages, at a planned replacement between them, or at
+        its failure.
+
+        [`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy]
+        is the rule for a part in general; this is the next replacement of
+        the one in service, from its age and the outages scheduled (this
+        package's use case UC-12). Each choice's cost is its expected cost
+        until the part is replaced (at the failure price if it fails
+        first), less the time the part serves until then, valued at the
+        baseline: the long-run cost a unit of time of how the position is
+        run, ``policy.cost_rate``. By default that is the age
+        replacement's (``optimal_replacement_policy().cost_rate``); where
+        cheap shuts keep coming, give the calendar's policy
+        ([`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]),
+        whose rate is lower, so a part is kept longer. The cheapest
+        choice is the best. With no outages and the default baseline,
+        replacing now is the best from the optimal replacement age.
+
+        A planned replacement is one later than now, at its best time.
+        Where no later time beats replacing at once (a part past its
+        optimal age), replacing at once is replacing now, which costs
+        ``now_cost``: the planned choice is then replacing now (time 0,
+        at ``now_cost``), ``now`` is True exactly when the best choice
+        is at time 0, and ``replace_from_age`` follows. A planned
+        replacement with a lead time is a scheduled outage at that time.
+
+        Parameters
+        ----------
+        age : float
+            The part's age now, at least 0, in the life's time unit.
+        now_cost : float, optional
+            What replacing it now costs, by default the planned cost.
+        scheduled_outages : list of (float, float), optional
+            The scheduled outages (shuts, turnarounds) as (time from now,
+            price) pairs: when each is, in the life's time unit, more than
+            0, and what replacing the part at it costs, at least 0.
+        policy : CalendarPolicy or MaintenancePolicy, optional
+            The policy whose ``cost_rate`` is the baseline, by default
+            ``optimal_replacement_policy()``.
+
+        Returns
+        -------
+        NextReplacement
+            Every choice with its cost and break-even age (the youngest at
+            which replacing now costs no more), the best, and the age from
+            which replacing now is the best.
+
+        Raises
+        ------
+        ValueError
+            If the costs have not been set, or an argument is out of its
+            range.
+        TypeError
+            If ``policy`` is not a policy (its cost rate alone is not one).
+        NotImplementedError
+            For a life with no survival function in closed form (a
+            non-parametric estimate or a ``StandbyModel``).
+
+        Examples
+        --------
+        A bearing with a Weibull life (scale 365 days, shape 2), 200 days
+        old, $150 for a planned replacement, $400 at a failure, and
+        outages scheduled in 150 and 330 days, at which replacing it costs
+        $100:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]),
+        ...     planned_cost=150.0,
+        ...     unplanned_cost=400.0,
+        ... )
+        >>> found = bearing.optimal_next_replacement(
+        ...     200.0, scheduled_outages=[(150.0, 100.0), (330.0, 100.0)]
+        ... )
+        >>> found.now, found.best.kind, found.best.time
+        (False, 'outage', 150.0)
+        >>> round(found.replace_from_age, 1)
+        297.6
+
+        With shuts every 180 days at $100 kept coming, the calendar's
+        policy values a day of service at 0.990 rather than 1.117, and
+        replacing now beats the outage in 150 days from a younger age:
+
+        >>> from repyability import Calendar, Opportunity
+        >>> shuts = bearing.optimal_calendar_policy(
+        ...     Calendar([Opportunity("shut", 100.0, period=180.0)])
+        ... )
+        >>> found = bearing.optimal_next_replacement(
+        ...     200.0,
+        ...     scheduled_outages=[(150.0, 100.0), (330.0, 100.0)],
+        ...     policy=shuts,
+        ... )
+        >>> outage = found.choices[1]
+        >>> round(found.cost_rate, 3), round(outage.break_even_age, 1)
+        (0.99, 256.1)
+        """
+        from repyability.maintenance._next import optimal_next_replacement
+
+        return optimal_next_replacement(
+            self,
+            age,
+            now_cost=now_cost,
+            scheduled_outages=scheduled_outages,
+            policy=policy,
+        )
+
+    def skip_next_replacement(
+        self, every, *, resets, time_to_next=None, discount_rate=0.0
+    ) -> SkipValue:
+        """Whether to skip the next planned replacement, right after a
+        failure (a new unit just in): the present-value cost of doing it
+        against that of skipping it, and the NPV of skipping.
+
+        The part is replaced when it fails (at its ``unplanned_cost``) and
+        on a plan (at its ``planned_cost``), in no time either way (this
+        package's use case UC-6). The plan either resets at each
+        replacement, planned or not (age replacement: the next planned
+        replacement is ``every`` after the failure), or keeps to fixed
+        times (block replacement: the next is ``time_to_next`` after the
+        failure, and the following one ``every`` later). Both costs are
+        exact, with no simulation; what each covers is in
+        [`SkipValue`][repyability.SkipValue].
+        [`optimal_next_replacement`][repyability.NonRepairable.optimal_next_replacement]
+        is the undiscounted, long-run question of a part in service with
+        no plan in force.
+
+        Parameters
+        ----------
+        every : float
+            The plan's interval, more than 0, in the life's time unit.
+        resets : bool
+            Whether the plan resets at each replacement: True, the next
+            planned replacement is ``every`` after the last replacement,
+            planned or not; False, planned replacements fall on fixed
+            times, ``every`` apart, whatever happens.
+        time_to_next : float, optional
+            For a plan that does not reset: the time from the failure to
+            the next planned replacement, more than 0 and at most
+            ``every``. A plan that resets has its next planned replacement
+            ``every`` after the failure, and takes none.
+        discount_rate : float, optional
+            The continuous discount rate per unit time of the life, by
+            default 0 (undiscounted): for an annual rate of 8% with a life
+            in days, ``math.log(1.08) / 365.25``.
+
+        Returns
+        -------
+        SkipValue
+            The present-value cost of doing the replacement (``replace``)
+            and of skipping it (``skip``), their difference (``npv``:
+            positive, skipping pays), the ``best`` of the two, and what
+            they were worked out for. On a plan that resets each is the
+            whole future's, endless (``inf``) with no discounting, where
+            only ``npv`` is finite. A discount rate that discounts the
+            costs away (a rate a year given with a life in days) is
+            warned of.
+
+        Raises
+        ------
+        ValueError
+            If the costs have not been set, or an argument is out of its
+            range, or ``time_to_next`` is given with a plan that resets or
+            missing from one that does not.
+        NotImplementedError
+            For a life with no survival function in closed form (a
+            non-parametric estimate or a ``StandbyModel``).
+
+        Examples
+        --------
+        A bearing with a Weibull life (scale 365 days, shape 2), replaced
+        every 180 days for $150, and at a failure for $400; right after a
+        failure, at 8% a year, skipping the next planned replacement
+        saves:
+
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]),
+        ...     planned_cost=150.0,
+        ...     unplanned_cost=400.0,
+        ... )
+        >>> a_day = math.log(1.08) / 365.25
+        >>> value = bearing.skip_next_replacement(
+        ...     180.0, resets=True, discount_rate=a_day
+        ... )
+        >>> round(value.npv, 2), value.best
+        (26.56, 'skip')
+
+        On fixed times, it depends on how soon the next planned
+        replacement is:
+
+        >>> value = bearing.skip_next_replacement(
+        ...     180.0, resets=False, time_to_next=30.0, discount_rate=a_day
+        ... )
+        >>> round(value.npv, 2)
+        123.08
+        """
+        from repyability.maintenance._skip import skip_next_replacement
+
+        return skip_next_replacement(
+            self,
+            every,
+            resets=resets,
+            time_to_next=time_to_next,
+            discount_rate=discount_rate,
+        )
+
+    def optimal_calendar_policy(
+        self,
+        calendar,
+        *,
+        max_age=None,
+        method="auto",
+        tail="repeat",
+        mc_samples=64,
+        seed=None,
+    ) -> CalendarPolicy:
+        """The long-run optimal replacement policy over a calendar of
+        opportunities: shuts at their own prices, a planned replacement on
+        any day at a dearer one (or none), and a failure at the dearest.
+
+        Age replacement
+        ([`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy])
+        has one planned price at every time, so the state is the age
+        alone. Here the price depends on the time, so the best policy is a
+        threshold age for each time, ``a*(t)``: replace if the part is at
+        least that old. It minimises the long-run average cost a unit of
+        time (opportunity-based age replacement, Dekker et al.). The
+        methods (this package's use case UC-13):
+
+        - ``"dp"``: dynamic programming on a grid, its step sized from
+          the life (about the mean life over 1,000) and put on the
+          opportunities' own times. Over a periodic calendar whose cycle
+          has at most 20,000 steps, by relative value iteration: the cost
+          rate exact for the grid, which is within about the square of
+          the step of deciding at any moment. Over a longer one, by a
+          long finite horizon, the cost rate differenced.
+        - ``"integration"``: between opportunities in continuous time, on
+          quadrature nodes; only with no replacement on any day.
+        - ``"sampling"``: for a cycle too long to sweep (co-prime
+          periods), the cost rate is the mean over ``mc_samples`` sampled
+          times of the cycle of a window's differenced rate, with its
+          standard error (``cost_rate_se``); each window is an exact
+          solve that may take a second or more, so ``mc_samples`` sets
+          the cost. The rates by kind (``replacement_rates``,
+          ``cost_rates``) and the schedule's chances are then estimates
+          from a new unit run in, with no standard error, and move with
+          the seed; the threshold at a time is a solve over a window
+          from it (deterministic).
+        - ``"auto"``: ``"dp"``, or ``"sampling"`` for a periodic calendar
+          whose cycle is too long to sweep, with a warning that says so.
+
+        The grid's step is not an argument: it is a numerical setting,
+        sized from the models (never in absolute time), not a choice of
+        when decisions are made; a calendar says that, by its
+        opportunities. It is a whole fraction of the periods, so a
+        periodic calendar keeps its period on the grid whatever its
+        offsets; an offset or date off the grid (a few hours on a period
+        of days, as dates turned into model time give) is laid at the
+        grid time nearest it, with a warning.
+
+        A calendar with given dates (a plan) is extended past its last
+        date by ``tail``: ``"repeat"`` repeats the plan (from 0 to its
+        last date and its mean gap), ``"anytime"`` leaves only replacement
+        on any day. Both are solved, and the policy says the first time
+        they differ (``determined_until``); its cost rate is the repeated
+        plan's.
+
+        Parameters
+        ----------
+        calendar : Calendar
+            The opportunities and prices; its ``"part"`` prices are this
+            part's planned and unplanned costs.
+        max_age : float, optional
+            The oldest age on the grid, by default the age a unit outlives
+            with a chance of 1e-9.
+        method : str, optional
+            ``"auto"`` (the default), ``"dp"``, ``"integration"`` or
+            ``"sampling"``.
+        tail : str, optional
+            How a plan of given dates goes on after its last date:
+            ``"repeat"`` (the default) or ``"anytime"``.
+        mc_samples : int, optional
+            The times sampled by ``"sampling"``, by default 64; the other
+            methods take none.
+        seed : int, optional
+            Seeds the sampled times; the other methods draw nothing.
+
+        Returns
+        -------
+        CalendarPolicy
+            The long-run cost rate and what it is made of by kind, each
+            shut's threshold and chance of a replacement (``schedule()``),
+            a unit's next replacement (``next_replacement()``), how it
+            was worked out, and the life it was worked out for.
+
+        Raises
+        ------
+        ValueError
+            If a price the calendar takes from the part is not set, the
+            calendar allows no planned replacement at all (no
+            opportunities, and none on any day), or an argument is out
+            of its range.
+        NotImplementedError
+            For ``method="integration"`` with replacement on any day, or
+            ``method="sampling"`` with given dates.
+
+        Examples
+        --------
+        With no opportunities and a planned replacement on any day at the
+        planned cost, it is age replacement:
+
+        >>> import surpyval as surv
+        >>> from repyability import Calendar, NonRepairable
+        >>> unit = NonRepairable(
+        ...     surv.Weibull.from_params([1000, 2.5]),
+        ...     planned_cost=1.0,
+        ...     unplanned_cost=5.0,
+        ... )
+        >>> policy = unit.optimal_calendar_policy(Calendar())
+        >>> round(policy.cost_rate, 6)
+        0.003462
+        >>> round(policy.next_replacement(age=0.0).time, 1)
+        493.3
+        >>> round(unit.optimal_replacement_policy().interval, 1)
+        493.0
+        """
+        from repyability.maintenance._replacement import (
+            optimal_calendar_policy,
+        )
+
+        return optimal_calendar_policy(
+            self,
+            calendar,
+            max_age=max_age,
+            method=method,
+            tail=tail,
+            mc_samples=mc_samples,
+            seed=seed,
+        )
+
+    def calendar_policy_cost(self, calendar, rule, *, max_age=None) -> float:
+        """The long-run average cost a unit of time of a given replacement
+        rule over a calendar of opportunities: to price simple policies
+        against
+        [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+
+        The rule gives, for each kind of replacement it uses (an
+        opportunity's name, or ``"anytime"`` for any day), the age from
+        which it replaces the part; the kinds it leaves out never replace.
+        Where kinds coincide, the one with the youngest age replaces (the
+        cheapest, at a tie). Worked out as the optimal policy's cost rate
+        is, on the same grid, with the decisions fixed (a plan of given
+        dates repeated past its last date).
+
+        Parameters
+        ----------
+        calendar : Calendar
+            The opportunities and prices.
+        rule : dict
+            The age, at least 0 (``inf`` for never), from which each kind
+            replaces: ``{"annual": 0.0}`` replaces at every annual shut,
+            ``{"anytime": 493.0}`` at age 493 on any day, ``{}`` runs to
+            failure.
+        max_age : float, optional
+            The oldest age on the grid, as for ``optimal_calendar_policy``.
+
+        Returns
+        -------
+        float
+            The rule's long-run cost a unit of time.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import Calendar, NonRepairable
+        >>> unit = NonRepairable(
+        ...     surv.Weibull.from_params([1000, 2.5]),
+        ...     planned_cost=1.0,
+        ...     unplanned_cost=5.0,
+        ... )
+        >>> rate = unit.calendar_policy_cost(Calendar(), {"anytime": 493.0})
+        >>> round(rate, 6)
+        0.003462
+        """
+        from repyability.maintenance._replacement import (
+            calendar_policy_cost,
+        )
+
+        return calendar_policy_cost(self, calendar, rule, max_age=max_age)
 
     def reset(self):
         """Restart the event sequence with a working, as-new unit.

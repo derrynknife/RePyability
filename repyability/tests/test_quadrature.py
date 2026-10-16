@@ -14,7 +14,7 @@ import pytest
 import surpyval as surv
 
 from repyability import RepairableRBD
-from repyability.rbd import _quadrature
+from repyability.rbd import _curves, _quadrature
 from repyability.rbd._point_availability import ChainDips
 
 E = surv.Exponential.from_params
@@ -111,7 +111,7 @@ def systems():
 def every_knot(rbd, t):
     """The mission availability over ``[0, t]`` summed between every knot
     of every curve (``t`` before the curves settle), as before #164."""
-    curves = rbd._availability_curves(t, set())
+    curves = _curves._availability_curves(rbd, t, set())
     edges = np.unique(
         np.concatenate(
             [[0.0, t]] + [curve.knots(0.0, t) for curve in curves.values()]
@@ -120,7 +120,7 @@ def every_knot(rbd, t):
     edges = edges[(edges >= 0.0) & (edges <= t)]
     a, b = edges[:-1], edges[1:]
     x, half = _quadrature.points(a, b)
-    up = rbd._curves_at(curves, x, set(), set(), "p")
+    up = _curves._curves_at(rbd, curves, x, set(), set(), "p")
     return float(_quadrature.summed(up, half).sum()) / t
 
 
@@ -166,7 +166,7 @@ def test_a_long_mission_on_many_components_takes_few_pieces(monkeypatch):
 
     monkeypatch.setattr(_quadrature, "refined", counted)
     value = rbd.mission_availability(t)
-    curves = rbd._availability_curves(t, set())
+    curves = _curves._availability_curves(rbd, t, set())
     knots = sum(len(c.knots(0.0, t)) for c in curves.values())
     assert knots > 200_000
     assert seen and seen[0] < 20_000

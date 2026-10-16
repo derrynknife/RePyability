@@ -33,6 +33,7 @@ from repyability import (
 from repyability._version import __version__
 from repyability.rbd.ccf import with_parameters
 from repyability.rbd.uncertainty import draw_ccf_models
+from repyability.utils import deprecation
 from repyability.utils.deprecation import NEXT_REMOVAL
 
 W, E = surv.Weibull.from_params, surv.Exponential.from_params
@@ -260,15 +261,50 @@ def test_the_spares_demand_values_are_properties():
     assert demand.std == pytest.approx(np.sqrt(10.0), rel=1e-4)
 
 
-def test_what_0_13_deprecates_goes_in_0_14():
-    # optimal_inspection_intervals(offsets=), renamed offset_shares (#222);
-    # CapacityDistribution.mean() called, now a property (#235); and the
-    # simulation options of StandbyModel, LoadSharingModel and
-    # DegradingNode's exact mean, which it ignores (#233). And the private
-    # names callers used before the levers were public, kept as they were
-    # for 0.13: rbd._sensitivity's levers and Lever (#244).
+def test_what_0_14_deprecates_goes_in_0_15():
+    # NodeState's phase, renamed since_scheduled (#350): giving phase= and
+    # reading .phase warn, and NEXT_REMOVAL (0.15) refuses them.
     version = tuple(map(int, __version__.split(".")))
     assert version < tuple(map(int, NEXT_REMOVAL.split(".")))
+
+
+def test_a_deprecation_warns_until_the_next_removal():
+    # The helpers a deprecation warns through.
+    match = f"{NEXT_REMOVAL} will refuse it"
+    with pytest.warns(FutureWarning, match=f"renamed new=.*{match}"):
+        deprecation.renamed("f", "old", "new", "it is clearer")
+    with pytest.warns(FutureWarning, match=f"f ignores seed: why.*{match}"):
+        deprecation.ignored("f", "why.", {"seed": 1, "lower": None})
+    number = deprecation.called(2.0, "Result.value")
+    array = deprecation.called(np.array([1.0, 2.0]), "Result.values")
+    assert number == 2.0 and np.array_equal(array, [1.0, 2.0])
+    with pytest.warns(FutureWarning, match=r"write value, not value\(\)"):
+        assert number() == 2.0
+    with pytest.warns(FutureWarning, match=f"refused in {NEXT_REMOVAL}"):
+        assert np.array_equal(array(), [1.0, 2.0])
+
+
+def test_a_node_state_takes_phase_as_since_scheduled_for_now():
+    with pytest.warns(
+        FutureWarning, match="phase= is renamed since_scheduled"
+    ):
+        state = NodeState(age=10.0, phase=4.0)
+    assert state.since_scheduled == 4.0
+    assert state == NodeState(age=10.0, since_scheduled=4.0)
+    assert (
+        repr(state) == "NodeState(age=10.0, alive=True, since_scheduled=4.0)"
+    )
+    with pytest.warns(FutureWarning, match="phase is renamed since_scheduled"):
+        assert state.phase == 4.0
+    with pytest.raises(TypeError, match="since_scheduled alone"):
+        NodeState(phase=4.0, since_scheduled=4.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert NodeState(since_scheduled=4.0).since_scheduled == 4.0
+        assert (
+            NodeState(stationary=True, since_scheduled=4.0).since_scheduled
+            == 4.0
+        )
 
 
 def test_an_uncertainty_result_shows_a_summary():
@@ -452,3 +488,71 @@ def test_the_shocks_are_kept():
             np.random.default_rng(0),
         )
     assert all(m.shocks == "independent" for m in drawn)
+
+
+# -- the routes print one method a line (0.14 persona review) ----------------
+
+
+def test_the_routes_print_one_method_a_line():
+    import json
+
+    from repyability import AnalysisRoutes, FaultTree
+    from repyability.rbd.routes import AnalysisRoute
+
+    unit = {"reliability": W([100, 2]), "repairability": E([0.5])}
+    diagrams = [
+        NonRepairableRBD(BRIDGE, {n: W([100, 2]) for n in "abcde"}),
+        RepairableRBD(BRIDGE, {n: dict(unit) for n in "abcde"}),
+        FaultTree({"top": ("and", ["a", "b"])}, {"a": W([100, 2]), "b": 0.1}),
+        Network(
+            {"a": ("s", "t", W([100, 2])), "b": ("s", "t", 0.1)}, "s", "t"
+        ),
+        PhasedMission(
+            [
+                (
+                    "p",
+                    10.0,
+                    NonRepairableRBD(
+                        BRIDGE, {n: W([100, 2]) for n in "abcde"}
+                    ),
+                )
+            ]
+        ),
+    ]
+    for diagram in diagrams:
+        report = diagram.analysis_routes()
+        assert isinstance(report, AnalysisRoutes)
+        assert isinstance(report, dict)
+        assert all(isinstance(r, AnalysisRoute) for r in report.values())
+        lines = str(report).splitlines()
+        assert repr(report) == str(report)
+        assert len(lines) == len(report)
+        for line, (name, route) in zip(lines, report.items()):
+            head, rest = line.split(": ", 1)
+            assert head == name
+            assert rest.startswith(route.route + " -- ")
+            assert "\n" not in rest
+            assert route.reason.startswith(rest[len(route.route) + 4 :])
+        plain = report.to_dict()
+        assert plain == json.loads(json.dumps(plain))
+        first = next(iter(report))
+        assert plain[first] == report[first].to_dict()
+        assert dict(report) == {k: v for k, v in report.items()}
+    # A long refusal is cut to its first sentence.
+    long = AnalysisRoutes(
+        {
+            "mean": AnalysisRoute(
+                "refused", "First sentence. Then more.\nAnd more."
+            )
+        }
+    )
+    assert str(long) == "mean: refused -- First sentence."
+
+
+def test_simulated_intervals_say_so():
+    rbd = NonRepairableRBD(BRIDGE, {n: W([100, 2]) for n in "abcde"})
+    assert rbd.mean_time_to_failure_interval(mc_samples=50, seed=1).method == (
+        "simulated"
+    )
+    mission = PhasedMission([("p", 10.0, rbd)])
+    assert mission.reliability_interval(50, seed=1).method == "simulated"

@@ -16,6 +16,7 @@ import pytest
 import surpyval as surv
 
 from repyability import NonRepairable, RepairableRBD
+from repyability.rbd import _intervals
 
 W = surv.Weibull.from_params
 E = surv.Exponential.from_params
@@ -53,7 +54,9 @@ def grid_best(plant, feasible=lambda rbd: True):
     for a, b in itertools.product(
         np.arange(500.0, 700.0, 10.0), np.arange(420.0, 700.0, 10.0)
     ):
-        rbd = plant._with_intervals(preventive={"a": a, "b1": b, "b2": b})
+        rbd = _intervals._with_intervals(
+            plant, preventive={"a": a, "b1": b, "b2": b}
+        )
         if feasible(rbd):
             best = min(best, (rbd.expected_cost_rate(), (a, b)))
     return best
@@ -96,7 +99,7 @@ def test_the_cheapest_intervals(plant):
     # standby: its replacements stop the plant too.
     assert plan.intervals["a"] > plan.intervals["b1"] + 50.0
     assert plan.intervals["b1"] == pytest.approx(plan.intervals["b2"])
-    again = plant._with_intervals(preventive=plan.intervals)
+    again = _intervals._with_intervals(plant, preventive=plan.intervals)
     assert again.expected_cost_rate() == pytest.approx(plan.cost_rate)
     assert again.mean_availability() == pytest.approx(plan.availability)
 
@@ -131,7 +134,9 @@ def test_a_cost_cap(plant):
     best = max(
         rbd.mean_availability()
         for rbd in (
-            plant._with_intervals(preventive={"a": a, "b1": b, "b2": b})
+            _intervals._with_intervals(
+                plant, preventive={"a": a, "b1": b, "b2": b}
+            )
             for a, b in itertools.product(
                 np.arange(560.0, 660.0, 10.0), np.arange(460.0, 660.0, 10.0)
             )
@@ -161,7 +166,9 @@ def test_a_memoryless_unit_is_never_replaced():
 def test_only_the_named_components_change(plant):
     plan = plant.optimal_replacement_intervals(nodes=["a"])
     assert set(plan.intervals) == {"a"}
-    fixed = plant._with_intervals(preventive={"a": plan.intervals["a"]})
+    fixed = _intervals._with_intervals(
+        plant, preventive={"a": plan.intervals["a"]}
+    )
     assert fixed.expected_cost_rate() == pytest.approx(plan.cost_rate)
 
 
@@ -205,7 +212,7 @@ def calendar_best(plant, allowed, feasible=lambda rbd: True):
     best = (math.inf, None)
     for combination in itertools.product(allowed, repeat=3):
         intervals = dict(zip(["a", "b1", "b2"], combination))
-        rbd = plant._with_intervals(preventive=intervals)
+        rbd = _intervals._with_intervals(plant, preventive=intervals)
         if feasible(rbd):
             best = min(best, (rbd.expected_cost_rate(), combination))
     return best
@@ -337,7 +344,7 @@ def test_every_combination_is_tried():
     )
     best = (math.inf, None)
     for a, b in itertools.product(CALENDAR, CALENDAR):
-        design = rbd._with_intervals(inspection={"v1": a, "v2": b})
+        design = _intervals._with_intervals(rbd, inspection={"v1": a, "v2": b})
         if design.mean_availability() >= target:
             best = min(best, (design.expected_cost_rate(), (a, b)))
     assert (plan.intervals["v1"], plan.intervals["v2"]) == best[1]
@@ -346,7 +353,7 @@ def test_every_combination_is_tried():
 
 def test_the_local_search_on_many_combinations(monkeypatch):
     # Force the local search on a problem small enough to enumerate.
-    import repyability.rbd.repairable_rbd as module
+    import repyability.rbd._intervals as module
 
     rbd = two_valves()
     exhaustive = rbd.optimal_inspection_intervals(
@@ -371,7 +378,9 @@ def test_a_cost_cap_on_the_tests():
     )
     assert plan.cost_rate <= 0.1
     for a, b in itertools.product(CALENDAR, CALENDAR):
-        design = two_valves()._with_intervals(inspection={"v1": a, "v2": b})
+        design = _intervals._with_intervals(
+            two_valves(), inspection={"v1": a, "v2": b}
+        )
         if design.expected_cost_rate() <= 0.1:
             assert design.mean_availability() <= plan.availability + 1e-15
 

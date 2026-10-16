@@ -215,16 +215,15 @@ class DegradingNode(StandbyModel):
     def mean(self, mc_samples=None, seed=None, *, method=None):
         """Mean lifetime (MTTF): the sum of the stages' mean times, exactly;
         infinite if a stage may never end. ``method="simulate"`` estimates
-        it from ``mc_samples`` draws of ``random`` instead (#233).
+        it from ``mc_samples`` draws of ``random`` instead.
 
         Parameters
         ----------
         mc_samples : int, optional
             With ``method="simulate"``, the number of draws, 10_000 by
-            default. The exact mean draws nothing, and ignores it with a
-            ``FutureWarning`` (0.14 will refuse it).
+            default. The exact mean draws nothing, and refuses it.
         seed : int or None, optional
-            Seed for those draws, ignored as ``mc_samples`` is.
+            Seed for those draws, refused as ``mc_samples`` is.
         method : {None, "exact", "simulate"}, optional
             As for ``StandbyModel.mean``: None and ``"exact"`` give the
             exact mean.
@@ -233,6 +232,11 @@ class DegradingNode(StandbyModel):
         -------
         float
             The mean lifetime, or its estimate.
+
+        Raises
+        ------
+        ValueError
+            If ``mc_samples`` or ``seed`` is given to the exact mean.
         """
         return drawn_mean(
             self,

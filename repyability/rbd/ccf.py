@@ -6,8 +6,8 @@ every unit — so their failures are correlated rather than independent. The
 exact RBD engine assumes independence, and therefore over-estimates redundant
 systems; a CCF model injects the shared-cause coupling.
 
-Two models are provided, both consumed by ``NonRepairableRBD``'s ``ccf_groups``
-argument via a [`CCFGroup`][repyability.CCFGroup]:
+Three models are provided, all consumed by ``NonRepairableRBD``'s
+``ccf_groups`` argument via a [`CCFGroup`][repyability.CCFGroup]:
 
 * [`BetaFactor`][repyability.BetaFactor] — a fraction ``beta`` of a
   component's failures come from a cause shared across the *whole* group (all
@@ -17,8 +17,13 @@ argument via a [`CCFGroup`][repyability.CCFGroup]:
   additionally captures *partial* common causes (a cause failing some but not
   all of the group) via a cascade of conditional probabilities
   ``beta, gamma, delta, ...``. Beta-factor is the two-unit special case.
+* [`AlphaFactor`][repyability.AlphaFactor] — the alpha-factor model: the
+  same multiplicities as MGL's, parameterised by ``alpha_1, ..., alpha_m``,
+  the shares of a group's failure events that fail exactly ``1, ..., m``
+  members, which event counts estimate directly (NUREG/CR-5485), under a
+  staggered or a non-staggered testing scheme.
 
-Both expose ``decompose``, which splits a group's failure probability into
+All expose ``decompose``, which splits a group's failure probability into
 an independent part plus a set of mutually-exclusive *shock* outcomes (each a
 subset of members failing together); ``NonRepairableRBD`` evaluates the exact
 system reliability by conditioning on those outcomes. See issue #44.
@@ -34,16 +39,17 @@ cause is a shock whose cumulative hazard is a fixed fraction of the
 members' own, ``H(t) = -log R(t)``. Each member then keeps its own life
 distribution, whatever it is, and the model holds over the whole life; it
 agrees with the probability split to first order in ``Q``.
-
-Alpha-factor (a data-estimable reparameterisation of the same multiplicities)
-is a planned extension.
 """
 
 from itertools import combinations
+from itertools import combinations as subsets_of
+from itertools import product
 from math import comb
 from typing import Any, Collection, Dict, Hashable, List, Optional, Tuple
 
 import numpy as np
+
+from repyability.utils.checks import number_or_nan, one_of
 
 # A group's failure decomposition: the per-component independent failure
 # probability, and a list of (members-failing-together, probability) shocks.
@@ -65,6 +71,21 @@ def _check_basis(basis: str) -> str:
             f"basis must be 'probability' or 'rate', got {basis!r}."
         )
     return basis
+
+
+def _check_shocks(basis: str, shocks: Optional[str]) -> str:
+    """How a model's shared causes combine, from its ``shocks`` option:
+    None for the ``basis``'s default (independent by rate, exclusive
+    splitting the probability); by rate, only independent."""
+    if shocks is None:
+        return "independent" if basis == "rate" else "exclusive"
+    one_of("shocks", shocks, ("exclusive", "independent"))
+    if basis == "rate" and shocks != "independent":
+        raise ValueError(
+            "By rate, every cause strikes independently: shocks="
+            "'exclusive' splits the probability (basis='probability')."
+        )
+    return shocks
 
 
 def _hazard(Q: np.ndarray, R: np.ndarray) -> np.ndarray:
@@ -189,7 +210,6 @@ def _as_independent(
     keeps its precision. None where some ``A_S`` is negative (a set the
     shocks never fail, while two causes could; or a large probability of
     failing): no independent causes do the same."""
-    from itertools import combinations as subsets_of
 
     struck = {frozenset(subset): p for subset, p in shocks}
     none = 1.0 - sum(struck.values())
@@ -225,6 +245,14 @@ class _Model:
         raise NotImplementedError
 
     def _split(self, members, Q, R) -> tuple:
+        raise NotImplementedError
+
+    def _by_rate(self) -> "_Model":
+        """This model splitting the failure rate (``basis="rate"``)."""
+        raise NotImplementedError
+
+    def required_group_size(self) -> Any:
+        """The group size this model requires: None for any size."""
         raise NotImplementedError
 
     @property
@@ -360,9 +388,10 @@ class BetaFactor(_Model):
     """
 
     def __init__(self, beta: float, basis: str = "probability"):
-        if not (0.0 <= beta <= 1.0):
-            raise ValueError(f"beta must be in [0, 1], got {beta!r}.")
-        self.beta = float(beta)
+        value = number_or_nan(beta)
+        if not (0.0 <= value <= 1.0):
+            raise ValueError(f"beta must be a number in [0, 1], got {beta!r}.")
+        self.beta = value
         self.basis = _check_basis(basis)
 
     def required_group_size(self) -> Any:
@@ -430,6 +459,9 @@ class BetaFactor(_Model):
         each shared cause, as the members it fails and its fraction."""
         return 1.0 - self.beta, [(frozenset(members), self.beta)]
 
+    def _by_rate(self) -> "BetaFactor":
+        return BetaFactor(self.beta, basis="rate")
+
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, BetaFactor)
@@ -445,7 +477,136 @@ class BetaFactor(_Model):
         return f"BetaFactor(beta={self.beta}{basis})"
 
 
-class MGL(_Model):
+class _SpecificSets(_Model):
+    """What the MGL and alpha-factor models share: each *specific* set of
+    ``k`` of the ``m`` members has a cause of its own, which fails it with
+    the basic-event probability ``Q_k``, a fraction of each member's ``Q``
+    given by the model's parameters (``_fractions``); the ``Q_k`` of the
+    sets holding a member sum to its ``Q``. Splitting the probability, the
+    shocks are exclusive or independent (``shocks``); by rate, each cause
+    is a shock with that fraction of the members' hazard."""
+
+    def __init__(self, basis: str, shocks: Optional[str]):
+        self.basis = _check_basis(basis)
+        self._shocks = _check_shocks(self.basis, shocks)
+
+    @property
+    def shocks(self) -> str:
+        """How the shared causes combine: ``"exclusive"`` (one at most,
+        the probability split's default) or ``"independent"`` (as
+        independent basic events; by rate, always)."""
+        return self._shocks
+
+    @property
+    def group_size(self) -> int:
+        """The number of members this model describes."""
+        raise NotImplementedError
+
+    def required_group_size(self) -> int:
+        """The group size this model requires, ``group_size``.
+
+        [`CCFGroup`][repyability.CCFGroup] rejects a group whose number of
+        members differs.
+
+        Returns
+        -------
+        int
+            ``group_size``: an ``MGL`` model's ``len(letters) + 1``, an
+            ``AlphaFactor`` model's ``len(alphas)``.
+        """
+        return self.group_size
+
+    def _fractions(self, m: int) -> List[float]:
+        """``Q_k / Q`` for ``k = 1, ..., m``: the fraction of a member's
+        probability of failing (or of its hazard, by rate) that fails each
+        specific set of ``k`` members, this one among them."""
+        raise NotImplementedError
+
+    def decompose(self, members: Collection[Hashable], Q) -> Decomposition:
+        """Split the failure probability into independent and shared parts.
+
+        With ``m = len(members)``, each member fails alone with ``Q_1``
+        and each specific set of ``k >= 2`` members fails together with
+        the basic-event probability ``Q_k`` given in the class
+        description. The RBD calls this at each evaluation time with
+        ``Q``, the probability that the group's first member has failed
+        by then.
+
+        By rate, or with ``shocks="independent"``, the shocks are the sets
+        of members the causes that have struck fail between them: several
+        causes may strike, and a member fails if any of its causes has, so
+        these are the distinct unions, mutually exclusive as the RBD needs,
+        each with its probability.
+
+        Parameters
+        ----------
+        members : collection of hashable
+            The group's member node names: ``group_size`` of them, as
+            [`CCFGroup`][repyability.CCFGroup] ensures.
+        Q : float or array_like
+            Each member's total failure probability (the same for every
+            member of a symmetric group), at one or more times.
+
+        Returns
+        -------
+        q_independent : numpy.ndarray
+            ``Q_1``, each member's independent failure probability, at
+            least 1-d (by rate, ``1 - (1 - Q) ** (Q_1 / Q)``).
+        shocks : list of (frozenset, numpy.ndarray)
+            ``(subset, Q_k)`` for every subset of ``k = 2, ..., m`` members,
+            smaller subsets first; by rate, ``(subset, probability)`` for
+            every set the struck causes can fail together.
+        """
+        Q = np.atleast_1d(np.asarray(Q, dtype=float))
+        q_independent, _, shocks = self._split(members, Q, 1.0 - Q)
+        return q_independent, shocks
+
+    def _split(self, members, Q, R):
+        """Each member's probability of failing on its own and of not
+        doing so, and the shocks (see ``decompose``), at the members'
+        probabilities of failing ``Q`` and of surviving ``R`` (both 1-d
+        arrays: by rate, whichever keeps its precision is used)."""
+        members = tuple(members)
+        if self.basis == "rate":
+            independent, causes = self._causes(members)
+            return _rate_outcomes(members, independent, causes, _hazard(Q, R))
+        if self.shocks == "independent":
+            independent, causes = self._causes(members)
+            return _event_outcomes(members, independent, causes, Q)
+        m = len(members)
+        fractions = self._fractions(m)
+        q_independent = fractions[0] * Q
+        shocks: List[Tuple[frozenset, np.ndarray]] = []
+        for k in range(2, m + 1):
+            q_k = fractions[k - 1] * Q
+            for subset in combinations(members, k):
+                shocks.append((frozenset(subset), q_k))
+        return q_independent, 1.0 - q_independent, shocks
+
+    def _causes(self, members) -> Tuple[float, list]:
+        """By rate: each member's own causes' fraction of its hazard, and
+        each shared cause, as the members it fails and its fraction."""
+        members = tuple(members)
+        m = len(members)
+        fractions = self._fractions(m)
+        causes = [
+            (frozenset(subset), fractions[k - 1])
+            for k in range(2, m + 1)
+            for subset in combinations(members, k)
+        ]
+        return fractions[0], causes
+
+    def _options(self) -> List[str]:
+        """The ``basis`` and ``shocks`` options as ``repr`` shows them:
+        only those that differ from the defaults."""
+        if self.basis == "rate":
+            return ["basis='rate'"]
+        if self.shocks == "independent":
+            return ["shocks='independent'"]
+        return []
+
+
+class MGL(_SpecificSets):
     """The Multiple Greek Letter common-cause model.
 
     The parameters are the conditional probabilities of a common-cause failure
@@ -465,7 +626,8 @@ class MGL(_Model):
     total failure probability ``Q``; its own failure and the shared causes
     being separate events, it fails with probability ``Q`` to first order
     (``Q - beta (1 - beta) Q**2`` for one shared cause), as in PRA's basic
-    events.
+    events. The [`AlphaFactor`][repyability.AlphaFactor] model gives the
+    same ``Q_k`` from the parameters event counts estimate.
 
     That is the default ``basis``, ``"probability"``: the PRA basic-event
     model, for a small ``Q`` (see [`BetaFactor`][repyability.BetaFactor]).
@@ -485,7 +647,7 @@ class MGL(_Model):
     that several may strike: ``shocks="independent"``. The two differ at
     second order in ``Q`` (a 2-out-of-3 group of ``MGL(0.2, 0.3)`` at
     ``Q = 0.0311`` fails with probability 0.010219 one way and 0.010192
-    the other), so match the tool you check against (#180). A
+    the other), so match the tool you check against. A
     ``BetaFactor``, or an ``MGL`` model with one shared cause, has one
     shock, and both agree. By rate, the causes strike independently.
 
@@ -542,133 +704,31 @@ class MGL(_Model):
     ):
         if len(letters) < 1:
             raise ValueError("MGL needs at least one parameter (beta).")
-        for value in letters:
-            if not (0.0 <= value <= 1.0):
+        for given in letters:
+            if not (0.0 <= number_or_nan(given) <= 1.0):
                 raise ValueError(
-                    f"MGL parameters must be in [0, 1], got {value!r}."
+                    "MGL parameters must be numbers in [0, 1], got "
+                    f"{given!r}."
                 )
-        self.letters = tuple(float(v) for v in letters)
-        self.basis = _check_basis(basis)
-        if shocks is None:
-            shocks = "independent" if self.basis == "rate" else "exclusive"
-        if shocks not in ("exclusive", "independent"):
-            raise ValueError(
-                "shocks must be 'exclusive' or 'independent', got "
-                f"{shocks!r}."
-            )
-        if self.basis == "rate" and shocks != "independent":
-            raise ValueError(
-                "By rate, every cause strikes independently: shocks="
-                "'exclusive' splits the probability (basis='probability')."
-            )
-        self._shocks = shocks
-
-    @property
-    def shocks(self) -> str:
-        """How the shared causes combine: ``"exclusive"`` (one at most,
-        the probability split's default) or ``"independent"`` (as
-        independent basic events; by rate, always)."""
-        return self._shocks
+        self.letters = tuple(number_or_nan(v) for v in letters)
+        super().__init__(basis, shocks)
 
     @property
     def group_size(self) -> int:
         """The number of members this model describes, ``len(letters) + 1``."""
         return len(self.letters) + 1
 
-    def required_group_size(self) -> int:
-        """The group size this model requires, ``group_size``.
+    def _fractions(self, m: int) -> List[float]:
+        # rho[0..m] is rho_1, ..., rho_{m+1}: 1, the letters, then 0.
+        rho = [1.0, *self.letters, 0.0]
+        out, product_so_far = [], 1.0
+        for k in range(1, m + 1):
+            product_so_far *= rho[k - 1]
+            out.append(product_so_far * (1.0 - rho[k]) / comb(m - 1, k - 1))
+        return out
 
-        [`CCFGroup`][repyability.CCFGroup] rejects a group whose number of
-        members differs.
-
-        Returns
-        -------
-        int
-            ``len(letters) + 1``.
-        """
-        return self.group_size
-
-    def _specific_set_prob(self, m: int, k: int, Q: np.ndarray) -> np.ndarray:
-        # rho[0..m-1] represents rho_1..rho_m (rho_1 = 1, then the letters).
-        rho = [1.0] + list(self.letters)
-        prod = 1.0
-        for i in range(k):
-            prod *= rho[i]
-        rho_next = rho[k] if k < m else 0.0
-        return (prod * (1.0 - rho_next) / comb(m - 1, k - 1)) * Q
-
-    def decompose(self, members: Collection[Hashable], Q) -> Decomposition:
-        """Split the failure probability into independent and shared parts.
-
-        With ``m = len(members)``, each member fails alone with
-        ``Q_1 = (1 - beta) * Q``, and each specific set of ``k >= 2``
-        members fails together with the basic-event probability ``Q_k``
-        given in the class description. The RBD calls this at each
-        evaluation time with ``Q``, the probability that the group's first
-        member has failed by then.
-
-        By rate, or with ``shocks="independent"``, the shocks are the sets
-        of members the causes that have struck fail between them: several
-        causes may strike, and a member fails if any of its causes has, so
-        these are the distinct unions, mutually exclusive as the RBD needs,
-        each with its probability.
-
-        Parameters
-        ----------
-        members : collection of hashable
-            The group's member node names: ``group_size`` of them, as
-            [`CCFGroup`][repyability.CCFGroup] ensures.
-        Q : float or array_like
-            Each member's total failure probability (the same for every
-            member of a symmetric group), at one or more times.
-
-        Returns
-        -------
-        q_independent : numpy.ndarray
-            ``Q_1``, each member's independent failure probability, at
-            least 1-d (by rate, ``1 - (1 - Q) ** (1 - beta)``).
-        shocks : list of (frozenset, numpy.ndarray)
-            ``(subset, Q_k)`` for every subset of ``k = 2, ..., m`` members,
-            smaller subsets first; by rate, ``(subset, probability)`` for
-            every set the struck causes can fail together.
-        """
-        Q = np.atleast_1d(np.asarray(Q, dtype=float))
-        q_independent, _, shocks = self._split(members, Q, 1.0 - Q)
-        return q_independent, shocks
-
-    def _split(self, members, Q, R):
-        """Each member's probability of failing on its own and of not
-        doing so, and the shocks (see ``decompose``), at the members'
-        probabilities of failing ``Q`` and of surviving ``R`` (both 1-d
-        arrays: by rate, whichever keeps its precision is used)."""
-        members = tuple(members)
-        if self.basis == "rate":
-            independent, causes = self._causes(members)
-            return _rate_outcomes(members, independent, causes, _hazard(Q, R))
-        if self.shocks == "independent":
-            independent, causes = self._causes(members)
-            return _event_outcomes(members, independent, causes, Q)
-        m = len(members)
-        q_independent = self._specific_set_prob(m, 1, Q)
-        shocks: List[Tuple[frozenset, np.ndarray]] = []
-        for k in range(2, m + 1):
-            q_k = self._specific_set_prob(m, k, Q)
-            for subset in combinations(members, k):
-                shocks.append((frozenset(subset), q_k))
-        return q_independent, 1.0 - q_independent, shocks
-
-    def _causes(self, members) -> Tuple[float, list]:
-        """By rate: each member's own causes' fraction of its hazard, and
-        each shared cause, as the members it fails and its fraction."""
-        members = tuple(members)
-        m = len(members)
-        one = np.ones(1)
-        causes = [
-            (frozenset(subset), float(self._specific_set_prob(m, k, one)[0]))
-            for k in range(2, m + 1)
-            for subset in combinations(members, k)
-        ]
-        return float(self._specific_set_prob(m, 1, one)[0]), causes
+    def _by_rate(self) -> "MGL":
+        return MGL(*self.letters, basis="rate")
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -684,12 +744,200 @@ class MGL(_Model):
         )
 
     def __repr__(self) -> str:
-        parts = [repr(letter) for letter in self.letters]
-        if self.basis == "rate":
-            parts.append("basis='rate'")
-        elif self.shocks == "independent":
-            parts.append("shocks='independent'")
+        parts = [repr(letter) for letter in self.letters] + self._options()
         return f"MGL({', '.join(parts)})"
+
+
+#: The testing schemes an alpha-factor model's parameters were estimated
+#: under: ``"staggered"``, the members tested one after another, or
+#: ``"non-staggered"``, all at once.
+TESTING = ("staggered", "non-staggered")
+
+#: How far the alpha factors given may sum from 1 (published tables are
+#: rounded); they are scaled to sum to 1 exactly.
+ALPHA_TOLERANCE = 0.01
+
+
+class AlphaFactor(_SpecificSets):
+    """The alpha-factor common-cause model.
+
+    The parameters are the shares of a group's failure events by how many
+    members each failed: ``alpha_k`` is the fraction of the events that
+    failed exactly ``k`` of the ``m`` members, so ``alpha_1, ..., alpha_m``
+    sum to 1. Each is estimated directly from event counts, which is why
+    common-cause data sources (NUREG/CR-5485, the NRC's CCF parameter
+    estimates) publish this model's parameters. The multiplicities are the
+    [`MGL`][repyability.MGL] model's: the probability that a common cause
+    fails a *specific* set of ``k`` of the ``m`` members is
+
+    ``Q_k = [1 / C(m-1, k-1)] * alpha_k * Q``
+
+    for a group whose members are tested one after another, in a
+    staggered scheme (``testing="staggered"``), and
+
+    ``Q_k = [k / C(m-1, k-1)] * (alpha_k / alpha_t) * Q``
+
+    with ``alpha_t = sum of k * alpha_k``, for one tested all at once,
+    in a non-staggered scheme (``testing="non-staggered"``): the schemes
+    count a multiple failure differently (NUREG/CR-5485), so use the one
+    the estimates were published for.
+    Either way the ``Q_k`` of the sets holding a component sum to its total
+    failure probability ``Q``, and everything else is as for ``MGL`` (the
+    ``basis``, the ``shocks``, and what the diagrams do with the group):
+    each ``AlphaFactor`` model is an ``MGL`` model with the letters
+    ``rho_k = sum over j >= k of C(m-1, j-1) Q_j / sum over j >= k-1``.
+
+    The levers of the model (its ``parameters``, for ``levers()``,
+    ``parameter_sensitivity`` and the parameter uncertainty) are
+    ``alpha_2, ..., alpha_m``, named ``ccf_alpha_2``, ...; ``alpha_1`` is
+    the remainder, so a change that would take their sum past 1 is
+    refused.
+
+    Use it through a [`CCFGroup`][repyability.CCFGroup]; models with equal
+    alpha factors, ``testing``, ``basis`` and ``shocks`` compare equal.
+
+    Parameters
+    ----------
+    alphas : sequence of float
+        ``alpha_1, ..., alpha_m``, each in ``[0, 1]``, summing to 1 (a
+        rounded table's, summing to within 1% of 1, are scaled to 1); at
+        least two. A group of ``m`` members needs ``m`` alpha factors.
+    testing : {"staggered", "non-staggered"}, optional
+        The testing scheme the alpha factors were estimated under, by
+        default ``"staggered"`` (keyword only).
+    basis : {"probability", "rate"}, optional
+        What the alpha factors split, by default ``"probability"``
+        (keyword only; see [`MGL`][repyability.MGL]).
+    shocks : {"exclusive", "independent"}, optional
+        How the shared causes combine when the alpha factors split the
+        probability (keyword only): by default ``"exclusive"``, one at
+        most; ``"independent"``, as independent basic events. By rate
+        they are always independent.
+
+    Raises
+    ------
+    ValueError
+        If fewer than two alpha factors are given, any is not a number in
+        ``[0, 1]``, they do not sum to 1, ``testing`` is neither
+        ``"staggered"`` nor ``"non-staggered"``, ``basis`` is neither
+        ``"probability"`` nor ``"rate"``, or ``shocks`` is neither
+        ``"exclusive"`` nor ``"independent"`` (``"exclusive"`` by rate).
+
+    Examples
+    --------
+    A three-member group in which 95% of the failure events failed one
+    member, 4% two and 1% all three, each member failing with probability
+    ``Q = 0.1``, its tests staggered:
+
+    >>> from repyability import AlphaFactor
+    >>> model = AlphaFactor([0.95, 0.04, 0.01])
+    >>> model.group_size
+    3
+    >>> q_independent, shocks = model.decompose(["a", "b", "c"], 0.1)
+    >>> round(float(q_independent[0]), 4)  # alpha_1 * Q
+    0.095
+    >>> for members, q in shocks:
+    ...     print(sorted(members), round(float(q[0]), 4))
+    ['a', 'b'] 0.002
+    ['a', 'c'] 0.002
+    ['b', 'c'] 0.002
+    ['a', 'b', 'c'] 0.001
+
+    The same alpha factors estimated under non-staggered testing give
+    more weight to the multiple failures (``alpha_t = 1.06``):
+
+    >>> model = AlphaFactor([0.95, 0.04, 0.01], testing="non-staggered")
+    >>> q_independent, shocks = model.decompose(["a", "b", "c"], 0.1)
+    >>> round(float(q_independent[0]), 4)  # 0.95 / 1.06 * Q
+    0.0896
+    >>> round(float(shocks[0][1][0]), 4)  # 2 / 2 * 0.04 / 1.06 * Q
+    0.0038
+    >>> round(float(shocks[-1][1][0]), 4)  # 3 * 0.01 / 1.06 * Q
+    0.0028
+    """
+
+    def __init__(
+        self,
+        alphas: Collection[float],
+        *,
+        testing: str = "staggered",
+        basis: str = "probability",
+        shocks: Optional[str] = None,
+    ):
+        if isinstance(alphas, (str, bytes)) or not isinstance(
+            alphas, Collection
+        ):
+            raise ValueError(
+                "alphas must be the alpha factors alpha_1, ..., alpha_m of a "
+                f"group of m members, in a list; got {alphas!r}."
+            )
+        values = [number_or_nan(alpha) for alpha in alphas]
+        if len(values) < 2:
+            raise ValueError(
+                "AlphaFactor needs an alpha factor for each of a group's "
+                f"members, at least two (alpha_1, alpha_2); got {len(values)}."
+            )
+        if not all(0.0 <= value <= 1.0 for value in values):
+            raise ValueError(
+                "Alpha factors must be numbers in [0, 1], got "
+                f"{list(alphas)!r}."
+            )
+        total = sum(values)
+        if abs(total - 1.0) > ALPHA_TOLERANCE:
+            raise ValueError(
+                f"Alpha factors must sum to 1, got {list(alphas)!r}, which "
+                f"sum to {total:.4g}."
+            )
+        self.alphas = tuple(value / total for value in values)
+        one_of("testing", testing, TESTING)
+        self.testing = testing
+        super().__init__(basis, shocks)
+
+    @property
+    def group_size(self) -> int:
+        """The number of members this model describes, ``len(alphas)``."""
+        return len(self.alphas)
+
+    def _fractions(self, m: int) -> List[float]:
+        if self.testing == "staggered":
+            weights = list(self.alphas)
+        else:
+            alpha_t = sum(k * alpha for k, alpha in enumerate(self.alphas, 1))
+            weights = [
+                k * alpha / alpha_t for k, alpha in enumerate(self.alphas, 1)
+            ]
+        return [
+            weight / comb(m - 1, k - 1) for k, weight in enumerate(weights, 1)
+        ]
+
+    def _by_rate(self) -> "AlphaFactor":
+        return AlphaFactor(self.alphas, testing=self.testing, basis="rate")
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, AlphaFactor)
+            and other.alphas == self.alphas
+            and other.testing == self.testing
+            and other.basis == self.basis
+            and other.shocks == self.shocks
+        )
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                type(self).__name__,
+                self.alphas,
+                self.testing,
+                self.basis,
+                self.shocks,
+            )
+        )
+
+    def __repr__(self) -> str:
+        parts = [repr(list(self.alphas))]
+        if self.testing != "staggered":
+            parts.append(f"testing={self.testing!r}")
+        return f"AlphaFactor({', '.join(parts + self._options())})"
 
 
 #: The names of an MGL model's letters, in order: ``beta`` first.
@@ -723,9 +971,14 @@ LETTERS = (
 def parameters(model) -> Dict[str, float]:
     """A common-cause model's parameters by name: a ``BetaFactor``'s
     ``beta``, an ``MGL`` model's letters (``beta``, ``gamma``, ``delta``,
-    ...)."""
+    ...), an ``AlphaFactor`` model's ``alpha_2``, ..., ``alpha_m``
+    (``alpha_1`` being the remainder)."""
     if isinstance(model, BetaFactor):
         return {"beta": model.beta}
+    if isinstance(model, AlphaFactor):
+        return {
+            f"alpha_{k}": value for k, value in enumerate(model.alphas[1:], 2)
+        }
     return {
         LETTERS[j] if j < len(LETTERS) else f"letter{j + 1}": value
         for j, value in enumerate(model.letters)
@@ -735,7 +988,8 @@ def parameters(model) -> Dict[str, float]:
 def with_parameters(model, values: Dict[str, float]) -> "_Model":
     """``model`` with the parameters ``values`` names changed (see
     ``parameters``), its basis kept: a ``ValueError`` for one outside
-    ``[0, 1]`` or a name it does not have."""
+    ``[0, 1]``, a name it does not have, or alpha factors summing past
+    1."""
     current = parameters(model)
     unknown = [name for name in values if name not in current]
     if unknown:
@@ -746,6 +1000,20 @@ def with_parameters(model, values: Dict[str, float]) -> "_Model":
     current.update({name: float(v) for name, v in values.items()})
     if isinstance(model, BetaFactor):
         return BetaFactor(current["beta"], basis=model.basis)
+    if isinstance(model, AlphaFactor):
+        rest = list(current.values())
+        first = 1.0 - sum(rest)
+        if first < -1e-12:
+            raise ValueError(
+                f"{list(current)} must sum to at most 1 (alpha_1 is the "
+                f"remainder), got {rest}, which sum to {sum(rest):.4g}."
+            )
+        return AlphaFactor(
+            [max(first, 0.0), *rest],
+            testing=model.testing,
+            basis=model.basis,
+            shocks=model.shocks,
+        )
     return MGL(*current.values(), basis=model.basis, shocks=model.shocks)
 
 
@@ -758,11 +1026,7 @@ def validity_warning(group: "CCFGroup", Q: float) -> None:
     from repyability.utils.wrappers import outside_level
 
     model = group.model
-    rate: _Model = (
-        BetaFactor(model.beta, basis="rate")
-        if isinstance(model, BetaFactor)
-        else MGL(*model.letters, basis="rate")
-    )
+    rate = model._by_rate()
     warnings.warn(
         f"Common-cause group {list(group.members)} ({model!r}): its "
         f"members' probability of failing reaches Q = {Q:.3g} at the times "
@@ -809,17 +1073,20 @@ class CCFGroup:
         The RBD nodes that share the common cause (at least two, distinct).
         Standard CCF theory is for *symmetric* groups, so the members must
         carry identical component models.
-    model : BetaFactor or MGL
+    model : BetaFactor, MGL or AlphaFactor
         The common-cause model coupling the members. An
         [`MGL`][repyability.MGL] model fixes the group size (``m - 1``
-        letters for ``m`` members).
+        letters for ``m`` members), as an
+        [`AlphaFactor`][repyability.AlphaFactor] model does (``m`` alpha
+        factors).
 
     Raises
     ------
     ValueError
         If there are fewer than two members, a member is listed twice,
-        ``model`` is not a ``BetaFactor`` or ``MGL``, or an ``MGL`` model's
-        group size differs from the number of members.
+        ``model`` is not a ``BetaFactor``, ``MGL`` or ``AlphaFactor``, or
+        an ``MGL`` or ``AlphaFactor`` model's group size differs from the
+        number of members.
 
     Notes
     -----
@@ -847,6 +1114,13 @@ class CCFGroup:
     """
 
     def __init__(self, members: Collection[Hashable], model: Any):
+        if isinstance(members, (str, bytes)) or not isinstance(
+            members, Collection
+        ):
+            raise ValueError(
+                "CCF group members must be a collection of node names, "
+                f"not one name: got {members!r}."
+            )
         members = tuple(members)
         if len(members) < 2:
             raise ValueError(
@@ -856,10 +1130,10 @@ class CCFGroup:
             raise ValueError(
                 f"CCF group members must be distinct, got {list(members)}."
             )
-        if not isinstance(model, (BetaFactor, MGL)):
+        if not isinstance(model, _Model):
             raise ValueError(
-                "CCFGroup model must be a BetaFactor or MGL; alpha-factor is "
-                "not supported yet."
+                "CCFGroup model must be a BetaFactor, MGL or AlphaFactor, "
+                f"got {model!r}."
             )
         required = model.required_group_size()
         if required is not None and required != len(members):
@@ -876,7 +1150,7 @@ class CCFGroup:
 
 def as_groups(groups) -> list:
     """A diagram's ``ccf_groups`` as a list: none for None, and one for a
-    single ``CCFGroup`` (#232); else the groups given, which the diagram
+    single ``CCFGroup``; else the groups given, which the diagram
     checks."""
     if groups is None:
         return []
@@ -887,6 +1161,40 @@ def as_groups(groups) -> list:
             "ccf_groups must be a CCFGroup or a list of them, got "
             f"{groups!r}."
         )
+    return list(groups)
+
+
+def checked_groups(groups, check_member, saved, unlike, noun="Node") -> list:
+    """The common-cause ``groups``, checked as every diagram and tree
+    checks them: each a ``CCFGroup``, each member passing
+    ``check_member(member, group)`` (which raises for one that cannot be in
+    a group) and in one group at
+    most, and a group's members alike as ``saved`` saves them (the models
+    assume a symmetric group); a group whose members cannot be saved is
+    not compared. ``unlike(group)`` is the message for one that is not
+    symmetric."""
+    from ._model_utils import SAVE_ERRORS
+
+    seen: set = set()
+    for group in groups:
+        if not isinstance(group, CCFGroup):
+            raise ValueError(
+                "ccf_groups must contain CCFGroup instances, got "
+                f"{type(group).__name__}."
+            )
+        for member in group.members:
+            check_member(member, group)
+            if member in seen:
+                raise ValueError(
+                    f"{noun} {member!r} appears in more than one CCF group."
+                )
+            seen.add(member)
+        try:
+            forms = [saved(member) for member in group.members]
+        except SAVE_ERRORS:
+            continue
+        if any(form != forms[0] for form in forms[1:]):
+            raise ValueError(unlike(group))
     return list(groups)
 
 
@@ -901,7 +1209,6 @@ def shock_outcomes(groups, base_probabilities, base_failures, check=None):
     The exact values condition on the groups module by module instead (see
     ``_ccf_modules``), and must agree with the sum over these, which the
     capacity distribution and the redundancy allocations still take."""
-    from itertools import product
 
     # Each group's mutually-exclusive shock outcomes: (weight, {member:
     # reliability}, {member: unreliability}) for every subset that can

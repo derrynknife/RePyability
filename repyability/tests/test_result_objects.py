@@ -90,6 +90,33 @@ def test_the_results_of_the_exact_methods_go_through_json(repairable):
     assert as_json(results[4])["members"] == ["a", "b"]
 
 
+def test_the_single_unit_policies_go_through_json():
+    from repyability import (
+        FailureLimitPolicy,
+        MaintenancePolicy,
+        NonRepairable,
+    )
+
+    policy = NonRepairable(
+        W([1000, 2.5]), planned_cost=1.0, unplanned_cost=5.0
+    ).optimal_replacement_policy()
+    assert isinstance(policy, MaintenancePolicy)
+    limit = FailureLimitPolicy(7, 0.031)
+    for result in (policy, limit):
+        assert isinstance(result, _ResultMapping)
+        out = as_json(result)
+        assert set(out) == fields_of(result)
+        assert out["cost_rate"] == result.cost_rate
+        assert result["cost_rate"] == result.cost_rate
+    assert as_json(policy)["interval"] == policy.interval
+    assert as_json(limit)["failure_count"] == 7
+    assert (
+        repr(limit) == "FailureLimitPolicy(failure_count=7, cost_rate=0.031)"
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        policy.interval = 1.0
+
+
 def test_a_simulated_cost_goes_through_json(repairable):
     cost = repairable.cost(1000.0, mc_samples=200, seed=1)
     out = as_json(cost)
@@ -207,8 +234,7 @@ def test_the_capacity_mean_is_a_property():
         warnings.simplefilter("error")
         assert capacity.mean == pytest.approx(expected)
         assert float(capacity.mean) == pytest.approx(expected)
-    with pytest.warns(FutureWarning, match="0.14"):
-        assert capacity.mean() == pytest.approx(expected)
+    assert type(capacity.mean) is float
 
 
 def test_spares_mean_is_still_a_property():

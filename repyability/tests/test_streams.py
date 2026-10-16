@@ -9,7 +9,7 @@ import dataclasses
 import numpy as np
 import pytest
 
-from repyability.rbd import _compiled, _philox, _streams
+from repyability.rbd import _compiled, _event_loop, _philox, _streams
 from repyability.tests.keyed_draws import reference_uniform
 from repyability.tests.test_simulation_engines import identical, plain_rbds
 
@@ -43,7 +43,7 @@ def test_the_uniforms_are_numpys_philox(name, uniforms):
 
 def test_a_block_holds_the_defined_uniforms_whatever_its_width():
     rbd = plain_rbds()["bridge"]
-    plan, _ = rbd._stream_plan(400.0, 5, False)
+    plan, _ = _event_loop._stream_plan(rbd, 400.0, 5, False)
     spec = plan.specs[(("a",), _streams.FAILURE)]
     uniform = dataclasses.replace(spec, sampler=lambda u: u)
     for width in (1, 3, 8):

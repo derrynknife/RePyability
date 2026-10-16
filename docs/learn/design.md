@@ -268,7 +268,8 @@ items behave like this (they are "knapsack" problems), so "best value first"
 is a heuristic, not a method. Use it only when the problem is too large for the
 exact search; RePyability's exact method uses a dynamic program over the nodes
 when they are in series, and a pruned search otherwise, and stops with an
-explanation if a problem is too large.
+explanation if a problem is too large. [Concepts](../concepts.md#allocation)
+describes both searches, and the cost function of the cost-based allocation.
 
 ### The whole trade-off: the Pareto front
 
@@ -461,6 +462,6 @@ This is the last lesson. From here:
   fitted models to a costed, maintained design;
 - the [User guide](../guide/index.md) covers every method and option, with
   [Design and allocation](../guide/design.md) for this lesson's;
-- the [Glossary](glossary.md) and [Concepts](../concepts.md) summarise the
-  ideas; and the [course index](index.md) maps the lessons, if you want to
+- the [Glossary](glossary.md) defines the terms, and [Concepts](../concepts.md)
+  says how RePyability computes each analysis; and the [course index](index.md) maps the lessons, if you want to
   revisit one.

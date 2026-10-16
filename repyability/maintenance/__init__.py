@@ -1,10 +1,18 @@
-"""Shared result types for component maintenance-policy optimisations."""
+"""Maintenance: the single-unit optimisers' result types, and the choices
+about a part's next replacement (#319).
+
+RePyability is about timelines: the calendar side of maintenance planning
+(tasks on dates, operating schedules, meters read by date) is Reliafy's.
+``README.md`` in this package records the use cases, the question each
+answers and how it is solved."""
 
 from dataclasses import dataclass
 
+from repyability.rbd.results import _ResultMapping
+
 
 @dataclass(frozen=True)
-class MaintenancePolicy:
+class MaintenancePolicy(_ResultMapping):
     """An optimal preventive-maintenance policy for a single component.
 
     Returned by the ``optimal_replacement_policy()`` method of
@@ -13,7 +21,8 @@ class MaintenancePolicy:
     ``optimal_overhaul_policy()`` method of
     [`Repairable`][repyability.Repairable] (periodic overhaul: repair each
     failure and renew the unit every ``interval``). It is an immutable
-    (frozen) dataclass.
+    (frozen) dataclass, read as a mapping too, with ``to_dict()`` for
+    JSON.
 
     Attributes
     ----------
@@ -43,13 +52,14 @@ class MaintenancePolicy:
 
 
 @dataclass(frozen=True)
-class FailureLimitPolicy:
+class FailureLimitPolicy(_ResultMapping):
     """An optimal failure-limit (replace-at-N-th-failure) policy.
 
     Returned by the ``optimal_failure_limit_policy()`` method of
     [`Repairable`][repyability.Repairable]: rather than renewing at a
     fixed *age*, the unit is repaired on each failure and replaced at the
-    ``failure_count``-th failure. It is an immutable (frozen) dataclass.
+    ``failure_count``-th failure. It is an immutable (frozen) dataclass,
+    read as a mapping too, with ``to_dict()`` for JSON.
 
     Attributes
     ----------
@@ -81,3 +91,19 @@ class FailureLimitPolicy:
 
     failure_count: int
     cost_rate: float
+
+
+# After the policies, which the modules it imports may import from here.
+from repyability.maintenance._calendar import (  # noqa: E402
+    Calendar,
+    Opportunity,
+)
+from repyability.maintenance._next import (  # noqa: E402
+    NextReplacement,
+    ReplacementChoice,
+)
+from repyability.maintenance._replacement import (  # noqa: E402
+    CalendarPolicy,
+    PlannedReplacement,
+)
+from repyability.maintenance._skip import SkipValue  # noqa: E402

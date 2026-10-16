@@ -26,7 +26,10 @@ def test_a_cross_reference_reads_as_its_name():
     text = f"see [`point_availability`][{target}]."
     assert readable(text) == "see ``point_availability``."
     assert readable(None) is None
-    assert readable("a [link](guide/greeks.md)") == "a [link](guide/greeks.md)"
+    assert (
+        readable("a [link](../guide/greeks.md)")
+        == "a [link](../guide/greeks.md)"
+    )
 
 
 @pytest.mark.parametrize("cls", [NonRepairableRBD, RepairableRBD, FaultTree])

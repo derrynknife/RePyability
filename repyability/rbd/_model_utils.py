@@ -9,9 +9,28 @@ small helpers keeps that coupling in one place (easy to audit and to cover
 with a compatibility test) and gives the call sites intention-revealing names.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 import numpy as np
+
+#: What a model raises when it cannot work out what it is asked (a quantile,
+#: a survival, a mean) at the values given: surpyval's models, and anything
+#: else given as one, fail in these ways. Code that probes what a model can
+#: do catches them, and lets anything else (a bug) through.
+MODEL_ERRORS = (
+    ArithmeticError,
+    AttributeError,
+    LookupError,
+    NotImplementedError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
+
+#: What saving a model that cannot be saved raises (``serialise_model``,
+#: a model's ``to_dict`` and ``json.dumps``).
+SAVE_ERRORS = (AttributeError, NotImplementedError, TypeError, ValueError)
+
 
 # surpyval distribution names whose event probability does not vary with time,
 # i.e. ``sf(t)`` is constant. These behave as fixed per-demand probabilities
@@ -76,6 +95,22 @@ def never_fails(model) -> float:
     return max(0.0, 1.0 - float(p))
 
 
+def always_works(model) -> bool:
+    """Whether ``model`` never fails at all: ``PerfectReliability``, or a
+    fixed probability of failing of 0 (as a ``node_availability`` of 1
+    gives). A node with such a model is a junction."""
+    from .helper_classes import PerfectReliability
+
+    if model is PerfectReliability or isinstance(model, PerfectReliability):
+        return True
+    if is_fixed_probability(model):
+        try:
+            return float(np.ravel(model.ff(1.0))[0]) == 0.0
+        except MODEL_ERRORS:
+            return False
+    return False
+
+
 def is_exponential(model) -> bool:
     """True if ``model`` is a plain surpyval Exponential lifetime: no
     offset, every unit fails and none is dead on arrival. Only then is it
@@ -114,20 +149,51 @@ def failure_time_scale(model) -> float:
     return float("nan")
 
 
-def parametric_spec(model):
-    """Return ``(surpyval_class, params, parameter_names, extras)`` for a
-    parametric node model, or ``None`` when it has no reconstructable
-    distribution parameters (a ``StandbyModel``, ``RepeatedNode``, nested
-    RBD, a repeated node's source name, the perfect-reliability helpers, or
-    a fitted non-parametric model). ``extras`` are its offset,
-    limited-failure-population and zero-inflation parameters (surpyval's
-    ``model.extras``): ``surpyval_class.from_params(params, **extras)``
-    rebuilds it.
+#: The shares a model may have after its distribution's parameters, in the
+#: order of surpyval's ``covariance()`` (a limited failure population's
+#: ``lfp_p``, then a zero-inflated one's ``f0``), each with the flag that
+#: says a fit estimated it and the value that means it has none.
+_SHARES = (("lfp", "lfp_p", 1.0), ("zi", "f0", 0.0))
 
-    Used by parameter-sensitivity analysis to rebuild a distribution with a
-    perturbed parameter. It is faithful for exactly the models
-    ``serialisation`` round-trips (surpyval parametric distributions), since it
-    goes through the same ``dist name`` + ``from_params`` reconstruction.
+
+class ParametricSpec(NamedTuple):
+    """A parametric model's parameters (see ``parametric_spec``)."""
+
+    cls: Any
+    params: List[float]
+    names: List[str]
+    extras: Dict[str, Any]
+    bounds: List[tuple]
+
+    def build(self, values) -> Any:
+        """The model with its parameters at ``values``, in the order of
+        ``params``."""
+        shares = {share for _, share, _ in _SHARES}
+        own = [float(v) for n, v in zip(self.names, values) if n not in shares]
+        given = {
+            n: float(v) for n, v in zip(self.names, values) if n in shares
+        }
+        return self.cls.from_params(own, **{**self.extras, **given})
+
+
+def parametric_spec(model) -> Optional[ParametricSpec]:
+    """The parameters of a parametric node model, or ``None`` when it has no
+    reconstructable distribution parameters (a ``StandbyModel``,
+    ``RepeatedNode``, nested RBD, a repeated node's source name, the
+    perfect-reliability helpers, or a fitted non-parametric model).
+
+    ``params`` and ``names`` are its distribution's, then the share that
+    ever fails (``lfp_p``, a limited failure population) and the share dead
+    on arrival (``f0``, zero inflation) where it has them: the order of
+    surpyval's ``covariance()``. ``extras`` are surpyval's ``model.extras``
+    (the offset kept as it is), ``bounds`` each parameter's range as its
+    distribution bounds it (None where it does not), and ``build(values)``
+    the model with its parameters at ``values``.
+
+    Used by parameter sensitivity and uncertainty to rebuild a model with
+    moved or drawn parameters. It is faithful for exactly the models
+    ``serialisation`` round-trips (surpyval parametric distributions), since
+    it goes through the same ``dist name`` + ``from_params`` reconstruction.
     """
     import surpyval
 
@@ -142,7 +208,60 @@ def parametric_spec(model):
     names = getattr(dist, "parameter_names", None)
     if not names or len(list(names)) != len(params):
         names = [f"param{i}" for i in range(len(params))]
-    return cls, params, list(names), dict(getattr(model, "extras", {}))
+    names = list(names)
+    bounds = list(getattr(cls, "bounds", None) or [])
+    if len(bounds) != len(params):
+        bounds = [(None, None)] * len(params)
+    extras = dict(getattr(model, "extras", {}))
+    for flag, share, none in _SHARES:
+        value = extras.get(share, none)
+        if getattr(model, flag, False) or value != none:
+            params.append(float(value))
+            names.append(share)
+            bounds.append((0, 1))
+    return ParametricSpec(cls, params, names, extras, bounds)
+
+
+class CovariateSpec(NamedTuple):
+    """A ``RegressionNode``'s covariates as levers, with the
+    interface of a ``ParametricSpec``: ``params`` the covariates, ``names``
+    ``"covariate.<name>"`` (the model's feature names, or their places),
+    ``bounds`` none, and ``build(values)`` the node at those covariates."""
+
+    node: Any
+    params: List[float]
+    names: List[str]
+    bounds: List[tuple]
+
+    def build(self, values) -> Any:
+        """The node at the covariates ``values``."""
+        from repyability.rbd.regression_node import RegressionNode
+
+        covariates = [float(v) for v in values]
+        return RegressionNode(self.node.model, covariates=covariates)
+
+
+def covariate_spec(model) -> Optional[CovariateSpec]:
+    """The covariates of a ``RegressionNode`` at fixed covariates, as
+    levers, or None for any other model (one along a schedule has no one
+    value to move)."""
+    from repyability.rbd.regression_node import RegressionNode
+
+    if not isinstance(model, RegressionNode) or model.covariates is None:
+        return None
+    params = [float(z) for z in model.covariates]
+    features = getattr(model.model, "feature_names", None)
+    if not features or len(list(features)) != len(params):
+        features = [str(i) for i in range(len(params))]
+    names = [f"covariate.{name}" for name in features]
+    return CovariateSpec(model, params, names, [(None, None)] * len(params))
+
+
+def lever_spec(model):
+    """What parameter sensitivity moves in a node's model: its
+    parameters (``parametric_spec``), or a regression node's covariates
+    (``covariate_spec``); None for a model with neither."""
+    return parametric_spec(model) or covariate_spec(model)
 
 
 def nonparametric(model) -> bool:
@@ -183,7 +302,7 @@ def nonparametric_nodes(models: Dict[Any, Any]) -> List[Any]:
 
 def refuse_nonparametric(models) -> None:
     """Refuse the nodes whose models (or component specs) hold a surpyval
-    non-parametric fit (#149)."""
+    non-parametric fit."""
     nodes = nonparametric_nodes(models)
     if nodes:
         raise ValueError(

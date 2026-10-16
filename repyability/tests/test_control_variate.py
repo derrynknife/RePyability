@@ -10,7 +10,7 @@ import pytest
 import surpyval as surv
 
 from repyability import ControlVariate, NodeState, RepairableRBD
-from repyability.rbd import _streams
+from repyability.rbd import _curves, _event_loop, _runs, _streams
 from repyability.tests.test_performance_equivalence import binomial_first
 from repyability.tests.test_simulation_chunks import identical
 
@@ -93,7 +93,7 @@ def test_the_controlled_estimate_is_unbiased_and_more_precise():
     )
     assert control.twin.shape == (2000,)
     assert control.exact == pytest.approx(
-        rbd._twin()[0].mission_availability(1000.0)
+        _runs._twin(rbd)[0].mission_availability(1000.0)
     )
     fractions = controlled.uptimes / 1000.0
     assert c.estimate == pytest.approx(control.controlled(fractions).mean())
@@ -186,7 +186,7 @@ def test_from_a_state_and_with_held_nodes():
         broken_nodes=["B"],
         control_variate=True,
     )
-    exact = rbd._twin()[0].mission_availability(500.0, broken_nodes=["B"])
+    exact = _runs._twin(rbd)[0].mission_availability(500.0, broken_nodes=["B"])
     assert held.control_variate.exact == pytest.approx(exact)
 
 
@@ -216,7 +216,7 @@ def test_the_twin_leaves_out_what_ties_components_together():
         repair_crews=2,
         maintenance_groups={"g": {}},
     )
-    twin, changes = rbd._twin()
+    twin, changes = _runs._twin(rbd)
     assert changes == [
         "the limit on repair crews",
         "the maintenance groups",
@@ -230,13 +230,13 @@ def test_the_twin_leaves_out_what_ties_components_together():
     # The standby group's twin is its units, as a nested RBD whose streams
     # are the units'.
     assert isinstance(twin.components["G"], RepairableRBD)
-    mine, _ = rbd._stream_specs(500.0)
-    theirs, _ = twin._stream_specs(500.0)
+    mine, _ = _event_loop._stream_specs(rbd, 500.0)
+    theirs, _ = _event_loop._stream_specs(twin, 500.0)
     for unit_index in range(3):
         for kind in (_streams.FAILURE, _streams.REPAIR):
             assert (("G", unit_index), kind) in mine
             assert (("G", unit_index), kind) in theirs
-    assert twin._over_time().route == "numerical"
+    assert _curves._over_time(twin).route == "numerical"
     route = rbd.analysis_routes()["availability"]
     assert route.twin.startswith("the system without the limit on repair")
     assert "Exact twin: the system without" in str(route)
@@ -328,13 +328,13 @@ def test_a_system_that_is_its_own_twin_is_simulated_once(monkeypatch):
     # Its twin's run, drawn from the same streams, is its own to the last
     # bit (#186): one run a round, where a twin that differs runs beside it.
     runs = []
-    plain = RepairableRBD._run
+    plain = _event_loop._run
 
-    def counted(self, *args, **kwargs):
-        runs.append(self)
-        return plain(self, *args, **kwargs)
+    def counted(rbd, *args, **kwargs):
+        runs.append(rbd)
+        return plain(rbd, *args, **kwargs)
 
-    monkeypatch.setattr(RepairableRBD, "_run", counted)
+    monkeypatch.setattr(_event_loop, "_run", counted)
     own = RepairableRBD(EDGES, {n: unit() for n in "ABC"})
     result = own.availability(
         300.0, mc_samples=100, seed=3, control_variate=True
@@ -383,16 +383,16 @@ def test_the_twin_builds_each_curve_once(monkeypatch):
     rbd = RepairableRBD(
         EDGES, {n: unit(scale) for n, scale in zip("ABC", (90, 100, 110))}
     )
-    twin, _ = rbd._twin()
+    twin, _ = _runs._twin(rbd)
     apart = (twin.expected_cost(300.0).mean, twin.mission_availability(300.0))
     built = []
-    plain = RepairableRBD._unit_curve
+    plain = _curves._unit_curve
 
-    def counted(self, node, *args, **kwargs):
+    def counted(rbd, node, *args, **kwargs):
         built.append(node)
-        return plain(self, node, *args, **kwargs)
+        return plain(rbd, node, *args, **kwargs)
 
-    monkeypatch.setattr(RepairableRBD, "_unit_curve", counted)
+    monkeypatch.setattr(_curves, "_unit_curve", counted)
     with twin._sharing_curves():
         together = (
             twin.expected_cost(300.0).mean,
@@ -463,7 +463,7 @@ def test_a_run_takes_exact_values_by_default(monkeypatch):
     def refuse(*args, **kwargs):
         raise NotImplementedError("too many grid points")
 
-    monkeypatch.setattr(RepairableRBD, "_twin_exact", refuse)
+    monkeypatch.setattr(_runs, "_twin_exact", refuse)
     with pytest.warns(RuntimeWarning, match="did not converge"):
         fallen = rbd.availability(
             300.0, mc_samples=50, seed=3, tolerance=1e-6, max_samples=100

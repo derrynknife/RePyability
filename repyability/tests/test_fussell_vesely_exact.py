@@ -12,7 +12,7 @@ import pytest
 from surpyval import Exponential, FixedEventProbability, Weibull
 
 from repyability import FaultTree, NonRepairableRBD, RepairableRBD
-from repyability.rbd import modular
+from repyability.rbd import _repairable_importance, modular
 from repyability.rbd.helper_classes import PerfectReliability
 
 F = FixedEventProbability.from_params
@@ -299,7 +299,9 @@ def test_a_repairable_diagram_averages_the_union_over_its_inspections():
             **{n: repairable(0.2) for n in "bcde"},
         },
     )
-    p, q, weights, _ = rbd._importance_probabilities(None, None)
+    p, q, weights, _ = _repairable_importance._importance_probabilities(
+        rbd, None, None
+    )
     size = len(weights)
     cuts = rbd.get_min_cut_sets()
     nodes = list("abcde")

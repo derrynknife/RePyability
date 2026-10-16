@@ -25,9 +25,20 @@ diagram, built from the gates (#171), so that the minimal path and cut sets,
 which multiply with the shared events, are found from it only when asked
 for. Nothing is approximated: the top event probability and the importance
 measures are exact, repeated events included.
+
+The analyses over a lifetime are the diagram's, on the tree's own
+evaluation (#314): the mean time to the top event, the B-lives, the density
+and hazard, the Barlow-Proschan importance and the parameter sensitivities
+call the functions ``rbd/non_repairable_rbd.py`` shares with
+``NonRepairableRBD``, with the tree's probabilities in place of the
+diagram's; the uncertainty from fitted event models is drawn by the
+diagram of the tree (``to_rbd()``, converted once), whose draws are the
+events'.
 """
 
+import functools
 import json
+import warnings
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -40,12 +51,12 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
-    Union,
 )
 
 import numpy as np
 from numpy.typing import ArrayLike
 
+from repyability.rbd import _measures
 from repyability.rbd._ordered_bdd import OrderedBDD
 from repyability.rbd.modular import (
     KOON,
@@ -54,10 +65,18 @@ from repyability.rbd.modular import (
     SERIES,
     Decomposition,
 )
-from repyability.utils.checks import no_distribution, real_array
+from repyability.rbd.routes import AnalysisRoute, Refused
+from repyability.utils.checks import (
+    no_distribution,
+    one_of,
+    real_array,
+    simulation_options,
+)
+from repyability.utils.wrappers import outside_level
 
 if TYPE_CHECKING:  # pragma: no cover
     from repyability.rbd.non_repairable_rbd import NonRepairableRBD
+    from repyability.rbd.results import Lever, UncertaintyResult
 
 #: The kinds of gate.
 GATE_KINDS = ("or", "and", "vote")
@@ -172,11 +191,12 @@ class FaultTree:
         gate's input.
     ccf_groups : list of CCFGroup, optional
         Common-cause groups over basic events (keyword only), as a
-        ``NonRepairableRBD`` takes them (#184): each group's members,
+        ``NonRepairableRBD`` takes them: each group's members,
         events with the same model, occur together through its shared
-        causes as well as on their own, split by its ``BetaFactor`` or
-        ``MGL`` model at every ``t``. The top event probability and the
-        importance measures sum over the groups' shock outcomes, exactly
+        causes as well as on their own, split by its ``BetaFactor``,
+        ``MGL`` or ``AlphaFactor`` model at every ``t``. The top event
+        probability and the importance measures sum over the groups'
+        shock outcomes, exactly
         as the diagram's do; the cut sets stay sets of basic events (their
         probabilities, in ``ranked_cut_sets``, take the groups in). By
         default none.
@@ -300,72 +320,79 @@ class FaultTree:
         """The common-cause groups, checked: each a ``CCFGroup`` of basic
         events, an event in one group at most, and the members of a group
         with one model (a symmetric group, as the models assume)."""
-        from repyability.rbd.ccf import CCFGroup, as_groups
+        from repyability.rbd.ccf import as_groups, checked_groups
         from repyability.rbd.serialisation import serialise_model
 
         groups = as_groups(groups)
         if not groups:
             return []
-        seen: set = set()
-        for group in groups:
-            if not isinstance(group, CCFGroup):
+
+        def check_member(member, group):
+            if member not in self.events:
                 raise ValueError(
-                    "ccf_groups must hold CCFGroup instances, got "
-                    f"{type(group).__name__}."
+                    f"CCF group member {member!r} is not a basic event "
+                    "of the tree."
                 )
-            for member in group.members:
-                if member not in self.events:
-                    raise ValueError(
-                        f"CCF group member {member!r} is not a basic event "
-                        "of the tree."
-                    )
-                if member in seen:
-                    raise ValueError(
-                        f"Event {member!r} appears in more than one CCF "
-                        "group."
-                    )
-                seen.add(member)
+
+        def saved(member):
             # Compared as saved, as the diagram compares its members (and,
             # as there, not at all for a model that cannot be saved).
-            try:
-                specs = [
-                    (
-                        self.events[m]
-                        if isinstance(self.events[m], float)
-                        else serialise_model(self.events[m])
-                    )
-                    for m in group.members
-                ]
-            except Exception:
-                continue
-            if any(spec != specs[0] for spec in specs[1:]):
-                raise ValueError(
-                    f"CCF group {list(group.members)} is not symmetric: its "
-                    "members must have the same model."
-                )
-        return list(groups)
-
-    def _evaluation(self, p: dict, q: dict, size: int, expand: bool = True):
-        """The tree's probabilities at the events' probabilities of not
-        having occurred ``p`` and of having occurred ``q``, with the
-        common-cause groups each conditioned on within the smallest module
-        holding its members, or (with ``expand``) written out as shock
-        events where those would multiply (#219, see
-        ``rbd._ccf_modules``)."""
-        from repyability.rbd import _ccf_modules
-
-        plans = self.__dict__.setdefault("_ccf_plans", {})
-        if expand not in plans:
-            plans[expand] = _ccf_modules.Plan(
-                self._decomposition,
-                self.ccf_groups,
-                self._ccf_expanded if expand else None,
+            event = self.events[member]
+            return (
+                event if isinstance(event, float) else serialise_model(event)
             )
-        return _ccf_modules.Evaluation(
-            plans[expand], self.ccf_groups, p, q, size, self._ccf_check
+
+        return checked_groups(
+            groups,
+            check_member,
+            saved,
+            lambda group: (
+                f"CCF group {list(group.members)} is not symmetric: its "
+                "members must have the same model."
+            ),
+            noun="Event",
         )
 
-    def _ccf_expanded(self, chosen: dict) -> Optional[Decomposition]:
+    def _evaluation(
+        self,
+        p: dict,
+        q: dict,
+        size: int,
+        expand: bool = True,
+        groups: Optional[list] = None,
+        structure: Optional[Decomposition] = None,
+    ):
+        """The tree's probabilities at the events' probabilities of not
+        having occurred ``p`` and of having occurred ``q``, with the
+        common-cause groups (the tree's, or ``groups`` in their place, as
+        the sensitivities move a group's model) each conditioned on within
+        the smallest module holding its members, or (with ``expand``)
+        written out as shock events where those would multiply (#219, see
+        ``rbd._ccf_modules``); over ``structure`` (the decomposition's
+        dual, for the path sets) in place of the decomposition."""
+        from repyability.rbd import _ccf_modules
+
+        if groups is None:
+            groups = self.ccf_groups
+        plans = self.__dict__.setdefault("_ccf_plans", {})
+        key = (expand, _ccf_modules.Plan.key(groups), id(structure))
+        if key not in plans:
+            plans[key] = _ccf_modules.Plan(
+                self._decomposition if structure is None else structure,
+                groups,
+                (
+                    functools.partial(self._ccf_expanded, groups=groups)
+                    if expand
+                    else None
+                ),
+            )
+        return _ccf_modules.Evaluation(
+            plans[key], groups, p, q, size, self._ccf_check
+        )
+
+    def _ccf_expanded(
+        self, chosen: dict, groups: Optional[list] = None
+    ) -> Optional[Decomposition]:
         """The tree's structure with the causes of the groups ``chosen``
         (each group's, as the members each fails) written out as events of
         their own (#219): each member's place taken by an OR gate of its
@@ -374,11 +401,13 @@ class FaultTree:
         tree is then too entangled to work out."""
         from repyability.rbd._ccf_modules import Failed, Shock
 
+        if groups is None:
+            groups = self.ccf_groups
         gates = self.gates
         events: Dict[Hashable, Any] = {e: 0.5 for e in self.events}
         failed: Dict[Hashable, Any] = {}
         for g, sets in chosen.items():
-            for member in self.ccf_groups[g].members:
+            for member in groups[g].members:
                 strikes = [
                     Shock(g, k)
                     for k, struck in enumerate(sets)
@@ -392,9 +421,7 @@ class FaultTree:
             gates[name] = (*head, [failed.get(x, x) for x in inputs])
         for member, gate in failed.items():
             g = next(
-                i
-                for i, group in enumerate(self.ccf_groups)
-                if member in group.members
+                i for i, group in enumerate(groups) if member in group.members
             )
             gates[gate] = (
                 "or",
@@ -421,6 +448,101 @@ class FaultTree:
         if largest > VALIDITY:
             self._ccf_warned.add(index)
             validity_warning(group, largest)
+
+    def _require_time_varying(self) -> None:
+        """Raise if no event's probability depends on time, so that the
+        time to a reliability is undefined."""
+        if self.is_fixed:
+            raise Refused(
+                "The top event probability does not vary with time (every "
+                "event is a fixed probability); the time to a reliability "
+                "is undefined."
+            )
+
+    def _require_varying_lifetimes(
+        self, what: str = "lifetimes to average"
+    ) -> None:
+        """Raise if every event is a probability: the top event then
+        occurs at the start or never, so the system has no lifetimes (no
+        ``what``: none to average, no failure density over time)."""
+        if self.is_fixed:
+            raise Refused(
+                "The top event probability does not vary with time (every "
+                f"event is a fixed probability): the system has no {what}."
+            )
+
+    def _require_lifetimes(self) -> None:
+        """Raise unless the exact mean time to the top event is defined:
+        its probability must vary with time, and hold over whole
+        lifetimes, which common-cause groups that split a probability do
+        not (as ``NonRepairableRBD.mean`` refuses them)."""
+        self._require_varying_lifetimes()
+        if any(g.model.basis == "probability" for g in self.ccf_groups):
+            raise NotImplementedError(
+                "The exact mean time to the top event does not account for "
+                "common-cause (CCF) groups that split a failure "
+                "probability (the default basis): their models assume it "
+                "is small (see CCFGroup), while over a whole lifetime it "
+                "runs to 1. Split the failure rate instead "
+                "(BetaFactor(beta, basis='rate'), or MGL(..., "
+                "basis='rate')), which holds over the whole life; the "
+                "diagram of the tree, to_rbd(), estimates the MTTF with "
+                "the common cause left out, mean(method='simulate')."
+            )
+
+    def _event_model(self, event: Hashable) -> Any:
+        """An event's model: as given, a probability as the
+        ``FixedEventProbability`` of it (as ``to_rbd`` draws it), whose
+        one parameter, ``p``, is its lever."""
+        from surpyval import FixedEventProbability
+
+        model = self.events[event]
+        if isinstance(model, float):
+            return FixedEventProbability.from_params(model)
+        return model
+
+    def _as_event(self, event: Hashable, model: Any) -> Any:
+        """A moved ``model`` of ``event`` as the event is given: the
+        probability of a ``FixedEventProbability`` for an event given as
+        one (see ``with_levers``)."""
+        if isinstance(self.events[event], float):
+            return float(np.ravel(model.params)[0])
+        return model
+
+    def _lifetime_models(self) -> list:
+        """The events' lifetime models (a probability has none)."""
+        return [m for m in self.events.values() if not isinstance(m, float)]
+
+    def _time_scale(self) -> float:
+        """The shortest typical failure time over the events' models (see
+        ``NonRepairableRBD._time_scale``), to size a step at time 0 by;
+        NaN if none has one."""
+        from repyability.rbd._measures import model_scale
+
+        scales = [model_scale(m) for m in self._lifetime_models()]
+        scales = [x for x in scales if np.isfinite(x) and x > 0.0]
+        return min(scales) if scales else float("nan")
+
+    @property
+    def _init_args(self) -> dict:
+        """The constructor's arguments, as ``with_levers`` rebuilds the
+        tree from them."""
+        return {
+            "gates": self.gates,
+            "events": dict(self.events),
+            "top": self.top,
+            "ccf_groups": list(self.ccf_groups) or None,
+        }
+
+    def _rbd(self) -> "NonRepairableRBD":
+        """The diagram of the tree (``to_rbd``), converted once: the
+        uncertainty analyses draw the events' models through it, its
+        nodes being the events (a repeated event's later places repeats of
+        its node) and its common-cause groups the tree's own."""
+        rbd = self.__dict__.get("_rbd_cache")
+        if rbd is None:
+            rbd = self.__dict__["_rbd_cache"] = self.to_rbd()
+        return rbd
 
     @property
     def gates(self) -> Dict[Hashable, tuple]:
@@ -572,15 +694,19 @@ class FaultTree:
 
     # -- evaluation --------------------------------------------------------
 
-    def _times(self, t) -> Tuple[np.ndarray, bool]:
+    def _times(self, t) -> Tuple[np.ndarray, tuple]:
+        """The times ``t`` as a row (1-d), and their shape: ``()`` for a
+        number, which ``_out`` gives a float back for. None stands for any
+        time (1.0) when no event's probability depends on time."""
         if t is None:
             if not self.is_fixed:
                 raise ValueError(
-                    "t is required: an event's probability depends on time."
+                    "t is required: this fault tree is time-varying (an "
+                    "event's probability depends on time)."
                 )
             t = 1.0
-        scalar = np.ndim(t) == 0
-        return np.atleast_1d(real_array(t, "t")), scalar
+        times = real_array(t, "t")
+        return times.reshape(-1), times.shape
 
     def _event_probabilities(self, t: np.ndarray) -> Tuple[dict, dict]:
         """Each event's probability of not having occurred (``p``) and of
@@ -618,13 +744,22 @@ class FaultTree:
         return np.broadcast_to(np.asarray(fails, dtype=float), (size,))
 
     @staticmethod
-    def _out(values, scalar: bool):
+    def _out(values, shape: tuple):
+        """``values`` (a row per time, or a dict of rows) shaped as the
+        times were (see ``_times``): a float for a number."""
+
+        def shaped(row):
+            row = np.asarray(row, dtype=float).reshape(-1)
+            if shape == ():
+                return float(row[0])
+            size = int(np.prod(shape, dtype=np.int64))
+            if row.size != size:
+                row = np.broadcast_to(row, (size,)).copy()
+            return row.reshape(shape)
+
         if isinstance(values, dict):
-            return {
-                k: (float(np.asarray(v).reshape(-1)[0]) if scalar else v)
-                for k, v in values.items()
-            }
-        return float(np.asarray(values).reshape(-1)[0]) if scalar else values
+            return {k: shaped(v) for k, v in values.items()}
+        return shaped(values)
 
     def top_event_probability(self, t: Optional[ArrayLike] = None):
         """The probability that the top event has occurred.
@@ -668,9 +803,9 @@ class FaultTree:
         >>> round(tree.top_event_probability(), 4)  # 0.01 + 0.99 * 0.1 ** 2
         0.0199
         """
-        t, scalar = self._times(t)
+        t, shape = self._times(t)
         p, q = self._event_probabilities(t)
-        return self._out(self._top(p, q, len(t)), scalar)
+        return self._out(self._top(p, q, len(t)), shape)
 
     def ff(self, t: Optional[ArrayLike] = None):
         """The probability that the top event has occurred by ``t``: the
@@ -714,7 +849,7 @@ class FaultTree:
         >>> round(tree.sf(), 4), round(tree.ff(), 4)
         (0.98, 0.02)
         """
-        t, scalar = self._times(t)
+        t, shape = self._times(t)
         p, q = self._event_probabilities(t)
         size = len(t)
         if self.ccf_groups:
@@ -724,7 +859,405 @@ class FaultTree:
                 p, q, shape=size, works=True, fails=False
             )
         values = np.broadcast_to(np.asarray(total, dtype=float), (size,))
-        return self._out(values, scalar)
+        return self._out(values, shape)
+
+    def _sf_and_ff(self, times: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """The probabilities that the top event has not occurred and that
+        it has by the ``times``, each worked out in its own right (so a
+        small one keeps its precision), from one evaluation."""
+        p, q = self._event_probabilities(times)
+        size = len(times)
+        if self.ccf_groups:
+            works, fails = self._evaluation(p, q, size).system()
+        else:
+            works, fails = self._decomposition.probabilities(
+                p, q, shape=size, works=True, fails=True
+            )
+        return (
+            np.broadcast_to(np.asarray(works, dtype=float), (size,)),
+            np.broadcast_to(np.asarray(fails, dtype=float), (size,)),
+        )
+
+    def Hf(self, t: Optional[ArrayLike] = None):
+        """The cumulative hazard ``H(t) = -ln R(t)`` of the system the tree
+        describes, ``R`` its [`sf`][repyability.FaultTree.sf]: exact (so
+        it honours the common-cause groups), ``+inf`` where the top event
+        is certain. While the top event is less likely than not it is
+        ``-log1p(-F(t))`` from its probability ``F``, so that a small one
+        keeps its precision, as ``NonRepairableRBD.Hf`` has it.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s, a number or an array. May be left out when no event's
+            probability depends on time.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The cumulative hazard: a float for a number ``t``, an array
+            for an array.
+
+        Raises
+        ------
+        ValueError
+            If ``t`` is left out and an event's probability depends on
+            time.
+
+        Examples
+        --------
+        One exponential event's cumulative hazard is its rate times ``t``:
+
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["c"])},
+        ...     {"c": surv.Exponential.from_params([0.01])},
+        ... )
+        >>> round(tree.Hf(50), 6)
+        0.5
+        """
+        from repyability.rbd._measures import cumulative_hazard
+
+        times, shape = self._times(t)
+        return self._out(cumulative_hazard(*self._sf_and_ff(times)), shape)
+
+    def _density(self, times: np.ndarray, dx: float) -> np.ndarray:
+        """The density of the time to the top event at ``times``, by
+        central differences of the exact probabilities (see ``df``)."""
+        from repyability.rbd._measures import (
+            density_by_differences,
+            difference_steps,
+        )
+
+        return density_by_differences(
+            self._sf_and_ff,
+            times,
+            difference_steps(times, dx, self._time_scale),
+        )
+
+    def df(self, t: Optional[ArrayLike] = None, dx: float = 1e-6):
+        """The density of the time to the top event, ``f(t) = -dR/dt``.
+
+        By a central finite difference of the exact
+        [`sf`][repyability.FaultTree.sf] (so it honours the common-cause
+        groups), with step ``dx * |t|``, relative to ``t`` (at 0, ``dx``
+        of the shortest of the events' typical failure times), as
+        ``NonRepairableRBD.df`` takes the diagram's: the difference is of
+        the top event probability while it is the smaller, which keeps
+        its precision, the lower point is clipped at 0, and a negative
+        result (rounding) is clipped to 0. It assumes the probability is
+        smooth near ``t``, which does not hold where an event's model has a
+        kink or a step; a tree of probabilities alone has a density of 0.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s, a number or an array. May be left out when no event's
+            probability depends on time.
+        dx : float, optional
+            The relative step of the difference, by default 1e-6.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The density: a float for a number ``t``, an array for an
+            array.
+
+        Raises
+        ------
+        ValueError
+            If ``t`` is left out and an event's probability depends on
+            time.
+
+        Examples
+        --------
+        One exponential event: ``f(t) = rate * exp(-rate * t)``.
+
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["c"])},
+        ...     {"c": surv.Exponential.from_params([0.01])},
+        ... )
+        >>> round(tree.df(50), 6)
+        0.006065
+        """
+        times, shape = self._times(t)
+        return self._out(self._density(times, dx), shape)
+
+    def hf(self, t: Optional[ArrayLike] = None, dx: float = 1e-6):
+        """The hazard rate of the top event, ``h(t) = f(t) / R(t)``: the
+        numerical density of [`df`][repyability.FaultTree.df] over the
+        exact [`sf`][repyability.FaultTree.sf] (both honour the
+        common-cause groups), ``+inf`` where the top event is certain.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s, a number or an array. May be left out when no event's
+            probability depends on time.
+        dx : float, optional
+            The relative step of the difference, passed to ``df``, by
+            default 1e-6.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The hazard rate: a float for a number ``t``, an array for an
+            array.
+
+        Raises
+        ------
+        ValueError
+            If ``t`` is left out and an event's probability depends on
+            time.
+
+        Examples
+        --------
+        One exponential event has a constant hazard rate:
+
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["c"])},
+        ...     {"c": surv.Exponential.from_params([0.01])},
+        ... )
+        >>> round(tree.hf(50), 6)
+        0.01
+        """
+        times, shape = self._times(t)
+        sf, _ = self._sf_and_ff(times)
+        density = self._density(times, dx)
+        return self._out(
+            np.divide(
+                density, sf, out=np.full_like(density, np.inf), where=sf > 0
+            ),
+            shape,
+        )
+
+    def mean(
+        self,
+        method: str = "exact",
+        *,
+        mc_samples: Optional[int] = None,
+        seed=None,
+    ) -> float:
+        """The mean time to the top event: the MTTF of the system the tree
+        describes.
+
+        Exact to about ``1e-10``, relative: the area under the probability
+        that the top event has not occurred, ``integral from 0 to infinity
+        of R(t) dt`` with ``R`` the exact [`sf`][repyability.FaultTree.sf],
+        integrated by adaptive quadrature on pieces that start at the
+        events' models' kinks, as ``NonRepairableRBD.mean`` integrates the
+        diagram's (it is as exact as the events' models' own
+        probabilities: see ``analysis_routes``). ``inf`` if the top event
+        may never occur (an event of a limited failure population). An
+        event given as a probability has occurred, or not, from the start
+        and for good, as ``sf`` takes it. A common-cause group that splits
+        the failure rate (``basis="rate"``) is included; one splitting a
+        probability is refused, as the diagram refuses it.
+
+        ``method="simulate"`` estimates it from ``mc_samples`` lifetimes
+        of the tree's diagram ([`random`][repyability.FaultTree.random]):
+        the draws are the diagram's, ``to_rbd().mean(method="simulate")``.
+
+        Parameters
+        ----------
+        method : str, optional
+            ``"exact"`` (the default) or ``"simulate"``.
+        mc_samples : int, optional
+            With ``method="simulate"``, the number of simulated lifetimes,
+            by default 100_000.
+        seed : int, optional
+            With ``method="simulate"``, seeds the draws, by default None.
+
+        Returns
+        -------
+        float
+            The mean time to the top event (``inf`` if it may never
+            occur).
+
+        Raises
+        ------
+        ValueError
+            If every event is a probability, so that the top event has no
+            time; if ``method`` is unknown, or ``mc_samples`` or ``seed``
+            is given with ``method="exact"``.
+        NotImplementedError
+            With a common-cause group that splits a failure probability
+            (the default basis): its model assumes it is small (see
+            [`CCFGroup`][repyability.CCFGroup]), while over a whole
+            lifetime it runs to 1.
+
+        Examples
+        --------
+        Either of two exponential events, with rates 0.01 and 0.03, is a
+        failure rate of 0.04: a mean time of 25.
+
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> E = surv.Exponential.from_params
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["a", "b"])}, {"a": E([0.01]), "b": E([0.03])}
+        ... )
+        >>> round(tree.mean(), 8)
+        25.0
+        >>> round(tree.mean(method="simulate", mc_samples=10_000, seed=1), 1)
+        25.3
+        """
+        from repyability.rbd._mean_lifetime import (
+            mean_lifetime,
+            model_kinks,
+            model_knots,
+        )
+
+        one_of("method", method, ("exact", "simulate"))
+        if method == "simulate":
+            return self._rbd().mean(
+                method="simulate", mc_samples=mc_samples, seed=seed
+            )
+        simulation_options("mean()", {"mc_samples": mc_samples, "seed": seed})
+        self._require_lifetimes()
+        models = self._lifetime_models()
+        return mean_lifetime(
+            lambda t: self.sf(t),
+            [model_knots(m) for m in models],
+            [model_kinks(m) for m in models],
+        )
+
+    def random(self, size: int, seed=None) -> np.ndarray:
+        """``size`` random times to the top event (Monte-Carlo): the
+        lifetimes of the tree's diagram,
+        [`NonRepairableRBD.random`][repyability.NonRepairableRBD.random]
+        of ``to_rbd()`` (converted once), so the draws are the diagram's
+        (an event given as a probability occurs at the start, with its
+        probability, or never; a common-cause group that splits a
+        probability is left out, as there).
+
+        Parameters
+        ----------
+        size : int
+            The number of lifetimes.
+        seed : int, optional
+            Seeds the draws, by default None.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``size`` times to the top event (``inf`` where it never
+            occurs).
+
+        Raises
+        ------
+        ValueError
+            If ``size`` is not a positive integer.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> E = surv.Exponential.from_params
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["a", "b"])}, {"a": E([0.01]), "b": E([0.03])}
+        ... )
+        >>> times = tree.random(5, seed=1)
+        >>> times.shape, bool((times == tree.to_rbd().random(5, seed=1)).all())
+        ((5,), True)
+        """
+        return self._rbd().random(size, seed=seed)
+
+    def time_to_reliability(self, target, upper_bound: Optional[float] = None):
+        """The time at which the probability that the top event has not
+        occurred falls to ``target``: the inverse of
+        [`sf`][repyability.FaultTree.sf] (so it honours the common-cause
+        groups), found by Brent's method between 0 and an upper bound
+        found by doubling from 1 unless given, as
+        ``NonRepairableRBD.time_to_reliability`` finds the diagram's.
+
+        Parameters
+        ----------
+        target : float or array_like
+            The reliability to solve for, in (0, 1), or several.
+        upper_bound : float, optional
+            A time at which the reliability is below ``target``; by
+            default found by doubling.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The time at which ``sf(t) == target``: an array of one for
+            each target, if several are given.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is not in (0, 1); if every event is a
+            probability (the reliability is constant in time); if
+            ``target`` exceeds the reliability at ``t = 0``, so it is
+            never reached; if no upper bound is found (after 1000
+            doublings); or if the reliability at ``upper_bound`` is still
+            above ``target``.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["c"])},
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> round(tree.time_to_reliability(0.9), 2)
+        32.46
+        """
+        from repyability.rbd._measures import invert_reliability
+
+        self._require_time_varying()
+        return invert_reliability(
+            lambda t: float(self.sf(t)), target, upper_bound
+        )
+
+    def bx_life(self, x, upper_bound: Optional[float] = None):
+        """The Bx life: the time by which the top event has occurred in
+        ``x`` percent of systems, ``time_to_reliability(1 - x / 100)``.
+        ``bx_life(10)`` is the B10 life.
+
+        Parameters
+        ----------
+        x : float or array_like
+            The percentage in which the top event has occurred (10 for the
+            B10 life, not a fraction), in
+            (0, 100), or several.
+        upper_bound : float, optional
+            As for ``time_to_reliability``.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The time (one for each ``x``, if several are given).
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is not in (0, 100), or as for
+            ``time_to_reliability``.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["c"])},
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> round(tree.bx_life(10), 2)
+        32.46
+        """
+        x = real_array(x, "x")
+        if not np.all((0.0 < x) & (x < 100.0)):
+            raise ValueError("x must be a percentage in (0, 100).")
+        return self.time_to_reliability(1.0 - x / 100.0, upper_bound)
 
     def occurs(self, events: Collection[Hashable]) -> bool:
         """Whether the top event occurs when exactly ``events`` have.
@@ -755,7 +1288,7 @@ class FaultTree:
         (False, True)
         """
         # A bare string is one event's name, not its characters (#225).
-        occurred = {events} if isinstance(events, str) else set(events)
+        occurred: set = {events} if isinstance(events, str) else set(events)
         unknown = occurred - set(self.events)
         if unknown:
             raise ValueError(f"Unknown event(s) {sorted(map(str, unknown))}.")
@@ -898,23 +1431,35 @@ class FaultTree:
 
     # -- importance --------------------------------------------------------
 
-    def _conditioned(self, t) -> Tuple[np.ndarray, dict, dict, dict, bool]:
-        """The top event probability, and for each event the top event
-        probability given that it has occurred and given that it has not,
-        with the events' probabilities of occurring."""
-        times, scalar = self._times(t)
+    def _held(self, p: dict, q: dict, size: int) -> Tuple[Any, dict, dict]:
+        """The top event probability of independent events, and for each
+        event that probability given that it has occurred and given that
+        it has not."""
+        top = self._independent_top(p, q, size)
+        occurred, not_occurred = {}, {}
+        for e in self.events:
+            p_e, q_e = dict(p), dict(q)
+            p_e[e], q_e[e] = np.zeros(size), np.ones(size)
+            occurred[e] = self._independent_top(p_e, q_e, size)
+            p_e[e], q_e[e] = np.ones(size), np.zeros(size)
+            not_occurred[e] = self._independent_top(p_e, q_e, size)
+        return top, occurred, not_occurred
+
+    def _conditioned(
+        self, t
+    ) -> Tuple[np.ndarray, np.ndarray, dict, dict, dict, dict, tuple]:
+        """The probabilities that the top event has not occurred and that
+        it has; for each event, the top event probability given that it
+        has occurred and given that it has not; the events' probabilities
+        of not having occurred and of having (a group member's, its
+        chances of each in its group); and the times' shape."""
+        times, shape = self._times(t)
         p, q = self._event_probabilities(times)
         size = len(times)
         if not self.ccf_groups:
-            top = self._top(p, q, size)
-            occurred, not_occurred = {}, {}
-            for e in self.events:
-                p_e, q_e = dict(p), dict(q)
-                p_e[e], q_e[e] = np.zeros(size), np.ones(size)
-                occurred[e] = self._top(p_e, q_e, size)
-                p_e[e], q_e[e] = np.ones(size), np.zeros(size)
-                not_occurred[e] = self._top(p_e, q_e, size)
-            return top, occurred, not_occurred, q, scalar
+            works, _ = self._sf_and_ff(times)
+            top, occurred, not_occurred = self._held(p, q, size)
+            return works, top, occurred, not_occurred, p, q, shape
         # With common-cause groups, as the diagram's measures: a member's
         # occurrence says something of the others', so the top event's
         # probability given it is a sum over its group's shock outcomes,
@@ -922,35 +1467,26 @@ class FaultTree:
         # other groups conditioned on within their modules (#219); an event
         # outside the groups is held, as without them.
         evaluation = self._evaluation(p, q, size)
-        _, top_sum = evaluation.system()
-        joint_in: Dict[Hashable, Any] = {}
-        joint_out: Dict[Hashable, Any] = {}
-        chance_in: Dict[Hashable, Any] = {}
-        chance_out: Dict[Hashable, Any] = {}
-        grouped = set()
+        works_sum, top_sum = evaluation.system()
+        occurred, not_occurred, up, down = {}, {}, dict(p), dict(q)
         for e in self.events:
-            values, joint = evaluation.joints(e)
-            joint_in[e], joint_out[e] = values["down_bad"], values["down_ok"]
-            if joint:
-                grouped.add(e)
-                chance_in[e], chance_out[e] = values["fails"], values["works"]
-        occurred, not_occurred, marginal = {}, {}, dict(q)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            for e in self.events:
-                if e in grouped:
-                    occurred[e] = joint_in[e] / chance_in[e]
-                    not_occurred[e] = joint_out[e] / chance_out[e]
-                    marginal[e] = np.asarray(chance_in[e], dtype=float)
-                else:
-                    occurred[e], not_occurred[e] = joint_in[e], joint_out[e]
+            given = evaluation.given((e,))
+            (chance_up, _, not_occurred[e]), (chance_down, _, occurred[e]) = (
+                given[True,],
+                given[False,],
+            )
+            if e in evaluation.group_of:
+                up[e] = np.asarray(chance_up, dtype=float)
+                down[e] = np.asarray(chance_down, dtype=float)
+        works = np.broadcast_to(np.asarray(works_sum, dtype=float), (size,))
         top = np.broadcast_to(np.asarray(top_sum, dtype=float), (size,))
-        return top, occurred, not_occurred, marginal, scalar
+        return works, top, occurred, not_occurred, up, down, shape
 
     def birnbaum_importance(self, t: Optional[ArrayLike] = None) -> dict:
         """Birnbaum importance of each basic event.
 
         In the guide's Greeks it is *delta*: how far the system moves with each
-        basic event (see [Sensitivities: the Greeks](guide/greeks.md)).
+        basic event (see [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``P(top | e occurred) - P(top | e did not)``: how much the top event
         probability depends on the event, the rate at which it rises with
@@ -979,30 +1515,45 @@ class FaultTree:
         >>> {e: round(v, 4) for e, v in tree.birnbaum_importance().items()}
         {'pump 1': 0.095, 'pump 2': 0.095, 'valve': 0.99}
         """
-        _, occurred, not_occurred, _, scalar = self._conditioned(t)
+        _, _, occurred, not_occurred, _, _, shape = self._conditioned(t)
         return self._out(
-            {e: occurred[e] - not_occurred[e] for e in self.events}, scalar
+            {e: occurred[e] - not_occurred[e] for e in self.events}, shape
         )
 
-    def criticality_importance(self, t: Optional[ArrayLike] = None) -> dict:
+    def criticality_importance(
+        self, t: Optional[ArrayLike] = None, kind: str = "failure"
+    ) -> dict:
         """Criticality importance of each basic event.
 
-        ``I_B(e) * P(e) / P(top)``: the probability that the event has
-        occurred and is critical, given that the top event has occurred, so
-        the share of the top event it accounts for. ``nan`` where the top
-        event cannot occur.
+        ``kind="failure"`` (the default): ``I_B(e) * P(e) / P(top)``, the
+        probability that the event has occurred and is critical, given
+        that the top event has occurred, so the share of the top event it
+        accounts for; ``nan`` where the top event cannot occur.
+        ``kind="success"``: ``I_B(e) * (1 - P(e)) / (1 - P(top))``, the
+        probability that the event has not occurred and is critical, given
+        that the top event has not, as
+        [`NonRepairableRBD.criticality_importance`][repyability.NonRepairableRBD.criticality_importance]
+        defines both forms; ``nan`` where the top event is certain.
 
         Parameters
         ----------
         t : array_like, optional
             Time/s, a number or an array. May be left out when no event's
             probability depends on time.
+        kind : str, optional
+            ``"failure"`` (the default) or ``"success"``.
 
         Returns
         -------
         dict
             ``{event: importance}``: floats for a number ``t``, arrays for
             an array.
+
+        Raises
+        ------
+        ValueError
+            If ``kind`` is neither "failure" nor "success", or ``t`` is
+            left out and an event's probability depends on time.
 
         Examples
         --------
@@ -1015,13 +1566,13 @@ class FaultTree:
         >>> {e: round(v, 4) for e, v in tree.criticality_importance().items()}
         {'pump 1': 0.1597, 'pump 2': 0.1597, 'valve': 0.8319}
         """
-        top, occurred, not_occurred, q, scalar = self._conditioned(t)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            out = {
-                e: (occurred[e] - not_occurred[e]) * q[e] / top
-                for e in self.events
-            }
-        return self._out(out, scalar)
+        one_of("kind", kind, ("failure", "success"))
+        works, top, occurred, not_occurred, p, q, shape = self._conditioned(t)
+        system, member = (works, p) if kind == "success" else (top, q)
+        birnbaum = {e: occurred[e] - not_occurred[e] for e in self.events}
+        return self._out(
+            _measures.criticality_importance(birnbaum, member, system), shape
+        )
 
     def risk_achievement_worth(self, t: Optional[ArrayLike] = None) -> dict:
         """Risk achievement worth of each basic event.
@@ -1052,10 +1603,10 @@ class FaultTree:
         >>> {e: round(v, 2) for e, v in tree.risk_achievement_worth().items()}
         {'pump 1': 2.44, 'pump 2': 2.44, 'valve': 16.81}
         """
-        top, occurred, _, _, scalar = self._conditioned(t)
+        _, top, occurred, _, _, _, shape = self._conditioned(t)
         with np.errstate(divide="ignore", invalid="ignore"):
             out = {e: occurred[e] / top for e in self.events}
-        return self._out(out, scalar)
+        return self._out(out, shape)
 
     def risk_reduction_worth(self, t: Optional[ArrayLike] = None) -> dict:
         """Risk reduction worth of each basic event.
@@ -1087,13 +1638,16 @@ class FaultTree:
         >>> {e: round(v, 3) for e, v in tree.risk_reduction_worth().items()}
         {'pump 1': 1.19, 'pump 2': 1.19, 'valve': 5.95}
         """
-        top, _, not_occurred, _, scalar = self._conditioned(t)
+        _, top, _, not_occurred, _, _, shape = self._conditioned(t)
         with np.errstate(divide="ignore", invalid="ignore"):
             out = {e: top / not_occurred[e] for e in self.events}
-        return self._out(out, scalar)
+        return self._out(out, shape)
 
     def fussell_vesely(
-        self, t: Optional[ArrayLike] = None, method: str = "exact"
+        self,
+        t: Optional[ArrayLike] = None,
+        fv_type: str = "c",
+        method: str = "exact",
     ) -> dict:
         """Fussell-Vesely importance of each basic event.
 
@@ -1105,12 +1659,20 @@ class FaultTree:
         sets' probabilities instead (the rare-event approximation of their
         union, as many PRA tools report it), which can exceed 1 when the
         events are not rare. ``nan`` where the top event cannot occur.
+        With ``fv_type="p"`` the minimal path sets (see
+        [`minimal_path_sets`][repyability.FaultTree.minimal_path_sets])
+        take the place of the cut sets, as the diagram's ``fv_type="p"``
+        does: the probability that every event of some path set
+        containing the event has occurred.
 
         Parameters
         ----------
         t : array_like, optional
             Time/s, a number or an array. May be left out when no event's
             probability depends on time.
+        fv_type : str, optional
+            ``"c"`` (the cut sets, the default) or ``"p"`` (the path
+            sets).
         method : str, optional
             ``"exact"`` (the default) or ``"rare_event"``.
 
@@ -1123,8 +1685,9 @@ class FaultTree:
         Raises
         ------
         ValueError
-            If ``method`` is not "exact" or "rare_event", or ``t`` is left
-            out and an event's probability depends on time.
+            If ``fv_type`` is not "c" or "p", ``method`` is not "exact" or
+            "rare_event", or ``t`` is left out and an event's probability
+            depends on time.
 
         Examples
         --------
@@ -1137,45 +1700,57 @@ class FaultTree:
         >>> {e: round(v, 4) for e, v in tree.fussell_vesely().items()}
         {'pump 1': 0.1681, 'pump 2': 0.1681, 'valve': 0.8403}
         """
-        if method not in ("exact", "rare_event"):
+        if fv_type not in ("c", "p"):
             raise ValueError(
-                f"method must be 'exact' or 'rare_event', got {method!r}."
+                "fv_type must be either 'c' (cut-set) or 'p' (path-set), "
+                f"fv_type={fv_type!r} was given."
             )
+        one_of("method", method, ("exact", "rare_event"))
         from repyability.rbd._ccf_modules import (
             expected_product,
             group_outcomes,
         )
 
-        times, scalar = self._times(t)
+        times, shape = self._times(t)
         p, q = self._event_probabilities(times)
         size = len(times)
         top = self._top(p, q, size)
         share = {e: np.zeros(size) for e in self.events}
         # The common-cause groups each conditioned on within the smallest
-        # module holding its members (#219).
+        # module holding its members (#219). The path sets are the dual
+        # structure's cut sets.
         if method == "exact":
+            structure = self._decomposition
+            if fv_type == "p":
+                structure = structure.dual()
             failed = (
-                self._evaluation(p, q, size, expand=False).failed_cut_sets()
+                self._evaluation(
+                    p, q, size, expand=False, structure=structure
+                ).failed_cut_sets()
                 if self.ccf_groups
-                else self._decomposition.failed_cut_sets(p, q, shape=size)
+                else structure.failed_cut_sets(p, q, shape=size)
             )
             for e, probability in failed.items():
                 share[e] = share[e] + probability
         else:
             outcomes = group_outcomes(self.ccf_groups, p, q, self._ccf_check)
-            for cut in self.minimal_cut_sets():
-                probability = expected_product(cut, q, outcomes)
-                for e in cut:
+            sets = (
+                self.minimal_cut_sets()
+                if fv_type == "c"
+                else self.minimal_path_sets()
+            )
+            for members in sets:
+                probability = expected_product(members, q, outcomes)
+                for e in members:
                     share[e] = share[e] + probability
-        with np.errstate(divide="ignore", invalid="ignore"):
-            out = {e: share[e] / top for e in self.events}
-        return self._out(out, scalar)
+        return self._out(_measures.fussell_vesely(share, top), shape)
 
     def differential_importance(
         self,
         t: Optional[ArrayLike] = None,
         *,
         change: str = "uniform",
+        kind: str = "failure",
         groups: Optional[Mapping[Hashable, Collection[Hashable]]] = None,
     ) -> dict:
         """Each basic event's share of the change in the top event
@@ -1183,7 +1758,7 @@ class FaultTree:
         importance measure (DIM, Borgonovo & Apostolakis, 2001).
 
         In the guide's Greeks it is *DIM*, the shares of a change (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``DIM_e = dP/dq_e dq_e / sum_f dP/dq_f dq_f``, with ``q_e`` the
         events' probabilities, so the shares add up to 1, and a group's
@@ -1204,6 +1779,11 @@ class FaultTree:
             probability depends on time.
         change : str, optional
             ``"uniform"`` (the default) or ``"proportional"``.
+        kind : str, optional
+            With ``change="proportional"``, the criticality importance
+            shared out: ``"failure"`` (the default) or ``"success"`` (see
+            ``criticality_importance``), as
+            ``NonRepairableRBD.differential_importance`` takes it.
         groups : dict, optional
             ``{name: events}``: each group's share, the sum of its events',
             instead of each event's.
@@ -1217,9 +1797,9 @@ class FaultTree:
         Raises
         ------
         ValueError
-            If ``change`` is not "uniform" or "proportional", a group names
-            an unknown event, or ``t`` is left out and an event's
-            probability depends on time.
+            If ``change`` is not "uniform" or "proportional", ``kind`` is
+            not "failure" or "success", a group names an unknown event, or
+            ``t`` is left out and an event's probability depends on time.
 
         Examples
         --------
@@ -1243,19 +1823,20 @@ class FaultTree:
                 f"by as much) or 'proportional' (each by the same fraction "
                 f"of itself), got {change!r}."
             )
+        one_of("kind", kind, ("failure", "success"))
         if change == "uniform":
             values = self.birnbaum_importance(t)
         else:
-            values = self.criticality_importance(t)
+            values = self.criticality_importance(t, kind=kind)
         return shares(values, groups, scalar=t is None or np.ndim(t) == 0)
 
     def joint_importance(self, t: Optional[ArrayLike] = None) -> dict:
-        """The joint (second-order) importance of each pair of basic events
-        (#194): whether preventing the two together is worth more than
+        """The joint (second-order) importance of each pair of basic events:
+        whether preventing the two together is worth more than
         preventing each.
 
         In the guide's Greeks it is *gamma*: complements or substitutes (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``JRI(e, f) = -d2P / dq_e dq_f``, ``P`` the top event probability
         and ``q`` the events' probabilities: how much event ``f``'s
@@ -1266,7 +1847,11 @@ class FaultTree:
         preventing the other worth more. Negative, they are substitutes, as
         under an AND gate: either one prevented keeps the gate from
         occurring. Exact, from the top event probability with both events
-        held, as the tree is multilinear in the events.
+        held, as the tree is multilinear in the events. With common-cause
+        groups, the top event probability given each of the pair occurring
+        and not is conditioned on their states, as ``birnbaum_importance``
+        conditions on one (two members of one group on their joint state),
+        and an event outside the groups is held.
 
         Parameters
         ----------
@@ -1286,8 +1871,6 @@ class FaultTree:
         ValueError
             If ``t`` is left out and an event's probability depends on
             time.
-        NotImplementedError
-            With common-cause groups, whose members cannot be held.
 
         Examples
         --------
@@ -1303,18 +1886,21 @@ class FaultTree:
         >>> round(joint[("pump 1", "valve")], 4)  # complements
         0.1
         """
-        if self.ccf_groups:
-            raise NotImplementedError(
-                "The joint importance holds pairs of events occurring and "
-                "not, which a common-cause group's members cannot be (the "
-                "causes they share would still strike the others): it is "
-                "not worked out with common-cause groups, as yet."
-            )
-        times, scalar = self._times(t)
+        from repyability.rbd.rbd import Pairs
+
+        times, shape = self._times(t)
         p, q = self._event_probabilities(times)
         size = len(times)
-        ones, zeros = np.ones(size), np.zeros(size)
         events = list(self.events)
+        if self.ccf_groups:
+            from repyability.rbd._ccf_modules import joint_importance
+
+            evaluation = self._evaluation(p, q, size)
+            pairs = Pairs.of(
+                events, lambda e, f: joint_importance(evaluation, e, f)
+            )
+            return Pairs(self._out(pairs, shape))
+        ones, zeros = np.ones(size), np.zeros(size)
 
         def importance(p_: dict, q_: dict, of: list) -> dict:
             out = {}
@@ -1325,8 +1911,6 @@ class FaultTree:
                 p_f[f], q_f[f] = ones, zeros
                 out[f] = occurred - self._top(p_f, q_f, size)
             return out
-
-        from repyability.rbd.rbd import Pairs
 
         pairs = Pairs()
         for k, e in enumerate(events):
@@ -1340,7 +1924,809 @@ class FaultTree:
             prevented = importance(p_e, q_e, rest)
             for f in rest:
                 pairs[Pairs.oriented(e, f)] = prevented[f] - occurring[f]
-        return Pairs(self._out(pairs, scalar))
+        return Pairs(self._out(pairs, shape))
+
+    def structural_importance(self) -> Dict[Hashable, float]:
+        """The structural importance of each basic event: the fraction of
+        the states of the other events in which it is pivotal, the top
+        event occurring when it has and not when it has not.
+
+        It is the Birnbaum importance with every event's probability at
+        1/2, so it depends on the gates alone, not on the events' models
+        or the common-cause groups: useful at design time, before any
+        data. It is the diagram's ``structural_importance`` (see
+        ``to_rbd``).
+
+        Returns
+        -------
+        dict
+            ``{event: importance}``, each in [0, 1].
+
+        Examples
+        --------
+        The valve is pivotal unless both pumps have failed (three states
+        of four), and a pump when the other has failed and the valve has
+        not (one of four):
+
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["valve", "flow"]),
+        ...      "flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+        ... )
+        >>> tree.structural_importance()
+        {'pump 1': 0.25, 'pump 2': 0.25, 'valve': 0.75}
+        """
+        half = {e: np.full(1, 0.5) for e in self.events}
+        _, occurred, not_occurred = self._held(half, half, 1)
+        return {
+            e: float(np.ravel(occurred[e] - not_occurred[e])[0])
+            for e in self.events
+        }
+
+    def improvement_potential(self, t: Optional[ArrayLike] = None) -> dict:
+        """The improvement potential of each basic event: ``P(top) - P(top
+        | e did not occur)``, how far the top event probability would fall
+        if the event could not occur. It is ``I_B(e) * q_e``, the Birnbaum
+        importance times the event's probability, and is worked out as
+        that product, so a small one keeps its precision; with common-cause
+        groups, a member's is conditioned through the groups' outcomes, as
+        ``birnbaum_importance`` is.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s, a number or an array. May be left out when no event's
+            probability depends on time.
+
+        Returns
+        -------
+        dict
+            ``{event: potential}``: floats for a number ``t``, arrays for
+            an array.
+
+        Raises
+        ------
+        ValueError
+            If ``t`` is left out and an event's probability depends on
+            time.
+
+        Examples
+        --------
+        A valve that could not fail would take the top event from 0.0595
+        to the pumps' 0.01:
+
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["valve", "flow"]),
+        ...      "flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+        ... )
+        >>> {e: round(v, 4) for e, v in tree.improvement_potential().items()}
+        {'pump 1': 0.0095, 'pump 2': 0.0095, 'valve': 0.0495}
+        """
+        _, _, occurred, not_occurred, _, q, shape = self._conditioned(t)
+        return self._out(
+            {e: (occurred[e] - not_occurred[e]) * q[e] for e in self.events},
+            shape,
+        )
+
+    def _rate_parts(self, t: np.ndarray) -> Dict[Any, np.ndarray]:
+        """Each event's part in the rate of change of the probability that
+        the top event has not occurred, at the times ``t``, and each
+        common-cause group's under the tuple of its members (see
+        ``NonRepairableRBD.reliability_rate`` and ``rate_parts``): a
+        probability has no density, so no part."""
+        from repyability.rbd._measures import density as model_density
+        from repyability.rbd._measures import rate_parts
+
+        _, _, occurred, not_occurred, _, _, _ = self._conditioned(t)
+        size = len(t)
+
+        def density(event, x: np.ndarray) -> np.ndarray:
+            model = self.events[event]
+            if isinstance(model, float):
+                return np.zeros(x.shape)
+            return model_density(model, x)
+
+        return rate_parts(
+            {e: occurred[e] - not_occurred[e] for e in self.events},
+            density,
+            t,
+            self.ccf_groups,
+            inputs=self._event_probabilities,
+            fails=lambda p, q: self._top(p, q, size),
+            scale=self._time_scale,
+        )
+
+    def barlow_proschan_importance(
+        self, t: Optional[ArrayLike] = None
+    ) -> dict:
+        """Each basic event's Barlow-Proschan importance: the probability
+        that the top event is caused by the event's occurring (Barlow &
+        Proschan, 1975), given that it has occurred by ``t``, or ever.
+
+        In the guide's Greeks it is *theta*, integrated: who caused the
+        failures (see [Sensitivities: the Greeks](../guide/greeks.md)).
+
+        An event's occurring causes the top event when the event is
+        critical then, so the probability that the top event has occurred
+        by ``t`` through event ``e`` is ``integral_0^t I_B^e(s) f_e(s)
+        ds``, its Birnbaum importance times its model's density, and its
+        share of the sum over the events is its importance: the shares add
+        up to 1. A common-cause group's part is its members' together,
+        under the tuple of their names (the top event probability's change
+        with the members' lives moved on, by differences). The integrals
+        are by adaptive quadrature to about ``1e-9``, as
+        ``NonRepairableRBD.barlow_proschan_importance`` works out the
+        diagram's. An event given as a probability has no density, so no
+        share; with every event one, the top event occurs at the start or
+        never, and the measure is refused.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s by which the top event has occurred, a number or an
+            array; by default over the whole life.
+
+        Returns
+        -------
+        dict
+            ``{event: share}`` (and each common-cause group's): floats for
+            a number ``t`` or the whole life, arrays for an array. NaN
+            where the top event cannot have occurred.
+
+        Raises
+        ------
+        ValueError
+            For a negative time, or if every event is a probability (the
+            system then has no lifetimes).
+
+        Examples
+        --------
+        Either of two exponential events, with rates 1 and 3: the second
+        causes three quarters of the top events.
+
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> E = surv.Exponential.from_params
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["a", "b"])}, {"a": E([1.0]), "b": E([3.0])}
+        ... )
+        >>> shares = tree.barlow_proschan_importance()
+        >>> {e: round(v, 6) for e, v in shares.items()}
+        {'a': 0.25, 'b': 0.75}
+        """
+        from repyability.rbd._measures import barlow_proschan, life_end
+
+        self._require_varying_lifetimes(
+            "lifetimes, so no failure density over time to share out"
+        )
+
+        def sf(x: np.ndarray) -> np.ndarray:
+            return np.asarray(self.sf(np.atleast_1d(x)), dtype=float).ravel()
+
+        return barlow_proschan(
+            self._rate_parts,
+            self._lifetime_models(),
+            t,
+            lambda knots: life_end(sf, knots),
+        )
+
+    def parameter_sensitivity(
+        self, t: Optional[ArrayLike] = None, rel_step: float = 1e-5
+    ) -> Dict[Any, Dict[str, Any]]:
+        """The sensitivity of the probability that the top event has not
+        occurred (``sf``) to each parameter of the events' models.
+
+        In the guide's Greeks it is the levers' *deltas* (see
+        [Sensitivities: the Greeks](../guide/greeks.md)).
+
+        For event ``e`` with parameter ``theta``, ``d sf / d theta =
+        I_B(e) * d sf_e(t; theta) / d theta``: its Birnbaum importance
+        times how far its model's reliability moves with the parameter,
+        the latter by a central difference with step ``rel_step *
+        |theta|`` (``rel_step`` if ``theta`` is 0), the model rebuilt with
+        ``from_params`` (one-sided where one side is not a valid value, nan
+        where neither is), as ``NonRepairableRBD.parameter_sensitivity``
+        works out the diagram's. An event given as a probability has one
+        parameter, ``p``, the probability (as a ``FixedEventProbability``
+        names it). The members of a common-cause group carry one model,
+        so its parameters are reported once, under the tuple of the
+        members, each moved for every member at once, and so are the
+        group's own (``"ccf_beta"``, and an [`MGL`][repyability.MGL]
+        model's ``"ccf_gamma"``, ...), each by a central difference of
+        the exact probabilities with the groups. ``levers()`` lists the
+        parameters, with their values and ranges, and ``with_levers``
+        builds the tree with them moved.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s, a number or an array. May be left out when no event's
+            probability depends on time.
+        rel_step : float, optional
+            The relative step of the differences, by default 1e-5.
+
+        Returns
+        -------
+        dict
+            ``{event: {parameter: sensitivity}}``, by surpyval's parameter
+            names, a common-cause group's under the tuple of its members:
+            floats for a number ``t``, arrays for an array.
+
+        Raises
+        ------
+        ValueError
+            If ``t`` is left out and an event's probability depends on
+            time.
+
+        Examples
+        --------
+        One exponential event: ``R = exp(-rate t)``, so ``dR/d rate = -t
+        exp(-rate t)``, about -9.048 at ``t = 10`` with rate 0.01:
+
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["c"])},
+        ...     {"c": surv.Exponential.from_params([0.01])},
+        ... )
+        >>> sens = tree.parameter_sensitivity(10)
+        >>> {name: round(v, 3) for name, v in sens["c"].items()}
+        {'failure_rate': -9.048}
+        """
+        from repyability.rbd._model_utils import lever_spec
+        from repyability.rbd.ccf import CCFGroup
+        from repyability.rbd.non_repairable_rbd import (
+            _dsf_dparam,
+            ccf_group_sensitivity,
+        )
+
+        times, shape = self._times(t)
+        size = len(times)
+        _, _, occurred, not_occurred, _, _, _ = self._conditioned(times)
+        p, q = self._event_probabilities(times)
+        groups = list(self.ccf_groups)
+        group_of = {m: g for g in groups for m in g.members}
+        out: Dict[Any, Dict[str, Any]] = {}
+        for event in self.events:
+            spec = lever_spec(self._event_model(event))
+            if event not in group_of:
+                if spec is None:
+                    continue
+                birnbaum = occurred[event] - not_occurred[event]
+                out[event] = {
+                    name: self._out(
+                        birnbaum * _dsf_dparam(spec, j, times, rel_step),
+                        shape,
+                    )
+                    for j, name in enumerate(spec.names)
+                }
+                continue
+            group = group_of[event]
+            if event != group.members[0]:
+                continue
+            index = next(i for i, g in enumerate(groups) if g is group)
+
+            def system(members=None, model=None, group=group, index=index):
+                given, failing = p, q
+                if members is not None:
+                    works, fails = members
+                    given = {**p, **{m: works for m in group.members}}
+                    failing = {**q, **{m: fails for m in group.members}}
+                trial = groups
+                if model is not None:
+                    trial = list(groups)
+                    trial[index] = CCFGroup(group.members, model)
+                up, down = self._evaluation(
+                    given, failing, size, groups=trial
+                ).system()
+                return (
+                    np.broadcast_to(np.asarray(up, dtype=float), (size,)),
+                    np.broadcast_to(np.asarray(down, dtype=float), (size,)),
+                )
+
+            values = ccf_group_sensitivity(
+                system, group, spec, times, rel_step
+            )
+            out[tuple(group.members)] = {
+                name: self._out(value, shape) for name, value in values.items()
+            }
+        return out
+
+    def levers(self) -> List["Lever"]:
+        """The parameters ``parameter_sensitivity`` moves, in the order it
+        reports them: each event's model's, by surpyval's names (``p``
+        for an event given as a probability), and each common-cause
+        group's under the tuple of its members (the one model its members
+        carry, then its own, ``"ccf_beta"``, ...), each a
+        [`Lever`][repyability.Lever] with its value and range, as a
+        diagram's ``levers()`` lists them. Nothing is worked out;
+        [`with_levers`][repyability.FaultTree.with_levers] sets them. The
+        levers are the events' models' own parameters: those of the units
+        inside a composite model (a ``StandbyModel``, a
+        ``LoadSharingModel``, a ``DegradingNode``) or of a nested diagram
+        are not reached (see the guide's Greeks).
+
+        Returns
+        -------
+        list of Lever
+            The levers, in ``parameter_sensitivity``'s order.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["c", "d"])},
+        ...     {"c": surv.Weibull.from_params([100, 2]), "d": 0.05},
+        ... )
+        >>> for lever in tree.levers():
+        ...     print(lever.key, lever.name, lever.value, lever.bounds)
+        c alpha 100.0 (0.0, inf)
+        c beta 2.0 (0.0, inf)
+        d p 0.05 (0.0, 1.0)
+        """
+        from repyability.rbd import _sensitivity
+
+        return _sensitivity.public_levers(self)
+
+    def with_levers(self, values) -> "FaultTree":
+        """A copy of this tree with parameters at new values, each moved
+        as ``parameter_sensitivity`` moves it: an event's model rebuilt
+        with the parameter changed (an event given as a probability keeps
+        being one), a common-cause group's members' one model for every
+        member, a group's own (``"ccf_beta"``, ...) in its model.
+        ``levers()`` lists the parameters.
+
+        Parameters
+        ----------
+        values : dict
+            Each parameter's new value, by its
+            [`Lever`][repyability.Lever] (from ``levers()``) or by its
+            ``(key, name)``, as ``parameter_sensitivity`` reports it.
+
+        Returns
+        -------
+        FaultTree
+            The new tree, built as this one was with the parameters
+            moved; this one is unchanged.
+
+        Raises
+        ------
+        ValueError
+            For a parameter the tree does not have (with the closest
+            name), or a value its model refuses (one outside the lever's
+            ``bounds``).
+        TypeError
+            If ``values`` is not a dict, a lever is neither a ``Lever``
+            nor a ``(key, name)``, or a value is not a number.
+
+        Examples
+        --------
+        Twice the Weibull scale: at 100 the top event has not occurred
+        with probability ``exp(-(100 / 200) ** 2)``, about 0.7788, where
+        it had ``exp(-1)``:
+
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["c"])},
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> longer = tree.with_levers({("c", "alpha"): 200.0})
+        >>> round(longer.sf(100), 4)
+        0.7788
+        """
+        from repyability.rbd import _sensitivity
+
+        return _sensitivity.with_levers(self, values)
+
+    # -- uncertainty -------------------------------------------------------
+
+    def sf_uncertainty(
+        self,
+        t: Optional[ArrayLike] = None,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+    ) -> "UncertaintyResult":
+        """The probability that the top event has not occurred, over
+        plausible event models (parameter uncertainty).
+
+        As ``NonRepairableRBD.sf_uncertainty`` does for a diagram's
+        reliability (see there for the kinds of uncertainty): each of the
+        ``n_draws`` draws gives every uncertain event a plausible model,
+        from the normal approximation of its surpyval fit (``"fit"``),
+        from distributions over named parameters, or from a list of
+        models, and the probability at ``t`` is worked out exactly for the
+        draw, with the common-cause groups (whose models may be drawn too,
+        the [`CCFGroup`][repyability.CCFGroup] given as a key). The draws
+        are the diagram's of the tree (``to_rbd``, converted once): the
+        events are its nodes, so they are keyed as its nodes are, events
+        of one population together in a tuple, and a group's members
+        together. An event given as a probability has no fit, so it is
+        not drawn by default; its ``p`` may be given a distribution.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s, a number or an array. May be left out when every
+            event's probability, drawn or not, is fixed.
+        uncertainty : dict, optional
+            ``{event or tuple of events: uncertainty}``, and ``{CCFGroup:
+            uncertainty}``, as for ``NonRepairableRBD.sf_uncertainty``. By
+            default every event whose model is a surpyval fit with a
+            parameter covariance, as ``"fit"``.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seeds the draws, for reproducible results.
+        sampling : str, optional
+            ``"random"`` (the default), or ``"sobol"`` for the points of a
+            scrambled Sobol sequence.
+
+        Returns
+        -------
+        UncertaintyResult
+            The probability of every draw (``samples``), the nominal value
+            with the events' own models, and summaries such as
+            ``interval`` (see
+            [`UncertaintyResult`][repyability.UncertaintyResult]).
+
+        Raises
+        ------
+        ValueError
+            As for ``NonRepairableRBD.sf_uncertainty``: an unknown event
+            or parameter, an uncertainty that cannot be drawn, a group's
+            members not given together, or ``t`` left out for lifetime
+            models.
+
+        Examples
+        --------
+        Cooling is lost if both pumps fail or the valve does. The pumps
+        are of one type, whose exponential failure rate is known only to
+        lie between 1 and 3 per 1000 h, so they share the one draw:
+
+        >>> import scipy.stats as st
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> pump = surv.Exponential.from_params([0.002])
+        >>> tree = FaultTree(
+        ...     {"no cooling": ("or", ["no flow", "valve"]),
+        ...      "no flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": pump, "pump 2": pump, "valve": 0.01},
+        ... )
+        >>> rate = {"failure_rate": st.uniform(0.001, 0.002)}
+        >>> result = tree.sf_uncertainty(
+        ...     500, {("pump 1", "pump 2"): rate}, n_draws=10_000, seed=1
+        ... )
+        >>> round(result.nominal, 4)
+        0.5944
+        >>> lower, upper = result.interval(0.9)
+        >>> round(lower, 3), round(upper, 3)
+        (0.409, 0.813)
+        """
+        return self._rbd().sf_uncertainty(
+            t, uncertainty, n_draws=n_draws, seed=seed, sampling=sampling
+        )
+
+    def mean_uncertainty(
+        self,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+    ) -> "UncertaintyResult":
+        """The mean time to the top event over plausible event models
+        (parameter uncertainty).
+
+        As [`sf_uncertainty`][repyability.FaultTree.sf_uncertainty] does
+        for the probability: each draw gives every uncertain event a
+        plausible model, and the mean time to the top event is worked out
+        exactly for the draw, as [`mean`][repyability.FaultTree.mean]
+        works it out. The draws are the diagram's of the tree (``to_rbd``,
+        converted once), as for ``sf_uncertainty``.
+
+        Parameters
+        ----------
+        uncertainty : dict, optional
+            ``{event or tuple of events: uncertainty}``, and ``{CCFGroup:
+            uncertainty}``, as for ``sf_uncertainty``. By default every
+            event whose model is a surpyval fit with a parameter
+            covariance, as ``"fit"``.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seeds the draws, for reproducible results.
+        sampling : str, optional
+            ``"random"`` (the default), or ``"sobol"``.
+
+        Returns
+        -------
+        UncertaintyResult
+            The mean time of every draw (``samples``; ``inf`` for a draw
+            in which the top event may never occur), the exact mean with
+            the events' own models (``nominal``), and summaries such as
+            ``interval``.
+
+        Raises
+        ------
+        ValueError
+            As for ``sf_uncertainty``, or if every event is a probability
+            (the top event has no time).
+        NotImplementedError
+            With a common-cause group that splits a failure probability,
+            as for ``mean``.
+
+        Examples
+        --------
+        Two pumps of one type, both of which must fail, whose exponential
+        failure rate is known only to lie between 1 and 3 per 1000 h:
+
+        >>> import scipy.stats as st
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> pump = surv.Exponential.from_params([0.002])
+        >>> tree = FaultTree(
+        ...     {"no flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": pump, "pump 2": pump},
+        ... )
+        >>> rate = {"failure_rate": st.uniform(0.001, 0.002)}
+        >>> result = tree.mean_uncertainty(
+        ...     {("pump 1", "pump 2"): rate}, seed=1
+        ... )
+        >>> round(result.nominal, 6)  # 1.5 / 0.002
+        750.0
+        >>> lower, upper = result.interval(0.9)
+        >>> round(lower), round(upper)
+        (515, 1352)
+        """
+        self._require_lifetimes()
+        return self._rbd().mean_uncertainty(
+            uncertainty, n_draws=n_draws, seed=seed, sampling=sampling
+        )
+
+    # -- how each analysis is computed ---------------------------------------
+
+    def analysis_routes(self) -> Dict[str, AnalysisRoute]:
+        """How each analysis of this tree is computed, found without
+        running it: exactly, numerically, by simulation, or not at all.
+
+        As a diagram's
+        [`analysis_routes`][repyability.NonRepairableRBD.analysis_routes]:
+        the gates are always evaluated exactly, but a value is only as
+        exact as the events' probabilities it is made of, so an event
+        whose model's reliability is numerical makes the analyses built
+        on it numerical, and one with no reliability makes them refuse. A
+        refusal is found by the check the method itself runs, and its
+        reason is the message it would raise.
+
+        Returns
+        -------
+        dict[str, AnalysisRoute]
+            For each public analysis, by method name: its ``route``
+            (``"exact"``, ``"numerical"``, ``"simulated"`` or
+            ``"refused"``), the ``reason``, and the ``events`` that decide
+            it, as ``nodes`` (see
+            [`AnalysisRoute`][repyability.AnalysisRoute]).
+
+        Examples
+        --------
+        A tree of probabilities has no time to the top event:
+
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("and", ["a", "b"])}, {"a": 0.1, "b": 0.2}
+        ... )
+        >>> routes = tree.analysis_routes()
+        >>> routes["top_event_probability"].route
+        'exact'
+        >>> routes["mean"].route
+        'refused'
+        >>> routes["sf_uncertainty"].route
+        'simulated'
+        """
+        from repyability.rbd import routes as r
+        from repyability.rbd._model_utils import parametric_spec
+
+        events = {
+            e: (
+                (r.EXACT, "a probability")
+                if isinstance(m, float)
+                else (r.model_route(m))
+            )
+            for e, m in self.events.items()
+        }
+        out: Dict[str, AnalysisRoute] = {}
+
+        def give(names, route) -> None:
+            for name in names:
+                out[name] = route
+
+        def built(route, reason):
+            return r.with_nodes(route, reason, events, "probabilities")
+
+        grouped = bool(self.ccf_groups)
+        summed = (
+            ", summed over the common-cause groups' outcomes."
+            if grouped
+            else "."
+        )
+        through = (
+            " A common-cause group's member is conditioned on through the "
+            "groups' outcomes."
+            if grouped
+            else ""
+        )
+        give(
+            ("top_event_probability", "ff", "sf", "Hf"),
+            built(
+                r.EXACT,
+                "The gates over the events' probabilities, exactly" + summed,
+            ),
+        )
+        give(
+            ("df", "hf"),
+            built(
+                r.NUMERICAL,
+                "The exact top event probability, differentiated by central "
+                "differences.",
+            ),
+        )
+        fixed = r.refusal(self._require_time_varying)
+        give(
+            ("time_to_reliability", "bx_life"),
+            (
+                r.refused(fixed)
+                if fixed
+                else built(
+                    r.NUMERICAL,
+                    "The exact top event probability, inverted by "
+                    "root-finding.",
+                )
+            ),
+        )
+        give(
+            (
+                "birnbaum_importance",
+                "improvement_potential",
+                "risk_achievement_worth",
+                "risk_reduction_worth",
+                "criticality_importance",
+            ),
+            built(
+                r.EXACT,
+                "The exact top event probability, with each event occurred "
+                "and not." + through,
+            ),
+        )
+        give(
+            ("ranked_cut_sets",),
+            built(
+                r.EXACT,
+                "Each minimal cut set's exact probability of its events "
+                "occurring together" + summed,
+            ),
+        )
+        give(
+            ("fussell_vesely",),
+            built(
+                r.EXACT,
+                "The exact probability that a minimal cut set (fv_type='p': "
+                "path set) containing each event has occurred, over the top "
+                "event probability (method='rare_event' sums the sets' "
+                "probabilities instead)" + summed,
+            ),
+        )
+        give(
+            ("joint_importance",),
+            built(
+                r.EXACT,
+                "Each event's exact Birnbaum importance with the other "
+                "event held not occurring, less with it held occurring."
+                + through,
+            ),
+        )
+        give(
+            ("differential_importance",),
+            built(
+                r.EXACT,
+                "The exact Birnbaum importance of each event (or, for a "
+                "proportional change, its criticality importance), shared "
+                "out." + through,
+            ),
+        )
+        out["structural_importance"] = AnalysisRoute(
+            r.EXACT, "From the gates alone."
+        )
+        differenced = sorted(
+            str(e)
+            for e, m in self.events.items()
+            if not isinstance(m, float) and parametric_spec(m) is None
+        )
+        densities = r.refusal(
+            lambda: self._require_varying_lifetimes(
+                "lifetimes, so no failure density over time to share out"
+            )
+        )
+        out["barlow_proschan_importance"] = (
+            r.refused(densities)
+            if densities
+            else built(
+                r.NUMERICAL,
+                "Each event's Birnbaum importance times its model's failure "
+                "density"
+                + (
+                    f" (differences of the probability for {differenced})"
+                    if differenced
+                    else ""
+                )
+                + (
+                    ", a common-cause group's part by differences of the "
+                    "top event probability with its members' lives moved on"
+                    if grouped
+                    else ""
+                )
+                + ", integrated over time by adaptive quadrature (to about "
+                "1e-9).",
+            )
+        )
+        out["parameter_sensitivity"] = built(
+            r.NUMERICAL,
+            "The exact Birnbaum importance times each parameter's "
+            "derivative, by differences."
+            + (
+                " A common-cause group's parameters, and its model's, by "
+                "differences of the exact top event probability."
+                if grouped
+                else ""
+            ),
+        )
+        lifetimes = r.refusal(self._require_lifetimes)
+        out["mean"] = (
+            r.refused(lifetimes)
+            if lifetimes
+            else built(
+                r.NUMERICAL,
+                "The exact probability that the top event has not occurred, "
+                "integrated over time by adaptive quadrature (to about "
+                "1e-10, relative); method='simulate' takes the mean of the "
+                "diagram's simulated lifetimes.",
+            )
+        )
+        out["random"] = AnalysisRoute(
+            r.SIMULATED,
+            "Monte-Carlo lifetimes of the tree's diagram (to_rbd), each "
+            "event's drawn from its model.",
+        )
+        drawn = (
+            " The common-cause groups are in each draw, and their models "
+            "may be drawn too."
+            if grouped
+            else ""
+        )
+        out["sf_uncertainty"] = built(
+            r.SIMULATED,
+            "The events' model parameters drawn from their uncertainty, and "
+            "the exact top event probability for each draw." + drawn,
+        )
+        out["mean_uncertainty"] = (
+            r.refused(lifetimes)
+            if lifetimes
+            else built(
+                r.SIMULATED,
+                "The events' model parameters drawn from their uncertainty, "
+                "and the exact mean time to the top event for each draw "
+                "(the area under its probability of not having occurred)."
+                + drawn,
+            )
+        )
+        return r.AnalysisRoutes(sorted(out.items()))
 
     # -- conversion --------------------------------------------------------
 
@@ -1475,7 +2861,7 @@ class FaultTree:
         group with one that can: the tree keeps it, for the group's causes
         to strike it with the others, as an event its logic makes
         irrelevant (the top event ``OR(G, AND(G, member))``, which is
-        ``G``, #237).
+        ``G``).
 
         Parameters
         ----------
@@ -1494,6 +2880,12 @@ class FaultTree:
             If ``rbd`` is not a ``NonRepairableRBD``.
         ValueError
             If the diagram cannot fail (a direct input-to-output edge).
+
+        Warns
+        -----
+        UserWarning
+            If the diagram has node capacities, which the tree leaves out
+            (a tree has no capacity analysis).
 
         Examples
         --------
@@ -1527,6 +2919,13 @@ class FaultTree:
             raise ValueError(
                 "The diagram cannot fail (its input joins its output "
                 "directly), so it has no top event."
+            )
+        if rbd.capacity:
+            warnings.warn(
+                "The diagram's node capacities are left out of the fault "
+                "tree: its top event is the system failing, with no "
+                "capacity analysis (the diagram keeps its own).",
+                stacklevel=outside_level(),
             )
         taken = set(rbd.reliabilities)
 
@@ -1816,7 +3215,3 @@ def _model_is_fixed(model) -> bool:
     from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 
     return NonRepairableRBD._model_is_fixed(model)
-
-
-# A gate as given: ("or", inputs), ("and", inputs) or ("vote", k, inputs).
-GateSpec = Union[Tuple[str, Sequence[Hashable]], Tuple[str, int, Sequence]]

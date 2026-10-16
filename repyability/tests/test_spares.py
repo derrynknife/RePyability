@@ -93,7 +93,7 @@ WORN = {
 
 def test_age_replacement_counts_match_a_direct_simulation():
     np.random.seed(3)
-    model = single(WORN)._replacements("c", True)
+    model = _spares._replacements(single(WORN), "c", True)
     args = (W([100.0, 2.5]), L([1.0, 0.6]), E([1 / 1.5]), 80.0)
     rng = np.random.default_rng(1)
     # From new over 500 hours.
@@ -221,7 +221,13 @@ def test_what_is_refused_and_checked():
     assert crewed.analysis_routes()["spares_demand"].route == r.REFUSED
     crewed.spares_demand(100.0, method="simulate", mc_samples=500, seed=1)
     nested = RepairableRBD([("s", "x"), ("x", "t")], {"x": single(PUMP)})
-    assert nested.spares_demand(100.0) == {}
+    # A nested RBD's components' spares are not counted here: by default
+    # it refuses (routes.Refused), naming the components counted.
+    with pytest.raises(ValueError, match="nested RBD") as refused:
+        nested.spares_demand(100.0)
+    assert nested.analysis_routes()["spares_demand"].reason == str(
+        refused.value
+    )
     with pytest.raises(ValueError, match="nested RBD"):
         nested.spares_demand(100.0, nodes=["x"])
     never = single(

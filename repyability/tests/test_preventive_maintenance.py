@@ -15,7 +15,8 @@ from scipy.special import gamma as gamma_function
 from scipy.special import gammainc
 
 from repyability import NonRepairable, RepairableRBD
-from repyability.rbd.repairable_rbd import Event
+from repyability.rbd import _long_run
+from repyability.rbd._events import Event
 
 X = surv.ExactEventTime.from_params
 E = surv.Exponential.from_params
@@ -137,16 +138,19 @@ def test_maintenance_that_takes_time_is_a_planned_outage():
     assert per_run(result, result.system_restorations) == 9
     assert result.system_failures == 0
     assert result.mean_up_time == 40.0
-    assert result.cost.by_category == {
-        "repair": 0.0,
-        "replace": 0.0,
-        "preventive": 50.0,
-        "inspection": 0.0,
-        "component_downtime": 60.0,
-        "system_downtime": 140.0,
-        "setup": 0.0,
-    }
-    assert result.cost.by_component == {"c": 110.0}
+    # The costs are the exact means, integrated: to rounding.
+    assert result.cost.by_category == pytest.approx(
+        {
+            "repair": 0.0,
+            "replace": 0.0,
+            "preventive": 50.0,
+            "inspection": 0.0,
+            "component_downtime": 60.0,
+            "system_downtime": 140.0,
+            "setup": 0.0,
+        }
+    )
+    assert result.cost.by_component == pytest.approx({"c": 110.0})
     fci = result.criticalities.failure_criticality_index
     # Planned outages are not failures.
     assert fci.per_system_failure.get("c", 0) == 0
@@ -259,7 +263,7 @@ def test_age_replacement_rate_is_the_non_repairable_rate():
     # Maintained in zero time: never down, so no planned outages; the
     # instant repairs are zero-length failures.
     assert rbd.mean_availability() == 1.0
-    assert rbd._outage_frequencies()[1] == 0.0
+    assert _long_run._outage_frequencies(rbd)[1] == 0.0
     assert rbd.mean_up_time() == pytest.approx(
         1 / rbd.system_failure_frequency()
     )
@@ -364,7 +368,7 @@ def test_the_exact_long_run_values_match_a_long_simulation():
     assert result.system_uptime / window == pytest.approx(
         rbd.mean_availability(), abs=0.002
     )
-    failures, planned = rbd._outage_frequencies()
+    failures, planned = _long_run._outage_frequencies(rbd)
     assert failures == rbd.system_failure_frequency()
     assert result.system_failures / window == pytest.approx(failures, rel=0.1)
     assert result.system_planned_outages / window == pytest.approx(
@@ -482,9 +486,10 @@ def test_forced_nodes_are_not_maintained():
         ({"interval": float("nan")}, "positive number"),
         ({"interval": "ten"}, "positive number"),
         (
-            {"interval": 10, "policy": "calendar"},
-            "'age', 'block' or 'condition'",
+            {"interval": 10, "policy": "weekly"},
+            "'age', 'block', 'condition' or 'calendar'",
         ),
+        ({"policy": "calendar"}, "needs a calendar"),
         ({"interval": 10, "duration": "quick"}, "time-to-maintain model"),
         ({"interval": 10, "duration": 2.0}, "time-to-maintain model"),
         ({"interval": 10, "cost": -1.0}, "non-negative"),
@@ -513,7 +518,8 @@ def test_a_zero_cost_prices_nothing():
     }
     rbd = single(spec)
     assert not rbd.has_costs
-    assert rbd.cost(100.0, mc_samples=2, seed=1) is None
+    with pytest.raises(ValueError, match="Nothing is priced"):
+        rbd.cost(100.0, mc_samples=2, seed=1)
     spec["preventive"]["cost"] = 1.0
     assert single(spec).has_costs
 

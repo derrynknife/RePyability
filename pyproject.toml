@@ -42,14 +42,13 @@ dependencies = [
     # Deliberately uncapped: RePyability consumes a small surface of surpyval
     # (sf/ff/qf/random/mean, extras/with_params, regression sf/sf_tvc,
     # to_dict/from_dict). A surpyval release reaches every fresh install at
-    # once, so the upstream workflow runs the tests against surpyval's
-    # development branch to show a break before it is released. CI also tests
-    # this minimum. 0.23 names the limited-failure proportion lfp_p (p goes
-    # in its next release), takes success_run's level as alpha_ci, and
-    # pickles its fits (for n_jobs' worker processes), as RePyability relies
-    # on; 0.22 named a distribution's parameters parameter_names and
-    # computes the Normal and LogNormal quantiles directly.
-    "surpyval>=0.23",
+    # once, so run the tests against surpyval's development branch before it
+    # is released, to show a break first. CI also tests this minimum. 0.24
+    # gives a mixture a precise tail (sf) and has conditional_gaps read a
+    # limited failure population's lfp_p, not a mixture's p; 0.23 named the
+    # proportion lfp_p, takes success_run's level as alpha_ci, and pickles
+    # its fits (for n_jobs' worker processes), as RePyability relies on.
+    "surpyval>=0.24",
     "tqdm>=4.64",
 ]
 
@@ -59,13 +58,20 @@ dependencies = [
 fast = ["numba>=0.60"]
 dev = [
     "black==26.3.1",
-    "isort>=5.12",
-    "flake8>=6.0",
+    # Pinned with black and mypy, and in step with .pre-commit-config.yaml.
+    "isort==9.0.1",
+    "flake8==7.4.1",
     "flake8-pyproject>=1.2",
     # Pinned (like black) so a new mypy release can't fail CI on code that
     # type-checks locally; bump deliberately.
     "mypy==2.3.0",
     "pytest>=7.0",
+    # The suite runs on every core (pytest -n auto), and its coverage is
+    # collected from each worker.
+    "pytest-xdist>=3.5",
+    # A test that hangs fails, named, rather than stopping its CI job.
+    "pytest-timeout>=2.3",
+    "pytest-cov>=5.0",
     "coverage>=7.0",
     "pre-commit>=3.0",
 ]
@@ -90,9 +96,11 @@ Issues = "https://github.com/derrynknife/RePyability/issues"
 # cannot silently rot.
 testpaths = ["repyability"]
 addopts = "--doctest-modules"
+# Far past any test's time: a test that hangs fails, named.
+timeout = 1800
 # A surpyval deprecation that RePyability or its tests run into fails them
-# ("... will be removed in v0.23"), so that the upstream workflow, on
-# surpyval's development branch, shows it before the name is removed.
+# ("... will be removed in v0.23"), so that a run on surpyval's development
+# branch shows it before the name is removed.
 filterwarnings = [
     "error:.*will be removed in v[0-9]:DeprecationWarning:repyability",
 ]
@@ -108,6 +116,7 @@ include = ["repyability*"]
 [tool.setuptools.package-data]
 "repyability" = ["py.typed"]
 "repyability.tests" = ["*.json"]
+"repyability.maintenance" = ["README.md", "CALENDAR_DECISIONS.md"]
 
 # For Black pre-commit hook
 [tool.black]
@@ -124,6 +133,8 @@ line_length = 79
 # mypy
 [tool.mypy]
 exclude = ['repyability/tests/']
+# Check the bodies of functions without annotations too.
+check_untyped_defs = true
 
 [[tool.mypy.overrides]]
 module = [

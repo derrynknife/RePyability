@@ -234,7 +234,7 @@ class PerfectUnreliability:
 def perfect_class(model):
     """``model``, but for an instance of ``PerfectReliability`` or
     ``PerfectUnreliability`` the class itself, which the diagrams
-    recognise by identity: an instance stands for its class (#232)."""
+    recognise by identity: an instance stands for its class."""
     if isinstance(model, (PerfectReliability, PerfectUnreliability)):
         return type(model)
     return model

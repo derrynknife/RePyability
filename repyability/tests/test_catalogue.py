@@ -36,6 +36,7 @@ from repyability import (
     StandbyModel,
 )
 from repyability.rbd import routes
+from repyability.rbd._degradation import is_degradation
 from repyability.rbd._model_utils import is_fixed_probability, is_mixture
 from repyability.rbd.results import _ResultMapping
 from repyability.rbd.uncertainty import is_fit
@@ -46,8 +47,12 @@ from repyability.tests.test_simulation_engines import identical, needs_numba
 #: the catalogue: a new export is either here or a node of the diagrams
 #: that take it (below).
 NOT_NODES = {
+    "AlphaFactor",
     "AnalysisRoute",
+    "AnalysisRoutes",
     "BetaFactor",
+    # A calendar of opportunities, priced (#319): a calendar policy's input.
+    "Calendar",
     "CCFGroup",
     "ComponentOption",
     "FailureLimitPolicy",
@@ -56,10 +61,13 @@ NOT_NODES = {
     "MaintenancePolicy",
     "Network",
     "NodeState",
+    "Opportunity",
     "PhasedMission",
     "RBD",
     # A component analysed alone: a diagram takes a NonRepairable.
     "Repairable",
+    # A part's maintenance plan, valued alone (#319).
+    "ReplacementPlan",
     "SimulationChunk",
     "Timeline",
     "Timelines",
@@ -153,6 +161,8 @@ def model_kinds(model) -> set:
         return {"NonRepairable"} | model_kinds(model.reliability)
     if is_mixture(model):
         return {"surpyval MixtureModel"}
+    if is_degradation(model):
+        return {"surpyval degradation process"}
     if "Regression" in cls.__name__:
         return {"surpyval regression model"}
     if is_fixed_probability(model):
@@ -240,11 +250,13 @@ def required_repairable() -> set:
         | {
             "BetaFactor common cause, probability basis",
             "MGL common cause, probability basis",
+            "AlphaFactor common cause, probability basis",
             "common cause among tested components",
         }
         | {"a structure too meshed to work out", "StandbyModel, simulated"}
         | {node.__name__ for node in REPAIRABLE_NODES}
         | SURPYVAL_KINDS
+        | {"surpyval degradation process"}
     )
 
 
@@ -253,11 +265,13 @@ def required_nonrepairable() -> set:
         {node.__name__ for node in NONREPAIRABLE_NODES}
         | SURPYVAL_KINDS
         | {"surpyval MixtureModel", "surpyval regression model"}
+        | {"surpyval degradation process"}
         | {"a k-out-of-n vote", "capacities"}
         | {
             "BetaFactor common cause, probability basis",
             "BetaFactor common cause, rate basis",
             "MGL common cause, probability basis",
+            "AlphaFactor common cause, probability basis",
         }
         | {"a structure too meshed to work out", "StandbyModel, simulated"}
     )

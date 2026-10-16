@@ -78,6 +78,50 @@ def test_mean_and_random(models):
     assert a.mean() == pytest.approx(node.mean(), rel=0.05)
 
 
+def _nodes(models):
+    """A node of each kind with a proper curve: fixed covariates (AFT and
+    PO) and a schedule that raises the load at 50."""
+    schedule = StepSchedule.from_changepoints([0, 50], [[0.0], [0.5]])
+    return [
+        RegressionNode(models["aft"], covariates=[0.2]),
+        RegressionNode(models["po"], covariates=[-0.4]),
+        RegressionNode(models["aft"], schedule=schedule),
+    ]
+
+
+def test_the_mean_is_the_integral_of_the_survival_function(models):
+    # Integrated to the end of the tail, not cut off where the survival
+    # falls to 1e-4 as the tabulated grid was.
+    from scipy.integrate import quad
+
+    for node in _nodes(models):
+        integral = sum(
+            quad(
+                lambda t: float(node.sf(t)),
+                a,
+                b,
+                epsabs=0.0,
+                epsrel=1e-12,
+                limit=500,
+            )[0]
+            for a, b in ((0.0, 50.0), (50.0, np.inf))
+        )
+        assert node.mean() == pytest.approx(integral, rel=1e-9)
+
+
+def test_draws_invert_the_distribution(models):
+    # Each uniform u is the lifetime t with F(t) = u: the model's quantile
+    # at fixed covariates, the cumulative hazard inverted along a schedule
+    # (no grid, so the tail is drawn too).
+    u = np.array([1e-9, 0.01, 0.3, 0.7, 0.99, 1.0 - 1e-9])
+    for node in _nodes(models):
+        t = node._draw(u)
+        np.testing.assert_allclose(node.ff(t), u, rtol=1e-6)
+    schedule = _nodes(models)[2]
+    exact = schedule._draw(u)
+    np.testing.assert_allclose(schedule.ff(exact), u, rtol=1e-12)
+
+
 def test_semiparametric_mean_random_raise_clearly(models):
     # A semiparametric Cox baseline has no proper tail, so MTTF is undefined;
     # mean/random must raise rather than return a wrong number; sf works.
@@ -272,3 +316,89 @@ def test_schedule_mean_and_random(models):
     np.random.seed(0)
     b = node.random(2000)
     assert np.allclose(a, b) and (a > 0).all()
+
+
+def test_a_covariate_path_is_integrated_and_drawn(models):
+    # surpyval's CovariatePath moves linearly between its points: its mean
+    # and draws work as a step schedule's, and saving it is refused by name.
+    from surpyval.univariate.regression import CovariatePath
+
+    path = CovariatePath.from_points([0, 50, 100], [[0.0], [0.5], [0.2]])
+    node = RegressionNode(models["aft"], schedule=path)
+    assert node.mean() == pytest.approx(
+        float(models["aft"].mean_tvc(path)), rel=1e-6
+    )
+    u = np.array([0.01, 0.5, 0.99])
+    np.testing.assert_allclose(node.ff(node._draw(u)), u, rtol=1e-12)
+    with pytest.raises(NotImplementedError, match="CovariatePath"):
+        node.to_dict()
+
+
+# -- covariates as levers (#272) --------------------------------------------
+
+
+def test_the_covariates_are_levers():
+    # An exponential AFT model: life 100 at load 1 and 25 at load 2, so
+    # theta(z) = 100 * 4 ** -(z - 1), R = exp(-t / theta) and dR/dz =
+    # -R * t * ln(4) / theta.
+    x = np.array([50.0, 100.0, 150.0, 12.5, 25.0, 37.5])
+    load = np.array([[1.0], [1.0], [1.0], [2.0], [2.0], [2.0]])
+    model = surv.ExponentialAFT.fit(x, Z=load)
+    rbd = NonRepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {"a": RegressionNode(model, covariates=[1.0])},
+    )
+    (lever,) = rbd.levers()
+    assert (lever.key, lever.name, lever.value) == ("a", "covariate.0", 1.0)
+    assert lever.bounds == (-np.inf, np.inf)
+    t = np.array([20.0, 50.0])
+    theta = float(model.mean(np.array([[1.0]])))
+    expected = -np.exp(-t / theta) * t * np.log(4.0) / theta
+    np.testing.assert_allclose(
+        rbd.parameter_sensitivity(t)["a"]["covariate.0"], expected, rtol=1e-5
+    )
+    moved = rbd.with_levers({("a", "covariate.0"): 2.0})
+    np.testing.assert_allclose(
+        moved.sf(t), model.sf(t, np.array([[2.0], [2.0]])), rtol=1e-12
+    )
+
+
+def test_covariates_are_named_by_the_models_features():
+    import pandas as pd
+
+    rng = np.random.default_rng(3)
+    frame = pd.DataFrame(
+        {
+            "x": rng.weibull(2.0, 200) * 100,
+            "load": rng.uniform(0.5, 1.5, 200),
+            "temp": rng.uniform(20.0, 60.0, 200),
+        }
+    )
+    model = surv.WeibullPH.fit_from_df(
+        frame, x_col="x", Z_cols=["load", "temp"]
+    )
+    rbd = NonRepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {"a": RegressionNode(model, covariates=[1.0, 40.0])},
+    )
+    assert [lever.name for lever in rbd.levers()] == [
+        "covariate.load",
+        "covariate.temp",
+    ]
+    assert list(rbd.parameter_sensitivity(50.0)["a"]) == [
+        "covariate.load",
+        "covariate.temp",
+    ]
+
+
+def test_a_node_along_a_schedule_has_no_levers():
+    x = np.array([50.0, 100.0, 150.0, 12.5, 25.0, 37.5])
+    load = np.array([[1.0], [1.0], [1.0], [2.0], [2.0], [2.0]])
+    model = surv.ExponentialAFT.fit(x, Z=load)
+    schedule = StepSchedule.from_changepoints([0, 50], [[1.0], [2.0]])
+    rbd = NonRepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {"a": RegressionNode(model, schedule=schedule)},
+    )
+    assert rbd.levers() == []
+    assert rbd.parameter_sensitivity(10.0) == {}

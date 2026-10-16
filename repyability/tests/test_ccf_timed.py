@@ -16,6 +16,7 @@ import pytest
 from surpyval import ExactEventTime, Exponential, Weibull
 
 from repyability import BetaFactor, CCFGroup, RepairableRBD
+from repyability.rbd import _ccf_groups, _long_run
 from repyability.rbd import routes as r
 
 E, X, W = (
@@ -147,10 +148,79 @@ def test_the_failure_frequency_with_repairs_that_take_time():
         failures, abs=4.0 * np.sqrt(failures / n)
     )
     assert rbd.mean_time_between_failures() > 0.0
-    # Tests that take time are planned outages, not worked out with groups.
-    timed = pair(0.2, TIMINGS["fixed test and repair"])
-    with pytest.raises(NotImplementedError, match="tests that take time"):
-        timed.mean_time_between_failures()
+
+
+def test_planned_outages_at_tests_that_take_time():
+    # #293: a test that takes time takes a working member off line, and
+    # the system down if the other is down then: a planned outage, at the
+    # tests' times on the calendar, from the groups' states just before
+    # and just after each (the test starting is one of the chain's jumps).
+    rbd = pair(
+        0.2, TIMINGS["fixed test and repair"], rate=2e-3, interval=100.0
+    )
+    terms, planned = _long_run._outage_terms(rbd)
+    failures = sum(term for _, term in terms)
+    assert failures == pytest.approx(rbd.system_failure_frequency())
+    T, n = 20000.0, 400
+    result = rbd.availability(
+        T, mc_samples=n, seed=5, control_variate=False, conditional=False
+    )
+    for exact, counts in (
+        (failures, result.system_failures),
+        (planned, result.system_planned_outages),
+    ):
+        total = float(np.sum(counts))
+        assert total / (n * T) == pytest.approx(
+            exact, abs=4.0 * np.sqrt(total) / (n * T)
+        )
+    # Mean up and down times take the planned outages with the failures.
+    up = rbd.mean_availability()
+    assert rbd.mean_up_time() == pytest.approx(up / (failures + planned))
+    assert rbd.mean_down_time() == pytest.approx(
+        (1.0 - up) / (failures + planned)
+    )
+    routes = rbd.analysis_routes()
+    for name in ("system_failure_frequency", "mean_up_time", "mean_down_time"):
+        assert routes[name].route != r.REFUSED, name
+
+
+@pytest.mark.parametrize("block", [False, True])
+def test_planned_outages_with_no_shared_cause_are_the_independent(block):
+    # With no shared cause, the planned outages at the tests (and at a
+    # block replacement that takes time, of a node outside the group) are
+    # those of the independent members, which their own models give.
+    def build(beta):
+        timing = TIMINGS["fixed test, exponential repair"]
+        a = inspected(3e-4, 500.0, **timing)
+        b = inspected(3e-4, 500.0, offset=170.0, **timing)
+        edges, components = PAIR, {"a": a, "b": b}
+        if block:
+            edges = [
+                ("s", "a"),
+                ("s", "b"),
+                ("a", "c"),
+                ("b", "c"),
+                ("c", "t"),
+            ]
+            components["c"] = {
+                "reliability": W([5000.0, 2.0]),
+                "repairability": E([0.125]),
+                "preventive": {
+                    "interval": 250.0,
+                    "policy": "block",
+                    "duration": E([0.2]),
+                },
+            }
+        groups = (
+            [] if beta is None else [CCFGroup(["a", "b"], BetaFactor(beta))]
+        )
+        return RepairableRBD(edges, components, ccf_groups=groups)
+
+    free, grouped = build(None), build(0.0)
+    for name in ("system_failure_frequency", "mean_up_time", "mean_down_time"):
+        assert getattr(grouped, name)() == pytest.approx(
+            getattr(free, name)(), rel=3e-5
+        ), name
 
 
 def refusal(**timing):
@@ -176,9 +246,9 @@ def test_what_the_chain_does_not_take_says_what_to_do():
 def test_copies_of_members_whose_repairs_take_time_are_refused():
     rbd = pair(0.1, TIMINGS["fixed repair"])
     group = rbd.ccf_groups[0]
-    times, _ = rbd._long_run_grid()
+    times, _ = _long_run._long_run_grid(rbd)
     with pytest.raises(NotImplementedError, match="copies of them"):
-        rbd._group_states(group, times, counts=[2, 1])
+        _ccf_groups._group_states(rbd, group, times, counts=[2, 1])
 
 
 def test_the_ends_of_tests_and_repairs_are_jumps_over_time():
@@ -223,3 +293,180 @@ def test_the_ends_of_tests_and_repairs_are_jumps_over_time():
     jumps = rate.jumps[rate.jump_times < end].sum()
     change = rbd.point_availability(end) - rbd.point_availability(0.0)
     assert integral + jumps == pytest.approx(change, abs=1e-7)
+
+
+MEASURES = (
+    "birnbaum_importance",
+    "improvement_potential",
+    "risk_achievement_worth",
+    "risk_reduction_worth",
+    "criticality_importance",
+    "differential_importance",
+)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "fixed test and repair",
+        "fixed test, instant repair",
+        "fixed test, exponential repair",
+    ],
+)
+def test_measures_with_tests_that_take_time_tend_to_the_independent(name):
+    # #294: while a member's test keeps it off line, it cannot be up, and
+    # the system given it up was 0/0. It is the system with it held up
+    # then, as for a node outside the groups: so with no shared cause the
+    # measures are the independent members' own (to the members' own
+    # model's grid, as above), where leaving those times out would move
+    # them by the tests' share of the time (0.4% here).
+    timing = TIMINGS[name]
+    free, tiny = pair(None, timing), pair(0.0, timing)
+    grouped = pair(0.1, timing)
+    for measure in MEASURES:
+        values = getattr(grouped, measure)()
+        assert all(np.isfinite(v) or v == np.inf for v in values.values())
+        own, near = getattr(free, measure)(), getattr(tiny, measure)()
+        for node in "ab":
+            assert near[node] == pytest.approx(own[node], rel=3e-5), measure
+
+
+def test_a_member_in_its_test_is_held_up_and_down():
+    # Member b is off line for its test over [170, 172): the pair is down
+    # just when a is, so b's Birnbaum measure then (b held up, then held
+    # down) is the system's unavailability.
+    rbd = pair(0.1, TIMINGS["fixed test, exponential repair"])
+    x = np.array([171.0])
+    birnbaum = rbd.birnbaum_importance(x=x)["b"]
+    assert birnbaum == pytest.approx(rbd.point_unavailability(x), rel=1e-9)
+
+
+def trapezoid_between_tests(rbd, stop: float, points: int) -> float:
+    """The integral from 0 to ``stop`` of the point unavailability by the
+    trapezoid rule on ``points`` a piece between the tests on the
+    calendar (finely after each, where an outage starts), each piece
+    ending just before the next test: the value at a test's time is the
+    value just after it."""
+    tests = np.unique(
+        np.concatenate(
+            [
+                schedule.offset + schedule.interval * np.arange(0.0, 200.0)
+                for schedule in rbd._inspection.values()
+            ]
+        )
+    )
+    edges = np.unique(np.concatenate([[0.0, stop], tests]))
+    edges = edges[(edges >= 0.0) & (edges <= stop)]
+    total = 0.0
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        x = np.unique(
+            np.concatenate(
+                [
+                    np.linspace(lo, min(lo + 60.0, hi), points),
+                    np.linspace(lo, hi, points),
+                ]
+            )
+        )
+        x[-1] = np.nextafter(hi, -np.inf)
+        total += np.trapezoid(rbd.point_unavailability(x), x)
+    return total
+
+
+def test_expected_events_count_the_tests_that_take_time():
+    # Each test that takes time takes a working member off line, and the
+    # pair down where the other is not up then: a planned outage of the
+    # system, counted over a window as the long run counts it (#293),
+    # from the group's chain just before and at each test. With no
+    # shared cause the counts are the independent members' own; the
+    # down time is the window less the mission availability's share;
+    # and the simulation counts the same.
+    def build(beta):
+        timing = TIMINGS["fixed test and repair"]
+        a = inspected(2e-3, 100.0, **timing)
+        groups = (
+            [] if beta is None else [CCFGroup(["a", "b"], BetaFactor(beta))]
+        )
+        return RepairableRBD(PAIR, {"a": a, "b": dict(a)}, ccf_groups=groups)
+
+    T = 1050.0
+    free, tiny = build(None).expected_events(T), build(0.0).expected_events(T)
+    assert free.system_planned_outages > 9.0
+    assert tiny.system_planned_outages == pytest.approx(
+        free.system_planned_outages, rel=3e-5
+    )
+    # The down times to the members' own model's grid, integrated.
+    assert tiny.system_downtime == pytest.approx(
+        free.system_downtime, rel=2e-4
+    )
+    for node in "ab":
+        for counted in ("node_inspections", "node_failures"):
+            assert getattr(tiny, counted)[node] == pytest.approx(
+                getattr(free, counted)[node], rel=3e-5
+            ), counted
+        assert tiny.node_downtime[node] == pytest.approx(
+            free.node_downtime[node], rel=2e-4
+        )
+    grouped = build(0.2)
+    events = grouped.expected_events(T)
+    assert events.system_downtime == pytest.approx(
+        T * grouped.mission_unavailability(T), rel=1e-9
+    )
+    # A shared cause fails both members together more often, so a test
+    # finds both down more often, with no outage to start.
+    assert events.system_planned_outages < free.system_planned_outages
+    assert events.system_planned_outages > 0.9 * free.system_planned_outages
+    n = 600
+    result = grouped.availability(
+        T, mc_samples=n, seed=3, control_variate=False, conditional=False
+    )
+    for exact, counts in (
+        (events.system_failures, result.system_failures),
+        (events.system_planned_outages, result.system_planned_outages),
+    ):
+        total = float(np.sum(counts))
+        assert total / n == pytest.approx(
+            exact, abs=4.0 * max(np.sqrt(total), 1.0) / n
+        )
+    interval = result.mean_availability_interval()
+    assert abs(interval.estimate - (1.0 - events.system_downtime / T)) < (
+        4.0 * interval.standard_error
+    )
+
+
+@pytest.mark.parametrize(
+    "name", ["exponential test and repair", "fixed test, exponential repair"]
+)
+def test_the_mission_unavailability_sees_tests_of_an_exponential_length(
+    name,
+):
+    # A test or repair of an exponential length starts a transient at its
+    # rate's scale, far shorter than the interval, over which the pair is
+    # down until the tests are over: the chain's knots follow it, and the
+    # integral over a window refines to that scale (as it does to a
+    # unit's closed form, #237). Against the trapezoid rule on a fine
+    # grid, and the long run after the first period.
+    timing = {"repair": E([1 / 24.0]), "test": E([1 / 8.0])}
+    if name == "fixed test, exponential repair":
+        timing["test"] = X([8.0])
+    rate, interval, T = 2e-6, 8760.0, 3 * 8760.0
+    a = inspected(rate, interval, **timing)
+    rbd = RepairableRBD(
+        PAIR,
+        {"a": a, "b": dict(a)},
+        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+    )
+    mission = rbd.mission_unavailability(T)
+    assert mission * T == pytest.approx(
+        trapezoid_between_tests(rbd, T, 4001), rel=1e-3
+    )
+    assert mission == pytest.approx(
+        1.0 - rbd.mission_availability(T), rel=1e-6
+    )
+    # Two of the three periods start with a test and its outage: the
+    # long-run's share, the first period's hidden failures a little
+    # fewer.
+    long_run = rbd.mean_unavailability()
+    assert 0.6 * long_run < mission < long_run
+    events = rbd.expected_events(T)
+    assert events.system_downtime == pytest.approx(mission * T, rel=1e-9)
+    assert events.system_planned_outages == pytest.approx(2.0, abs=0.01)

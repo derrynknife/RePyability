@@ -463,7 +463,7 @@ def _intervals(data: _Data, up: bool) -> np.ndarray:
 def _curve(data: _Data) -> Tuple[np.ndarray, np.ndarray]:
     """The fraction of histories up after each time at which one changed
     (and at 0 and the end): the times, in order, and the fractions."""
-    from repyability.rbd.repairable_rbd import _working_over_time
+    from repyability.rbd._time_order import _working_over_time
 
     history, j = data.positions
     delta = 2 * _after(data, history, j) - 1
@@ -819,7 +819,7 @@ class Timeline:
         failed again at that instant, so they count as two failures. Real
         logs often hold one outage as several records, overlapping or
         touching (two work orders on one outage): ``merge=True`` makes each
-        run of them one outage (#179).
+        run of them one outage.
 
         Parameters
         ----------
@@ -1110,7 +1110,7 @@ class Timeline:
         return _same(self, other)
 
     def to_dict(self) -> dict:
-        """The history as plain data, ready for ``json.dumps`` (#235).
+        """The history as plain data, ready for ``json.dumps``.
 
         Returns
         -------
@@ -1376,7 +1376,7 @@ class Timelines:
         return _same(self, other)
 
     def to_dict(self) -> dict:
-        """The histories as plain data, ready for ``json.dumps`` (#235).
+        """The histories as plain data, ready for ``json.dumps``.
 
         Returns
         -------

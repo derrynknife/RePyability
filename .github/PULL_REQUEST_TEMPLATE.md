@@ -13,8 +13,8 @@
 ## Checklist
 
 - [ ] Tests added/updated (asserting against a reference value where possible)
-- [ ] `black`, `isort`, `flake8`, and `mypy` pass
-- [ ] `coverage run -m pytest` passes and stays above the coverage gate
+- [ ] `scripts/check.sh` passes (black, isort, flake8, mypy), with the tests of what changed
+- [ ] Anything that must agree with the change is updated with it (see CONTRIBUTING.md, "What must agree")
 - [ ] `CHANGELOG.md` updated under `[Unreleased]`
 - [ ] Any Monte-Carlo tests are seeded (deterministic)
 

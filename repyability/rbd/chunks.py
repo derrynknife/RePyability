@@ -266,7 +266,7 @@ class SimulationChunk:
         ValueError
             If ``data`` is not a saved chunk.
         """
-        from repyability.rbd.repairable_rbd import _Tally
+        from repyability.rbd._tally import _Tally
         from repyability.rbd.serialisation import _node_name
 
         if not isinstance(data, dict) or data.get("kind") != (

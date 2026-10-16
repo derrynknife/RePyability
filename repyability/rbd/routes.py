@@ -63,7 +63,7 @@ class AnalysisRoute:
     twin: str = ""
 
     def to_dict(self) -> dict:
-        """The route as plain data, ready for ``json.dumps`` (#235): its
+        """The route as plain data, ready for ``json.dumps``: its
         fields by name, the nodes as a list.
 
         Returns
@@ -88,12 +88,71 @@ class AnalysisRoute:
         return text
 
 
+class AnalysisRoutes(dict):
+    """The routes of a diagram's analyses, as ``analysis_routes()`` gives
+    them: a dict of [`AnalysisRoute`][repyability.AnalysisRoute] by method
+    name, which prints one method a line, ``name: route -- reason`` (the
+    reason's first sentence).
+
+    Examples
+    --------
+    >>> import surpyval as surv
+    >>> from repyability import NonRepairableRBD
+    >>> rbd = NonRepairableRBD(
+    ...     [("s", "c"), ("c", "t")],
+    ...     {"c": surv.Exponential.from_params([0.01])},
+    ... )
+    >>> routes = rbd.analysis_routes()
+    >>> routes["mean"].route
+    'numerical'
+    >>> print(routes)  # doctest: +ELLIPSIS
+    Hf: exact -- The structure function over the node reliabilities, exactly.
+    allocate_redundancy: exact -- ...
+    ...
+    unreliability_interval: simulated -- ...
+    """
+
+    def to_dict(self) -> dict:
+        """The routes as plain data, ready for ``json.dumps``: each
+        route's ``to_dict()`` by method name.
+
+        Returns
+        -------
+        dict
+            ``{method: route.to_dict()}``.
+        """
+        return {name: route.to_dict() for name, route in self.items()}
+
+    def __str__(self) -> str:
+        return "\n".join(
+            f"{name}: {route.route} -- {_first_sentence(route.reason)}"
+            for name, route in self.items()
+        )
+
+    __repr__ = __str__
+
+
+def _first_sentence(reason: str) -> str:
+    """``reason`` on one line: its first sentence, when it has more."""
+    text = " ".join(reason.split())
+    cut = text.find(". ")
+    return text if cut < 0 else text[: cut + 1]
+
+
+class Refused(ValueError):
+    """An analysis refused because the diagram has nothing it works on (no
+    capacities, no component under age replacement, nothing priced, ...).
+    A ``ValueError``, as these always were; refusals of what an analysis
+    cannot work out are ``NotImplementedError``."""
+
+
 def refusal(check: Callable[[], object]) -> Optional[str]:
-    """The message of the ``NotImplementedError`` or ``ValueError`` that
-    ``check`` raises, or None if it passes."""
+    """The message of the refusal (``NotImplementedError`` or ``Refused``)
+    that ``check`` raises, or None if it passes. Any other error is a
+    fault, and is raised."""
     try:
         check()
-    except (NotImplementedError, ValueError) as error:
+    except (NotImplementedError, Refused) as error:
         return str(error)
     return None
 

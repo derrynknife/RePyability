@@ -18,8 +18,11 @@ import surpyval as surv
 from repyability import (
     AnalysisRoute,
     DegradingNode,
+    FaultTree,
     LoadSharingModel,
+    Network,
     NonRepairableRBD,
+    PhasedMission,
     RepairableRBD,
     RepeatedNode,
     RepeatedStandbyNode,
@@ -32,6 +35,7 @@ from repyability.tests.catalogue import (
     EDGES,
     E,
     W,
+    fault_tree_kinds,
     nonrepairable_kinds,
     repairable_kinds,
 )
@@ -366,6 +370,110 @@ def test_every_analysis_is_called(kinds, calls):
     assert set(calls) == set(report)
 
 
+# -- networks (#315) --------------------------------------------------------
+
+
+def uncertain_element(net):
+    """A link's first parameter known to within 5%."""
+    for name, model in net.models.items():
+        spec = parametric_spec(model)
+        if spec is not None:
+            parameter, value = spec.names[0], spec.params[0]
+            return {name: {parameter: st.uniform(0.95 * value, 0.1 * value)}}
+    raise AssertionError("No element's model has parameters.")
+
+
+NETWORK_CALLS = {
+    **{
+        name: (lambda name: lambda net: getattr(net, name)(X))(name)
+        for name in (
+            "sf",
+            "ff",
+            "birnbaum_importance",
+            "improvement_potential",
+            "risk_achievement_worth",
+            "risk_reduction_worth",
+            "criticality_importance",
+            "fussell_vesely",
+            "differential_importance",
+            "joint_importance",
+            "barlow_proschan_importance",
+        )
+    },
+    "structural_importance": lambda net: net.structural_importance(),
+    "cut_sets": lambda net: net.cut_sets(),
+    "path_sets": lambda net: net.path_sets(),
+    "minimal_cut_sets": lambda net: net.minimal_cut_sets(),
+    "minimal_path_sets": lambda net: net.minimal_path_sets(),
+    "mean": lambda net: net.mean(),
+    "time_to_reliability": lambda net: net.time_to_reliability(0.5),
+    "bx_life": lambda net: net.bx_life(10),
+    "random": lambda net: net.random(200, seed=1),
+    "sf_uncertainty": lambda net: net.sf_uncertainty(
+        X, uncertain_element(net), n_draws=20, seed=1
+    ),
+    "mean_uncertainty": lambda net: net.mean_uncertainty(
+        uncertain_element(net), n_draws=5, seed=1
+    ),
+}
+
+BRIDGE_LINKS = {
+    "a": ("s", "x"),
+    "b": ("s", "y"),
+    "c": ("x", "y"),
+    "d": ("x", "t"),
+    "e": ("y", "t"),
+}
+
+
+def networks():
+    """Networks of each kind: the bridge with lifetime models and a
+    failing node, and one of fixed probabilities."""
+    return {
+        "bridge": Network(
+            {
+                name: (u, v, W([100 + 10 * i, 1.5]))
+                for i, (name, (u, v)) in enumerate(BRIDGE_LINKS.items())
+            },
+            "s",
+            "t",
+            nodes={"x": E([0.01])},
+        ),
+        "fixed bridge": Network(
+            {
+                name: (u, v, 0.05 + 0.01 * i)
+                for i, (name, (u, v)) in enumerate(BRIDGE_LINKS.items())
+            },
+            "s",
+            "t",
+        ),
+    }
+
+
+@pytest.mark.parametrize("name", sorted(networks()))
+def test_every_network_method_does_what_the_report_says(name):
+    net = networks()[name]
+    report = net.analysis_routes()
+    assert set(NETWORK_CALLS) == set(report)
+    for method, call in NETWORK_CALLS.items():
+        behaves_as_reported(report[method], lambda: call(net))
+
+
+def test_the_network_report_covers_every_public_analysis():
+    public = {
+        name
+        for name, _ in inspect.getmembers(Network, callable)
+        if not name.startswith("_")
+    }
+    assert set(networks()["bridge"].analysis_routes()) == public - {
+        "analysis_routes",
+        "from_dict",
+        "from_json",
+        "to_dict",
+        "to_json",
+    }
+
+
 @pytest.mark.parametrize("cls", [NonRepairableRBD, RepairableRBD])
 def test_the_report_covers_every_public_analysis(cls):
     # Everything public but building, saving and the structure itself.
@@ -405,6 +513,69 @@ def test_the_report_covers_every_public_analysis(cls):
         )
     )
     assert set(rbd.analysis_routes()) == public - not_analyses
+
+
+PHASED_CALLS = {
+    **{
+        name: (lambda name: lambda mission: getattr(mission, name)())(name)
+        for name in (
+            "reliability",
+            "unreliability",
+            "sf",
+            "ff",
+            "phase_failure_probabilities",
+            "birnbaum_importance",
+            "improvement_potential",
+            "risk_achievement_worth",
+            "risk_reduction_worth",
+            "criticality_importance",
+            "fussell_vesely",
+        )
+    },
+    "reliability_interval": (
+        lambda mission: mission.reliability_interval(200, seed=1)
+    ),
+}
+
+
+def mission():
+    """A mission of a bridge then a vote (see ``test_phased_mission``)."""
+    from repyability.tests.test_phased_mission import BRIDGE, VOTE
+
+    return PhasedMission([("up", 30.0, BRIDGE), ("on", 30.0, VOTE)])
+
+
+@pytest.mark.parametrize(
+    "limit, expected",
+    [(None, {"exact", "simulated"}), (5, {"refused", "simulated"})],
+    ids=["worked out", "too large"],
+)
+def test_every_mission_method_does_what_the_report_says(
+    limit, expected, monkeypatch
+):
+    # A mission's analyses are exact, or refused once its decision diagram
+    # passes the limit, and its interval simulated (#316).
+    if limit is not None:
+        monkeypatch.setattr(phased_mission, "MAX_NODES", limit)
+    phased = mission()
+    report = phased.analysis_routes()
+    assert {route.route for route in report.values()} == expected
+    for method, call in PHASED_CALLS.items():
+        behaves_as_reported(report[method], lambda: call(phased))
+    assert set(PHASED_CALLS) == set(report)
+
+
+def test_the_mission_report_covers_every_public_analysis():
+    # Everything public but the report itself and the structure.
+    public = {
+        name
+        for name, _ in inspect.getmembers(PhasedMission, callable)
+        if not name.startswith("_")
+    }
+    assert set(mission().analysis_routes()) == public - {
+        "analysis_routes",
+        "minimal_cut_sets",
+    }
 
 
 def test_nodes_are_routed_by_how_their_reliability_is_found():
@@ -505,10 +676,14 @@ def test_the_engine_is_the_one_auto_would_run(monkeypatch):
     assert "not installed" in route.engine_reason
     monkeypatch.setattr(_compiled, "available", lambda: True)
     assert plain.analysis_routes()["availability"].engine == "numba"
-    capacities = repairable_kinds()["capacities"].analysis_routes()
+    with_capacities = repairable_kinds()["capacities"]
+    capacities = with_capacities.analysis_routes()
     # numba's own loop follows capacities (#155).
     assert capacities["availability"].engine == "numba"
-    assert capacities["cost"].engine == "numba"
+    priced = RepairableRBD(
+        **{**with_capacities._init_args, "downtime_cost_rate": 1.0}
+    )
+    assert priced.analysis_routes()["cost"].engine == "numba"
 
 
 def test_a_load_sharing_group_is_simulated_only_with_different_units():
@@ -550,6 +725,7 @@ def test_the_guide_s_table_agrees_with_the_report():
             EDGES,
             {n: {"reliability": life, "repairability": repair} for n in "abc"},
             capacity=capacity,
+            downtime_cost_rate=1.0,  # priced: the cost analyses refuse else
         ),
     }
     reports = {cls: rbd.analysis_routes() for cls, rbd in plain.items()}
@@ -590,9 +766,21 @@ def test_the_readme_says_what_is_simulated():
     crew = repairable["one repair crew, exponential"]
     group = repairable["standby group"]
     minimal = repairable["minimal repair in no time"]
+    timed_minimal = repairable["minimal repair, repairs that take time"]
     tested_group = repairable["common cause, tested"]
     revealed_group = repairable["common cause, revealed"]
     timed_group = repairable["common cause, timed tests and repairs"]
+    # A unit dead on arrival, repaired and block replaced in no time (#322).
+    dead_on_arrival = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {
+            "a": {
+                "reliability": W([100, 2], f0=0.1),
+                "repairability": "instant",
+                "preventive": {"interval": 60.0, "policy": "block"},
+            }
+        },
+    )
     claims = {
         "Sampled lifetimes or histories, and distributions or percentiles "
         "of an outcome over a window": [
@@ -719,7 +907,7 @@ def test_the_readme_says_what_is_simulated():
             (timed_group, "mean_availability", "numerical"),
             (timed_group, "birnbaum_importance", "numerical"),
             (timed_group, "point_availability", "numerical"),
-            (timed_group, "system_failure_frequency", "refused"),
+            (timed_group, "system_failure_frequency", "numerical"),
             (timed_group, "availability", "simulated"),
             (tested_group, "mean_availability", "exact"),
             (tested_group, "system_failure_frequency", "exact"),
@@ -780,6 +968,19 @@ def test_the_readme_says_what_is_simulated():
             (minimal, "point_availability", "numerical"),
             (minimal, "expected_cost", "numerical"),
             (minimal, "mean_availability", "refused"),
+            (timed_minimal, "expected_failures", "numerical"),
+            (timed_minimal, "point_availability", "numerical"),
+            (timed_minimal, "expected_cost", "numerical"),
+            (timed_minimal, "mean_availability", "refused"),
+        ],
+        "Replacement on condition by a measured degradation level": [
+            (repairable["replaced on condition by level"], name, route)
+            for name, route in (
+                ("mean_availability", "refused"),
+                ("point_availability", "refused"),
+                ("expected_cost", "refused"),
+                ("availability", "simulated"),
+            )
         ],
         "Spares with repair crews, standby groups, opportunistic "
         "maintenance or imperfect repair": [
@@ -802,6 +1003,8 @@ def test_the_readme_says_what_is_simulated():
                 "spares_stock",
                 "numerical",
             ),
+            (dead_on_arrival, "spares_stock", "numerical"),
+            (dead_on_arrival, "spares_demand", "numerical"),
             (
                 repairable["tested, constant rate"],
                 "spares_demand",
@@ -825,3 +1028,146 @@ def test_the_readme_says_what_is_simulated():
     assert phased_mission.MAX_STATES == 200_000
     assert network.MAX_PATHS == 100_000
     assert network.MAX_STATES == 5_000_000
+
+
+# -- fault trees (#314) -------------------------------------------------------
+
+
+def uncertain_event(tree):
+    """An event's model parameter known to within 5%: the first event,
+    outside the common-cause groups, whose model has parameters (a
+    probability's is ``p``)."""
+    members = {m for g in tree.ccf_groups for m in g.members}
+    for event in tree.events:
+        spec = parametric_spec(tree._event_model(event))
+        if spec is not None and event not in members:
+            name, value = spec[2][0], spec[1][0]
+            return {event: {name: st.uniform(0.95 * value, 0.1 * value)}}
+    raise AssertionError("No event's model has parameters.")
+
+
+FAULT_TREE_CALLS = {
+    **{
+        name: (lambda name: lambda tree: getattr(tree, name)(X))(name)
+        for name in (
+            "top_event_probability",
+            "sf",
+            "ff",
+            "Hf",
+            "df",
+            "hf",
+            "ranked_cut_sets",
+            "birnbaum_importance",
+            "improvement_potential",
+            "risk_achievement_worth",
+            "risk_reduction_worth",
+            "criticality_importance",
+            "fussell_vesely",
+            "differential_importance",
+            "joint_importance",
+            "barlow_proschan_importance",
+            "parameter_sensitivity",
+        )
+    },
+    "time_to_reliability": lambda tree: tree.time_to_reliability(0.5),
+    "bx_life": lambda tree: tree.bx_life(10),
+    "mean": lambda tree: tree.mean(),
+    "random": lambda tree: tree.random(200, seed=1),
+    "structural_importance": lambda tree: tree.structural_importance(),
+    "sf_uncertainty": lambda tree: tree.sf_uncertainty(
+        X, uncertain_event(tree), n_draws=2, seed=1
+    ),
+    "mean_uncertainty": lambda tree: tree.mean_uncertainty(
+        uncertain_event(tree), n_draws=2, seed=1
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(fault_tree_kinds()))
+def test_every_fault_tree_method_does_what_the_report_says(name):
+    tree = fault_tree_kinds()[name]
+    report = tree.analysis_routes()
+    for method, call in FAULT_TREE_CALLS.items():
+        behaves_as_reported(report[method], lambda: call(tree))
+
+
+def test_every_fault_tree_analysis_is_called():
+    report = next(iter(fault_tree_kinds().values())).analysis_routes()
+    assert set(FAULT_TREE_CALLS) == set(report)
+
+
+def test_the_fault_tree_report_covers_every_public_analysis():
+    # Everything public but building, saving, converting, the logic at one
+    # state, the cut and path sets, and the levers.
+    not_analyses = {
+        "analysis_routes",
+        "from_dict",
+        "from_json",
+        "from_rbd",
+        "to_dict",
+        "to_json",
+        "to_rbd",
+        "occurs",
+        "get_min_cut_sets",
+        "get_min_path_sets",
+        "minimal_cut_sets",
+        "minimal_path_sets",
+        "levers",
+        "with_levers",
+    }
+    public = {
+        name
+        for name, _ in inspect.getmembers(FaultTree, callable)
+        if not name.startswith("_")
+    }
+    tree = next(iter(fault_tree_kinds().values()))
+    assert set(tree.analysis_routes()) == public - not_analyses
+
+
+def test_a_fault_tree_s_routes_follow_its_events_and_groups():
+    kinds = fault_tree_kinds()
+    fixed = kinds["fixed"].analysis_routes()
+    assert fixed["top_event_probability"].route == routes.EXACT
+    assert fixed["mean"].route == routes.REFUSED
+    assert "does not vary with time" in fixed["mean"].reason
+    assert fixed["bx_life"].route == routes.REFUSED
+    assert fixed["sf_uncertainty"].route == routes.SIMULATED
+    timed = kinds["lifetimes"].analysis_routes()
+    assert timed["mean"].route == routes.NUMERICAL
+    assert timed["bx_life"].route == routes.NUMERICAL
+    assert timed["df"].route == routes.NUMERICAL
+    assert timed["structural_importance"].route == routes.EXACT
+    assert timed["barlow_proschan_importance"].route == routes.NUMERICAL
+    assert timed["mean_uncertainty"].route == routes.SIMULATED
+    grouped = kinds["common cause"].analysis_routes()
+    assert grouped["sf"].route == routes.EXACT
+    assert "common-cause" in grouped["sf"].reason
+    assert grouped["mean"].route == routes.REFUSED
+    assert "split a failure probability" in grouped["mean"].reason
+    assert grouped["mean_uncertainty"].route == routes.REFUSED
+    assert grouped["joint_importance"].route == routes.EXACT
+    by_rate = kinds["common cause by rate"].analysis_routes()
+    assert by_rate["mean"].route == routes.NUMERICAL
+    assert by_rate["parameter_sensitivity"].route == routes.NUMERICAL
+    for route in by_rate.values():
+        assert route.to_dict()["route"] == route.route
+
+
+def test_a_fault_in_a_check_is_raised_not_reported_as_a_refusal():
+    # A refusal (NotImplementedError, or routes.Refused for a diagram with
+    # nothing the analysis works on) is reported with its message; any
+    # other error in a check is a fault, and is raised.
+    def refused():
+        raise routes.Refused("No node has a capacity.")
+
+    def cannot():
+        raise NotImplementedError("Not exactly.")
+
+    def faulty():
+        raise ValueError("operands could not be broadcast together")
+
+    assert routes.refusal(refused) == "No node has a capacity."
+    assert routes.refusal(cannot) == "Not exactly."
+    assert routes.refusal(lambda: None) is None
+    with pytest.raises(ValueError, match="broadcast"):
+        routes.refusal(faulty)

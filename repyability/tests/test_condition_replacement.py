@@ -8,7 +8,7 @@ import surpyval as surv
 
 from repyability import RepairableRBD
 from repyability.rbd import routes as r
-from repyability.rbd.repairable_rbd import _failures_between
+from repyability.rbd._event_loop import _failures_between
 
 E, W, L = (
     surv.Exponential.from_params,
@@ -335,7 +335,10 @@ def test_the_values_over_time_are_numerical_and_the_spares_simulated():
             {"interval": 10.0, "policy": "block", "inspection_cost": 1.0},
             "only to the 'condition'",
         ),
-        ({"interval": 10.0, "policy": "cbm"}, "'age', 'block' or 'condition'"),
+        (
+            {"interval": 10.0, "policy": "cbm"},
+            "'age', 'block', 'condition' or 'calendar'",
+        ),
     ],
 )
 def test_the_spec_is_checked(preventive, message):
