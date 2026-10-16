@@ -21,14 +21,17 @@ skipping makes the first cycle's cut-off ``2 T`` rather than ``T``::
 with ``M(s)`` the integral of ``exp(-r x) R(x)`` to ``s``, and ``A(s) =
 unplanned L(s) + planned exp(-r s) R(s)``, ``L(s) = 1 - exp(-r s) R(s) -
 r M(s)`` the discounted chance of a failure first. The discount rate
-cancels from the last term, which holds with no discounting too. With
-``r > 0`` the two present values compared are those of the whole future:
-``V`` if the replacement is done, and ``A(2T) + (1 - r M(2T)) V`` if it is
-skipped (the longer first cycle, then the plan from new). Undiscounted
-both are infinite, and the comparison is the classic one: each choice's
-first cycle's cost less its length at the plan's cost rate ``g = A(T) /
+cancels from the last term, which holds with no discounting too. The two
+present values compared are those of the whole future: ``V`` if the
+replacement is done, and ``A(2T) + (1 - r M(2T)) V`` if it is skipped
+(the longer first cycle, then the plan from new). Undiscounted both are
+infinite (``replace`` and ``skip`` are ``inf``), and only their
+difference is finite, the classic comparison: each choice's first
+cycle's cost less its length at the plan's cost rate ``g = A(T) /
 M(T)``, ``A(T) - g M(T)`` (0, the plan's own) against ``A(2T) - g
-M(2T)``. Either way the difference is the NPV above.
+M(2T)``. Either way the difference is the NPV above. A discount rate
+that discounts the costs away (a rate a year with a life in days, #231)
+is warned of as a ``RepairableRBD``'s costs warn of it.
 
 **A plan that does not reset** (block replacement, on a calendar):
 planned replacements fall on fixed times, the next ``d`` after the
@@ -84,19 +87,19 @@ class SkipValue(_ResultMapping):
         The present-value cost of doing the next planned replacement.
         On a plan that does not reset, the costs to the following planned
         replacement: the replacement, the new unit's failures to then and
-        the failures before it. On a plan that resets, with a discount
-        rate, the cost of the whole future (the first cycle, then the plan
-        from new); undiscounted, the first cycle's cost less its length at
-        the plan's cost rate, which is 0, the plan's own.
+        the failures before it. On a plan that resets, the cost of the
+        whole future (the first cycle, then the plan from new), which
+        with no discounting is endless: ``inf``.
     skip : float
         The present-value cost of skipping it, over the same comparison:
         the failures to the following planned replacement; or, on a plan
-        that resets, the whole future from the longer first cycle, or,
-        undiscounted, that cycle's cost less its length at the plan's
-        cost rate.
+        that resets, the whole future from the longer first cycle
+        (``inf`` with no discounting).
     npv : float
         What skipping saves, ``replace - skip``: the planned cost saved,
-        net of the failures it adds. Positive, skipping pays.
+        net of the failures it adds. Positive, skipping pays. Finite
+        where both are endless: the first cycles' difference, each
+        cycle's cost less its length at the plan's cost rate.
     best : str
         ``"skip"`` where skipping saves, ``"replace"`` otherwise.
     """
@@ -145,7 +148,7 @@ def skip_next_replacement(
                 f"({every:g}) after the failure: give no time_to_next."
             )
         time_to_next = every
-        replace, skip = _resetting(part, every, rate)
+        replace, skip, npv = _resetting(part, every, rate)
     else:
         if time_to_next is None:
             raise ValueError(
@@ -160,7 +163,7 @@ def skip_next_replacement(
                 "interval."
             )
         replace, skip = _fixed(part, every, rate, time_to_next)
-    npv = replace - skip
+        npv = replace - skip
     return SkipValue(
         resets,
         every,
@@ -173,11 +176,29 @@ def skip_next_replacement(
     )
 
 
+def _warn_discounted_away(part, rate: float, horizons) -> None:
+    """The check a ``RepairableRBD``'s costs make of a discount rate
+    (#231): warn where it discounts the costs at the life's mean (or
+    over ``horizons``) to almost nothing."""
+    from repyability.rbd._common import _present_horizon
+    from repyability.rbd._model_utils import MODEL_ERRORS, model_mean
+
+    def lives() -> list:
+        try:
+            return [float(model_mean(part.reliability))]
+        except MODEL_ERRORS:
+            return []
+
+    _present_horizon(np.asarray(horizons, float), rate, lives)
+
+
 def _resetting(part, every: float, rate: float) -> tuple:
     """The present-value costs of doing and of skipping the next planned
-    replacement on a plan that resets (see the module's notes)."""
+    replacement on a plan that resets, and the NPV of skipping (see the
+    module's notes)."""
     from repyability.rbd._mean_lifetime import _integrate, model_knots
 
+    _warn_discounted_away(part, rate, [every, 2.0 * every])
     sf = part.reliability_function
 
     def discounted(x: np.ndarray) -> np.ndarray:
@@ -201,11 +222,13 @@ def _resetting(part, every: float, rate: float) -> tuple:
         # The whole future: the plan from new is worth A(T) / (r M(T)),
         # and skipping puts it after the longer first cycle.
         value = done / (rate * once)
-        return value, skipped + (1.0 - rate * twice) * value
-    # Undiscounted: each first cycle's cost less its length at the plan's
-    # cost rate (the plan's own cycle is 0 by construction).
+        skip = skipped + (1.0 - rate * twice) * value
+        return value, skip, value - skip
+    # Undiscounted, each whole future is endless, and the NPV is the
+    # first cycles' difference, each cycle's cost less its length at the
+    # plan's cost rate (the plan's own cycle is 0 by construction).
     g = done / once
-    return done - g * once, skipped - g * twice
+    return math.inf, math.inf, (done - g * once) - (skipped - g * twice)
 
 
 def _fixed(part, every: float, rate: float, time_to_next: float) -> tuple:

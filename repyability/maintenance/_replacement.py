@@ -147,30 +147,44 @@ def _age_where(sf, chance: float, scale: float) -> float:
     return high
 
 
-def _default_step(calendar: Calendar, mean: float) -> float:
-    """About ``mean / STEPS_PER_LIFE``, but a whole fraction of the
-    largest step every opportunity's period, offset and dates lie on, so
-    that they lie on the grid; with none such (or one far finer), the
-    first."""
-    base = mean / STEPS_PER_LIFE
-    times = []
-    for o in calendar.opportunities:
-        if o.periodic:
-            times += [o.period, o.offset]
-        else:
-            times += list(o.dates)
-    fractions = [_fraction(abs(t)) for t in times if t != 0.0]
+def _common_divisor(values) -> Optional[float]:
+    """The largest step every one of ``values`` (read as fractions, 0
+    left out) is a whole number of; None with none."""
+    fractions = [_fraction(abs(v)) for v in values if v != 0.0]
     if not fractions:
-        return base
-    common = float(
+        return None
+    return float(
         Fraction(
             math.gcd(*(f.numerator for f in fractions)),
             math.lcm(*(f.denominator for f in fractions)),
         )
     )
-    if common < base / 10.0:
-        return base
-    return common / math.ceil(common / base)
+
+
+def _default_step(calendar: Calendar, mean: float) -> float:
+    """About ``mean / STEPS_PER_LIFE``, but a whole fraction of the
+    largest step every period (and the period a plan of given dates
+    repeats with) lies on, so that a periodic calendar keeps its period
+    on the grid whatever its offsets; and of the offsets and dates too,
+    unless that makes the step far finer (below a tenth of the life's),
+    when each is laid at the grid time nearest it (``_Grid``, which
+    warns). An offset of a few hours on a period of days is what dates
+    turned into model time give, and must not cost the period."""
+    base = mean / STEPS_PER_LIFE
+    periods = [o.period for o in calendar.opportunities if o.periodic]
+    if not calendar.periodic:
+        periods.append(calendar._repeat())
+    others = [o.offset for o in calendar.opportunities if o.periodic]
+    others += [
+        d for o in calendar.opportunities if not o.periodic for d in o.dates
+    ]
+    for common in (
+        _common_divisor(periods + others),
+        _common_divisor(periods),
+    ):
+        if common is not None and common >= base / 10.0:
+            return common / math.ceil(common / base)
+    return base
 
 
 def _sweep(
@@ -372,7 +386,10 @@ def _summary(names, anytime, kinds, costs, replaced, failures, failure, time):
 class _Thresholds:
     """Where a policy's thresholds come from: ``at(index)`` gives the
     first replacing age index and the kind of replacement at grid
-    indices."""
+    indices; ``horizon`` is the steps within which a step that replaces
+    comes, if any does (a cycle; a window's settling length)."""
+
+    horizon: int
 
     def at(self, index: np.ndarray):  # pragma: no cover - interface
         raise NotImplementedError
@@ -384,6 +401,7 @@ class _CycleTable(_Thresholds):
 
     def __init__(self, first, kinds, chance):
         self.first, self.kinds, self.chance = first, kinds, chance
+        self.horizon = first.size
 
     def chances(self, n: int) -> np.ndarray:
         return self.chance[np.mod(np.arange(n), self.first.size)]
@@ -404,6 +422,7 @@ class _WindowTable(_Thresholds):
         self.first, self.kinds = first, kinds
         self.block = max(settle, 1024)
         self.blocks: Dict[int, tuple] = {}
+        self.horizon = max(settle, 1)
 
     def _block(self, b: int):
         if b not in self.blocks:
@@ -457,8 +476,8 @@ class PlannedReplacement(_ResultMapping):
     Attributes
     ----------
     time : float
-        When, in the calendar's time (``inf``: none, the unit all but
-        sure to fail first).
+        When, in the calendar's time (``inf``: no planned replacement
+        comes, as after the last date of a plan with none on any day).
     kind : str or None
         The opportunity it falls at (``"anytime"`` for a day with no
         shut); None if none.
@@ -498,7 +517,10 @@ class CalendarPolicy(_ResultMapping):
         Replacements a unit of time in the long run, by kind: each
         opportunity's name, ``"anytime"`` (a day with no shut, where the
         calendar allows one) and ``"failure"``. A kind the policy never
-        uses has 0.
+        uses has 0. Exact for the grid where the cost rate is
+        (``basis`` ``"exact"``); otherwise, with the schedule's chances,
+        estimates from a new unit run in, with no standard error (only
+        ``cost_rate_se`` has one): a sampled policy's move with the seed.
     cost_rates : dict
         What each kind costs a unit of time in the long run (its rate
         times its price); they sum to ``cost_rate``.
@@ -530,6 +552,11 @@ class CalendarPolicy(_ResultMapping):
     settings : dict
         How it was worked out: the calendar's tail, sweeps, bounds,
         samples, windows.
+    life : dict or None
+        The saved form of the life it was worked out for (as the
+        diagrams save a model), which a
+        [`RepairableRBD`][repyability.RepairableRBD] component given the
+        policy must have; None where the life does not save.
 
     Examples
     --------
@@ -578,6 +605,7 @@ class CalendarPolicy(_ResultMapping):
     determined_until: Optional[float]
     threshold_only: bool
     settings: Dict[str, Any] = field(default_factory=dict)
+    life: Optional[dict] = None
 
     def _bind(self, table, names, grid=None, oldest=None) -> "CalendarPolicy":
         object.__setattr__(self, "_table", table)
@@ -589,10 +617,14 @@ class CalendarPolicy(_ResultMapping):
     def _next_planned(self, installed: float, after: float):
         """When a unit put in at ``installed`` is next replaced on the
         policy, at or after ``after`` (strictly after, if put in then):
-        its time, price and kind, ``(inf, 0.0, None)`` if it would outlive
-        the oldest age the policy was worked out to first. What a
-        ``RepairableRBD`` component on a ``"calendar"`` preventive policy
-        asks at each of its renewals."""
+        its time, price and kind, ``(inf, 0.0, None)`` if no step
+        replaces it. A unit past the oldest age the policy was worked out
+        to is past every threshold, so it is replaced at the first step
+        that replaces at all: the search runs to where the unit reaches
+        that age, or a horizon ahead (a cycle, a window's settling
+        length) if it already has. What a ``RepairableRBD`` component on
+        a ``"calendar"`` preventive policy asks at each of its
+        renewals."""
         if self._grid is None:
             return self._table.next_planned(installed, after, self._oldest)
         step = cast(float, self.step)
@@ -601,6 +633,7 @@ class CalendarPolicy(_ResultMapping):
         else:
             n = int(math.ceil(after / step - 1e-9))
         limit = int(math.ceil((installed + self._oldest) / step)) + 1
+        limit = max(limit, n + self._table.horizon)
         while n <= limit:
             index = np.arange(n, min(n + _CHUNK, limit + 1))
             first, kinds = self._table.at(index)
@@ -646,7 +679,12 @@ class CalendarPolicy(_ResultMapping):
 
     def next_replacement(self, age, now=0.0) -> PlannedReplacement:
         """When the unit in service, ``age`` old at time ``now``, will be
-        replaced on the policy, if it does not fail first.
+        replaced on the policy, if it does not fail first: the first
+        time, at or after now, at which a planned replacement is open
+        and the unit is at least its threshold. A unit older than the
+        oldest age the policy was worked out to (``settings["max_age"]``)
+        is past every threshold, and is replaced at the next
+        opportunity, or on any day now where the calendar allows one.
 
         Parameters
         ----------
@@ -780,7 +818,20 @@ def optimal_calendar_policy(
             f"max_age must be a number, more than 0; got {max_age!r}."
         )
     failure, anytime = calendar._prices(part)
+    if not calendar.opportunities and anytime is None:
+        allowed = (
+            "its anytime is None"
+            if calendar.anytime is None
+            else "the part has no planned_cost for its anytime"
+        )
+        raise ValueError(
+            "The calendar allows no planned replacement (no opportunities, "
+            f"and none on any day: {allowed}), so there is no policy to "
+            "find but running to failure: give the part a planned_cost, or "
+            "the calendar opportunities or an anytime price."
+        )
     dated = not calendar.periodic
+    life = _saved_life(part)
     if method == "integration":
         from repyability.maintenance._integration import integrated_policy
 
@@ -791,7 +842,7 @@ def optimal_calendar_policy(
                 f"{anytime:g}): use method='dp', or anytime=None."
             )
         return integrated_policy(
-            part, calendar, failure, max_age=max_age, tail=tail
+            part, calendar, failure, max_age=max_age, tail=tail, life=life
         )
     step = _resolve_step(step, calendar, part)
     ages = _Ages(part, step, None if max_age is None else float(max_age))
@@ -801,6 +852,18 @@ def optimal_calendar_policy(
     short = grid.cycle is not None and grid.cycle <= MAX_CYCLE
     if method == "auto":
         method = "sampling" if (not dated and not short) else "dp"
+        if method == "sampling":
+            warnings.warn(
+                f"The calendar repeats only after {grid.cycle:,} steps of "
+                f"the grid, more than {MAX_CYCLE:,}, so the cost rate is "
+                f"sampled over mc_samples ({mc_samples}) windows of it, "
+                "each an exact solve that may take a second or more: "
+                "mc_samples sets the cost, and cost_rate_se says how close "
+                "the rate is; the rates by kind are estimates with no "
+                "standard error. method='dp' differences one long horizon "
+                "instead.",
+                stacklevel=outside_level(),
+            )
     if method == "sampling":
         if dated:
             raise NotImplementedError(
@@ -817,18 +880,30 @@ def optimal_calendar_policy(
                 f"{mc_samples!r}."
             )
         return _sampled_policy(
-            grid, ages, failure, settle, int(mc_samples), seed, names
+            grid, ages, failure, settle, int(mc_samples), seed, names, life
         )
     if not dated and short:
-        return _cycle_policy(grid, ages, failure, names, calendar)
+        return _cycle_policy(grid, ages, failure, names, life)
     if not dated:
-        return _differenced_policy(grid, ages, failure, settle, names)
+        return _differenced_policy(grid, ages, failure, settle, names, life)
     return _dated_policy(
-        part, calendar, anytime, ages, failure, settle, tail, names
+        part, calendar, anytime, ages, failure, settle, tail, names, life
     )
 
 
-def _cycle_policy(grid, ages, failure, names, calendar) -> CalendarPolicy:
+def _saved_life(part) -> Optional[dict]:
+    """The saved form of the part's life, for the policy to carry (a
+    ``RepairableRBD`` component given the policy must have that life);
+    None where it does not save."""
+    from repyability.rbd.serialisation import serialise_model
+
+    try:
+        return serialise_model(part.reliability)
+    except (NotImplementedError, TypeError, ValueError):
+        return None
+
+
+def _cycle_policy(grid, ages, failure, names, life) -> CalendarPolicy:
     costs, kinds = grid.prices(0, grid.cycle)
     cycle = _relative_values(costs, ages, failure)
     _warn_not_threshold(cycle.upper)
@@ -855,6 +930,7 @@ def _cycle_policy(grid, ages, failure, names, calendar) -> CalendarPolicy:
             "cycle_steps": grid.cycle,
             "max_age": ages.size * ages.step,
         },
+        life=life,
     )
     table = _CycleTable(cycle.first, kinds, replaced)
     return policy._bind(table, names, grid, ages.size * ages.step)
@@ -882,7 +958,9 @@ def _run_in(grid, ages, failure, start, settle, span):
     return rate, replaced, failures, kinds[window], costs, upper
 
 
-def _differenced_policy(grid, ages, failure, settle, names) -> CalendarPolicy:
+def _differenced_policy(
+    grid, ages, failure, settle, names, life
+) -> CalendarPolicy:
     """A periodic calendar too long to sweep, by a long finite horizon:
     the cost rate differenced over ``2 * settle`` steps, after a settling
     length."""
@@ -918,6 +996,7 @@ def _differenced_policy(grid, ages, failure, settle, names) -> CalendarPolicy:
             "table_until": span * grid.step,
             "max_age": ages.size * ages.step,
         },
+        life=life,
     )
     _, first, kinds, _ = _window(grid, 0, span + settle, ages, failure)
     table = _WindowTable(
@@ -975,7 +1054,7 @@ def _sampled_rate(grid, ages, failure, settle, samples, rng):
 
 
 def _sampled_policy(
-    grid, ages, failure, settle, samples, seed, names
+    grid, ages, failure, settle, samples, seed, names, life
 ) -> CalendarPolicy:
     rng = np.random.default_rng(checks.seed(seed))
     rate, error, rates, spent = _sampled_rate(
@@ -999,13 +1078,14 @@ def _sampled_policy(
             "cycle": None if grid.cycle is None else grid.cycle * grid.step,
             "max_age": ages.size * ages.step,
         },
+        life=life,
     )
     table = _WindowTable(grid, ages, failure, settle, first[:1], kinds[:1])
     return policy._bind(table, names, grid, ages.size * ages.step)
 
 
 def _dated_policy(
-    part, calendar, anytime, ages, failure, settle, tail, names
+    part, calendar, anytime, ages, failure, settle, tail, names, life
 ) -> CalendarPolicy:
     """A calendar with given dates: the policy over the plan and a
     settling length past it, solved with the chosen tail; with the other
@@ -1063,6 +1143,7 @@ def _dated_policy(
             "settle": settle * step,
             "max_age": ages.size * ages.step,
         },
+        life=life,
     )
     window = _WindowTable(grid, ages, failure, settle, first, kinds)
     return policy._bind(window, names, grid, ages.size * ages.step)

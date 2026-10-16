@@ -281,11 +281,16 @@ question here is the model-time one it becomes.)
     a discount rate, the present value of the whole future under each:
     done, the plan from new, `A(T) / (r M(T))`; skipped, the longer first
     cycle and then the plan from new, `A(2T) + (1 - r M(2T)) A(T) / (r
-    M(T))`. Undiscounted those are infinite, and the comparison is the
-    classic one: each first cycle's cost less its length at the plan's
-    cost rate `g = A(T) / M(T)`, `A(T) - g M(T)` (0, the plan's own)
-    against `A(2T) - g M(2T)`. Either way the difference is the NPV
-    above.
+    M(T))`. Undiscounted those are infinite, and `replace` and `skip`
+    are `inf` (one meaning for the fields whatever the rate: the whole
+    future's present value; from the 0.14 persona review, where they
+    had shown the first cycles' comparison terms, 0 and -26.33); only
+    the NPV is finite, the classic comparison: each first cycle's cost
+    less its length at the plan's cost rate `g = A(T) / M(T)`, `A(T) -
+    g M(T)` (0, the plan's own) against `A(2T) - g M(2T)`. Either way
+    the difference is the NPV above. A rate that discounts the costs
+    away (0.08 given as a rate a day) is warned of on both plans, by
+    the check a `RepairableRBD`'s costs make (#231).
   - **The discount rate** is continuous, per unit of the life's time, as
     `RepairableRBD.expected_cost` takes it (0 by default): for 8% a year
     with a life in days, `r = log(1.08) / 365.25`, so a cost a year away
@@ -784,7 +789,17 @@ answers back into dates is Reliafy's too.)
     after the listed ones; UC-13's calendar policy now says what the
     shuts are worth, and the outages listed stay the ones scheduled.
   - `now_cost` is the planned price unless given (an outage today, or a
-    chance while the machine is apart, is cheaper).
+    chance while the machine is apart, is cheaper). **A planned
+    replacement is one later than now** (from the 0.14 persona review):
+    where no later time beats replacing at once (a part past its
+    optimal age), replacing at once is replacing now, at `now_cost`, so
+    the planned choice is then replacing now (time 0, at `now_cost`,
+    never the planned price at time 0 that `now_cost` contradicts),
+    `now` is True exactly when the best choice is at time 0, and
+    `replace_from_age` follows. A part 400 days old with `now_cost=500`
+    runs to failure (254.5, against 500 now, from no age); with
+    `now_cost=100` it is replaced now. A planned replacement with a
+    lead time is a scheduled outage at that time.
   - **Each choice's break-even age** (`ReplacementChoice.break_even_age`)
     is the youngest at which replacing now costs no more than it, on a
     grid of 64 ages up to the one a new part reaches with a chance of
@@ -806,7 +821,9 @@ answers back into dates is Reliafy's too.)
     the default; a cost rate, a calendar or anything but a policy is
     refused; an exponential life (each
     outage's cost `price · exp(-λu)`, running to failure 0 and best);
-    replacing now dearer than a planned replacement is never best; a
+    a planned replacement at once is replacing now, at `now_cost` above
+    and below the planned price, and `now` is True exactly when the
+    best choice is at time 0; a
     cheaper chance now breaks even younger; the answer the same in days
     and in hours; JSON; the input checks.
 - **Learned / open questions:**
@@ -879,4 +896,36 @@ answers back into dates is Reliafy's too.)
     unit in service will be replaced, at which shut and price. For the
     plant: 0.962 replacements a year at the annual shut, 0.078 failures,
     no other kind used.
+  - **From the 0.14 persona review** (a planner using the bearing of
+    UC-12, with shuts every 180 days at 100):
+    - **The step is sized from the periods, not the offsets.** A shut at
+      an offset of 0.1234 days (three hours into the day, what a date
+      turned into model time gives) had the step sized from the gcd of
+      the period and the offset, 1/5000, far below the life's step, so
+      the life-sized step was taken, which does not divide 180: the
+      calendar lost its period, `"auto"` sampled it (57 s for 0.5 s,
+      the cost rate 0.04% off, no period) and the schedule drifted
+      (0.0, 180.17, 360.03). The step is now a whole fraction of the
+      periods (and a plan's repeat), the offsets and dates on it too
+      only where that keeps it near the life's; an offset off the grid
+      is laid at the grid time nearest it (within half a step, with the
+      warning), and the policy is the aligned calendar's: the same step,
+      cost rate, thresholds and chances, `dp`, exact, period 180.
+    - **`"auto"` says when it samples** (the cycle has more than 20,000
+      steps; `mc_samples` sets the cost), and the docs say that a
+      sampled policy's rates by kind and the schedule's chances are
+      estimates from a unit run in with no standard error (they move by
+      some 10% between seeds at 8 samples); only `cost_rate_se` has one.
+    - **A calendar allowing no planned replacement is refused**
+      (`Calendar()` on a part with no `planned_cost`, or
+      `Calendar(anytime=None)`), as `optimal_replacement_policy` refuses
+      with no costs, rather than return running to failure.
+    - **A unit past the oldest age worked out is replaced at the next
+      opportunity** (`next_replacement(5000.0, now=0.0)` gives the shut
+      at 0, not `inf`): it is past every threshold.
+    - **The policy carries the life it was worked out for** (`life`, its
+      saved form), and a `RepairableRBD` component with another life is
+      refused, naming both: a policy worked out for the Weibull(1000,
+      2.5) bearing given to the Weibull(365, 2) one simulated at a cost
+      rate 19% off the one worked out for it, silently.
 

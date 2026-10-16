@@ -901,6 +901,14 @@ class NonRepairable:
         choice is the best. With no outages and the default baseline,
         replacing now is the best from the optimal replacement age.
 
+        A planned replacement is one later than now, at its best time.
+        Where no later time beats replacing at once (a part past its
+        optimal age), replacing at once is replacing now, which costs
+        ``now_cost``: the planned choice is then replacing now (time 0,
+        at ``now_cost``), ``now`` is True exactly when the best choice
+        is at time 0, and ``replace_from_age`` follows. A planned
+        replacement with a lead time is a scheduled outage at that time.
+
         Parameters
         ----------
         age : float
@@ -1027,7 +1035,11 @@ class NonRepairable:
             The present-value cost of doing the replacement (``replace``)
             and of skipping it (``skip``), their difference (``npv``:
             positive, skipping pays), the ``best`` of the two, and what
-            they were worked out for.
+            they were worked out for. On a plan that resets each is the
+            whole future's, endless (``inf``) with no discounting, where
+            only ``npv`` is finite. A discount rate that discounts the
+            costs away (a rate a year given with a life in days) is
+            warned of.
 
         Raises
         ------
@@ -1115,15 +1127,24 @@ class NonRepairable:
         - ``"sampling"``: for a cycle too long to sweep (co-prime
           periods), the cost rate is the mean over ``mc_samples`` sampled
           times of the cycle of a window's differenced rate, with its
-          standard error; the threshold at a time is a solve over a window
+          standard error (``cost_rate_se``); each window is an exact
+          solve that may take a second or more, so ``mc_samples`` sets
+          the cost. The rates by kind (``replacement_rates``,
+          ``cost_rates``) and the schedule's chances are then estimates
+          from a new unit run in, with no standard error, and move with
+          the seed; the threshold at a time is a solve over a window
           from it (deterministic).
         - ``"auto"``: ``"dp"``, or ``"sampling"`` for a periodic calendar
-          whose cycle is too long to sweep.
+          whose cycle is too long to sweep, with a warning that says so.
 
         The grid's step is not an argument: it is a numerical setting,
         sized from the models (never in absolute time), not a choice of
         when decisions are made; a calendar says that, by its
-        opportunities.
+        opportunities. It is a whole fraction of the periods, so a
+        periodic calendar keeps its period on the grid whatever its
+        offsets; an offset or date off the grid (a few hours on a period
+        of days, as dates turned into model time give) is laid at the
+        grid time nearest it, with a warning.
 
         A calendar with given dates (a plan) is extended past its last
         date by ``tail``: ``"repeat"`` repeats the plan (from 0 to its
@@ -1147,23 +1168,26 @@ class NonRepairable:
             How a plan of given dates goes on after its last date:
             ``"repeat"`` (the default) or ``"anytime"``.
         mc_samples : int, optional
-            The times sampled by ``"sampling"``, by default 64.
+            The times sampled by ``"sampling"``, by default 64; the other
+            methods take none.
         seed : int, optional
-            Seeds the sampled times.
+            Seeds the sampled times; the other methods draw nothing.
 
         Returns
         -------
         CalendarPolicy
             The long-run cost rate and what it is made of by kind, each
             shut's threshold and chance of a replacement (``schedule()``),
-            a unit's next replacement (``next_replacement()``), and how it
-            was worked out.
+            a unit's next replacement (``next_replacement()``), how it
+            was worked out, and the life it was worked out for.
 
         Raises
         ------
         ValueError
-            If a price the calendar takes from the part is not set, or an
-            argument is out of its range.
+            If a price the calendar takes from the part is not set, the
+            calendar allows no planned replacement at all (no
+            opportunities, and none on any day), or an argument is out
+            of its range.
         NotImplementedError
             For ``method="integration"`` with replacement on any day, or
             ``method="sampling"`` with given dates.

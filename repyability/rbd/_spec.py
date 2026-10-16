@@ -391,11 +391,22 @@ def _validate_component_spec(node, spec: dict) -> None:
             )
 
 
-def _validate_calendar(node, spec: dict, policy: str):
+def _saved_name(saved: dict) -> str:
+    """A model's saved form in a few words, for a message."""
+    if saved.get("kind") == "surpyval":
+        model = saved["model"]
+        return f"{model.get('distribution')} {model.get('params')}"
+    return str(saved.get("kind"))
+
+
+def _validate_calendar(node, spec: dict, policy: str, life):
     """A ``"calendar"`` policy's ``CalendarPolicy`` (#319), checked: given
     under that policy and no other, with no interval (its thresholds say
-    when) and no cost (its calendar's prices are charged)."""
+    when) and no cost (its calendar's prices are charged), and worked out
+    for the component's own ``life`` (the policy carries the saved form
+    of the life it was worked out for; one that does not save passes)."""
     from repyability.maintenance import CalendarPolicy
+    from repyability.rbd.serialisation import serialise_model
 
     given = spec.get("calendar")
     if policy != "calendar":
@@ -419,6 +430,19 @@ def _validate_calendar(node, spec: dict, policy: str):
             raise ValueError(
                 f"Component {node!r}: a 'calendar' policy takes no {key}: "
                 f"{why}."
+            )
+    if given.life is not None:
+        try:
+            saved = serialise_model(life)
+        except (NotImplementedError, TypeError, ValueError):
+            saved = None
+        if saved is not None and saved != given.life:
+            raise ValueError(
+                f"Component {node!r}: its calendar policy was worked out "
+                f"for another life ({_saved_name(given.life)}), not the "
+                f"life of the component ({_saved_name(saved)}): work the "
+                "policy out for it, "
+                "NonRepairable(life, ...).optimal_calendar_policy(calendar)."
             )
     return given
 
@@ -448,7 +472,7 @@ def _validate_preventive(
             f"Component {node!r}: the preventive policy must be 'age', "
             f"'block', 'condition' or 'calendar', got {policy!r}."
         )
-    calendar = _validate_calendar(node, spec, policy)
+    calendar = _validate_calendar(node, spec, policy, life)
     if calendar is not None:
         interval = math.inf
     else:

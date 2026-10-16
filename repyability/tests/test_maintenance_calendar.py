@@ -192,6 +192,143 @@ def test_the_default_step_puts_the_opportunities_on_the_grid():
     assert step <= 887.0 / _replacement.STEPS_PER_LIFE * 1.0001
 
 
+# The step is sized from the periods: an offset off the grid (a few hours
+# on a period of days, as dates turned into model time give) is laid at
+# the grid time nearest it, and the calendar keeps its period.
+
+SHUT = NonRepairable(
+    surv.Weibull.from_params([365.0, 2.0]),
+    planned_cost=150.0,
+    unplanned_cost=400.0,
+)
+
+
+def shut_every_180(offset):
+    return Calendar([Opportunity("shut", 100.0, period=180.0, offset=offset)])
+
+
+def test_an_offset_off_the_grid_keeps_the_period():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        aligned = SHUT.optimal_calendar_policy(shut_every_180(0.0))
+    with pytest.warns(UserWarning, match="nearest"):
+        moved = SHUT.optimal_calendar_policy(shut_every_180(0.1234))
+    assert (aligned.method, aligned.basis) == ("dp", "exact")
+    assert (moved.method, moved.basis, moved.period) == ("dp", "exact", 180.0)
+    assert aligned.period == 180.0
+    # The step is a whole fraction of the period, the same either way
+    # (about the mean life, 323.5 days, over 1,000), so the shut at
+    # 0.1234 + k 180 is laid at k 180, within half a step, and the two
+    # policies are one and the same: the cost rate exactly, each shut's
+    # threshold and long-run chance of a replacement.
+    assert moved.step == aligned.step
+    assert 180.0 / moved.step == round(180.0 / moved.step)
+    assert 0.1234 < moved.step / 2
+    assert moved.cost_rate == aligned.cost_rate
+    assert moved.schedule() == aligned.schedule()
+    shuts = moved.schedule(until=400.0)
+    assert [t for t, _, _, _ in shuts] == [0.0, 180.0, 360.0]
+    assert len({chance for _, _, _, chance in shuts}) == 1
+    assert shuts[0][3] == pytest.approx(
+        moved.replacement_rates["shut"] * 180.0, rel=1e-9
+    )
+    assert _replacement._default_step(shut_every_180(0.1234), 323.5) == (
+        _replacement._default_step(shut_every_180(0.0), 323.5)
+    )
+
+
+def test_an_offset_of_whole_steps_shifts_the_policy():
+    aligned = SHUT.optimal_calendar_policy(shut_every_180(0.0))
+    offset = 10 * aligned.step
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        shifted = SHUT.optimal_calendar_policy(shut_every_180(offset))
+    assert shifted.step == aligned.step and shifted.period == 180.0
+    assert shifted.cost_rate == pytest.approx(aligned.cost_rate, rel=1e-9)
+    moved = shifted.schedule(until=400.0)
+    kept = aligned.schedule(until=400.0 - offset)
+    assert [t - offset for t, _, _, _ in moved] == pytest.approx(
+        [t for t, _, _, _ in kept], abs=1e-9
+    )
+    assert [(k, a) for _, k, a, _ in moved] == [(k, a) for _, k, a, _ in kept]
+    times = np.arange(0.0, 360.0, 7.0)
+    assert np.array_equal(
+        shifted._threshold(times + offset), aligned._threshold(times)
+    )
+
+
+def test_a_unit_past_the_oldest_age_is_replaced_at_the_next_opportunity():
+    # The thresholds are worked out up to the age a unit outlives with a
+    # chance of 1e-9; a unit given as in service past it is past every
+    # threshold, and goes at the next shut, or on any day now.
+    shuts = SHUT.optimal_calendar_policy(
+        Calendar([Opportunity("shut", 100.0, period=180.0)], anytime=None)
+    )
+    oldest = shuts.settings["max_age"]
+    assert 5000.0 > oldest
+    assert tuple(shuts.next_replacement(5000.0, now=0.0).values()) == (
+        0.0,
+        "shut",
+        100.0,
+    )
+    assert tuple(shuts.next_replacement(5000.0, now=10.0).values()) == (
+        180.0,
+        "shut",
+        100.0,
+    )
+    assert shuts.next_replacement(oldest, now=10.0).time == 180.0
+    any_day = SHUT.optimal_calendar_policy(shut_every_180(0.0))
+    assert any_day.next_replacement(5000.0, now=10.0).kind == "anytime"
+    assert any_day.next_replacement(5000.0, now=10.0).time == pytest.approx(
+        10.0, abs=any_day.step
+    )
+    integrated = solve(
+        SHUT,
+        Calendar([Opportunity("shut", 100.0, period=180.0)], anytime=None),
+        method="integration",
+    )
+    assert tuple(integrated.next_replacement(5000.0, now=10.0).values()) == (
+        180.0,
+        "shut",
+        100.0,
+    )
+
+
+def test_a_calendar_with_no_planned_replacement_is_refused():
+    # As optimal_replacement_policy refuses with no costs: there is no
+    # policy to find but running to failure.
+    unplanned = NonRepairable(
+        surv.Weibull.from_params([365.0, 2.0]), unplanned_cost=400.0
+    )
+    with pytest.raises(ValueError, match="no planned replacement"):
+        unplanned.optimal_calendar_policy(Calendar())
+    with pytest.raises(ValueError, match="anytime is None"):
+        SHUT.optimal_calendar_policy(Calendar(anytime=None))
+    with pytest.raises(ValueError, match="no planned replacement"):
+        SHUT.optimal_calendar_policy(
+            Calendar(anytime=None), method="integration"
+        )
+    # An opportunity, or a price on any day, is a planned replacement.
+    assert (
+        unplanned.optimal_calendar_policy(
+            Calendar([Opportunity("shut", 100.0, period=180.0)])
+        ).replacement_rates["shut"]
+        > 0.0
+    )
+    assert (
+        SHUT.optimal_calendar_policy(Calendar()).replacement_rates["anytime"]
+        > 0.0
+    )
+
+
+def test_the_policy_carries_the_life_it_was_worked_out_for():
+    from repyability.rbd.serialisation import serialise_model
+
+    policy = SHUT.optimal_calendar_policy(shut_every_180(0.0))
+    assert policy.life == serialise_model(SHUT.reliability)
+    assert json.loads(json.dumps(policy.to_dict()))["life"] == policy.life
+
+
 # Phase 1, test 1: with no opportunities and a planned replacement on any
 # day at the planned price, it is age replacement.
 
