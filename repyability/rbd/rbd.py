@@ -517,6 +517,15 @@ class Pairs(dict):
         """The pair as it is kept: its names in order as text."""
         return (j, i) if str(j) < str(i) else (i, j)
 
+    @classmethod
+    def of(cls, nodes, value: Callable) -> "Pairs":
+        """Each pair of ``nodes`` once, with ``value(i, j)``."""
+        out = cls()
+        for k, i in enumerate(nodes):
+            for j in nodes[k + 1 :]:  # noqa: E203
+                out[cls.oriented(i, j)] = value(i, j)
+        return out
+
     def _swapped(self, key):
         if isinstance(key, tuple) and len(key) == 2:
             return (key[1], key[0])
@@ -1747,27 +1756,14 @@ class RBD:
                     out[name] = r.refused(meshed)
         return dict(sorted(out.items()))
 
-    def _require_no_ccf_pairs(self) -> None:
-        """Raise if the diagram has common-cause groups: the joint
-        importance holds pairs of nodes working and failed, which a group's
-        members cannot be (the causes they share would still strike the
-        others)."""
-        if getattr(self, "ccf_groups", None):
-            raise NotImplementedError(
-                "The joint importance holds pairs of nodes working and "
-                "failed, which a common-cause group's members cannot be "
-                "(the causes they share would still strike the others): it "
-                "is not worked out with common-cause groups, as yet."
-            )
-
     def _joint_pairs(self, birnbaum: Callable, working_nodes, broken_nodes):
         """The joint importance of each pair of nodes (see
         ``NonRepairableRBD.joint_importance``) from ``birnbaum(working,
         broken)``, every node's Birnbaum importance with those nodes held:
         node ``j``'s with node ``i`` held working, less with it held
         failed, for each pair once (see ``Pairs``); 0 for a pair with a
-        node already held."""
-        self._require_no_ccf_pairs()
+        node already held. (With common-cause groups, see
+        ``_ccf_modules.joint_importance``.)"""
         working = set(working_nodes or ())
         broken = set(broken_nodes or ())
         base = birnbaum(working, broken)
@@ -1778,14 +1774,14 @@ class RBD:
             if node not in held:
                 up[node] = birnbaum(working | {node}, broken)
                 down[node] = birnbaum(working, broken | {node})
-        out = Pairs()
-        for k, i in enumerate(nodes):
-            for j in nodes[k + 1 :]:  # noqa: E203
-                if i in held or j in held:
-                    out[Pairs.oriented(i, j)] = 0.0 * base[j]
-                else:
-                    out[Pairs.oriented(i, j)] = up[i][j] - down[i][j]
-        return out
+        return Pairs.of(
+            nodes,
+            lambda i, j: (
+                0.0 * base[j]
+                if i in held or j in held
+                else up[i][j] - down[i][j]
+            ),
+        )
 
     def _too_meshed(self) -> Optional[str]:
         """Why the diagram cannot be worked out exactly, if its core is too

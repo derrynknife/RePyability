@@ -135,21 +135,22 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         ),
         conditioned,
     )
-    pairs = r.refusal(rbd._require_no_ccf_pairs)
     give(
         ("joint_importance",),
         (
-            r.refused(pairs)
-            if pairs
-            else (
-                conditioned
-                if conditioned.route == r.REFUSED
-                else dataclasses.replace(
-                    conditioned,
-                    reason="Each component's Birnbaum importance with "
-                    "the other held up, less with it held down. "
-                    + conditioned.reason,
+            conditioned
+            if conditioned.route == r.REFUSED
+            else dataclasses.replace(
+                conditioned,
+                reason=(
+                    "The system's availability given each of the pair up "
+                    "and down, a common-cause group's members conditioned "
+                    "on their states through the groups' chains. "
+                    if rbd.ccf_groups
+                    else "Each component's Birnbaum importance with the "
+                    "other held up, less with it held down. "
                 )
+                + conditioned.reason,
             )
         ),
     )

@@ -37,53 +37,129 @@ pytestmark = pytest.mark.filterwarnings(
 KEYS = ("works", "fails", "up_ok", "down_ok", "up_bad", "down_bad")
 
 
-def every_combination(rbd, x):
-    """What ``_ccf_importances`` and the Fussell-Vesely numerators give,
-    conditioned on every combination of every group's outcomes."""
+def chosen_pairs(rbd) -> list:
+    """Pairs of nodes of each kind there is: two members of one group,
+    members of two groups, a member and a node outside the groups, and two
+    outside; the first of each."""
+    group_of = {m: k for k, g in enumerate(rbd.ccf_groups) for m in g.members}
+    kinds: dict = {}
+    for i, j in itertools.combinations(rbd.nodes, 2):
+        a, b = group_of.get(i), group_of.get(j)
+        kind = (
+            "outside"
+            if a is None and b is None
+            else (
+                "mixed"
+                if a is None or b is None
+                else "within" if a == b else "across"
+            )
+        )
+        kinds.setdefault(kind, (i, j))
+    return list(kinds.values())
+
+
+def every_combination(rbd, x, pairs=()):
+    """What ``_ccf_modules.Evaluation.states`` gives of each node and of
+    each pair of ``pairs``, and the Fussell-Vesely numerators, conditioned
+    on every combination of every group's outcomes."""
     p = {n: np.atleast_1d(rbd.reliabilities[n].sf(x)) for n in rbd.nodes}
     q = {n: np.atleast_1d(rbd.reliabilities[n].ff(x)) for n in rbd.nodes}
     grouped = {m for g in rbd.ccf_groups for m in g.members}
     sums: dict = {key: {} for key in KEYS}
     R = Q = 0.0
     fv: dict = {}
+    states = {(i, j): {} for i, j in pairs}
     for w, given, failing in shock_outcomes(rbd.ccf_groups, p, q):
         up, down = rbd._system_probabilities(given, failing)
         R, Q = R + w * up, Q + w * down
+
+        def held(hold: dict):
+            """The system with each node of ``hold`` failed (1.0) or
+            working (0.0)."""
+            down = {n: s * np.ones_like(up) for n, s in hold.items()}
+            return rbd._system_probabilities(
+                {**given, **{n: 1.0 - d for n, d in down.items()}},
+                {**failing, **down},
+            )
+
         for node in rbd.nodes:
             works, fails = given[node], failing[node]
-            one, zero = np.ones_like(works), np.zeros_like(works)
-            u1, d1 = rbd._system_probabilities(
-                {**given, node: one}, {**failing, node: zero}
-            )
-            u0, d0 = rbd._system_probabilities(
-                {**given, node: zero}, {**failing, node: one}
-            )
+            u1, d1 = held({node: 0.0})
+            u0, d0 = held({node: 1.0})
             on, off = (works, fails) if node in grouped else (1.0, 1.0)
             for key, value in zip(
                 KEYS,
                 (works, fails, on * u1, on * d1, off * u0, off * d0),
             ):
                 sums[key][node] = sums[key].get(node, 0.0) + w * value
-        pairs, failures, size = rbd._node_pairs(given, failing)
+        for i, j in pairs:
+            for a, b in itertools.product((True, False), repeat=2):
+                chance = w
+                for node, up_ in ((i, a), (j, b)):
+                    if node in grouped:
+                        chance = chance * (given if up_ else failing)[node]
+                u, d = held({i: 0.0 if a else 1.0, j: 0.0 if b else 1.0})
+                was = states[i, j].get((a, b), (0.0, 0.0, 0.0))
+                states[i, j][a, b] = (
+                    was[0] + chance,
+                    was[1] + chance * u,
+                    was[2] + chance * d,
+                )
+        pairs_p, failures, size = rbd._node_pairs(given, failing)
         structure = rbd._set_structure()
         for node, value in structure.failed_cut_sets(
-            pairs, failures, shape=size
+            pairs_p, failures, shape=size
         ).items():
             fv[node] = fv.get(node, 0.0) + w * value
-    return R, Q, sums, fv
+    return R, Q, sums, fv, states
+
+
+def joint_of(states: dict) -> np.ndarray:
+    """The joint importance from a pair's states (see
+    ``every_combination``): the system given each combination."""
+    given = {combo: up / chance for combo, (chance, up, _) in states.items()}
+    return (
+        given[True, True]
+        - given[True, False]
+        - given[False, True]
+        + given[False, False]
+    )
 
 
 def agree(rbd, x, rel=1e-10):
-    R, Q, sums, fv = every_combination(rbd, x)
+    pairs = chosen_pairs(rbd)
+    R, Q, sums, fv, states = every_combination(rbd, x, pairs)
     up, down = rbd._sf_and_ff(x, None, None)
     np.testing.assert_allclose(up, R, rtol=rel)
     np.testing.assert_allclose(down, Q, rtol=rel)
-    ours = rbd._ccf_importances(x, None, None)
-    for key in KEYS:
-        for node in rbd.nodes:
+    evaluation = rbd._ccf_evaluation(
+        *rbd._importance_inputs(x, set(), set()), set(), set()
+    )
+    grouped = {m for g in rbd.ccf_groups for m in g.members}
+    for node in rbd.nodes:
+        ours = evaluation.states((node,))
+        (works, up_ok, down_ok), (fails, up_bad, down_bad) = (
+            ours[True,],
+            ours[False,],
+        )
+        if node not in grouped:
+            assert works == 1.0 and fails == 1.0
+            works, fails = sums["works"][node], sums["fails"][node]
+        for key, value in zip(
+            KEYS, (works, fails, up_ok, down_ok, up_bad, down_bad)
+        ):
             np.testing.assert_allclose(
-                ours[key][node], sums[key][node], rtol=rel, err_msg=key
+                value, sums[key][node], rtol=rel, err_msg=key
             )
+    joint = rbd.joint_importance(x)
+    for pair in pairs:
+        np.testing.assert_allclose(
+            joint[pair],
+            joint_of(states[pair]),
+            rtol=1e-8,
+            atol=1e-13,
+            err_msg=str(pair),
+        )
     p, q = rbd._importance_inputs(x, set(), set())
     shares = rbd._ccf_fv_numerators(p, q, set(), set(), "c", "exact")
     for node in rbd.nodes:
@@ -267,6 +343,12 @@ def test_many_groups_across_trains_are_quick(model):
     for event in tree.events:
         assert ours[event] == pytest.approx(
             float(np.ravel(theirs[event])[0]), rel=1e-9
+        )
+    joint, pairs = tree.joint_importance(200.0), small.joint_importance(200.0)
+    assert set(joint) == set(pairs)
+    for pair in chosen_pairs(small):
+        assert joint[pair] == pytest.approx(
+            float(np.ravel(pairs[pair])[0]), rel=1e-9
         )
 
 

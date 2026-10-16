@@ -316,7 +316,14 @@ plant.joint_importance(x=[0.5, 20.0])[("A", "C")]   # array([0.0385, 0.0909])
 A `FaultTree` has it too, as `−∂²P/∂q_e ∂q_f` in its events'
 probabilities, which is the same as its diagram's (`to_rbd()`): positive
 under an OR gate (complements), negative under an AND gate (substitutes).
-With common-cause groups, whose members cannot be held, it is refused.
+
+With common-cause groups, the system given each of the pair working and
+failed is conditioned on their states, as the single-node measures are
+(see [Common-cause
+failures](common-cause.md#importance-sensitivity-uncertainty-and-allocation)):
+a member's state says something of its group's shocks, two members of one
+group are conditioned on their joint state, and a node outside the groups
+is held.
 
 ## Shares of a change: differential importance
 

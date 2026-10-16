@@ -11,6 +11,21 @@ other release, fixes included, the minor.
 
 ### Added
 
+- **The joint importance is worked out with common-cause groups (#317).**
+  `joint_importance` no longer refuses a diagram with common-cause groups,
+  in `NonRepairableRBD`, `FaultTree` and `RepairableRBD` (in the long run,
+  at times and over a window): the system given each of the pair working
+  and failed is conditioned on their states, as the single-node measures
+  condition on one (#294), a member's through its group's shock outcomes
+  (a repairable system's, its chain's joint states), two members of one
+  group on their joint state, and a node outside the groups held; where a
+  state has no chance at a point, the system with the pair held so. The
+  shared causes at zero give the pairs without the groups. The routes and
+  the README's tables say so. Underneath, one method of the conditioning
+  (`_ccf_modules.Evaluation.states`, with `given` and `held`) serves one
+  node or a pair, on the model's outcomes and the chains' tables alike, in
+  place of a method a node and a method a table.
+
 - **The long-run optimal replacement policy over a calendar of shuts
   (#319).** `NonRepairable.optimal_calendar_policy(calendar)` finds, for a
   part whose planned replacement costs differently at different times

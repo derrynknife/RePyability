@@ -36,6 +36,7 @@ from repyability.rbd import (
 from repyability.rbd._common import (
     _squeeze_values,
 )
+from repyability.rbd.rbd import Pairs
 from repyability.rbd.results import (
     RateBreakdown,
 )
@@ -867,6 +868,28 @@ def joint_importance(
         for key, value in (("x", x), ("window", window), ("state", state))
         if value is not None
     }
+    if rbd.ccf_groups:
+        # Each pair conditioned on its states through the groups' chains
+        # (#317, see ``RepairableRBD._ccf_measure``), as the other measures
+        # are: refused where their chains do not cover the groups.
+        _ccf_groups._require_ccf_long_run(rbd)
+        if timed:
+            return Pairs(
+                _importance_over_time(
+                    rbd,
+                    _importance_time.Spec(_importance_time.JOINT),
+                    working_nodes,
+                    broken_nodes,
+                    x,
+                    window,
+                    state,
+                )
+            )
+        return Pairs(
+            _ccf_groups._ccf_long_run_measure(
+                rbd, _importance_time.JOINT, working_nodes, broken_nodes
+            )
+        )
     with rbd._sharing_curves():
         return rbd._joint_pairs(
             lambda working, broken: rbd.birnbaum_importance(

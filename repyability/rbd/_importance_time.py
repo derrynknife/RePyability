@@ -44,6 +44,9 @@ RAW = "raw"
 RRW = "rrw"
 CRITICALITY = "criticality"
 FUSSELL_VESELY = "fussell_vesely"
+#: The joint importance of each pair, with common-cause groups (#317):
+#: without them, each node's Birnbaum importance with the other held.
+JOINT = "joint"
 
 #: The measures the crews' chain holds each node for (the others are
 #: averages over its states).
@@ -130,11 +133,14 @@ def _base(rbd, spec: Spec, p: dict, q: dict, weights) -> dict:
     return RBD._fussell_vesely(rbd, p, spec.fv_type, spec.method, weights, q)
 
 
-def _grouped(rbd, spec: Spec, groups: list, p: dict, q: dict, x, weights):
+def _grouped(
+    rbd, spec: Spec, groups: list, p: dict, q: dict, x, weights, held
+):
     """The measure with common-cause groups (their chains over time,
     ``groups``, see ``_ccf_chain.OverTime``) at the times ``x``: averaged
     with ``weights``, or at each time without (see
-    ``RepairableRBD._ccf_measure``)."""
+    ``RepairableRBD._ccf_measure``); ``held`` are the nodes held up or
+    down."""
     from . import _ccf_chain
 
     tables = [
@@ -158,6 +164,7 @@ def _grouped(rbd, spec: Spec, groups: list, p: dict, q: dict, x, weights):
         spec.kind,
         spec.fv_type,
         spec.method,
+        held,
     )
 
 
@@ -193,7 +200,9 @@ def _at(rbd, spec, times, working, broken, states, state) -> dict:
             rbd, horizon, working, broken, "p", states
         )
         p, q = _independent(rbd, grouped.curves, times, working, broken)
-        values = _grouped(rbd, spec, grouped.system.groups, p, q, times, None)
+        values = _grouped(
+            rbd, spec, grouped.system.groups, p, q, times, None, forced
+        )
         return {
             node: np.asarray(value, dtype=float)
             for node, value in values.items()
@@ -295,7 +304,7 @@ def _over(rbd, spec, end, working, broken, states, state) -> dict:
         x, weights = window_points([grouped], end, system, _MISSION_POINTS)
         p, q = _independent(rbd, grouped.curves, x, working, broken)
         return _grouped(
-            rbd, spec, grouped.system.groups, p, q, x, weights / end
+            rbd, spec, grouped.system.groups, p, q, x, weights / end, forced
         )
     curves = _curves._availability_curves(rbd, end, forced, state=states)
 

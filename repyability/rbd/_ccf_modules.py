@@ -29,12 +29,14 @@ the probabilities evaluated, the groups are conditioned on instead.
 probabilities once (each owner's summed over its groups' outcomes), and
 then the system's, also with nodes held working or failed, or a group's
 outcome given: only the terms above them are worked out again, and the
-owners among those summed over their outcomes again. ``joints`` gives
-what the importance measures need of a node, and ``failed_cut_sets`` each
-node's probability of failing with some minimal cut set containing it,
-the numerator of its Fussell-Vesely importance (for a structure without
-shocks). Every value is a sum of products, so a small probability keeps
-its precision.
+owners among those summed over their outcomes again. ``states`` gives
+the system with one node, or a pair, in each combination of their states
+(what the importance measures need, the joint importance's pairs among
+them, #317), ``given`` the system given those states, and
+``failed_cut_sets`` each node's probability of failing with some minimal
+cut set containing it, the numerator of its Fussell-Vesely importance
+(for a structure without shocks). Every value is a sum of products, so a
+small probability keeps its precision.
 """
 
 import math
@@ -470,24 +472,45 @@ class Evaluation:
             term[2] if term[0] == KOON else 0,
         )
 
-    def _overrides(self, owner: int, fixed: dict):
-        """Each combination of the outcomes of the groups ``owner`` owns
-        (but those whose outcome ``fixed`` gives, holding their members):
-        its probability, and ``fixed`` with their members' probabilities
-        given it."""
-        groups = [
-            self.outcomes[g]
-            for g in self.c.owned[owner]
-            if not self.c.members[g] <= fixed.keys()
-        ]
-        for combination in product(*groups):  # type: ignore[arg-type]
+    def _combinations(self, groups, fixed: dict, frame=None, split=()):
+        """Each combination of the outcomes of the groups ``groups``
+        (conditioned on): its probability, ``fixed`` with their members'
+        probabilities given it, and the frame its values are in. With
+        ``split``, nodes of those groups, each combination is split by
+        their states too: each node up or down for certain, the chance of
+        that given the outcome in the probability."""
+        outcomes = [self.outcomes[g] for g in groups]
+        ones = np.ones(self._shape(frame))
+        zeros = 0.0 * ones
+        for combination in product(*outcomes):  # type: ignore[arg-type]
             weight: Any = 1.0
             given = dict(fixed)
             for outcome_weight, works, fails in combination:
                 weight = weight * outcome_weight
                 for member in works:
                     given[member] = (works[member], fails[member])
-            yield weight, given
+            for states in product((True, False), repeat=len(split)):
+                share, held = weight, dict(given)
+                for node, up in zip(split, states):
+                    share = share * given[node][0 if up else 1]
+                    held[node] = (ones, zeros) if up else (zeros, ones)
+                yield share, held, frame
+
+    def _total(self, weight, value):
+        """A value at a combination's points, weighted by the combination's
+        probability, as it adds to the sum over the combinations."""
+        return weight * value
+
+    def _owned(self, owner: int, fixed: dict, frame=None):
+        """The combinations (see ``_combinations``) of the groups ``owner``
+        owns, but those whose outcome ``fixed`` gives, holding their
+        members."""
+        groups = [
+            g
+            for g in self.c.owned[owner]
+            if not self.c.members[g] <= fixed.keys()
+        ]
+        return self._combinations(groups, fixed, frame)
 
     def _order(self, top: int, keys) -> List[int]:
         """The terms under ``top`` (with it) whose probabilities change with
@@ -559,10 +582,10 @@ class Evaluation:
         """``owner``'s probabilities, summed over its groups' outcomes."""
         works: Any = 0.0
         fails: Any = 0.0
-        for weight, given in self._overrides(owner, fixed):
-            r, q = self._unmixed(owner, given, hold, frame)
-            works = works + weight * r
-            fails = fails + weight * q
+        for weight, given, inner in self._owned(owner, fixed, frame):
+            r, q = self._unmixed(owner, given, hold, inner)
+            works = works + self._total(weight, r)
+            fails = fails + self._total(weight, q)
         return works, fails
 
     def _unmixed(
@@ -620,108 +643,167 @@ class Evaluation:
 
     # -- the importance measures -------------------------------------------
 
-    def joints(self, node) -> Tuple[Dict[str, Any], bool]:
-        """What the importance measures need of ``node``: the probabilities
-        that it works and that it has failed (``works``, ``fails``), and
-        that the system works and fails with it working (``up_ok``,
-        ``down_ok``) and with it failed (``up_bad``, ``down_bad``); and
-        whether those four are joint probabilities (for a group member,
-        whose state says something of its group's shocks: summed over
-        them, each weighed by its chance of the state) or given the node's
-        state (for one outside the groups, held)."""
-        g = self.group_of.get(node)
-        if g is None:
-            up_1, down_1 = self.system(hold={node: True})
-            up_0, down_0 = self.system(hold={node: False})
-            return (
-                {
-                    "works": self.p[node],
-                    "fails": self.q[node],
-                    "up_ok": up_1,
-                    "down_ok": down_1,
-                    "up_bad": up_0,
-                    "down_bad": down_0,
-                },
-                False,
-            )
-        if g in self.causes:
-            return self._written_out(node, g), True
-        out: Dict[str, Any] = dict.fromkeys(
-            ("works", "fails", "up_ok", "down_ok", "up_bad", "down_bad"), 0.0
-        )
-        for weight, given, failing in self.outcomes[g]:  # type: ignore
-            fixed = {m: (given[m], failing[m]) for m in given}
-            on, off = given[node], failing[node]
-            up_1, down_1 = self.system(fixed, {node: True})
-            up_0, down_0 = self.system(fixed, {node: False})
-            out["works"] = out["works"] + weight * on
-            out["fails"] = out["fails"] + weight * off
-            out["up_ok"] = out["up_ok"] + weight * on * up_1
-            out["down_ok"] = out["down_ok"] + weight * on * down_1
-            out["up_bad"] = out["up_bad"] + weight * off * up_0
-            out["down_bad"] = out["down_bad"] + weight * off * down_0
-        return out, True
-
-    def held(self, node) -> Tuple[Any, Any, Any, Any]:
-        """The system's probabilities of working and of failing with
-        ``node`` held working, then held failed, the rest as they are (its
-        group's other members included): what the system given the node's
-        state comes to where that state has no chance (see
-        ``RepairableRBD._ccf_measure``), as for a node outside the groups."""
-        g = self.group_of.get(node)
-        if g is None or g in self.causes:
-            return (
-                *self.system(hold={node: True}),
-                *self.system(hold={node: False}),
-            )
-        out: List[Any] = [0.0, 0.0, 0.0, 0.0]
-        for weight, given, failing in self.outcomes[g]:  # type: ignore
-            fixed = {m: (given[m], failing[m]) for m in given}
-            for k, state in enumerate((True, False)):
-                up, down = self.system(fixed, {node: state})
-                out[2 * k] = out[2 * k] + weight * up
-                out[2 * k + 1] = out[2 * k + 1] + weight * down
-        return out[0], out[1], out[2], out[3]
-
-    def _written_out(self, node, g: int) -> Dict[str, Any]:
-        """``joints`` for a member of a group written out as shocks: it
-        works when neither its own causes nor any shock striking it has
-        fired, and has failed through the first of them that has (its own,
-        then the shocks in turn), so that each probability is a sum of
-        products."""
-        q_own, r_own, fired = self.causes[g]
-        strikes = [
-            (Shock(g, k), fires, holds)
-            for k, (struck, fires, holds) in enumerate(fired)
-            if node in struck
+    def _kinds(self, nodes) -> Tuple[list, list, list, list]:
+        """``nodes`` sorted by how their states are given: the members of
+        groups conditioned on, those groups, the members of groups written
+        out as shocks, and the nodes outside the groups (held)."""
+        conditioned = [
+            node
+            for node in nodes
+            if node in self.group_of and self.group_of[node] not in self.causes
         ]
-        held: Dict[Hashable, bool] = {node: True}
-        works: Any = r_own
-        for shock, _, holds in strikes:
-            held[shock] = True
-            works = works * holds
-        up_1, down_1 = self.system(hold=held)
-        up_0, down_0 = self.system(hold={node: False})
-        fails: Any = q_own
-        up_bad: Any = q_own * up_0
-        down_bad: Any = q_own * down_0
-        before: Any = r_own  # its own causes, and the shocks so far, held
-        hold: Dict[Hashable, bool] = {node: True}
-        for shock, fires, holds in strikes:
-            up, down = self.system(hold={**hold, shock: False})
-            fails = fails + before * fires
-            up_bad = up_bad + before * fires * up
-            down_bad = down_bad + before * fires * down
-            before = before * holds
-            hold[shock] = True
-        return {
-            "works": works,
-            "fails": fails,
-            "up_ok": works * up_1,
-            "down_ok": works * down_1,
-            "up_bad": up_bad,
-            "down_bad": down_bad,
+        groups = sorted({self.group_of[node] for node in conditioned})
+        written = [
+            node
+            for node in nodes
+            if node in self.group_of and self.group_of[node] in self.causes
+        ]
+        free = [node for node in nodes if node not in self.group_of]
+        return conditioned, groups, written, free
+
+    def states(self, nodes) -> Dict[tuple, Tuple[Any, Any, Any]]:
+        """What the importance measures need of ``nodes`` (one, or a pair
+        for the joint importance): for each combination of their states
+        (True for working, in their order), the probability that the
+        group members among them are in those states, and that the system
+        works and that it fails with them so, jointly for the members and
+        given the nodes outside the groups, which are held (the chance is
+        1 with no member). A member's state says something of its group's
+        shocks, so its joint probabilities are sums over its group's
+        outcomes, each weighed by the chance of the state in it, the other
+        groups conditioned on within their modules (#219); the members of
+        a group written out as shock events are held through their causes
+        (see ``_fired``). Every term is a product of probabilities, so a
+        small one keeps its precision."""
+        nodes = tuple(nodes)
+        conditioned, groups, written, free = self._kinds(nodes)
+        rest = written + free
+        out: Dict[tuple, Tuple[Any, Any, Any]] = {
+            combo: (0.0, 0.0, 0.0)
+            for combo in product((True, False), repeat=len(nodes))
         }
+        for weight, given, frame in self._combinations(
+            groups, {}, None, conditioned
+        ):
+            done: Dict[tuple, list] = {}
+            for combo in out:
+                state = dict(zip(nodes, combo))
+                key = tuple(state[node] for node in rest)
+                if key not in done:
+                    done[key] = [
+                        (factor, *self.system(given, held, frame))
+                        for factor, held in self._fired(
+                            [(node, state[node]) for node in written],
+                            {node: state[node] for node in free},
+                        )
+                    ]
+                chance, up, down = out[combo]
+                for factor, r, q in done[key]:
+                    share = factor
+                    for node in conditioned:
+                        share = share * given[node][0 if state[node] else 1]
+                    chance = chance + self._total(weight, share)
+                    up = up + self._total(weight, share * r)
+                    down = down + self._total(weight, share * q)
+                out[combo] = (chance, up, down)
+        return out
+
+    def _fired(self, targets, hold: dict):
+        """Each way the members of groups written out as shocks
+        (``targets``: each with the state wanted) come to be so, with
+        ``hold`` (the nodes held working or failed): its probability, and
+        ``hold`` with the members' causes held. A member works when
+        neither its own causes nor any shock striking it has fired, which
+        are held off; it has failed through the first of them that has
+        (its own, then the shocks in turn), with those before held off,
+        and the rest free, so that each probability is a product."""
+        hold = dict(hold)
+        factor: Any = 1.0
+        pending = []
+        for node, up in targets:
+            g = self.group_of[node]
+            q_own, r_own, fired = self.causes[g]
+            causes = [(node, q_own, r_own)] + [
+                (Shock(g, k), fires, holds)
+                for k, (struck, fires, holds) in enumerate(fired)
+                if node in struck
+            ]
+            if not up:
+                pending.append(causes)
+                continue
+            for cause, _, holds in causes:
+                if cause not in hold:
+                    hold[cause] = True
+                    factor = factor * holds
+        yield from self._first_fired(pending, hold, factor)
+
+    def _first_fired(self, pending: list, hold: dict, factor):
+        """``_fired`` for the members still to fail, each through the
+        first of its causes (``pending``) not held off that fires: a cause
+        already fired has failed it."""
+        if not pending:
+            yield factor, hold
+            return
+        causes, rest = pending[0], pending[1:]
+        if any(hold.get(cause) is False for cause, _, _ in causes):
+            yield from self._first_fired(rest, hold, factor)
+            return
+        before, held = factor, dict(hold)
+        for cause, fires, holds in causes:
+            if cause in held:
+                continue  # held off: it has not fired
+            yield from self._first_fired(
+                rest, {**held, cause: False}, before * fires
+            )
+            held[cause] = True
+            before = before * holds
+
+    def held(self, nodes) -> Dict[tuple, Tuple[Any, Any]]:
+        """The system's probabilities of working and of failing with
+        ``nodes`` held in each combination of their states (as ``states``
+        lays them out), the rest as they are (their groups' other members
+        included): what the system given the nodes' states comes to where
+        those states have no chance (see ``given``), as for nodes outside
+        the groups."""
+        nodes = tuple(nodes)
+        _, groups, _, _ = self._kinds(nodes)
+        out: Dict[tuple, Tuple[Any, Any]] = {}
+        for combo in product((True, False), repeat=len(nodes)):
+            hold = dict(zip(nodes, combo))
+            up: Any = 0.0
+            down: Any = 0.0
+            for weight, given, frame in self._combinations(groups, {}, None):
+                r, q = self.system(given, hold, frame)
+                up = up + self._total(weight, r)
+                down = down + self._total(weight, q)
+            out[combo] = (up, down)
+        return out
+
+    def given(self, nodes) -> Dict[tuple, Tuple[Any, Any, Any]]:
+        """The system given ``nodes`` in each combination of their states
+        (as ``states`` lays them out): the combination's probability (1
+        for nodes outside the groups, held), and the system's
+        probabilities of working and of failing given it, the joint
+        probabilities over the combination's. Where a combination has no
+        chance at some point (a member off line for its test, say), the
+        system with the nodes held so there (see ``held``), as for nodes
+        outside the groups."""
+        nodes = tuple(nodes)
+        states = self.states(nodes)
+        held = None
+        out: Dict[tuple, Tuple[Any, Any, Any]] = {}
+        with np.errstate(divide="ignore", invalid="ignore"):
+            for combo, (chance, up, down) in states.items():
+                if np.any(np.asarray(chance) <= 0.0):
+                    if held is None:
+                        held = self.held(nodes)
+                    some = np.asarray(chance) > 0.0
+                    up = np.where(some, up / chance, held[combo][0])
+                    down = np.where(some, down / chance, held[combo][1])
+                else:
+                    up, down = up / chance, down / chance
+                out[combo] = (chance, up, down)
+        return out
 
     # -- Fussell-Vesely ----------------------------------------------------
 
@@ -820,9 +902,9 @@ class Evaluation:
         self, owner: int, fixed: dict, frame=None
     ) -> Dict[Hashable, Any]:
         out: Dict[Hashable, Any] = {}
-        for weight, given in self._overrides(owner, fixed):
-            for node, value in self._fv_unmixed(owner, given, frame).items():
-                out[node] = out.get(node, 0.0) + weight * value
+        for weight, given, inner in self._owned(owner, fixed, frame):
+            for node, value in self._fv_unmixed(owner, given, inner).items():
+                out[node] = out.get(node, 0.0) + self._total(weight, value)
         return out
 
     def _fv_pass(self, top: int, fixed: dict, mix_top: bool, frame=None):
@@ -907,14 +989,15 @@ class Tabled(Evaluation):
     or down for certain, and independent of every other node, so each
     group is conditioned on within its owner as before (see
     ``Conditioned``); but where ``Evaluation`` sums an owner over its
-    groups' outcomes one at a time, here they are points of their own:
-    each point of the owner's repeated for each combination of its groups'
-    states with a probability there, worked out together, ``CHUNK`` at a
-    time, and summed back. So the memory taken stays bounded, and the time
-    is that of the points: a sum over the owners where the groups' states
-    are in separate modules, a product only where they meet. Before
-    anything is worked out, the most points an owner can need is checked
-    against ``POINTS`` (see ``_check``)."""
+    groups' outcomes one at a time, here they are points of their own
+    (``_combinations``): each point of the owner's repeated for each
+    combination of its groups' states with a probability there, worked
+    out together, ``CHUNK`` at a time, and summed back (``_total``). So
+    the memory taken stays bounded, and the time is that of the points: a
+    sum over the owners where the groups' states are in separate modules,
+    a product only where they meet. Before anything is worked out, the
+    most points an owner can need is checked against ``POINTS`` (see
+    ``_check``)."""
 
     def __init__(self, plan: Plan, groups, p, q, shape, tables):
         self.shape = shape
@@ -930,7 +1013,6 @@ class Tabled(Evaluation):
             for member in table.members
         }
         self.p, self.q = dict(p), dict(q)
-        self._joints: Dict[int, dict] = {}
         self._check()
         self._settle()
 
@@ -979,20 +1061,15 @@ class Tabled(Evaluation):
             "which take the groups in."
         )
 
-    # -- an owner's combinations as points of their own ----------------------
+    # -- the groups' combinations as points of their own ---------------------
 
-    def _frames(self, owner: int, fixed: dict, frame):
-        """The combinations of ``owner``'s groups' states (but those whose
-        members ``fixed`` holds) as a new last axis of ``frame``, ``CHUNK``
-        values at a time: for each chunk, the combinations' probabilities
-        at each point, ``fixed`` with the groups' members up or down in
-        each, and the chunk's frame. With no group left, ``fixed`` and the
-        frame itself."""
-        groups = [
-            g
-            for g in self.c.owned[owner]
-            if not set(self.tables[g].members) <= fixed.keys()
-        ]
+    def _combinations(self, groups, fixed: dict, frame=None, split=()):
+        """The combinations of the states of the groups ``groups`` as a
+        new last axis of ``frame``, ``CHUNK`` values at a time: for each
+        chunk, the combinations' probabilities at each point, ``fixed``
+        with the groups' members up or down in each (so ``split`` asks
+        for nothing more), and the chunk's frame. With no group, ``fixed``
+        and the frame itself, under no weight."""
         if not groups:
             yield None, fixed, frame
             return
@@ -1035,26 +1112,12 @@ class Tabled(Evaluation):
                     )
             yield weights, given, inner
 
-    def _mix(self, owner: int, fixed: dict, hold: dict, frame=None):
-        works: Any = 0.0
-        fails: Any = 0.0
-        for weights, given, inner in self._frames(owner, fixed, frame):
-            r, q = self._unmixed(owner, given, hold, inner)
-            if weights is None:
-                return r, q
-            works = works + (weights * r).sum(axis=-1)
-            fails = fails + (weights * q).sum(axis=-1)
-        return works, fails
-
-    def _fv_mix(self, owner: int, fixed: dict, frame=None) -> dict:
-        out: Dict[Hashable, Any] = {}
-        for weights, given, inner in self._frames(owner, fixed, frame):
-            values = self._fv_unmixed(owner, given, inner)
-            if weights is None:
-                return values
-            for node, value in values.items():
-                out[node] = out.get(node, 0.0) + (weights * value).sum(axis=-1)
-        return out
+    def _total(self, weight, value):
+        """The value summed back over the chunk's combinations (the last
+        axis), weighted; the value itself under no weight."""
+        if weight is None:
+            return value
+        return (weight * value).sum(axis=-1)
 
     # -- what the measures need --------------------------------------------
 
@@ -1062,70 +1125,6 @@ class Tabled(Evaluation):
         """A group member's probability of working at each point."""
         table = self.tables[self.group_of[member]]
         return table.marginal(table.members.index(member))
-
-    def joints(self, node) -> Tuple[Dict[str, Any], bool]:
-        """As ``Evaluation.joints``: a member's are worked out for its
-        whole group at once (see ``_group_joints``)."""
-        g = self.group_of.get(node)
-        if g is None:
-            return super().joints(node)
-        if g not in self._joints:
-            self._joints[g] = self._group_joints(g)
-        return self._joints[g][node], True
-
-    def _combinations(self, g: int):
-        """Group ``g``'s members in each of their combinations (a last
-        axis, see ``_frames``): what ``system`` takes of them, its frame,
-        and the sum over the combinations of a value at each."""
-        table = self.tables[g]
-        count = len(table.works)
-        frame = (self.shape, count)
-        given = {
-            member: (
-                table.works[:, k].reshape(1, count),
-                table.fails[:, k].reshape(1, count),
-            )
-            for k, member in enumerate(table.members)
-        }
-        weights = table.probabilities
-
-        def total(value) -> np.ndarray:
-            return np.broadcast_to((weights * value).sum(axis=-1), self.shape)
-
-        return given, frame, total
-
-    def held(self, node) -> Tuple[Any, Any, Any, Any]:
-        """As ``Evaluation.held``: a member held, its group's other members
-        in each of their combinations."""
-        g = self.group_of.get(node)
-        if g is None:
-            return super().held(node)
-        given, frame, total = self._combinations(g)
-        up_1, down_1 = self.system(given, {node: True}, frame)
-        up_0, down_0 = self.system(given, {node: False}, frame)
-        return total(up_1), total(down_1), total(up_0), total(down_0)
-
-    def _group_joints(self, g: int) -> Dict[Hashable, Dict[str, Any]]:
-        """``joints`` for each member of group ``g``: the system worked out
-        once with the group's members in each of their combinations (a last
-        axis, see ``_frames``), and summed over them for each member up
-        and down."""
-        given, frame, total = self._combinations(g)
-        table = self.tables[g]
-        up, down = self.system(given, {}, frame)
-
-        out: Dict[Hashable, Dict[str, Any]] = {}
-        for k, member in enumerate(table.members):
-            on, off = given[member]
-            out[member] = {
-                "works": total(on),
-                "fails": total(off),
-                "up_ok": total(on * up),
-                "down_ok": total(on * down),
-                "up_bad": total(off * up),
-                "down_bad": total(off * down),
-            }
-        return out
 
     def combinations(self, g: int, down: np.ndarray) -> Tuple[Any, Any]:
         """The system's probabilities of working and of failing at each
@@ -1162,3 +1161,29 @@ class Tabled(Evaluation):
             ]
             for table in self.tables
         ]
+
+
+def joint_importance(evaluation: Evaluation, i, j) -> np.ndarray:
+    """The joint (second-order) importance of nodes ``i`` and ``j`` at each
+    of the evaluation's points (#317): ``R(1_i, 1_j) - R(1_i, 0_j) -
+    R(0_i, 1_j) + R(0_i, 0_j)``, with ``R(1_i, 0_j)`` the system's
+    probability of working given node ``i`` working and node ``j``
+    failed (see ``Evaluation.given``: a group member's state conditioned
+    on, two members of one group on their joint state; a node outside the
+    groups held); from whichever end keeps its precision, the system's
+    probability of failing where that is the smaller."""
+    works, fails = evaluation.system()
+    given = evaluation.given((i, j))
+
+    def second(k: int) -> Any:
+        return (
+            given[True, True][k]
+            - given[True, False][k]
+            - given[False, True][k]
+            + given[False, False][k]
+        )
+
+    with np.errstate(invalid="ignore"):
+        return np.where(
+            np.asarray(fails) <= np.asarray(works), -second(2), second(1)
+        )

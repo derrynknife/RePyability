@@ -258,6 +258,19 @@ with_valve.fussell_vesely()["v"]           # -> 0.4808   independent: 0.9092
 with_valve.risk_achievement_worth()["p1"]  # -> 52.45    independent: 9.99
 ```
 
+The joint importance of a pair conditions on both states the same way:
+`R(1_i, 0_j)` is the system's reliability given member `i` works and `j`
+has failed, two members of one group conditioned on their joint state,
+and a node outside the groups held. With `p1` failed, `p2` is likelier to
+have failed too, so the valve is worth less then, and more of a
+complement of each pump; the pumps' pair is as without the group, the
+valve alone remaining given their states:
+
+```python
+with_valve.joint_importance()[("p1", "v")]    # -> 0.1082   independent: 0.01
+with_valve.joint_importance()[("p1", "p2")]   # -> -0.999   independent: -0.999
+```
+
 A member held working or broken (`working_nodes`, `broken_nodes`) is
 refused, as it is for `sf`.
 
