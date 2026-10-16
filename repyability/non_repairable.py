@@ -955,7 +955,6 @@ class NonRepairable:
         self,
         calendar,
         *,
-        step=None,
         max_age=None,
         method="auto",
         tail="repeat",
@@ -975,12 +974,13 @@ class NonRepairable:
         time (opportunity-based age replacement, Dekker et al.). The
         methods (this package's use case UC-13):
 
-        - ``"dp"``: dynamic programming on a grid of ``step``. Over a
-          periodic calendar whose cycle has at most 20,000 steps, by
-          relative value iteration: the cost rate exact for the grid (low
-          by about ``step / 2`` a failure, as a failure is replaced by the
-          next step). Over a longer one, by a long finite horizon, the
-          cost rate differenced.
+        - ``"dp"``: dynamic programming on a grid, its step sized from
+          the life (about the mean life over 1,000) and put on the
+          opportunities' own times. Over a periodic calendar whose cycle
+          has at most 20,000 steps, by relative value iteration: the cost
+          rate exact for the grid, which is within about the square of
+          the step of deciding at any moment. Over a longer one, by a
+          long finite horizon, the cost rate differenced.
         - ``"integration"``: between opportunities in continuous time, on
           quadrature nodes; only with no replacement on any day.
         - ``"sampling"``: for a cycle too long to sweep (co-prime
@@ -990,6 +990,11 @@ class NonRepairable:
           from it (deterministic).
         - ``"auto"``: ``"dp"``, or ``"sampling"`` for a periodic calendar
           whose cycle is too long to sweep.
+
+        The grid's step is not an argument: it is a numerical setting,
+        sized from the models (never in absolute time), not a choice of
+        when decisions are made; a calendar says that, by its
+        opportunities.
 
         A calendar with given dates (a plan) is extended past its last
         date by ``tail``: ``"repeat"`` repeats the plan (from 0 to its
@@ -1003,11 +1008,6 @@ class NonRepairable:
         calendar : Calendar
             The opportunities and prices; its ``"part"`` prices are this
             part's planned and unplanned costs.
-        step : float, optional
-            The grid's step, in the life's time unit. By default about the
-            mean life over 1,000, on the opportunities' own grid where it
-            can be (every period, offset and date a whole number of
-            steps).
         max_age : float, optional
             The oldest age on the grid, by default the age a unit outlives
             with a chance of 1e-9.
@@ -1051,11 +1051,11 @@ class NonRepairable:
         ...     planned_cost=1.0,
         ...     unplanned_cost=5.0,
         ... )
-        >>> policy = unit.optimal_calendar_policy(Calendar(), step=1.0)
+        >>> policy = unit.optimal_calendar_policy(Calendar())
         >>> round(policy.cost_rate, 6)
         0.003462
-        >>> policy.next_replacement(age=0.0)
-        PlannedReplacement(time=493.0, kind='anytime', price=1.0)
+        >>> round(policy.next_replacement(age=0.0).time, 1)
+        493.3
         >>> round(unit.optimal_replacement_policy().interval, 1)
         493.0
         """
@@ -1066,7 +1066,6 @@ class NonRepairable:
         return optimal_calendar_policy(
             self,
             calendar,
-            step=step,
             max_age=max_age,
             method=method,
             tail=tail,
@@ -1074,9 +1073,7 @@ class NonRepairable:
             seed=seed,
         )
 
-    def calendar_policy_cost(
-        self, calendar, rule, *, step=None, max_age=None
-    ) -> float:
+    def calendar_policy_cost(self, calendar, rule, *, max_age=None) -> float:
         """The long-run average cost a unit of time of a given replacement
         rule over a calendar of opportunities: to price simple policies
         against
@@ -1099,8 +1096,6 @@ class NonRepairable:
             replaces: ``{"annual": 0.0}`` replaces at every annual shut,
             ``{"anytime": 493.0}`` at age 493 on any day, ``{}`` runs to
             failure.
-        step : float, optional
-            The grid's step, as for ``optimal_calendar_policy``.
         max_age : float, optional
             The oldest age on the grid, as for ``optimal_calendar_policy``.
 
@@ -1118,9 +1113,7 @@ class NonRepairable:
         ...     planned_cost=1.0,
         ...     unplanned_cost=5.0,
         ... )
-        >>> rate = unit.calendar_policy_cost(
-        ...     Calendar(), {"anytime": 493.0}, step=1.0
-        ... )
+        >>> rate = unit.calendar_policy_cost(Calendar(), {"anytime": 493.0})
         >>> round(rate, 6)
         0.003462
         """
@@ -1128,9 +1121,7 @@ class NonRepairable:
             calendar_policy_cost,
         )
 
-        return calendar_policy_cost(
-            self, calendar, rule, step=step, max_age=max_age
-        )
+        return calendar_policy_cost(self, calendar, rule, max_age=max_age)
 
     def reset(self):
         """Restart the event sequence with a working, as-new unit.

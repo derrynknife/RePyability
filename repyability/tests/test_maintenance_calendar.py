@@ -15,6 +15,18 @@ from repyability import Calendar, CalendarPolicy, NonRepairable, Opportunity
 from repyability.maintenance import _replacement
 from repyability.maintenance._calendar import _Grid
 
+
+def solve(part, calendar, **options):
+    """The calendar policy, on a grid of a given step where a check needs
+    one (the public method sizes its own)."""
+    return _replacement.optimal_calendar_policy(part, calendar, **options)
+
+
+def price(part, calendar, rule, **options):
+    """A rule's cost rate, likewise."""
+    return _replacement.calendar_policy_cost(part, calendar, rule, **options)
+
+
 LIFE = surv.Weibull.from_params([1000.0, 2.5])
 BEARING = NonRepairable(LIFE)
 
@@ -33,7 +45,7 @@ PLANT = Calendar(
 
 @pytest.fixture(scope="module")
 def plant():
-    return BEARING.optimal_calendar_policy(PLANT, step=1.0)
+    return solve(BEARING, PLANT, step=1.0)
 
 
 # The calendar.
@@ -48,6 +60,19 @@ def test_an_opportunity_on_a_period_or_dates():
     plan = Opportunity("turnaround", 1.0, dates=[1130.0, 400.0, 400.0])
     assert plan.dates == (400.0, 1130.0)
     assert not plan.periodic
+
+
+def test_the_step_is_not_an_argument():
+    # A numerical setting, sized from the models: the calendar says when
+    # decisions are made. The default here is 7/8 of a day, on the shuts.
+    with pytest.raises(TypeError):
+        BEARING.optimal_calendar_policy(PLANT, step=1.0)
+    with pytest.raises(TypeError):
+        BEARING.calendar_policy_cost(PLANT, {}, step=1.0)
+    policy = BEARING.optimal_calendar_policy(PLANT)
+    assert policy.step == 0.875
+    daily = solve(BEARING, PLANT, step=1.0)
+    assert policy.cost_rate == pytest.approx(daily.cost_rate, rel=1e-6)
 
 
 @pytest.mark.parametrize(
@@ -130,15 +155,16 @@ def test_the_calendar_is_checked():
         Calendar(anytime="cheap")
     # The prices taken from the part must be there.
     with pytest.raises(ValueError, match="failure price"):
-        BEARING.optimal_calendar_policy(Calendar(), step=10.0)
+        solve(BEARING, Calendar(), step=10.0)
 
 
 def test_the_part_gives_the_failure_and_anytime_prices():
     unit = NonRepairable(LIFE, planned_cost=4.0, unplanned_cost=20.0)
-    by_part = unit.optimal_calendar_policy(
-        Calendar([Opportunity("annual", 1.0, period=364.0)]), step=7.0
+    by_part = solve(
+        unit, Calendar([Opportunity("annual", 1.0, period=364.0)]), step=7.0
     )
-    given = BEARING.optimal_calendar_policy(
+    given = solve(
+        BEARING,
         Calendar([Opportunity("annual", 1.0, period=364.0)], 20.0, 4.0),
         step=7.0,
     )
@@ -177,7 +203,7 @@ def test_it_collapses_to_age_replacement():
         unplanned_cost=5.0,
     )
     classical = unit.optimal_replacement_policy()
-    policy = unit.optimal_calendar_policy(Calendar(), step=1.0)
+    policy = solve(unit, Calendar(), step=1.0)
     assert policy.method == "dp" and policy.basis == "exact"
     assert abs(policy._threshold(10.0) - classical.interval) <= 1.0
     assert policy.cost_rate == pytest.approx(classical.cost_rate, rel=1e-5)
@@ -302,7 +328,7 @@ def test_the_rates_by_kind_are_simulated():
         failure=60.0,
         anytime=4.0,
     )
-    policy = BEARING.optimal_calendar_policy(calendar, step=1.0)
+    policy = solve(BEARING, calendar, step=1.0)
     simulated_rates = counted(policy, calendar)
     for kind, rate in policy.replacement_rates.items():
         assert simulated_rates[kind] == pytest.approx(rate, rel=0.03, abs=2e-6)
@@ -398,7 +424,7 @@ TEN_YEARS = 3640.0
 
 def test_it_beats_the_simple_policies(plant):
     def ten_years(rule):
-        return BEARING.calendar_policy_cost(PLANT, rule, step=1.0) * TEN_YEARS
+        return price(BEARING, PLANT, rule, step=1.0) * TEN_YEARS
 
     age = NonRepairable(
         LIFE, planned_cost=4.0, unplanned_cost=20.0
@@ -418,7 +444,7 @@ def test_it_beats_the_simple_policies(plant):
 
 
 def test_running_to_failure_costs_the_failures():
-    rate = BEARING.calendar_policy_cost(PLANT, {}, step=1.0)
+    rate = price(BEARING, PLANT, {}, step=1.0)
     assert rate == pytest.approx(20.0 / LIFE.mean(), rel=1e-5)
 
 
@@ -429,9 +455,7 @@ def test_a_set_that_is_no_threshold_is_flagged():
     unit = NonRepairable(surv.LogNormal.from_params([6.0, 1.0]))
     calendar = Calendar([Opportunity("monthly", 1.0, period=30.0)], 20.0)
     with pytest.warns(UserWarning, match="youngest"):
-        policy = unit.optimal_calendar_policy(
-            calendar, step=1.0, max_age=20000.0
-        )
+        policy = solve(unit, calendar, step=1.0, max_age=20000.0)
     assert not policy.threshold_only
     assert np.isfinite(policy._threshold(0.0))
 
@@ -457,8 +481,8 @@ def test_a_repeated_plan_is_the_periodic_calendar():
         [Opportunity("t", 1.0, dates=[364.0, 728.0, 1092.0])], 20.0, None
     )
     annual = Calendar([Opportunity("t", 1.0, period=364.0)], 20.0, None)
-    dated = BEARING.optimal_calendar_policy(plan, step=1.0)
-    periodic = BEARING.optimal_calendar_policy(annual, step=1.0)
+    dated = solve(BEARING, plan, step=1.0)
+    periodic = solve(BEARING, annual, step=1.0)
     assert dated.cost_rate == pytest.approx(periodic.cost_rate, rel=1e-12)
     assert dated.settings["repeat"] == 1092.0
     # Repeated forward only: nothing at 0, before the plan.
@@ -467,8 +491,8 @@ def test_a_repeated_plan_is_the_periodic_calendar():
 
 
 def test_a_plan_says_until_when_its_tail_does_not_matter():
-    repeat = BEARING.optimal_calendar_policy(PLAN, step=1.0)
-    anytime = BEARING.optimal_calendar_policy(PLAN, step=1.0, tail="anytime")
+    repeat = solve(BEARING, PLAN, step=1.0)
+    anytime = solve(BEARING, PLAN, step=1.0, tail="anytime")
     assert repeat.determined_until == anytime.determined_until
     until = repeat.determined_until
     assert 0.0 < until <= PLAN.plan_end
@@ -551,23 +575,23 @@ def test_the_answer_is_the_same_in_hours():
 )
 def test_the_arguments_are_checked(kwargs, error, match):
     with pytest.raises(error, match=match):
-        BEARING.optimal_calendar_policy(PLANT, **kwargs)
+        solve(BEARING, PLANT, **kwargs)
     with pytest.raises(TypeError, match="Calendar"):
-        BEARING.optimal_calendar_policy([Opportunity("a", 1.0, period=7.0)])
+        solve(BEARING, [Opportunity("a", 1.0, period=7.0)])
 
 
 def test_a_rule_is_checked():
     with pytest.raises(ValueError, match="Unknown kind"):
-        BEARING.calendar_policy_cost(PLANT, {"monthly": 0.0}, step=7.0)
+        price(BEARING, PLANT, {"monthly": 0.0}, step=7.0)
     with pytest.raises(ValueError, match="at least 0"):
-        BEARING.calendar_policy_cost(PLANT, {"annual": -1.0}, step=7.0)
+        price(BEARING, PLANT, {"annual": -1.0}, step=7.0)
     with pytest.raises(TypeError, match="dict"):
-        BEARING.calendar_policy_cost(PLANT, [0.0], step=7.0)
+        price(BEARING, PLANT, [0.0], step=7.0)
     shut_only = Calendar(PLANT.opportunities, 20.0, None)
     with pytest.raises(ValueError, match="any day"):
-        BEARING.calendar_policy_cost(shut_only, {"anytime": 1.0}, step=7.0)
+        price(BEARING, shut_only, {"anytime": 1.0}, step=7.0)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        assert BEARING.calendar_policy_cost(
-            shut_only, {"annual": math.inf}, step=7.0
+        assert price(
+            BEARING, shut_only, {"annual": math.inf}, step=7.0
         ) == pytest.approx(20.0 / LIFE.mean(), rel=1e-4)

@@ -321,7 +321,7 @@ def calendar_policy(life):
     calendar = Calendar(
         [Opportunity("shut", 2.0, period=60.0)], failure=10.0, anytime=None
     )
-    return NonRepairable(life).optimal_calendar_policy(calendar, step=1.0)
+    return NonRepairable(life).optimal_calendar_policy(calendar)
 
 
 def repairable_kinds():

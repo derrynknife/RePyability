@@ -74,16 +74,17 @@ eye.
 
    *Decide:* keep this, or revert to the brief's recursion and relax test 1
    to about 2e-4.
-5. **★ The default step is not 1.0.** CLAUDE.md requires that no result
-   depends on the unit of time, so `step=None` is sized from the models:
+5. **The step is not an argument (decided).** It is a numerical
+   setting, not a choice of when decisions are made; the calendar says
+   that, by its opportunities. It is sized from the models, as CLAUDE.md
+   requires, so that no result depends on the unit of time:
    - about the mean life over 1,000 (`STEPS_PER_LIFE`);
-   - reduced to a whole fraction of the largest step on which every period,
-     offset and date lies, so the dates fall on the grid;
-   - for the plant in days this gives 0.875 days;
-   - `test_the_answer_is_the_same_in_hours` checks it.
+   - reduced to a whole fraction of the largest step on which every
+     period, offset and date lies, so the dates fall on the grid;
+   - for the plant in days this gives 0.875 days.
 
-   Pass `step=1.0` for a daily grid. *Decide:* keep this, or default to 1.0
-   and accept the dependence on units.
+   The tests set it through the internal solver
+   (`_replacement.optimal_calendar_policy(..., step=)`).
 6. **The cycle limit is 20,000 steps** (`MAX_CYCLE`), not "about 20 years of
    days" (7,300). Relative value iteration on 20,000 steps is a few seconds a
    sweep at worst. *Decide:* the limit.
@@ -281,17 +282,13 @@ eye.
 
 ## F. Around the build
 
-27. **★ What happens to UC-7's `replacement_policies` and UC-12's
-    `optimal_next_replacement`.** Both are unreleased.
-    - **`replacement_policies`** (one shut type, four families of policy) is
-      now a special case of `optimal_calendar_policy`, which also finds
-      policies outside those families.
-    - **`optimal_next_replacement`** could take a `CalendarPolicy`'s
-      `cost_rate` as its baseline, which is what you asked for in the
-      discussion before the brief.
-
-    *Decide:* remove `replacement_policies` before 0.14, and point
-    `optimal_next_replacement` at a `CalendarPolicy`.
+27. **UC-7's `replacement_policies` and UC-12's
+    `optimal_next_replacement`.** Decided: `replacement_policies` is
+    removed (a special case of `optimal_calendar_policy`), with the
+    `older_than` rule it added to `condition_cycle`;
+    `optimal_replacement_policy` is kept. Still open:
+    `optimal_next_replacement` could take a `CalendarPolicy`'s
+    `cost_rate` as its baseline.
 28. **The chart.** It is an SVG committed under `docs/guide/img/`, drawn by
     `scripts/calendar_policy_chart.py` with matplotlib, outside the package
     (which keeps no plotting dependency). Run the script again after a change

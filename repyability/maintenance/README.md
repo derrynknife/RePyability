@@ -22,7 +22,7 @@ use cases, under the same numbers.
 | UC-2, UC-3, UC-4 | Tasks on dates and monthly rules: calendar only | Reliafy's |
 | UC-5 | A part's chance of failing, expected failures and their cost over a window, from its age | **Built**: `NonRepairable.failures` |
 | UC-6 | Right after a failure, the value of skipping the next planned replacement | **Built**: `ReplacementPlan.skip_next`, to be reworked |
-| UC-7 | The cheapest replacement policy when replacing at a shut is cheaper than between shuts | **Built**: `replacement_policies` |
+| UC-7 | The cheapest replacement policy when replacing at a shut is cheaper than between shuts | Built as `replacement_policies`, then removed: UC-13 answers it |
 | UC-8 | Each policy's cost over a window from a state, and its spread | Answered by hand |
 | UC-9 | The cost in each of a run of windows from a state, and how often each outcome happens | Answered by hand |
 | UC-10 | Tasks by use on an operating schedule: calendar only | Reliafy's |
@@ -323,8 +323,12 @@ question here is the model-time one it becomes.)
 
 ### UC-7: "Replacing the bearing at a shut (every 180 days) costs $100, a planned replacement between shuts $150, and one at a failure $400. Which replacement policy is cheapest in the long run?"
 
-- **Status:** built: `replacement_policies(life, shut_every=, shut_cost=,
-  planned_cost=, failure_cost=)`, the first of the RCM calculators.
+- **Status:** built as `replacement_policies(life, shut_every=,
+  shut_cost=, planned_cost=, failure_cost=)` (#339), then removed before
+  release: UC-13's `NonRepairable.optimal_calendar_policy` answers it (one
+  shut type, a planned replacement on any day, a failure), finding the best
+  policy of any form rather than the best of four families. The record
+  below is kept for what it found.
 - **Who asks, and why:** the planner of UC-6. The plant shuts every 180
   days; replacing in a shut is cheaper than a planned replacement that
   needs its own outage, which is cheaper than a failure.

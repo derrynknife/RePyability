@@ -33,7 +33,6 @@ import numpy as np
 from scipy.integrate import cumulative_trapezoid, quad
 from scipy.optimize import minimize_scalar
 
-from repyability.maintenance._shuts import _amount
 from repyability.rbd.results import _ResultMapping
 from repyability.utils import checks
 
@@ -114,6 +113,15 @@ class NextReplacement(_ResultMapping):
     choices: List[ReplacementChoice]
     replace_from_age: float
     cost_rate: float
+
+
+def _amount(value, name: str) -> float:
+    """``value`` as a cost: a finite number, at least 0."""
+    if not (checks.is_number(value) and 0.0 <= float(value) < math.inf):
+        raise ValueError(
+            f"{name} must be a number, at least 0; got {value!r}."
+        )
+    return float(value)
 
 
 def _time(value, name: str) -> float:

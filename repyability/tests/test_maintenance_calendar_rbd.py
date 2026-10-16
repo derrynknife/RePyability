@@ -16,6 +16,19 @@ from repyability import (
     Opportunity,
     RepairableRBD,
 )
+from repyability.maintenance import _replacement
+
+
+def solve(part, calendar, **options):
+    """The calendar policy, on a grid of a given step where a check needs
+    one (the public method sizes its own)."""
+    return _replacement.optimal_calendar_policy(part, calendar, **options)
+
+
+def price(part, calendar, rule, **options):
+    """A rule's cost rate, likewise."""
+    return _replacement.calendar_policy_cost(part, calendar, rule, **options)
+
 
 LIFE = surv.Weibull.from_params([1000.0, 2.5])
 PLANT = Calendar(
@@ -39,7 +52,7 @@ SHUTS = Calendar(
 
 @pytest.fixture(scope="module")
 def plant():
-    return NonRepairable(LIFE).optimal_calendar_policy(PLANT, step=1.0)
+    return solve(NonRepairable(LIFE), PLANT, step=1.0)
 
 
 def bearing(policy, **more):
@@ -54,9 +67,7 @@ def bearing(policy, **more):
 
 @pytest.mark.parametrize("method", ["dp", "integration"])
 def test_a_unit_is_next_replaced_where_its_threshold_is_reached(method):
-    policy = NonRepairable(LIFE).optimal_calendar_policy(
-        SHUTS, step=1.0, method=method
-    )
+    policy = solve(NonRepairable(LIFE), SHUTS, step=1.0, method=method)
     # New at 0: the next annual shut. Put in at an annual shut (300 days
     # on, it is young at the next): the one after. Old: at once.
     annual = 1.0, "annual"

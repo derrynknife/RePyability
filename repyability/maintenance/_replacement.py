@@ -512,7 +512,8 @@ class CalendarPolicy(_ResultMapping):
         the rates by kind are estimated from a new unit run in, where the
         cost rate is not exact.
     step : float or None
-        The grid's step (None for integration, which has none).
+        The grid's step, sized from the life and put on the opportunities'
+        times (None for integration, which has none).
     period : float or None
         The time after which the thresholds repeat (None if they do not,
         or too long to keep).
@@ -547,7 +548,7 @@ class CalendarPolicy(_ResultMapping):
     ...     failure=20.0,
     ...     anytime=None,
     ... )
-    >>> policy = bearing.optimal_calendar_policy(calendar, step=7.0)
+    >>> policy = bearing.optimal_calendar_policy(calendar)
     >>> policy.method, policy.basis, policy.period
     ('dp', 'exact', 364.0)
     >>> round(policy.cost_rate * 364, 3)

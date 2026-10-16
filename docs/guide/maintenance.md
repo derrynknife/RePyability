@@ -144,16 +144,16 @@ plant = Calendar(
     failure=20.0,      # by default the part's unplanned_cost
     anytime=4.0,       # any other day; None: not allowed; by default its planned_cost
 )
-policy = bearing.optimal_calendar_policy(plant, step=1.0)
+policy = bearing.optimal_calendar_policy(plant)
 
 policy.cost_rate             # -> 0.006943   a day (2.53 a year)
 policy.replacement_rates     # a day; a year:  annual 0.962, failure 0.078,
                              #   weekly, quarterly and any day 0
-policy.cost_rates            # a day; a year:  annual 0.962, failure 1.565
+policy.cost_rates            # a day; a year:  annual 0.962, failure 1.566
 policy.schedule(kinds=("quarterly", "annual"))
-# -> [(0.0,   'annual',    88.0, 0.962),     (time, kind, threshold, chance)
-#     (91.0,  'quarterly', 222.0, 0.0),
-#     (182.0, 'quarterly', 324.0, 0.0),
+# -> [(0.0,   'annual',    88.375, 0.962),   (time, kind, threshold, chance)
+#     (91.0,  'quarterly', 221.375, 0.0),
+#     (182.0, 'quarterly', 323.75, 0.0),
 #     (273.0, 'quarterly', 574.0, 0.0)]
 policy.next_replacement(age=60.0, now=364.0)
 # -> PlannedReplacement(time=728.0, kind='annual', price=1.0)
@@ -172,12 +172,13 @@ An [`Opportunity`][repyability.Opportunity] repeats every `period` from its
   unit there if it is at least `threshold` old, which happens with `chance`
   in the long run. The threshold at a shut depends on how far the next
   cheaper one is (the quarterly shut a quarter before the annual waits for a
-  unit of 574 days, the one three quarters before it for one of 222), but at
+  unit of 574 days, the one three quarters before it for one of 221), but at
   these prices the annual shut replaces units before they reach any of them,
   so each quarterly shut's chance is 0.
 - **The unit in service.** `next_replacement(age, now)` says when it will be
   replaced, if it does not fail first: a unit 60 days old at the annual shut
-  is younger than its threshold, 88 days, so it is kept to the next one.
+  is younger than its threshold, about 88 days, so it is kept to the next
+  one.
 
 ![The threshold age at each weekly, quarterly and annual shut over a year](img/calendar-thresholds.svg)
 
@@ -188,7 +189,7 @@ prices a rule given as the age from which each kind of replacement replaces):
 
 | Policy | Rule | Cost over 10 years |
 |---|---|---|
-| **Optimal** | annual from 88 d; quarterly from 222, 324, 574 d; weekly as charted | **25.27** |
+| **Optimal** | annual from 88 d; quarterly from 221, 324, 574 d; weekly as charted | **25.27** |
 | Every annual shut | `{"annual": 0.0}` | 25.48 |
 | Age replacement on any day | `{"anytime": 493.0}` (the textbook interval at 4 and 20) | 50.41 |
 | Run to failure | `{}` | 82.05 |
@@ -197,8 +198,8 @@ prices a rule given as the age from which each kind of replacement replaces):
 
 `method="auto"` (the default) chooses among these:
 
-- **`"dp"`**: dynamic programming on a grid of `step` (by default about the
-  mean life over 1,000, put on the opportunities' own grid). Over a periodic
+- **`"dp"`**: dynamic programming on a grid (its step about the mean life
+  over 1,000, put on the opportunities' own times). Over a periodic
   calendar whose cycle (the least common multiple of its periods) has at
   most 20,000 steps, relative value iteration gives the cost rate exactly for
   the grid; a failure renews half a step later on average, so the grid's
@@ -217,15 +218,15 @@ prices a rule given as the age from which each kind of replacement replaces):
 `policy.method` and `policy.basis` (`"exact"`, `"differenced"` or
 `"sampled"`) say which was used.
 
-**How exact it is.** On a grid the decisions are made at the grid's times
-(every day, with `step=1.0`), so the answer is exact for decisions made
-daily: if the plant decides once a day, that is the problem. As the step
-shrinks it tends to decisions at any moment, with an error of the order of
-the step squared; for this plant the cost a year is 2.5272587 at a day,
-2.5272583 at a quarter of a day. Leaving `step` out takes a step from the
-life and the calendar (here 0.875 days), not an exact solution. With no
-replacement on any day, `method="integration"` works between the shuts in
-continuous time, exact but for its quadrature (2.5272576 a year here). A plan of given dates is extended past its
+**How exact it is.** The grid's step is not an argument: it is a numerical
+setting, sized from the life and put on the shuts' times (here 0.875 days),
+not a choice of when decisions are made, which the calendar says by its
+opportunities. On the grid the cost rate is exact for decisions at its
+times, and within about the square of the step of deciding at any moment:
+for this plant 2.5272582 a year, against 2.5272583 on a grid four times as
+fine. With no replacement on any day, `method="integration"` works between
+the shuts in continuous time, exact but for its quadrature (2.5272576 a
+year here). A plan of given dates is extended past its
 last date by `tail`: `"repeat"` (repeat it) or `"anytime"` (only the
 replacement on any day). Both are solved, and `policy.determined_until` is the
 first time at which the two differ: the policy before it does not depend on

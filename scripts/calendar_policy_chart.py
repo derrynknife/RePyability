@@ -46,7 +46,7 @@ def main() -> None:
         failure=20.0,
         anytime=4.0,
     )
-    policy = bearing.optimal_calendar_policy(plant, step=1.0)
+    policy = bearing.optimal_calendar_policy(plant)
     figure, axes = plt.subplots(figsize=(8, 4.2), dpi=100)
     figure.patch.set_facecolor(SURFACE)
     axes.set_facecolor(SURFACE)
