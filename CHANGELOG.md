@@ -12,20 +12,19 @@ other release, fixes included, the minor.
 ### Added
 
 - **When to replace a part in service next (#319).**
-  `NonRepairable.optimal_next_replacement(age, now_cost=, shuts=,
-  shut_every=, shut_cost=)` compares replacing it now, at each of the
-  coming shuts (given as time from now and price), at a planned
-  replacement at its best time, and running it to failure. Each choice's
-  cost is its expected cost until the part is replaced, less the time it
-  serves valued at the best long-run cost a unit of time (the age
-  replacement's, or with regular shuts `replacement_policies`' best), so
-  with no shuts replacing now is the best from the optimal replacement
-  age. Each choice comes with its break-even age, the youngest at which
-  replacing now costs no more (`NextReplacement`, `ReplacementChoice`).
-  A bearing 200 days old (Weibull, 365 days, shape 2; $150 planned, $400
-  at a failure, shuts in 150 and 330 days at $100, regular shuts every
-  180 days) is best kept to the shut in 150 days; replacing now is the
-  best from 264 days old.
+  `NonRepairable.optimal_next_replacement(age, now_cost=,
+  scheduled_outages=)` compares replacing it now, at each scheduled
+  outage (given as time from now and price), at a planned replacement at
+  its best time, and running it to failure. Each choice's cost is its
+  expected cost until the part is replaced, less the time it serves
+  valued at the baseline, the long-run cost a unit of time of its
+  `optimal_replacement_policy`, so with no outages replacing now is the
+  best from the optimal replacement age. Each choice comes with its
+  break-even age, the youngest at which replacing now costs no more
+  (`NextReplacement`, `ReplacementChoice`). A bearing 200 days old
+  (Weibull, 365 days, shape 2; $150 planned, $400 at a failure, outages
+  in 150 and 330 days at $100) is best kept to the outage in 150 days;
+  replacing now is the best from 297.6 days old.
 - **The best replacement policy when a shut is the cheapest time to
   replace (#319).** `replacement_policies(life, shut_every=, shut_cost=,
   planned_cost=, failure_cost=)` finds, in the long run, the best of

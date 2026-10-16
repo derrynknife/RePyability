@@ -875,30 +875,22 @@ class NonRepairable:
         return MaintenancePolicy(interval=float(interval), cost_rate=rate)
 
     def optimal_next_replacement(
-        self,
-        age,
-        *,
-        now_cost=None,
-        shuts=(),
-        shut_every=None,
-        shut_cost=None,
+        self, age, *, now_cost=None, scheduled_outages=()
     ) -> NextReplacement:
         """When to replace the part in service next: now, at one of the
-        coming shuts, at a planned replacement between them, or at its
-        failure.
+        scheduled outages, at a planned replacement between them, or at
+        its failure.
 
         [`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy]
         is the rule for a part in general; this is the next replacement of
-        the one in service, from its age and the shuts coming up (this
+        the one in service, from its age and the outages scheduled (this
         package's use case UC-12). Each choice's cost is its expected cost
         until the part is replaced (at the failure price if it fails
         first), less the time the part serves until then, valued at the
-        best long-run cost a unit of time of its position: the age
-        replacement's (``optimal_replacement_policy().cost_rate``), or
-        with regular shuts the best of
-        [`replacement_policies`][repyability.replacement_policies]. The
-        cheapest choice is the best. With no shuts, replacing now is the
-        best from the optimal replacement age.
+        baseline: the long-run cost a unit of time of the replacement
+        policy (``optimal_replacement_policy().cost_rate``). The cheapest
+        choice is the best. With no outages, replacing now is the best
+        from the optimal replacement age.
 
         Parameters
         ----------
@@ -906,17 +898,10 @@ class NonRepairable:
             The part's age now, at least 0, in the life's time unit.
         now_cost : float, optional
             What replacing it now costs, by default the planned cost.
-        shuts : list of (float, float), optional
-            The coming shuts (or other outages) as (time from now, price)
-            pairs, each time more than 0 and each price at least 0.
-        shut_every : float, optional
-            The regular shuts' interval, given with ``shut_cost``: the best
-            long-run cost is then that of
-            [`replacement_policies`][repyability.replacement_policies]
-            (which takes some seconds) rather than the age replacement's.
-        shut_cost : float, optional
-            What a replacement at a regular shut costs, given with
-            ``shut_every``.
+        scheduled_outages : list of (float, float), optional
+            The scheduled outages (shuts, turnarounds) as (time from now,
+            price) pairs: when each is, in the life's time unit, more than
+            0, and what replacing the part at it costs, at least 0.
 
         Returns
         -------
@@ -937,8 +922,9 @@ class NonRepairable:
         Examples
         --------
         A bearing with a Weibull life (scale 365 days, shape 2), 200 days
-        old, $150 for a planned replacement, $400 at a failure, and shuts
-        in 150 and 330 days at $100:
+        old, $150 for a planned replacement, $400 at a failure, and
+        outages scheduled in 150 and 330 days, at which replacing it costs
+        $100:
 
         >>> import surpyval as surv
         >>> from repyability import NonRepairable
@@ -948,22 +934,17 @@ class NonRepairable:
         ...     unplanned_cost=400.0,
         ... )
         >>> found = bearing.optimal_next_replacement(
-        ...     200.0, shuts=[(150.0, 100.0), (330.0, 100.0)]
+        ...     200.0, scheduled_outages=[(150.0, 100.0), (330.0, 100.0)]
         ... )
         >>> found.now, found.best.kind, found.best.time
-        (False, 'shut', 150.0)
+        (False, 'outage', 150.0)
         >>> round(found.replace_from_age, 1)
         297.6
         """
         from repyability.maintenance._next import optimal_next_replacement
 
         return optimal_next_replacement(
-            self,
-            age,
-            now_cost=now_cost,
-            shuts=shuts,
-            shut_every=shut_every,
-            shut_cost=shut_cost,
+            self, age, now_cost=now_cost, scheduled_outages=scheduled_outages
         )
 
     def reset(self):
