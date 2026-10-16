@@ -11,6 +11,26 @@ other release, fixes included, the minor.
 
 ### Added
 
+- **The long-run optimal replacement policy over a calendar of shuts
+  (#319).** `NonRepairable.optimal_calendar_policy(calendar)` finds, for a
+  part whose planned replacement costs differently at different times
+  (shuts on periods or dates, each `Opportunity` with its own price; a
+  dearer day, or none; a failure), the threshold age at each time and the
+  long-run cost rate (`CalendarPolicy`: `threshold(t)`, `replace(t, age)`,
+  `schedule()`). Dynamic programming on a grid (exact for the grid over a
+  periodic calendar's cycle), integration between opportunities in
+  continuous time, or, for a cycle too long to sweep, a sampled cost rate
+  with its standard error. `calendar_policy_cost(calendar, rule)` prices
+  a given rule. A bearing (Weibull, 1000 days, shape 2.5) with an annual
+  shut at 1, quarterly at 2, weekly at 3, any day at 4 and a failure at
+  20 costs 0.006943 a day, against 0.007000 replacing at every annual
+  shut and 0.01385 by age replacement on any day. In a `RepairableRBD`,
+  a component's `"preventive": {"policy": "calendar", "calendar":
+  policy}` replaces each unit at the first time its age reaches the
+  policy's threshold, charged the calendar's price there: simulated (in
+  the Python loop), refused by the exact and numerical analyses, and not
+  saved. Decisions to take on all of it:
+  `repyability/maintenance/CALENDAR_DECISIONS.md`.
 - **When to replace a part in service next (#319).**
   `NonRepairable.optimal_next_replacement(age, now_cost=,
   scheduled_outages=)` compares replacing it now, at each scheduled

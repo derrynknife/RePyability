@@ -90,6 +90,10 @@ class FailureLimitPolicy:
 
 
 # After the policies, which the modules it imports may import from here.
+from repyability.maintenance._calendar import (  # noqa: E402
+    Calendar,
+    Opportunity,
+)
 from repyability.maintenance._next import (  # noqa: E402
     NextReplacement,
     ReplacementChoice,
@@ -97,6 +101,9 @@ from repyability.maintenance._next import (  # noqa: E402
 from repyability.maintenance._plans import (  # noqa: E402
     ReplacementPlan,
     SkipValue,
+)
+from repyability.maintenance._replacement import (  # noqa: E402
+    CalendarPolicy,
 )
 from repyability.maintenance._shuts import (  # noqa: E402
     ReplacementPolicies,

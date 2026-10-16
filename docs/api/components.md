@@ -9,3 +9,7 @@
 ::: repyability.ReplacementPlan
 
 ::: repyability.replacement_policies
+
+::: repyability.Opportunity
+
+::: repyability.Calendar

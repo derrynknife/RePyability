@@ -332,6 +332,12 @@ def _serialise_schedule(spec: dict) -> dict:
     # interval (and policy, and a condition policy's threshold or level) as
     # they are, the duration ("instant" or a model) and the costs (each a
     # number or a distribution).
+    if spec.get("policy") == "calendar":
+        raise NotImplementedError(
+            "Cannot save a 'calendar' preventive policy: a CalendarPolicy "
+            "is worked out from its part and calendar, not saved. Save the "
+            "diagram without it, and work the policy out again."
+        )
     out: dict[str, Any] = {"interval": float(spec["interval"])}
     if "policy" in spec:
         out["policy"] = spec["policy"]
