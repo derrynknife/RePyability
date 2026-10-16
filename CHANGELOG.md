@@ -526,6 +526,15 @@ and `rbd._sensitivity`'s `levers` and `Lever` are gone (use `levers()`,
 
 ### Fixed
 
+- **A fixed maintenance duration is fixed whatever numpy's rounding.** A
+  duration known exactly (an `ExactEventTime`) is followed as a fixed
+  time, where a spread one is convolved; it was told from its variance,
+  a difference of two numbers about the duration squared, against a
+  tolerance a few units of rounding wide: on numpy 2.0 the variance came
+  out at 1e-15, and the exact and numerical analyses of a component
+  maintained for a fixed time refused ("its later age replacements ...
+  are too many ... to follow exactly"). The tolerance is a millionth of
+  the duration.
 - **A shut at an offset off the grid keeps its period (#319).** The
   grid's step for `NonRepairable.optimal_calendar_policy` was sized to
   put every period, offset and date on it, and fell back to the

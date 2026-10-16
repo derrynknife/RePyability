@@ -831,7 +831,10 @@ class ChainDips:
         mean, variance = _moments(
             sf, np.linspace(0.0, self.top, 4097), self.splits
         )
-        if variance <= (1e-9 * self.top) ** 2:
+        # A fixed time, to rounding: the variance is a difference of two
+        # numbers about ``top ** 2``, so it is uncertain by a few units of
+        # rounding in them (numpy 2.0 sums them to 1e-15 at a top of 5).
+        if variance <= (1e-6 * self.top) ** 2:
             self.fixed = mean
             return
         from scipy.signal import fftconvolve

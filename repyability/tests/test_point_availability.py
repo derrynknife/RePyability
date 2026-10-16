@@ -491,7 +491,9 @@ def test_matches_the_simulation(name):
 def test_instant_repair_is_always_up():
     rbd = alone(unit(W([100.0, 2.0]), "instant"))
     assert rbd.point_availability([0.0, 10.0, 1e4]).tolist() == [1, 1, 1]
-    assert rbd.mission_availability(100.0) == 1.0
+    # To rounding: the integral of a constant 1 sums the quadrature's
+    # weights, exact to a few units of rounding in some numpy versions.
+    assert rbd.mission_availability(100.0) == pytest.approx(1.0, abs=1e-15)
 
 
 def test_units_dead_on_arrival_and_units_that_never_fail():
