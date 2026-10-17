@@ -18,7 +18,7 @@ pip install -e .[dev]              # add ,fast for numba, ,docs for mkdocs
 pre-commit install                 # run the formatters and linters on commit
 ```
 
-RePyability needs Python 3.11 or later and surpyval 0.24 or later.
+RePyability needs Python 3.11 or later and surpyval 0.25 or later.
 
 ## Branches and the one automated test run
 

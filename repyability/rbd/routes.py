@@ -157,12 +157,20 @@ def refusal(check: Callable[[], object]) -> Optional[str]:
     return None
 
 
+#: How a joint node's reliability is worked out.
+JOINT_HOW = (
+    "its joint model's prediction, by quadrature over the unit's marker "
+    "path"
+)
+
+
 def model_route(model) -> Tuple[str, str]:
     """How a node model's reliability (its ``sf``) is obtained: the route,
     and a phrase saying how."""
     from surpyval import Parametric
 
     from .helper_classes import PerfectReliability, PerfectUnreliability
+    from .joint_node import JointNode
     from .load_sharing_node import LoadSharingModel
     from .non_repairable_rbd import NonRepairableRBD
     from .numerical_convolution import ConvolvedSurvival
@@ -200,6 +208,8 @@ def model_route(model) -> Tuple[str, str]:
         return worst, f"a nested RBD with {worst} nodes {_names(which)}"
     if isinstance(model, Parametric):
         return EXACT, "a closed form"
+    if isinstance(model, JointNode):
+        return NUMERICAL, JOINT_HOW
     return EXACT, "its own sf"
 
 
@@ -207,6 +217,7 @@ def mean_route(model) -> Tuple[str, str]:
     """How a node model's mean lifetime (its ``mean()``) is found: the route,
     and a phrase saying how, or the message its ``mean()`` would raise."""
     from .degrading_node import DegradingNode
+    from .joint_node import JointNode
     from .load_sharing_node import LoadSharingModel
     from .non_repairable_rbd import NonRepairableRBD
     from .regression_node import RegressionNode
@@ -239,6 +250,8 @@ def mean_route(model) -> Tuple[str, str]:
         return model_route(model)
     if isinstance(model, RegressionNode):
         return NUMERICAL, "the mean of its survival function on a grid"
+    if isinstance(model, JointNode):
+        return NUMERICAL, "the area under its prediction's survival"
     return EXACT, "its model's mean"
 
 

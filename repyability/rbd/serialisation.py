@@ -38,6 +38,7 @@ from repyability.rbd.helper_classes import (
     PerfectReliability,
     PerfectUnreliability,
 )
+from repyability.rbd.joint_node import JointNode, as_node
 from repyability.rbd.load_sharing_node import LoadSharingModel
 from repyability.rbd.rbd import RBD
 from repyability.rbd.regression_node import RegressionNode
@@ -57,6 +58,7 @@ _WRAPPERS = {
     "repeated_node": RepeatedNode,
     "non_repairable": NonRepairable,
     "regression_node": RegressionNode,
+    "joint_node": JointNode,
     "load_sharing": LoadSharingModel,
 }
 
@@ -158,6 +160,10 @@ def _serialise_model(model: Any) -> dict:
         }
     if isinstance(model, RegressionNode):
         return {"kind": "regression_node", **model.to_dict()}
+    if isinstance(as_node(model), JointNode):
+        # A joint model's unit (or its prediction, which loads as one):
+        # the model in surpyval's format and the unit's inputs.
+        return {"kind": "joint_node", **as_node(model).to_dict()}
     if isinstance(model, LoadSharingModel):
         return {
             "kind": "load_sharing",
@@ -178,7 +184,7 @@ def _serialise_model(model: Any) -> dict:
         f"Cannot serialise a node model of type {type(model).__name__}. "
         "Only surpyval's parametric models, the "
         "RePyability node wrappers (standby, degrading, repeated, "
-        "NonRepairable, load-sharing, regression), perfect "
+        "NonRepairable, load-sharing, regression, joint), perfect "
         "reliability/unreliability and nested RBDs are supported."
     )
 
@@ -238,6 +244,8 @@ def deserialise_model(d: dict) -> Any:
         )
     if kind == "regression_node":
         return RegressionNode.from_dict(d)
+    if kind == "joint_node":
+        return JointNode.from_dict(d)
     if kind == "load_sharing":
         return LoadSharingModel(
             [surpyval.from_dict(md) for md in d["models"]],

@@ -344,6 +344,7 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("A probability per demand", "fixed"),
         ("A mixture (`MixtureModel`)", "mixture"),
         ("A regression node (covariates)", "regression"),
+        ("A joint model's unit, given its readings", "joint"),
         ("A degrading node", "degrading"),
         ("A fitted degradation process", "degradation process"),
         ("Cold standby (convolved)", "convolved standby"),

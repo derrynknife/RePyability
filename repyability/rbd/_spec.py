@@ -361,6 +361,7 @@ def _validate_groups(
 def _unknown_component(node, component) -> str:
     """Why ``component`` cannot be node ``node``: it is none of the
     kinds a node can be."""
+    from repyability.rbd.joint_node import NOT_REPAIRABLE, is_joint
     from repyability.repairable import Repairable
 
     kinds = (
@@ -369,6 +370,8 @@ def _unknown_component(node, component) -> str:
         "that never fails, such as a k-out-of-n vote point, "
         "PerfectReliability)."
     )
+    if is_joint(component):
+        return f"Component {node!r}: {NOT_REPAIRABLE}"
     if isinstance(component, Repairable):
         return (
             f"Component {node!r} is a Repairable, which models the "

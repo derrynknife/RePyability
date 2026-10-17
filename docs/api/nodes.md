@@ -18,6 +18,8 @@ models provided here (see [Building an RBD](../guide/building.md) and
 
 ::: repyability.RegressionNode
 
+::: repyability.JointNode
+
 ::: repyability.PerfectReliability
 
 ::: repyability.PerfectUnreliability
