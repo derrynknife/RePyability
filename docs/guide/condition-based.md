@@ -111,6 +111,9 @@ and the valve works.
 
 - Parametric distributions and `RegressionNode`s age.
   For them, `NodeState(age=0)` is the same as leaving the node out.
+- A [`JointNode`][repyability.JointNode] (a unit of a joint model, given
+  its readings) takes its age from its prediction: see
+  [below](#a-unit-with-readings-joint-models).
 - A fixed-probability component given any state in which it is alive
   contributes 1 from now on: its chance of failing has been resolved by
   observing it working. Left out of the state, it keeps its usual
@@ -228,3 +231,89 @@ ramped.sf_given_state(1000, {"m": NodeState(age=2500)})   # -> 0.7036
   semi-parametric Cox model has no defined mean and says so.
 - The node saves with the RBD; the fitted model round-trips through
   `surpyval.from_dict`.
+
+## A unit with readings: joint models
+
+Some components are watched: a vibration level, a wear measurement or an
+oil analysis is read every so often, and a rising reading warns of a
+failure to come. A **joint model** of the readings and the failures,
+fitted in surpyval (`surpyval.WeibullJointPH`, or any
+`surpyval.JointPH(distribution, path_model)`), says how. Its `predict`
+gives one unit's life given its covariates, its readings so far and that
+it is still running at its age now, and that prediction can be a node:
+
+```python
+from surpyval import ItemLifetime, SurpyvalData, WeibullJointPH
+from repyability import JointNode
+
+# A fleet of 60 pumps, each with its vibration read every 10 hours.
+rng = np.random.default_rng(3)
+pumps = []
+for k in range(60):
+    start, rate = rng.normal(2.0, 0.4), rng.normal(0.02, 0.005)
+    life = 100 * rng.weibull(2.0) * np.exp(-0.9 * (start - 2))
+    end = min(life, 120.0)
+    ages = np.arange(0.0, end, 10.0)
+    vibration = start + rate * ages + rng.normal(0, 0.2, ages.size)
+    outcome = "observed" if life < 120 else "right_censored"
+    pumps.append(
+        ItemLifetime(k, **{outcome: end}, markers=dict(zip(ages, vibration)))
+    )
+joint = WeibullJointPH.fit(SurpyvalData.from_items(pumps))
+
+# Our pump: 40 hours old, its vibration rising faster than most.
+pump = joint.predict(markers={0: 2.1, 20: 2.5, 40: 3.0}, given=40)
+valve = surv.Weibull.from_params([80, 1.5])
+line = NonRepairableRBD(
+    [("in", "pump"), ("pump", "valve"), ("valve", "out")],
+    {"pump": pump, "valve": valve},
+)
+line.sf(20)   # -> 0.6953   pump.sf(60) * valve.sf(20)
+```
+
+The diagram's time is **time from now**, while a prediction's functions
+take ages since new. The node is the prediction moved to now: at mission
+time `t` the pump's reliability is `pump.sf(40 + t)`, which surpyval has
+already conditioned on the pump reaching 40 hours, its lifetimes are
+`pump.random() - 40` and its mean is its mean life left. A prediction given
+as a node becomes a [`JointNode`][repyability.JointNode];
+`JointNode(joint, Z=..., markers=..., age=...)` makes the same node from the
+fitted model and the unit's covariates, readings and age.
+
+It takes part in everything an ordinary node does: the system's
+reliability, MTTF and B-lives, the importance measures and the
+simulations.
+
+```python
+line.mean()                    # -> 35.50
+line.birnbaum_importance(20)["valve"]   # -> 0.7879   the pump's sf(60)
+line.sf_given_state(20, {"valve": NodeState(age=30)})   # -> 0.6048
+```
+
+- **Its age is the prediction's.** In a state, the pump may be given
+  `alive=False`, or its prediction's age (`NodeState(age=40)`, the same as
+  leaving it out); any other age raises `ValueError`, as it would condition
+  the pump a second time. For the pump later on, predict again with
+  `given=` its new age and its readings since.
+- **Its mean can be infinite.** With a straight-line marker path whose
+  slope varies from unit to unit, a few units' paths fall away and they
+  never fail; the model leaves even this pump a chance of that (about
+  5e-9), so `JointNode(pump).mean()` is `inf`, as the mean of such a
+  model is. The reliability, the B-lives and a system whose other parts
+  wear out (`line` above) are not affected.
+- **Parameter uncertainty** (`sf_uncertainty` and the others) holds the
+  joint model at its fit, unless the pump is given a list of predictions
+  to draw from (from joint models refitted to bootstrap resamples, say);
+  surpyval's `pump.cb(...)` bounds the pump's own reliability for its
+  model's.
+- **A new unit** is `JointNode(joint, Z=...)`, with no readings: the
+  model's life over the fleet's marker paths.
+- **Not in a repairable diagram.** A [`RepairableRBD`][repyability.RepairableRBD]
+  (and a `NonRepairable`) refuses a joint model: the prediction is of the
+  unit in service now, given its readings, but the units that replace it
+  are new and have none, while such a component draws every one of its
+  lives from one surpyval distribution. Use a `NonRepairableRBD` for the
+  mission from now.
+- The node saves with the RBD: the joint model in surpyval's format
+  (`JointModel.to_dict()`, a built-in path model) and the unit's
+  covariates, readings and age.

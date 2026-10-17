@@ -43,12 +43,14 @@ dependencies = [
     # (sf/ff/qf/random/mean, extras/with_params, regression sf/sf_tvc,
     # to_dict/from_dict). A surpyval release reaches every fresh install at
     # once, so run the tests against surpyval's development branch before it
-    # is released, to show a break first. CI also tests this minimum. 0.24
-    # gives a mixture a precise tail (sf) and has conditional_gaps read a
-    # limited failure population's lfp_p, not a mixture's p; 0.23 named the
-    # proportion lfp_p, takes success_run's level as alpha_ci, and pickles
-    # its fits (for n_jobs' worker processes), as RePyability relies on.
-    "surpyval>=0.24",
+    # is released, to show a break first. CI also tests this minimum. 0.25
+    # has the joint models (surpyval.univariate.joint) a JointNode takes;
+    # 0.24 gives a mixture a precise tail (sf) and has conditional_gaps read
+    # a limited failure population's lfp_p, not a mixture's p; 0.23 named
+    # the proportion lfp_p, takes success_run's level as alpha_ci, and
+    # pickles its fits (for n_jobs' worker processes), as RePyability
+    # relies on.
+    "surpyval>=0.25",
     "tqdm>=4.64",
 ]
 

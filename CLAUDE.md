@@ -4,9 +4,9 @@ Setup, branches, the checks a change needs, where tests go, pull requests,
 deprecations and releases are in [CONTRIBUTING.md](CONTRIBUTING.md); read it
 first. This file adds the internals and conventions it does not cover.
 
-**Versions (17 Oct 2026):** 0.13 is the latest release (PyPI, `v0.13`). 0.14
-is prepared on `dev` (`_version.py`, CHANGELOG dated 2026-10-16) and waits on
-the release pull request from `dev` into `main`. `dev` needs surpyval 0.24
+**Versions (17 Oct 2026):** 0.14 is the latest release (PyPI, `v0.14`). 0.15
+is prepared on `dev` (`_version.py`, CHANGELOG dated 2026-10-17) and waits on
+the release pull request from `dev` into `main`. `dev` needs surpyval 0.25
 or later.
 
 ## Architecture & scope
@@ -483,7 +483,8 @@ CONTRIBUTING.md. What it leaves to the maintainer's say:
 
 ## surpyval workarounds to remove
 
-surpyval 0.24 (the minimum) gives a mixture a precise tail (`sf`, #671) and
+surpyval 0.25 (the minimum) has the joint models a `JointNode` takes; 0.24
+gives a mixture a precise tail (`sf`, #671) and
 has `conditional_gaps` read a limited failure population's `lfp_p`, not a
 mixture's `p` (#626); 0.23 pickles its fits (#573), names the
 limited-failure proportion `lfp_p` (#608) and takes `success_run`'s

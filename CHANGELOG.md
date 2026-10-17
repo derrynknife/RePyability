@@ -9,6 +9,24 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- A unit of a surpyval joint model of readings and failures, given its
+  readings, is a block of a `NonRepairableRBD`: a `JointNode`, or the
+  unit's `DynamicPrediction` (`joint_model.predict(Z, markers, given)`)
+  given as the node. Its reliability is from now, `pred.sf(age + t)`; its
+  lifetimes `pred.random() - age`; its mean the unit's mean life left. It
+  takes part in the reliability, MTTF, B-lives, importance measures,
+  states, simulations and saving. Its age is its prediction's: a
+  `NodeState` with another age is refused, as it would condition the unit
+  again. A `RepairableRBD` and a `NonRepairable` refuse a joint model,
+  whose units after the first are new and without its readings. See the
+  condition-based evaluation guide.
+
+### Changed
+
+- surpyval 0.25 is required (for its joint models).
+
 ## [0.14] - 2026-10-16
 
 Fitted models in, every kind of model brought up to the diagram, and

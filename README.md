@@ -226,6 +226,7 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | A probability per demand | E | – | – | E | E | N | S | E N | – | S |
 | A mixture (`MixtureModel`) | E | N | N | E N | E N | N | S | E N | – | S |
 | A regression node (covariates) | E | N | N | E N | E N | N | S | E N | – | S |
+| A joint model's unit, given its readings | N | N | N | N | N | N | S | N | – | S |
 | A degrading node | N | N | N | N | N | N | S | N | N | S |
 | A fitted degradation process | E | N | N | E N | E N | N | S | E N | – | S |
 | Cold standby (convolved) | N | N | N | N | N | N | S | N | – | S |
@@ -303,8 +304,9 @@ places, nested diagrams):
 - **components:** surpyval lifetime distributions, degradation processes
   (Wiener and gamma, as the time to their threshold) and fixed
   probabilities (a diagram refuses a non-parametric fit, such as
-  Kaplan–Meier: fit a parametric distribution in surpyval); repeated
-  nodes; cold standby with one or
+  Kaplan–Meier: fit a parametric distribution in surpyval); a unit of a
+  surpyval joint model of readings and failures, given its readings
+  (`JointNode`, from now); repeated nodes; cold standby with one or
   two units operating (any units) or more (identical units); warm standby
   with one unit operating, and hot standby (any units); load sharing of
   identical units; common-cause groups, for the system's reliability,
