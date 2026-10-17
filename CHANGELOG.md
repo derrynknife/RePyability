@@ -9,6 +9,19 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+## [0.15] - 2026-10-17
+
+surpyval 0.25, and a joint model in a diagram. A unit of a surpyval joint
+model of readings and failures (`surpyval.WeibullJointPH`), given its
+readings so far, is a block of a `NonRepairableRBD` (`JointNode`, or its
+`DynamicPrediction` given as the node): its reliability is from now, and
+it takes part in every analysis of the diagram. A `RepairableRBD` refuses
+it, as the units that replace it are new and without its readings. What
+0.14 deprecated is gone.
+
+Behaviour changes: surpyval 0.25 is required; `NodeState`'s `phase` is
+refused (it is `since_scheduled`).
+
 ### Added
 
 - A unit of a surpyval joint model of readings and failures, given its
@@ -26,6 +39,11 @@ other release, fixes included, the minor.
 ### Changed
 
 - surpyval 0.25 is required (for its joint models).
+
+### Removed
+
+- `NodeState`'s `phase`, deprecated in 0.14 and renamed `since_scheduled`
+  (#350): giving it raises `TypeError`, and a state has no `phase`.
 
 ## [0.14] - 2026-10-16
 
