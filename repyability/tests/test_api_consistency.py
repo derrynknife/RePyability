@@ -30,7 +30,6 @@ from repyability import (
     mtbf_pass_probability,
     mtbf_test_time,
 )
-from repyability._version import __version__
 from repyability.rbd.ccf import with_parameters
 from repyability.rbd.uncertainty import draw_ccf_models
 from repyability.utils import deprecation
@@ -261,13 +260,6 @@ def test_the_spares_demand_values_are_properties():
     assert demand.std == pytest.approx(np.sqrt(10.0), rel=1e-4)
 
 
-def test_what_0_14_deprecates_goes_in_0_15():
-    # NodeState's phase, renamed since_scheduled (#350): giving phase= and
-    # reading .phase warn, and NEXT_REMOVAL (0.15) refuses them.
-    version = tuple(map(int, __version__.split(".")))
-    assert version < tuple(map(int, NEXT_REMOVAL.split(".")))
-
-
 def test_a_deprecation_warns_until_the_next_removal():
     # The helpers a deprecation warns through.
     match = f"{NEXT_REMOVAL} will refuse it"
@@ -282,29 +274,6 @@ def test_a_deprecation_warns_until_the_next_removal():
         assert number() == 2.0
     with pytest.warns(FutureWarning, match=f"refused in {NEXT_REMOVAL}"):
         assert np.array_equal(array(), [1.0, 2.0])
-
-
-def test_a_node_state_takes_phase_as_since_scheduled_for_now():
-    with pytest.warns(
-        FutureWarning, match="phase= is renamed since_scheduled"
-    ):
-        state = NodeState(age=10.0, phase=4.0)
-    assert state.since_scheduled == 4.0
-    assert state == NodeState(age=10.0, since_scheduled=4.0)
-    assert (
-        repr(state) == "NodeState(age=10.0, alive=True, since_scheduled=4.0)"
-    )
-    with pytest.warns(FutureWarning, match="phase is renamed since_scheduled"):
-        assert state.phase == 4.0
-    with pytest.raises(TypeError, match="since_scheduled alone"):
-        NodeState(phase=4.0, since_scheduled=4.0)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        assert NodeState(since_scheduled=4.0).since_scheduled == 4.0
-        assert (
-            NodeState(stationary=True, since_scheduled=4.0).since_scheduled
-            == 4.0
-        )
 
 
 def test_an_uncertainty_result_shows_a_summary():

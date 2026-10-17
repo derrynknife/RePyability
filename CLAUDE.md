@@ -435,13 +435,12 @@ or later.
 - **Deprecations** follow CONTRIBUTING (one minor release's notice, a
   `FutureWarning` through `repyability/utils/deprecation.py`). Each
   release's removals stay gone through `test_removed_in_0_12.py`,
-  `_0_13.py` and `_0_14.py`: a removed argument raises `TypeError`. What
-  0.14 deprecates goes in 0.15 (`NEXT_REMOVAL`): `NodeState`'s `phase`,
-  renamed `since_scheduled` (#350, through `deprecation.renamed` for the
-  argument and `renamed_attribute` for reading it). A new deprecation
-  warns through those, `called` or `ignored`;
-  `test_what_0_14_deprecates_goes_in_0_15` fails once the version reaches
-  it.
+  `_0_13.py`, `_0_14.py` and `_0_15.py` (`NodeState`'s `phase`, #350):
+  a removed argument raises `TypeError`. 0.15 deprecates nothing; what it
+  would deprecate goes in 0.16 (`NEXT_REMOVAL`). A new deprecation warns
+  through `deprecation.renamed`, `renamed_attribute`, `called` or
+  `ignored`, with a test that fails once the version reaches its removal
+  (as `test_what_0_14_deprecates_goes_in_0_15` did).
 - **No result depends on the unit of time (or of a covariate).** A step,
   grid or probe is sized from the models (a typical life,
   `failure_time_scale`), never in absolute time, and a proportional

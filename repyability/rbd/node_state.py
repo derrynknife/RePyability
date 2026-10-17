@@ -16,18 +16,8 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
-from repyability.utils.deprecation import renamed, renamed_attribute
 
-#: The release that refuses ``phase``, renamed ``since_scheduled`` in 0.14
-#: (#350).
-_PHASE_REMOVAL = "0.15"
-_PHASE_WHY = (
-    "it is the time since the last scheduled replacement or test, and a "
-    "phased mission has phases of its own"
-)
-
-
-@dataclass(frozen=True, init=False)
+@dataclass(frozen=True)
 class NodeState:
     """The current condition of a single RBD node.
 
@@ -93,9 +83,6 @@ class NodeState:
         ``virtual_age`` now and ``since_failure``: give ``age=
         since_failure`` and ``virtual_age=virtual_age - since_failure``.
         The simulations take it.
-    phase : float, optional
-        Deprecated: ``since_scheduled``, which it is renamed (#350), as a
-        phased mission has phases of its own. Refused in 0.15.
 
     Raises
     ------
@@ -104,8 +91,6 @@ class NodeState:
         is negative or not finite, ``down_for`` or ``maintenance`` is given
         for a component that is alive, or another field is given with
         ``stationary``.
-    TypeError
-        If ``since_scheduled`` is given under both names.
 
     Notes
     -----
@@ -161,54 +146,6 @@ class NodeState:
     since_scheduled: Optional[float] = None
     stationary: bool = False
     virtual_age: Optional[float] = None
-
-    def __init__(
-        self,
-        age: float = 0.0,
-        alive: bool = True,
-        down_for: float = 0.0,
-        maintenance: bool = False,
-        since_scheduled: Optional[float] = None,
-        stationary: bool = False,
-        virtual_age: Optional[float] = None,
-        *,
-        phase: Optional[float] = None,
-    ) -> None:
-        if phase is not None:
-            if since_scheduled is not None:
-                raise TypeError(
-                    "NodeState takes since_scheduled alone: phase is its "
-                    "old name."
-                )
-            renamed(
-                "NodeState",
-                "phase",
-                "since_scheduled",
-                _PHASE_WHY,
-                removal=_PHASE_REMOVAL,
-            )
-            since_scheduled = phase
-        object.__setattr__(self, "age", age)
-        object.__setattr__(self, "alive", alive)
-        object.__setattr__(self, "down_for", down_for)
-        object.__setattr__(self, "maintenance", maintenance)
-        object.__setattr__(self, "since_scheduled", since_scheduled)
-        object.__setattr__(self, "stationary", stationary)
-        object.__setattr__(self, "virtual_age", virtual_age)
-        self.__post_init__()
-
-    @property
-    def phase(self) -> Optional[float]:
-        """``since_scheduled``, by its old name: deprecated, and refused in
-        0.15 (#350)."""
-        renamed_attribute(
-            "NodeState",
-            "phase",
-            "since_scheduled",
-            _PHASE_WHY,
-            removal=_PHASE_REMOVAL,
-        )
-        return self.since_scheduled
 
     def __post_init__(self) -> None:
         if self.age < 0:
