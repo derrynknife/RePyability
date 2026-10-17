@@ -83,6 +83,7 @@ from .helper_classes import (
     PerfectUnreliability,
     perfect_class,
 )
+from .joint_node import JointNode, as_node, is_joint
 from .load_sharing_node import LoadSharingModel
 from .modular import GraphStructure
 from .node_state import NodeState
@@ -361,12 +362,37 @@ def ccf_group_sensitivity(
     return out
 
 
+def _check_joint_state(node, model, state: NodeState) -> None:
+    """Refuse a state that gives a joint node an age other than its
+    prediction's: its reliability is from that age already, and a state's
+    age would condition it again."""
+    if not isinstance(model, JointNode) or not state.alive:
+        return
+    if not math.isclose(state.age, model.age, rel_tol=1e-12, abs_tol=0.0):
+        raise ValueError(
+            f"Node {node!r} is a joint model's unit, at age {model.age:g} "
+            f"now (its prediction's age), and its reliability is from "
+            f"then: a state of age {state.age:g} would condition it again. "
+            "Leave it out of the state (or give it its prediction's age, "
+            "or alive=False); for the unit at another age, predict again "
+            "with given= that age and its readings since."
+        )
+
+
 def _check_model(node, model) -> None:
     """Raise if a node's model is not one (it has no ``sf``, or it is a
     surpyval distribution itself, whose ``sf`` needs parameters, #233),
     saying what to give instead; a number most likely means a
     probability."""
     no_distribution(model, f"The model of node {node!r}")
+    if is_joint(model) and not isinstance(model, JointNode):
+        raise TypeError(
+            f"The model of node {node!r} is a surpyval JointModel, whose "
+            "survival is of a unit given its covariates, readings and age: "
+            "give the unit's prediction (joint_model.predict(Z, markers, "
+            "given)), or JointNode(joint_model, Z=..., markers=..., "
+            "age=...)."
+        )
     if is_degradation(model):
         check_life(model, f"The model of node {node!r}")
     if callable(getattr(model, "sf", None)):
@@ -433,6 +459,9 @@ class NonRepairableRBD(RBD):
       [`RepeatedStandbyNode`][repyability.RepeatedStandbyNode],
       [`RegressionNode`][repyability.RegressionNode] or another
       ``NonRepairableRBD`` nested as a single node;
+    - one unit of a fitted surpyval joint model (readings and failures),
+      given its readings: its ``DynamicPrediction`` (``predict``), or a
+      [`JointNode`][repyability.JointNode], whose reliability is from now;
     - [`PerfectReliability`][repyability.PerfectReliability] or
       [`PerfectUnreliability`][repyability.PerfectUnreliability].
 
@@ -624,8 +653,10 @@ class NonRepairableRBD(RBD):
         edges = list(edges)
         ccf_groups = as_groups(ccf_groups)
         # PerfectReliability() stands for the class (#232).
+        # A joint model's prediction is the JointNode of its unit.
         reliabilities = {
-            node: perfect_class(model) for node, model in reliabilities.items()
+            node: perfect_class(as_node(model))
+            for node, model in reliabilities.items()
         }
         self._init_args = {
             "edges": [tuple(e) for e in edges],
@@ -7012,6 +7043,7 @@ class NonRepairableRBD(RBD):
                     f"distribution components in this release; node {node!r} "
                     f"is a {type(self.reliabilities[node]).__name__}."
                 )
+            _check_joint_state(node, self.reliabilities[node], node_state)
         return state
 
     def _state_node_probabilities(self, x, state) -> Dict[Any, ArrayLike]:
@@ -7033,6 +7065,10 @@ class NonRepairableRBD(RBD):
                 node_probabilities[node_name] = np.atleast_1d(
                     PerfectUnreliability.sf(x)
                 )
+            elif isinstance(model, JointNode):
+                # Its reliability is from now already, at its age (which
+                # the state repeats, _check_joint_state).
+                node_probabilities[node_name] = np.atleast_1d(model.sf(x))
             else:
                 node_probabilities[node_name] = np.atleast_1d(
                     conditional_survival(model, x, node_state.age)

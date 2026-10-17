@@ -17,6 +17,7 @@ from repyability.rbd._model_utils import (
     never_fails,
 )
 from repyability.rbd.helper_classes import PerfectReliability, perfect_class
+from repyability.rbd.joint_node import NOT_REPAIRABLE, is_joint
 from repyability.rbd.results import FailureForecast
 from repyability.rbd.standby_node import StandbyModel
 from repyability.utils.checks import is_number, no_distribution, real_array
@@ -235,6 +236,8 @@ class NonRepairable:
             # is only simulated, and its sf refuses.
             self.model_parameterization = "standby"
             self.reliability_function = _scalar_sf(reliability)
+        elif is_joint(reliability):
+            raise ValueError(NOT_REPAIRABLE)
         elif reliability is PerfectReliability:
             raise ValueError(
                 "A NonRepairable's life must end, and PerfectReliability "

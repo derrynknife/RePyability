@@ -24,6 +24,7 @@ import pytest
 import repyability
 from repyability import (
     DegradingNode,
+    JointNode,
     LoadSharingModel,
     NonRepairable,
     NonRepairableRBD,
@@ -83,6 +84,7 @@ NONREPAIRABLE_NODES = {
     RepeatedNode,
     RepeatedStandbyNode,
     StandbyModel,
+    JointNode,
 }
 #: The node classes a RepairableRBD takes, as a component or its life.
 REPAIRABLE_NODES = {
@@ -159,6 +161,8 @@ def model_kinds(model) -> set:
         return {cls.__name__}
     if isinstance(model, NonRepairable):
         return {"NonRepairable"} | model_kinds(model.reliability)
+    if isinstance(model, JointNode):
+        return {"JointNode"}
     if is_mixture(model):
         return {"surpyval MixtureModel"}
     if is_degradation(model):

@@ -22,6 +22,7 @@ from repyability import (
     CCFGroup,
     DegradingNode,
     FaultTree,
+    JointNode,
     LoadSharingModel,
     NonRepairable,
     NonRepairableRBD,
@@ -101,6 +102,45 @@ def aft():
     x = np.array([50.0, 100.0, 150.0, 12.5, 25.0, 37.5])
     load = np.array([[1.0], [1.0], [1.0], [2.0], [2.0], [2.0]])
     return surv.ExponentialAFT.fit(x, Z=load)
+
+
+@_fitted_once
+def joint_model():
+    """A Weibull joint model (surpyval's WeibullJointPH) of a fleet of 60
+    pumps, each with a marker read every 10 hours and a load: a pump's
+    marker starts near 2 and rises by about 0.02 an hour, and a higher
+    marker or load shortens its life."""
+    from surpyval import ItemLifetime, SurpyvalData, WeibullJointPH
+
+    rng = np.random.default_rng(3)
+    items = []
+    for k in range(60):
+        start, rate = rng.normal(2.0, 0.4), rng.normal(0.02, 0.005)
+        load = float(k % 2)
+        life = 100 * rng.weibull(2.0) * np.exp(-0.9 * (start - 2) - 0.3 * load)
+        end = min(life, 120.0)
+        ages = np.arange(0.0, end, 10.0)
+        y = start + rate * ages + rng.normal(0, 0.2, ages.size)
+        outcome = "observed" if life < 120 else "right_censored"
+        items.append(
+            ItemLifetime(
+                k,
+                **{outcome: end},
+                markers=dict(zip(ages, y)),
+                covariates={"load": load},
+            )
+        )
+    return WeibullJointPH.fit(SurpyvalData.from_items(items))
+
+
+#: A pump of the joint model's fleet, 40 hours old, at load 1, whose
+#: marker has risen faster than most.
+PUMP = {"Z": {"load": 1.0}, "markers": {0: 2.1, 20: 2.5, 40: 3.0}, "age": 40}
+
+
+def joint_unit():
+    """The pump ``PUMP`` of ``joint_model``, as a JointNode."""
+    return JointNode(joint_model(), **PUMP)
 
 
 @_fitted_once
@@ -268,6 +308,7 @@ def nonrepairable_kinds():
         "regression": NonRepairableRBD(
             EDGES, {"a": RegressionNode(aft(), covariates=[1.0]), **rest}
         ),
+        "joint": NonRepairableRBD(EDGES, {"a": joint_unit(), **rest}),
         "fitted": NonRepairableRBD(EDGES, {"a": fitted_life(), **rest}),
         "fitted shares": NonRepairableRBD(EDGES, {"a": shares_life(), **rest}),
         "degradation process": NonRepairableRBD(EDGES, {"a": wear(), **rest}),

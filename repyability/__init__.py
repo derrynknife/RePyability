@@ -61,6 +61,7 @@ from repyability.rbd.helper_classes import (
     PerfectReliability,
     PerfectUnreliability,
 )
+from repyability.rbd.joint_node import JointNode
 from repyability.rbd.load_sharing_node import LoadSharingModel
 from repyability.rbd.node_state import NodeState
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
@@ -130,6 +131,7 @@ __all__ = [
     "PerfectUnreliability",
     "NodeState",
     "RegressionNode",
+    "JointNode",
     "BetaFactor",
     "MGL",
     "AlphaFactor",
