@@ -1,11 +1,12 @@
 """Deprecated names, arguments and calls.
 
-A deprecation gives one minor release's notice: what 0.15 deprecates goes
-in 0.16 (``NEXT_REMOVAL``). Each warns with a ``FutureWarning``, which
+A deprecation gives one minor release's notice: what 0.16 deprecates goes
+in 0.17 (``NEXT_REMOVAL``). Each warns with a ``FutureWarning``, which
 Python always shows, as the notice is short: an argument renamed
 (``renamed``; an attribute, ``renamed_attribute``), a result's value
 called that is now a property (``called``), or arguments a method ignores
-(``ignored``). 0.15 deprecates nothing.
+(``ignored``). 0.16 deprecates nothing, nor did 0.15, so 0.16 removes
+nothing.
 
 What 0.14 deprecated went in 0.15: ``NodeState``'s ``phase``, renamed
 ``since_scheduled`` (#350). What 0.13 deprecated went in 0.14:
@@ -31,8 +32,8 @@ import numpy as np
 
 from repyability.utils.wrappers import outside_level
 
-#: The release that removes what 0.15 deprecates.
-NEXT_REMOVAL = "0.16"
+#: The release that removes what 0.16 deprecates.
+NEXT_REMOVAL = "0.17"
 
 
 def _called_warning(name: str, removal: str) -> None:
