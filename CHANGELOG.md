@@ -9,6 +9,22 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+## [0.16] - 2026-10-31
+
+surpyval 0.26. RePyability is tested against surpyval 0.26 and needs it:
+0.26 removes the names 0.25 deprecated (`RecurrentEventData`,
+`EventHistoryData.items` and `get_times_to_first_events()`), none of
+which RePyability uses, and its new features (weights, Bayesian fits,
+distributional and spline regressions) leave the fitted models
+RePyability takes unchanged. Nothing was deprecated in 0.15, so nothing is
+removed.
+
+Behaviour changes: surpyval 0.26 is required.
+
+### Changed
+
+- surpyval 0.26 is required, the release this one is tested against.
+
 ## [0.15] - 2026-10-17
 
 surpyval 0.25, and a joint model in a diagram. A unit of a surpyval joint

@@ -4,9 +4,9 @@ Setup, branches, the checks a change needs, where tests go, pull requests,
 deprecations and releases are in [CONTRIBUTING.md](CONTRIBUTING.md); read it
 first. This file adds the internals and conventions it does not cover.
 
-**Versions (17 Oct 2026):** 0.14 is the latest release (PyPI, `v0.14`). 0.15
-is prepared on `dev` (`_version.py`, CHANGELOG dated 2026-10-17) and waits on
-the release pull request from `dev` into `main`. `dev` needs surpyval 0.25
+**Versions (31 Oct 2026):** 0.15 is the latest release (PyPI, `v0.15`). 0.16
+is prepared on `dev` (`_version.py`, CHANGELOG dated 2026-10-31) and waits on
+the release pull request from `dev` into `main`. `dev` needs surpyval 0.26
 or later.
 
 ## Architecture & scope
@@ -436,8 +436,8 @@ or later.
   `FutureWarning` through `repyability/utils/deprecation.py`). Each
   release's removals stay gone through `test_removed_in_0_12.py`,
   `_0_13.py`, `_0_14.py` and `_0_15.py` (`NodeState`'s `phase`, #350):
-  a removed argument raises `TypeError`. 0.15 deprecates nothing; what it
-  would deprecate goes in 0.16 (`NEXT_REMOVAL`). A new deprecation warns
+  a removed argument raises `TypeError`. 0.15 and 0.16 deprecate nothing;
+  what 0.16 would deprecate goes in 0.17 (`NEXT_REMOVAL`). A new deprecation warns
   through `deprecation.renamed`, `renamed_attribute`, `called` or
   `ignored`, with a test that fails once the version reaches its removal
   (as `test_what_0_14_deprecates_goes_in_0_15` did).
@@ -482,7 +482,9 @@ CONTRIBUTING.md. What it leaves to the maintainer's say:
 
 ## surpyval workarounds to remove
 
-surpyval 0.25 (the minimum) has the joint models a `JointNode` takes; 0.24
+surpyval 0.26 is the minimum (the release 0.16 is tested against; it
+removed what 0.25 deprecated, none of which RePyability used). 0.25 has
+the joint models a `JointNode` takes; 0.24
 gives a mixture a precise tail (`sf`, #671) and
 has `conditional_gaps` read a limited failure population's `lfp_p`, not a
 mixture's `p` (#626); 0.23 pickles its fits (#573), names the
