@@ -3237,3 +3237,86 @@ class TimelineSimulation(_ResultMapping):
             method=names("method"),
             start=first.start,
         )
+
+
+@dataclass
+class StressStrengthResult(_ResultMapping):
+    """The result of [`stress_strength`][repyability.stress_strength]: the
+    chance that a strength exceeds the stress (or the largest of ``n_loads``
+    stresses), ``R = P(strength > stress)``. Like the other result types it
+    is also a read-only mapping of its fields.
+
+    Attributes
+    ----------
+    reliability : float
+        ``R``, from the models as given.
+    failure_probability : float
+        ``1 - R``, the chance the stress reaches the strength. Worked out
+        from the strength's ``ff`` (or a closed form) rather than as
+        ``1 - R``, so that it is not lost to rounding when ``R`` is near
+        1; quadrature is accurate to about 1e-13 absolute.
+    reliability_index : float
+        The normal quantile of ``R`` (the "safety index"): the number of
+        standard deviations of a normal margin that would give ``R``. It
+        is infinite when ``R`` is 1 and ``-inf`` when it is 0.
+    n_loads : int
+        The number of independent stress applications the strength must
+        survive (1 for a single stress).
+    method : str
+        How ``R`` was found: ``"exact"`` (a closed form), ``"numerical"``
+        (quadrature) or ``"simulated"``.
+    standard_error : float or None
+        The Monte-Carlo standard error of ``R``; None unless simulated.
+    n_samples : int or None
+        The number of simulated strength and stress draws; None unless
+        simulated.
+    lower : float or None
+        The lower bound of ``R`` from the models' parameter uncertainty;
+        None unless ``uncertainty`` was asked for.
+    upper : float or None
+        The upper bound of ``R`` from the models' parameter uncertainty;
+        None unless ``uncertainty`` was asked for.
+    confidence : float or None
+        The confidence level of ``lower`` and ``upper``.
+    n_draws : int or None
+        The number of draws of the models' parameters behind the bounds.
+    """
+
+    reliability: float
+    failure_probability: float
+    reliability_index: float
+    n_loads: int
+    method: str
+    standard_error: Optional[float] = None
+    n_samples: Optional[int] = None
+    lower: Optional[float] = None
+    upper: Optional[float] = None
+    confidence: Optional[float] = None
+    n_draws: Optional[int] = None
+
+
+@dataclass
+class StressStrengthCurve(_ResultMapping):
+    """The result of
+    [`stress_strength_over_time`][repyability.stress_strength_over_time]:
+    the interference reliability of a strength that changes with age.
+
+    Attributes
+    ----------
+    times : numpy.ndarray
+        The ages, in the unit the models share.
+    reliability : numpy.ndarray
+        ``R(t) = P(strength at age t > stress)`` at each age.
+    failure_probability : numpy.ndarray
+        ``1 - R(t)``, worked out directly.
+    n_loads : int
+        The number of independent stress applications at each age.
+    method : str
+        ``"exact"`` if every age used a closed form, else ``"numerical"``.
+    """
+
+    times: Any
+    reliability: Any
+    failure_probability: Any
+    n_loads: int
+    method: str
