@@ -21,12 +21,16 @@ use cases, under the same numbers.
 | UC-1 | A system's expected maintenance work in each of a run of windows from its state | Answered by hand |
 | UC-2, UC-3, UC-4 | Tasks on dates and monthly rules: calendar only | Reliafy's |
 | UC-5 | A part's chance of failing, expected failures and their cost over a window, from its age | **Built**: `NonRepairable.failures` |
-| UC-6 | Right after a failure, the value of skipping the next planned replacement | **Built**: `NonRepairable.skip_next_replacement` |
+| UC-6 | Right after a failure, the value of skipping the next planned replacement; and, from any state, replace, defer, move to a shut or skip compared | **Built**: `NonRepairable.skip_next_replacement`, and `NonRepairable.compare_replacement_options` |
 | UC-7 | The cheapest replacement policy when replacing at a shut is cheaper than between shuts | Built as `replacement_policies`, then removed: UC-13 answers it |
 | UC-8 | Each policy's cost over a window from a state, and its spread | Answered by hand |
 | UC-9 | The cost in each of a run of windows from a state, and how often each outcome happens | Answered by hand |
 | UC-10 | Tasks by use on an operating schedule: calendar only | Reliafy's |
-| UC-11 | A part renewed at every service and at failure: its risk before each service, from its state, in running hours | Answered by hand |
+| UC-11 | A part renewed at every service and at failure: its risk before each service, from its state, in running hours | **Built**: `NonRepairable.renewal_forecast` |
+| UC-14 | The best visit interval and depth ratio for a layered package of visits | **Built**: `optimal_layered_visits` |
+| UC-15 | The cost and risk of letting a task slip by a tolerance | **Built**: `NonRepairable.slack_effect` |
+| UC-16 | The extra risk and cost of rounding a due replacement up to the next visit | **Built**: `NonRepairable.cost_of_waiting_for_visit` |
+| UC-17 | The risk added when a visit is missed and its work waits | **Built**: `NonRepairable.cost_of_missed_visit` (and `delay_effect`) |
 | UC-12 | When to replace this part next: now, at a scheduled outage, at a planned replacement, or at its failure? | **Built**: `NonRepairable.optimal_next_replacement` |
 | UC-13 | The long-run optimal replacement policy over a calendar of shuts with prices of their own | **Built**: `NonRepairable.optimal_calendar_policy` |
 
@@ -356,6 +360,24 @@ question here is the model-time one it becomes.)
     on the part (`NonRepairable`). Deferring, or moving to a shut, are
     UC-12's and UC-13's.
 
+- **Extended (compared from any state):**
+  `NonRepairable.compare_replacement_options(age, due_in, every, *,
+  defer_by=, shuts=, discount_rate=)` replaces the one-purpose
+  comparison with every option side by side, as present-value costs from
+  the part's age now, on a plan of fixed times: replace as planned,
+  replace now, defer by given amounts, move to a shut (a time and its own
+  price), or skip. Each is costed to the following planned replacement,
+  where every option has a new part in: `F_age(u) + exp(-r u) (price +
+  F_0(horizon - u))`, with `F_a(t)` a part `a` old's failures' discounted
+  cost (exact, a `RepairableRBD` component). For a new part it agrees with
+  `skip_next_replacement` to 1e-9 (the table above), and every option
+  matches a seeded simulation of that plan within four standard errors.
+  Replacements that reset (age replacement) are not compared here: the
+  options shift the later replacements, which `skip_next_replacement`
+  (`resets=True`) works out. This is the first RCM calculator
+  (`NonRepairable.compare_replacement_options` and `scheduled_replacement`
+  share its numbers).
+
 ### UC-7: "Replacing the bearing at a shut (every 180 days) costs $100, a planned replacement between shuts $150, and one at a failure $400. Which replacement policy is cheapest in the long run?"
 
 - **Status:** built as `replacement_policies(life, shut_every=,
@@ -565,7 +587,8 @@ and, through the operating schedule, how many running hours lie ahead
 (944 h to the end of the year, at 16 hours a weekday). Turning the
 answers back into dates is Reliafy's too.)
 
-- **Status:** answered by hand with today's RePyability; design to agree.
+- **Status:** built: `NonRepairable.renewal_forecast(window, every, *,
+  resets, age=, since_renewal=)` and `RenewalForecast` (see *As built*).
 - **Who asks, and why:** a planner whose part is renewed by the
   maintenance as well as at failures, so its risk starts again at each
   service: what is the risk before the next one, and is the plan right?
@@ -644,6 +667,22 @@ answers back into dates is Reliafy's too.)
   - **History in, risk out:** Reliafy's history gives the age and the
     time since the last service in running hours, RePyability the risk
     and cost in running hours, and the schedule turns them into dates.
+
+- **As built (UC-11):** `NonRepairable.renewal_forecast` takes the
+  window, the service interval, `resets` (said every time, as for UC-6:
+  `False` keeps the services to fixed times, block replacement; `True`
+  starts each interval at the last renewal, planned or not), the age and,
+  for fixed times, how far into the interval the part is. It gives the
+  chance of a failure before each service (the first from the age, each
+  later one from a part new at the service before: `1 - R(every)`), the
+  expected failures, renewals and cost over the window (a one-component
+  `RepairableRBD`, exact), the same without renewals, the plan's long-run
+  cost rate against running to failure and against the best age
+  replacement, and `worth_it`. The seal's numbers above are the test:
+  0.0024 and 0.0042, 0.00785 failures, 2 renewals, $407.06, 0.4076 a
+  hour against 0.1198 at the best age, 3,179 h. Its expected failures
+  match a seeded simulation of both plans (fixed and resetting) within
+  four standard errors.
 
 ### UC-12: "The bearing is 200 days old. Replacing it now costs $150; a planned replacement any time costs $150 too, and one at a failure $400. Outages are scheduled in 150 and 330 days, at which replacing it costs $100. Do I replace it now?"
 
@@ -929,3 +968,65 @@ answers back into dates is Reliafy's too.)
       2.5) bearing given to the Weibull(365, 2) one simulated at a cost
       rate 19% off the one worked out for it, silently.
 
+
+
+### UC-14: "A cheap task every visit and a deeper one every few visits: how often should we visit, and how deep?"
+
+- **Status:** built: `optimal_layered_visits(light, deep, *, visit_cost=,
+  max_ratio=)` and `layered_cost_rate`.
+- **Who asks, and why:** a planner bundling the tasks of several parts
+  into visits that each cost something: more visits mean fewer failures
+  but more visit cost, and a part that lives long should be renewed at
+  every few visits only.
+- **What they know:** two parts with lives and prices, what a visit costs
+  by itself.
+- **What they want back:** the visit interval, the depth ratio `k` (the
+  deep part at every `k`-th visit), the cost rate and its parts.
+- **How it is solved:** the cost rate of a part renewed every `P` is
+  `(planned + unplanned M(P)) / P` with `M` the renewal count (exact,
+  `NonRepairable.failures`); the package is `visit_cost / T +
+  rate_light(T) + rate_deep(k T)`; for each `k` the best `T` is found on
+  a grid and refined. One layer without a visit cost is the optimal
+  block-replacement interval.
+- **Checks:** the cost rate against the closed form for exponential
+  lives and a seeded simulation of the plan; the optimum and each
+  ratio's best rate against a dense scan using a renewal function solved
+  here by a separate discretisation (within 0.4%).
+- **Learned:** with a cheap failure, ratio 1 wins; the ratio only pays
+  when the light part's failures are dear (a failure of 1,000 against a
+  renewal of 20 gives a ratio of 10 at every 30 days). Layers are
+  independent here: a failure replaces its part but does not move the
+  visits.
+
+### UC-15: "This task is due every 300 days but may slip by up to 60. What does the slip cost?"
+
+- **Status:** built: `NonRepairable.slack_effect(interval, slack)`.
+- **How it is solved:** age replacement at `T` and at `T + slack`:
+  the chance of a failure first and the long-run cost rate
+  (`(planned R + unplanned (1 - R)) / integral of R`), their
+  differences, and the rate averaged over a uniform lateness.
+- **Checks:** both rates against a seeded simulation of the cycles;
+  the risk against the survival function.
+- **Learned:** below the optimal age a slip can lower the cost rate
+  (a negative `added_cost_rate`): the tolerance is then free.
+
+### UC-16: "The replacement comes due in 10 days but the crew visits weekly. What does waiting for the visit cost?"
+
+- **Status:** built: `NonRepairable.cost_of_waiting_for_visit(age, due_in,
+  visits)`, with `visits` an `Opportunity` or a list of times.
+- **How it is solved:** the first visit at or after the due time, then
+  `delay_effect` from the due time to it: one cycle to the replacement,
+  `cost(u) = planned exp(-r u) S(u) + unplanned (1 - exp(-r u) S(u) - r
+  M(u))`, `S(u) = R(age + u) / R(age)`.
+- **Checks:** the exponential closed form (`added_cost = (unplanned -
+  planned) (exp(-lam d1) - exp(-lam d2))`) and a seeded simulation of
+  the cycle, discounted and not.
+
+### UC-17: "If we miss the visit, how much risk does the delay add?"
+
+- **Status:** built: `NonRepairable.cost_of_missed_visit(age, visit_in,
+  next_visit_in, miss_probability=)` and `delay_effect`.
+- **How it is solved:** as UC-16 with the next visit as the new time,
+  weighted by the chance the visit is missed for the expected added risk
+  and cost. Skipping and deferring a replacement for a whole interval
+  are UC-6's; this is one cycle.
