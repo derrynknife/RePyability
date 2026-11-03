@@ -98,6 +98,18 @@ from repyability.maintenance._calendar import (  # noqa: E402
     Calendar,
     Opportunity,
 )
+from repyability.maintenance._decisions import (  # noqa: E402
+    FailureFinding,
+    OnCondition,
+    RunToFailure,
+    ScheduledReplacement,
+    failure_finding,
+    on_condition,
+    optimal_failure_finding_interval,
+    optimal_on_condition_interval,
+    run_to_failure,
+    scheduled_replacement,
+)
 from repyability.maintenance._next import (  # noqa: E402
     NextReplacement,
     ReplacementChoice,

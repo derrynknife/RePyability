@@ -11,6 +11,10 @@ other release, fixes included, the minor.
 
 ### Added
 
+- The numbers behind each maintenance decision for a failure mode, in model
+  time: `run_to_failure`, `scheduled_replacement`, `failure_finding` (with
+  `optimal_failure_finding_interval`, by a target on the mean unavailability
+  or by cost) and `on_condition` (with `optimal_on_condition_interval`).
 - Maintenance from a part's state, in model time (`NonRepairable`):
   `compare_replacement_options` (replace as planned, now, deferred, moved
   to a shut, or skipped, as present-value costs, extending
