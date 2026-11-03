@@ -158,6 +158,7 @@ Which analyses each model type has (the method; — where it has none):
 | Top event probability | — | — | `top_event_probability` | — | — |
 | Each phase's failure probability | — | — | — | — | `phase_failure_probabilities` |
 | **Availability and outages** | | | | | |
+| Reliability and mean time to the first failure | — | `first_failure_sf` | — | — | — |
 | Long-run availability | — | `mean_availability` | — | — | — |
 | Each node's availability | — | `node_availability` | — | — | — |
 | Availability over time | — | `point_availability` | — | — | — |
@@ -181,6 +182,7 @@ Which analyses each model type has (the method; — where it has none):
 | Each path set's probability | `path_set_probabilities` | `path_set_probabilities` | — | — | — |
 | Cut sets ranked by probability | — | — | `ranked_cut_sets` | — | — |
 | Irrelevant components | `find_irrelevant_components` | `find_irrelevant_components` | — | — | — |
+| Structure sizes (counts, depth, core) | `structure_summary` | `structure_summary` | — | — | — |
 | Convert to and from an RBD | — | — | `to_rbd` | — | — |
 | Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — |
 | Capacity over time | — | `point_capacity` | — | — | — |

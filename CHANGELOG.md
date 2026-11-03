@@ -9,6 +9,44 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- The numbers behind each maintenance decision for a failure mode, in model
+  time: `run_to_failure`, `scheduled_replacement`, `failure_finding` (with
+  `optimal_failure_finding_interval`, by a target on the mean unavailability
+  or by cost) and `on_condition` (with `optimal_on_condition_interval`).
+- Maintenance from a part's state, in model time (`NonRepairable`):
+  `compare_replacement_options` (replace as planned, now, deferred, moved
+  to a shut, or skipped, as present-value costs, extending
+  `skip_next_replacement`), `renewal_forecast` (a part renewed at every
+  service: the chance it fails before each, expected failures, renewals
+  and cost over a window, against running to failure and the best age
+  replacement), and the calculators `delay_effect`,
+  `cost_of_waiting_for_visit`, `cost_of_missed_visit` and `slack_effect`
+  (the risk and cost of a replacement done late), with
+  `optimal_layered_visits` and `layered_cost_rate` (the best visit
+  interval and depth ratio of a layered package of visits).
+- `Repairable.overhaul_replace_cost_rate()` and
+  `optimal_overhaul_replace_policy()` (and the `OverhaulReplacePolicy`
+  result): a two-level policy that repairs failures minimally, overhauls
+  every `interval` (taking off part of the unit's age) and replaces the
+  unit after `cycles` periods. The long-run cost rate is exact for an
+  analytic (`cif`) model.
+- `RepairableRBD.first_failure_sf()` and `mean_time_to_first_failure()`: the
+  probability that the system runs to `t` without a failure, and the mean
+  time to its first failure, which differ from a non-repairable diagram's
+  when repairs can come before the first system failure. Exact for series
+  structures (any lives) and for exponential lives and repairs (any repair
+  crews; a Markov chain with the system-down states absorbing, followed by
+  uniformization), from new or from the components' states; the rest is
+  simulated on request with `method="simulate"`.
+- `RBD.structure_summary()`, `count_minimal_path_sets()` and
+  `count_minimal_cut_sets()` (and the `StructureSummary` result): the
+  number of components, modules, how deeply they nest, the size of the
+  core that does not reduce, and the numbers of minimal path and cut sets,
+  counted without listing them. These make public what callers had to
+  reach through the private `_decomposition()`.
+
 ## [0.16] - 2026-10-31
 
 surpyval 0.26. RePyability is tested against surpyval 0.26 and needs it:

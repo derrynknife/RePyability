@@ -93,17 +93,84 @@ class FailureLimitPolicy(_ResultMapping):
     cost_rate: float
 
 
+@dataclass(frozen=True)
+class OverhaulReplacePolicy(_ResultMapping):
+    """An optimal repair, overhaul and replace policy for a single component.
+
+    Returned by the ``optimal_overhaul_replace_policy()`` method of
+    [`Repairable`][repyability.Repairable]: failures are repaired minimally,
+    the unit is overhauled every ``interval`` (an overhaul takes off part of
+    its age) and replaced by a new unit after ``cycles`` such periods. It is
+    an immutable (frozen) dataclass, read as a mapping too, with
+    ``to_dict()`` for JSON.
+
+    Attributes
+    ----------
+    interval : float
+        The time between overhauls, in the time units of the component's
+        model. ``inf`` when overhauling never pays.
+    cycles : int
+        The number of periods of ``interval`` between replacements: the
+        unit is overhauled ``cycles - 1`` times, and replaced at the end of
+        the ``cycles``-th period. ``1`` means no overhaul: replace every
+        ``interval``.
+    cost_rate : float
+        The long-run expected cost per unit time under the policy.
+
+    Examples
+    --------
+    >>> from surpyval.recurrent import CrowAMSAA
+    >>> from repyability import Repairable
+    >>> unit = Repairable(CrowAMSAA.from_params([100.0, 2.5]))
+    >>> unit.set_repair_and_overhaul_costs(cr=1.0, co=5.0)
+    >>> policy = unit.optimal_overhaul_replace_policy(
+    ...     overhaul_factor=0.6, replacement_cost=20.0, max_cycles=5
+    ... )
+    >>> policy.cycles, round(policy.interval, 1), round(policy.cost_rate, 4)
+    (2, 177.7, 0.1172)
+    """
+
+    interval: float
+    cycles: int
+    cost_rate: float
+
+
 # After the policies, which the modules it imports may import from here.
 from repyability.maintenance._calendar import (  # noqa: E402
     Calendar,
     Opportunity,
 )
+from repyability.maintenance._decisions import (  # noqa: E402
+    FailureFinding,
+    OnCondition,
+    RunToFailure,
+    ScheduledReplacement,
+    failure_finding,
+    on_condition,
+    optimal_failure_finding_interval,
+    optimal_on_condition_interval,
+    run_to_failure,
+    scheduled_replacement,
+)
 from repyability.maintenance._next import (  # noqa: E402
     NextReplacement,
     ReplacementChoice,
+)
+from repyability.maintenance._options import (  # noqa: E402
+    DelayEffect,
+    OptionValue,
+    RenewalForecast,
+    ReplacementComparison,
+    SlackEffect,
 )
 from repyability.maintenance._replacement import (  # noqa: E402
     CalendarPolicy,
     PlannedReplacement,
 )
 from repyability.maintenance._skip import SkipValue  # noqa: E402
+from repyability.maintenance._visits import (  # noqa: E402
+    LayeredVisits,
+    RatioChoice,
+    layered_cost_rate,
+    optimal_layered_visits,
+)

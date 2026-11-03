@@ -359,6 +359,155 @@ minimal_repair_time_to_nth_failure(alpha=1500, beta=2.0, n=5)   # -> 3271.4
 
 It is `alpha · Γ(n + 1/beta) / Γ(n)`.
 
+### Repair, overhaul and replace in cycles
+
+Real plants often work in two levels. Failures are repaired on the spot, which leaves the unit as bad as it was. Every so often the unit is **overhauled**, which makes it younger but not new. After a few overhauls it is **replaced**, which clears the age the overhauls could not. The questions are how often to overhaul (`interval`) and how many periods to run before replacing (`cycles`).
+
+The overhaul takes off a share of the unit's age: `overhaul_factor` is the share it *keeps*, from 0 (as good as new) up to, not including, 1 (no effect). The unit's failures follow a power-law or other intensity model (an analytic model, such as `CrowAMSAA`), and repairs, overhauls and replacements take no time:
+
+```python
+from surpyval.recurrent import CrowAMSAA
+
+pump = Repairable(CrowAMSAA.from_params([100.0, 2.5]))
+pump.set_repair_and_overhaul_costs(cr=1.0, co=5.0)     # a repair, an overhaul
+
+# Replace every 280 time units, no overhauls (cost 20 for a replacement):
+pump.overhaul_replace_cost_rate(280.0, 1, 0.6, 20.0)   # -> 0.1183
+# Overhaul every 178, replace every second overhaul period:
+pump.overhaul_replace_cost_rate(177.7, 2, 0.6, 20.0)   # -> 0.1172
+
+best = pump.optimal_overhaul_replace_policy(0.6, 20.0, max_cycles=5)
+best.interval, best.cycles   # -> (177.70161320528848, 2)
+```
+
+Behind the numbers: period `j` starts at the age `v` the overhauls have left (`v_0 = 0`, `v_j = f (v_(j-1) + T)` for the share `f` kept), and expects `Λ(v + T) − Λ(v)` failures, `Λ` being the model's cumulative intensity. A replacement cycle of `K` periods then costs `cr` times the repairs, plus `(K − 1)` overhauls and one replacement, and lasts `K·T`; the long-run cost rate is that cost over that length. It is exact, with no simulation. With one period (`cycles=1`) it is the periodic replacement of `optimal_overhaul_policy`, at the replacement cost.
+
+Take the result as a comparison of a few policies, not a sharp optimum. The cost rate is flat, here the best of two periods saves about 1% over replacing every 280, and it need not fall steadily with the number of periods: it can have a local minimum at a few periods and a slightly lower value at many (overhaul for ever, never replace). A result equal to `max_cycles` may mean more periods pay, so try a few limits. A unit that does not wear out is never overhauled (`interval` is `inf`, `cycles` is 1). The result is an [`OverhaulReplacePolicy`][repyability.OverhaulReplacePolicy]. It needs an analytic (`cif`) model: a simulation-backed imperfect-repair model counts failures from new only and is refused.
+
+## From the part's state: options, delays and renewals (`NonRepairable`)
+
+These answer questions about one part, asked from its age now, in the
+part's time unit (turning dates into times is yours). All are exact except
+where said.
+
+**Which option is cheapest?** The plan replaces the part on fixed times,
+the next `due_in` from now and the following one `every` later.
+`compare_replacement_options` costs each way of handling the next
+replacement to the following one: do it as planned, now, deferred, moved to
+a shut with its own price, or skipped.
+
+```python
+import surpyval as surv
+from repyability import NonRepairable
+
+bearing = NonRepairable(
+    surv.Weibull.from_params([365.0, 2.0]), planned_cost=150.0, unplanned_cost=400.0
+)
+choice = bearing.compare_replacement_options(
+    200.0, 30.0, 180.0, defer_by=[30.0], shuts={"shut": (90.0, 100.0)}
+)
+[(o.name, round(o.cost)) for o in choice.options]
+# -> [('replace', 277), ('now', 269), ('defer by 30', 289), ('shut', 257), ('skip', 274)]
+choice.best.name   # -> 'shut'
+```
+
+For a new part this agrees with `skip_next_replacement`.
+
+**What does a delay cost?** `delay_effect(age, planned_in, done_in)` is the
+extra chance the part fails first, and the extra expected cost, if the
+replacement planned for `planned_in` is done at `done_in`.
+`cost_of_waiting_for_visit` rounds the due time up to the next visit of an
+`Opportunity` (or a list of times); `cost_of_missed_visit` is the delay to
+the next visit, weighted by the chance the visit is missed; `slack_effect`
+is the long-run cost and risk of letting a task due at age `T` be done up
+to `slack` later.
+
+```python
+late = bearing.delay_effect(200.0, 10.0, 40.0)
+round(late.added_failure_probability, 4)   # -> 0.0934
+round(late.added_cost, 2)                  # -> 23.36
+```
+
+**A part renewed at every service.** `renewal_forecast` gives the chance
+the part fails before each service, and the expected failures, renewals and
+cost over a window, from its age and how far it is into the interval, and
+says whether renewing at every service beats running to failure and the
+best age replacement.
+
+```python
+seal = NonRepairable(
+    surv.Weibull.from_params([6000.0, 2.2]), planned_cost=200.0, unplanned_cost=900.0
+)
+plan = seal.renewal_forecast(944.0, 500.0, resets=False, age=340.0)
+[round(r, 4) for r in plan.risk_before_service]   # -> [0.0024, 0.0042]
+round(plan.expected_cost, 2), plan.worth_it       # -> (407.06, False)
+```
+
+**A layered package of visits.** A cheap task at every visit and a deeper
+one at every `k`-th: `optimal_layered_visits(light, deep, visit_cost=...)`
+finds the visit interval and the ratio `k` that cost least in the long run.
+The visits keep to fixed times, a part that fails is replaced at once, and
+with one layer and no visit cost it is the best block-replacement interval.
+
+```python
+from repyability import optimal_layered_visits
+
+filter_ = NonRepairable(
+    surv.Weibull.from_params([90.0, 3.0]), planned_cost=20.0, unplanned_cost=1000.0
+)
+pump = NonRepairable(
+    surv.Weibull.from_params([700.0, 2.5]), planned_cost=400.0, unplanned_cost=2500.0
+)
+plan = optimal_layered_visits(filter_, pump, visit_cost=50.0)
+plan.ratio, round(plan.interval, 1), round(plan.cost_rate, 3)   # -> (10, 29.9, 5.836)
+```
+
+## The four ways of managing a failure mode (`NonRepairable`)
+
+For one failure mode, four numbers sets compare the usual tasks: how often
+it fails, what it costs a unit of time, and how much risk is left. All are
+exact, in the part's time unit.
+
+```python
+from repyability import (
+    NonRepairable, failure_finding, on_condition,
+    optimal_failure_finding_interval, run_to_failure, scheduled_replacement,
+)
+
+run_to_failure(bearing).cost_rate                    # ~> 1.2366  per day
+plan = scheduled_replacement(bearing)                # at the cheapest age
+round(plan.interval), round(plan.cost_rate, 4)       # -> (298, 1.117)
+plan.worth_it                                        # -> True
+```
+
+**Failure finding** is for a protective device whose failure nobody sees
+until it is tested. A test finds a failed device and repairs it as new. The
+mean unavailability is the average chance it is failed when it is needed;
+with a demand rate it gives the rate of multiple failures (a demand met by
+a failed device).
+
+```python
+valve = NonRepairable(surv.Exponential.from_params([0.001]))   # per year
+test = failure_finding(valve, 2.0, demand_rate=0.02)
+round(test.mean_unavailability, 6)   # -> 0.000999   near lambda * tau / 2
+optimal_failure_finding_interval(valve, target_unavailability=0.001).interval  # ~> 2.0
+```
+
+Without a target, `optimal_failure_finding_interval` takes the test, repair
+and consequence costs and the demand rate, and finds the cheapest interval.
+
+**On condition** is for a failure that gives warning: the P-F interval is
+the time from the warning to the failure. Inspect every so often, finding the
+warning with some probability each time:
+
+```python
+on_condition(30.0, 20.0, onset_rate=1 / 400).detection_probability   # -> 1.0
+on_condition(30.0, 60.0, onset_rate=1 / 400).detection_probability   # -> 0.5
+```
+
+`pf_interval` may be a fitted surpyval model instead of a number, and
+`optimal_on_condition_interval` finds the cheapest interval from the prices.
+
 ## Results
 
 Both policy types are small typed results:

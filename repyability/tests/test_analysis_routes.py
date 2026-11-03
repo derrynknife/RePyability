@@ -241,6 +241,10 @@ REPAIRABLE_CALLS = {
     "total_cost": lambda rbd: rbd.total_cost(1000.0),
     "spares_demand": lambda rbd: rbd.spares_demand(200.0),
     "spares_stock": lambda rbd: rbd.spares_stock(50.0, fill_rate=0.9),
+    "first_failure_sf": lambda rbd: rbd.first_failure_sf([10.0, 200.0]),
+    "mean_time_to_first_failure": (
+        lambda rbd: rbd.mean_time_to_first_failure()
+    ),
     "point_availability": lambda rbd: rbd.point_availability([10.0, 200.0]),
     "point_unavailability": (
         lambda rbd: rbd.point_unavailability([10.0, 200.0])
@@ -495,6 +499,9 @@ def test_the_report_covers_every_public_analysis(cls):
         "get_min_path_sets",
         "minimal_cut_sets",
         "minimal_path_sets",
+        "structure_summary",
+        "count_minimal_cut_sets",
+        "count_minimal_path_sets",
         "get_non_analytic_nodes",
         "is_analytically_solvable",
         "is_system_working",

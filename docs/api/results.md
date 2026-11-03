@@ -8,6 +8,8 @@
 
 ::: repyability.CapacityDistribution
 
+::: repyability.StructureSummary
+
 ::: repyability.Criticalities
 
 ::: repyability.UpDownImportance
@@ -66,9 +68,33 @@
 
 ::: repyability.FailureLimitPolicy
 
+::: repyability.OverhaulReplacePolicy
+
 ::: repyability.FailureForecast
 
 ::: repyability.SkipValue
+
+::: repyability.ReplacementComparison
+
+::: repyability.OptionValue
+
+::: repyability.DelayEffect
+
+::: repyability.SlackEffect
+
+::: repyability.RenewalForecast
+
+::: repyability.LayeredVisits
+
+::: repyability.RatioChoice
+
+::: repyability.RunToFailure
+
+::: repyability.ScheduledReplacement
+
+::: repyability.FailureFinding
+
+::: repyability.OnCondition
 
 ::: repyability.NextReplacement
 

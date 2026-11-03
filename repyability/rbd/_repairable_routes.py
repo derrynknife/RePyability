@@ -18,6 +18,7 @@ from repyability.rbd import (
     _crews,
     _curves,
     _event_loop,
+    _first_failure,
     _intervals,
     _long_run,
     _repairable_allocation,
@@ -256,6 +257,15 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             "mission_unavailability",
         ),
         _curves._over_time(rbd),
+    )
+    first_failure = r.refusal(partial(_first_failure._require_exact, rbd))
+    give(
+        ("first_failure_sf", "mean_time_to_first_failure"),
+        (
+            r.refused(first_failure)
+            if first_failure
+            else r.AnalysisRoute(r.NUMERICAL, _first_failure.exact_route(rbd))
+        ),
     )
     give(
         ("availability_rate",),

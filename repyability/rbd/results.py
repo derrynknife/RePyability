@@ -129,6 +129,94 @@ class _ResultMapping(Mapping):
         return tuple(f.name for f in dataclasses.fields(cast(Any, self)))
 
 
+@dataclass(frozen=True)
+class StructureSummary(_ResultMapping):
+    """How big a diagram's structure is, found without listing its path or
+    cut sets.
+
+    Returned by [`RBD.structure_summary`][repyability.RBD.structure_summary].
+    A diagram is first reduced to *modules*: series chains, parallel
+    groups and k-out-of-n groups, each independent of the rest. A
+    series-parallel diagram reduces to one module. Otherwise something is
+    left over, a *core* (a bridge is the smallest), over the modules and
+    single nodes around it, and only the core needs the heavier methods.
+    The summary says how much of the diagram is each, and how many path
+    and cut sets there are, which can be far too many to list. It is an
+    immutable dataclass, read as a mapping too, with ``to_dict()`` for
+    JSON.
+
+    Attributes
+    ----------
+    n_components : int
+        The components that can decide whether the system works (the
+        relevant nodes), leaving out the input and output nodes, any
+        junction (a node that never fails) and the irrelevant nodes.
+    n_irrelevant : int
+        The components in no minimal path set, whose state never changes
+        whether the system works (see
+        [`find_irrelevant_components`][repyability.RBD.find_irrelevant_components]).
+    always_works : bool
+        True when the input is joined to the output by an edge that never
+        fails, so there is nothing to fail.
+    series_parallel : bool
+        True when the whole diagram reduces to modules, with no core left.
+    n_modules : int
+        The series, parallel and k-out-of-n groups the reduction found
+        (nested ones counted each), not counting single nodes.
+    module_depth : int
+        How deeply the modules nest: 0 for a single component, 1 for one
+        group of components, and one more for each group held in another.
+        A core counts as one more level over the terms it joins.
+    core_size : int
+        The modules and single nodes the core joins, 0 for a
+        series-parallel diagram.
+    core_path_sets : int
+        The core's minimal path sets (over those modules and nodes), 0 for
+        a series-parallel diagram.
+    n_path_sets : int or None
+        The minimal path sets of the whole diagram. ``None`` when the
+        diagram is too meshed to work out exactly.
+    n_cut_sets : int or None
+        The minimal cut sets of the whole diagram. ``None`` when the
+        diagram is too meshed to work out exactly.
+    counts_exact : bool
+        True when ``n_path_sets`` and ``n_cut_sets`` are exact. A
+        component drawn in more than one place (a repeated node) can make
+        two counted sets the same set, or one hold another, so then they
+        are upper bounds. False also when they are ``None``.
+    too_meshed : str or None
+        Why the diagram could not be worked out exactly, if it could not;
+        ``None`` otherwise.
+
+    Examples
+    --------
+    A diagram with a cross-link that is not series-parallel: the core joins
+    three paths, and there are three minimal path sets.
+
+    >>> from repyability import RBD
+    >>> rbd = RBD(
+    ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "d"),
+    ...      ("a", "e"), ("e", "d"), ("c", "t"), ("d", "t")]
+    ... )
+    >>> info = rbd.structure_summary()
+    >>> info.n_components, info.series_parallel, info.n_path_sets
+    (5, False, 3)
+    """
+
+    n_components: int
+    n_irrelevant: int
+    always_works: bool
+    series_parallel: bool
+    n_modules: int
+    module_depth: int
+    core_size: int
+    core_path_sets: int
+    n_path_sets: Optional[int]
+    n_cut_sets: Optional[int]
+    counts_exact: bool
+    too_meshed: Optional[str]
+
+
 @dataclass
 class EventsByWindow(_ResultMapping):
     """What a system is expected to do in each of a run of consecutive
@@ -144,19 +232,27 @@ class EventsByWindow(_ResultMapping):
 
     Attributes
     ----------
-    starts, ends : numpy.ndarray
-        Each window's start and end, in the models' time unit.
+    starts : numpy.ndarray
+        Each window's start, in the models' time unit.
+    ends : numpy.ndarray
+        Each window's end.
     system_failures : numpy.ndarray
         The expected system failures in each window.
     system_planned_outages : numpy.ndarray
         The expected planned outages of the system in each window.
     system_downtime : numpy.ndarray
         The expected time the system is down in each window.
-    node_failures, node_corrective, node_preventive : dict
-        Each component's expected failures, corrective actions and
-        preventive replacements in each window (an array per component).
-    node_inspections, node_downtime : dict
-        Each component's expected tests and down time in each window.
+    node_failures : dict
+        Each component's expected failures in each window (an array per
+        component).
+    node_corrective : dict
+        Each component's expected corrective actions in each window.
+    node_preventive : dict
+        Each component's expected preventive replacements in each window.
+    node_inspections : dict
+        Each component's expected tests in each window.
+    node_downtime : dict
+        Each component's expected down time in each window.
 
     Examples
     --------
@@ -212,8 +308,10 @@ class CostByWindow(_ResultMapping):
 
     Attributes
     ----------
-    starts, ends : numpy.ndarray
-        Each window's start and end.
+    starts : numpy.ndarray
+        Each window's start.
+    ends : numpy.ndarray
+        Each window's end.
     mean : numpy.ndarray
         The exact expected cost of each window.
     simulated_mean : numpy.ndarray
@@ -244,23 +342,48 @@ class CostByWindow(_ResultMapping):
     percentiles: np.ndarray
 
     def percentile(self, q: float) -> np.ndarray:
-        """Each window's ``q``-th percentile of cost (``q`` from 0 to
-        100)."""
+        """Each window's ``q``-th percentile of cost.
+
+        Parameters
+        ----------
+        q : float
+            The percentile, from 0 to 100.
+        """
         return np.percentile(self.samples, q, axis=1)
 
     def total_percentile(self, q: float) -> float:
         """The ``q``-th percentile of the cost of all the windows
-        together: not the sum of the windows' (ranges do not add)."""
+        together: not the sum of the windows' (ranges do not add).
+
+        Parameters
+        ----------
+        q : float
+            The percentile, from 0 to 100.
+        """
         return float(np.percentile(self.samples.sum(axis=0), q))
 
     def probability_above(self, budget: float) -> np.ndarray:
-        """Each window's chance of costing more than ``budget``."""
+        """Each window's chance of costing more than ``budget``.
+
+        Parameters
+        ----------
+        budget : float
+            The cost to exceed.
+        """
         return np.mean(self.samples > budget, axis=1)
 
     def outcomes(self, window: int, decimals: int = 6) -> list:
         """The distinct costs of a window (counted from 0) and how often
         each happened, cheapest first: ``[{"cost": ..., "share": ...}]``
-        (costs rounded to ``decimals`` places)."""
+        (costs rounded to ``decimals`` places).
+
+        Parameters
+        ----------
+        window : int
+            The window, counted from 0.
+        decimals : int, optional
+            The places costs are rounded to, by default 6.
+        """
         costs, counts = np.unique(
             np.round(self.samples[window], decimals), return_counts=True
         )
