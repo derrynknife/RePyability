@@ -11,6 +11,12 @@ other release, fixes included, the minor.
 
 ### Added
 
+- `Repairable.overhaul_replace_cost_rate()` and
+  `optimal_overhaul_replace_policy()` (and the `OverhaulReplacePolicy`
+  result): a two-level policy that repairs failures minimally, overhauls
+  every `interval` (taking off part of the unit's age) and replaces the
+  unit after `cycles` periods. The long-run cost rate is exact for an
+  analytic (`cif`) model.
 - `RepairableRBD.first_failure_sf()` and `mean_time_to_first_failure()`: the
   probability that the system runs to `t` without a failure, and the mean
   time to its first failure, which differ from a non-repairable diagram's
