@@ -70,6 +70,20 @@
 
 ::: repyability.SkipValue
 
+::: repyability.ReplacementComparison
+
+::: repyability.OptionValue
+
+::: repyability.DelayEffect
+
+::: repyability.SlackEffect
+
+::: repyability.RenewalForecast
+
+::: repyability.LayeredVisits
+
+::: repyability.RatioChoice
+
 ::: repyability.NextReplacement
 
 ::: repyability.ReplacementChoice

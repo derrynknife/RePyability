@@ -2818,9 +2818,16 @@ class RepairableRBD(RBD):
         t_simulation : float, optional
             With ``method="simulate"``: how long each simulation runs, by
             default the largest time in ``x``.
-        mc_samples, seed, engine
-            With ``method="simulate"`` only: as for
+        mc_samples : int, optional
+            With ``method="simulate"`` only: the number of simulations, as
+            for
             [`simulate_timelines`][repyability.RepairableRBD.simulate_timelines].
+        seed : int, optional
+            With ``method="simulate"`` only: the seed, as for
+            ``simulate_timelines``.
+        engine : {"auto", "python", "numba"}, optional
+            With ``method="simulate"`` only: the engine, as for
+            ``simulate_timelines``.
 
         Returns
         -------
@@ -2898,8 +2905,12 @@ class RepairableRBD(RBD):
             runs. A simulation with no failure by then counts as
             ``t_simulation``, so the estimate is a lower bound (and a
             warning says how many), unless nearly all of them fail.
-        mc_samples, seed, engine
-            With ``method="simulate"`` only.
+        mc_samples : int, optional
+            With ``method="simulate"`` only: the number of simulations.
+        seed : int, optional
+            With ``method="simulate"`` only: the seed.
+        engine : {"auto", "python", "numba"}, optional
+            With ``method="simulate"`` only: the engine.
         confidence : float, optional
             The confidence level of the simulated estimate's interval.
 

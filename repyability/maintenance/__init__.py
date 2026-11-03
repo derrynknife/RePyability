@@ -144,8 +144,21 @@ from repyability.maintenance._next import (  # noqa: E402
     NextReplacement,
     ReplacementChoice,
 )
+from repyability.maintenance._options import (  # noqa: E402
+    DelayEffect,
+    OptionValue,
+    RenewalForecast,
+    ReplacementComparison,
+    SlackEffect,
+)
 from repyability.maintenance._replacement import (  # noqa: E402
     CalendarPolicy,
     PlannedReplacement,
 )
 from repyability.maintenance._skip import SkipValue  # noqa: E402
+from repyability.maintenance._visits import (  # noqa: E402
+    LayeredVisits,
+    RatioChoice,
+    layered_cost_rate,
+    optimal_layered_visits,
+)

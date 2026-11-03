@@ -384,6 +384,84 @@ Behind the numbers: period `j` starts at the age `v` the overhauls have left (`v
 
 Take the result as a comparison of a few policies, not a sharp optimum. The cost rate is flat, here the best of two periods saves about 1% over replacing every 280, and it need not fall steadily with the number of periods: it can have a local minimum at a few periods and a slightly lower value at many (overhaul for ever, never replace). A result equal to `max_cycles` may mean more periods pay, so try a few limits. A unit that does not wear out is never overhauled (`interval` is `inf`, `cycles` is 1). The result is an [`OverhaulReplacePolicy`][repyability.OverhaulReplacePolicy]. It needs an analytic (`cif`) model: a simulation-backed imperfect-repair model counts failures from new only and is refused.
 
+## From the part's state: options, delays and renewals (`NonRepairable`)
+
+These answer questions about one part, asked from its age now, in the
+part's time unit (turning dates into times is yours). All are exact except
+where said.
+
+**Which option is cheapest?** The plan replaces the part on fixed times,
+the next `due_in` from now and the following one `every` later.
+`compare_replacement_options` costs each way of handling the next
+replacement to the following one: do it as planned, now, deferred, moved to
+a shut with its own price, or skipped.
+
+```python
+import surpyval as surv
+from repyability import NonRepairable
+
+bearing = NonRepairable(
+    surv.Weibull.from_params([365.0, 2.0]), planned_cost=150.0, unplanned_cost=400.0
+)
+choice = bearing.compare_replacement_options(
+    200.0, 30.0, 180.0, defer_by=[30.0], shuts={"shut": (90.0, 100.0)}
+)
+[(o.name, round(o.cost)) for o in choice.options]
+# -> [('replace', 277), ('now', 269), ('defer by 30', 289), ('shut', 257), ('skip', 274)]
+choice.best.name   # -> 'shut'
+```
+
+For a new part this agrees with `skip_next_replacement`.
+
+**What does a delay cost?** `delay_effect(age, planned_in, done_in)` is the
+extra chance the part fails first, and the extra expected cost, if the
+replacement planned for `planned_in` is done at `done_in`.
+`cost_of_waiting_for_visit` rounds the due time up to the next visit of an
+`Opportunity` (or a list of times); `cost_of_missed_visit` is the delay to
+the next visit, weighted by the chance the visit is missed; `slack_effect`
+is the long-run cost and risk of letting a task due at age `T` be done up
+to `slack` later.
+
+```python
+late = bearing.delay_effect(200.0, 10.0, 40.0)
+round(late.added_failure_probability, 4)   # -> 0.0934
+round(late.added_cost, 2)                  # -> 23.36
+```
+
+**A part renewed at every service.** `renewal_forecast` gives the chance
+the part fails before each service, and the expected failures, renewals and
+cost over a window, from its age and how far it is into the interval, and
+says whether renewing at every service beats running to failure and the
+best age replacement.
+
+```python
+seal = NonRepairable(
+    surv.Weibull.from_params([6000.0, 2.2]), planned_cost=200.0, unplanned_cost=900.0
+)
+plan = seal.renewal_forecast(944.0, 500.0, resets=False, age=340.0)
+[round(r, 4) for r in plan.risk_before_service]   # -> [0.0024, 0.0042]
+round(plan.expected_cost, 2), plan.worth_it       # -> (407.06, False)
+```
+
+**A layered package of visits.** A cheap task at every visit and a deeper
+one at every `k`-th: `optimal_layered_visits(light, deep, visit_cost=...)`
+finds the visit interval and the ratio `k` that cost least in the long run.
+The visits keep to fixed times, a part that fails is replaced at once, and
+with one layer and no visit cost it is the best block-replacement interval.
+
+```python
+from repyability import optimal_layered_visits
+
+filter_ = NonRepairable(
+    surv.Weibull.from_params([90.0, 3.0]), planned_cost=20.0, unplanned_cost=1000.0
+)
+pump = NonRepairable(
+    surv.Weibull.from_params([700.0, 2.5]), planned_cost=400.0, unplanned_cost=2500.0
+)
+plan = optimal_layered_visits(filter_, pump, visit_cost=50.0)
+plan.ratio, round(plan.interval, 1), round(plan.cost_rate, 3)   # -> (10, 29.9, 5.836)
+```
+
 ## Results
 
 Both policy types are small typed results:

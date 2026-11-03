@@ -9,3 +9,7 @@
 ::: repyability.Opportunity
 
 ::: repyability.Calendar
+
+::: repyability.optimal_layered_visits
+
+::: repyability.layered_cost_rate

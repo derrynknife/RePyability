@@ -11,6 +11,17 @@ other release, fixes included, the minor.
 
 ### Added
 
+- Maintenance from a part's state, in model time (`NonRepairable`):
+  `compare_replacement_options` (replace as planned, now, deferred, moved
+  to a shut, or skipped, as present-value costs, extending
+  `skip_next_replacement`), `renewal_forecast` (a part renewed at every
+  service: the chance it fails before each, expected failures, renewals
+  and cost over a window, against running to failure and the best age
+  replacement), and the calculators `delay_effect`,
+  `cost_of_waiting_for_visit`, `cost_of_missed_visit` and `slack_effect`
+  (the risk and cost of a replacement done late), with
+  `optimal_layered_visits` and `layered_cost_rate` (the best visit
+  interval and depth ratio of a layered package of visits).
 - `Repairable.overhaul_replace_cost_rate()` and
   `optimal_overhaul_replace_policy()` (and the `OverhaulReplacePolicy`
   result): a two-level policy that repairs failures minimally, overhauls
