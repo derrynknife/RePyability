@@ -243,6 +243,35 @@ pair.mission_unavailability(8760.0)   # -> 6.391e-17  from new, over a year
     importance measure is averaged over (#235). Each runs from 0, every
     component new, unless a `state` is given.
 
+## Reliability until the first failure (exact)
+
+Availability answers "is it up at time `t`?" Often the question is harder: "will it run to `t` **without a single system failure**?" A repair in between does not help a customer who has already seen an outage. This is the **reliability of the first failure**, `first_failure_sf`, and its mean, `mean_time_to_first_failure` (the mean time to the first system failure, MTTFF).
+
+For a redundant system it is not the non-repairable diagram's reliability: a unit that fails can be repaired while its partner carries the load, so the pair lasts longer than the same pair without repairs. For a series system the two agree, since the first failure of any component is the system's.
+
+```python
+rate, repair = 0.01, 0.1          # per hour
+part = {
+    "reliability": surv.Exponential.from_params([rate]),
+    "repairability": surv.Exponential.from_params([repair]),
+}
+duo = RepairableRBD(
+    [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")], {"a": part, "b": part}
+)
+duo.first_failure_sf([100.0, 300.0, 1000.0])   # array([0.8663, 0.6345, 0.2133])
+duo.mean_time_to_first_failure()               # -> 650.0
+(3 * rate + repair) / (2 * rate**2)            # -> 650.0   closed form
+```
+
+The last line is the textbook mean for a repaired pair, `(3 lam + mu) / (2 lam^2)`. Without repairs the same pair would last `1.5 / lam` = 150 hours on average.
+
+It is exact in two cases:
+
+- **A series structure**: the product of each component's survival, from its state. Any life distributions work, and the repair times do not matter.
+- **Exponential lives and repairs** (or instant repairs), with any `repair_crews`: the components' states form a Markov chain, as for [repair crews](#repair-crews). The states in which the system is down are made absorbing, so the reliability is the chain's chance of not being absorbed by `t`, and the mean time is one linear solve.
+
+Anything else (Weibull lives in a redundant structure, scheduled maintenance, tests, standby and common-cause groups, nested diagrams) refuses and says why. `method="simulate"` then estimates it from simulated histories (the share with no failure by `t`; the mean needs a `t_simulation` and is a lower bound if some runs do not fail by then). Pass `state` to start from the plant as it is now, as `point_availability` does; a unit that is down is in a repair.
+
 ## Expected events over a window (exact)
 
 From the same curves, the expected number of system failures in a window

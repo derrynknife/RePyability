@@ -267,6 +267,29 @@ list(redundant_b.get_all_path_sets())      # [['s', 'a', 't'], ['s', 'b', 'a', '
 
 Path and cut sets depend only on the structure and are computed once per RBD.
 
+### How big is the structure?
+
+A large diagram can have far more path or cut sets than you want to list.
+`structure_summary()` tells you the size first, from the same reduction
+that makes the probabilities fast: the reduction folds series chains,
+parallel groups and k-out-of-n groups into *modules*, and what it cannot
+fold (a bridge, say) is the *core*. A diagram that folds completely is
+series-parallel.
+
+```python
+info = two_of_three.structure_summary()
+info.n_components, info.series_parallel   # -> (4, True)
+info.n_path_sets, info.n_cut_sets         # -> (3, 4)
+```
+
+The summary also gives how deeply the modules nest (`module_depth`), how
+many modules there are (`n_modules`), and the size of the core
+(`core_size`, `core_path_sets`; both 0 for a series-parallel diagram).
+`count_minimal_path_sets()` and `count_minimal_cut_sets()` give just the
+counts. Each count is exact unless a component is drawn in more than one
+place (`counts_exact` says), when it is an upper bound. A diagram too
+meshed to work out exactly gives `None` and says why in `too_meshed`.
+
 ## Is the system time-dependent, and is it exact?
 
 - `is_fixed` is `True` when every node is a fixed probability. Then time plays

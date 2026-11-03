@@ -46,13 +46,19 @@ from scipy.special import logit, logsumexp, softmax
 from repyability.rbd import bdd
 from repyability.rbd import capacity as _capacity
 from repyability.rbd.modular import (
+    NODE,
     Decomposition,
     GraphStructure,
     decompose,
     fold,
 )
 from repyability.rbd.rbd_graph import RBDGraph
-from repyability.rbd.results import CapacityDistribution, _json_key, plain
+from repyability.rbd.results import (
+    CapacityDistribution,
+    StructureSummary,
+    _json_key,
+    plain,
+)
 from repyability.rbd.routes import Refused
 from repyability.rbd.shannon import (
     _evaluate_shannon_plan,
@@ -1106,6 +1112,129 @@ class RBD:
         if isinstance(structure, GraphStructure):
             raise NotImplementedError(structure.reason)
         return set(self.nodes) - structure.nodes - self._junctions()
+
+    def structure_summary(self) -> StructureSummary:
+        """How big the structure is, without listing its path or cut sets:
+        how many components decide the system, how the diagram reduces to
+        modules (series, parallel and k-out-of-n groups), how deeply they
+        nest, how big the part that does not reduce (the core) is, and how
+        many minimal path and cut sets there are.
+
+        The counts matter for a large diagram, where listing the sets with
+        [`minimal_path_sets`][repyability.RBD.minimal_path_sets] may take
+        too long or too much memory: they tell you beforehand. They
+        come from the same reduction as the probabilities, junctions
+        (nodes that never fail) folded in as always working, as the sets
+        are. A diagram too meshed to work out exactly gives ``None`` for
+        the counts and says why in ``too_meshed``.
+
+        Returns
+        -------
+        StructureSummary
+            The sizes. See [`StructureSummary`][repyability.StructureSummary]
+            for each field.
+
+        Examples
+        --------
+        Two pumps in parallel, in series with a valve:
+
+        >>> from repyability import RBD
+        >>> rbd = RBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")]
+        ... )
+        >>> info = rbd.structure_summary()
+        >>> info.n_components, info.series_parallel, info.module_depth
+        (3, True, 2)
+        >>> info.n_path_sets, info.n_cut_sets
+        (2, 2)
+        """
+        structure = self._set_structure()
+        if isinstance(structure, GraphStructure):
+            return StructureSummary(
+                n_components=len(structure.nodes),
+                n_irrelevant=0,
+                always_works=False,
+                series_parallel=False,
+                n_modules=0,
+                module_depth=0,
+                core_size=0,
+                core_path_sets=0,
+                n_path_sets=None,
+                n_cut_sets=None,
+                counts_exact=False,
+                too_meshed=structure.reason,
+            )
+        core = structure.core if structure.root is None else None
+        core_terms = {c for chosen in core or [] for c in chosen}
+        return StructureSummary(
+            n_components=len(structure.nodes),
+            n_irrelevant=len(self.find_irrelevant_components()),
+            always_works=structure.always_works,
+            series_parallel=structure.root is not None
+            or structure.always_works,
+            n_modules=sum(1 for t in structure.terms if t[0] != NODE),
+            module_depth=structure.depth(),
+            core_size=len(core_terms),
+            core_path_sets=len(core or []),
+            n_path_sets=structure.count_sets(True),
+            n_cut_sets=structure.count_sets(False),
+            counts_exact=not self._component_aliases(),
+            too_meshed=None,
+        )
+
+    def count_minimal_path_sets(self) -> int:
+        """How many minimal path sets the diagram has, counted without
+        listing them: see
+        [`structure_summary`][repyability.RBD.structure_summary], which
+        also says whether the count is exact (``counts_exact``).
+
+        Returns
+        -------
+        int
+            The number of minimal path sets.
+
+        Raises
+        ------
+        NotImplementedError
+            If the diagram is too meshed to work out exactly.
+
+        Examples
+        --------
+        >>> from repyability import RBD
+        >>> rbd = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+        ... )
+        >>> rbd.count_minimal_path_sets()
+        2
+        """
+        return self._set_structure().count_sets(True)
+
+    def count_minimal_cut_sets(self) -> int:
+        """How many minimal cut sets the diagram has, counted without
+        listing them: see
+        [`structure_summary`][repyability.RBD.structure_summary].
+
+        Returns
+        -------
+        int
+            The number of minimal cut sets.
+
+        Raises
+        ------
+        NotImplementedError
+            If the diagram is too meshed to work out exactly.
+
+        Examples
+        --------
+        >>> from repyability import RBD
+        >>> rbd = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+        ... )
+        >>> rbd.count_minimal_cut_sets()
+        2
+        """
+        return self._set_structure().count_sets(False)
 
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
         """Iterate over every path from the input node to the output node.
