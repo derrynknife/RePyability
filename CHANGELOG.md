@@ -9,6 +9,15 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- `Repairable.overhaul_replace_cost_rate()` and
+  `optimal_overhaul_replace_policy()` (and the `OverhaulReplacePolicy`
+  result): a two-level policy that repairs failures minimally, overhauls
+  every `interval` (taking off part of the unit's age) and replaces the
+  unit after `cycles` periods. The long-run cost rate is exact for an
+  analytic (`cif`) model.
+
 ## [0.16] - 2026-10-31
 
 surpyval 0.26. RePyability is tested against surpyval 0.26 and needs it:

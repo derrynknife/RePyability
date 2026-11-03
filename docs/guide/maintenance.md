@@ -359,6 +359,31 @@ minimal_repair_time_to_nth_failure(alpha=1500, beta=2.0, n=5)   # -> 3271.4
 
 It is `alpha · Γ(n + 1/beta) / Γ(n)`.
 
+### Repair, overhaul and replace in cycles
+
+Real plants often work in two levels. Failures are repaired on the spot, which leaves the unit as bad as it was. Every so often the unit is **overhauled**, which makes it younger but not new. After a few overhauls it is **replaced**, which clears the age the overhauls could not. The questions are how often to overhaul (`interval`) and how many periods to run before replacing (`cycles`).
+
+The overhaul takes off a share of the unit's age: `overhaul_factor` is the share it *keeps*, from 0 (as good as new) up to, not including, 1 (no effect). The unit's failures follow a power-law or other intensity model (an analytic model, such as `CrowAMSAA`), and repairs, overhauls and replacements take no time:
+
+```python
+from surpyval.recurrent import CrowAMSAA
+
+pump = Repairable(CrowAMSAA.from_params([100.0, 2.5]))
+pump.set_repair_and_overhaul_costs(cr=1.0, co=5.0)     # a repair, an overhaul
+
+# Replace every 280 time units, no overhauls (cost 20 for a replacement):
+pump.overhaul_replace_cost_rate(280.0, 1, 0.6, 20.0)   # -> 0.1183
+# Overhaul every 178, replace every second overhaul period:
+pump.overhaul_replace_cost_rate(177.7, 2, 0.6, 20.0)   # -> 0.1172
+
+best = pump.optimal_overhaul_replace_policy(0.6, 20.0, max_cycles=5)
+best.interval, best.cycles   # -> (177.70161320528848, 2)
+```
+
+Behind the numbers: period `j` starts at the age `v` the overhauls have left (`v_0 = 0`, `v_j = f (v_(j-1) + T)` for the share `f` kept), and expects `Λ(v + T) − Λ(v)` failures, `Λ` being the model's cumulative intensity. A replacement cycle of `K` periods then costs `cr` times the repairs, plus `(K − 1)` overhauls and one replacement, and lasts `K·T`; the long-run cost rate is that cost over that length. It is exact, with no simulation. With one period (`cycles=1`) it is the periodic replacement of `optimal_overhaul_policy`, at the replacement cost.
+
+Take the result as a comparison of a few policies, not a sharp optimum. The cost rate is flat, here the best of two periods saves about 1% over replacing every 280, and it need not fall steadily with the number of periods: it can have a local minimum at a few periods and a slightly lower value at many (overhaul for ever, never replace). A result equal to `max_cycles` may mean more periods pay, so try a few limits. A unit that does not wear out is never overhauled (`interval` is `inf`, `cycles` is 1). The result is an [`OverhaulReplacePolicy`][repyability.OverhaulReplacePolicy]. It needs an analytic (`cif`) model: a simulation-backed imperfect-repair model counts failures from new only and is refused.
+
 ## Results
 
 Both policy types are small typed results:

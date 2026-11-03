@@ -62,6 +62,8 @@
 
 ::: repyability.FailureLimitPolicy
 
+::: repyability.OverhaulReplacePolicy
+
 ::: repyability.FailureForecast
 
 ::: repyability.SkipValue
