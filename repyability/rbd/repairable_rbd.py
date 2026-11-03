@@ -69,6 +69,7 @@ from repyability.rbd import (
     _crews,
     _curves,
     _event_loop,
+    _first_failure,
     _intervals,
     _long_run,
     _repairable_allocation,
@@ -2759,6 +2760,175 @@ class RepairableRBD(RBD):
             working_nodes=working_nodes,
             broken_nodes=broken_nodes,
             method=method,
+        )
+
+    def first_failure_sf(
+        self,
+        x,
+        state=None,
+        method: str = "exact",
+        t_simulation: Optional[float] = None,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        engine: str = "auto",
+    ):
+        """The probability that the system runs to each time ``x`` without
+        a failure: the reliability of the first system failure.
+
+        This is not the non-repairable diagram's reliability. A component
+        of a redundant system can fail and be repaired while its partner
+        keeps the system up, so a repaired pair lasts longer than the same
+        pair without repairs. In a series structure no repair can come
+        before the first failure, and the two agree. (The availability,
+        [`point_availability`][repyability.RepairableRBD.point_availability],
+        is the probability the system is up *at* ``t``, whether or not it
+        failed and was repaired before.)
+
+        It is exact where the model allows:
+
+        - **a series structure** (every component alone can fail the
+          system): the product of the components' survival from their
+          states, for any life distributions (repair times do not matter);
+        - **exponential lives and repairs** (or instant repairs), with any
+          number of ``repair_crews``: the Markov chain of the components'
+          states, with the states the system is down in made absorbing,
+          followed by uniformization (to about 1e-13).
+
+        Everything else (other lives or repairs in a redundant structure,
+        scheduled maintenance, tests of hidden failures, standby groups,
+        common-cause groups, nested diagrams) refuses and points to
+        ``method="simulate"``, which reads the first failures off
+        [`simulate_timelines`][repyability.RepairableRBD.simulate_timelines]:
+        the share of simulations with no failure by each time.
+
+        Parameters
+        ----------
+        x : float or array-like
+            Times from 0 (or from ``state``).
+        state : dict or str, optional
+            Start from the components' current states rather than new, as
+            for
+            [`point_availability`][repyability.RepairableRBD.point_availability]:
+            ``{node: NodeState}``, or ``"stationary"``. A component that
+            is down (``alive=False``) is in a repair. If the system is
+            down at the start, the reliability is 0. By default every
+            component is new.
+        method : {"exact", "simulate"}, optional
+            Exact by default; ``"simulate"`` estimates it.
+        t_simulation : float, optional
+            With ``method="simulate"``: how long each simulation runs, by
+            default the largest time in ``x``.
+        mc_samples, seed, engine
+            With ``method="simulate"`` only: as for
+            [`simulate_timelines`][repyability.RepairableRBD.simulate_timelines].
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The probability of no system failure by each time, in ``x``'s
+            shape.
+
+        Raises
+        ------
+        NotImplementedError
+            If the exact values do not cover the diagram (the message says
+            why), or the chain's rates are too far apart to follow.
+        ValueError
+            If a time is negative or not finite, or an option is passed
+            that ``method`` does not use.
+
+        Examples
+        --------
+        A pair of exponential units (failure rate 0.01 per hour, repair
+        rate 0.1 per hour), either keeping the system up:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> unit = {
+        ...     "reliability": surv.Exponential.from_params([0.01]),
+        ...     "repairability": surv.Exponential.from_params([0.1]),
+        ... }
+        >>> pair = RepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {"a": unit, "b": unit},
+        ... )
+        >>> round(pair.first_failure_sf(100.0), 4)
+        0.8663
+        >>> round(pair.mean_time_to_first_failure(), 1)
+        650.0
+        """
+        return _first_failure.first_failure_sf(
+            self, x, state, method, t_simulation, mc_samples, seed, engine
+        )
+
+    def mean_time_to_first_failure(
+        self,
+        state=None,
+        method: str = "exact",
+        t_simulation: Optional[float] = None,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        engine: str = "auto",
+        confidence: float = 0.95,
+    ):
+        """The mean time until the first system failure.
+
+        In plain terms: start the system and wait for it to fail for the
+        first time. How long, on average? Repairs of the components
+        count: a repair that finishes before the partner fails keeps the
+        system going. It is the area under
+        [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf],
+        which has the routes: exact for a series structure and for
+        exponential lives and repairs (one linear solve over the Markov
+        chain's up states), and ``method="simulate"`` for the rest.
+
+        For a pair of exponential units in parallel with one repair crew,
+        the mean time to the first failure is ``(3 lam + mu) / (2 lam^2)``,
+        with ``lam`` the failure rate and ``mu`` the repair rate.
+
+        Parameters
+        ----------
+        state : dict or str, optional
+            As for
+            [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf].
+        method : {"exact", "simulate"}, optional
+            Exact by default.
+        t_simulation : float, optional
+            With ``method="simulate"``, required: how long each simulation
+            runs. A simulation with no failure by then counts as
+            ``t_simulation``, so the estimate is a lower bound (and a
+            warning says how many), unless nearly all of them fail.
+        mc_samples, seed, engine
+            With ``method="simulate"`` only.
+        confidence : float, optional
+            The confidence level of the simulated estimate's interval.
+
+        Returns
+        -------
+        float or ConfidenceInterval
+            The mean time (in the models' unit); with
+            ``method="simulate"`` its
+            [`ConfidenceInterval`][repyability.ConfidenceInterval].
+
+        Raises
+        ------
+        NotImplementedError, ValueError
+            As for
+            [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf].
+
+        Examples
+        --------
+        See [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf].
+        """
+        return _first_failure.mean_time_to_first_failure(
+            self,
+            state,
+            method,
+            t_simulation,
+            mc_samples,
+            seed,
+            engine,
+            confidence,
         )
 
     def point_availability(

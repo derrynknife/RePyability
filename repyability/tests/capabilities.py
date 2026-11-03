@@ -74,6 +74,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
     (
         "Availability and outages",
         [
+            (
+                "Reliability and mean time to the first failure",
+                ("first_failure_sf", "mean_time_to_first_failure"),
+            ),
             ("Long-run availability", ("mean_availability",)),
             ("Each node's availability", ("node_availability",)),
             (

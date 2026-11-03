@@ -9,6 +9,17 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- `RepairableRBD.first_failure_sf()` and `mean_time_to_first_failure()`: the
+  probability that the system runs to `t` without a failure, and the mean
+  time to its first failure, which differ from a non-repairable diagram's
+  when repairs can come before the first system failure. Exact for series
+  structures (any lives) and for exponential lives and repairs (any repair
+  crews; a Markov chain with the system-down states absorbing, followed by
+  uniformization), from new or from the components' states; the rest is
+  simulated on request with `method="simulate"`.
+
 ## [0.16] - 2026-10-31
 
 surpyval 0.26. RePyability is tested against surpyval 0.26 and needs it:
