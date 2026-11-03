@@ -320,6 +320,20 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         if unpriced
         else (window if rbd.has_costs else acquisition_only)
     )
+    # The net present value is the window's costs, discounted, less the
+    # discounted expected time up: it is as exact as the worse of them.
+    uptime = out["mission_availability"]
+    if uptime.route == r.REFUSED:
+        out["expected_npv"] = uptime
+    elif rbd.has_costs:
+        out["expected_npv"] = (
+            out["expected_cost"]
+            if out["expected_cost"].route == r.REFUSED
+            or uptime.route == r.EXACT
+            else (window if window.route == r.NUMERICAL else uptime)
+        )
+    else:
+        out["expected_npv"] = uptime
     # A group's members' MTTF and MTTR are their group's: the
     # availability allocations hold them, and a member's copies join its
     # group.

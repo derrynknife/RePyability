@@ -303,6 +303,67 @@ costs it saves come later: it can change which design wins (see the
 [fourth pump train](#whole-trains) below, which no longer pays at 15% a
 year). The cost rates and the simulated costs stay undiscounted.
 
+### Net present value
+
+A plan is judged by what it leaves you with, not only by what it costs.
+`expected_npv(horizon, discount_rate=, value_rate=)` gives the **net present
+value**: what the system earns while it works (`value_rate` per unit time),
+less every cost, each counted at what it is worth now. It is the average over
+every way the failures could fall, worked out exactly with no simulation, from
+the same expected events and expected time up as `expected_cost` and
+`mission_availability`: each cost is discounted at its own time (a block
+replacement at its exact time, not in the middle of a year), and the value is
+discounted as it is earned. The acquisition cost is paid at the start. It does
+not say how much a bad run could lose: that needs the simulated distribution.
+
+```python
+npv = line.expected_npv(87600.0, discount_rate=seven, value_rate=120.0, periods=10)
+npv.cost                # -> 114528.4   the same present value as expected_cost(...).total
+npv.value               # -> 7563068.0  120 per hour while the pump works
+npv.npv                 # -> 7448539.5
+npv.undiscounted_npv    # -> 10257843.3  the same ten years, not discounted
+```
+
+The **equivalent annual cost**, `eac`, is the steady cost per unit time over
+the horizon that is worth the same as all the costs (the annuity form:
+`cost / ((1 − e^(−r·H)) / r)`, in the models' unit of time). It is the figure
+to compare plans of different lives. With no discounting it is the total cost
+over the horizon divided by its length, and over a long horizon it approaches
+`expected_cost_rate()`.
+
+```python
+npv.eac * 8760          # -> 15760.9   a year, for the ten
+line.expected_npv(1e7).eac   # -> 1.487   undiscounted and long: the cost rate, 1.4851, and the purchase
+```
+
+`periods` (a number of equal periods, or the ends of the periods in the
+models' time) cuts the answer into a **cash-flow table**, `npv.cash_flows`:
+one row for each period, category (repair, replace, preventive, inspection,
+downtime, set-up, acquisition and `"value"`) and component, with its present
+value and its undiscounted amount, costs negative and value positive, so the
+present values add to the `npv`. It is for applying your own tax,
+depreciation and financial-year conventions: which period is which year is
+yours to say. Start from the components' current states with `state=`, as for
+`expected_cost`.
+
+```python
+npv.cash_flows[3]["category"]   # 'value'
+sum(row["present_value"] for row in npv.cash_flows)   # -> 7448539.5
+```
+
+For one part replaced at an age or at a failure, over for ever,
+`NonRepairable.age_replacement_value(age, discount_rate=)` gives the net
+present value (Fox, 1966) and the equivalent annual cost in closed form. At a
+discount rate of 0 the equivalent annual cost is `cost_rate(age)`.
+
+```python
+from repyability import NonRepairable
+bearing = NonRepairable(surv.Weibull.from_params([1000.0, 2.5]),
+                        planned_cost=1.0, unplanned_cost=5.0)
+bearing.age_replacement_value(493.0).eac                    # -> 0.003462
+bearing.age_replacement_value(493.0, discount_rate=seven).eac * 8760   # -> 30.3
+```
+
 ### Buying redundancy
 
 A redundant copy is bought once and then runs: it fails, is repaired and

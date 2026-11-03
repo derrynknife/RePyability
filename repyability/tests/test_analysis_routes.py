@@ -255,6 +255,9 @@ REPAIRABLE_CALLS = {
     "expected_failures": lambda rbd: rbd.expected_failures([10.0, 200.0]),
     "expected_events": lambda rbd: rbd.expected_events(200.0),
     "expected_cost": lambda rbd: rbd.expected_cost(200.0),
+    "expected_npv": lambda rbd: rbd.expected_npv(
+        200.0, discount_rate=0.01, value_rate=1.0, periods=2
+    ),
     "point_capacity": lambda rbd: rbd.point_capacity([10.0, 200.0]),
     "mission_capacity": lambda rbd: rbd.mission_capacity(200.0),
     "availability": lambda rbd: rbd.availability(200.0, mc_samples=20, seed=1),

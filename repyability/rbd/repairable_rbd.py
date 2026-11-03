@@ -49,6 +49,7 @@ from repyability.rbd.results import (
     CostResult,
     ExpectedCost,
     ExpectedEvents,
+    ExpectedNPV,
     Lever,
     MaintenancePlan,
     RateBreakdown,
@@ -72,6 +73,7 @@ from repyability.rbd import (
     _first_failure,
     _intervals,
     _long_run,
+    _npv,
     _repairable_allocation,
     _repairable_capacity,
     _repairable_importance,
@@ -3653,6 +3655,143 @@ class RepairableRBD(RBD):
             method=method,
             state=state,
             discount_rate=discount_rate,
+        )
+
+    def expected_npv(
+        self,
+        horizon,
+        *,
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        periods=None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+        state=None,
+    ) -> ExpectedNPV:
+        """The expected net present value of running the system for
+        ``horizon``, from new or from a state: what it earns while it
+        works, less what it costs, each counted at what it is worth now.
+        Exact, with no simulation.
+
+        In plain terms: a cost or an earning ``t`` from now counts for
+        ``exp(-discount_rate * t)`` of itself. By the linearity of
+        averages, the expected present value of a cost charged at events
+        is its price times the discounted expected number of events, and of
+        a value earned per unit time the discounted expected time up. So
+        the answer needs only what ``expected_cost`` and
+        ``point_availability`` already give exactly: costs are those of
+        ``expected_cost(discount_rate=...)``, each event discounted at its
+        own time (a block replacement or a test at its exact time, not in
+        the middle of a period), and the value is ``value_rate`` times the
+        integral of ``exp(-discount_rate * t)`` times the system's point
+        availability. The acquisition cost is paid at the start. It is the
+        average over the ways the failures could fall: its spread needs a
+        simulation.
+
+        The equivalent annual cost (``eac``) is the steady cost per unit
+        of time over the horizon worth the same as all the costs, so plans
+        of different horizons compare. With no discounting it is the total
+        cost over the horizon divided by it, which, over a horizon long
+        compared with the components' cycles, approaches
+        ``expected_cost_rate`` (plus the acquisition cost spread over the
+        horizon).
+
+        The result has a cash-flow table by period, category and
+        component, each amount with its present value and undiscounted, to
+        apply your own tax or financial-year conventions: the periods are
+        stretches of the model's time (dates are for the caller).
+
+        Parameters
+        ----------
+        horizon : float
+            The length of time to value, more than 0, in the component
+            models' unit.
+        discount_rate : float, optional
+            The continuous discount rate per unit time of the component
+            models, as for ``total_cost``, by default 0 (undiscounted):
+            for an annual rate ``i`` with models in hours,
+            ``math.log(1 + i) / 8760``.
+        value_rate : float, optional
+            What the system earns per unit time while it works, at least
+            0, by default 0 (costs alone). Constant in this version.
+        periods : int or array-like, optional
+            The periods of the cash-flow table: a number of equal periods
+            across the horizon, or the increasing ends of the periods, the
+            last the horizon. By default one period.
+        working_nodes : Collection[Hashable], optional
+            Nodes that always work, as for ``expected_cost``, by default
+            None.
+        broken_nodes : Collection[Hashable], optional
+            Nodes that are always failed, as for ``expected_cost``, by
+            default None.
+        method : str, optional
+            Evaluate the structure function from the minimal path sets
+            (``"p"`` or ``"paths"``, the default) or the cut sets (``"c"``
+            or ``"cuts"``); both give the same result.
+        state : dict or str, optional
+            Start from the components' current states rather than new, as
+            for ``expected_cost``. By default None: every component new at
+            0.
+
+        Returns
+        -------
+        ExpectedNPV
+            The net present value, its value and cost, the equivalent
+            annual cost, the undiscounted totals, the cost by category and
+            component, and the cash-flow table.
+
+        Raises
+        ------
+        ValueError
+            If ``horizon``, ``discount_rate``, ``value_rate`` or
+            ``periods`` is invalid; if nothing is priced and there is no
+            ``value_rate`` (as ``routes.Refused``); or as for
+            ``expected_cost``.
+        NotImplementedError
+            As for ``point_availability`` and ``expected_cost``.
+
+        Examples
+        --------
+        A pump earning 10 per hour while it works, failing on average
+        every 1000 hours, repaired in 10 at 500 per repair, bought for
+        20,000, valued over 5 years of 8,760 hours at 8% a year:
+
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "p"), ("p", "t")],
+        ...     {
+        ...         "p": {
+        ...             "reliability": surv.Exponential.from_params([1e-3]),
+        ...             "repairability": surv.Exponential.from_params([0.1]),
+        ...             "repair_cost": 500.0,
+        ...             "acquisition_cost": 20000.0,
+        ...         }
+        ...     },
+        ... )
+        >>> r = math.log(1.08) / 8760  # per hour
+        >>> result = rbd.expected_npv(
+        ...     5 * 8760.0, discount_rate=r, value_rate=10.0, periods=5
+        ... )
+        >>> round(result.npv), round(result.value), round(result.cost)
+        (321975, 359974, 37999)
+        >>> round(result.eac * 8760)  # per year
+        9155
+        >>> len(result.cash_flows)
+        11
+        """
+        return _npv.expected_npv(
+            self,
+            horizon,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            periods=periods,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            method=method,
+            state=state,
         )
 
     @contextmanager

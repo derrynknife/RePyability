@@ -27,7 +27,7 @@ import math
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Dict, Hashable, Optional, Tuple, cast
+from typing import Any, Dict, Hashable, List, Optional, Tuple, cast
 
 import numpy as np
 from scipy.special import ndtri
@@ -1652,6 +1652,137 @@ class ExpectedCost(_ResultMapping):
         with np.errstate(invalid="ignore", divide="ignore"):
             rate = np.divide(self.mean, self.window)
         return float(rate) if np.ndim(rate) == 0 else rate
+
+
+@dataclass
+class ExpectedNPV(_ResultMapping):
+    """What running a system is worth, over a horizon from new or from a
+    state: returned by ``RepairableRBD.expected_npv``.
+
+    In plain terms: the net present value (NPV) is what the system earns
+    while it works, less what it costs to own and run, each amount counted
+    at what it is worth now (an amount ``t`` from now is worth
+    ``exp(-r t)`` of itself). It is the average over every way the
+    failures could fall, worked out exactly (no simulation) from the
+    expected number of events and the expected time up: the average of
+    the present values is the present value of the averages. It says
+    nothing of the spread; a bad run can lose what the average gains.
+
+    The equivalent annual cost (``eac``) is the steady cost per unit time
+    over the horizon that is worth the same as all the costs: the figure to
+    compare plans of different lengths or lives. With no discounting it
+    is the total cost over the horizon divided by its length.
+
+    Attributes
+    ----------
+    horizon : float
+        The length of time valued, in the models' unit.
+    discount_rate : float
+        The continuous rate per unit time the amounts were discounted at
+        (0: not discounted).
+    value_rate : float
+        The value earned per unit time while the system works.
+    npv : float
+        The expected net present value: ``value - cost``.
+    value : float
+        The present value of what the system earns while it works.
+    cost : float
+        The present value of every cost: the running costs and the
+        acquisition cost (paid at the start).
+    eac : float
+        The equivalent annual cost: ``cost`` divided by the
+        ``annuity_factor``, per unit of the models' time.
+    undiscounted_npv : float
+        The same sum with no discounting.
+    undiscounted_value : float
+        The expected time up times ``value_rate``, undiscounted.
+    undiscounted_cost : float
+        The expected cost over the horizon with no discounting, with the
+        acquisition cost.
+    cost_by_category : dict
+        The present value of the cost in each category (``"repair"``,
+        ``"replace"``, ``"preventive"``, ``"inspection"``,
+        ``"component_downtime"``, ``"system_downtime"``, ``"setup"``, and
+        ``"acquisition"``), as positive amounts.
+    cost_by_component : dict
+        The present value of the cost attributable to each costed
+        component, with its acquisition cost.
+    period_ends : list
+        Where each period of the cash-flow table ends, in the models'
+        time: the last is the horizon.
+    cash_flows : list
+        The cash-flow table: one dict per period, category and component
+        with something in it, with ``period`` (from 1), ``start``, ``end``,
+        ``category`` (a cost category, or ``"value"``), ``component`` (None
+        for value, the system's downtime and a group's set-up),
+        ``present_value`` and ``undiscounted``, both signed: costs
+        negative, value positive. The ``present_value`` of all rows add up
+        to ``npv``. Costs given by period and category are the exact
+        increments of the expected cost; the table is for applying your
+        own tax, depreciation and financial-year conventions outside the
+        package.
+
+    Examples
+    --------
+    A pump earning 10 per hour while it works, failing on average every
+    1000 hours, repaired in 10 at 500 per repair, bought for 20,000,
+    valued over 5 years of 8,760 hours at 8% a year:
+
+    >>> import math
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "p"), ("p", "t")],
+    ...     {
+    ...         "p": {
+    ...             "reliability": surv.Exponential.from_params([1e-3]),
+    ...             "repairability": surv.Exponential.from_params([0.1]),
+    ...             "repair_cost": 500.0,
+    ...             "acquisition_cost": 20000.0,
+    ...         }
+    ...     },
+    ... )
+    >>> r = math.log(1.08) / 8760  # per hour
+    >>> result = rbd.expected_npv(
+    ...     5 * 8760.0, discount_rate=r, value_rate=10.0, periods=5
+    ... )
+    >>> round(result.npv), round(result.value), round(result.cost)
+    (321975, 359974, 37999)
+    >>> round(result.eac * 8760)  # per year
+    9155
+    """
+
+    horizon: float
+    discount_rate: float
+    value_rate: float
+    npv: float
+    value: float
+    cost: float
+    eac: float
+    undiscounted_npv: float
+    undiscounted_value: float
+    undiscounted_cost: float
+    cost_by_category: Dict[str, float]
+    cost_by_component: Dict[Hashable, float]
+    period_ends: List[float]
+    cash_flows: List[Dict[str, Any]]
+
+    @property
+    def annuity_factor(self) -> float:
+        """What one unit of cost per unit time, steady over the horizon,
+        is worth now: ``(1 - exp(-r H)) / r`` for the ``discount_rate``
+        ``r`` and the ``horizon`` ``H``, and ``H`` with none.
+
+        Returns
+        -------
+        float
+            The factor ``eac`` divides the cost by.
+        """
+        if not self.discount_rate:
+            return self.horizon
+        return float(
+            -np.expm1(-self.discount_rate * self.horizon) / self.discount_rate
+        )
 
 
 @dataclass
