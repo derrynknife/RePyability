@@ -158,6 +158,7 @@ Which analyses each model type has (the method; — where it has none):
 | Top event probability | — | — | `top_event_probability` | — | — |
 | Each phase's failure probability | — | — | — | — | `phase_failure_probabilities` |
 | **Availability and outages** | | | | | |
+| Reliability and mean time to the first failure | — | `first_failure_sf` | — | — | — |
 | Long-run availability | — | `mean_availability` | — | — | — |
 | Each node's availability | — | `node_availability` | — | — | — |
 | Availability over time | — | `point_availability` | — | — | — |
