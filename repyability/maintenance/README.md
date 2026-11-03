@@ -30,6 +30,7 @@ use cases, under the same numbers.
 | UC-14 | The best visit interval and depth ratio for a layered package of visits | **Built**: `optimal_layered_visits` |
 | UC-15 | The cost and risk of letting a task slip by a tolerance | **Built**: `NonRepairable.slack_effect` |
 | UC-16 | The extra risk and cost of rounding a due replacement up to the next visit | **Built**: `NonRepairable.cost_of_waiting_for_visit` |
+| UC-18 | The numbers behind each maintenance decision for a failure mode: run to failure, scheduled replacement, failure finding, on condition | **Built**: `run_to_failure`, `scheduled_replacement`, `failure_finding`, `on_condition` |
 | UC-17 | The risk added when a visit is missed and its work waits | **Built**: `NonRepairable.cost_of_missed_visit` (and `delay_effect`) |
 | UC-12 | When to replace this part next: now, at a scheduled outage, at a planned replacement, or at its failure? | **Built**: `NonRepairable.optimal_next_replacement` |
 | UC-13 | The long-run optimal replacement policy over a calendar of shuts with prices of their own | **Built**: `NonRepairable.optimal_calendar_policy` |
@@ -1030,3 +1031,45 @@ answers back into dates is Reliafy's too.)
   weighted by the chance the visit is missed for the expected added risk
   and cost. Skipping and deferring a replacement for a whole interval
   are UC-6's; this is one cycle.
+
+
+### UC-18: "For this failure mode, what do the four ways of managing it each cost and prevent?"
+
+- **Status:** built: `run_to_failure(part)`, `scheduled_replacement(part,
+  interval=None)`, `failure_finding(device, test_interval, ...)` with
+  `optimal_failure_finding_interval`, and `on_condition(pf_interval,
+  inspection_interval, ...)` with `optimal_on_condition_interval`. The
+  option compared at a planned replacement is UC-6's
+  `compare_replacement_options`.
+- **Who asks, and why:** someone choosing the task for one failure mode
+  who needs the numbers to compare: how often it fails, what it costs a
+  unit of time, and how much risk is left.
+- **How each is solved (exact, model time):**
+  - *Run to failure:* `1 / (MTTF + replacement time)` failures a unit of
+    time, at the unplanned cost.
+  - *Scheduled replacement at age `T`:* the cycle is the life cut off at
+    `T`: failures `(1 - R(T)) / M(T)`, planned replacements `R(T) /
+    M(T)`, cost `(planned R + unplanned (1 - R)) / M(T)`, `M` the
+    integral of `R`; the cheapest `T` is `optimal_replacement_policy`'s.
+  - *Failure finding:* a hidden failure found at a test, every `tau`, and
+    repaired as new; a working device carries its age on. A cycle ends at
+    the test that finds the failure, so the mean unavailability is `1 -
+    MTTF / (tau sum R(j tau))`, which for an exponential life is `1 - (1 -
+    exp(-lambda tau)) / (lambda tau)`, near `lambda tau / 2`. Demands at
+    a rate `d` meet a failed device at `d U`. The interval comes from a
+    target on `U` (the longest meeting it) or from the cost rate of tests,
+    repairs and the consequence of multiple failures.
+  - *On condition:* a warning precedes the failure by the P-F interval
+    `X`; inspections every `tau` at a random phase find it with
+    probability `p` each. A warning of length `x` is missed with
+    probability `q^floor(x/tau) (1 - p frac(x/tau))`, `q = 1 - p`; the
+    chance it is found is one less its mean over `X`. A fixed warning is
+    inspected best as often as it is long.
+- **Checks:** closed forms for an exponential life (each), and seeded
+  simulations of the plans themselves (cycles with tests; warnings with
+  random phase) that do not use the formulas, within four standard
+  errors; the intervals against dense scans.
+- **Learned / left:** repair and test times are taken as nil; one
+  device's hidden failure is independent of the demand; the detection
+  probability does not change as the warning grows. The system-level
+  consequence of a failure is a diagram's, not here.

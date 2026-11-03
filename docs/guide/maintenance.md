@@ -462,6 +462,52 @@ plan = optimal_layered_visits(filter_, pump, visit_cost=50.0)
 plan.ratio, round(plan.interval, 1), round(plan.cost_rate, 3)   # -> (10, 29.9, 5.836)
 ```
 
+## The four ways of managing a failure mode (`NonRepairable`)
+
+For one failure mode, four numbers sets compare the usual tasks: how often
+it fails, what it costs a unit of time, and how much risk is left. All are
+exact, in the part's time unit.
+
+```python
+from repyability import (
+    NonRepairable, failure_finding, on_condition,
+    optimal_failure_finding_interval, run_to_failure, scheduled_replacement,
+)
+
+run_to_failure(bearing).cost_rate                    # ~> 1.2366  per day
+plan = scheduled_replacement(bearing)                # at the cheapest age
+round(plan.interval), round(plan.cost_rate, 4)       # -> (298, 1.117)
+plan.worth_it                                        # -> True
+```
+
+**Failure finding** is for a protective device whose failure nobody sees
+until it is tested. A test finds a failed device and repairs it as new. The
+mean unavailability is the average chance it is failed when it is needed;
+with a demand rate it gives the rate of multiple failures (a demand met by
+a failed device).
+
+```python
+valve = NonRepairable(surv.Exponential.from_params([0.001]))   # per year
+test = failure_finding(valve, 2.0, demand_rate=0.02)
+round(test.mean_unavailability, 6)   # -> 0.000999   near lambda * tau / 2
+optimal_failure_finding_interval(valve, target_unavailability=0.001).interval  # ~> 2.0
+```
+
+Without a target, `optimal_failure_finding_interval` takes the test, repair
+and consequence costs and the demand rate, and finds the cheapest interval.
+
+**On condition** is for a failure that gives warning: the P-F interval is
+the time from the warning to the failure. Inspect every so often, finding the
+warning with some probability each time:
+
+```python
+on_condition(30.0, 20.0, onset_rate=1 / 400).detection_probability   # -> 1.0
+on_condition(30.0, 60.0, onset_rate=1 / 400).detection_probability   # -> 0.5
+```
+
+`pf_interval` may be a fitted surpyval model instead of a number, and
+`optimal_on_condition_interval` finds the cheapest interval from the prices.
+
 ## Results
 
 Both policy types are small typed results:

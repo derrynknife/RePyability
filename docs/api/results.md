@@ -84,6 +84,14 @@
 
 ::: repyability.RatioChoice
 
+::: repyability.RunToFailure
+
+::: repyability.ScheduledReplacement
+
+::: repyability.FailureFinding
+
+::: repyability.OnCondition
+
 ::: repyability.NextReplacement
 
 ::: repyability.ReplacementChoice
