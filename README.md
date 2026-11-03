@@ -180,6 +180,7 @@ Which analyses each model type has (the method; — where it has none):
 | Each path set's probability | `path_set_probabilities` | `path_set_probabilities` | — | — | — |
 | Cut sets ranked by probability | — | — | `ranked_cut_sets` | — | — |
 | Irrelevant components | `find_irrelevant_components` | `find_irrelevant_components` | — | — | — |
+| Structure sizes (counts, depth, core) | `structure_summary` | `structure_summary` | — | — | — |
 | Convert to and from an RBD | — | — | `to_rbd` | — | — |
 | Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — |
 | Capacity over time | — | `point_capacity` | — | — | — |
