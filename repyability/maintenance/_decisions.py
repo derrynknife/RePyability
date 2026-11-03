@@ -190,8 +190,10 @@ class ScheduledReplacement(_ResultMapping):
         The chance the part fails before it is replaced, ``1 - R(T)``.
     mean_cycle : float
         The mean time between replacements, planned or not.
-    failure_rate, replacement_rate : float
+    failure_rate : float
         Failures and planned replacements per unit time.
+    replacement_rate : float
+        The companion of ``failure_rate`` above.
     cost_rate : float
         The long-run cost a unit of time.
     run_to_failure_cost_rate : float
@@ -495,8 +497,14 @@ def optimal_failure_finding_interval(
         [`failure_finding`][repyability.failure_finding].
     target_unavailability : float, optional
         The mean unavailability not to exceed, between 0 and 1.
-    test_cost, repair_cost, demand_rate, consequence_cost : float, optional
+    test_cost : float, optional
         As for [`failure_finding`][repyability.failure_finding].
+    repair_cost : float, optional
+        The companion of ``test_cost`` above.
+    demand_rate : float, optional
+        The companion of ``test_cost`` above.
+    consequence_cost : float, optional
+        The companion of ``test_cost`` above.
 
     Returns
     -------
@@ -724,10 +732,14 @@ def on_condition(
     detection_probability : float, optional
         The chance an inspection finds a warning that is there, by
         default 1.
-    inspection_cost, found_cost, failure_cost : float, optional
+    inspection_cost : float, optional
         What an inspection costs; acting on a warning found (replacing
         the part in time); and a failure the warning ended in. By default
         0.
+    found_cost : float, optional
+        The companion of ``inspection_cost`` above.
+    failure_cost : float, optional
+        The companion of ``inspection_cost`` above.
 
     Returns
     -------
@@ -769,12 +781,20 @@ def optimal_on_condition_interval(
 
     Parameters
     ----------
-    pf_interval, onset_rate, detection_probability
+    pf_interval : float
         As for [`on_condition`][repyability.on_condition].
-    inspection_cost, found_cost, failure_cost : float
+    onset_rate : float
+        As for [`on_condition`][repyability.on_condition].
+    detection_probability : float, optional
+        As for [`on_condition`][repyability.on_condition].
+    inspection_cost : float
         The prices, as for [`on_condition`][repyability.on_condition]; the
         inspection and the failure must cost something, and a failure more
         than acting on a warning.
+    found_cost : float
+        The companion of ``inspection_cost`` above.
+    failure_cost : float
+        The companion of ``inspection_cost`` above.
 
     Returns
     -------
