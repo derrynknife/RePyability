@@ -8,6 +8,8 @@
 
 ::: repyability.CapacityDistribution
 
+::: repyability.StructureSummary
+
 ::: repyability.Criticalities
 
 ::: repyability.UpDownImportance

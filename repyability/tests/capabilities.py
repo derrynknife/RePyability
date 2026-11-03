@@ -139,6 +139,14 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Each path set's probability", ("path_set_probabilities",)),
             ("Cut sets ranked by probability", ("ranked_cut_sets",)),
             ("Irrelevant components", ("find_irrelevant_components",)),
+            (
+                "Structure sizes (counts, depth, core)",
+                (
+                    "structure_summary",
+                    "count_minimal_path_sets",
+                    "count_minimal_cut_sets",
+                ),
+            ),
             ("Convert to and from an RBD", ("to_rbd", "from_rbd")),
             (
                 "Capacity distribution",
