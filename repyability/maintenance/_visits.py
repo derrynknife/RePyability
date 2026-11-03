@@ -107,9 +107,13 @@ class LayeredVisits(_ResultMapping):
         ``ratio * interval``: the time between deep renewals.
     cost_rate : float
         The package's long-run cost a unit of time.
-    visit_cost_rate, light_cost_rate, deep_cost_rate : float
+    visit_cost_rate : float
         Its parts: the visits themselves, the light layer's renewals and
         failures, and the deep layer's.
+    light_cost_rate : float
+        The companion of ``visit_cost_rate`` above.
+    deep_cost_rate : float
+        The companion of ``visit_cost_rate`` above.
     by_ratio : list of RatioChoice
         The best interval and cost rate for each ratio tried, from 1.
     """
@@ -136,9 +140,11 @@ def layered_cost_rate(
 
     Parameters
     ----------
-    light, deep : NonRepairable or None
+    light : NonRepairable or None
         The parts of the two layers, with their planned and unplanned
         costs; None for no such layer.
+    deep : NonRepairable or None
+        The companion of ``light`` above.
     interval : float
         The time between visits, more than 0.
     ratio : int

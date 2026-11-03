@@ -129,6 +129,94 @@ class _ResultMapping(Mapping):
         return tuple(f.name for f in dataclasses.fields(cast(Any, self)))
 
 
+@dataclass(frozen=True)
+class StructureSummary(_ResultMapping):
+    """How big a diagram's structure is, found without listing its path or
+    cut sets.
+
+    Returned by [`RBD.structure_summary`][repyability.RBD.structure_summary].
+    A diagram is first reduced to *modules*: series chains, parallel
+    groups and k-out-of-n groups, each independent of the rest. A
+    series-parallel diagram reduces to one module. Otherwise something is
+    left over, a *core* (a bridge is the smallest), over the modules and
+    single nodes around it, and only the core needs the heavier methods.
+    The summary says how much of the diagram is each, and how many path
+    and cut sets there are, which can be far too many to list. It is an
+    immutable dataclass, read as a mapping too, with ``to_dict()`` for
+    JSON.
+
+    Attributes
+    ----------
+    n_components : int
+        The components that can decide whether the system works (the
+        relevant nodes), leaving out the input and output nodes, any
+        junction (a node that never fails) and the irrelevant nodes.
+    n_irrelevant : int
+        The components in no minimal path set, whose state never changes
+        whether the system works (see
+        [`find_irrelevant_components`][repyability.RBD.find_irrelevant_components]).
+    always_works : bool
+        True when the input is joined to the output by an edge that never
+        fails, so there is nothing to fail.
+    series_parallel : bool
+        True when the whole diagram reduces to modules, with no core left.
+    n_modules : int
+        The series, parallel and k-out-of-n groups the reduction found
+        (nested ones counted each), not counting single nodes.
+    module_depth : int
+        How deeply the modules nest: 0 for a single component, 1 for one
+        group of components, and one more for each group held in another.
+        A core counts as one more level over the terms it joins.
+    core_size : int
+        The modules and single nodes the core joins, 0 for a
+        series-parallel diagram.
+    core_path_sets : int
+        The core's minimal path sets (over those modules and nodes), 0 for
+        a series-parallel diagram.
+    n_path_sets : int or None
+        The minimal path sets of the whole diagram. ``None`` when the
+        diagram is too meshed to work out exactly.
+    n_cut_sets : int or None
+        The minimal cut sets of the whole diagram. ``None`` when the
+        diagram is too meshed to work out exactly.
+    counts_exact : bool
+        True when ``n_path_sets`` and ``n_cut_sets`` are exact. A
+        component drawn in more than one place (a repeated node) can make
+        two counted sets the same set, or one hold another, so then they
+        are upper bounds. False also when they are ``None``.
+    too_meshed : str or None
+        Why the diagram could not be worked out exactly, if it could not;
+        ``None`` otherwise.
+
+    Examples
+    --------
+    A diagram with a cross-link that is not series-parallel: the core joins
+    three paths, and there are three minimal path sets.
+
+    >>> from repyability import RBD
+    >>> rbd = RBD(
+    ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "d"),
+    ...      ("a", "e"), ("e", "d"), ("c", "t"), ("d", "t")]
+    ... )
+    >>> info = rbd.structure_summary()
+    >>> info.n_components, info.series_parallel, info.n_path_sets
+    (5, False, 3)
+    """
+
+    n_components: int
+    n_irrelevant: int
+    always_works: bool
+    series_parallel: bool
+    n_modules: int
+    module_depth: int
+    core_size: int
+    core_path_sets: int
+    n_path_sets: Optional[int]
+    n_cut_sets: Optional[int]
+    counts_exact: bool
+    too_meshed: Optional[str]
+
+
 @dataclass
 class ConfidenceInterval(_ResultMapping):
     """A Monte-Carlo estimate with its sampling uncertainty.
