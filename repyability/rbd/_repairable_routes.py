@@ -705,7 +705,23 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             "shards",
         ):
             out[name] = r.refused(meshed)
-    out = rbd._meshed_routes(out, free)
+    # A run of windows: the exact values over time (the window's own
+    # route), and for the cost its spread simulated from one seeded run.
+    out["expected_events_by_window"] = out["expected_events"]
+    if out["expected_cost"].route not in (r.EXACT, r.NUMERICAL):
+        out["cost_by_window"] = out["expected_cost"]
+    elif out["cost"].route == r.REFUSED:
+        out["cost_by_window"] = out["cost"]
+    else:
+        out["cost_by_window"] = dataclasses.replace(
+            out["cost"],
+            reason="Each window's mean is the difference of expected_cost "
+            "(exact); its spread comes from the simulations cost runs, "
+            "one seeded set of histories cut at every window's end.",
+            twin="",
+        )
+    drawn = {"cost_by_window"} if rbd.has_costs else set()
+    out = rbd._meshed_routes(out, free, drawn)
     # Parameter uncertainty (#200): each draw's diagram rebuilt and its
     # value worked out as the diagram's own, so refused where that is
     # (a structure too meshed included).
