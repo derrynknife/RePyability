@@ -8,6 +8,8 @@
 
 ::: repyability.CapacityDistribution
 
+::: repyability.StructureSummary
+
 ::: repyability.Criticalities
 
 ::: repyability.UpDownImportance
@@ -61,6 +63,8 @@
 ::: repyability.MaintenancePolicy
 
 ::: repyability.FailureLimitPolicy
+
+::: repyability.OverhaulReplacePolicy
 
 ::: repyability.FailureForecast
 

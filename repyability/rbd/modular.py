@@ -48,6 +48,7 @@ analysis works on the reduced diagram too, kept whole as a
 :class:`FlowGraph`.
 """
 
+import math
 from itertools import combinations, product
 from typing import (
     Any,
@@ -772,6 +773,55 @@ class Decomposition:
             for chosen in core or []
             for s in _joint([families[c] for c in chosen])
         }
+
+    def count_sets(self, paths: bool) -> int:
+        """How many minimal path sets (or cut sets) there are, counted
+        without listing them: a series module's path sets multiply its
+        members' and a parallel module's add (and the other way round for
+        cut sets), a k-out-of-n module sums the products over each choice
+        of members it needs, and a core multiplies over each of its sets
+        of terms. The members of a module share no node, so the count is
+        exact when no node is drawn in more than one place."""
+        if self.always_works:
+            return 1 if paths else 0
+        counts: list = [0] * len(self.terms)
+        for i, term in enumerate(self.terms):
+            if term[0] == NODE:
+                counts[i] = 1
+                continue
+            members = [counts[c] for c in term[1]]
+            if term[0] == KOON:
+                size = term[2] if paths else len(members) - term[2] + 1
+                counts[i] = sum(
+                    math.prod(chosen) for chosen in combinations(members, size)
+                )
+            elif (term[0] == SERIES) == paths:
+                counts[i] = math.prod(members)
+            else:
+                counts[i] = sum(members)
+        if self.root is not None:
+            return counts[self.root]
+        core = self.core if paths else self.core_cut_sets()
+        return sum(
+            math.prod(counts[c] for c in chosen) for chosen in core or []
+        )
+
+    def depth(self) -> int:
+        """How deeply modules nest: 0 for a single node, 1 for a series,
+        parallel or k-out-of-n group of nodes, one more for each module
+        held in another. A core counts as one module over its terms."""
+        if self.always_works or not self.terms:
+            return 0
+        levels: list = [0] * len(self.terms)
+        for i, term in enumerate(self.terms):
+            if term[0] != NODE:
+                levels[i] = 1 + max(levels[c] for c in term[1])
+        if self.root is not None:
+            return levels[self.root]
+        return 1 + max(
+            (levels[c] for chosen in self.core or [] for c in chosen),
+            default=0,
+        )
 
     def path_sets(self) -> set[frozenset]:
         """The minimal path sets, over nodes."""

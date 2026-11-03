@@ -329,24 +329,32 @@ class DelayEffect(_ResultMapping):
     ----------
     age : float
         The part's age now.
-    planned_in, done_in : float
+    planned_in : float
         When the replacement was planned and when it is done, from now.
+    done_in : float
+        The companion of ``planned_in`` above.
     delay : float
         ``done_in - planned_in``.
-    failure_probability_planned, failure_probability_done : float
+    failure_probability_planned : float
         The chance the part fails before the replacement, planned and
         delayed.
+    failure_probability_done : float
+        The companion of ``failure_probability_planned`` above.
     added_failure_probability : float
         Their difference: the risk the delay adds.
-    cost_planned, cost_done : float
+    cost_planned : float
         The present-value cost of the cycle to the replacement (the part's
         planned cost if it survives, its unplanned cost if it fails first).
+    cost_done : float
+        The companion of ``cost_planned`` above.
     added_cost : float
         Their difference: what the delay adds in expectation.
     weight : float
         The chance the delay happens (1, or the chance a visit is missed).
-    expected_added_failure_probability, expected_added_cost : float
+    expected_added_failure_probability : float
         The added risk and cost times ``weight``.
+    expected_added_cost : float
+        The companion of ``expected_added_failure_probability`` above.
     """
 
     age: float
@@ -439,13 +447,17 @@ class SlackEffect(_ResultMapping):
         The age at which the task (a replacement) is due.
     slack : float
         How late it may be done.
-    risk_on_time, risk_at_limit : float
+    risk_on_time : float
         The chance the part fails before the replacement, done at the due
         age and at the latest age allowed.
+    risk_at_limit : float
+        The companion of ``risk_on_time`` above.
     added_risk : float
         Their difference.
-    cost_rate_on_time, cost_rate_at_limit : float
+    cost_rate_on_time : float
         The long-run cost a unit of time of replacing at each age.
+    cost_rate_at_limit : float
+        The companion of ``cost_rate_on_time`` above.
     added_cost_rate : float
         Their difference: the most the tolerance costs, if the work is
         always as late as allowed.
@@ -543,11 +555,13 @@ class RenewalForecast(_ResultMapping):
         The plan's long-run cost a unit of time.
     run_to_failure_cost_rate : float
         The long-run cost rate with no planned renewal.
-    best_interval, best_cost_rate : float
+    best_interval : float
         The part's best age replacement
         ([`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy])
         and its cost rate; ``inf`` for an interval when renewing never
         pays.
+    best_cost_rate : float
+        The companion of ``best_interval`` above.
     worth_it : bool
         Whether the plan costs less than running to failure.
     """

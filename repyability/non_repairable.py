@@ -1221,9 +1221,11 @@ class NonRepairable:
         ----------
         age : float
             The part's age now.
-        planned_in, done_in : float
+        planned_in : float
             When the replacement was planned and when it is done, from
             now; ``done_in`` at least ``planned_in``.
+        done_in : float
+            The companion of ``planned_in`` above.
         weight : float, optional
             The chance the delay happens, by default 1.
         discount_rate : float, optional
@@ -1347,8 +1349,10 @@ class NonRepairable:
         ----------
         age : float
             The part's age now.
-        visit_in, next_visit_in : float
+        visit_in : float
             The times from now of the visit and of the next one.
+        next_visit_in : float
+            The companion of ``visit_in`` above.
         miss_probability : float, optional
             The chance the visit is missed, by default 1.
         discount_rate : float, optional
