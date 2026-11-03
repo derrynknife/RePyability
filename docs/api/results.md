@@ -20,6 +20,10 @@
 
 ::: repyability.ExpectedEvents
 
+::: repyability.EventsByWindow
+
+::: repyability.CostByWindow
+
 ::: repyability.RateBreakdown
 
 ::: repyability.ExpectedCost

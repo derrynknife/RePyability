@@ -46,7 +46,9 @@ from repyability.rbd.results import (
     AvailabilityResult,
     CapacityDistribution,
     ConfidenceInterval,
+    CostByWindow,
     CostResult,
+    EventsByWindow,
     ExpectedCost,
     ExpectedEvents,
     Lever,
@@ -78,6 +80,7 @@ from repyability.rbd import (
     _repairable_uncertainty,
     _runs,
     _spec,
+    _window_report,
     _windows,
 )
 from repyability.rbd._common import (
@@ -3340,6 +3343,149 @@ class RepairableRBD(RBD):
             broken_nodes=broken_nodes,
             method=method,
             state=state,
+        )
+
+    def expected_events_by_window(
+        self,
+        ends=None,
+        *,
+        width: Optional[float] = None,
+        count: Optional[int] = None,
+        state=None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+    ) -> EventsByWindow:
+        """The work expected in each of a run of consecutive windows from
+        the system's state now: how many replacements, repairs and tests
+        each component has in each window, and how many failures and
+        planned outages the system has.
+
+        A planner building next year's work and budget asks exactly this:
+        "in each of the next twelve windows of 730 hours, what is due?"
+        Each window's number is its own (not a running total), exact, with
+        no simulation: the difference of
+        [`expected_events`][repyability.RepairableRBD.expected_events] at
+        the window's two ends, which add up over windows. Give the
+        windows' ``ends`` (uneven windows are fine), or a ``width`` and a
+        ``count``. The first window starts now.
+
+        A component's task and the system's outage are different counts:
+        a task done while the system is already down (a hidden failure
+        found earlier, say) causes no new outage.
+
+        Parameters
+        ----------
+        ends : array-like, optional
+            The windows' end times from now, increasing.
+        width, count : float, int, optional
+            Instead of ``ends``: ``count`` windows each ``width`` long.
+        state : dict or str, optional
+            Where the components are now, as for
+            [`expected_events`][repyability.RepairableRBD.expected_events].
+        working_nodes, broken_nodes, method
+            As for `expected_events`.
+
+        Returns
+        -------
+        EventsByWindow
+            The windows and each count in each (arrays); a hair below 0
+            from numerics, in a window with nothing in it, is shown as 0.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for `expected_events`, or if the windows are not given
+            properly.
+
+        Examples
+        --------
+        See [`EventsByWindow`][repyability.EventsByWindow].
+        """
+        return _window_report.expected_events_by_window(
+            self,
+            ends,
+            width,
+            count,
+            state,
+            working_nodes,
+            broken_nodes,
+            method,
+        )
+
+    def cost_by_window(
+        self,
+        ends=None,
+        *,
+        width: Optional[float] = None,
+        count: Optional[int] = None,
+        state=None,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        engine: str = "auto",
+        levels=(10.0, 50.0, 90.0),
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+    ) -> CostByWindow:
+        """What the system costs in each of a run of consecutive windows
+        from its state now, and how much that can vary.
+
+        A budget starts from the plant as it is, and needs each window's
+        own spend, not the running total, and what could happen in it. The
+        mean of each window is exact (the difference of
+        [`expected_cost`][repyability.RepairableRBD.expected_cost] at its
+        ends). The spread is simulated, as a spread must be, from one
+        seeded set of histories cut at every window's end, so the windows
+        are of the same histories: a simulation's cost in a window is its
+        cost to the window's end less its cost to the window's start. Give
+        a ``seed`` for a repeatable answer.
+
+        Costs usually come in steps (a replacement at a fixed price), so
+        percentiles can hide that most windows cost exactly one amount:
+        read the outcomes (``outcomes(window)``) and the chance of
+        exceeding a budget (``probability_above(budget)``) too.
+
+        Parameters
+        ----------
+        ends : array-like, optional
+            The windows' end times from now, increasing.
+        width, count : float, int, optional
+            Instead of ``ends``: ``count`` windows each ``width`` long.
+        state : dict or str, optional
+            Where the components are now, as for
+            [`expected_cost`][repyability.RepairableRBD.expected_cost].
+        mc_samples, seed, engine
+            The simulations, as for
+            [`cost`][repyability.RepairableRBD.cost].
+        levels : array-like, optional
+            The percentiles to report, by default 10, 50 and 90.
+        working_nodes, broken_nodes, method
+            As for `expected_cost`.
+
+        Returns
+        -------
+        CostByWindow
+            The exact mean, the simulations' own mean and standard error,
+            every simulation's cost in each window, and the percentiles.
+
+        Examples
+        --------
+        See [`CostByWindow`][repyability.CostByWindow].
+        """
+        return _window_report.cost_by_window(
+            self,
+            ends,
+            width,
+            count,
+            state,
+            mc_samples,
+            seed,
+            engine,
+            levels,
+            working_nodes,
+            broken_nodes,
+            method,
         )
 
     def expected_cost(

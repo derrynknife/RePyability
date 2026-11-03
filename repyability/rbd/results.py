@@ -130,6 +130,147 @@ class _ResultMapping(Mapping):
 
 
 @dataclass
+class EventsByWindow(_ResultMapping):
+    """What a system is expected to do in each of a run of consecutive
+    windows from now: returned by
+    [`RepairableRBD.expected_events_by_window`][repyability.RepairableRBD.expected_events_by_window].
+
+    The windows are ``[starts[i], ends[i])``, the first starting at 0
+    (now, or the state given). Every count is exact (see
+    [`ExpectedEvents`][repyability.ExpectedEvents]) and is the window's
+    own, not a running total: the difference of the expected counts at its
+    two ends, which add up over windows. A value that numerics leave a
+    hair below 0 for a window with no events is shown as 0.
+
+    Attributes
+    ----------
+    starts, ends : numpy.ndarray
+        Each window's start and end, in the models' time unit.
+    system_failures : numpy.ndarray
+        The expected system failures in each window.
+    system_planned_outages : numpy.ndarray
+        The expected planned outages of the system in each window.
+    system_downtime : numpy.ndarray
+        The expected time the system is down in each window.
+    node_failures, node_corrective, node_preventive : dict
+        Each component's expected failures, corrective actions and
+        preventive replacements in each window (an array per component).
+    node_inspections, node_downtime : dict
+        Each component's expected tests and down time in each window.
+
+    Examples
+    --------
+    One component with a block replacement every 100 hours, over three
+    windows of 100 hours from 40 hours into its interval: its replacement
+    is due in 60 hours, and then every 100:
+
+    >>> import surpyval as surv
+    >>> from repyability import NodeState, RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "c"), ("c", "t")],
+    ...     {"c": {
+    ...         "reliability": surv.Exponential.from_params([1e-9]),
+    ...         "repairability": "instant",
+    ...         "preventive": {"interval": 100.0, "policy": "block"},
+    ...     }},
+    ... )
+    >>> state = {"c": NodeState(since_scheduled=40.0)}
+    >>> windows = rbd.expected_events_by_window(
+    ...     width=100.0, count=3, state=state
+    ... )
+    >>> windows.node_preventive["c"].round(3).tolist()
+    [1.0, 1.0, 1.0]
+    """
+
+    starts: np.ndarray
+    ends: np.ndarray
+    system_failures: np.ndarray
+    system_planned_outages: np.ndarray
+    system_downtime: np.ndarray
+    node_failures: Dict[Hashable, np.ndarray]
+    node_corrective: Dict[Hashable, np.ndarray]
+    node_preventive: Dict[Hashable, np.ndarray]
+    node_inspections: Dict[Hashable, np.ndarray]
+    node_downtime: Dict[Hashable, np.ndarray]
+
+
+@dataclass
+class CostByWindow(_ResultMapping):
+    """What a system costs in each of a run of consecutive windows from
+    now, and how much that can vary: returned by
+    [`RepairableRBD.cost_by_window`][repyability.RepairableRBD.cost_by_window].
+
+    The windows are ``[starts[i], ends[i])``. ``mean`` is exact. The spread
+    comes from one set of simulated histories cut at each window's end, so
+    every window's costs are of the same histories (a window's cost is
+    the cost to its end less the cost to its start). A cost that comes
+    in steps (a replacement at a fixed price, say) has few distinct
+    values, and percentiles hide that: ``outcomes`` gives each cost and
+    its share, and ``probability_above`` the chance of overspending a
+    budget. Ranges do not add over windows: use the ``total`` row for a
+    run's total.
+
+    Attributes
+    ----------
+    starts, ends : numpy.ndarray
+        Each window's start and end.
+    mean : numpy.ndarray
+        The exact expected cost of each window.
+    simulated_mean : numpy.ndarray
+        The simulations' own mean of each window's cost (it agrees with
+        ``mean`` to within ``standard_error``).
+    standard_error : numpy.ndarray
+        The standard error of ``simulated_mean``.
+    samples : numpy.ndarray
+        Each simulation's cost in each window, shape ``(windows,
+        simulations)``; none is below 0.
+    n_simulations : int
+        The number of simulations.
+    levels : tuple of float
+        The percentiles of ``percentiles``.
+    percentiles : numpy.ndarray
+        Each window's cost percentiles at ``levels``, shape ``(windows,
+        len(levels))``.
+    """
+
+    starts: np.ndarray
+    ends: np.ndarray
+    mean: np.ndarray
+    simulated_mean: np.ndarray
+    standard_error: np.ndarray
+    samples: np.ndarray
+    n_simulations: int
+    levels: Tuple[float, ...]
+    percentiles: np.ndarray
+
+    def percentile(self, q: float) -> np.ndarray:
+        """Each window's ``q``-th percentile of cost (``q`` from 0 to
+        100)."""
+        return np.percentile(self.samples, q, axis=1)
+
+    def total_percentile(self, q: float) -> float:
+        """The ``q``-th percentile of the cost of all the windows
+        together: not the sum of the windows' (ranges do not add)."""
+        return float(np.percentile(self.samples.sum(axis=0), q))
+
+    def probability_above(self, budget: float) -> np.ndarray:
+        """Each window's chance of costing more than ``budget``."""
+        return np.mean(self.samples > budget, axis=1)
+
+    def outcomes(self, window: int, decimals: int = 6) -> list:
+        """The distinct costs of a window (counted from 0) and how often
+        each happened, cheapest first: ``[{"cost": ..., "share": ...}]``
+        (costs rounded to ``decimals`` places)."""
+        costs, counts = np.unique(
+            np.round(self.samples[window], decimals), return_counts=True
+        )
+        return [
+            {"cost": float(c), "share": float(n) / self.n_simulations}
+            for c, n in zip(costs, counts)
+        ]
+
+
+@dataclass
 class ConfidenceInterval(_ResultMapping):
     """A Monte-Carlo estimate with its sampling uncertainty.
 

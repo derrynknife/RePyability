@@ -92,7 +92,11 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Mean up and down times", ("mean_up_time", "mean_down_time")),
             (
                 "Expected failures and events in a window",
-                ("expected_events", "expected_failures"),
+                (
+                    "expected_events",
+                    "expected_failures",
+                    "expected_events_by_window",
+                ),
             ),
             (
                 "Simulated availability (distribution)",
@@ -112,6 +116,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
         [
             ("Long-run cost rate", ("expected_cost_rate",)),
             ("Expected cost in a window", ("expected_cost",)),
+            ("Cost in each of a run of windows", ("cost_by_window",)),
             ("Simulated cost (distribution)", ("cost",)),
             ("Total cost of ownership", ("total_cost",)),
             ("Spares demand and stock", ("spares_demand", "spares_stock")),
