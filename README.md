@@ -173,6 +173,7 @@ Which analyses each model type has (the method; — where it has none):
 | **Costs and spares** | | | | | |
 | Long-run cost rate | — | `expected_cost_rate` | — | — | — |
 | Expected cost in a window | — | `expected_cost` | — | — | — |
+| Cost in each of a run of windows | — | `cost_by_window` | — | — | — |
 | Simulated cost (distribution) | — | `cost` | — | — | — |
 | Total cost of ownership | — | `total_cost` | — | — | — |
 | Spares demand and stock | — | `spares_demand` | — | — | — |
