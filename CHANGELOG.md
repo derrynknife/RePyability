@@ -9,6 +9,15 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- `RBD.structure_summary()`, `count_minimal_path_sets()` and
+  `count_minimal_cut_sets()` (and the `StructureSummary` result): the
+  number of components, modules, how deeply they nest, the size of the
+  core that does not reduce, and the numbers of minimal path and cut sets,
+  counted without listing them. These make public what callers had to
+  reach through the private `_decomposition()`.
+
 ## [0.16] - 2026-10-31
 
 surpyval 0.26. RePyability is tested against surpyval 0.26 and needs it:
