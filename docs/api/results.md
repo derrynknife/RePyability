@@ -52,6 +52,10 @@
 
 ::: repyability.DemonstrationPlan
 
+::: repyability.StressStrengthResult
+
+::: repyability.StressStrengthCurve
+
 ::: repyability.AvailabilityAllocation
 
 ::: repyability.SparesDemand

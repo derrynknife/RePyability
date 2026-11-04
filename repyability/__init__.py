@@ -13,6 +13,8 @@ exactly or numerically where it can be, and simulated on request:
 - ``FaultTree``, ``Network`` and ``PhasedMission``: the other ways to draw
   a system; ``StandbyModel``, ``LoadSharingModel``, ``RepeatedNode`` and
   ``CCFGroup`` the dependencies within one.
+- ``stress_strength`` and ``stress_strength_over_time``: the chance a
+  strength exceeds a stress (interference), exact or numerical.
 - ``demonstration_plan`` and the other ``demonstration_*`` and ``mtbf_*``
   functions: demonstration test planning.
 
@@ -116,6 +118,8 @@ from repyability.rbd.results import (
     RestorationCriticalityIndex,
     SparesDemand,
     SparesStock,
+    StressStrengthCurve,
+    StressStrengthResult,
     StructureSummary,
     TimelineSimulation,
     TotalCostAllocation,
@@ -129,6 +133,10 @@ from repyability.rbd.standby_node import StandbyModel
 from repyability.repairable import (
     Repairable,
     minimal_repair_time_to_nth_failure,
+)
+from repyability.stress_strength import (
+    stress_strength,
+    stress_strength_over_time,
 )
 from repyability.timelines import Timeline, Timelines
 
@@ -171,6 +179,9 @@ __all__ = [
     "mtbf_pass_probability",
     "mtbf_demonstration_plan",
     "ComponentOption",
+    # Stress-strength interference
+    "stress_strength",
+    "stress_strength_over_time",
     # Maintenance planning
     "Opportunity",
     "Calendar",
@@ -199,6 +210,8 @@ __all__ = [
     "UncertaintyImportance",
     "Criticalities",
     "DemonstrationPlan",
+    "StressStrengthResult",
+    "StressStrengthCurve",
     "UpDownImportance",
     "FailureCriticalityIndex",
     "RestorationCriticalityIndex",
