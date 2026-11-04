@@ -1073,3 +1073,44 @@ answers back into dates is Reliafy's too.)
   device's hidden failure is independent of the demand; the detection
   probability does not change as the warning grows. The system-level
   consequence of a failure is a diagram's, not here.
+
+
+### UC-19: "What is this plan worth over ten years at 8%, and what is it as a yearly cost?"
+
+- **Status:** built (the first part of a net present value valuation):
+  `RepairableRBD.expected_npv(horizon, discount_rate=, value_rate=,
+  periods=)` and `NonRepairable.age_replacement_value(age,
+  discount_rate=)`.
+- **Who asks, and why:** someone who must justify a plan (an interval, a
+  spare, a repair crew, a redundant unit) at the cost of capital: what the
+  plant earns while it works, less what it costs to buy and run, each
+  amount counted at what it is worth now, and the same cost as a steady
+  yearly figure to compare plans of different lives.
+- **How it is solved (exact, model time):** by the linearity of
+  expectation, the expected present value of a cost charged at events is
+  its price times the discounted expected number of events, and of a value
+  earned per unit time the discounted expected time up: `integral exp(-r t)
+  A(t) dt`. The costs are `expected_cost(discount_rate=)`, which discounts
+  each event at its own time (a block replacement or a test at its exact
+  time); the value is that integral of the system's point availability,
+  summed on the same pieces as the mission availability, with the settled
+  level or period after it in closed form. The acquisition cost is paid at
+  the start. The equivalent annual cost is the cost over the annuity
+  factor `(1 - exp(-r H)) / r` (`H / 1` with no discounting), which tends
+  to the cost rate over a long horizon. For one part replaced at an age or
+  at a failure for ever, Fox (1966): `PV = [cu A + cp exp(-r T) R(T)] /
+  (r M(T))`, `A = 1 - exp(-r T) R(T) - r M(T)` the discounted chance of
+  failing first, `M` the integral of `exp(-r t) R(t)` to `T`.
+- **The answer:** the net present value, its value and cost, the
+  equivalent annual cost, the undiscounted totals, and a cash-flow table
+  by period, category and component, in model time (which period is which
+  financial year is the caller's).
+- **Checks:** `test_expected_npv.py`: an exponential pump's value against
+  the closed form of its availability, discounted; its repair cost as `cost
+  x lambda x` the time up; no discounting against `mission_availability` and
+  `expected_cost`; block replacements at exact times; an age replacement
+  over a long horizon against Fox's formula integrated independently; the
+  table adding up to the total; the cost rate as the rate goes to 0.
+- **Not yet:** value that varies in time, escalation, plans of actions at
+  given times, the simulated distribution, crews as cash flows, and NPV as
+  the optimisers' objective.

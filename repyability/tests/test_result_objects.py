@@ -79,6 +79,9 @@ def test_the_results_of_the_exact_methods_go_through_json(repairable):
         repairable.spares_demand(300.0)["a"],
         repairable.spares_demand(300.0, parts={"p": ["a", "b"]})["p"],
         repairable.spares_stock(10.0, fill_rate=0.9)["a"],
+        repairable.expected_npv(
+            1000.0, discount_rate=1e-3, value_rate=1.0, periods=2
+        ),
     ]
     for result in results:
         assert isinstance(result, _ResultMapping)

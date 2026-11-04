@@ -1428,6 +1428,68 @@ class NonRepairable:
 
         return slack_effect(self, interval, slack)
 
+    def age_replacement_value(self, age, *, discount_rate=0.0):
+        """What replacing the part at ``age``, or when it fails, costs for
+        good: its net present value (Fox, 1966) and equivalent annual
+        cost. Exact, with no simulation.
+
+        In plain terms: the part is replaced by a new one at ``age`` (cost
+        ``cp``) or at a failure (cost ``cu``), again and again. Counting
+        each replacement at what it is worth now, the sum of them all is
+        finite when discounted. The equivalent annual cost is the steady
+        cost per unit time worth the same: the discounted counterpart of
+        ``cost_rate(age)``, to which it comes as the discount rate goes to
+        0. For a whole plant, with value earned and a cash-flow table, see
+        [`RepairableRBD.expected_npv`][repyability.RepairableRBD.expected_npv].
+
+        With ``R`` the part's reliability, ``f`` its density and ``r`` the
+        discount rate, the present value is::
+
+            [cu * integral_0^T exp(-r t) f(t) dt + cp * exp(-r T) R(T)]
+              / [1 - integral_0^T exp(-r t) f(t) dt - exp(-r T) R(T)]
+
+        Parameters
+        ----------
+        age : float
+            The replacement age, more than 0 and finite.
+        discount_rate : float, optional
+            The continuous discount rate per unit of time, by default 0
+            (undiscounted: ``npv`` is then ``inf`` and ``eac`` the
+            long-run cost rate).
+
+        Returns
+        -------
+        AgeReplacementValue
+            The net present value, equivalent annual cost and first
+            cycle's cost.
+
+        Raises
+        ------
+        ValueError
+            If an argument is out of range or the costs are not set.
+
+        Examples
+        --------
+        A bearing (Weibull, scale 1000 hours, shape 2.5), replaced at 500
+        hours for 1, or at a failure for 5, at 8% a year (in hours):
+
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([1000.0, 2.5]),
+        ...     planned_cost=1.0,
+        ...     unplanned_cost=5.0,
+        ... )
+        >>> a_year = math.log(1.08) / 8760
+        >>> value = bearing.age_replacement_value(500.0, discount_rate=a_year)
+        >>> round(value.npv, 1), round(value.eac * 8760, 2)
+        (393.5, 30.28)
+        """
+        from repyability.maintenance._options import age_replacement_value
+
+        return age_replacement_value(self, age, discount_rate=discount_rate)
+
     def renewal_forecast(
         self, window, every, *, resets, age=0.0, since_renewal=None
     ):

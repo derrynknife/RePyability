@@ -157,6 +157,7 @@ from repyability.maintenance._next import (  # noqa: E402
     ReplacementChoice,
 )
 from repyability.maintenance._options import (  # noqa: E402
+    AgeReplacementValue,
     DelayEffect,
     OptionValue,
     RenewalForecast,

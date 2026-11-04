@@ -11,6 +11,18 @@ other release, fixes included, the minor.
 
 ### Added
 
+- `RepairableRBD.expected_npv()` (and the `ExpectedNPV` result): the
+  expected net present value of running a system over a horizon, from new
+  or from a state. Exact, with no simulation: the discounted expected
+  cost (each event at its own time, a scheduled replacement at its exact
+  time) less the discounted value earned (`value_rate` per unit time)
+  while the system works, with the acquisition cost at the start. It gives
+  the equivalent annual cost (which tends to `expected_cost_rate` over a
+  long horizon), the undiscounted totals, and a cash-flow table by period,
+  category and component. Also in `analysis_routes()`.
+- `NonRepairable.age_replacement_value()` (and `AgeReplacementValue`): the
+  present value (Fox, 1966) and equivalent annual cost of replacing a part
+  at an age or at a failure for ever; undiscounted it is `cost_rate`.
 - Stress-strength interference: `stress_strength` (the chance a strength
   exceeds a stress, `P(strength > stress)`, from two fitted models; closed
   forms for Normal, LogNormal, Exponential and common-shape Weibull pairs,

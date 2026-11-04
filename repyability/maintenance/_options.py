@@ -668,3 +668,71 @@ def renewal_forecast(
         float(policy.cost_rate),
         bool(plan_rate < rtf),
     )
+
+
+# -- an age replacement's present value (Fox, 1966) --------------------------
+
+
+@dataclass
+class AgeReplacementValue(_ResultMapping):
+    """What an age-replacement policy costs a part for good, discounted:
+    returned by
+    [`NonRepairable.age_replacement_value`][repyability.NonRepairable.age_replacement_value].
+
+    In plain terms: replace the part at ``age`` or when it fails, as often
+    as it takes, forever; ``npv`` is what all those replacements cost,
+    counted at what they are worth now, and ``eac`` the steady cost per
+    unit time worth the same. With no discounting ``eac`` is the long-run
+    cost rate, and ``npv`` is endless.
+
+    Attributes
+    ----------
+    age : float
+        The replacement age.
+    discount_rate : float
+        The continuous discount rate per unit time (0: none).
+    npv : float
+        The present value of all the replacements from a new part (a cost,
+        positive); ``inf`` with no discounting.
+    eac : float
+        The equivalent annual cost: ``discount_rate * npv``, per unit of
+        time; with no discounting, the long-run cost rate.
+    cycle_cost : float
+        The present value of the first cycle's replacement: ``cu`` at a
+        failure, ``cp`` at ``age``, each discounted to when it falls.
+    """
+
+    age: float
+    discount_rate: float
+    npv: float
+    eac: float
+    cycle_cost: float
+
+
+def age_replacement_value(
+    part, age, *, discount_rate: float = 0.0
+) -> AgeReplacementValue:
+    """See ``NonRepairable.age_replacement_value``."""
+    part._require_costs()
+    if not (checks.is_number(age) and 0.0 < float(age) < math.inf):
+        raise ValueError(
+            f"age must be a finite number, more than 0; got {age!r}."
+        )
+    age = float(age)
+    rate = _number(discount_rate, "discount_rate")
+    # The chance of reaching the planned replacement, discounted to then
+    # (kept), and of failing before it, discounted (failed): with M the
+    # discounted mean time up, 1 - kept - rate * M, by parts.
+    kept = math.exp(-rate * age) * float(
+        np.ravel(part.reliability_function(age))[0]
+    )
+    length = _discounted_length(part, 0.0, age, rate)
+    failed = max(1.0 - kept - rate * length, 0.0)
+    cycle = part.cu * failed + part.cp * kept
+    if rate == 0.0:
+        # Renewal reward: the cost of a cycle over its mean length.
+        return AgeReplacementValue(age, rate, math.inf, cycle / length, cycle)
+    # Fox (1966): the cycle's cost over 1 - L, where L, the cycle's
+    # discount, is 1 - rate * length.
+    npv = cycle / (rate * length)
+    return AgeReplacementValue(age, rate, npv, rate * npv, cycle)

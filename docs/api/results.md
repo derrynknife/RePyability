@@ -30,6 +30,8 @@
 
 ::: repyability.ExpectedCost
 
+::: repyability.ExpectedNPV
+
 ::: repyability.ConfidenceInterval
 
 ::: repyability.ControlVariate
@@ -83,6 +85,8 @@
 ::: repyability.OptionValue
 
 ::: repyability.DelayEffect
+
+::: repyability.AgeReplacementValue
 
 ::: repyability.SlackEffect
 

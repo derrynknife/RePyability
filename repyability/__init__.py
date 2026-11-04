@@ -44,6 +44,7 @@ from repyability.demonstration import (
 )
 from repyability.fault_tree import FaultTree
 from repyability.maintenance import (
+    AgeReplacementValue,
     Calendar,
     CalendarPolicy,
     DelayEffect,
@@ -108,6 +109,7 @@ from repyability.rbd.results import (
     EventsByWindow,
     ExpectedCost,
     ExpectedEvents,
+    ExpectedNPV,
     FailureCriticalityIndex,
     FailureForecast,
     Lever,
@@ -199,6 +201,7 @@ __all__ = [
     "CostResult",
     "ExpectedCost",
     "ExpectedEvents",
+    "ExpectedNPV",
     "EventsByWindow",
     "CostByWindow",
     "StructureSummary",
@@ -223,6 +226,7 @@ __all__ = [
     "ReplacementComparison",
     "OptionValue",
     "DelayEffect",
+    "AgeReplacementValue",
     "SlackEffect",
     "RenewalForecast",
     "LayeredVisits",

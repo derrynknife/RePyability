@@ -120,6 +120,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
         [
             ("Long-run cost rate", ("expected_cost_rate",)),
             ("Expected cost in a window", ("expected_cost",)),
+            ("Expected net present value", ("expected_npv",)),
             ("Cost in each of a run of windows", ("cost_by_window",)),
             ("Simulated cost (distribution)", ("cost",)),
             ("Total cost of ownership", ("total_cost",)),
@@ -313,7 +314,7 @@ FAMILIES: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {
             "Over time",
             ("point_availability", "mission_availability", "expected_events"),
         ),
-        ("Costs", ("expected_cost_rate", "expected_cost")),
+        ("Costs", ("expected_cost_rate", "expected_cost", "expected_npv")),
         (
             "Importance",
             (

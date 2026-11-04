@@ -233,6 +233,7 @@ def _integrated(
     ends: np.ndarray,
     horizon: float,
     relative: Optional[float] = None,
+    rate: float = 0.0,
 ) -> np.ndarray:
     """The integral from 0 to each of ``ends`` of the system's point
     availability, ``system_at``, from its nodes' ``curves`` (over the
@@ -241,7 +242,10 @@ def _integrated(
     ``relative``, a time scale, to a tolerance relative to the integral
     itself, pieces being halved down to that scale where the grids are
     coarser: for an unavailability, small, and changing in closed form
-    faster than the grids (#237)."""
+    faster than the grids (#237). With a ``rate`` above 0 each moment is
+    weighed by ``exp(-rate * t)``, the present value of a steady value
+    earned while the system works (``expected_npv``); the settled level
+    and the cycles after it are summed in closed form."""
     from repyability.rbd._curves import _MISSION_POINTS, _settling
 
     # After ``settle`` the system's availability is constant, or repeats
@@ -258,7 +262,10 @@ def _integrated(
 
     def estimate(a, b):
         x, half = _quadrature.points(a, b)
-        return {"up": _quadrature.summed(system_at(x), half)}
+        values = system_at(x)
+        if rate:
+            values = values * np.exp(-rate * x)
+        return {"up": _quadrature.summed(values, half)}
 
     try:
         edges, finest = _quadrature.pieces(
@@ -287,14 +294,35 @@ def _integrated(
     if beyond.any():
         if period is None:
             level = system_at(np.array([horizon]))[0]
-            totals[beyond] = uptime(reach) + (ends[beyond] - reach) * level
+            span = ends[beyond] - reach
+            # The level's integral from ``reach``: exp(-rate reach)
+            # (1 - exp(-rate span)) / rate, or ``span`` undiscounted.
+            weight = (
+                span
+                if not rate
+                else math.exp(-rate * reach) * -np.expm1(-rate * span) / rate
+            )
+            totals[beyond] = uptime(reach) + weight * level
         else:
             base = uptime(settle)
-            totals[beyond] = (
-                base
-                + cycles * (uptime(reach) - base)
-                + (uptime(settle + rest) - base)
-            )
+            if rate:
+                # Each cycle is worth exp(-rate period) of the one
+                # before: a geometric sum.
+                q = math.exp(-rate * period)
+                repeats = -np.expm1(-rate * period * cycles) / -math.expm1(
+                    -rate * period
+                )
+                totals[beyond] = (
+                    base
+                    + (uptime(reach) - base) * repeats
+                    + q**cycles * (uptime(settle + rest) - base)
+                )
+            else:
+                totals[beyond] = (
+                    base
+                    + cycles * (uptime(reach) - base)
+                    + (uptime(settle + rest) - base)
+                )
     return totals
 
 
@@ -425,8 +453,11 @@ def expected_cost(
     state,
     *,
     discount_rate: float,
+    cells: Optional[dict] = None,
 ) -> ExpectedCost:
-    """See ``RepairableRBD.expected_cost``."""
+    """See ``RepairableRBD.expected_cost``. With ``cells`` (a dict), it is
+    filled with each component's cost by category, ``{(node, category):
+    values}``, as ``expected_npv``'s cash-flow table needs."""
     _requirements._require_costs(rbd)
     rate = _discount_rate(discount_rate)
     if rate > 0.0 and rbd.has_costs:
@@ -434,7 +465,7 @@ def expected_cost(
             _horizons(t, 0.0), rate, partial(_requirements._mean_lives, rbd)
         )  # warns of a rate that discounts the costs away
         return _discounted_cost(
-            rbd, t, rate, working_nodes, broken_nodes, method, state
+            rbd, t, rate, working_nodes, broken_nodes, method, state, cells
         )
     if not rbd.has_costs:
         # An acquisition cost alone: no running cost, exactly.
@@ -495,6 +526,9 @@ def expected_cost(
         for category, charge in charges:
             categories[category] = categories[category] + charge
             own = own + charge
+            if cells is not None:
+                cell = (node, category)
+                cells[cell] = cells.get(cell, 0.0) + charge
         by_component[node] = _shaped(own, t, windows)
     if rbd.downtime_cost_rate:
         categories["system_downtime"] = rbd.downtime_cost_rate * (
@@ -529,7 +563,14 @@ def expected_cost(
 
 
 def _discounted_cost(
-    rbd, t, rate: float, working_nodes, broken_nodes, method: str, state
+    rbd,
+    t,
+    rate: float,
+    working_nodes,
+    broken_nodes,
+    method: str,
+    state,
+    cells: Optional[dict] = None,
 ) -> ExpectedCost:
     """``expected_cost`` at ``t`` discounted at ``rate`` (#231): each
     window's ``exp(-r T) C(T) + r * integral_0^T exp(-r s) C(s) ds``,
@@ -543,23 +584,34 @@ def _discounted_cost(
     ends = windows.ravel()
     horizon = float(ends.max()) if ends.size else 0.0
     keys: list = []
+    cell_keys: list = []
 
     def values(times: np.ndarray) -> np.ndarray:
         """``C`` at ``times``: its mean, each category's and each
         component's, as rows. The longest window is worked out too, so
         that every call's curves reach it, and are shared."""
-        got = rbd.expected_cost(
+        own: Optional[dict] = {} if cells is not None else None
+        got = expected_cost(
+            rbd,
             np.append(times, horizon),
             working_nodes,
             broken_nodes,
             method,
             state,
+            discount_rate=0.0,
+            cells=own,
         )
         if not keys:
             keys.extend(got.by_component)
+            if own is not None:
+                cell_keys.extend(own)
         rows = [got.mean]
         rows += [got.by_category[category] for category in _CATEGORIES]
         rows += [got.by_component[node] for node in keys]
+        if own is not None:
+            rows += [
+                np.broadcast_to(own[k], got.mean.shape) for k in cell_keys
+            ]
         return np.vstack([np.ravel(row)[:-1] for row in rows])
 
     def rules(a: np.ndarray, b: np.ndarray):
@@ -602,6 +654,8 @@ def _discounted_cost(
     mean = next(rows)
     categories = {category: next(rows) for category in _CATEGORIES}
     components = {node: next(rows) for node in keys}
+    if cells is not None:
+        cells.update({k: next(rows) for k in cell_keys})
     return ExpectedCost(
         window=_shaped(ends, t, windows),
         mean=_shaped(mean, t, windows),
