@@ -112,6 +112,7 @@ nav:
       - Design and allocation: guide/design.md
       - Maintenance policies: guide/maintenance.md
       - Demonstration testing: guide/demonstration.md
+      - Stress-strength interference: guide/stress-strength.md
       - Timelines: guide/timelines.md
       - Simulation precision and speed: guide/simulation.md
       - Saving, reproducibility and performance: guide/saving.md
@@ -125,5 +126,6 @@ nav:
       - Node models: api/nodes.md
       - Components and maintenance: api/components.md
       - Demonstration testing: api/demonstration.md
+      - Stress-strength interference: api/stress-strength.md
       - Timelines: api/timelines.md
       - Result types: api/results.md

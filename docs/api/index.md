@@ -12,5 +12,6 @@ explanations and runnable examples, see the [user guide](../guide/index.md).
 - [Node models](nodes.md)
 - [Components and maintenance](components.md)
 - [Demonstration test planning](demonstration.md)
+- [Stress-strength interference](stress-strength.md)
 - [Timelines](timelines.md)
 - [Result types](results.md)

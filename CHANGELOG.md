@@ -23,6 +23,13 @@ other release, fixes included, the minor.
 - `NonRepairable.age_replacement_value()` (and `AgeReplacementValue`): the
   present value (Fox, 1966) and equivalent annual cost of replacing a part
   at an age or at a failure for ever; undiscounted it is `cost_rate`.
+- Stress-strength interference: `stress_strength` (the chance a strength
+  exceeds a stress, `P(strength > stress)`, from two fitted models; closed
+  forms for Normal, LogNormal, Exponential and common-shape Weibull pairs,
+  quadrature otherwise, `n_loads` independent applications of the stress,
+  `method="simulate"` and parameter-uncertainty bounds) and
+  `stress_strength_over_time` (a strength model given for each age). Both
+  models must share one unit, which is not checked.
 - The numbers behind each maintenance decision for a failure mode, in model
   time: `run_to_failure`, `scheduled_replacement`, `failure_finding` (with
   `optimal_failure_finding_interval`, by a target on the mean unavailability
