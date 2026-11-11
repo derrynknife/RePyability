@@ -48,7 +48,13 @@ class MissionDrivers(_ResultMapping):
 
     def top(self, phase: Hashable) -> Optional[Hashable]:
         """The block whose never failing would lower the failure
-        probability of ``phase`` the most (None if none would)."""
+        probability of ``phase`` the most (None if none would).
+
+        Parameters
+        ----------
+        phase : Hashable
+            The phase's name.
+        """
         best, fall = None, 0.0
         for block, falls in self.falls.items():
             if falls[phase] > fall:
@@ -73,8 +79,10 @@ class MissionPhaseSummary(_ResultMapping):
     ----------
     name : Hashable
         The phase's name.
-    start, end : float
-        When it starts and ends, from the mission's start.
+    start : float
+        When it starts, from the mission's start.
+    end : float
+        When it ends, from the mission's start.
     failure_probability : float
         The probability that the mission fails in it: gets through the
         earlier phases and not this one.
@@ -122,8 +130,10 @@ class MissionSummary(_ResultMapping):
         Why it was simulated (``None`` when exact).
     duration : float
         The mission's length.
-    reliability, unreliability : float
-        The probabilities that the mission succeeds and fails.
+    reliability : float
+        The probability that the mission succeeds.
+    unreliability : float
+        The probability that it fails.
     interval : ConfidenceInterval or None
         Simulated: the reliability's confidence interval.
     times : numpy.ndarray
