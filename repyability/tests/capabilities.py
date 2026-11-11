@@ -69,6 +69,8 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 "Each phase's failure probability",
                 ("phase_failure_probabilities",),
             ),
+            ("Reliability over a mission's time", ("reliability_over_time",)),
+            ("A mission's results from one run", ("summary",)),
         ],
     ),
     (
@@ -153,7 +155,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                     "count_minimal_cut_sets",
                 ),
             ),
-            ("Convert to and from an RBD", ("to_rbd", "from_rbd")),
+            (
+                "Convert to and from an RBD",
+                ("to_rbd", "from_rbd", "from_diagram"),
+            ),
             (
                 "Capacity distribution",
                 ("capacity_distribution", "system_capacity"),
@@ -186,6 +191,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Differential (DIM)", ("differential_importance",)),
             ("Joint (second order)", ("joint_importance",)),
             ("Barlow-Proschan", ("barlow_proschan_importance",)),
+            (
+                "Each block's part in each phase's failures",
+                ("failure_drivers",),
+            ),
             (
                 "Rate of change over time",
                 ("reliability_rate", "availability_rate"),

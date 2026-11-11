@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 import surpyval as surv
 from scipy import integrate
+from scipy.linalg import expm
 
 from repyability import (
     AgeReplacementValue,
@@ -314,3 +315,42 @@ def test_age_replacement_value_is_checked():
         NonRepairable(
             surv.Weibull.from_params([1000.0, 2.5])
         ).age_replacement_value(5.0)
+
+
+@pytest.mark.parametrize("crews", [1, 2])
+def test_a_crew_limited_pair_is_its_markov_chain_discounted(crews):
+    # Story MX-13's oracle: two exponential pumps in parallel (life rate
+    # LAM, repair rate MU2), each repair costing 10 at the failure, and the
+    # system down (both pumps down) costing 100 per unit time. With n pumps
+    # down (0, 1, 2) the chain built here, sharing no code with the
+    # package, has
+    #   0 -> 1 at 2 LAM;  1 -> 2 at LAM;  1 -> 0 at MU2;
+    #   2 -> 1 at MU2 (one crew) or 2 MU2 (two crews),
+    # and cost rates r = (2 LAM 10, LAM 10, 100). The present value over
+    # H from all up is e_0^T (dI - Q)^-1 (I - exp(-(dI - Q) H)) r, which
+    # tends to e_0^T (dI - Q)^-1 r as H grows.
+    mu2, delta, horizon = 0.02, DELTA, 5000.0
+    spec = {
+        "reliability": surv.Exponential.from_params([LAM]),
+        "repairability": surv.Exponential.from_params([mu2]),
+        "repair_cost": 10.0,
+    }
+    rbd = RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {"a": dict(spec), "b": dict(spec)},
+        repair_crews=crews,
+        downtime_cost_rate=100.0,
+    )
+    both = mu2 * crews
+    q = np.array(
+        [
+            [-2 * LAM, 2 * LAM, 0.0],
+            [mu2, -(mu2 + LAM), LAM],
+            [0.0, both, -both],
+        ]
+    )
+    m = delta * np.eye(3) - q
+    rates = np.array([2 * LAM * 10.0, LAM * 10.0, 100.0])
+    by_hand = np.linalg.solve(m, (np.eye(3) - expm(-m * horizon)) @ rates)
+    result = rbd.expected_npv(horizon, discount_rate=delta)
+    assert result.cost == pytest.approx(by_hand[0], rel=1e-6)

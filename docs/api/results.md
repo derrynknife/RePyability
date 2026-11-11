@@ -6,6 +6,12 @@
 
 ::: repyability.AvailabilityResult
 
+::: repyability.MissionSummary
+
+::: repyability.MissionPhaseSummary
+
+::: repyability.MissionDrivers
+
 ::: repyability.CapacityDistribution
 
 ::: repyability.StructureSummary
@@ -91,6 +97,10 @@
 ::: repyability.SlackEffect
 
 ::: repyability.RenewalForecast
+
+::: repyability.CostDistribution
+
+::: repyability.WindowCosts
 
 ::: repyability.LayeredVisits
 

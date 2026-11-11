@@ -11,6 +11,43 @@ other release, fixes included, the minor.
 
 ### Added
 
+- `PhasedMission.from_diagram(rbd, phases)`: a mission drawn as one
+  diagram, each phase (`MissionPhase(name, duration, blocks=..., k=...)`)
+  setting how its blocks behave: `"working"` (the default), `"standby"`
+  (cold standby, idle until the phase's structure needs it, started in a
+  set order, switching perfect and instant), `"guaranteed"` (ages but
+  cannot fail in the phase) or `"not_needed"` (taken as working by the
+  phase, while it ages and can fail), the covariates of a regression block
+  in the phase (`BlockSetting(state=..., covariates=...)`, age carried
+  over as along a step schedule), and the k of a vote. Missions with no
+  block on standby are exact (the Esary-Ziehms segments, 1 in a
+  guaranteed phase); with standby, simulated (one simulation across the
+  phases), with `analysis_routes()` saying which.
+- `PhasedMission.reliability_over_time(t)`, `failure_drivers()` (the fall
+  in each phase's failure probability if a block never failed, exact or
+  with common random numbers) and `summary()`, the whole mission at once
+  from one run (`MissionSummary`, `MissionPhaseSummary`,
+  `MissionDrivers`).
+- A surpyval Bayesian fit (`fit_bayes`, or `BayesianParametric.from_draws`)
+  as a life: a block of a `NonRepairableRBD`, a `NonRepairable` (and the
+  maintenance calculators on it) and a `RepairableRBD` component's life or
+  repair time take the fit as it is. Its life is the posterior predictive,
+  the survival at each posterior point averaged with the points'
+  probabilities (equal for draws; the Lomax in closed form for an
+  Exponential with a Gamma posterior), as the new `PosteriorPredictive`:
+  each function to its own precision (`ff` averaged, not `1 - sf`), its
+  quantile by inverting the mixture, its mean the points' means averaged,
+  and its draws a posterior point and a life from one uniform, so seeded
+  simulations stream it and both engines take it. It saves with the
+  diagram (the fit's own `to_dict()`, its posterior whole) and pickles.
+  The parameter-uncertainty methods refuse `"fit"` for it (its
+  uncertainty is averaged in already; give `fit.draw_models(k)` as a list)
+  and leave it out of their default draws; the credible band is not
+  carried to system results yet. A fit with an offset, a limited failure
+  population or zero inflation, or of a discrete distribution, is refused
+  for now. A surpyval Bayesian fit is no longer taken for its
+  distribution at the posterior medians by the model probes
+  (`distribution_name`).
 - `RepairableRBD.expected_npv()` (and the `ExpectedNPV` result): the
   expected net present value of running a system over a horizon, from new
   or from a state. Exact, with no simulation: the discounted expected
@@ -59,6 +96,13 @@ other release, fixes included, the minor.
   crews; a Markov chain with the system-down states absorbing, followed by
   uniformization), from new or from the components' states; the rest is
   simulated on request with `method="simulate"`.
+- `RepairableRBD.expected_events_by_window()` and `cost_by_window()` (and
+  the `EventsByWindow` and `CostByWindow` results): the work (each
+  component's replacements, repairs and tests; the system's failures and
+  planned outages) and the cost expected in each of a run of consecutive
+  windows from the system's state now, each window's own and exact; the
+  cost's spread in each window is simulated, from one seeded set of
+  histories. Also in `analysis_routes()`.
 - `RBD.structure_summary()`, `count_minimal_path_sets()` and
   `count_minimal_cut_sets()` (and the `StructureSummary` result): the
   number of components, modules, how deeply they nest, the size of the
@@ -78,6 +122,24 @@ other release, fixes included, the minor.
   interval this settles into. From a state it is still refused (a state
   does not give the level), as is a Wiener process with no drift towards
   its threshold. `analysis_routes()` says so.
+- `NonRepairable.cost_distribution()` (and the `CostDistribution`
+  result): what a part's maintenance costs over a window from its state
+  now, with its spread, under run to failure, age replacement or block
+  replacement. It gives the chance of every number of failures and
+  planned replacements in the window, and so of every cost, with the
+  mean, standard deviation, percentiles, each outcome and the chance of
+  exceeding a budget. Numerical by default, to a `precision` it reports
+  (the counts' distribution worked out by convolutions on a grid sized
+  from the life, checked against a grid twice as coarse), and simulated
+  with `method="simulate"`. Replacements take no time.
+- `NonRepairable.cost_by_window()` (and the `WindowCosts` result): a
+  part's cost in each of a run of consecutive windows from its state now,
+  with the same policies: each window's distribution of counts and cost,
+  worked out through every earlier window (a failure in one renews the
+  part for the next), the chance of each outcome (nothing, planned work
+  only, one failure, several failures) and of exceeding a budget, and the
+  whole span's own distribution. Numerical by default, simulated with
+  `method="simulate"` (the windows of the same histories).
 
 ### Changed
 
@@ -93,6 +155,14 @@ other release, fixes included, the minor.
 
 - `ROADMAP.md`. Planned work is tracked privately; questions and bug
   reports stay in the issue tracker. The user stories (`stories/`) stay.
+
+### Documentation
+
+- The user stories' statuses are brought up to date with `dev`, each
+  built part citing the test that is its oracle, and `stories/README.md`
+  says how a story gets its oracle test and status. A new test checks
+  `expected_npv` with limited repair crews against the Markov chain built
+  by hand (story MX-13).
 
 ## [0.16] - 2026-10-31
 

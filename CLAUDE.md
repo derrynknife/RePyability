@@ -4,10 +4,10 @@ Setup, branches, the checks a change needs, where tests go, pull requests,
 deprecations and releases are in [CONTRIBUTING.md](CONTRIBUTING.md); read it
 first. This file adds the internals and conventions it does not cover.
 
-**Versions (31 Oct 2026):** 0.15 is the latest release (PyPI, `v0.15`). 0.16
-is prepared on `dev` (`_version.py`, CHANGELOG dated 2026-10-31) and waits on
-the release pull request from `dev` into `main`. `dev` needs surpyval 0.26
-or later.
+**Versions (11 Nov 2026):** 0.16 is the latest release (31 Oct 2026; PyPI,
+`v0.16`, `main`). `dev` holds the work for 0.17 under the CHANGELOG's
+`[Unreleased]`; `_version.py` reads 0.16 until the release branch bumps it.
+`dev` needs surpyval 0.26 or later.
 
 ## Architecture & scope
 
@@ -447,8 +447,10 @@ or later.
   `FutureWarning` through `repyability/utils/deprecation.py`). Each
   release's removals stay gone through `test_removed_in_0_12.py`,
   `_0_13.py`, `_0_14.py` and `_0_15.py` (`NodeState`'s `phase`, #350):
-  a removed argument raises `TypeError`. 0.15 and 0.16 deprecate nothing;
-  what 0.16 would deprecate goes in 0.17 (`NEXT_REMOVAL`). A new deprecation warns
+  a removed argument raises `TypeError`. 0.15 and 0.16 deprecated nothing,
+  so 0.16 removed nothing and 0.17 has nothing to remove. `NEXT_REMOVAL`
+  (0.17) names the release that removes what 0.16 deprecates: the first
+  deprecation made for 0.17 raises it to 0.18. A new deprecation warns
   through `deprecation.renamed`, `renamed_attribute`, `called` or
   `ignored`, with a test that fails once the version reaches its removal
   (as `test_what_0_14_deprecates_goes_in_0_15` did).
@@ -537,6 +539,16 @@ limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
   surpyval's `covariance()` leaves an offset fit's `gamma` out, so
   `rbd/uncertainty.py` holds it where it was fitted, with a warning. Draw it
   once the minimum surpyval's covariance includes it.
+
+- **A Bayesian fit's predictive in the tails** (no surpyval issue yet).
+  surpyval 0.26's `BayesianParametric` gives `ff` as `1 - sf` and `Hf` as
+  `-log sf` (their precision lost below about 1e-8; its `dev` fixes this
+  for the conjugate Lomax only), and its `qf` (brentq on that `ff`)
+  raises `RuntimeError` near the upper tail of a grid posterior (`p` of
+  0.999 and above). `rbd/_bayesian_life.PosteriorPredictive` works out
+  `ff`, `Hf` and `qf` from the posterior's points itself (the quantile by
+  `_sampling.mixed_quantile`, a mixture's). Take the fit's own once the
+  minimum surpyval's are as precise and converge.
 
 Refused until surpyval has it: an ARA, ARI or G1 renewal model as a life,
 whose next failure surpyval cannot draw yet (surpyval #833,

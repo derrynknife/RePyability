@@ -36,6 +36,7 @@ from repyability.tests.catalogue import (
     E,
     W,
     fault_tree_kinds,
+    mission_kinds,
     nonrepairable_kinds,
     repairable_kinds,
 )
@@ -551,6 +552,15 @@ PHASED_CALLS = {
     "reliability_interval": (
         lambda mission: mission.reliability_interval(200, seed=1)
     ),
+    "reliability_over_time": (
+        lambda mission: mission.reliability_over_time(
+            [0.0, mission.duration], mc_samples=200, seed=1
+        )
+    ),
+    "failure_drivers": (
+        lambda mission: mission.failure_drivers(mc_samples=200, seed=1)
+    ),
+    "summary": lambda mission: mission.summary(mc_samples=200, seed=1),
 }
 
 
@@ -581,6 +591,17 @@ def test_every_mission_method_does_what_the_report_says(
     assert set(PHASED_CALLS) == set(report)
 
 
+@pytest.mark.parametrize("name", sorted(mission_kinds()))
+def test_every_mission_with_settings_does_what_the_report_says(name):
+    # A mission drawn as one diagram: exact with blocks guaranteed, not
+    # needed or at a phase's covariates; simulated with one on standby.
+    phased = mission_kinds()[name]
+    report = phased.analysis_routes()
+    for method, call in PHASED_CALLS.items():
+        behaves_as_reported(report[method], lambda: call(phased))
+    assert set(PHASED_CALLS) == set(report)
+
+
 def test_the_mission_report_covers_every_public_analysis():
     # Everything public but the report itself and the structure.
     public = {
@@ -590,6 +611,7 @@ def test_the_mission_report_covers_every_public_analysis():
     }
     assert set(mission().analysis_routes()) == public - {
         "analysis_routes",
+        "from_diagram",
         "minimal_cut_sets",
     }
 

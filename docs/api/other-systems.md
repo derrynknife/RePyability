@@ -4,4 +4,8 @@
 
 ::: repyability.PhasedMission
 
+::: repyability.MissionPhase
+
+::: repyability.BlockSetting
+
 ::: repyability.Network

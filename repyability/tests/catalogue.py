@@ -183,6 +183,18 @@ def crow_amsaa():
 
 
 @_fitted_once
+def bayes_life():
+    """A Bayesian Weibull fit, its posterior 400 draws about alpha 500
+    and beta 1.5 (from another sampler, say): its life is the posterior
+    predictive (``PosteriorPredictive``)."""
+    g = np.random.default_rng(7)
+    draws = np.c_[
+        500 * g.lognormal(0, 0.1, 400), 1.5 * g.lognormal(0, 0.1, 400)
+    ]
+    return surv.bayes.BayesianParametric.from_draws(surv.Weibull, draws)
+
+
+@_fitted_once
 def mixture_life():
     """A two-mode population, infant mortality and wear-out (#227)."""
     g = np.random.default_rng(7)
@@ -313,6 +325,7 @@ def nonrepairable_kinds():
         "fitted shares": NonRepairableRBD(EDGES, {"a": shares_life(), **rest}),
         "degradation process": NonRepairableRBD(EDGES, {"a": wear(), **rest}),
         "mixture": NonRepairableRBD(EDGES, {"a": mixture_life(), **rest}),
+        "Bayesian fit": NonRepairableRBD(EDGES, {"a": bayes_life(), **rest}),
         "degrading": NonRepairableRBD(
             EDGES,
             {
@@ -334,6 +347,50 @@ def nonrepairable_kinds():
                 capacity={"a": 5.0, "b": 5.0, "c": 5.0, "d": 5.0, "e": 5.0},
             )
         ),
+    }
+
+
+def mission_kinds():
+    """The phased missions drawn as one diagram whose analyses are checked
+    on: with blocks guaranteed, not needed, at a phase's covariates and a
+    phase's vote count (exact), and with a block on standby (simulated)."""
+    from repyability import BlockSetting, MissionPhase, PhasedMission
+
+    unit = W([100, 2])
+    edges = [
+        ("s", "a"),
+        ("s", "b"),
+        ("s", "c"),
+        ("a", "v"),
+        ("b", "v"),
+        ("c", "v"),
+        ("v", "d"),
+        ("d", "t"),
+    ]
+    models = {
+        "a": unit,
+        "b": unit,
+        "c": E([0.01]),
+        "v": PerfectReliability,
+        "d": RegressionNode(aft(), covariates=[1.0]),
+    }
+    vote = NonRepairableRBD(edges, models, k={"v": 2})
+    settings = [
+        MissionPhase(
+            "up",
+            20.0,
+            blocks={"a": "guaranteed", "d": BlockSetting(covariates=[2.0])},
+            k={"v": 3},
+        ),
+        MissionPhase("on", 30.0, blocks={"c": "not_needed"}),
+    ]
+    standby = [
+        MissionPhase("up", 20.0, blocks={"c": "standby"}),
+        MissionPhase("on", 30.0, k={"v": 1}),
+    ]
+    return {
+        "settings": PhasedMission.from_diagram(vote, settings),
+        "standby": PhasedMission.from_diagram(vote, standby),
     }
 
 
@@ -620,6 +677,9 @@ def repairable_kinds():
             ),
             "mixture life": system(
                 unit(reliability=mixture_life(), replace_cost=10.0)
+            ),
+            "Bayesian fit life": system(
+                unit(reliability=bayes_life(), replace_cost=10.0)
             ),
             "fitted Crow-AMSAA process": system(
                 unit(reliability=crow_amsaa(), repair_cost=1.0)

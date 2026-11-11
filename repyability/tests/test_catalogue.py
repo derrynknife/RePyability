@@ -30,6 +30,7 @@ from repyability import (
     NonRepairableRBD,
     PerfectReliability,
     PerfectUnreliability,
+    PosteriorPredictive,
     RegressionNode,
     RepairableRBD,
     RepeatedNode,
@@ -37,6 +38,7 @@ from repyability import (
     StandbyModel,
 )
 from repyability.rbd import routes
+from repyability.rbd._bayesian_life import as_life
 from repyability.rbd._degradation import is_degradation
 from repyability.rbd._model_utils import is_fixed_probability, is_mixture
 from repyability.rbd.results import _ResultMapping
@@ -64,6 +66,11 @@ NOT_NODES = {
     "NodeState",
     "Opportunity",
     "PhasedMission",
+    "MissionPhase",
+    "BlockSetting",
+    "MissionSummary",
+    "MissionPhaseSummary",
+    "MissionDrivers",
     "RBD",
     # A component analysed alone: a diagram takes a NonRepairable.
     "Repairable",
@@ -85,12 +92,14 @@ NONREPAIRABLE_NODES = {
     RepeatedStandbyNode,
     StandbyModel,
     JointNode,
+    PosteriorPredictive,
 }
 #: The node classes a RepairableRBD takes, as a component or its life.
 REPAIRABLE_NODES = {
     DegradingNode,
     NonRepairable,
     PerfectReliability,
+    PosteriorPredictive,
     RepairableRBD,
     StandbyModel,
 }
@@ -163,6 +172,8 @@ def model_kinds(model) -> set:
         return {"NonRepairable"} | model_kinds(model.reliability)
     if isinstance(model, JointNode):
         return {"JointNode"}
+    if isinstance(as_life(model), PosteriorPredictive):
+        return {"PosteriorPredictive"}
     if is_mixture(model):
         return {"surpyval MixtureModel"}
     if is_degradation(model):
