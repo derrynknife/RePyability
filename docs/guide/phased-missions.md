@@ -67,9 +67,10 @@ alone = (
   out; it still ages.
 - **Phases.** In order, with distinct names; a phase of no duration needs
   its diagram working at that instant (a check before take-off, say).
-- **Not modelled.** Repair between or during phases, a component ageing
-  faster in one phase than another (it has one lifetime model), and
-  common-cause groups, which a phase may not have.
+- **Not modelled here.** Repair between or during phases, and
+  common-cause groups, which a phase may not have. A block on standby, a
+  block that cannot fail in a phase, and a block's covariates by phase are
+  set on a mission drawn as [one diagram](#one-diagram-each-phase-setting-its-blocks).
 
 ## Exact and simulated
 
@@ -166,3 +167,155 @@ flight.fussell_vesely(method="rare_event")["e1"]   # -> 0.2426
 `analysis_routes()` reports each analysis as exact, or refused when the
 mission's diagram (for `fussell_vesely`, the cut sets' too) would pass
 `MAX_NODES`, and `reliability_interval` as simulated.
+
+## One diagram, each phase setting its blocks
+
+Often there is one drawing of the system, and what changes from phase to
+phase is how its blocks behave: the auxiliary power unit waits on standby,
+the navigation unit is checked and cannot fail during the take-off, the
+landing gear is not needed in the cruise, the engine vote needs both
+engines to take off and land but one to cruise, an engine runs hotter in
+the climb. `PhasedMission.from_diagram` takes the one diagram and a
+`MissionPhase` per phase, each naming the blocks it sets:
+
+```python
+from repyability import BlockSetting, MissionPhase, PerfectReliability
+
+aircraft = NonRepairableRBD(
+    [("s", "e1"), ("s", "e2"), ("e1", "engines"), ("e2", "engines"),
+     ("engines", "nav"), ("nav", "gear"), ("gear", "t")],
+    {"e1": engine, "e2": engine, "engines": PerfectReliability,
+     "nav": nav, "gear": gear},
+    k={"engines": 1},
+)
+flight = PhasedMission.from_diagram(aircraft, [
+    MissionPhase("take-off", 0.2, k={"engines": 2}, blocks={"nav": "guaranteed"}),
+    MissionPhase("cruise", 10.0, blocks={"gear": "not_needed"}),
+    MissionPhase("landing", 0.3, k={"engines": 2}),
+])
+flight.unreliability()           # -> 0.003983
+```
+
+Each block has one clock through the mission, its age, and one life: it
+fails once it has used up its life's hazard, and how a phase sets it says
+whether its clock runs and whether it uses hazard:
+
+- **`"working"`** (a block not named): it runs, ages and can fail.
+- **`"guaranteed"`**: it runs and ages, but cannot fail in this phase (its
+  hazard is taken as zero there). Afterwards it carries on from the age it
+  reached. A block that failed in an earlier phase stays failed.
+- **`"not_needed"`**: the phase takes it as working, whatever its
+  condition, but it runs, ages and can fail all the same; failed, it is
+  failed for the later phases that need it (the same as leaving it out of a
+  phase's own diagram).
+- **`"standby"`**: cold standby. It sits idle (not ageing, unable to fail)
+  until the phase needs it, then runs, ages and can fail for the rest of
+  the phase. In a later phase it follows that phase's setting: on standby
+  again, it goes idle unless needed at once. The switch over is perfect and
+  instant.
+- **covariates**: a block whose model is a `RegressionNode` with fixed
+  covariates can be given its covariates in a phase,
+  `BlockSetting(covariates=[...])` (with a state too, if wanted:
+  `BlockSetting(state="standby", covariates=[...])`). Its life follows
+  each phase's covariates along its own clock, its age carried over, as
+  a `RegressionNode` along a step schedule does (an accelerated-failure-time
+  model by its accumulated exposure, a proportional-hazards one by its
+  hazard at each phase's values). A phase that does not name it uses the
+  node's own covariates.
+- **`k`**: a phase can set the number of inputs a k-out-of-n node needs.
+
+**When a block on standby starts.** Whenever the phase's structure does not
+work (at the phase's start, or when a running block fails), taking the
+blocks that are running and not failed as working (and those not needed,
+and guaranteed ones not failed), the idle standby blocks that have not
+failed are started in the order the phase's `blocks` lists them until it
+works. Then each block just started, latest first, goes back to idle if
+the structure works without it, so only the blocks needed start. If no
+choice makes the structure work, the mission fails then.
+
+**Exact and simulated.** A mission with no block on standby is exact, as
+any phased mission is: each block's segment of a phase is survived with its
+life's probability for the stretch (1 in a phase it is guaranteed), so the
+decision diagram, the importance measures and the cut sets all work as
+above. A block on standby starts when the others fail, so a mission with
+one is simulated: each block's life drawn once per mission, and the
+missions played through the phases together, the take-overs worked out
+mission by mission. `reliability()` then refuses (pointing to
+`method="simulate"` and `reliability_interval`), as do the importance
+measures and cut sets (pointing to `failure_drivers`), and
+`analysis_routes()` says which analysis is which, and why.
+
+### The whole mission at once
+
+`summary()` gives everything about the mission from one run: exact where
+the mission is, else from one simulation. It holds the reliability (with a
+confidence interval when simulated), the reliability over a grid of times
+across the mission (20 steps a phase, each boundary included), each phase's
+failure probability, share of the failures, failure probability given it
+was reached, the reliability at its end, its blocks' settings, how often
+each standby block was started in it, and its top driver; the drivers; and
+the riskiest phase.
+
+```python
+result = flight.summary()
+result.method                    # -> 'exact'
+result.riskiest_phase            # -> 'cruise'
+landing = result.phases[2]
+landing.conditional_failure      # -> 0.00198
+landing.top_driver               # -> 'e1'
+```
+
+`reliability_over_time(t)` is the probability that the mission has not
+failed by each mission time, on one clock across the phases. It may step
+down at a phase's start, where the phase needs more than the earlier ones
+did: here the landing needs both engines again, and an engine lost in the
+cruise fails the mission as the landing starts.
+
+```python
+flight.reliability_over_time([0.2, 5.0, 10.2, 10.5])
+# -> [0.999992, 0.999033, 0.996154, 0.996017]
+```
+
+`failure_drivers()` says which blocks drove the failures: for each block
+and phase, the fall in the phase's failure probability if the block never
+failed (the mission worked out again with it held working). The total is
+the fall in the mission's unreliability. An engine matters most at the
+landing, where it is needed again:
+
+```python
+drivers = flight.failure_drivers()
+drivers.totals["nav"]            # -> 0.002054
+drivers.falls["e1"]["landing"]   # -> 0.000954
+```
+
+With an auxiliary power unit on standby to stand in for an engine, the
+mission is simulated. In the cruise one engine is enough, so the unit stays
+idle; at the landing it starts whenever an engine was lost:
+
+```python
+apu = surv.Exponential.from_params([1e-3])
+with_apu = NonRepairableRBD(
+    [("s", "e1"), ("s", "e2"), ("s", "apu"), ("e1", "engines"),
+     ("e2", "engines"), ("apu", "engines"), ("engines", "nav"),
+     ("nav", "gear"), ("gear", "t")],
+    {"e1": engine, "e2": engine, "apu": apu, "engines": PerfectReliability,
+     "nav": nav, "gear": gear},
+    k={"engines": 1},
+)
+standing_by = {"apu": "standby"}
+backed_up = PhasedMission.from_diagram(with_apu, [
+    MissionPhase("take-off", 0.2, k={"engines": 2},
+                 blocks={"nav": "guaranteed", **standing_by}),
+    MissionPhase("cruise", 10.0, blocks={"gear": "not_needed", **standing_by}),
+    MissionPhase("landing", 0.3, k={"engines": 2}, blocks=standing_by),
+])
+backed_up.analysis_routes()["summary"].route   # -> 'simulated'
+result = backed_up.summary(mc_samples=200_000, seed=1)
+result.reliability               # -> 0.9980
+result.phases[2].takeovers["apu"]   # -> 0.0018
+```
+
+**Not modelled yet.** A standby block failing to start, or taking time to
+switch over; warm standby (ageing slowly while idle); repair; common-cause
+groups. Exact values for narrow standby cases are not worked out either:
+every mission with a standby block is simulated.
