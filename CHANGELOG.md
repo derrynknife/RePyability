@@ -92,6 +92,24 @@ other release, fixes included, the minor.
   core that does not reduce, and the numbers of minimal path and cut sets,
   counted without listing them. These make public what callers had to
   reach through the private `_decomposition()`.
+- `NonRepairable.cost_distribution()` (and the `CostDistribution`
+  result): what a part's maintenance costs over a window from its state
+  now, with its spread, under run to failure, age replacement or block
+  replacement. It gives the chance of every number of failures and
+  planned replacements in the window, and so of every cost, with the
+  mean, standard deviation, percentiles, each outcome and the chance of
+  exceeding a budget. Numerical by default, to a `precision` it reports
+  (the counts' distribution worked out by convolutions on a grid sized
+  from the life, checked against a grid twice as coarse), and simulated
+  with `method="simulate"`. Replacements take no time.
+- `NonRepairable.cost_by_window()` (and the `WindowCosts` result): a
+  part's cost in each of a run of consecutive windows from its state now,
+  with the same policies: each window's distribution of counts and cost,
+  worked out through every earlier window (a failure in one renews the
+  part for the next), the chance of each outcome (nothing, planned work
+  only, one failure, several failures) and of exceeding a budget, and the
+  whole span's own distribution. Numerical by default, simulated with
+  `method="simulate"` (the windows of the same histories).
 
 ### Removed
 
