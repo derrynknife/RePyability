@@ -55,6 +55,11 @@ def within(interval_or_estimate, error, exact, z=4.0):
     return abs(interval_or_estimate - exact) <= z * error
 
 
+def binomial(p, n):
+    """The standard error of a fraction of ``n`` missions, ``p`` each."""
+    return math.sqrt(p * (1 - p) / n)
+
+
 def loads():
     """An exponential life 100 at load 1 and 25 at load 2 (as fitted)."""
     x = np.array([50.0, 100.0, 150.0, 12.5, 25.0, 37.5])
@@ -208,8 +213,9 @@ def test_cold_standby_pair_of_identical_exponentials():
     # b starts exactly when a fails within the phase: 1 - exp(-l t).
     summary = mission.summary(mc_samples=40_000, seed=1)
     assert summary.method == "simulated"
-    assert summary.phases[0].takeovers["b"] == pytest.approx(
-        1 - math.exp(-lam * t), abs=0.01
+    started = 1 - math.exp(-lam * t)
+    assert within(
+        summary.phases[0].takeovers["b"], binomial(started, 40_000), started
     )
 
 
@@ -291,8 +297,8 @@ def test_only_the_needed_spare_starts():
     second = integrate.quad(
         lambda x: l2 * math.exp(-l2 * x) * pair(l1, x), 0, t
     )[0]
-    assert started["b1"] == pytest.approx(first, abs=0.01)
-    assert started["b2"] == pytest.approx(second, abs=0.01)
+    assert within(started["b1"], binomial(first, 40_000), first)
+    assert within(started["b2"], binomial(second, 40_000), second)
 
 
 def test_standby_blocks_start_in_the_order_given():
@@ -307,13 +313,144 @@ def test_standby_blocks_start_in_the_order_given():
     summary = mission.summary(mc_samples=20_000, seed=1)
     started = summary.phases[0].takeovers
     # b: a failed by t; c: a then b failed by t (Erlang 2).
-    assert started["b"] == pytest.approx(1 - math.exp(-lam * t), abs=0.012)
-    assert started["c"] == pytest.approx(
-        1 - math.exp(-lam * t) * (1 + lam * t), abs=0.012
-    )
+    b = 1 - math.exp(-lam * t)
+    c = 1 - math.exp(-lam * t) * (1 + lam * t)
+    assert within(started["b"], binomial(b, 20_000), b)
+    assert within(started["c"], binomial(c, 20_000), c)
     # R: Erlang 3.
     closed = math.exp(-lam * t) * (1 + lam * t + (lam * t) ** 2 / 2)
     assert within(summary.reliability, summary.interval.standard_error, closed)
+
+
+def reference_take_over(works, running, ready, start, stop):
+    """One mission through a phase with blocks on standby, written from
+    the rule one event at a time: whenever the structure (``works``) does
+    not work, idle blocks (``ready``: running time left, None if failed)
+    start in order until it does, then each just started (latest first)
+    that is not needed goes back to idle; if none makes it work, the
+    mission fails then. When it fails (None if it gets through) and each
+    block started's start."""
+    starts = {}
+
+    def status(t):
+        state = {node: failing > t for node, failing in running.items()}
+        for node in ready:
+            state[node] = node in starts and starts[node][1] > t
+        return state
+
+    t = start
+    while True:
+        if not works(status(t)):
+            fresh = []
+            for node, left in ready.items():
+                if node in starts or left is None:
+                    continue
+                starts[node] = (t, t + left)
+                fresh.append(node)
+                if works(status(t)):
+                    break
+            else:
+                for node in fresh:
+                    del starts[node]
+                return t, {node: when for node, (when, _) in starts.items()}
+            for node in reversed(fresh):
+                kept = starts.pop(node)
+                if not works(status(t)):
+                    starts[node] = kept
+        upcoming = [
+            failing
+            for failing in [*running.values()]
+            + [until for _, until in starts.values()]
+            if t < failing <= stop
+        ]
+        if not upcoming:
+            return None, {node: when for node, (when, _) in starts.items()}
+        t = min(upcoming)
+
+
+@pytest.mark.parametrize(
+    "edges, spares",
+    [
+        (PAIR, ["b"]),
+        (PAIR + [("s", "c"), ("c", "t")], ["c", "b"]),
+        (PAIRS, ["b1", "b2"]),
+        (VOTE, ["c", "a"]),
+        (SERIES, ["b"]),
+    ],
+    ids=["pair", "three", "two-pairs", "vote", "series"],
+)
+def test_take_overs_of_all_missions_follow_the_rule(edges, spares):
+    # The take-overs worked out for every mission at once agree exactly
+    # with the rule played out one mission at a time, with failures and
+    # times left drawn on a coarse grid so that ties happen too.
+    from repyability.rbd._mission_runs import _take_over
+
+    nodes = sorted({n for edge in edges for n in edge} - {"s", "t"})
+    rbd = NonRepairableRBD(
+        edges,
+        {n: E([0.01]) for n in nodes},
+        k={"v": 2} if "v" in nodes else {},
+    )
+    structure = rbd._set_structure()
+    rng = np.random.default_rng(len(edges))
+    size, start, stop = 2_000, 10.0, 30.0
+    running = {
+        n: rng.integers(0, 9, size) * 5.0 for n in nodes if n not in spares
+    }
+    ready = {n: rng.integers(1, 6, size) * 5.0 for n in spares}
+    for left in ready.values():
+        left[rng.random(size) < 0.2] = np.nan
+    fail, when = _take_over(
+        structure,
+        {**running, **{n: np.full(size, -np.inf) for n in spares}},
+        ready,
+        start,
+        stop,
+    )
+    works = structure.structure_function()
+    for m in range(size):
+        expected, began = reference_take_over(
+            works,
+            {n: float(v[m]) for n, v in running.items()},
+            {
+                n: None if np.isnan(v[m]) else float(v[m])
+                for n, v in ready.items()
+            },
+            start,
+            stop,
+        )
+        assert fail[m] == (np.inf if expected is None else expected)
+        assert {n: when[n][m] for n in spares if not np.isnan(when[n][m])} == (
+            began
+        )
+
+
+def test_seeded_take_overs_are_unchanged():
+    # Recorded from the take-overs worked out one mission at a time.
+    lam, t = 0.02, 50.0
+    edges = PAIR + [("s", "c"), ("c", "t")]
+    rbd = NonRepairableRBD(edges, {n: E([lam]) for n in "abc"})
+    mission = PhasedMission.from_diagram(
+        rbd, [P("only", t, blocks={"b": "standby", "c": "standby"})]
+    )
+    summary = mission.summary(mc_samples=20_000, seed=1)
+    assert summary.reliability == 0.91965
+    assert summary.phases[0].takeovers == {"b": 0.63175, "c": 0.2629}
+    models = {"a1": E([0.02]), "b1": E([0.02]), "a2": E([0.01])}
+    models.update({"b2": E([0.01]), "m": F(0.0)})
+    mission = PhasedMission.from_diagram(
+        NonRepairableRBD(PAIRS, models),
+        [
+            P("one", 25.0, blocks={"b1": "standby", "b2": "standby"}),
+            P("two", 15.0, blocks={"b2": "standby"}),
+        ],
+    )
+    summary = mission.summary(mc_samples=20_000, seed=2)
+    assert summary.reliability == 0.7452
+    assert [ph.takeovers for ph in summary.phases] == [
+        {"b1": 0.38275, "b2": 0.2189},
+        {"b2": 0.2723},
+    ]
 
 
 def test_standby_missions_refuse_the_exact_analyses():
