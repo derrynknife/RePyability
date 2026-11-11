@@ -107,10 +107,128 @@ failures over the next 20 hours. Each pump is critical in 23% of them, however
 worn: a pump is critical to a system failure only when both pumps have failed
 and the valve works.
 
+## A measured level
+
+Some components are not just old: they are measured. A vibration level, a
+wear depth or a crack length is read, and the unit fails when it reaches a
+limit. When the unit's life is a **degradation process** fitted in surpyval
+(a `WienerProcess` or `GammaProcess`, whose life is the time the level
+takes to first reach the failure threshold), the question becomes: *we
+measured the wear; from here, how long until it reaches the threshold?*
+Give the reading as the state's `level`:
+
+```python
+from surpyval.degradation import GammaProcessModel
+
+# Bearing vibration in mm/s: healthy at 1.0, failed at 7, rising as a gamma
+# process (each year's rise a gamma of shape 4 and rate 2, so 2 mm/s a year
+# on average).
+bearing = GammaProcessModel(alpha=4.0, beta=2.0, threshold=7.0, y0=1.0)
+station = NonRepairableRBD(
+    [("s", "b1"), ("s", "b2"), ("b1", "t"), ("b2", "t")],
+    {"b1": bearing, "b2": bearing},
+)
+now = {
+    "b1": NodeState(age=2.0, level=2.4),   # two years in, still healthy
+    "b2": NodeState(age=2.0, level=5.5),   # two years in, near the limit
+}
+station.sf_given_state(1.0, now)   # -> 0.9881   the next year
+station.sf(1.0)                    # -> 1.0      two new bearings
+station.remaining_life(0.9, now)   # -> 1.516    years to 90% reliability
+station.importances_given_state(1.0, now)["birnbaum"]["b1"]   # -> 0.6472
+```
+
+Each bearing's life from now is the first passage from its own level,
+which surpyval gives (`bearing.sf(t, y0=5.5)`). A gamma process and a
+Wiener process both have **independent increments**: how the level moves
+from here does not depend on how it got here. So once the level is known,
+the age adds nothing about the life left, and it does not condition it
+again. It keeps its one meaning, the operating time, for what else needs
+it: in a `RepairableRBD`, an age replacement falls due when the operating
+time reaches its interval, whatever the level.
+
+- A level at or past the threshold is a failed unit: give `alive=False`.
+- A gamma process only rises, so its level cannot be below its starting
+  level `y0`. A Wiener path can fall, so a level below its start is taken.
+- A level needs a degradation process as the unit's life (the node's, or
+  the unit's own `model`, below); any other life refuses it.
+- The levels, the threshold and the process's scale are in one unit of
+  measure: measuring in other units, scaled together, changes nothing.
+
+In a [`RepairableRBD`][repyability.RepairableRBD], the unit measured is the
+one in service now; its replacements are new, starting at the process's
+`y0`:
+
+```python
+from repyability import RepairableRBD
+
+plant = RepairableRBD(
+    [("s", "b"), ("b", "t")],
+    {"b": {"reliability": bearing,
+           "repairability": surv.Exponential.from_params([52.0]),
+           "replace_cost": 4000.0}},
+)
+worn = {"b": NodeState(age=2.0, level=5.5)}
+plant.expected_failures(3.0)               # -> 0.4631   three years from new
+plant.expected_failures(3.0, state=worn)   # -> 1.1438   from bearing 2 now
+```
+
+## A unit's own model
+
+Sometimes one unit is known better than its fleet: a model refitted to its
+own history, or one conditioned on its own readings. Give it as the
+state's `model`: it is used instead of the node's for the unit in service
+now, conditioned on its `age` as the node's model would be.
+
+```python
+W = surv.Weibull.from_params
+pumps = NonRepairableRBD(
+    [("s", "p1"), ("s", "p2"), ("p1", "t"), ("p2", "t")],
+    {"p1": W([20000, 2.0]), "p2": W([20000, 2.0])},
+)
+aged = {"p1": NodeState(age=6000), "p2": NodeState(age=6000)}
+mine = {"p1": NodeState(age=6000, model=W([9000, 2.5])), "p2": NodeState(age=6000)}
+pumps.sf_given_state(2000, aged)   # -> 0.9954   the fleet's model for both
+pumps.sf_given_state(2000, mine)   # -> 0.9785   pump 1 refitted to itself
+```
+
+- The model must be one the node could itself have been given as its life
+  in that diagram (a fitted surpyval model, a `RegressionNode` at the
+  unit's covariates, a degradation process, ...); a joint model's
+  prediction of the unit from its readings (a
+  [`JointNode`](#a-unit-with-readings-joint-models)) is taken too, at its
+  prediction's age, as it already is from now. Standby, load-sharing and
+  repeated nodes and nested diagrams take no state, so no model either.
+- Given the node's own model, it is exactly the age alone.
+- In a `RepairableRBD` the model is that of the unit in service at the
+  start only: the units that replace it have the node's life again. So a
+  joint model's prediction, which a repaired component refuses as its life,
+  can be the life of the unit in service now. A probability of failing
+  cannot: a repaired unit's life is a time.
+- A `level` with a `model` is a level of that model's process.
+- A state with a `level` or a `model` describes a working unit: with
+  `alive=False`, `stationary=True` or a `virtual_age` it is refused.
+
+**Where they are taken.** A `NonRepairableRBD`'s `sf_given_state`,
+`remaining_life`, `mean_residual_life` and `importances_given_state`; a
+`RepairableRBD`'s exact analyses from a state (`point_availability`,
+`mission_availability`, `expected_failures`, `expected_cost`,
+`expected_npv`, ...) and its simulations from a state (`availability`,
+`cost`, `simulate_timelines`, ..., in the Python engine, as every start
+from a state is), for a unit on its own or on age or block replacement.
+A unit tested for hidden failures, repaired imperfectly, run part of the
+time (a `"duty"`), in a common-cause or standby group or replaced on
+condition starts its units its own way, and refuses them as not worked out
+yet; so does the Markov chain of limited repair crews (simulate them) and
+of the first system failure of a structure that is not a series.
+
 ## What can take a state
 
 - Parametric distributions and `RegressionNode`s age.
   For them, `NodeState(age=0)` is the same as leaving the node out.
+- A degradation process takes a measured `level` too, and any node that
+  takes a state takes a `model` of its unit's own: see
+  [above](#a-measured-level).
 - A [`JointNode`][repyability.JointNode] (a unit of a joint model, given
   its readings) takes its age from its prediction: see
   [below](#a-unit-with-readings-joint-models).

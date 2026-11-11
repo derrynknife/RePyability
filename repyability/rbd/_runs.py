@@ -8,7 +8,6 @@ itself (``_run``, ``_replicate``) stays with the diagram. The methods of
 ``RepairableRBD`` of those names call these.
 """
 
-import dataclasses
 import hashlib
 import json
 from functools import partial
@@ -31,7 +30,7 @@ from repyability.rbd import (
     _conditional,
 )
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.rbd import _streams, _timeline_runs
+from repyability.rbd import _overrides, _streams, _timeline_runs
 from repyability.rbd._exact import (
     bin_totals,
 )
@@ -106,7 +105,7 @@ def _state_key(states: dict) -> Optional[str]:
             if isinstance(start, NodeState):
                 if start.new:
                     continue
-                value: Any = dataclasses.asdict(start)
+                value: Any = _overrides.state_to_dict(start)
             else:
                 value = plain(start)
                 if not value:
@@ -147,7 +146,7 @@ def _states_from_key(rbd, key: Optional[str]) -> dict:
         for name, value in entries:
             node = nodes[name]
             if isinstance(value, dict):
-                out[node] = NodeState(**value)
+                out[node] = _overrides.state_from_dict(value)
             else:
                 out[node] = states(rbd.components[node], value)
         return out

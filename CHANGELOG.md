@@ -11,6 +11,24 @@ other release, fixes included, the minor.
 
 ### Added
 
+- `NodeState.level` and `NodeState.model`: a unit's own life in a state.
+  `level` is the degradation level measured now on a unit whose life is a
+  surpyval Wiener or gamma degradation process: its life from now is the
+  first passage from that level to the failure threshold, and its `age`
+  stays its operating time (it conditions the life no further, the
+  processes' increments being independent of their past). `model` is a
+  life model of the unit's own (refitted to it, or a joint model's
+  prediction from its readings), used instead of the node's for the unit in
+  service now; in a `RepairableRBD` its replacements have the node's life
+  again. Both are taken by `NonRepairableRBD.sf_given_state`,
+  `remaining_life`, `mean_residual_life` and `importances_given_state`,
+  and by a `RepairableRBD`'s exact analyses and simulations from a state,
+  for a unit on its own or on age or block replacement; the rest (tested,
+  imperfectly repaired, duty-cycled, grouped units, replacement on
+  condition, the crews' and first failure's Markov chains) refuse them as
+  not worked out yet. See the guide's "A measured level" and "A unit's own
+  model".
+
 - `RepairableRBD.expected_npv()` (and the `ExpectedNPV` result): the
   expected net present value of running a system over a horizon, from new
   or from a state. Exact, with no simulation: the discounted expected

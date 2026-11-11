@@ -27,6 +27,7 @@ from repyability.rbd import (
     _chain_transient,
     _crews,
     _long_run,
+    _overrides,
     _repairable_capacity,
     _requirements,
     _standby_chain,
@@ -85,9 +86,12 @@ from repyability.utils.checks import (
 def _draws_start(start) -> bool:
     """Whether a component started from ``start`` (a ``NodeState``, or
     None for new) draws what is left of its life, repair or maintenance:
-    when it is down, or up at an age. Up at age 0, it is new, whatever its
-    ``since_scheduled``."""
-    return isinstance(start, NodeState) and (not start.alive or start.age > 0)
+    when it is down, up at an age, or up with a life of its own (a
+    measured level, or its own model). Up at age 0 with the node's life,
+    it is new, whatever its ``since_scheduled``."""
+    return isinstance(start, NodeState) and (
+        not start.alive or start.age > 0 or start.own_life
+    )
 
 
 #: Why a simulation does not start in the long-run state.
@@ -730,7 +734,8 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
     ):
         raise NotImplementedError(
             f"Component {node!r} is replaced on condition by its "
-            "measured degradation level, which a state does not give: "
+            "measured degradation level, and starting that policy from a "
+            "state (a measured level among them) is not worked out yet: "
             "leave it out (new)."
         )
     if (
@@ -799,13 +804,19 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
                 "since it was renewed, which a state does not give: "
                 "leave it out (new)."
             )
+    component = rbd.components[node]
+    life = component.reliability
+    if state.own_life:
+        life = _check_own_life(rbd, node, state, simulated)
     if state.stationary or (
-        state.alive and not state.age and not state.virtual_age
+        state.alive
+        and not state.age
+        and not state.virtual_age
+        and not state.own_life
     ):
         return
-    component = rbd.components[node]
     for what, model in [
-        ("reliability", component.reliability),
+        ("reliability", life),
         ("repairability", component.time_to_replace),
     ]:
         if is_fixed_probability(model):
@@ -821,7 +832,11 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
         if inspection is not None:
             since = min(state.age, state.since_scheduled or 0.0)
         age = state.age - since + (state.virtual_age or 0.0)
-        survive = _sf_values(component.reliability.sf, np.array([age]))
+        if state.own_life:
+            # Its own life, at its age within it (from now: 0).
+            own, at = _overrides.life_now(node, component, state)
+            life, age = own, 0.0 if at is None else at
+        survive = _sf_values(life.sf, np.array([age]))
         if not survive[0] > 0.0:
             raise ValueError(
                 f"Component {node!r} cannot be up at age {age:g}: its "
@@ -841,6 +856,60 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
             f"{'maintenance' if state.maintenance else 'repair'} is "
             "always over by then."
         )
+
+
+def _check_own_life(rbd, node, state: NodeState, simulated: bool):
+    """Raise if component ``node`` cannot start with a life of its own
+    (``state.level`` or ``state.model``, see ``_overrides``): its own
+    model must be one the component could have been given, and its level
+    one of the life it is of; and the unit must be one whose first life
+    the analyses follow by itself (a plain unit, or one on age or block
+    replacement), not one tested for hidden failures, repaired
+    imperfectly, run part of the time, in a standby or common-cause
+    group, replaced on condition, or (outside a simulation) in a repair
+    crews' Markov chain, each of which starts its units its own way.
+    Return the life of the unit in service now."""
+    from repyability.rbd.non_repairable_rbd import _check_joint_state
+
+    life = _overrides.unit_life(node, rbd.components[node], state)
+    # A joint model's unit is at its prediction's age.
+    _check_joint_state(node, life, state)
+    what = None
+    schedule = rbd._preventive.get(node)
+    spec = getattr(rbd, "_init_args", {}).get("components", {}).get(node)
+    if node in rbd._inspection:
+        what = "is tested for hidden failures"
+    elif node in rbd._imperfect:
+        what = "is repaired imperfectly"
+    elif node in rbd._standby:
+        what = "is a standby group"
+    elif isinstance(spec, dict) and spec.get("duty") is not None:
+        what = "operates part of the time (a duty)"
+    elif any(node in group.members for group in rbd.ccf_groups):
+        what = "is in a common-cause group"
+    elif schedule is not None and schedule.policy == "condition":
+        what = "is replaced on condition"
+    elif (
+        not simulated
+        and _crews._crews_limited(rbd)
+        and node in _crews._crew_served(rbd)
+    ):
+        what = (
+            "shares limited repair crews, whose Markov chain takes "
+            "exponential lives"
+        )
+    if what is not None:
+        raise NotImplementedError(
+            f"Component {node!r} {what}: starting it with a life of its "
+            "own (a measured level, or its own model) is not worked out "
+            "yet. Give its age alone, or leave it out (new)."
+            + (
+                " Or simulate it: availability(state=...)."
+                if "crews" in what
+                else ""
+            )
+        )
+    return life
 
 
 def _simulation_states(rbd, state, forced=frozenset()) -> dict:
@@ -887,6 +956,15 @@ def _check_simulated(rbd, states: dict) -> None:
                 "surpyval parametric ones), so it cannot start part way "
                 "through a life or repair: leave it out (new)."
             )
+        if start.own_life and start.model is not None:
+            life, at = _overrides.life_now(node, component, start)
+            if at is not None and stream_sampler(life) is None:
+                raise NotImplementedError(
+                    f"Component {node!r}: its own model draws its events "
+                    "its own way (it is not a surpyval parametric one), so "
+                    "a simulation cannot draw what is left of its life: "
+                    "give a surpyval parametric model."
+                )
         if not start.alive and node in served:
             in_hand += 1
     if served and in_hand > rbd.repair_crews:  # type: ignore[operator]
@@ -1166,6 +1244,7 @@ def _crew_start(rbd, chain, states: dict) -> np.ndarray:
     exponential, however long it has taken), and none waits, so there
     can be no more down than crews."""
     named = {node: states[node] for node in chain.nodes if node in states}
+    _overrides.refuse_in_chain(named)
     stationary = [node for node, s in named.items() if s.stationary]
     if stationary:
         if len(stationary) < len(chain.nodes):
@@ -1588,6 +1667,16 @@ def _unit_curve(
             stage_model,
         )
     scale = _up_scale(life, age)
+    if first is not None and start is not None and start.own_life:
+        # The grid follows the first life too, which may be the shorter.
+        own, _ = _overrides.life_now(node, component, start)
+        first_scale = _up_scale(own, None)
+        if np.isfinite(first_scale) and first_scale > 0.0:
+            scale = (
+                first_scale
+                if not np.isfinite(scale)
+                else min(scale, first_scale)
+            )
     if schedule is not None:
         up, cycle, _, _ = _long_run._maintenance_cycle(rbd, node, schedule)
     else:
@@ -1753,7 +1842,21 @@ def _first_unit(
     its repair or maintenance (``G(r + s) / G(r)``, after ``r`` so
     far). ``_check_state`` has checked that it can be in the state."""
     if start.alive:
-        a = float(start.age)
+        # Its operating age, from which its replacement falls due.
+        operated = float(start.age)
+        a = operated
+        if start.own_life:
+            # A life of its own (from a measured level, or its own model),
+            # at its age within it (0 for one from now).
+            if stage_model is not None:
+                raise NotImplementedError(
+                    f"Component {node!r} degrades through stages, which a "
+                    "life of its own (a measured level, or its own model) "
+                    "does not have: give its age alone."
+                )
+            life, at = _overrides.life_now(node, rbd.components[node], start)
+            up_sf, up_splits = life.sf, point_knots(life)
+            a = 0.0 if at is None else at
         survive = float(_sf_values(up_sf, np.array([a]))[0])
 
         def cdf(s):
@@ -1767,7 +1870,7 @@ def _first_unit(
         return First(
             cdf,
             splits[splits > 0.0],
-            None if age is None else age - a,
+            None if age is None else age - operated,
             stages=None if stage_model is None else stages,
         )
     if start.maintenance:

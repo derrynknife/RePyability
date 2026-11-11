@@ -34,7 +34,7 @@ from typing import Any, Dict, NoReturn, Optional, Tuple
 import numpy as np
 
 from repyability.rbd import _crew_chain as crew_chain
-from repyability.rbd import _curves
+from repyability.rbd import _curves, _overrides
 from repyability.rbd._common import _constant_rate, _repair_rate
 from repyability.rbd._mean_lifetime import mean_lifetime, model_knots
 from repyability.rbd.modular import NODE, SERIES, GraphStructure
@@ -195,7 +195,12 @@ def _series_parts(rbd, states: dict) -> list:
     for node in needed:
         state = states.get(node)
         age = 0.0 if state is None else float(state.age)
-        parts.append((rbd.components[node].reliability, age))
+        life = rbd.components[node].reliability
+        if state is not None and state.alive and state.own_life:
+            # A life of its own (see _overrides), from now or at its age.
+            life, at = _overrides.life_now(node, rbd.components[node], state)
+            age = 0.0 if at is None else at
+        parts.append((life, age))
     return parts
 
 
@@ -347,6 +352,7 @@ def _start(rbd, chain, states: dict) -> np.ndarray:
     """The chain's states' probabilities at 0 (see ``_curves._crew_start``,
     with no limit on the crews when the diagram has none)."""
     named = {node: states[node] for node in chain.nodes if node in states}
+    _overrides.refuse_in_chain(named)
     stationary = [node for node, s in named.items() if s.stationary]
     if stationary:
         if len(stationary) < len(chain.nodes):

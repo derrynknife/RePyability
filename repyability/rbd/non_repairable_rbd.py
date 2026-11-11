@@ -72,6 +72,7 @@ from ._model_utils import (
     parametric_spec,
     refuse_nonparametric,
 )
+from ._overrides import life_now, unit_life
 from ._sampling import RowSampler, column, inverse_sampler, row_sampler
 from .ccf import VALIDITY, BetaFactor, CCFGroup, as_groups, checked_groups
 from .ccf import parameters as ccf_parameters
@@ -377,6 +378,25 @@ def _check_joint_state(node, model, state: NodeState) -> None:
             "or alive=False); for the unit at another age, predict again "
             "with given= that age and its readings since."
         )
+
+
+def _stateable(model) -> bool:
+    """True if a single scalar age applies unambiguously to ``model``.
+
+    Excludes the composite / dynamic node models -- a standby arrangement,
+    a repeated node, and a nested RBD -- whose conditioning semantics are
+    out of scope for condition-based evaluation in this release.
+    """
+    return not isinstance(
+        model,
+        (
+            StandbyModel,
+            RepeatedStandbyNode,
+            LoadSharingModel,
+            RepeatedNode,
+            RBD,
+        ),
+    )
 
 
 def _check_model(node, model) -> None:
@@ -6981,22 +7001,9 @@ class NonRepairableRBD(RBD):
     # -- Condition-based ("digital twin") evaluation -----------------------
 
     def _node_is_stateable(self, model) -> bool:
-        """True if a single scalar age applies unambiguously to ``model``.
-
-        Excludes the composite / dynamic node models -- a standby arrangement,
-        a repeated node, and a nested RBD -- whose conditioning semantics are
-        out of scope for condition-based evaluation in this release.
-        """
-        return not isinstance(
-            model,
-            (
-                StandbyModel,
-                RepeatedStandbyNode,
-                LoadSharingModel,
-                RepeatedNode,
-                RBD,
-            ),
-        )
+        """True if a single scalar age applies unambiguously to ``model``
+        (see ``_stateable``)."""
+        return _stateable(model)
 
     def _validate_state(self, state) -> dict:
         """A condition-based ``state`` mapping, validated, with a plain
@@ -7043,7 +7050,12 @@ class NonRepairableRBD(RBD):
                     f"distribution components in this release; node {node!r} "
                     f"is a {type(self.reliabilities[node]).__name__}."
                 )
-            _check_joint_state(node, self.reliabilities[node], node_state)
+            life = self.reliabilities[node]
+            if node_state.alive and node_state.own_life:
+                # Its own model, if given, stands in for the node's, and a
+                # level is checked against the life it is of.
+                life = unit_life(node, life, node_state)
+            _check_joint_state(node, life, node_state)
         return state
 
     def _state_node_probabilities(self, x, state) -> Dict[Any, ArrayLike]:
@@ -7052,7 +7064,9 @@ class NonRepairableRBD(RBD):
         ``x`` is a 1-d array. Each node conditions on its own current life: a
         node absent from ``state`` uses its unconditioned reliability (age 0),
         a failed node contributes zero, and an alive node of age ``X``
-        contributes ``conditional_survival(model, x, X) = sf(X + x) / sf(X)``.
+        contributes ``conditional_survival(model, x, X) = sf(X + x) / sf(X)``,
+        of its own model if its state gives one; one at a measured level, the
+        first passage from it (see ``_overrides.life_now``).
         """
         self._require_no_ccf_for_states()
         state = self._validate_state(state)
@@ -7065,13 +7079,16 @@ class NonRepairableRBD(RBD):
                 node_probabilities[node_name] = np.atleast_1d(
                     PerfectUnreliability.sf(x)
                 )
-            elif isinstance(model, JointNode):
-                # Its reliability is from now already, at its age (which
-                # the state repeats, _check_joint_state).
-                node_probabilities[node_name] = np.atleast_1d(model.sf(x))
             else:
+                # The unit's own life (from its level, or its own model),
+                # or the node's, at its age; a joint model's unit and a
+                # life from a level are from now already (at the age the
+                # state repeats, _check_joint_state).
+                life, age = life_now(node_name, model, node_state)
                 node_probabilities[node_name] = np.atleast_1d(
-                    conditional_survival(model, x, node_state.age)
+                    life.sf(x)
+                    if age is None
+                    else conditional_survival(life, x, age)
                 )
         return node_probabilities
 
@@ -7097,7 +7114,10 @@ class NonRepairableRBD(RBD):
         A node that is alive at age ``X_i`` contributes ``R_i(x | X_i)``
         (0 where ``R_i(X_i)`` is 0), a failed node (``alive=False``)
         contributes 0, and a node left out of ``state`` contributes its
-        ordinary reliability ``R_i(x)``, as if new.
+        ordinary reliability ``R_i(x)``, as if new. A state's ``model``
+        takes the place of ``R_i`` for the unit, and a measured ``level``
+        of a degradation process makes its reliability the first passage
+        from that level (see [`NodeState`][repyability.NodeState]).
 
         Parameters
         ----------
@@ -7313,7 +7333,19 @@ class NonRepairableRBD(RBD):
             bends = np.asarray(model_kinks(model), dtype=float)
             knots.append(own)
             kinks.append(bends)
-            age = getattr(state.get(node), "age", None)
+            node_state = state.get(node)
+            age = getattr(node_state, "age", None)
+            if (
+                isinstance(node_state, NodeState)
+                and node_state.alive
+                and node_state.own_life
+            ):
+                # The unit's own life, from now or at its age.
+                life, age = life_now(node, model, node_state)
+                own = np.asarray(model_knots(life), dtype=float)
+                bends = np.asarray(model_kinks(life), dtype=float)
+                knots.append(own)
+                kinks.append(bends)
             if age:
                 knots.append(own - float(age))
                 kinks.append(bends - float(age))
