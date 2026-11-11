@@ -154,6 +154,13 @@ other release, fixes included, the minor.
   whole span's own distribution. Numerical by default, simulated with
   `method="simulate"` (the windows of the same histories).
 
+### Changed
+
+- A phased mission's take-overs by blocks on standby are worked out for
+  all the simulated missions at once with numpy, rather than one mission
+  at a time: about 5 to 10 times faster where many missions need them.
+  Results are unchanged, to the last bit for a given seed.
+
 ### Removed
 
 - `ROADMAP.md`. Planned work is tracked privately; questions and bug
