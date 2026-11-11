@@ -1,6 +1,6 @@
 """A phased mission's simulation (see ``PhasedMission``): each block's
 life drawn once per mission, then the missions played through the phases
-together, the take-overs of blocks on standby one mission at a time.
+together, the take-overs of blocks on standby included.
 
 A block's state in a mission is the age (on its life's clock, see
 ``_mission_settings``) at which it will fail if it runs on, ``end``, and
@@ -144,36 +144,31 @@ def play(
         if idle:
             for node in idle:
                 started[(j, node)] = np.zeros(size, dtype=bool)
-            works = structure.structure_function()
-            for m in np.flatnonzero(failed):
-                ready = {
-                    node: (
-                        end[node][m] - (start - offset[node][m])
-                        if dead[node][m] > start
-                        else None
-                    )
-                    for node in idle
-                }
-                fail, starts = _take_over(
-                    works,
-                    {
-                        n: float(v[m])
-                        for n, v in nodes.items()
-                        if n not in idle
-                    },
-                    ready,
-                    start,
-                    stop,
+            m = np.flatnonzero(failed)
+            ready = {
+                node: np.where(
+                    dead[node][m] > start,
+                    end[node][m] - (start - offset[node][m]),
+                    np.nan,
                 )
-                for node, (when, until) in starts.items():
-                    started[(j, node)][m] = True
-                    offset[node][m] += when - start
-                    if until <= stop:
-                        dead[node][m] = until
-                if fail is None:
-                    failed[m] = False
-                else:
-                    fails_at[m] = fail
+                for node in idle
+            }
+            fail, when = _take_over(
+                structure,
+                {n: v[m] for n, v in nodes.items()},
+                ready,
+                start,
+                stop,
+            )
+            for node in idle:
+                begun = ~np.isnan(when[node])
+                ms = m[begun]
+                until = when[node][begun] + ready[node][begun]
+                started[(j, node)][ms] = True
+                offset[node][ms] += when[node][begun] - start
+                dead[node][ms] = np.where(until <= stop, until, dead[node][ms])
+            failed[m] = fail <= stop
+            fails_at[m] = fail
             for node in idle:
                 # The time idle: the whole phase, unless started.
                 offset[node] += np.where(
@@ -203,59 +198,73 @@ def _guaranteed(life, j, end, offset, alive, start, stop) -> None:
 
 
 def _take_over(
-    works,
-    running: Dict[Hashable, float],
-    ready: Dict[Hashable, Optional[float]],
+    structure,
+    nodes: Dict[Hashable, np.ndarray],
+    ready: Dict[Hashable, np.ndarray],
     start: float,
     stop: float,
-) -> Tuple[Optional[float], Dict[Hashable, Tuple[float, float]]]:
-    """One mission through a phase with blocks on standby: when it fails
-    (None if it gets through) and when each block that was started was.
+) -> Tuple[np.ndarray, Dict[Hashable, np.ndarray]]:
+    """Missions through a phase with blocks on standby, all at once: when
+    each fails (``inf`` if it gets through) and when each block on standby
+    was started in it (``nan`` if not).
 
-    ``running`` holds when each other block fails (or failed), ``ready``
-    each standby block's running time left (None if it has failed), in the
-    order they are started. Whenever the structure (``works``) does not
-    work, at the phase's start or at a failure, idle blocks are started in
-    order until it does; then each just started (latest first) whose
-    removal still leaves it working goes back to idle. If it cannot be made
-    to work, the mission fails then. Each block started is given with
-    when it started and when it fails (or will).
+    ``nodes`` holds when each block fails (or failed), ``ready`` each
+    standby block's running time left (``nan`` if it has failed), in the
+    order they are started. Whenever the structure does not work, at the
+    phase's start or at a failure, idle blocks are started in order until
+    it does; then each just started (latest first) whose removal still
+    leaves it working goes back to idle. If it cannot be made to work, the
+    mission fails then.
+
+    The structure works at ``t`` when its lifetime, from each block's
+    failure (a block on standby's when started and running, ``-inf``
+    idle), is past ``t``; and nothing changes until it stops working, so
+    each round jumps to then.
     """
-    # Each started block's start and failure.
-    starts: Dict[Hashable, Tuple[float, float]] = {}
+    size = len(next(iter(nodes.values())))
+    times = {n: np.array(v, dtype=float) for n, v in nodes.items()}
+    for node in ready:
+        times[node] = np.full(size, -np.inf)
+    when = {node: np.full(size, np.nan) for node in ready}
+    fail = np.full(size, np.inf)
+    t = np.full(size, float(start))
 
-    def status(t: float) -> Dict[Hashable, bool]:
-        state = {node: failing > t for node, failing in running.items()}
+    def lasts(m: np.ndarray) -> np.ndarray:
+        """Until when the structure works, in missions ``m``."""
+        return structure.lifetime({n: v[m] for n, v in times.items()}, m.size)
+
+    def put_back(node: Hashable, m: np.ndarray) -> None:
+        when[node][m] = np.nan
+        times[node][m] = -np.inf
+
+    going = np.arange(size)
+    while going.size:
+        down = lasts(going)
+        going = going[down <= stop]
+        t[going] = np.maximum(t[going], down[down <= stop])
+        # Start idle blocks in order while it does not work.
+        broken = going
+        fresh = {}
         for node in ready:
-            state[node] = node in starts and starts[node][1] > t
-        return state
-
-    t = start
-    while True:
-        if not works(status(t)):
-            fresh = []
-            for node, left in ready.items():
-                if node in starts or left is None:
-                    continue
-                starts[node] = (t, t + left)
-                fresh.append(node)
-                if works(status(t)):
-                    break
-            else:
-                # It cannot be made to work: none of them is started.
-                for node in fresh:
-                    del starts[node]
-                return t, starts
-            for node in reversed(fresh):
-                kept = starts.pop(node)
-                if not works(status(t)):
-                    starts[node] = kept
-        upcoming = [
-            failing
-            for failing in [*running.values()]
-            + [until for _, until in starts.values()]
-            if t < failing <= stop
-        ]
-        if not upcoming:
-            return None, starts
-        t = min(upcoming)
+            idle = np.isnan(when[node][broken]) & ~np.isnan(
+                ready[node][broken]
+            )
+            begin = broken[idle]
+            when[node][begin] = t[begin]
+            times[node][begin] = t[begin] + ready[node][begin]
+            fresh[node] = begin
+            broken = broken[~(lasts(broken) > t[broken])]
+        # It cannot be made to work: none of them is started.
+        for node, begun in fresh.items():
+            put_back(node, np.intersect1d(begun, broken))
+        fail[broken] = t[broken]
+        going = np.setdiff1d(going, broken)
+        # Those just started that are not needed go back to idle.
+        for node in reversed(list(ready)):
+            back = np.intersect1d(fresh[node], going)
+            kept = times[node][back]
+            put_back(node, back)
+            needed = ~(lasts(back) > t[back])
+            when[node][back[needed]] = t[back[needed]]
+            times[node][back[needed]] = kept[needed]
+    return fail, when

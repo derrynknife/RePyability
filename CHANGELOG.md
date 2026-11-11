@@ -177,6 +177,11 @@ other release, fixes included, the minor.
   `control_variate=False` are unchanged. The guide's quoted mean for the
   liner example changes accordingly.
 
+- A phased mission's take-overs by blocks on standby are worked out for
+  all the simulated missions at once with numpy, rather than one mission
+  at a time: about 5 to 10 times faster where many missions need them.
+  Results are unchanged, to the last bit for a given seed.
+
 ### Removed
 
 - `ROADMAP.md`. Planned work is tracked privately; questions and bug
@@ -189,6 +194,15 @@ other release, fixes included, the minor.
   says how a story gets its oracle test and status. A new test checks
   `expected_npv` with limited repair crews against the Markov chain built
   by hand (story MX-13).
+
+### Fixed
+
+- Age replacement of a component whose life is a fitted degradation
+  process (a `"preventive": {"policy": "age", ...}` in a `RepairableRBD`,
+  and `NonRepairable.avg_replacement_time`, `find_optimal_replacement` and
+  `optimal_replacement_policy`) raised an `AttributeError`: its survival was
+  taken for a non-parametric estimate's. It is a smooth curve, and is now
+  integrated and searched as a distribution's is.
 
 ## [0.16] - 2026-10-31
 
