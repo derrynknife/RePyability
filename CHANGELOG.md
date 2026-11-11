@@ -66,6 +66,11 @@ other release, fixes included, the minor.
   counted without listing them. These make public what callers had to
   reach through the private `_decomposition()`.
 
+### Removed
+
+- `ROADMAP.md`. Planned work is tracked privately; questions and bug
+  reports stay in the issue tracker. The user stories (`stories/`) stay.
+
 ## [0.16] - 2026-10-31
 
 surpyval 0.26. RePyability is tested against surpyval 0.26 and needs it:

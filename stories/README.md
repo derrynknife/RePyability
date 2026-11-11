@@ -2,9 +2,7 @@
 
 The questions people (and the agents working for them) bring to RePyability
 that it should be able to answer. These files record *what* is wanted and
-*how we will know it is answered*. Units of work go in issues, the larger
-ideas and their designs in [ROADMAP.md](../ROADMAP.md), and the outcomes
-they serve here.
+*how we will know it is answered*.
 
 | File | Area | Stories |
 |---|---|---|

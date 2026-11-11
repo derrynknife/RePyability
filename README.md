@@ -393,13 +393,12 @@ mkdocs serve            # then open http://127.0.0.1:8000
 
 The source lives in `docs/` and `mkdocs.yml`; start with `docs/index.md`.
 
-## Roadmap
+## User stories
 
-Where RePyability is going, beyond the issue tracker: [ROADMAP.md](ROADMAP.md)
-holds the larger ideas and their designs (first among them a net present
-value simulator for maintenance plans, kept current as the plant changes),
-and [`stories/`](stories/README.md) the questions users and agents should be
-able to answer, with how we will know they are answered.
+[`stories/`](stories/README.md) holds the questions users and agents should
+be able to answer with RePyability, with how we will know they are answered.
+Questions and bug reports are welcome in the
+[issue tracker](https://github.com/derrynknife/RePyability/issues).
 
 ## Related
 
