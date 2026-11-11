@@ -48,6 +48,7 @@ from . import _montecarlo as montecarlo
 from . import _sensitivity
 from . import capacity as _capacity
 from . import redundancy_allocation
+from ._bayesian_life import as_life
 from ._degradation import check_life, is_degradation
 from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 from ._measures import (
@@ -655,7 +656,7 @@ class NonRepairableRBD(RBD):
         # PerfectReliability() stands for the class (#232).
         # A joint model's prediction is the JointNode of its unit.
         reliabilities = {
-            node: perfect_class(as_node(model))
+            node: perfect_class(as_life(as_node(model)))
             for node, model in reliabilities.items()
         }
         self._init_args = {

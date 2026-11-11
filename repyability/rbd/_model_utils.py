@@ -47,6 +47,17 @@ def is_mixture(model) -> bool:
     return type(model).__name__ == "MixtureModel"
 
 
+def is_bayesian_fit(model) -> bool:
+    """Whether ``model`` is a surpyval Bayesian fit (``fit_bayes``'s
+    ``BayesianParametric``): its ``dist`` and ``params`` are only its
+    posterior's family and medians, while its life is the posterior
+    predictive, a mixture over the posterior (see
+    ``PosteriorPredictive``)."""
+    from surpyval.bayes import BayesianParametric
+
+    return isinstance(model, BayesianParametric)
+
+
 def distribution_name(model) -> Optional[str]:
     """Return the surpyval distribution name of ``model``.
 
@@ -54,10 +65,11 @@ def distribution_name(model) -> Optional[str]:
     (e.g. a ``StandbyModel``, ``RepeatedNode``, nested RBD, or the perfect
     reliability/unreliability helpers), and for a ``MixtureModel``, whose
     ``dist`` is only its components': a mixture of exponentials is not
-    memoryless, nor is it rebuilt by ``from_params``.
+    memoryless, nor is it rebuilt by ``from_params``; and for a surpyval
+    Bayesian fit, whose life is a mixture over its posterior.
     """
     dist = getattr(model, "dist", None)
-    if dist is None or is_mixture(model):
+    if dist is None or is_mixture(model) or is_bayesian_fit(model):
         return None
     return getattr(dist, "name", None)
 

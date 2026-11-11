@@ -53,6 +53,7 @@ from typing import (
 
 import numpy as np
 
+from repyability.rbd._bayesian_life import PosteriorPredictive
 from repyability.rbd._model_utils import is_mixture, parametric_spec
 from repyability.utils.checks import seed as check_seed
 from repyability.utils.wrappers import outside_level
@@ -191,6 +192,14 @@ def _spec(model, label: str):
             "parameter covariance (expectation-maximisation leaves none), "
             "so they cannot be drawn. Give a list of alternative models "
             "instead (fitted to resampled data, say)."
+        )
+    if isinstance(model, PosteriorPredictive):
+        raise ValueError(
+            f"{label}: its model is a Bayesian fit's posterior predictive, "
+            "which has the uncertainty in its parameters averaged in "
+            "already, and no covariance to draw from. To carry its "
+            "posterior through, give a list of models drawn from it "
+            "instead (fit.draw_models(k))."
         )
     spec = parametric_spec(model)
     if spec is None:
