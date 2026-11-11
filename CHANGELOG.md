@@ -11,6 +11,26 @@ other release, fixes included, the minor.
 
 ### Added
 
+- `PhasedMission.from_diagram(rbd, phases)`: a mission drawn as one
+  diagram, each phase (`MissionPhase(name, duration, blocks=..., k=...)`)
+  setting how its blocks behave: `"working"` (the default), `"standby"`
+  (cold standby, idle until the phase's structure needs it, started in a
+  set order, switching perfect and instant), `"guaranteed"` (ages but
+  cannot fail in the phase) or `"not_needed"` (taken as working by the
+  phase, while it ages and can fail), the covariates of a regression block
+  in the phase (`BlockSetting(state=..., covariates=...)`, age carried
+  over as along a step schedule), and the k of a vote. Missions with no
+  block on standby are exact (the Esary-Ziehms segments, 1 in a
+  guaranteed phase); with standby, simulated (one simulation across the
+  phases), with `analysis_routes()` saying which.
+- `PhasedMission.reliability_over_time(t)`, `failure_drivers()` (the fall
+  in each phase's failure probability if a block never failed, exact or
+  with common random numbers) and `summary()`, the whole mission at once
+  from one run (`MissionSummary`, `MissionPhaseSummary`,
+  `MissionDrivers`).
+
+### Added
+
 - `RepairableRBD.expected_npv()` (and the `ExpectedNPV` result): the
   expected net present value of running a system over a horizon, from new
   or from a state. Exact, with no simulation: the discounted expected

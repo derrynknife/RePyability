@@ -49,13 +49,24 @@ from typing import (
 
 import numpy as np
 
+from repyability.rbd import _mission_runs
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import bdd, modular, routes
+from repyability.rbd._mission_results import (
+    MissionDrivers,
+    MissionPhaseSummary,
+    MissionSummary,
+)
+from repyability.rbd._mission_settings import (
+    Life,
+    MissionPhase,
+    behaviour,
+    life_of,
+)
 from repyability.rbd._ordered_bdd import FALSE, TRUE, OrderedBDD
-from repyability.rbd._sampling import lifetime_sampler
 from repyability.rbd.results import ConfidenceInterval
 from repyability.rbd.shannon import _plan_rows, replay, room
-from repyability.utils.checks import one_of, simulation_options
+from repyability.utils.checks import one_of, real_array, simulation_options
 from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.wrappers import numpy_seed
 
@@ -386,6 +397,15 @@ class PhasedMission:
             end += float(duration)
             self.phases.append(_Phase(name, float(duration), rbd, end, used))
         self.duration = end
+        # Each phase's settings of its blocks (none here: every block
+        # working; see ``from_diagram``), and each component's life on its
+        # running clock.
+        self._settings: List[MissionPhase] = [
+            MissionPhase(phase.name, phase.duration) for phase in self.phases
+        ]
+        self._lives: Dict[Hashable, Life] = {
+            node: Life(model) for node, model in self.components.items()
+        }
         # The decomposition of the first so many phases, once worked out.
         self._plans: Dict[int, tuple] = {}
         # The minimal cut sets, and the plan of their occurrence by
@@ -393,43 +413,299 @@ class PhasedMission:
         self._cut_sets: Optional[List[frozenset]] = None
         self._cut_plan: Optional[Tuple[tuple, Dict[Hashable, int]]] = None
 
+    @classmethod
+    def from_diagram(
+        cls, rbd: Any, phases: Sequence[MissionPhase]
+    ) -> "PhasedMission":
+        """A mission drawn as one diagram, run through phases that each
+        set how its blocks behave: one block on standby, another unable to
+        fail, a third not needed, a regression block at the phase's
+        covariates, a vote needing fewer inputs.
+
+        Each phase is a [`MissionPhase`][repyability.MissionPhase]: a
+        name, a duration, and for some blocks a state (``"working"``, the
+        default; ``"standby"``; ``"guaranteed"``; ``"not_needed"``) or a
+        [`BlockSetting`][repyability.BlockSetting] with the block's
+        covariates in the phase, and for some k-out-of-n nodes the number
+        of inputs the phase needs. Every block has one running clock
+        through the mission and one budget of hazard: it ages while it
+        runs, spends hazard while it runs and can fail, and fails once it
+        has spent its budget. Working, it runs; guaranteed, it runs but
+        spends nothing; on standby it is idle (neither ageing nor
+        spending) until the phase's structure needs it, then runs to the
+        phase's end; not needed, the structure takes it as working while
+        it runs on. The [phased missions guide](../guide/phased-missions.md)
+        has the rule for starting blocks on standby.
+
+        A mission with no block on standby is exact, as one built from a
+        diagram per phase is (each block's segments survived with its
+        life's probabilities, 1 in a phase it is guaranteed); one with a
+        block on standby is simulated. ``analysis_routes()`` says which.
+
+        Parameters
+        ----------
+        rbd : NonRepairableRBD
+            The diagram, the same in every phase but for the settings.
+        phases : Sequence[MissionPhase]
+            The phases in order, with distinct names.
+
+        Returns
+        -------
+        PhasedMission
+            The mission, with a phase per ``MissionPhase``, each with the
+            diagram as the phase sees it (a block not needed taken as
+            working, the phase's vote counts).
+
+        Raises
+        ------
+        ValueError
+            If ``rbd`` is not a ``NonRepairableRBD`` or has common-cause
+            groups, there is no phase, a phase is not a ``MissionPhase``,
+            two have one name, a phase names a block the diagram does not
+            have (or a repeated node, the input or output node, or a
+            junction), a vote count for a node not in the diagram or that
+            the diagram refuses, or covariates for a block whose model is
+            not a ``RegressionNode`` with fixed covariates, or of the wrong
+            length.
+
+        Examples
+        --------
+        Two exponential units in series, the second unable to fail in the
+        first phase: ``R = exp(-0.01 * 30) * exp(-0.02 * 20)``.
+
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import MissionPhase, NonRepairableRBD
+        >>> from repyability import PhasedMission
+        >>> series = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {
+        ...         "a": surv.Exponential.from_params([0.01]),
+        ...         "b": surv.Exponential.from_params([0.02]),
+        ...     },
+        ... )
+        >>> mission = PhasedMission.from_diagram(
+        ...     series,
+        ...     [
+        ...         MissionPhase("first", 10.0, blocks={"b": "guaranteed"}),
+        ...         MissionPhase("second", 20.0),
+        ...     ],
+        ... )
+        >>> math.isclose(mission.reliability(), math.exp(-0.3 - 0.4))
+        True
+        """
+        from repyability.rbd.non_repairable_rbd import NonRepairableRBD
+
+        if not isinstance(rbd, NonRepairableRBD):
+            raise ValueError(
+                "The diagram must be a NonRepairableRBD, got "
+                f"{type(rbd).__name__}."
+            )
+        if rbd.ccf_groups:
+            raise ValueError(
+                "The diagram has common-cause groups, which a phased "
+                "mission does not model."
+            )
+        phases = list(phases)
+        if not phases:
+            raise ValueError("A mission needs at least one phase.")
+        drawn = set(rbd.G.nodes)
+        ends = {rbd.input_node, rbd.output_node}
+        blocks = set(rbd._components()) - ends - rbd._junctions()
+        for phase in phases:
+            if not isinstance(phase, MissionPhase):
+                raise ValueError(
+                    f"Each phase must be a MissionPhase, got {phase!r}."
+                )
+            for node in phase.blocks:
+                if node in blocks:
+                    continue
+                if node in rbd.repeated:
+                    why = (
+                        f"is a repeat of {rbd.repeated[node]!r}: set the "
+                        "component it repeats"
+                    )
+                elif node in ends or node in drawn:
+                    why = "is the input or output node, or a junction"
+                else:
+                    why = "is not a node of the diagram"
+                raise ValueError(
+                    f"Phase {phase.name!r} sets block {node!r}, which {why}."
+                )
+            for node in phase.k:
+                if node not in drawn:
+                    raise ValueError(
+                        f"Phase {phase.name!r} sets the vote count of "
+                        f"{node!r}, which is not a node of the diagram."
+                    )
+        mission = cls(
+            [
+                (phase.name, phase.duration, cls._as_seen(rbd, phase))
+                for phase in phases
+            ]
+        )
+        mission._settings = phases
+        starts = [ph.end - ph.duration for ph in mission.phases]
+        mission._lives = {
+            node: life_of(node, model, phases, starts)
+            for node, model in mission.components.items()
+        }
+        return mission
+
+    @staticmethod
+    def _as_seen(rbd: Any, phase: MissionPhase) -> Any:
+        """The diagram as ``phase`` sees it: each block it does not need a
+        junction (always working), and its vote counts; the diagram itself
+        if it changes neither."""
+        from repyability.rbd.helper_classes import PerfectReliability
+        from repyability.rbd.non_repairable_rbd import NonRepairableRBD
+
+        dropped = [
+            node
+            for node, setting in phase.blocks.items()
+            if not behaviour(setting).in_structure
+        ]
+        if not dropped and not phase.k:
+            return rbd
+        given = rbd._init_args
+        reliabilities = dict(given["reliabilities"])
+        for node in dropped:
+            reliabilities[node] = PerfectReliability
+        try:
+            return NonRepairableRBD(
+                given["edges"],
+                reliabilities,
+                k={**(given["k"] or {}), **phase.k},
+                input_node=given["input_node"],
+                output_node=given["output_node"],
+                on_infeasible_rbd=given["on_infeasible_rbd"],
+            )
+        except ValueError as error:
+            raise ValueError(f"Phase {phase.name!r}: {error}") from error
+
     # ------------------------------------------------------------------
     # Exact
     # ------------------------------------------------------------------
 
-    def _at_ends(self) -> Dict[Hashable, Tuple[np.ndarray, np.ndarray]]:
-        """Each component's probabilities of working and of having failed
-        at the phases' ends, from its model (each in its own right, so a
-        small one keeps its precision)."""
-        ends = np.array([phase.end for phase in self.phases])
+    def _guaranteed(self, node: Hashable) -> List[bool]:
+        """Whether block ``node`` is guaranteed (spends no hazard) in each
+        phase."""
+        return [not behaviour(p.setting(node)).spends for p in self._settings]
+
+    def _standby(self) -> List[Hashable]:
+        """The components on standby in some phase."""
+        return [
+            node
+            for node in self.components
+            if any(behaviour(p.setting(node)).standby for p in self._settings)
+        ]
+
+    def _require_exact(self, what: Optional[str] = None) -> None:
+        """Refuse an exact analysis of a mission with blocks on standby,
+        whose take-over is simulated (``what``: an analysis that has no
+        simulated version, which then names the one to use instead)."""
+        standby = self._standby()
+        if not standby:
+            return
+        names = ", ".join(repr(node) for node in standby)
+        if what is None:
+            raise NotImplementedError(
+                f"Blocks on standby ({names}) start when the phase needs "
+                "them, which depends on the other blocks' failures, so the "
+                "mission is simulated: method='simulate', or "
+                "reliability_interval."
+            )
+        raise NotImplementedError(
+            f"The {what} of a mission with blocks on standby ({names}) is "
+            "not worked out: failure_drivers gives each block's part in "
+            "the mission's failures, simulated."
+        )
+
+    def _raw_ends(
+        self, ends: Optional[np.ndarray] = None
+    ) -> Dict[Hashable, Tuple[np.ndarray, np.ndarray]]:
+        """Each component's life's probabilities of working and of having
+        failed at the phases' ends (or at ``ends``, as many as the first
+        phases), from its model on its running clock, the mission's (each
+        in its own right, so a small one keeps its precision)."""
+        if ends is None:
+            ends = np.array([phase.end for phase in self.phases])
         out: Dict[Hashable, Tuple[np.ndarray, np.ndarray]] = {}
-        for node, model in self.components.items():
+        for node in self.components:
+            model = self._lives[node].model
             with np.errstate(all="ignore"):
                 sf = np.clip(np.ravel(model.sf(ends)).astype(float), 0, 1)
                 ff = np.clip(np.ravel(model.ff(ends)).astype(float), 0, 1)
             out[node] = (sf, ff)
         return out
 
-    def _segments(self) -> Tuple[Dict[int, float], Dict[int, float]]:
+    @staticmethod
+    def _chain(
+        sf: np.ndarray, ff: np.ndarray, guaranteed: Sequence[bool]
+    ) -> Tuple[List[float], List[float]]:
+        """A component's segments' survival probabilities and their
+        complements, from its life's at the phases' ends: the ``k``-th
+        survived with ``R(T_k) / R(T_{k-1})``, the first from the mission's
+        start (so a unit dead on arrival fails in it), and surely in a
+        phase in which it is guaranteed (where it ages but cannot fail)."""
+        p: List[float] = []
+        q: List[float] = []
+        before_sf, before_ff = 1.0, 0.0
+        for k in range(len(sf)):
+            if guaranteed[k]:
+                p.append(1.0)
+                q.append(0.0)
+            elif before_sf > 0.0:
+                p.append(min(sf[k] / before_sf, 1.0))
+                q.append(min(max(ff[k] - before_ff, 0.0) / before_sf, 1.0))
+            else:
+                p.append(0.0)
+                q.append(1.0)
+            before_sf, before_ff = sf[k], ff[k]
+        return p, q
+
+    def _at_ends(self) -> Dict[Hashable, Tuple[np.ndarray, np.ndarray]]:
+        """Each component's probabilities of working and of having failed
+        at the phases' ends: its life's, or where it is guaranteed in some
+        phase, through its segments (``F_j = F_{j-1} + R_{j-1} q_j``, so a
+        small one keeps its precision)."""
+        out = self._raw_ends()
+        for node, (sf, ff) in out.items():
+            guaranteed = self._guaranteed(node)
+            if any(guaranteed):
+                p, q = self._chain(sf, ff, guaranteed)
+                works, failed = np.empty(len(p)), np.empty(len(p))
+                before = 1.0
+                for k in range(len(p)):
+                    failed[k] = (failed[k - 1] if k else 0.0) + before * q[k]
+                    works[k] = before = before * p[k]
+                out[node] = (works, failed)
+        return out
+
+    def _segments(
+        self,
+        ends: Optional[np.ndarray] = None,
+        held: Optional[Dict[Hashable, float]] = None,
+    ) -> Tuple[Dict[int, float], Dict[int, float]]:
         """Each component's segments' survival probabilities, and their
-        complements, by element number (``component * phases + k``): the
-        ``k``-th survived with ``R(T_k) / R(T_{k-1})``, the first from the
-        mission's start (so a unit dead on arrival fails in it)."""
+        complements, by element number (``component * phases + k``; see
+        ``_chain``), at the phases' ends or at ``ends`` (the first
+        ``len(ends)`` phases, the last perhaps cut short). A component in
+        ``held`` has every segment survived with that probability (1:
+        working throughout, 0: failed from the start)."""
         count = len(self.phases)
         p: Dict[int, float] = {}
         q: Dict[int, float] = {}
-        for index, (sf, ff) in enumerate(self._at_ends().values()):
-            before_sf, before_ff = 1.0, 0.0
-            for k in range(count):
-                element = index * count + k
-                if before_sf > 0.0:
-                    p[element] = min(sf[k] / before_sf, 1.0)
-                    q[element] = min(
-                        max(ff[k] - before_ff, 0.0) / before_sf, 1.0
-                    )
-                else:
-                    p[element], q[element] = 0.0, 1.0
-                before_sf, before_ff = sf[k], ff[k]
+        held = held or {}
+        for index, (node, (sf, ff)) in enumerate(self._raw_ends(ends).items()):
+            chain = (
+                ([held[node]] * len(sf), [1.0 - held[node]] * len(sf))
+                if node in held
+                else self._chain(sf, ff, self._guaranteed(node))
+            )
+            for k, (works, fails) in enumerate(zip(*chain)):
+                p[index * count + k] = works
+                q[index * count + k] = fails
         return p, q
 
     def _families(self) -> List[List[frozenset]]:
@@ -555,6 +831,7 @@ class PhasedMission:
         """The probability that the mission gets through its first
         ``phases`` phases, and that it fails in them, each to its own
         relative precision."""
+        self._require_exact()
         return _outcomes(self._plan(phases), *self._segments())
 
     # ------------------------------------------------------------------
@@ -705,48 +982,14 @@ class PhasedMission:
         """The phase in which each of ``size`` simulated missions fails
         (its number, ``len(phases)`` for none), each component's life drawn
         once per mission from numpy's global RNG as it stands."""
-        samplers = {
-            node: lifetime_sampler(model)
-            for node, model in self.components.items()
-        }
-        if antithetic and any(s is None for s in samplers.values()):
-            raise NotImplementedError(
-                "Antithetic sampling needs every component's lives to be "
-                "drawn from uniforms (surpyval parametric distributions and "
-                "the composite nodes built from them)."
-            )
-        width = sum(s.width for s in samplers.values() if s is not None)
-        rows = size // 2 if antithetic else size
-        u = np.random.random_sample((rows, width))
-        lives: Dict[Hashable, np.ndarray] = {}
-        start = 0
-        for node, sampler in samplers.items():
-            if sampler is None:
-                model = self.components[node]
-                lives[node] = np.asarray(model.random(size), dtype=float)
-                continue
-            block = u[:, start : start + sampler.width]
-            start += sampler.width
-            if antithetic:
-                both = np.empty(size)
-                both[0::2] = sampler.draw(block)
-                both[1::2] = sampler.draw(1.0 - block)
-                lives[node] = both
-            else:
-                lives[node] = np.asarray(sampler.draw(block), dtype=float)
-        failed = np.full(size, len(self.phases))
-        for j in range(len(self.phases) - 1, -1, -1):
-            phase = self.phases[j]
-            rbd = phase.rbd
-            nodes = {
-                n: lives.get(n, np.full(size, np.inf))
-                for n in rbd._components()
-            }
-            lifetime = np.asarray(
-                rbd._set_structure().lifetime(nodes, size), dtype=float
-            )
-            failed[~(lifetime > phase.end)] = j
-        return failed
+        return self._runs(size, antithetic).phase
+
+    def _runs(
+        self, size: int, antithetic: bool = False
+    ) -> "_mission_runs.Runs":
+        """``size`` simulated missions (see ``_mission_runs``)."""
+        lives = _mission_runs.draw(self, size, antithetic)
+        return _mission_runs.play(self, lives, size)
 
     def _simulated(
         self,
@@ -761,6 +1004,28 @@ class PhasedMission:
         """The failure phases of ``mc_samples`` simulated missions (at
         least ``least``), then more while a run to ``tolerance`` needs
         them."""
+        return self._simulated_runs(
+            mc_samples,
+            seed,
+            antithetic,
+            tolerance,
+            confidence,
+            max_samples,
+            least,
+        ).phase
+
+    def _simulated_runs(
+        self,
+        mc_samples: int,
+        seed,
+        antithetic: bool = False,
+        tolerance=None,
+        confidence: float = 0.95,
+        max_samples=None,
+        least: int = 1,
+    ) -> "_mission_runs.Runs":
+        """``mc_samples`` simulated missions (at least ``least``), then
+        more while a run to ``tolerance`` needs them."""
         montecarlo.check_count(mc_samples, antithetic, "mc_samples", least)
         montecarlo.check_confidence(confidence)
         limit = montecarlo.sample_limit(
@@ -770,14 +1035,16 @@ class PhasedMission:
             antithetic,
             ("mc_samples", "max_samples"),
         )
-        parts: List[np.ndarray] = []
+        parts: List[_mission_runs.Runs] = []
         with numpy_seed(seed):
             batch = mc_samples
             while batch:
-                parts.append(self._failure_phases(batch, antithetic))
+                parts.append(self._runs(batch, antithetic))
                 batch = 0
                 if limit is not None:
-                    succeeded = np.concatenate(parts) == len(self.phases)
+                    succeeded = _mission_runs.joined(parts).phase == len(
+                        self.phases
+                    )
                     batch = montecarlo.more_samples(
                         succeeded.astype(float),
                         mc_samples,
@@ -788,7 +1055,7 @@ class PhasedMission:
                         "mission reliability",
                         "max_samples",
                     )
-        return np.concatenate(parts)
+        return _mission_runs.joined(parts)
 
     # ------------------------------------------------------------------
     # Public
@@ -1077,6 +1344,7 @@ class PhasedMission:
         >>> {k: round(v, 6) for k, v in mission.birnbaum_importance().items()}
         {'e1': 0.999, 'e2': 0.999}
         """
+        self._require_exact("importance measures")
         return {
             component: birnbaum
             for component, (birnbaum, _, _) in self._measures().items()
@@ -1126,6 +1394,7 @@ class PhasedMission:
         >>> {k: round(v, 6) for k, v in potential.items()}
         {'e1': 0.003372, 'e2': 0.003372}
         """
+        self._require_exact("importance measures")
         return {
             component: potential
             for component, (_, potential, _) in self._measures().items()
@@ -1182,6 +1451,7 @@ class PhasedMission:
         >>> round(1 / mission.unreliability(), 2)
         228.74
         """
+        self._require_exact("importance measures")
         _, failure = self._exact(len(self.phases))
         with np.errstate(divide="ignore", invalid="ignore"):
             return {
@@ -1234,6 +1504,7 @@ class PhasedMission:
         >>> {k: round(v, 4) for k, v in rrw.items()}
         {'e1': 4.374, 'e2': 4.374}
         """
+        self._require_exact("importance measures")
         _, failure = self._exact(len(self.phases))
         with np.errstate(divide="ignore", invalid="ignore"):
             return {
@@ -1316,6 +1587,7 @@ class PhasedMission:
         >>> round(1 - 1 / mission.risk_reduction_worth()["e1"], 4)
         0.7714
         """
+        self._require_exact("importance measures")
         one_of("kind", kind, ("failure", "success"))
         success, failure = self._exact(len(self.phases))
         mission, which = (failure, 1) if kind == "failure" else (success, 2)
@@ -1408,6 +1680,7 @@ class PhasedMission:
         >>> {k: round(v, 4) for k, v in fv.items()}
         {'e1': 0.7941, 'e2': 0.7941}
         """
+        self._require_exact("importance measures")
         _, failure = self._exact(len(self.phases))
         numerators = self._fv_numerators(method)
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -1471,6 +1744,7 @@ class PhasedMission:
         [('e2', 'take-off')]
         [('e1', 'cruise'), ('e2', 'cruise')]
         """
+        self._require_exact("minimal cut sets")
         if self._cut_sets is None:
             dated: List[Dict[Hashable, int]] = []
             for j, phase in enumerate(self.phases):
@@ -1494,6 +1768,428 @@ class PhasedMission:
                 key=lambda cut: (len(cut), sorted(map(str, cut))),
             )
         return list(self._cut_sets)
+
+    # ------------------------------------------------------------------
+    # The whole mission at once
+    # ------------------------------------------------------------------
+
+    def _starts(self) -> List[float]:
+        """When each phase starts, from the mission's start."""
+        return [0.0] + [phase.end for phase in self.phases[:-1]]
+
+    def _choose(self, method: Optional[str], mc_samples, seed, name: str):
+        """``"exact"`` or ``"simulate"``, and why it is simulated: by
+        default (``method=None``), exact unless a block is on standby."""
+        if method is None:
+            standby = self._standby()
+            if not standby:
+                return "exact", None
+            names = ", ".join(repr(node) for node in standby)
+            return "simulate", (
+                f"Blocks on standby ({names}) start when the phase needs "
+                "them, which depends on the other blocks' failures."
+            )
+        method = self._method(method, mc_samples, seed, name)
+        return method, (
+            "Asked for (method='simulate')." if method == "simulate" else None
+        )
+
+    def _times(self, t, name: str = "t") -> np.ndarray:
+        """``t`` checked: times from 0 to the mission's duration."""
+        times = real_array(t, name)
+        if not np.all((times >= 0.0) & (times <= self.duration)):
+            raise ValueError(
+                f"{name} must be times from 0 to the mission's duration, "
+                f"{self.duration:g}, got {t!r}."
+            )
+        return times
+
+    def _exact_over_time(self, times: np.ndarray) -> np.ndarray:
+        """The mission's exact reliability at each of ``times``: the
+        phases before the one under way (the latest to start by then)
+        whole, and that one cut short."""
+        starts, ends = self._starts(), [phase.end for phase in self.phases]
+        out = np.empty(times.shape)
+        for i, t in np.ndenumerate(times):
+            j = int(np.searchsorted(starts, t, side="right")) - 1
+            cut = ends[: j + 1] if t == ends[j] else ends[:j] + [float(t)]
+            out[i] = _outcomes(
+                self._plan(j + 1), *self._segments(np.array(cut))
+            )[0]
+        return out
+
+    def reliability_over_time(
+        self,
+        t,
+        method: Optional[str] = None,
+        *,
+        mc_samples: Optional[int] = None,
+        seed=None,
+    ):
+        """The probability that the mission has not failed by each mission
+        time ``t``, on one clock across the phases.
+
+        It falls through each phase as the blocks fail, and may step down
+        at a phase's start, where the phase needs blocks that the earlier
+        ones did not (a time at a boundary belongs to the phase starting
+        then, so a failure at its start has happened by it). At the
+        mission's duration it is the mission's reliability.
+
+        Parameters
+        ----------
+        t : float or array_like
+            Times from 0 to the mission's duration.
+        method : str, optional
+            ``"exact"``: each time's phase cut short there, the earlier
+            ones whole, through the mission's decision diagram.
+            ``"simulate"``: the fraction of simulated missions not failed
+            by then. By default exact, unless a block is on standby.
+        mc_samples : int, optional
+            The number of simulated missions, by default 10_000 (used only
+            when simulated).
+        seed : int, optional
+            Seeds the simulation, by default None.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The reliability at each time: a float for a scalar ``t``.
+
+        Raises
+        ------
+        ValueError
+            If a time is not from 0 to the duration, or ``method`` is
+            unknown, or ``mc_samples`` or ``seed`` is given with
+            ``method="exact"``.
+        NotImplementedError
+            With ``method="exact"``, if a block is on standby, or the
+            mission's decision diagram is too large.
+
+        Examples
+        --------
+        One exponential unit through two phases: ``R(t) = exp(-0.01 t)``
+        across them.
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> unit = surv.Exponential.from_params([0.01])
+        >>> one = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": unit})
+        >>> mission = PhasedMission([("out", 10.0, one), ("back", 10.0, one)])
+        >>> [round(r, 6) for r in mission.reliability_over_time([5.0, 15.0])]
+        [0.951229, 0.860708]
+        """
+        times = self._times(t)
+        method, _ = self._choose(
+            method, mc_samples, seed, "reliability_over_time"
+        )
+        if method == "simulate":
+            runs = self._simulated_runs(
+                10_000 if mc_samples is None else mc_samples, seed
+            )
+            out = np.mean(runs.time[:, None] > times.ravel()[None, :], axis=0)
+            out = out.reshape(times.shape)
+        else:
+            out = self._exact_over_time(times)
+        return float(out) if out.ndim == 0 else out
+
+    def _phase_failures(self, held: Optional[Hashable] = None) -> List[float]:
+        """The exact probability of failing in each phase, with the
+        component ``held`` (if any) working throughout."""
+        segments = self._segments(held=None if held is None else {held: 1.0})
+        out: List[float] = []
+        before = 0.0
+        for j in range(len(self.phases)):
+            _, failure = _outcomes(self._plan(j + 1), *segments)
+            out.append(failure - before)
+            before = failure
+        return out
+
+    def _drivers(
+        self, runs: Optional[Tuple[Any, Dict[Hashable, Any]]]
+    ) -> "MissionDrivers":
+        """The drivers, exact (``runs`` None) or from simulated missions
+        ``runs``: the base run and one with each component held."""
+        names = [phase.name for phase in self.phases]
+        count = len(names)
+        falls: Dict[Hashable, Dict[Hashable, float]] = {}
+        totals: Dict[Hashable, float] = {}
+        if runs is None:
+            self._require_exact()
+            base = self._phase_failures()
+            for node in self.components:
+                with_it = self._phase_failures(node)
+                falls[node] = {
+                    name: base[j] - with_it[j] for j, name in enumerate(names)
+                }
+                totals[node] = float(sum(falls[node].values()))
+            return MissionDrivers("exact", names, falls, totals)
+        plain, held = runs
+        errors: Dict[Hashable, float] = {}
+        for node, other in held.items():
+            falls[node] = {
+                name: float(
+                    np.mean(plain.phase == j) - np.mean(other.phase == j)
+                )
+                for j, name in enumerate(names)
+            }
+            difference = (plain.phase < count).astype(float) - (
+                other.phase < count
+            ).astype(float)
+            totals[node] = float(difference.mean())
+            errors[node] = montecarlo.standard_error(difference, False)
+        return MissionDrivers(
+            "simulated", names, falls, totals, errors, len(plain.phase)
+        )
+
+    def _played(
+        self, mc_samples: int, seed
+    ) -> Tuple[Any, Dict[Hashable, Any]]:
+        """``mc_samples`` simulated missions, and the same missions with
+        each component never failing (common random numbers)."""
+        montecarlo.check_count(mc_samples, False, "mc_samples", 2)
+        with numpy_seed(seed):
+            lives = _mission_runs.draw(self, mc_samples, False)
+        plain = _mission_runs.play(self, lives, mc_samples)
+        held = {
+            node: _mission_runs.play(self, lives, mc_samples, held=node)
+            for node in self.components
+        }
+        return plain, held
+
+    def failure_drivers(
+        self,
+        method: Optional[str] = None,
+        *,
+        mc_samples: Optional[int] = None,
+        seed=None,
+    ) -> "MissionDrivers":
+        """Which blocks drove the mission's failures, phase by phase.
+
+        For each block and each phase, the fall in the phase's failure
+        probability if the block never failed: the mission worked out
+        again with the block held working throughout (on standby it still
+        idles until needed, but never fails). The total over the phases
+        is the fall in the mission's unreliability, the block's
+        improvement potential. A fall can be negative in a phase, when
+        the block never failing carries missions into a later phase that
+        then fails.
+
+        Parameters
+        ----------
+        method : str, optional
+            ``"exact"``: the mission's decision diagram replayed with each
+            block's segments held. ``"simulate"``: ``mc_samples`` missions
+            played again with each block held, on the same draws (common
+            random numbers), with each total's standard error. By default
+            exact, unless a block is on standby.
+        mc_samples : int, optional
+            The number of simulated missions, by default 10_000 (used only
+            when simulated).
+        seed : int, optional
+            Seeds the simulation, by default None.
+
+        Returns
+        -------
+        MissionDrivers
+            The falls by block and phase, and their totals.
+
+        Raises
+        ------
+        ValueError
+            If ``method`` is unknown, or ``mc_samples`` or ``seed`` is
+            given with ``method="exact"``.
+        NotImplementedError
+            With ``method="exact"``, if a block is on standby, or the
+            mission's decision diagram is too large.
+
+        Examples
+        --------
+        Two exponential units in series for one phase: the mission fails
+        with ``1 - exp(-0.03 t)``, and without unit ``a``'s failures with
+        ``1 - exp(-0.02 t)``.
+
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> series = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {
+        ...         "a": surv.Exponential.from_params([0.01]),
+        ...         "b": surv.Exponential.from_params([0.02]),
+        ...     },
+        ... )
+        >>> mission = PhasedMission([("only", 10.0, series)])
+        >>> drivers = mission.failure_drivers()
+        >>> math.isclose(drivers.totals["a"], math.exp(-0.2) - math.exp(-0.3))
+        True
+        """
+        method, _ = self._choose(method, mc_samples, seed, "failure_drivers")
+        if method == "simulate":
+            return self._drivers(
+                self._played(
+                    10_000 if mc_samples is None else mc_samples, seed
+                )
+            )
+        return self._drivers(None)
+
+    def summary(
+        self,
+        times=None,
+        method: Optional[str] = None,
+        *,
+        mc_samples: Optional[int] = None,
+        seed=None,
+        confidence: float = 0.95,
+    ) -> "MissionSummary":
+        """The whole mission at once, from one run: its reliability, its
+        reliability over time, each phase's part in its failures, and the
+        blocks that drove them.
+
+        Exact where the mission is (no block on standby), else from one
+        simulation of ``mc_samples`` missions, which every value is read
+        from (the drivers from the same missions played again with each
+        block held, see
+        [`failure_drivers`][repyability.PhasedMission.failure_drivers]).
+
+        Parameters
+        ----------
+        times : array_like, optional
+            The times for the reliability over time, from 0 to the
+            duration; by default 20 steps through each phase, every phase
+            boundary included.
+        method : str, optional
+            ``"exact"`` or ``"simulate"``; by default exact unless a
+            block is on standby.
+        mc_samples : int, optional
+            The number of simulated missions, by default 10_000 (used only
+            when simulated).
+        seed : int, optional
+            Seeds the simulation, by default None.
+        confidence : float, optional
+            The confidence level of the simulated reliability's interval,
+            by default 0.95.
+
+        Returns
+        -------
+        MissionSummary
+            The mission's values, each phase's
+            ([`MissionPhaseSummary`][repyability.MissionPhaseSummary]) and
+            the drivers ([`MissionDrivers`][repyability.MissionDrivers]).
+
+        Raises
+        ------
+        ValueError
+            If a time is not from 0 to the duration, ``method`` is
+            unknown, ``mc_samples`` or ``seed`` is given with
+            ``method="exact"``, or ``mc_samples`` is less than 2.
+        NotImplementedError
+            With ``method="exact"``, if a block is on standby, or the
+            mission's decision diagram is too large.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> unit = surv.Exponential.from_params([0.01])
+        >>> one = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": unit})
+        >>> mission = PhasedMission([("out", 10.0, one), ("back", 10.0, one)])
+        >>> result = mission.summary()
+        >>> result.method, result.riskiest_phase
+        ('exact', 'out')
+        >>> round(result.phases[1].conditional_failure, 6)  # 1 - exp(-0.1)
+        0.095163
+        """
+        starts = self._starts()
+        names = [phase.name for phase in self.phases]
+        count = len(names)
+        if times is None:
+            grid = [
+                np.linspace(start, phase.end, 21)
+                for start, phase in zip(starts, self.phases)
+            ]
+            grid_times = np.unique(np.concatenate(grid))
+        else:
+            grid_times = np.ravel(self._times(times, "times"))
+        method, reason = self._choose(method, mc_samples, seed, "summary")
+        takeovers: List[Dict[Hashable, float]] = [{} for _ in names]
+        interval = None
+        n_samples = None
+        if method == "simulate":
+            montecarlo.check_confidence(confidence)
+            n_samples = 10_000 if mc_samples is None else mc_samples
+            runs = self._played(n_samples, seed)
+            plain = runs[0]
+            succeeded = (plain.phase == count).astype(float)
+            success = float(succeeded.mean())
+            failure = 1.0 - success
+            error = montecarlo.standard_error(succeeded, False)
+            half = montecarlo.z_value(confidence) * error
+            interval = ConfidenceInterval(
+                estimate=success,
+                lower=max(success - half, 0.0),
+                upper=min(success + half, 1.0),
+                confidence=confidence,
+                standard_error=error,
+                n_samples=n_samples,
+                method="simulated",
+            )
+            failing = [float(np.mean(plain.phase == j)) for j in range(count)]
+            through = [float(np.mean(plain.phase > j)) for j in range(count)]
+            curve = np.mean(plain.time[:, None] > grid_times[None, :], axis=0)
+            for (j, node), started in plain.started.items():
+                takeovers[j][node] = float(started.mean())
+            drivers = self._drivers(runs)
+        else:
+            success, failure = self._exact(count)
+            failing = self._phase_failures()
+            through = [self._exact(j + 1)[0] for j in range(count)]
+            curve = self._exact_over_time(grid_times)
+            drivers = self._drivers(None)
+        phases = []
+        reached = 1.0
+        for j, (phase, setting) in enumerate(zip(self.phases, self._settings)):
+            phases.append(
+                MissionPhaseSummary(
+                    name=phase.name,
+                    start=starts[j],
+                    end=phase.end,
+                    failure_probability=failing[j],
+                    share=failing[j] / failure if failure > 0 else math.nan,
+                    conditional_failure=(
+                        failing[j] / reached if reached > 0 else math.nan
+                    ),
+                    reliability_at_end=through[j],
+                    settings={
+                        node: {
+                            "state": given.state,
+                            "covariates": (
+                                None
+                                if given.covariates is None
+                                else list(given.covariates)
+                            ),
+                        }
+                        for node, given in setting.blocks.items()
+                    },
+                    takeovers=takeovers[j],
+                    top_driver=drivers.top(phase.name),
+                )
+            )
+            reached = through[j]
+        riskiest = names[int(np.argmax(failing))] if max(failing) > 0 else None
+        return MissionSummary(
+            method="simulated" if method == "simulate" else "exact",
+            reason=reason,
+            duration=self.duration,
+            reliability=success,
+            unreliability=failure,
+            interval=interval,
+            times=grid_times,
+            reliability_over_time=np.asarray(curve, dtype=float),
+            phases=phases,
+            drivers=drivers,
+            riskiest_phase=riskiest,
+            n_samples=n_samples,
+        )
 
     def analysis_routes(self) -> Dict[str, routes.AnalysisRoute]:
         """How each analysis of the mission is computed, found without
@@ -1532,7 +2228,10 @@ class PhasedMission:
         # A component whose model has no exact or numerical reliability
         # refuses what is built on it, as the diagrams' routes have it.
         nodes = {n: r.model_route(m) for n, m in self.components.items()}
-        refused = r.refusal(lambda: self._plan(len(self.phases)))
+        count = len(self.phases)
+        refused = r.refusal(self._require_exact) or r.refusal(
+            lambda: self._plan(count)
+        )
         diagram = (
             r.refused(refused)
             if refused
@@ -1546,20 +2245,21 @@ class PhasedMission:
         )
         out = {
             name: diagram
-            for name in (
-                "reliability",
-                "unreliability",
-                "sf",
-                "ff",
-                "phase_failure_probabilities",
-                "birnbaum_importance",
-                "improvement_potential",
-                "risk_achievement_worth",
-                "risk_reduction_worth",
-                "criticality_importance",
-            )
+            for name in ("reliability", "unreliability", "sf", "ff")
         }
-        cuts = refused or r.refusal(self._cut_set_plan)
+        out["phase_failure_probabilities"] = diagram
+        measures = r.refusal(
+            lambda: self._require_exact("importance measures")
+        )
+        for name in (
+            "birnbaum_importance",
+            "improvement_potential",
+            "risk_achievement_worth",
+            "risk_reduction_worth",
+            "criticality_importance",
+        ):
+            out[name] = r.refused(measures) if measures else diagram
+        cuts = measures or refused or r.refusal(self._cut_set_plan)
         out["fussell_vesely"] = (
             r.refused(cuts)
             if cuts
@@ -1571,9 +2271,22 @@ class PhasedMission:
                 "reliabilities",
             )
         )
-        out["reliability_interval"] = r.AnalysisRoute(
+        simulated = r.AnalysisRoute(
             r.SIMULATED, "Each component's life drawn once per mission."
         )
+        out["reliability_interval"] = simulated
+        _, reason = self._choose(None, None, None, "")
+        whole = (
+            r.AnalysisRoute(
+                r.SIMULATED,
+                f"{reason} Each block's life drawn once per mission, the "
+                "missions played through the phases.",
+            )
+            if reason
+            else diagram
+        )
+        for name in ("reliability_over_time", "failure_drivers", "summary"):
+            out[name] = whole
         return r.AnalysisRoutes(out)
 
     def _method(self, method: str, mc_samples, seed, name: str) -> str:
