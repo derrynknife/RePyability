@@ -47,6 +47,7 @@ from repyability.maintenance import (
     AgeReplacementValue,
     Calendar,
     CalendarPolicy,
+    CostDistribution,
     DelayEffect,
     FailureFinding,
     FailureLimitPolicy,
@@ -66,6 +67,7 @@ from repyability.maintenance import (
     ScheduledReplacement,
     SkipValue,
     SlackEffect,
+    WindowCosts,
     failure_finding,
     layered_cost_rate,
     on_condition,
@@ -77,6 +79,7 @@ from repyability.maintenance import (
 )
 from repyability.network import Network
 from repyability.non_repairable import NonRepairable
+from repyability.rbd._bayesian_life import PosteriorPredictive
 from repyability.rbd._mission_results import (
     MissionDrivers,
     MissionPhaseSummary,
@@ -176,6 +179,7 @@ __all__ = [
     "NodeState",
     "RegressionNode",
     "JointNode",
+    "PosteriorPredictive",
     "BetaFactor",
     "MGL",
     "AlphaFactor",
@@ -240,6 +244,8 @@ __all__ = [
     "AgeReplacementValue",
     "SlackEffect",
     "RenewalForecast",
+    "CostDistribution",
+    "WindowCosts",
     "LayeredVisits",
     "RatioChoice",
     "optimal_layered_visits",

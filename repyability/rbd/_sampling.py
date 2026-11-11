@@ -176,7 +176,17 @@ def mixture_quantile(model) -> Sampler:
     halves it instead. Above ``u = 1/2`` the survival function is compared
     with ``1 - u``, which is exact, for the long lives' precision."""
     weights = np.ravel(np.asarray(model.w, dtype=float))
-    values = _components(model)
+    return mixed_quantile(_components(model), weights)
+
+
+def mixed_quantile(
+    values: Callable[[str, np.ndarray], np.ndarray], weights: np.ndarray
+) -> Sampler:
+    """The quantile function of the mixture of components whose functions
+    are ``values(name, x)`` (one column a component, as ``_components``
+    gives them), with ``weights``: :func:`mixture_quantile`'s, for a
+    mixture given by its components' functions (a Bayesian fit's
+    posterior predictive, say)."""
 
     def mixed(name: str, x: np.ndarray) -> np.ndarray:
         return np.sum(values(name, x) * weights, axis=1)
@@ -355,12 +365,20 @@ def stream_sampler(model) -> Optional[Sampler]:
     """What a ``RepairableRBD``'s streams turn a model's uniforms into its
     draws with, one uniform a draw: :func:`inverse_sampler`'s, or a
     surpyval ``MixtureModel``'s quantile worked out
-    (:func:`mixture_quantile`). None for a model that draws its own way.
+    (:func:`mixture_quantile`), or a Bayesian fit's posterior predictive's
+    draw (``PosteriorPredictive._draw``). None for a model that draws its
+    own way.
     (A ``NonRepairableRBD``'s draws replay surpyval's own, and a mixture
     draws there as surpyval does.)"""
+    from ._bayesian_life import PosteriorPredictive
+
     sampler = inverse_sampler(model)
     if sampler is None and is_mixture(model):
         return mixture_quantile(model)
+    if isinstance(model, PosteriorPredictive):
+        # A Bayesian fit's posterior predictive: a posterior point and a
+        # life from it, both from the one uniform (see its _draw).
+        return model._draw
     if sampler is None and is_degradation(model):
         # A degradation process's first-passage time from its starting
         # level (#271), by its own quantile function.

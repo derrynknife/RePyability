@@ -183,6 +183,18 @@ def crow_amsaa():
 
 
 @_fitted_once
+def bayes_life():
+    """A Bayesian Weibull fit, its posterior 400 draws about alpha 500
+    and beta 1.5 (from another sampler, say): its life is the posterior
+    predictive (``PosteriorPredictive``)."""
+    g = np.random.default_rng(7)
+    draws = np.c_[
+        500 * g.lognormal(0, 0.1, 400), 1.5 * g.lognormal(0, 0.1, 400)
+    ]
+    return surv.bayes.BayesianParametric.from_draws(surv.Weibull, draws)
+
+
+@_fitted_once
 def mixture_life():
     """A two-mode population, infant mortality and wear-out (#227)."""
     g = np.random.default_rng(7)
@@ -313,6 +325,7 @@ def nonrepairable_kinds():
         "fitted shares": NonRepairableRBD(EDGES, {"a": shares_life(), **rest}),
         "degradation process": NonRepairableRBD(EDGES, {"a": wear(), **rest}),
         "mixture": NonRepairableRBD(EDGES, {"a": mixture_life(), **rest}),
+        "Bayesian fit": NonRepairableRBD(EDGES, {"a": bayes_life(), **rest}),
         "degrading": NonRepairableRBD(
             EDGES,
             {
@@ -664,6 +677,9 @@ def repairable_kinds():
             ),
             "mixture life": system(
                 unit(reliability=mixture_life(), replace_cost=10.0)
+            ),
+            "Bayesian fit life": system(
+                unit(reliability=bayes_life(), replace_cost=10.0)
             ),
             "fitted Crow-AMSAA process": system(
                 unit(reliability=crow_amsaa(), repair_cost=1.0)

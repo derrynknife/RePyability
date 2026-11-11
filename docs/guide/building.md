@@ -46,6 +46,7 @@ A node model is anything that exposes `sf(t)` and `ff(t)`:
 |---|---|
 | A surpyval parametric distribution (`Weibull`, `Exponential`, `LogNormal`, …) | An ordinary component with a fitted lifetime. |
 | A surpyval `MixtureModel` | A population of failure modes (infant mortality and wear-out). |
+| A surpyval Bayesian fit (`fit_bayes`, a `BayesianParametric`) | A component whose life is known with uncertainty: the life is the fit's posterior predictive (see [below](#a-bayesian-fit-as-a-life)). |
 | A surpyval `WienerProcess` or `GammaProcess` fit | A component that fails when its degradation reaches a threshold: its life is the time to the threshold (see [Costs](system-maintenance.md#replacing-on-the-measured-level) for replacing it on the measured level). |
 | A surpyval non-parametric fit (`KaplanMeier`, `NelsonAalen`, …) | Refused (`ValueError`): its curve ends at the data, and says nothing beyond it. Fit a parametric distribution in surpyval instead. |
 | `surpyval.FixedEventProbability` | A component with a fixed probability of failure (a demand, a mission). |
@@ -73,6 +74,49 @@ one.node_mttf()["c"]    # inf
 (surpyval's own `mean()` of such a model is the *defective* mean, its
 failing units' mean weighted by their fraction: RePyability never uses it as
 a lifetime.)
+
+## A Bayesian fit as a life
+
+A Bayesian fit in surpyval (`surv.Weibull.fit_bayes(...)`, or
+`surv.bayes.BayesianParametric.from_draws(...)` from another sampler's
+draws) says how sure we are of a life's parameters. Given to a diagram, a
+[`NonRepairable`][repyability.NonRepairable] or a `RepairableRBD`'s
+component, the block's life is the fit's averaged prediction over that
+uncertainty: the life of a new unit, all things considered. It is a little
+more spread than the life at the best single estimate, with more early
+failures and more long lives.
+
+In symbols, the block's reliability is the posterior predictive,
+`S(t) = sum_i w_i S(t | theta_i)`: the survival function at each
+posterior point `theta_i`, averaged with its probability `w_i` (equal for
+draws). Where the fit has it in closed form (an Exponential with a Gamma posterior on its rate, whose predictive
+is a Lomax), that is used. The block is a
+[`PosteriorPredictive`][repyability.PosteriorPredictive]: each function is
+the predictive's (its probability of failing worked out in its own right,
+its quantile by inverting it, its mean the points' means averaged), and the
+simulations draw a posterior point and a life from it, from one uniform.
+
+```python
+import numpy as np
+
+# The rate of a pump's exponential life has a Gamma(5, 1250) posterior,
+# here as 4000 draws from another sampler.
+rate = np.random.default_rng(1).gamma(5.0, 1 / 1250.0, 4000)
+fit = surv.bayes.BayesianParametric.from_draws(surv.Exponential, rate[:, None])
+plant = NonRepairableRBD(
+    [("s", "pump"), ("pump", "valve"), ("valve", "t")],
+    {"pump": fit, "valve": surv.Weibull.from_params([2000, 1.5])},
+)
+plant.sf(100)                                # -> 0.676
+plant.reliabilities["pump"].sf(100)          # -> 0.6836   the draws' average
+```
+
+The credible band (how sure the fit is of the system's reliability) is not
+carried through a diagram yet: the block is the predictive, and the
+parameter-uncertainty methods (`sf_uncertainty` and the like) refuse
+`"fit"` for it. To propagate the posterior, give them a list of models
+drawn from it, `{"pump": fit.draw_models(200)}`. A fit with an offset, a
+limited failure population or zero inflation is not taken yet.
 
 ## k-out-of-n nodes
 

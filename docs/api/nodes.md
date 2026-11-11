@@ -20,6 +20,8 @@ models provided here (see [Building an RBD](../guide/building.md) and
 
 ::: repyability.JointNode
 
+::: repyability.PosteriorPredictive
+
 ::: repyability.PerfectReliability
 
 ::: repyability.PerfectUnreliability
