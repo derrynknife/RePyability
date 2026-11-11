@@ -423,3 +423,15 @@ def test_the_long_run_agrees_with_the_simulation(name):
     rate = rbd.expected_cost_rate()
     assert costs.lower <= rate * window <= costs.upper
     assert costs.lower <= rbd.expected_cost(window).mean <= costs.upper
+
+
+def test_grids_too_large_or_unsettled_are_refused(monkeypatch):
+    model = PROCESSES["gamma"]()
+    monkeypatch.setattr(level_module, "_MAX_SURVIVAL", 1000)
+    with pytest.raises(NotImplementedError, match="too large to follow"):
+        unit(model).mean_availability()
+    monkeypatch.undo()
+    # Followed for at most three intervals: no long run yet.
+    monkeypatch.setattr(level_module, "_MAX_VALUES", 1)
+    with pytest.raises(NotImplementedError, match="has not settled"):
+        LevelModel(model, REPAIR, DURATION, 60.0, 25.0).cycle()
