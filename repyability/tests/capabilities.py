@@ -121,6 +121,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Long-run cost rate", ("expected_cost_rate",)),
             ("Expected cost in a window", ("expected_cost",)),
             ("Expected net present value", ("expected_npv",)),
+            ("A plan against what happened", ("plan_vs_actual",)),
             ("Cost in each of a run of windows", ("cost_by_window",)),
             ("Simulated cost (distribution)", ("cost",)),
             ("Total cost of ownership", ("total_cost",)),

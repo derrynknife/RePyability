@@ -20,6 +20,18 @@ other release, fixes included, the minor.
   the equivalent annual cost (which tends to `expected_cost_rate` over a
   long horizon), the undiscounted totals, and a cash-flow table by period,
   category and component. Also in `analysis_routes()`.
+- `RepairableRBD.plan_vs_actual()` (and the `PlanVsActual` result): a plan
+  against what happened. The plan's expected cash flows to `now` beside
+  those an outage log implies (one `Timeline` per component, from the
+  start of the plan to `now`), priced with the diagram's own costs and
+  discounted at the times they fell, and the variance by period, category
+  and component; then the rest of the horizon valued from the components'
+  states now, read off their logs where the diagram's rules let it (or
+  given in `state=`), and the plan's value with what happened so far
+  beside its original value. Costs the log does not determine (tests that
+  find nothing, a hidden failure's repair, set-up and acquisition costs,
+  ...) are compared on neither side, listed with the reason. Exact, with no
+  simulation. Also in `analysis_routes()`.
 - `NonRepairable.age_replacement_value()` (and `AgeReplacementValue`): the
   present value (Fox, 1966) and equivalent annual cost of replacing a part
   at an age or at a failure for ever; undiscounted it is `cost_rate`.
