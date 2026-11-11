@@ -111,12 +111,63 @@ plant.sf(100)                                # -> 0.676
 plant.reliabilities["pump"].sf(100)          # -> 0.6836   the draws' average
 ```
 
-The credible band (how sure the fit is of the system's reliability) is not
-carried through a diagram yet: the block is the predictive, and the
-parameter-uncertainty methods (`sf_uncertainty` and the like) refuse
-`"fit"` for it. To propagate the posterior, give them a list of models
-drawn from it, `{"pump": fit.draw_models(200)}`. A fit with an offset, a
-limited failure population or zero inflation is not taken yet.
+### Its credible band, carried to the system
+
+The predictive is one number for each question: the best single answer,
+with the uncertainty averaged in. How sure the fit is of that answer is
+its *credible band*, and the [parameter-uncertainty
+methods](reliability.md#uncertainty-in-the-component-models)
+(`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`,
+`time_to_reliability_uncertainty`, and a `RepairableRBD`'s
+`mean_availability_uncertainty` and the like) carry it to the system. For
+an ordinary fit they draw plausible parameters from the fit's sampling
+uncertainty; for a Bayesian fit the plausible parameters are the posterior
+itself. Each draw picks a posterior point by its probability (grid points
+have unequal probabilities; none is left out or thinned), or, for a
+conjugate posterior, a value from its exact family; the block in that draw
+is the plain distribution at that point, not the predictive. The system's
+value is worked out for every draw, and the spread of those values is the
+band. The point value (`nominal`) stays the predictive's.
+
+In symbols, with `theta_k` the `k`-th draw from the posterior, the band is
+the percentiles of `R_sys(t | theta_k)` over the draws: for one exponential
+block whose rate `lam` has a Gamma(a, b) posterior, `R(t) = exp(-lam t)`
+falls as `lam` rises, so the 90% band is `(exp(-t q_0.95), exp(-t
+q_0.05))`, `q` the Gamma's quantiles, and the point value the Lomax
+`(b / (b + t)) ** a`.
+
+```python
+band = plant.sf_uncertainty(100, n_draws=10_000, seed=0)
+band.band                                    # 'credible'
+band.nominal                                 # -> 0.676   the predictive's
+lower, upper = band.interval(0.9)
+round(lower, 3), round(upper, 3)             # (0.483, 0.847)
+```
+
+Against the closed form: the Gamma(5, 1250) quantiles give `(0.475,
+0.845)` (times the valve's 0.9978); the 4000 draws the fit is made of are
+that posterior to within their own sampling error.
+
+By default every fitted block is drawn: the Bayesian ones from their
+posteriors, the ones fitted by maximum likelihood from their covariance.
+A band over both is `"mixed"`: each draw takes every block's draw, so it
+holds both kinds of uncertainty at once, and is neither a confidence band
+nor a credible band alone. `UncertaintyResult.band` says which it is:
+`"credible"` (Bayesian blocks only), `"confidence"` (covariance-based fits
+only), `"given"` (distributions or lists of models given) or `"mixed"`.
+
+Blocks given the same fit object are one population, as blocks given one
+ordinary fit are: they share one draw of the posterior in every draw (the
+diagram holds one model for them), and drawing one without the others is
+warned about. Two fit objects, even of the same data, are drawn apart.
+`uncertainty_importance` takes a Bayesian block with `method="sobol"`; its
+default, the delta method, moves parameters a little about one value with
+their covariance, which a posterior has not, and refuses it. A
+`{parameter: distribution}` for a Bayesian block is refused too: give
+`"fit"`, or a list of models.
+
+A fit with an offset, a limited failure population or zero inflation is
+not taken yet.
 
 ## k-out-of-n nodes
 

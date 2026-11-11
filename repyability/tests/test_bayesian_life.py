@@ -298,12 +298,11 @@ def test_saved_whole_and_pickled(weibull_fit):
     assert loaded.mean_availability() == repairable.mean_availability()
 
 
-def test_parameter_uncertainty_refuses_it_in_plain_words(weibull_fit):
+def test_parameter_uncertainty_draws_its_posterior(weibull_fit):
+    # "fit" draws the posterior itself, by default too (its credible band:
+    # test_bayesian_bands.py); its posterior's models also go in as a list.
     rbd = NonRepairableRBD(SERIES, {"a": weibull_fit, "b": REPAIR})
-    with pytest.raises(ValueError, match="posterior predictive.*draw_models"):
-        rbd.sf_uncertainty(100.0, {"a": "fit"})
-    # Left out of the default draws, as a model without a covariance is;
-    # its posterior's models go in as a list.
+    assert rbd.sf_uncertainty(100.0, n_draws=20, seed=1).band == "credible"
     models = weibull_fit.draw_models(20, random_state=1)
     result = rbd.sf_uncertainty(100.0, {"a": models}, n_draws=20, seed=1)
     assert result is not None

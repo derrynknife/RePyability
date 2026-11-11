@@ -287,7 +287,8 @@ def test_the_result_summaries():
         np.percentile(samples, 75),
     )
     assert isinstance(result.mean, float)
-    assert set(result) == {"samples", "nominal", "n_draws"}
+    assert set(result) == {"samples", "nominal", "n_draws", "band"}
+    assert result.band is None  # made by hand: no band said
     for bad in (0.0, 1.0, 1.5):
         with pytest.raises(ValueError, match="level"):
             result.interval(bad)

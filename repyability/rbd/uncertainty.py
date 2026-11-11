@@ -18,7 +18,13 @@ in surpyval, already provides. A node's uncertainty is one of
   estimated: the distribution's, and a limited failure population's share
   that ever fails (``lfp_p``) and a zero-inflated one's share dead on
   arrival (``f0``) (#267). An offset is held where it was fitted, since
-  surpyval's covariance leaves it out (SurPyval#830), with a warning;
+  surpyval's covariance leaves it out (SurPyval#830), with a warning.
+  For a Bayesian fit (a ``PosteriorPredictive``) the draws are its
+  posterior itself: each a posterior point picked by its probability
+  (unequal on a grid; no point left out), or from the exact family of a
+  conjugate posterior, and the node in that draw the plain distribution
+  at it, not the predictive. The band so drawn is a credible band;
+  drawn from a covariance, a confidence band (see ``band``);
 - a mapping ``{parameter name: distribution}``: each named parameter is
   drawn independently from its distribution (anything with ``qf`` or
   ``ppf``, such as a surpyval or scipy.stats distribution), the others
@@ -195,11 +201,9 @@ def _spec(model, label: str):
         )
     if isinstance(model, PosteriorPredictive):
         raise ValueError(
-            f"{label}: its model is a Bayesian fit's posterior predictive, "
-            "which has the uncertainty in its parameters averaged in "
-            "already, and no covariance to draw from. To carry its "
-            "posterior through, give a list of models drawn from it "
-            "instead (fit.draw_models(k))."
+            f"{label}: its model is a Bayesian fit, whose parameters are "
+            "its posterior, not values to redraw one by one: give 'fit', "
+            "which draws from the posterior itself, or a list of models."
         )
     spec = parametric_spec(model)
     if spec is None:
@@ -318,7 +322,10 @@ def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
 
 def is_fit(model) -> bool:
     """Whether ``"fit"`` can draw ``model``: a surpyval parametric fit with
-    a finite parameter covariance, its parameters inside their ranges."""
+    a finite parameter covariance, its parameters inside their ranges, or
+    a Bayesian fit (its posterior)."""
+    if isinstance(model, PosteriorPredictive):
+        return True
     try:
         _fit_draws(model, 0, np.random.default_rng(0), "")
     except (ValueError, TypeError, AttributeError):
@@ -439,6 +446,9 @@ def draw_models(
                 f"{label}: unknown uncertainty {spec!r}; give 'fit', a dict "
                 "of parameter distributions or a list of models."
             )
+        if isinstance(model, PosteriorPredictive):
+            # The posterior itself: one uniform a draw.
+            return model._posterior_models(rng.random(n))
         return _fit_draws(model, n, rng, label)
     if isinstance(spec, Mapping):
         if not spec:
@@ -450,6 +460,32 @@ def draw_models(
         f"{label}: the uncertainty must be 'fit', a dict of parameter "
         f"distributions or a list of models, got {spec!r}."
     )
+
+
+#: What a band over draws is, by the kinds of its uncertain inputs (see
+#: ``band``).
+CONFIDENCE, CREDIBLE, GIVEN, MIXED = "confidence", "credible", "given", "mixed"
+
+
+def input_band(model: Any, spec: Any) -> str:
+    """What drawing ``model`` as ``spec`` makes of its band: ``"credible"``
+    for ``"fit"`` of a Bayesian fit (its posterior), ``"confidence"`` for
+    ``"fit"`` of a fit with a parameter covariance (its sampling
+    uncertainty), ``"given"`` for distributions or a list of models."""
+    if isinstance(spec, str) and spec == FIT:
+        return (
+            CREDIBLE if isinstance(model, PosteriorPredictive) else CONFIDENCE
+        )
+    return GIVEN
+
+
+def band(kinds: Iterable[str]) -> str:
+    """What the band over draws of inputs of ``kinds`` (``input_band``'s)
+    is: their one kind, or ``"mixed"``, a band over more than one kind of
+    uncertainty at once (a confidence band's sampling uncertainty and a
+    credible band's posterior, say)."""
+    found = set(kinds)
+    return found.pop() if len(found) == 1 else MIXED
 
 
 def draw_ccf_models(
@@ -556,6 +592,15 @@ def varied_parameters(model, spec: Any, label: str):
             raise ValueError(
                 f"{label}: unknown uncertainty {spec!r}; give 'fit', a dict "
                 "of parameter distributions or a list of models."
+            )
+        if isinstance(model, PosteriorPredictive):
+            raise ValueError(
+                f"{label}: its model is a Bayesian fit. The delta method "
+                "moves a model's parameters a little about one value and "
+                "weighs the change by their covariance; a Bayesian fit has "
+                "its posterior instead, which need not be near a normal "
+                "about one value: method='sobol' draws from the posterior "
+                "itself."
             )
         _, params, covariance, bounds = _fit_covariance(model, label, True)
         return list(range(len(params))), params, covariance, bounds

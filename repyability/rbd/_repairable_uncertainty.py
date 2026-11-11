@@ -9,7 +9,8 @@ its preventive maintenance and of its tests (``"preventive.duration"``,
 ``"inspection.duration"``), named as ``parameter_sensitivity``'s levers are.
 Each may be uncertain, and is drawn as ``NonRepairableRBD.sf_uncertainty``
 draws a node's model (see ``uncertainty``): from a fit's parameter
-covariance, distributions over its parameters, or a list of models. A
+covariance or a Bayesian fit's posterior, distributions over its
+parameters, or a list of models. A
 common-cause group's model may be uncertain too. An input is a node, a
 population of nodes sharing a model (a tuple), or a common-cause group;
 a node may come under several inputs, a role under one (#214): a fleet's
@@ -54,6 +55,8 @@ from repyability.utils.wrappers import outside_level
 
 from .uncertainty import (
     FIT,
+    GIVEN,
+    band,
     check_draws,
     draw_ccf_models,
     draw_models,
@@ -147,7 +150,8 @@ def _roles(spec: Any, models: dict, label: str) -> Dict[str, Any]:
             raise ValueError(
                 f"{label}: none of its models (its life, repair, or "
                 "maintenance or test duration) is a surpyval fit with a "
-                "parameter covariance, which 'fit' draws from. Give "
+                "parameter covariance or a Bayesian fit, which 'fit' draws "
+                "from. Give "
                 "distributions over a model's parameters, or a list of "
                 "models, by role: {'reliability': ..., 'repairability': "
                 "...}."
@@ -279,7 +283,8 @@ def require_fitted(rbd) -> None:
     )
     raise Refused(
         "No component's model is a surpyval fit with a parameter "
-        f"covariance, which the uncertainty is drawn from by default{nested}: "
+        "covariance, or a Bayesian fit, which the uncertainty is drawn "
+        f"from by default{nested}: "
         "give the uncertain nodes, uncertainty={node: 'fit'} or {node: "
         "{'repairability': {parameter: distribution}}}, for example."
     )
@@ -490,6 +495,20 @@ def draws(
         )
 
     return draw_with(draw, n, seed, sampling, paired, join)
+
+
+def band_of(rbd, inputs: List[Source], groups: Dict[int, Any]) -> str:
+    """What the band over draws of ``inputs`` and the common-cause
+    ``groups`` is (``uncertainty.band``): credible, confidence, given or
+    mixed."""
+    from .uncertainty import input_band
+
+    kinds = [
+        input_band(_models(rbd, item.members[0])[role], spec)
+        for item in inputs
+        for role, spec in item.specs.items()
+    ]
+    return band(kinds + [GIVEN] * len(groups))
 
 
 def build(rbd, inputs, drawn, drawn_groups, i: int):
@@ -726,13 +745,17 @@ def _uncertainty(
     samples = drawn.samples(
         rbd, of, x, state, inputs, models, group_models, n_draws
     )
+    kind = drawn.band_of(rbd, inputs, groups)
     if x is None or np.ndim(x) == 0:
         return UncertaintyResult(
             samples=samples[:, 0],
             nominal=float(nominal[0]),
             n_draws=n_draws,
+            band=kind,
         )
-    return UncertaintyResult(samples=samples, nominal=nominal, n_draws=n_draws)
+    return UncertaintyResult(
+        samples=samples, nominal=nominal, n_draws=n_draws, band=kind
+    )
 
 
 def mean_availability_uncertainty(

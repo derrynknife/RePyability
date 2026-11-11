@@ -664,8 +664,19 @@ class UncertaintyResult(_ResultMapping):
     quantity is computed exactly for that draw. The samples therefore
     describe *epistemic* uncertainty, about what the models are, and not
     the aleatory variability that the models themselves describe. Their
-    percentiles give uncertainty (credible) intervals; they do not narrow
-    as ``n_draws`` grows, which only makes them more precise.
+    percentiles give uncertainty intervals; they do not narrow as
+    ``n_draws`` grows, which only makes them more precise.
+
+    What the interval is depends on where the draws came from, which
+    ``band`` says: a *confidence* band where every uncertain input is a
+    maximum-likelihood fit drawn from its parameter covariance (the
+    sampling uncertainty of the estimates); a *credible* band where every
+    one is a Bayesian fit drawn from its posterior (how sure the fit is,
+    given its prior and data); ``"given"`` where the inputs were drawn from
+    distributions or lists of models given; and ``"mixed"`` where the
+    inputs are of more than one of these kinds, a band over all of them at
+    once (each draw takes every input's), neither a confidence nor a
+    credible band alone.
 
     Its repr summarises the draws: the nominal value, the median and the
     90% interval.
@@ -679,6 +690,10 @@ class UncertaintyResult(_ResultMapping):
         The value with every node's own model: the point estimate.
     n_draws : int
         The number of draws.
+    band : str or None
+        What the band over the draws is (see above): ``"confidence"``,
+        ``"credible"``, ``"given"`` or ``"mixed"``; None for a result made
+        by hand.
 
     Examples
     --------
@@ -701,11 +716,14 @@ class UncertaintyResult(_ResultMapping):
     >>> lower, upper = result.interval(0.9)
     >>> round(lower, 3), round(upper, 3)
     (0.777, 0.906)
+    >>> result.band  # from the fit's parameter covariance
+    'confidence'
     """
 
     samples: np.ndarray
     nominal: Any
     n_draws: int
+    band: Optional[str] = None
 
     @property
     def mean(self) -> Any:
@@ -818,7 +836,9 @@ class UncertaintyResult(_ResultMapping):
             f"{type(self).__name__}(nominal={shown(self.nominal)}, "
             f"median={shown(self.median)}, "
             f"interval_90=({shown(lower)}, {shown(upper)}), "
-            f"n_draws={self.n_draws})"
+            f"n_draws={self.n_draws}"
+            + ("" if self.band is None else f", band={self.band!r}")
+            + ")"
         )
 
 

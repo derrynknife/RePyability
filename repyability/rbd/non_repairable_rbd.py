@@ -48,7 +48,7 @@ from . import _montecarlo as montecarlo
 from . import _sensitivity
 from . import capacity as _capacity
 from . import redundancy_allocation
-from ._bayesian_life import as_life
+from ._bayesian_life import PosteriorPredictive, as_life
 from ._degradation import check_life, is_degradation
 from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 from ._measures import (
@@ -111,11 +111,14 @@ from .results import (
 from .routes import EXACT, NUMERICAL, AnalysisRoute, Refused, model_route
 from .standby_node import StandbyModel
 from .uncertainty import (
+    GIVEN,
+    band,
     check_draws,
     draw_ccf_models,
     draw_models,
     draw_with,
     fitted_together,
+    input_band,
     split_group_levers,
     varied_ccf_parameters,
     varied_parameters,
@@ -1760,7 +1763,12 @@ class NonRepairableRBD(RBD):
           logit scale for one in (0, 1), so that every draw is valid:
           the distribution's parameters and a limited failure population's
           ``lfp_p`` or a zero-inflated fit's ``f0``; an offset, which the
-          covariance leaves out, keeps its fitted value, with a warning;
+          covariance leaves out, keeps its fitted value, with a warning.
+          For a node given a Bayesian fit, ``"fit"`` draws its posterior
+          itself: each draw a posterior point picked by its probability
+          (from the exact family of a conjugate posterior), the node in
+          that draw the plain distribution at that point. The nominal
+          value stays the posterior predictive's;
         - ``{parameter name: distribution}``: each named parameter is drawn
           from its distribution (anything with ``qf`` or ``ppf``, such as a
           surpyval or scipy.stats distribution), the others kept;
@@ -1801,7 +1809,8 @@ class NonRepairableRBD(RBD):
             nodes, and ``{CCFGroup: uncertainty}`` for an uncertain
             common-cause model (see above). The other nodes and groups
             keep their models. By default, every node whose model is a
-            surpyval fit with a parameter covariance is drawn as ``"fit"``,
+            surpyval fit with a parameter covariance, or a Bayesian fit,
+            is drawn as ``"fit"``,
             the nodes that share one model object (or a common-cause group)
             together. Nodes with separate but equal fits are drawn apart,
             which understates the uncertainty if they are one estimate:
@@ -1821,8 +1830,10 @@ class NonRepairableRBD(RBD):
         UncertaintyResult
             The system reliability of every draw (``samples``), the nominal
             value with the nodes' own models, and summaries: ``mean``,
-            ``median``, ``std``, ``percentile`` and ``interval`` (see
-            [`UncertaintyResult`][repyability.UncertaintyResult]).
+            ``median``, ``std``, ``percentile`` and ``interval``, and what
+            the band is (``band``: a credible band from Bayesian fits, a
+            confidence band from fits' covariances, ``"mixed"`` over
+            both; see [`UncertaintyResult`][repyability.UncertaintyResult]).
 
         Raises
         ------
@@ -1884,7 +1895,7 @@ class NonRepairableRBD(RBD):
         >>> round(lower, 3), round(upper, 3)
         (0.401, 0.795)
         """
-        drawn, drawn_groups = self._uncertain_draws(
+        drawn, drawn_groups, kind = self._uncertain_run(
             uncertainty, n_draws, seed, sampling
         )
 
@@ -1911,11 +1922,13 @@ class NonRepairableRBD(RBD):
                 samples=samples[:, 0],
                 nominal=float(nominal.reshape(-1)[0]),
                 n_draws=n_draws,
+                band=kind,
             )
         return UncertaintyResult(
             samples=samples.reshape((n_draws,) + np.shape(x)),
             nominal=nominal.reshape(np.shape(x)),
             n_draws=n_draws,
+            band=kind,
         )
 
     def _quantity_samples(
@@ -2097,14 +2110,17 @@ class NonRepairableRBD(RBD):
         (515, 1352)
         """
         self._require_lifetimes()
-        drawn, drawn_groups = self._uncertain_draws(
+        drawn, drawn_groups, kind = self._uncertain_run(
             uncertainty, n_draws, seed, sampling
         )
         samples = self._quantity_samples(
             "mean", None, drawn, drawn_groups, n_draws
         )
         return UncertaintyResult(
-            samples=samples, nominal=self._exact_mean(), n_draws=n_draws
+            samples=samples,
+            nominal=self._exact_mean(),
+            n_draws=n_draws,
+            band=kind,
         )
 
     def time_to_reliability_uncertainty(
@@ -2192,7 +2208,7 @@ class NonRepairableRBD(RBD):
                 "target reliability must be in (0, 1) (or an array of "
                 f"such), got {target!r}."
             )
-        drawn, drawn_groups = self._uncertain_draws(
+        drawn, drawn_groups, kind = self._uncertain_run(
             uncertainty, n_draws, seed, sampling
         )
         samples = self._quantity_samples(
@@ -2205,7 +2221,7 @@ class NonRepairableRBD(RBD):
         )
         nominal = self.time_to_reliability(target, upper_bound=upper_bound)
         return UncertaintyResult(
-            samples=samples, nominal=nominal, n_draws=n_draws
+            samples=samples, nominal=nominal, n_draws=n_draws, band=kind
         )
 
     def bx_life_uncertainty(
@@ -2328,7 +2344,9 @@ class NonRepairableRBD(RBD):
         ``covariance()``) for ``"fit"``, or the variances of the distributions
         given. The inputs are independent, so each one's part is its own
         term and the shares add up to 1. A list of models has no
-        parameters to move: it needs ``method="sobol"``.
+        parameters to move, nor a Bayesian fit one value of them (its
+        posterior need not be near a normal): they need
+        ``method="sobol"``.
 
         ``method="sobol"`` draws the inputs as ``sf_uncertainty`` does and
         estimates the variance-based (Sobol) indices: ``n_draws`` draws of
@@ -2667,6 +2685,21 @@ class NonRepairableRBD(RBD):
 
         check_draws(n_draws)
         sources, ccf_specs = self._uncertainty_sources(uncertainty)
+        return self._draws_of(
+            sources, ccf_specs, n_draws, seed, sampling, paired
+        )
+
+    def _draws_of(
+        self,
+        sources,
+        ccf_specs,
+        n_draws: int,
+        seed,
+        sampling: str = "random",
+        paired: bool = False,
+    ) -> Tuple[Dict[Hashable, list], list]:
+        """``_uncertain_draws`` of the inputs ``_uncertainty_sources``
+        gave."""
 
         def draw(n: int, source) -> Tuple[Dict[Hashable, list], list]:
             drawn: Dict[Hashable, list] = {}
@@ -2720,10 +2753,10 @@ class NonRepairableRBD(RBD):
             if not uncertainty:
                 raise ValueError(
                     "No node's model is a surpyval fit with a parameter "
-                    "covariance, which the uncertainty is drawn from by "
-                    "default: give the uncertain nodes, uncertainty={node: "
-                    "'fit'} or {node: {parameter: distribution}}, for "
-                    "example."
+                    "covariance, or a Bayesian fit, which the uncertainty "
+                    "is drawn from by default: give the uncertain nodes, "
+                    "uncertainty={node: 'fit'} or {node: {parameter: "
+                    "distribution}}, for example."
                 )
         if not uncertainty:
             raise ValueError(
@@ -2844,6 +2877,30 @@ class NonRepairableRBD(RBD):
             },
             (group.members for group in self.ccf_groups),
         )
+
+    def _band(self, sources, ccf_specs) -> str:
+        """What the band over draws of the inputs ``_uncertainty_sources``
+        gave is (``uncertainty.band``): credible, confidence, given or
+        mixed."""
+        return band(
+            [
+                input_band(self.reliabilities[members[0]], spec)
+                for _, members, spec in sources
+            ]
+            + [GIVEN] * len(ccf_specs)
+        )
+
+    def _uncertain_run(
+        self, uncertainty, n_draws: int, seed, sampling: str
+    ) -> Tuple[Dict[Hashable, list], list, str]:
+        """``_uncertain_draws``'s draws, and what their band is
+        (``_band``)."""
+        check_draws(n_draws)
+        sources, ccf_specs = self._uncertainty_sources(uncertainty)
+        drawn, groups = self._draws_of(
+            sources, ccf_specs, n_draws, seed, sampling
+        )
+        return drawn, groups, self._band(sources, ccf_specs)
 
     def _drawn_groups(self, drawn_groups: list, i: int) -> Optional[list]:
         """The common-cause groups of draw ``i`` (see ``_uncertain_draws``),
@@ -5372,6 +5429,18 @@ class NonRepairableRBD(RBD):
             if grouped
             else ""
         )
+        bayesian = [
+            node
+            for node in self.nodes
+            if isinstance(self.reliabilities[node], PosteriorPredictive)
+        ]
+        groups_drawn += (
+            f" A Bayesian block ({', '.join(map(repr, bayesian))}) is drawn "
+            "from its posterior, a credible band, its nominal value the "
+            "posterior predictive."
+            if bayesian
+            else ""
+        )
         # Each draw is worked out exactly, from the drawn nodes'
         # reliabilities: refused, as sf is, where a node has none.
         out["sf_uncertainty"] = built(
@@ -5384,7 +5453,15 @@ class NonRepairableRBD(RBD):
             "The delta method: the exact quantity's derivative in each "
             "uncertain parameter, by central differences, with their "
             "covariance (method='sobol' estimates Sobol indices from draws "
-            "instead)." + groups_drawn,
+            "instead)."
+            + groups_drawn
+            + (
+                " The delta method refuses a Bayesian block, which has a "
+                "posterior, not one value of its parameters to move: "
+                "method='sobol' takes it."
+                if bayesian
+                else ""
+            ),
         )
         no_lifetimes = r.refusal(self._require_lifetimes)
         out["mean_uncertainty"] = (

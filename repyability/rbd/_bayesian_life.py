@@ -14,9 +14,17 @@ in closed form (an Exponential with a Gamma posterior on its rate: a Lomax;
 a Normal mean with the spread known), that is used, as surpyval does.
 
 A diagram, a ``NonRepairable`` and a ``RepairableRBD``'s component take a
-Bayesian fit as it is, and wrap it in this (``as_life``).
+Bayesian fit as it is, and wrap it in this (``as_life``): one fit object is
+one predictive object wherever it is given, so blocks given the same fit
+hold the same model, as blocks given one ordinary fit do.
+
+The parameter-uncertainty methods draw a Bayesian block's credible band
+from its posterior (``_posterior_models``): each draw a posterior point
+picked by its probability (from the exact family of a conjugate posterior),
+and the block in that draw the plain distribution at it.
 """
 
+import weakref
 from typing import Any
 
 import numpy as np
@@ -32,12 +40,26 @@ _BLOCK = 1 << 21
 _BELOW_ONE = float(np.nextafter(1.0, 0.0))
 
 
+#: The predictive of each Bayesian fit given as a life, by the fit's id
+#: (the entry goes with the last model holding it).
+_PREDICTIVES: "weakref.WeakValueDictionary[int, PosteriorPredictive]" = (
+    weakref.WeakValueDictionary()
+)
+
+
 def as_life(model: Any) -> Any:
     """``model``, but a surpyval Bayesian fit as its posterior predictive
-    (a ``PosteriorPredictive``)."""
-    if is_bayesian_fit(model):
-        return PosteriorPredictive(model)
-    return model
+    (a ``PosteriorPredictive``): the same one for the same fit object, so
+    that blocks given one fit share one model (and, under parameter
+    uncertainty, one draw of its posterior), as blocks given one ordinary
+    fit do."""
+    if not is_bayesian_fit(model):
+        return model
+    life = _PREDICTIVES.get(id(model))
+    if life is None or life.fit is not model:
+        life = PosteriorPredictive(model)
+        _PREDICTIVES[id(model)] = life
+    return life
 
 
 class PosteriorPredictive:
@@ -66,11 +88,14 @@ class PosteriorPredictive:
     that point's probability the uniform falls at is the point's life's
     quantile (the closed forms are inverted instead).
 
-    The credible band of a result (how sure the fit is of it) is not
-    carried through a diagram yet: a node is its predictive. The posterior
-    is kept (``points``, ``weights``, ``fit``) for that. A fit with an
-    offset, a limited failure population or zero inflation, or of a
-    discrete distribution, is not taken yet.
+    A diagram's value is worked out with the predictive (its point value).
+    How sure the fit is of that value, its credible band, is what the
+    parameter-uncertainty methods (``sf_uncertainty`` and the like) carry
+    to the system: each draw takes a point of the posterior by its
+    probability (from the exact family of a conjugate posterior) and the
+    plain distribution at it (see the guide's "A Bayesian fit as a
+    life"). A fit with an offset, a limited failure population or zero
+    inflation, or of a discrete distribution, is not taken yet.
 
     Parameters
     ----------
@@ -395,6 +420,28 @@ class PosteriorPredictive:
         return RowSampler(
             1, lambda u: self._draw(np.ascontiguousarray(u[:, 0]))
         )
+
+    def _posterior_models(self, u: ArrayLike) -> list:
+        """The plain distributions at the posterior points the uniforms
+        ``u`` pick, one a draw: the point whose share of ``[0, 1)`` (its
+        probability, the points one after another) ``u`` falls in, so
+        points are picked by their probabilities, unequal on a grid, none
+        left out; a conjugate posterior's parameter is its exact family's
+        quantile at ``u`` instead (surpyval's ``posterior.quantile``),
+        the other parameters (a fixed spread) as its points hold them."""
+        u = np.asarray(u, dtype=float).ravel()
+        posterior = self.fit.posterior
+        exact = posterior.exact
+        if exact:
+            rows = np.repeat(self.points[:1], len(u), axis=0)
+            column = self._family.parameter_names.index(exact["name"])
+            rows[:, column] = posterior.quantile(exact["name"], u)
+        else:
+            last = len(self.weights) - 1
+            rows = self.points[
+                np.minimum(np.searchsorted(self._ends, u, "right"), last)
+            ]
+        return [self._family.from_params(list(row)) for row in rows]
 
     # -- Saving --------------------------------------------------------------
 
