@@ -83,6 +83,7 @@ from repyability.maintenance import (
 )
 from repyability.network import Network
 from repyability.non_repairable import NonRepairable
+from repyability.rbd._bayesian_life import PosteriorPredictive
 from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor, CCFGroup
 from repyability.rbd.chunks import SimulationChunk
 from repyability.rbd.degrading_node import DegradingNode
@@ -171,6 +172,7 @@ __all__ = [
     "NodeState",
     "RegressionNode",
     "JointNode",
+    "PosteriorPredictive",
     "BetaFactor",
     "MGL",
     "AlphaFactor",

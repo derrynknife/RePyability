@@ -25,6 +25,26 @@ other release, fixes included, the minor.
   a tolerance. `best_switch_time()` (and `SwitchTime`) finds the switch
   time between two ways of running that maximises the NPV, with the NPV
   of never switching and of switching at once, and the scan behind it.
+- A surpyval Bayesian fit (`fit_bayes`, or `BayesianParametric.from_draws`)
+  as a life: a block of a `NonRepairableRBD`, a `NonRepairable` (and the
+  maintenance calculators on it) and a `RepairableRBD` component's life or
+  repair time take the fit as it is. Its life is the posterior predictive,
+  the survival at each posterior point averaged with the points'
+  probabilities (equal for draws; the Lomax in closed form for an
+  Exponential with a Gamma posterior), as the new `PosteriorPredictive`:
+  each function to its own precision (`ff` averaged, not `1 - sf`), its
+  quantile by inverting the mixture, its mean the points' means averaged,
+  and its draws a posterior point and a life from one uniform, so seeded
+  simulations stream it and both engines take it. It saves with the
+  diagram (the fit's own `to_dict()`, its posterior whole) and pickles.
+  The parameter-uncertainty methods refuse `"fit"` for it (its
+  uncertainty is averaged in already; give `fit.draw_models(k)` as a list)
+  and leave it out of their default draws; the credible band is not
+  carried to system results yet. A fit with an offset, a limited failure
+  population or zero inflation, or of a discrete distribution, is refused
+  for now. A surpyval Bayesian fit is no longer taken for its
+  distribution at the posterior medians by the model probes
+  (`distribution_name`).
 - `RepairableRBD.expected_npv()` (and the `ExpectedNPV` result): the
   expected net present value of running a system over a horizon, from new
   or from a state. Exact, with no simulation: the discounted expected
