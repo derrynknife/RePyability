@@ -53,6 +53,7 @@ from repyability.rbd._hidden_life import (
     TestedLifeSteady,
 )
 from repyability.rbd._hidden_tests import TestedUnit
+from repyability.rbd._level_replacement import level_model
 from repyability.rbd._long_run import (
     _TESTED_CYCLE,
 )
@@ -269,6 +270,12 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
         )
     if message:
         return r.REFUSED, message
+    if calendar and schedule.level is not None:  # type: ignore
+        return (
+            r.NUMERICAL,
+            "replacement on condition by level: followed from one "
+            "inspection to the next on a grid, the units kept by level",
+        )
     if calendar and schedule.policy == "condition":  # type: ignore
         return (
             r.NUMERICAL,
@@ -1778,8 +1785,8 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     its long-run state (a stationary ``start``), its settled cycle from
     its phase on; from another state, its own curve up to its first
     block time or inspection, and the schedule's from there (see
-    ``StartedBlockCurve``)."""
-    _requirements._refuse_level(rbd, node)
+    ``StartedBlockCurve``). Replaced on condition by its level (see
+    ``_level_replacement``), from new only (``_check_state``)."""
     component = rbd.components[node]
     schedule = rbd._preventive[node]
     duration = schedule.duration
@@ -1789,6 +1796,9 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     models = (life, component.time_to_replace, duration, schedule.interval)
 
     def followed(horizon: float, head=None):
+        if schedule.level is not None:
+            assert head is None  # from new (see _check_state)
+            return level_model(rbd, node).availability(horizon)
         if schedule.policy == "condition":
             return condition_availability(
                 *models, float(schedule.threshold), horizon, node, head

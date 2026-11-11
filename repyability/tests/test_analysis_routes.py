@@ -1023,9 +1023,9 @@ def test_the_readme_says_what_is_simulated():
         "Replacement on condition by a measured degradation level": [
             (repairable["replaced on condition by level"], name, route)
             for name, route in (
-                ("mean_availability", "refused"),
-                ("point_availability", "refused"),
-                ("expected_cost", "refused"),
+                ("mean_availability", "numerical"),
+                ("point_availability", "numerical"),
+                ("expected_cost", "numerical"),
                 ("availability", "simulated"),
             )
         ],

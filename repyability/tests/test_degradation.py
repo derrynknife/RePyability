@@ -259,15 +259,13 @@ def test_a_level_is_kept_by_saving():
     ).samples.tolist() == (first.samples.tolist())
 
 
-def test_level_replacement_is_simulated_only():
+def test_level_replacement_is_refused_from_a_state():
+    # Numerical from new (see test_level_replacement.py), but a state
+    # does not give the level.
     rbd = levelled(wear(), 6.0, repair_cost=1.0, cost=1.0)
-    for exact in (
-        rbd.mean_availability,
-        lambda: rbd.point_availability([100.0]),
-        lambda: rbd.expected_cost(500.0),
-    ):
-        with pytest.raises(NotImplementedError, match="measured degradation"):
-            exact()
+    for state in (NodeState(age=50.0), NodeState(stationary=True)):
+        with pytest.raises(NotImplementedError, match="leave it out"):
+            rbd.point_availability([100.0], state={"a": state})
     with pytest.raises(NotImplementedError, match="leave it out"):
         rbd.availability(
             t_simulation=100.0,

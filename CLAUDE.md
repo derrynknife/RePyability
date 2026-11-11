@@ -252,6 +252,17 @@ first. This file adds the internals and conventions it does not cover.
   are not done, and a failure a test misses waits for the next full test.
   A change to one goes into the other; `test_hidden_failures_timed.py`
   checks the model against the simulation.
+- **Replacement on condition by level's numerical model
+  (`repyability/rbd/_level_replacement.py`, #271) copies the simulation's
+  inspections** (`_event_loop._condition_next`): a working unit's level is
+  measured at every multiple of the interval, a unit at or past the level
+  is replaced (taking the replacement's time), an inspection in a repair
+  or replacement is not done, and a unit put into service starts at `y0`.
+  The level's law between inspections is stated once,
+  `_degradation.level_below`, which the simulation's draw inverts and the
+  grid of levels takes differences of. A change to one goes into the
+  other; `test_level_replacement.py` checks the model against the
+  simulation.
 
 ## How each analysis is computed
 

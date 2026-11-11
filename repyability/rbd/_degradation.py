@@ -20,6 +20,12 @@ fitted parameters, a workaround to drop once surpyval has it:
 - a gamma process, whose increment over ``t`` is Gamma(``alpha t``,
   rate ``beta``): monotone, so not having failed by ``t`` is the level
   being below ``L`` at ``t``, a gamma truncated there.
+
+Both are stated once, in :func:`level_below`: the probability that a unit
+at level ``y`` now is, a time ``t`` later, unfailed and at a level at most
+``z``. The simulation's draw (:func:`level_after`) inverts it; the
+numerical values (``_level_replacement``) take its differences over a
+grid of levels.
 """
 
 import math
@@ -58,11 +64,46 @@ def check_life(model, label: str) -> None:
         )
 
 
+def level_below(model, y, t, z, exp=np.exp):
+    """The probability that a unit at level ``y`` now has not failed (not
+    reached ``model.threshold``) a time ``t > 0`` from now, and is then at
+    a level at most ``z``: at ``z`` at or past the threshold, its
+    survival. Arrays broadcast. ``exp`` is the exponential the Wiener
+    reflection's weight is taken by: the simulation's draws use
+    ``math.exp``, with which its seeded results were recorded. A
+    workaround for SurPyval#836 (see the module docstring)."""
+    threshold = float(model.threshold)
+    a, b = (float(p) for p in model.params)
+    wiener, _ = _kinds()
+    z = np.minimum(z, threshold)
+    if isinstance(model, wiener):
+        return _wiener_below(a, b, threshold, y, t, z, exp)
+    return _gamma_below(a, b, y, t, z)
+
+
+def _wiener_below(mu, sigma, threshold, y, t, z, exp):
+    """``level_below`` for a Wiener process, ``z`` at most the threshold:
+    the free path's distribution less its reflection in the threshold."""
+    spread = sigma * np.sqrt(t)
+    # log of exp(2 mu gap / sigma^2), the reflection's weight.
+    weight = 2.0 * mu * (threshold - y) / sigma**2
+    free = ndtr((z - y - mu * t) / spread)
+    image = (z - 2.0 * threshold + y - mu * t) / spread
+    return free - exp(weight + log_ndtr(image))
+
+
+def _gamma_below(alpha, beta, y, t, z):
+    """``level_below`` for a gamma process, ``z`` at most the threshold:
+    monotone, so unfailed at a level at most ``z`` is an increment of at
+    most ``z - y``."""
+    return gammainc(alpha * t, beta * np.maximum(z - y, 0.0))
+
+
 def level_after(model, y: float, t: float, u: float) -> float:
     """The level at time ``t`` from now of a unit at level ``y`` now that
     has not failed (reached ``model.threshold``) by then, from the uniform
-    ``u``: the inverse of its distribution function (see the module
-    docstring). A workaround for SurPyval#836."""
+    ``u``: the inverse of its distribution function, ``level_below`` over
+    its value at the threshold. A workaround for SurPyval#836."""
     threshold = float(model.threshold)
     if t <= 0.0:
         return y
@@ -72,7 +113,7 @@ def level_after(model, y: float, t: float, u: float) -> float:
     alpha, beta = (float(p) for p in model.params)
     # P(increment < L - y) is the survival; the increment below it is a
     # gamma truncated there.
-    survive = gammainc(alpha * t, beta * (threshold - y))
+    survive = _gamma_below(alpha, beta, y, t, threshold)
     return y + float(gammaincinv(alpha * t, u * survive)) / beta
 
 
@@ -80,16 +121,11 @@ def _wiener_level(model, y: float, t: float, u: float, threshold: float):
     """A Wiener level (see :func:`level_after`), by bisection of its
     distribution function on ``(-inf, threshold)``."""
     mu, sigma = (float(p) for p in model.params)
-    gap = threshold - y
     spread = sigma * math.sqrt(t)
-    # log of exp(2 mu gap / sigma^2), the reflection's weight.
-    weight = 2.0 * mu * gap / sigma**2
 
     def below(z: float) -> float:
         """P(Y(t) <= z and no crossing by t), for z <= threshold."""
-        free = ndtr((z - y - mu * t) / spread)
-        image = (z - 2.0 * threshold + y - mu * t) / spread
-        return free - math.exp(weight + float(log_ndtr(image)))
+        return _wiener_below(mu, sigma, threshold, y, t, z, math.exp)
 
     survive = below(threshold)
     target = u * survive

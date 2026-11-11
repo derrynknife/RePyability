@@ -291,7 +291,13 @@ class MissionPhase:
 
     def setting(self, node: Hashable) -> BlockSetting:
         """The setting of block ``node`` in this phase (working, on its
-        node's model at its covariates, when not named)."""
+        node's model at its covariates, when not named).
+
+        Parameters
+        ----------
+        node : Hashable
+            The block's name in the diagram.
+        """
         return self.blocks.get(node, _DEFAULT)
 
 

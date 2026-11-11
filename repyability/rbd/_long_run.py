@@ -44,6 +44,7 @@ from repyability.rbd._events import (
     _Inspection,
     _Preventive,
 )
+from repyability.rbd._level_replacement import level_model
 from repyability.rbd._model_utils import (
     model_mean,
 )
@@ -179,6 +180,13 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
         )
         if message:
             return r.REFUSED, message
+        if schedule.level is not None:
+            return (
+                r.NUMERICAL,
+                "replacement on condition by level: its levels at the "
+                "inspections, followed from new on a grid of levels until "
+                "they repeat",
+            )
         if schedule.policy == "condition":
             return (
                 r.NUMERICAL,
@@ -388,10 +396,13 @@ def _block_nodes(rbd) -> list:
 def _block_cycle(rbd, node):
     """The renewal cycle of a component under block replacement (see
     ``_block_replacement``) or replaced on condition (see
-    ``_condition_replacement``), computed once and kept."""
-    _requirements._refuse_level(rbd, node)
+    ``_condition_replacement``, or by its level: ``_level_replacement``,
+    whose cycle is one inspection interval of the long run), computed
+    once and kept."""
     component = rbd.components[node]
     schedule = rbd._preventive[node]
+    if schedule.level is not None:
+        return level_model(rbd, node).cycle()
     cache = rbd._cache.kept("block_cycles")
     key = (
         node,

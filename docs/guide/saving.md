@@ -171,7 +171,8 @@ The nodes can change a route:
   `cost`). Until 0.12 its reliability was fitted to simulated lifetimes.
 - **Maintenance.** Preventive maintenance makes the long-run values numerical,
   and the values over time too, replacement on condition (`"policy":
-  "condition"`) among it (#161). The exact
+  "condition"`) among it (#161), by age or by a measured degradation
+  level (#271; from new only). The exact
   values refuse a component renewed early at its maintenance group's stops
   (an `"opportunity"`). A group's set-up cost is
   exact when no member is renewed early, unless two members are replaced on

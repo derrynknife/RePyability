@@ -541,8 +541,12 @@ class ScheduleValue(_ResultMapping):
         The expected number of failures over the horizon.
     up_time : float
         The expected time the unit works over the horizon.
-    undiscounted_npv, undiscounted_value, undiscounted_cost : float
-        The same sums with no discounting.
+    undiscounted_npv : float
+        ``npv`` with no discounting.
+    undiscounted_value : float
+        ``value`` with no discounting.
+    undiscounted_cost : float
+        ``cost`` with no discounting.
     stretches : list of dict
         One row per stretch of the schedule: ``start``, ``end`` (cut at
         the horizon), ``covariates``, ``value_rate``, and the ``value``,
@@ -876,7 +880,13 @@ def best_switch_time(
         after.
     horizon : float
         The length of time to value, more than 0.
-    failure_cost, down_time, discount_rate, age
+    failure_cost : float, optional
+        As for ``operating_schedule_value``.
+    down_time : float or surpyval model, optional
+        As for ``operating_schedule_value``.
+    discount_rate : float, optional
+        As for ``operating_schedule_value``.
+    age : float, optional
         As for ``operating_schedule_value``.
     tolerance : float, optional
         The relative agreement asked of each NPV's grid with its halving,
