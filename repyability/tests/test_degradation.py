@@ -6,7 +6,12 @@ import pytest
 import surpyval as surv
 from scipy import stats
 
-from repyability import NodeState, NonRepairableRBD, RepairableRBD
+from repyability import (
+    NodeState,
+    NonRepairable,
+    NonRepairableRBD,
+    RepairableRBD,
+)
 from repyability.rbd._degradation import level_after
 from repyability.rbd.serialisation import rbd_from_json, rbd_to_json
 from repyability.tests.catalogue import wear
@@ -99,6 +104,59 @@ def test_a_repaired_degradation_life_is_exact(make):
     assert rbd.mean_availability() == pytest.approx(
         life / (life + 20.0), rel=1e-6
     )
+    run = rbd.availability(
+        t_simulation=20_000.0, mc_samples=200, seed=2, control_variate=False
+    )
+    interval = run.mean_availability_interval(0.9999)
+    assert interval.lower < rbd.mean_availability() < interval.upper
+
+
+@pytest.mark.parametrize("make", [wear, drift])
+def test_a_degradation_life_is_replaced_at_an_age(make):
+    """Age replacement of a degradation life: its mean cycle is the
+    integral of its survival to the age, summed here on a fine grid, and
+    the best age is the cheapest of a scan of ages."""
+    model = make()
+    unit = NonRepairable(model)
+    unit.set_costs_planned_and_unplanned(cp=1.0, cu=5.0)
+    age = float(np.ravel(model.qf(np.array([0.3])))[0])
+    ages = np.linspace(0.0, age, 200_001)
+    R = np.ravel(model.sf(ages))
+    cycle = float(np.sum(0.5 * (R[1:] + R[:-1]) * np.diff(ages)))
+    assert unit.avg_replacement_time(age) == pytest.approx(cycle, rel=1e-8)
+
+    best = unit.find_optimal_replacement()
+    scan = np.linspace(0.2 * best, 2.0 * best, 1801)
+    rates = np.array([unit._cost_rate(a) for a in scan])
+    assert best == pytest.approx(scan[int(np.argmin(rates))], rel=2e-3)
+    assert unit._cost_rate(best) <= rates.min() * (1 + 1e-9)
+    assert unit._cost_rate(best) < unit._run_to_failure_rate()
+
+
+@pytest.mark.parametrize("make", [wear, drift])
+def test_a_repaired_degradation_life_replaced_at_an_age_is_exact(make):
+    """In a diagram, replaced in no time at an age T or repaired at a
+    failure (mean 20): a cycle is up for the integral of R to T and down
+    for 20 with probability F(T), so the long-run availability is
+    U / (U + 20 F(T))."""
+    model = make()
+    age = float(np.ravel(model.qf(np.array([0.3])))[0])
+    rbd = RepairableRBD(
+        EDGES,
+        {
+            "a": {
+                "reliability": model,
+                "repairability": REPAIR,
+                "preventive": {"policy": "age", "interval": age},
+            }
+        },
+    )
+    ages = np.linspace(0.0, age, 200_001)
+    R = np.ravel(model.sf(ages))
+    up = float(np.sum(0.5 * (R[1:] + R[:-1]) * np.diff(ages)))
+    down = 20.0 * (1.0 - R[-1])  # F(T) = 0.3
+    assert rbd.mean_availability() == pytest.approx(up / (up + down), rel=1e-7)
+    assert 0.0 < rbd.point_availability(2.5 * age) < 1.0
     run = rbd.availability(
         t_simulation=20_000.0, mc_samples=200, seed=2, control_variate=False
     )
