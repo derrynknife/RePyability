@@ -25,3 +25,7 @@
 ::: repyability.on_condition
 
 ::: repyability.optimal_on_condition_interval
+
+::: repyability.operating_schedule_value
+
+::: repyability.best_switch_time

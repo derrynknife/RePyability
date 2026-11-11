@@ -408,7 +408,12 @@ Not an API decision, but what every story's answer should carry:
   - The switch-over time that maximises NPV.
 - **Needs:** B1, B2; covariate-dependent lives in a `RepairableRBD`, which
   today only the non-repairable side supports.
-- **Status:** open.
+- **Status:** partial: built for one unit, `operating_schedule_value`
+  (the NPV of a schedule, value and failure cost apart, by stretch) and
+  `best_switch_time` (the switch time that maximises the NPV), in the
+  condition-based guide's "Is it worth running hot?". Open: a whole
+  diagram on a load schedule, which needs covariate-dependent lives in a
+  `RepairableRBD`.
 
 ### MX-12: Pump 1 is at 18,000 hours. Replace it at the March outage, or run it?
 

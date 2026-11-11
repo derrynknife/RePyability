@@ -35,6 +35,7 @@ use cases, under the same numbers.
 | UC-12 | When to replace this part next: now, at a scheduled outage, at a planned replacement, or at its failure? | **Built**: `NonRepairable.optimal_next_replacement` |
 | UC-13 | The long-run optimal replacement policy over a calendar of shuts with prices of their own | **Built**: `NonRepairable.optimal_calendar_policy` |
 | UC-19 | What a plan is worth over a horizon at a discount rate, and as a yearly cost | **Built**: `RepairableRBD.expected_npv`, `NonRepairable.age_replacement_value` |
+| UC-20 | One unit run on an operating schedule (covariates and value by stretch, in model time): the value earned, the failures' cost and the NPV, and the best time to switch from one way of running to another | **Built** (one unit): `operating_schedule_value`, `best_switch_time` |
 
 ## How a use case is added
 
@@ -1271,3 +1272,74 @@ answers back into dates is Reliafy's too.)
 - **Not yet:** value that varies in time, escalation, plans of actions at
   given times, the simulated distribution, crews as cash flows, and NPV as
   the optimisers' objective.
+
+
+### UC-20: "If we run at 70 °C instead of 30 °C we make more, but the bearings wear out faster. Does it pay?"
+
+- **Status:** built for one unit: `operating_schedule_value(model, times,
+  covariates, value_rates, horizon, failure_cost=, down_time=,
+  discount_rate=, age=)` and `best_switch_time(model, covariates,
+  value_rates, horizon, ...)`. A whole diagram on an operating schedule is
+  not built: a `RepairableRBD` component cannot yet take a covariate-
+  dependent life.
+- **Who asks, and why:** an operations manager who can raise output at
+  the cost of faster wear, and wants to know whether the extra output
+  pays for the extra failures, and when to change.
+- **What they know:** the unit's life against its covariates (a fitted
+  surpyval regression model: accelerated failure time, proportional
+  hazards or odds, additive hazards); the operating schedule in model
+  time from 0 (when each stretch starts, its covariates, and what the unit
+  earns per unit of time up in it: the calendar is the caller's, who turns
+  it into model time); the cost of a failure and how long a replacement
+  takes; the discount rate; the horizon.
+- **What they want back:** the NPV of each schedule with the value earned
+  and the failures' cost apart, the expected failures and time up, a table
+  by stretch, and the switch time that maximises the NPV, with the NPV of
+  never switching and of switching at once beside it.
+- **How it is solved (numerical, model time):** the unit is replaced by a
+  new one at each failure; a unit put in at time `v` runs along the rest
+  of the schedule, so its life is the model's `sf_tvc` along the schedule
+  shifted by `v`, and its failures and replacements form a renewal process
+  whose life depends on when each unit was put in. Its expected failures
+  and chance of being up solve a renewal equation in the plant's time, on
+  a grid sized from the lives with the schedule's changes at cell edges:
+  within the stretch a unit was put in, its life is that stretch's
+  fixed-covariate life averaged exactly over the cell; past it, the life
+  along the path of a unit put in at the cell's middle; a replacement's
+  end follows from the down time's distribution integrated exactly over
+  the cell. The value is the discounted integral of the value rate times
+  the chance of being up, the cost the discounted failures times their
+  cost. The grid is halved until every total agrees with the halved
+  grid's to a tolerance (1e-6 relative by default). The best switch time
+  is searched on 41 switch times across the horizon (the NPV need not have
+  one peak), then polished by Brent's method between the best one's
+  neighbours.
+- **Today:** a constant schedule is a one-component `RepairableRBD` whose
+  life is the model's at the fixed covariates (a Weibull of scale
+  `alpha / exp(beta z)` for the guide's Weibull AFT bearing), which
+  `expected_npv` values exactly. Over 20,000 hours at 8% a year, 150,000
+  a failure, 24 hours down and value 30 or 70 an hour: cool (30 °C), NPV
+  177,051 (value 548,462, cost 371,411); hot (70 °C), NPV 391,649 (value
+  1,274,025, cost 882,376). `operating_schedule_value` gives the same to
+  the unit. The guide's schedule (cool for 2000 hours, then hot) has no
+  such model: a `RepairableRBD` refuses a `RegressionNode` as a life, so
+  it could be answered only by simulating the process by hand, as the
+  checks below do. It is NPV 368,081 (value 1,195,407, cost 827,326).
+- **Checks:** `test_operating_schedule.py`: exponential lives and repairs
+  against the two-state Markov chain stretch by stretch; an accelerated
+  life with instant replacement against the baseline's renewal function
+  at the accumulated exposure (from `NonRepairable.failures`); a constant
+  schedule against a one-component `RepairableRBD`'s `expected_npv` and
+  `expected_events`; proportional hazards (where time does not rescale)
+  against a hand-written seeded simulation drawing each life along its
+  shifted path, with a unit aged at 0 and log-normal down times; the best
+  switch time against a fine scan, with an end best each way; results
+  scaling with the unit of time from 1e-6 to 1e6 and with the
+  covariate's unit; the refusals, JSON and `help()`.
+- **Learned / left:** each unit put in before the last change has its own
+  life, so the work grows with the cells before it (one evaluation of the
+  model along a path each); `best_switch_time` values each switch time to
+  a looser tolerance by default (1e-4) for that reason. Left: a diagram on
+  a schedule (covariate-dependent lives in a `RepairableRBD`), a schedule
+  that varies continuously (a `CovariatePath`), and value that depends on
+  more than the stretch.

@@ -11,6 +11,20 @@ other release, fixes included, the minor.
 
 ### Added
 
+- `operating_schedule_value()` (and `ScheduleValue`): what one unit run on
+  an operating schedule is worth over a horizon. The schedule gives, in
+  model time from 0, each stretch's covariates and the value earned per
+  unit of time up there; the unit's life is a fitted surpyval regression
+  model, so a unit put in at time `v` lives along the schedule from `v`
+  (`sf_tvc`), and each failure costs `failure_cost` and a down time while
+  a new unit is put in. Returns the NPV with the value and the failures'
+  cost apart, the expected failures and time up, the undiscounted totals,
+  the equivalent annual cost and a table by stretch. Numerical, with no
+  simulation: a renewal equation whose life depends on when each unit
+  was put in, solved on a grid halved until it agrees with its halving to
+  a tolerance. `best_switch_time()` (and `SwitchTime`) finds the switch
+  time between two ways of running that maximises the NPV, with the NPV
+  of never switching and of switching at once, and the scan behind it.
 - `RepairableRBD.expected_npv()` (and the `ExpectedNPV` result): the
   expected net present value of running a system over a horizon, from new
   or from a state. Exact, with no simulation: the discounted expected
