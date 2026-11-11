@@ -1875,7 +1875,8 @@ class PhasedMission:
         >>> unit = surv.Exponential.from_params([0.01])
         >>> one = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": unit})
         >>> mission = PhasedMission([("out", 10.0, one), ("back", 10.0, one)])
-        >>> [round(r, 6) for r in mission.reliability_over_time([5.0, 15.0])]
+        >>> over = mission.reliability_over_time([5.0, 15.0])
+        >>> [round(float(r), 6) for r in over]
         [0.951229, 0.860708]
         """
         times = self._times(t)

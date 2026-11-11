@@ -242,6 +242,9 @@ def _take_over(
                 if works(status(t)):
                     break
             else:
+                # It cannot be made to work: none of them is started.
+                for node in fresh:
+                    del starts[node]
                 return t, starts
             for node in reversed(fresh):
                 kept = starts.pop(node)
