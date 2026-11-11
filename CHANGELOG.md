@@ -71,6 +71,14 @@ other release, fixes included, the minor.
 - `ROADMAP.md`. Planned work is tracked privately; questions and bug
   reports stay in the issue tracker. The user stories (`stories/`) stay.
 
+### Documentation
+
+- The user stories' statuses are brought up to date with `dev`, each
+  built part citing the test that is its oracle, and `stories/README.md`
+  says how a story gets its oracle test and status. A new test checks
+  `expected_npv` with limited repair crews against the Markov chain built
+  by hand (story MX-13).
+
 ## [0.16] - 2026-10-31
 
 surpyval 0.26. RePyability is tested against surpyval 0.26 and needs it:
