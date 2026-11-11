@@ -1,8 +1,8 @@
 # Maintenance economics: the net present value of a plan
 
 Stories MX-01 to MX-25: valuing a plan (MX-01 to MX-17) and keeping its
-value current as the plant changes (MX-18 to MX-25). Statuses as of 0.13
-and what is merged on `dev` for 0.14 (16 October 2026).
+value current as the plant changes (MX-18 to MX-25). Statuses as of 0.16
+and what is merged on `dev` for 0.17 (11 November 2026).
 
 Every story is answered in model time: the models' own unit, from 0 or
 from a state. A question asked in dates (a month, a financial year, a
@@ -20,12 +20,17 @@ in #184 (item 3) found exactly that and had to discount by hand.
 0.12 took the first step: `total_cost` and `allocate_redundancy` take a
 `discount_rate` (a continuous rate per unit time of the models), buying
 the components at the start and discounting the **long-run** cost rate
-over the horizon, `(1 - exp(-r H)) / r`. Everything else (but for one
-part's skipped replacement, `ReplacementPlan.skip_next`, on `dev` for
-0.14) is still undiscounted: the costs from new (`expected_cost`, where the early years
-weigh most), the interval optimisers, the simulations and their
-distributions. There is no value side (what the plant earns while it
-runs), no plan of actions at given times, no cash-flow table, and no way
+over the horizon, `(1 - exp(-r H)) / r`. 0.14 discounted one part's
+skipped replacement (`NonRepairable.skip_next_replacement`). `dev` (for
+0.17) has building block B1: `RepairableRBD.expected_npv` (the expected
+NPV and EAC from new or from a state, with a constant value rate, an
+acquisition cost, events at fixed times discounted at those times, and a
+cash-flow table by period, category and component),
+`NonRepairable.age_replacement_value` (Fox's present value of an age
+replacement) and `NonRepairable.compare_replacement_options` (a part's
+options as present-value costs). Still undiscounted: the interval
+optimisers, and the simulations and their distributions. There is no
+value that varies in time, no plan of actions at given times, and no way
 to keep a plan's value current as the plant changes.
 
 The question they ask is not "what is the cheapest plan per hour in the
@@ -140,10 +145,15 @@ Not an API decision, but what every story's answer should carry:
 - **Needs:** B1, B6.
 - **References:** Fox (1966), *Age replacement with discounting*;
   Jardine & Tsang, *Maintenance, Replacement and Reliability*, ch. 2–3.
-- **Status:** open. The undiscounted optimum is
-  `optimal_replacement_policy()`; on `dev` for 0.14,
-  `ReplacementPlan.skip_next(discount_rate)` (#319) discounts one
-  decision about the plan, not the interval.
+- **Status:** partial, on `dev` for 0.17. The undiscounted optimum is
+  `optimal_replacement_policy()`, and `age_replacement_value(age,
+  discount_rate=)` gives the present value and EAC at any age by Fox's
+  formula; no optimiser searches for the discounted interval (B6).
+  Oracles: `repyability/tests/test_expected_npv.py::test_age_replacement_value_is_fox`
+  (Fox integrated independently, at 2%, 8% and 15% a year),
+  `::test_age_replacement_value_undiscounted_is_the_cost_rate` (0%) and
+  `::test_it_matches_fox_for_an_age_replacement_over_a_long_horizon`
+  (the same question at system level, one node).
 
 ### MX-02: Overhaul the gearbox now, or defer it to next financial year?
 
@@ -191,9 +201,10 @@ Not an API decision, but what every story's answer should carry:
     `expected_cost_rate` for the same group.
 - **Needs:** B1, B3 (campaigns), B6.
 - **Status:** partial: groups and opportunistic maintenance exist
-  undiscounted, and on `dev` for 0.14 `replacement_policies(shut_every=)`
-  (#319) finds a part's best policy against periodic shuts, undiscounted;
-  campaigns at given times do not exist.
+  undiscounted, and since 0.14 `NonRepairable.optimal_calendar_policy`
+  (#319) finds a part's best long-run policy over a calendar of shuts with
+  prices of their own, undiscounted; campaigns at given times do not
+  exist.
 
 ### MX-04: Proof-test intervals under a SIL target, at least cost
 
@@ -250,8 +261,13 @@ Not an API decision, but what every story's answer should carry:
 - **Needs:** B1, B6.
 - **References:** IEC 60300-3-3 (life cycle costing); ISO 15663.
 - **Status:** partial: `total_cost(horizon, discount_rate=)` (0.12) gives
-  each design's present value at its long-run cost rate; the costs from
-  new, payback, IRR and the cash-flow table do not exist.
+  each design's present value at its long-run cost rate; on `dev` for
+  0.17, `expected_npv(horizon, discount_rate=)` gives it from new, with
+  the components' `acquisition_cost` and the cash-flow table
+  (`repyability/tests/test_expected_npv.py::test_the_cash_flow_table_adds_up`,
+  `::test_with_no_discounting_it_is_the_expected_time_up_and_cost`).
+  Payback, IRR and each design at its own best interval are worked out by
+  hand.
 
 ### MX-06: Should we add a fourth pump train?
 
@@ -298,7 +314,12 @@ Not an API decision, but what every story's answer should carry:
   - The inverse question: the life Vendor B's valve must have to break
     even at a quoted price.
 - **Needs:** B1.
-- **Status:** partial: the undiscounted saving per hour is available today.
+- **Status:** partial: on `dev` for 0.17, `expected_npv` gives the
+  present value of running cost with each valve, and with
+  `working_nodes=["valve"]` the perfect valve's bound; the break-even
+  price is their difference, by hand, and the inverse question is not
+  answered. Oracle for the present values:
+  `repyability/tests/test_expected_npv.py::test_value_is_the_discounted_expected_time_up`.
 
 ### MX-08: Refurbish the compressor in year 8, or replace it with the new model?
 
@@ -411,13 +432,18 @@ Not an API decision, but what every story's answer should carry:
     SurPyval (`GeneralizedRenewal.unit_states()`, since 0.23);
     RePyability takes the state.
 - **Needs:** B1, B3.
-- **Status:** partial, on `dev` for 0.14: the simulations start a Kijima
-  unit from its virtual age (`NodeState(age=, virtual_age=)`, #269),
-  which a fitted `GeneralizedRenewal`'s `unit_states()` gives, though the
-  exact methods refuse such a state; and for a part replaced rather than
+- **Status:** partial: since 0.14 the simulations start a Kijima unit
+  from its virtual age (`NodeState(age=, virtual_age=)`, #269), which a
+  fitted `GeneralizedRenewal`'s `unit_states()` gives, though the exact
+  methods refuse such a state; and for a part replaced rather than
   repaired, `NonRepairable.optimal_next_replacement(age,
   scheduled_outages=)` (#319) compares replacing now, at each scheduled
-  outage, at its best age and running to failure, undiscounted. The NPV,
+  outage, at its best age and running to failure, undiscounted. On `dev`
+  for 0.17, `NonRepairable.compare_replacement_options(age, due_in,
+  every, discount_rate=)` compares replacing as planned, now, deferred,
+  at a shut or skipping, as present-value costs
+  (`repyability/tests/test_maintenance_options.py::test_options_have_closed_forms_for_an_exponential_life`,
+  `::test_options_match_simulated_plans`). The NPV of a repaired unit,
   refurbishment and salvage do not exist.
 
 ---
@@ -445,9 +471,12 @@ Not an API decision, but what every story's answer should carry:
     `PV = e_0^T (delta I - Q)^(-1) r` from the all-up state, sharing no
     code with `_crew_chain.py`.
 - **Needs:** B1, B5.
-- **Status:** partial: `expected_cost(t)` already runs over time with
-  `repair_crews` for exponential components, so the static crew comparison
-  can be discounted by hand, and since 0.12 the intervals can be chosen
+- **Status:** partial: on `dev` for 0.17, `expected_npv` discounts a
+  plant with `repair_crews` of exponential components numerically, from
+  its Markov chain, so the NPV with 1 and 2 crews is a call each, less the crews'
+  salaries by hand
+  (`repyability/tests/test_expected_npv.py::test_a_crew_limited_pair_is_its_markov_chain_discounted`,
+  the chain built in the test); since 0.12 the intervals can be chosen
   with `assume_unlimited_crews=True` and checked by simulation with
   `with_intervals(plan)`; the call-out option does not exist.
 
@@ -513,7 +542,15 @@ Not an API decision, but what every story's answer should carry:
   - Units stated in the result (time unit of the models, the rate's
     period), so an agent cannot mix hours and years silently.
 - **Needs:** B1; `analysis_routes` coverage.
-- **Status:** open.
+- **Status:** partial, on `dev` for 0.17: `RepairableRBD.expected_npv`
+  returns the NPV, the EAC, the undiscounted totals and the cash-flow
+  table as plain data, and `analysis_routes()` reports it (exact,
+  numerical or refused, with the reason). The result states the
+  discount rate and that times are in the models' unit, but not the unit
+  itself, which RePyability does not yet read from the models. Oracles:
+  `repyability/tests/test_expected_npv.py` (closed forms, Fox, the
+  undiscounted analyses, `::test_it_is_plain_data`) and
+  `repyability/tests/test_analysis_routes.py::test_every_repairable_method_does_what_the_report_says`.
 
 ### MX-17: The plan said one thing; the outage log says another
 
@@ -581,7 +618,7 @@ the valuation that follows it.
     components with exact curves.
 - **Needs:** B1, B8; SurPyval: a degradation model's remaining life from a
   current level, as a life model RePyability can condition on.
-- **Status:** partial, on `dev` for 0.14: a fitted gamma or Wiener process
+- **Status:** partial, since 0.14: a fitted gamma or Wiener process
   is a component's life, and replacement on condition can go by its
   measured level (#271); a reading as a component's state, and the
   valuation, do not exist.
@@ -604,7 +641,7 @@ the valuation that follows it.
   - Checked against re-valuing from scratch with the resulting states.
 - **Needs:** B3, B8.
 - **Status:** partial: the state after a replacement (`NodeState(age=0)`)
-  or, on `dev` for 0.14, after an imperfect repair
+  or, since 0.14, after an imperfect repair
   (`NodeState(virtual_age=)`, #269, simulations only) can be given; the
   events, their order and the valuation do not exist.
 
