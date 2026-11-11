@@ -94,6 +94,8 @@
 
 ::: repyability.CostDistribution
 
+::: repyability.WindowCosts
+
 ::: repyability.LayeredVisits
 
 ::: repyability.RatioChoice
