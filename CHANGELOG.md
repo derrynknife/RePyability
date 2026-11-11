@@ -45,6 +45,16 @@ other release, fixes included, the minor.
   with common random numbers) and `summary()`, the whole mission at once
   from one run (`MissionSummary`, `MissionPhaseSummary`,
   `MissionDrivers`).
+- `BlockSetting(model=...)`: a block's life model in one phase of a
+  mission drawn as one diagram, in place of its node's (a pump in its
+  start-up phase, say), without drawing a second block. The block keeps
+  one clock and one budget of hazard: entering the phase at age `a` it
+  uses `H(a + d) - H(a)` of the phase's model, its age carried into the
+  next phase. The model is checked as one the node could have been given;
+  it goes with every state, exact without standby and simulated with it,
+  and the summary's settings hold it in its saved form. A phase's
+  covariates are now the special case of it (the node's regression model
+  at them), worked out by the same per-phase lives.
 - A surpyval Bayesian fit (`fit_bayes`, or `BayesianParametric.from_draws`)
   as a life: a block of a `NonRepairableRBD`, a `NonRepairable` (and the
   maintenance calculators on it) and a `RepairableRBD` component's life or

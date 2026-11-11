@@ -42,7 +42,7 @@ def _repairable_life(model) -> bool:
     return isinstance(model, NonRepairable)
 
 
-def checked_override(node, own_model, override):
+def checked_override(node, own_model, override, label: Optional[str] = None):
     """``override``, checked as the life of ``node`` in place of
     ``own_model`` (the node's model as its diagram holds it: a
     ``NonRepairableRBD``'s node model, or a ``RepairableRBD``'s
@@ -58,6 +58,9 @@ def checked_override(node, own_model, override):
     probability of failing is not, as the unit's life must be one of
     times.
 
+    ``label`` names the model in the messages (by default, "The model
+    given in the state of node ...").
+
     Raises
     ------
     TypeError
@@ -70,7 +73,8 @@ def checked_override(node, own_model, override):
     from repyability.rbd.joint_node import JointNode, as_node
     from repyability.rbd.non_repairable_rbd import _check_model, _stateable
 
-    label = f"The model given in the state of node {node!r}"
+    if label is None:
+        label = f"The model given in the state of node {node!r}"
     override = perfect_class(as_node(override))
     if _repairable_life(own_model):
         if not _stateable(own_model.reliability):
