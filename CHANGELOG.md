@@ -28,9 +28,6 @@ other release, fixes included, the minor.
   with common random numbers) and `summary()`, the whole mission at once
   from one run (`MissionSummary`, `MissionPhaseSummary`,
   `MissionDrivers`).
-
-### Added
-
 - `RepairableRBD.expected_npv()` (and the `ExpectedNPV` result): the
   expected net present value of running a system over a horizon, from new
   or from a state. Exact, with no simulation: the discounted expected
