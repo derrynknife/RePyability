@@ -788,4 +788,48 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             ),
         )
     )
+    # Each component's actions per unit time: from its own long-run
+    # values (node_availability's), the common-cause groups' chains
+    # first.
+    frequencies_given = r.refusal(
+        partial(_ccf_groups._require_ccf_frequencies, rbd)
+    )
+    own = out["node_availability"]
+    out["node_action_rates"] = (
+        r.refused(frequencies_given)
+        if frequencies_given
+        else (
+            own
+            if own.route == r.REFUSED
+            else dataclasses.replace(
+                own,
+                reason="Each component's long-run failures and preventive "
+                "replacements per unit time, from its renewal cycle and "
+                "its long-run availability. " + own.reason,
+            )
+        )
+    )
+    coupling = r.refusal(partial(_crews._require_coupling_crews, rbd))
+    out["crew_states"] = (
+        r.refused(coupling) if coupling else _long_run._crew_chain_route(rbd)
+    )
+    out["replacement_cycle"] = _long_run._replacement_cycle_route(rbd)
+    engine, why = _runs._engine_choice(rbd, capacity=False)
+    out["simulation_samples"] = (
+        r.refused(groups)
+        if groups
+        else (
+            r.AnalysisRoute(
+                r.SIMULATED,
+                "Each simulation of a discrete-event simulation of the "
+                "components' failures, repairs and maintenance, every "
+                "draw from a stream named by its component (common random "
+                "numbers).",
+                engine=engine,
+                engine_reason=why,
+            )
+            if streamed
+            else r.refused(_UNSTREAMED)
+        )
+    )
     return r.AnalysisRoutes(sorted(out.items()))

@@ -48,14 +48,19 @@ from repyability.rbd.results import (
     ConfidenceInterval,
     CostByWindow,
     CostResult,
+    CrewJob,
+    CrewStates,
     EventsByWindow,
     ExpectedCost,
     ExpectedEvents,
     ExpectedNPV,
     Lever,
     MaintenancePlan,
+    NodeActionRates,
     PlanVsActual,
     RateBreakdown,
+    ReplacementCycle,
+    SimulationSamples,
     SparesDemand,
     SparesStock,
     TimelineSimulation,
@@ -5839,6 +5844,321 @@ class RepairableRBD(RBD):
         {'a': 0.8333, 'b': 1.0}
         """
         return _long_run.node_availability(self)
+
+    def node_action_rates(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> Dict[Hashable, NodeActionRates]:
+        """Each component's corrective and preventive actions per unit
+        time, in the long run.
+
+        Its failures per unit time (each a repair or replacement) and its
+        preventive replacements per unit time: the long-run frequencies
+        [`expected_cost_rate`][repyability.RepairableRBD.expected_cost_rate]
+        prices, for pricing your own way or planning the work. They need
+        each component's long-run availability, which is worked out here:
+        from its own models, or with limited ``repair_crews`` from their
+        Markov chain (waiting for a crew, a component cannot fail). A
+        standby group's actions are its units' failures. A component held
+        working or broken never changes state, so it takes none.
+
+        Parameters
+        ----------
+        working_nodes : collection, optional
+            Nodes held working, by default none.
+        broken_nodes : collection, optional
+            Nodes held broken, by default none.
+
+        Returns
+        -------
+        dict
+            ``{node: NodeActionRates}`` for each component: its
+            ``corrective`` and ``preventive`` actions per unit time (see
+            [`NodeActionRates`][repyability.NodeActionRates]).
+
+        Raises
+        ------
+        ValueError
+            If a held node is unknown, or in both sets.
+        NotImplementedError
+            Where the long-run values are not worked out exactly or
+            numerically (see
+            [`node_availability`][repyability.RepairableRBD.node_availability]),
+            or a common-cause group's are not.
+
+        Examples
+        --------
+        A pump replaced at age 400 or at failure, whichever comes first:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> pump = {
+        ...     "reliability": surv.Weibull.from_params([1000.0, 3.0]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ...     "preventive": {"interval": 400.0},
+        ... }
+        >>> rbd = RepairableRBD([("s", "p"), ("p", "t")], {"p": pump})
+        >>> actions = rbd.node_action_rates()["p"]
+        >>> round(actions.corrective, 6), round(actions.preventive, 6)
+        (0.000157, 0.002382)
+
+        Most of its renewals are planned: about one in 16 is a failure.
+        """
+        return _costs.node_action_rates(self, working_nodes, broken_nodes)
+
+    def crew_jobs(self) -> List[CrewJob]:
+        """The jobs the repair crews work on.
+
+        Each component of this diagram is a job; a standby group's units
+        are a job each; a nested RBD is none, as it has crews of its own.
+        With ``repair_crews`` fewer than these jobs, a job can wait for a
+        crew.
+
+        Returns
+        -------
+        list of CrewJob
+            The jobs, in the order of the components: ``CrewJob(node,
+            None)`` for a plain component, ``CrewJob(node, unit)`` for
+            each unit of a standby group (see
+            [`CrewJob`][repyability.CrewJob]).
+
+        Examples
+        --------
+        A motor, and a standby group of two pumps:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> unit = {
+        ...     "reliability": surv.Exponential.from_params([0.01]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ... }
+        >>> rbd = RepairableRBD(
+        ...     [("s", "motor"), ("motor", "pumps"), ("pumps", "t")],
+        ...     {"motor": unit, "pumps": {**unit, "standby": {"units": 2}}},
+        ...     repair_crews=1,
+        ... )
+        >>> [(job.node, job.unit) for job in rbd.crew_jobs()]
+        [('motor', None), ('pumps', 0), ('pumps', 1)]
+        """
+        return _crews.crew_jobs(self)
+
+    def crew_states(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> CrewStates:
+        """With limited repair crews, the states of their Markov chain in
+        the long run: each node's availability in each state, and each
+        state's probability.
+
+        With fewer ``repair_crews`` than jobs (see
+        [`crew_jobs`][repyability.RepairableRBD.crew_jobs]), a failed
+        component may wait for a crew, so components no longer fail and
+        recover independently. The exact long-run values then come from a
+        Markov chain of which components are up and which jobs wait, and
+        each is an average over its states. These are the states, to work
+        out a long-run value of your own: a node's availability is
+        ``probabilities @ node_availability[node]``.
+
+        Parameters
+        ----------
+        working_nodes : collection, optional
+            Nodes held working, by default none: never failing, they need
+            no crew.
+        broken_nodes : collection, optional
+            Nodes held broken, by default none: never repaired, they need
+            no crew either.
+
+        Returns
+        -------
+        CrewStates
+            ``node_availability`` (each node's, 1 or 0, in each state) and
+            the states' ``probabilities`` (see
+            [`CrewStates`][repyability.CrewStates]).
+
+        Raises
+        ------
+        ValueError
+            If a held node is unknown, or in both sets; or (as
+            ``routes.Refused``) if no job can wait for a crew behind
+            another component's, so there is no chain.
+        NotImplementedError
+            If the chain does not cover the diagram: lives or repairs
+            that are not exponential, maintenance or inspections, standby
+            groups, common-cause groups, or too many states.
+
+        Examples
+        --------
+        Two pumps in parallel, one crew to repair them:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> pump = {
+        ...     "reliability": surv.Exponential.from_params([0.1]),
+        ...     "repairability": surv.Exponential.from_params([1.0]),
+        ... }
+        >>> rbd = RepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {"a": pump, "b": pump},
+        ...     repair_crews=1,
+        ... )
+        >>> states = rbd.crew_states()
+        >>> a = states.node_availability["a"]
+        >>> round(float(states.probabilities @ a), 4)
+        0.9016
+
+        The chain's five states are both pumps up, either one being
+        repaired, and either one repaired while the other waits, with
+        long-run probabilities in the ratio ``1 : lambda / mu`` (each)
+        ``: lambda^2 / mu^2`` (each); pump ``a`` is up in the first and
+        while ``b`` alone is repaired, ``1.1 / 1.22`` of the time.
+        """
+        return _crews.crew_states(self, working_nodes, broken_nodes)
+
+    def replacement_cycle(self, node: Hashable) -> ReplacementCycle:
+        """The renewal cycle of a component under block replacement or
+        replaced on condition, in the long run.
+
+        Under block replacement every ``T`` a unit is replaced at each
+        multiple of ``T`` at which it is up; replaced on condition, it is
+        inspected every ``T`` and replaced when found worn. Either way its
+        long-run behaviour repeats over each interval: how long it is up
+        and how often it fails in a cycle, its availability and failure
+        intensity across the interval, and whether it is up just before
+        and just after a block time or inspection. These are what
+        [`node_availability`][repyability.RepairableRBD.node_availability]
+        and the costs are made of.
+
+        Parameters
+        ----------
+        node : Hashable
+            The component, under block replacement or replaced on
+            condition (``"policy": "block"`` or ``"condition"``).
+
+        Returns
+        -------
+        ReplacementCycle
+            The cycle (see [`ReplacementCycle`][repyability.ReplacementCycle]).
+
+        Raises
+        ------
+        ValueError
+            If ``node`` is not a component, or (as ``routes.Refused``) is
+            not under block replacement or replaced on condition.
+        NotImplementedError
+            If its models are not covered (as for ``node_availability``).
+
+        Examples
+        --------
+        A pump replaced every 400 hours, and at failures in between:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> pump = {
+        ...     "reliability": surv.Weibull.from_params([1000.0, 3.0]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ...     "preventive": {"interval": 400.0, "policy": "block"},
+        ... }
+        >>> rbd = RepairableRBD([("s", "p"), ("p", "t")], {"p": pump})
+        >>> cycle = rbd.replacement_cycle("p")
+        >>> round(cycle.failures, 4), round(cycle.before, 4)
+        (0.0622, 0.9991)
+        """
+        return _long_run.replacement_cycle(self, node)
+
+    def simulation_samples(
+        self,
+        t_simulation: float,
+        mc_samples: Optional[int] = None,
+        *,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        seed: Optional[int] = None,
+        entropy: Optional[int] = None,
+    ) -> SimulationSamples:
+        """Each simulation's availability and cost over a window, drawn
+        from common random numbers.
+
+        The simulations
+        [`availability`][repyability.RepairableRBD.availability] and
+        [`cost`][repyability.RepairableRBD.cost] run, each value kept,
+        with every draw from a stream named by the component it is for:
+        a component in the same place in two diagrams draws the same
+        numbers in both when they are run with the same ``seed`` (or
+        ``entropy``), as [`compare`][repyability.RepairableRBD.compare]
+        runs them. Use it to compare designs your own way (held nodes,
+        several measures, batches): the differences between two diagrams'
+        samples, simulation by simulation, come from how they differ
+        rather than from chance. Simulation ``r`` of a run is the same
+        whatever the run's size, so a run can be made in batches, each
+        from its own entropy.
+
+        Parameters
+        ----------
+        t_simulation : float
+            The window each simulation covers, from 0, every component
+            new.
+        mc_samples : int, optional
+            The number of simulations, by default 10_000.
+        working_nodes : collection, optional
+            Nodes held working, by default none.
+        broken_nodes : collection, optional
+            Nodes held broken, by default none.
+        seed : int, optional
+            Seeds the run, by default None: a number drawn from numpy's
+            global random number generator.
+        entropy : int, optional
+            The streams' entropy itself, in place of a seed (see
+            [`seed_entropy`][repyability.seed_entropy], which gives the
+            one a seed makes).
+
+        Returns
+        -------
+        SimulationSamples
+            Each simulation's fraction of the window up
+            (``availability``) and running cost (``cost``, ``None`` with
+            nothing priced): see
+            [`SimulationSamples`][repyability.SimulationSamples].
+
+        Raises
+        ------
+        ValueError
+            If ``t_simulation``, ``mc_samples``, ``seed`` or ``entropy`` is
+            invalid, both ``seed`` and ``entropy`` are given, or a held
+            node is unknown; or if a common-cause group's member is held
+            or the groups cannot be simulated.
+        NotImplementedError
+            If a component's draws cannot come from a stream of its own (a
+            model sampled its own way).
+
+        Examples
+        --------
+        A pump whose repairs take 1 hour on average against one whose
+        take 2, on the same failures:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> def pump(mttr):
+        ...     spec = {
+        ...         "reliability": surv.Exponential.from_params([0.1]),
+        ...         "repairability": surv.Exponential.from_params([1 / mttr]),
+        ...     }
+        ...     return RepairableRBD([("s", "p"), ("p", "t")], {"p": spec})
+        >>> fast = pump(1.0).simulation_samples(100.0, 1000, seed=1)
+        >>> slow = pump(2.0).simulation_samples(100.0, 1000, seed=1)
+        >>> bool((fast.availability >= slow.availability).all())
+        True
+        """
+        return _runs.simulation_samples(
+            self,
+            t_simulation,
+            mc_samples,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            seed=seed,
+            entropy=entropy,
+        )
 
     def system_failure_frequency(
         self,

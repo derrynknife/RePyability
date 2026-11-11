@@ -47,6 +47,7 @@ from repyability.rbd.results import (
     Criticalities,
     FailureCriticalityIndex,
     RestorationCriticalityIndex,
+    SimulationSamples,
     TimelineSimulation,
     UpDownImportance,
 )
@@ -933,6 +934,61 @@ def _fingerprint(diagram) -> Optional[str]:
     except SAVE_ERRORS:
         return None
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def simulation_samples(
+    rbd,
+    t_simulation: float,
+    mc_samples: Optional[int],
+    *,
+    working_nodes: Optional[Collection[Hashable]],
+    broken_nodes: Optional[Collection[Hashable]],
+    seed,
+    entropy: Optional[int],
+) -> SimulationSamples:
+    """See ``RepairableRBD.simulation_samples``."""
+    from . import _event_loop
+
+    N = 10_000 if mc_samples is None else mc_samples
+    montecarlo.check_count(N, False, "mc_samples")
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
+    if entropy is None:
+        entropy = _streams.entropy_of(seed)
+    elif seed is not None:
+        raise ValueError(
+            "Give seed or entropy, not both: the entropy is what a seed "
+            "makes (seed_entropy(seed))."
+        )
+    elif (
+        isinstance(entropy, (bool, np.bool_))
+        or not isinstance(entropy, (int, np.integer))
+        or not 0 <= entropy < 2**62
+    ):
+        raise ValueError(
+            "entropy must be a whole number from 0 to 2**62 - 1 (as "
+            f"seed_entropy gives), got {entropy!r}."
+        )
+    t_simulation = simulation_window(t_simulation)
+    tally = _event_loop._run(
+        rbd,
+        t_simulation,
+        working,
+        broken,
+        "p",
+        N,
+        False,
+        None,
+        entropy=int(entropy),
+        common=True,
+    )
+    return SimulationSamples(
+        availability=np.asarray(tally.uptimes, dtype=float) / t_simulation,
+        cost=(
+            np.asarray(tally.cost_samples, dtype=float)
+            if rbd.has_costs
+            else None
+        ),
+    )
 
 
 def compare(

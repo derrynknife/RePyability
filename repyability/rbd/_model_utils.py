@@ -9,9 +9,12 @@ small helpers keeps that coupling in one place (easy to audit and to cover
 with a compatibility test) and gives the call sites intention-revealing names.
 """
 
-from typing import Any, Dict, List, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from repyability.rbd.results import ModelParameters
 
 #: What a model raises when it cannot work out what it is asked (a quantile,
 #: a survival, a mean) at the values given: surpyval's models, and anything
@@ -232,6 +235,59 @@ def parametric_spec(model) -> Optional[ParametricSpec]:
             names.append(share)
             bounds.append((0, 1))
     return ParametricSpec(cls, params, names, extras, bounds)
+
+
+def model_parameters(model) -> Optional["ModelParameters"]:
+    """A parametric model's parameters, to rebuild the model with them
+    moved or drawn (for a sensitivity or an uncertainty of your own).
+
+    Parameters
+    ----------
+    model : object
+        A node's life or repair model: a surpyval parametric fit, or
+        anything else a diagram takes.
+
+    Returns
+    -------
+    ModelParameters or None
+        The parameters, their names and ranges, and ``build(values)``,
+        which rebuilds the model (see
+        [`ModelParameters`][repyability.ModelParameters]). ``None`` where
+        the model has none to rebuild: a nested diagram, a standby or
+        load-sharing group, a repeated node, a mixture, a Bayesian or
+        non-parametric fit, ``PerfectReliability``, a name or ``None``.
+
+    Examples
+    --------
+    A limited failure population: its share that ever fails is a
+    parameter too.
+
+    >>> import surpyval as surv
+    >>> from repyability import model_parameters
+    >>> model = surv.Weibull.from_params([100.0, 2.0], lfp_p=0.3)
+    >>> found = model_parameters(model)
+    >>> found.names
+    ['alpha', 'beta', 'lfp_p']
+    >>> rebuilt = found.build([100.0, 2.0, 0.6])
+    >>> round(float(rebuilt.ff(1e4)), 4)
+    0.6
+    >>> model_parameters("a name") is None
+    True
+    """
+    from repyability.rbd.results import ModelParameters
+
+    if model is None or isinstance(model, str):
+        return None
+    spec = parametric_spec(model)
+    if spec is None:
+        return None
+    return ModelParameters(
+        spec.cls,
+        list(spec.params),
+        list(spec.names),
+        dict(spec.extras),
+        list(spec.bounds),
+    )
 
 
 class CovariateSpec(NamedTuple):

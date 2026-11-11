@@ -8,9 +8,12 @@ state probabilities and outage terms in the long run.
 import math
 from typing import (
     Any,
+    Collection,
     Dict,
+    Hashable,
     List,
     NoReturn,
+    Optional,
     Tuple,
 )
 
@@ -28,6 +31,8 @@ from repyability.rbd._common import (
 from repyability.rbd._events import (
     _Unit,
 )
+from repyability.rbd.results import CrewJob, CrewStates
+from repyability.rbd.routes import Refused
 
 
 def _crew_served(rbd) -> list:
@@ -218,6 +223,45 @@ def _chain_probabilities(
     for node in rbd.in_or_out:
         out[node] = np.ones(size)
     return out, chain.probabilities
+
+
+def crew_jobs(rbd) -> List[CrewJob]:
+    """See ``RepairableRBD.crew_jobs``."""
+    return [
+        (
+            CrewJob(key.node, key.unit)
+            if isinstance(key, _Unit)
+            else CrewJob(key, None)
+        )
+        for key in _crew_served(rbd)
+    ]
+
+
+def _require_coupling_crews(rbd) -> None:
+    """Raise (``routes.Refused``) if no job can wait for a repair crew
+    behind another component's, so that there is no crews' chain: the
+    crews are unlimited, or as many as their jobs, or serve one standby
+    group's units alone (whose own chain counts them)."""
+    if not rbd._crews_couple():
+        raise Refused(
+            "No job here can wait for a repair crew behind another "
+            "component's (the crews are unlimited, as many as their jobs, "
+            "or serve one standby group's units alone), so the components "
+            "fail and recover independently, with no crews' chain: "
+            "node_availability gives each one's long-run availability."
+        )
+
+
+def crew_states(
+    rbd,
+    working_nodes: Optional[Collection[Hashable]],
+    broken_nodes: Optional[Collection[Hashable]],
+) -> CrewStates:
+    """See ``RepairableRBD.crew_states``."""
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
+    _require_coupling_crews(rbd)
+    availability, probabilities = _chain_probabilities(rbd, working, broken)
+    return CrewStates(availability, probabilities)
 
 
 def _chain_outage_terms(

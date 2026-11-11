@@ -48,6 +48,7 @@ from repyability.rbd._level_replacement import level_model
 from repyability.rbd._model_utils import (
     model_mean,
 )
+from repyability.rbd.results import ReplacementCycle
 from repyability.rbd.routes import AnalysisRoute
 from repyability.utils.checks import (
     structure_method,
@@ -432,6 +433,73 @@ def _block_cycle(rbd, node):
                 node,
             )
     return cache[key]
+
+
+def _replaced_nodes_refusal(rbd, node) -> None:
+    """Raise (``routes.Refused``) unless ``node`` is under block
+    replacement or replaced on condition (see ``_block_nodes``): only
+    such a component has a renewal cycle of fixed length."""
+    from repyability.rbd.routes import Refused
+
+    replaced = _block_nodes(rbd)
+    if node in replaced:
+        return
+    if not replaced:
+        raise Refused(
+            "No component here is under block replacement or replaced on "
+            "condition, so none has a replacement cycle: give a "
+            "component a preventive schedule with policy 'block' or "
+            "'condition'."
+        )
+    raise Refused(
+        f"Component {node!r} is not under block replacement or replaced "
+        "on condition, so it has no replacement cycle; the components "
+        f"that are: {replaced}."
+    )
+
+
+def replacement_cycle(rbd, node) -> ReplacementCycle:
+    """See ``RepairableRBD.replacement_cycle``."""
+    _requirements._require_component(rbd, node, "replacement_cycle")
+    _replaced_nodes_refusal(rbd, node)
+    # The checks _node_long_run makes, in its order.
+    _requirements._require_perfect_repair(rbd, node)
+    _requirements._require_times(rbd, node)
+    _requirements._require_no_opportunities(rbd, node)
+    _requirements._require_block_models(rbd, node)
+    cycle = _block_cycle(rbd, node)
+    return ReplacementCycle(
+        up=float(cycle.up),
+        length=float(cycle.length),
+        failures=float(cycle.failures),
+        phase=np.asarray(cycle.phase, dtype=float),
+        availability=np.asarray(cycle.availability, dtype=float),
+        failure_rate=np.asarray(cycle.failure_rate, dtype=float),
+        before=float(cycle.before),
+        after=float(cycle.after),
+    )
+
+
+def _replacement_cycle_route(rbd) -> AnalysisRoute:
+    """How ``replacement_cycle`` is found for the first component under
+    block replacement or replaced on condition (see ``analysis_routes``):
+    as its long-run values are; refused when there is none."""
+    from repyability.rbd import routes as r
+
+    replaced = _block_nodes(rbd)
+    if not replaced:
+        return r.refused(
+            r.refusal(partial(_replaced_nodes_refusal, rbd, None)) or ""
+        )
+    node = replaced[0]
+    route, how = _node_long_run(rbd, node)
+    if route == r.REFUSED:
+        return r.refused(how, (node,))
+    return AnalysisRoute(
+        route,
+        f"The renewal cycle of each component under block replacement or "
+        f"replaced on condition ({node!r}: {how}).",
+    )
 
 
 def _has_calendar(rbd) -> bool:
