@@ -104,9 +104,10 @@ go once the minimum surpyval version has the fix.
 
 A deprecation warns (a `FutureWarning`, through
 `repyability/utils/deprecation.py`) for one minor release, and the next
-removes it. A test of the kind `test_what_0_14_deprecates_goes_in_0_15`
-(in `test_api_consistency.py`) fails once the version reaches the removal,
-as a reminder; the removed names then stay gone through
+removes it. A test in `test_api_consistency.py`, of the kind
+`test_what_0_14_deprecates_goes_in_0_15` (removed with the names it
+watched in 0.15), fails once the version reaches the removal, as a
+reminder; the removed names then stay gone through
 `test_removed_in_X_Y.py`.
 
 ## Releases (maintainers)

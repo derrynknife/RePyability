@@ -59,6 +59,13 @@ other release, fixes included, the minor.
   crews; a Markov chain with the system-down states absorbing, followed by
   uniformization), from new or from the components' states; the rest is
   simulated on request with `method="simulate"`.
+- `RepairableRBD.expected_events_by_window()` and `cost_by_window()` (and
+  the `EventsByWindow` and `CostByWindow` results): the work (each
+  component's replacements, repairs and tests; the system's failures and
+  planned outages) and the cost expected in each of a run of consecutive
+  windows from the system's state now, each window's own and exact; the
+  cost's spread in each window is simulated, from one seeded set of
+  histories. Also in `analysis_routes()`.
 - `RBD.structure_summary()`, `count_minimal_path_sets()` and
   `count_minimal_cut_sets()` (and the `StructureSummary` result): the
   number of components, modules, how deeply they nest, the size of the
@@ -80,6 +87,14 @@ other release, fixes included, the minor.
 
 - `ROADMAP.md`. Planned work is tracked privately; questions and bug
   reports stay in the issue tracker. The user stories (`stories/`) stay.
+
+### Documentation
+
+- The user stories' statuses are brought up to date with `dev`, each
+  built part citing the test that is its oracle, and `stories/README.md`
+  says how a story gets its oracle test and status. A new test checks
+  `expected_npv` with limited repair crews against the Markov chain built
+  by hand (story MX-13).
 
 ## [0.16] - 2026-10-31
 

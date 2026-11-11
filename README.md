@@ -383,7 +383,7 @@ hosted at
 **[derrynknife.github.io/RePyability](https://derrynknife.github.io/RePyability/)**.
 
 It is built with [MkDocs](https://www.mkdocs.org/) from the sources in `docs/`
-and `mkdocs.yml`, and published to GitHub Pages on every push to `master`. To
+and `mkdocs.yml`, and published to GitHub Pages on every push to `main`. To
 build and serve it locally:
 
 ```bash
