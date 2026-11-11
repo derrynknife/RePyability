@@ -570,7 +570,23 @@ Not an API decision, but what every story's answer should carry:
   - The plan re-valued from the current states (`state=`) for the rest of
     the horizon.
 - **Needs:** B1, B3; the timelines' measures.
-- **Status:** open.
+- **Status:** built, on `dev` for 0.17: `RepairableRBD.plan_vs_actual(
+  timelines, now, horizon, discount_rate=, value_rate=, periods=,
+  state=)`. The plan's expected cash flows to `now` beside those the log
+  implies, priced with the diagram's costs and discounted at the times
+  they fell, and the variance, by period, category and component; costs the
+  log does not determine (tests that find nothing, a hidden failure's
+  repair, a standby group's units, replacements in no time, calendar
+  prices, set-up and acquisition costs) compared on neither side and
+  listed with the reason; the states now read off the logs where the
+  diagram's rules let it (else asked for), the rest valued from them, and
+  the plan's value now beside its original value. Still open: the prices
+  actually paid (the log is priced at the plan's mean prices), states the
+  log does not give (a nested diagram, a standby group, an imperfect
+  repair, hidden failures, degradation, a common-cause group, too few
+  crews: given by the caller), and the spread of the plan's cash flows
+  (whether the actual is inside what the plan allowed for): the comparison
+  is with the expectation.
 
 ---
 

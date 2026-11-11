@@ -21,6 +21,7 @@ from repyability.rbd import (
     _first_failure,
     _intervals,
     _long_run,
+    _plan_actual,
     _repairable_allocation,
     _repairable_capacity,
     _repairable_uncertainty,
@@ -334,6 +335,7 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         )
     else:
         out["expected_npv"] = uptime
+    out["plan_vs_actual"] = _plan_actual.route(rbd, out["expected_npv"])
     # A group's members' MTTF and MTTR are their group's: the
     # availability allocations hold them, and a member's copies join its
     # group.
