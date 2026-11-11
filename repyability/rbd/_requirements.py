@@ -335,27 +335,25 @@ def _on_a_clock(rbd, node) -> bool:
 
 def _require_block_models(rbd, node) -> None:
     """Raise unless the exact block-replacement values cover the
-    component's models (the checks ``block_cycle`` makes first)."""
+    component's models (the checks ``block_cycle`` makes first); replaced
+    on condition by its level, those of ``_level_replacement``."""
+    from ._level_replacement import check_models
 
-    _refuse_level(rbd, node)
     component = rbd.components[node]
+    schedule = rbd._preventive[node]
+    if schedule.level is not None:
+        check_models(
+            component.reliability,
+            component.time_to_replace,
+            schedule.duration,
+            schedule.level,
+            schedule.interval,
+            node,
+        )
+        return
     _check_life(component.reliability, node)
     _Duration(component.time_to_replace, "repair", node)
-    _Duration(rbd._preventive[node].duration, "replacement", node)
-
-
-def _refuse_level(rbd, node) -> None:
-    """Raise for a component replaced on condition by its measured
-    degradation level (#271): its inspections follow the level, which
-    only the simulation draws."""
-    schedule = rbd._preventive.get(node)
-    if schedule is not None and schedule.level is not None:
-        raise NotImplementedError(
-            f"Component {node!r} is replaced on condition by its "
-            "measured degradation level, which only the simulation "
-            "follows: estimate it by simulation, with availability() or "
-            "cost()."
-        )
+    _Duration(schedule.duration, "replacement", node)
 
 
 def _require_calendars(rbd) -> None:
