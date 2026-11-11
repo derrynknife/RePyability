@@ -123,3 +123,7 @@
 ::: repyability.CalendarPolicy
 
 ::: repyability.PlannedReplacement
+
+::: repyability.ScheduleValue
+
+::: repyability.SwitchTime
