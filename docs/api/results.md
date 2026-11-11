@@ -38,6 +38,8 @@
 
 ::: repyability.ExpectedNPV
 
+::: repyability.PlanVsActual
+
 ::: repyability.ConfidenceInterval
 
 ::: repyability.ControlVariate

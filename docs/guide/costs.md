@@ -364,6 +364,94 @@ bearing.age_replacement_value(493.0).eac                    # -> 0.003462
 bearing.age_replacement_value(493.0, discount_rate=seven).eac * 8760   # -> 30.3
 ```
 
+### A plan against what happened
+
+Two years into a ten-year plan, the question changes: *how does what actually
+happened compare with what we expected, and what is the plan worth now?*
+`plan_vs_actual(timelines, now, horizon, ...)` answers it from the outage log.
+
+It does three things. First, it sets the plan's expected cash flows to
+`now` (the `expected_npv` table above) beside the cash flows the log
+implies, priced with the diagram's own costs: each failure in the log its
+repair and replace costs, each planned outage its preventive cost, each
+hour a component or the system was down its downtime cost, and each hour
+the system was up its value, every amount discounted at the time it fell.
+The **variance** is the actual less the expected, by period, category and
+component. Amounts are signed as in the cash-flow table (costs negative,
+value positive), so a positive variance is in your favour: less spent, or
+more earned, than the plan expected. Second, it reads each component's
+state now off its log (up for so long since its last repair, or down for so
+long, and why) and values the rest of the horizon from there. Third, it adds
+what happened so far to that expected rest, and sets the sum beside the
+plan's own value: `change` is how much the plan has gained or lost, which is
+the variance so far plus how the outlook for the rest has moved.
+
+The log is a [`Timeline`](timelines.md) per component, on the diagram's
+clock from 0 (the start of the plan) to `now`, its planned outages flagged.
+Here the pump of the net present value example above, two years in:
+
+```python
+from repyability import Timeline
+
+log = Timeline.from_outages(
+    [(1500, 1512), (2900, 2950), (4100, 4108), (6100, 6190),
+     (9800, 9805), (12000, 12040), (15500, 15560), (17400, 17460)],
+    end=17520.0,
+)
+review = line.plan_vs_actual({"pump": log}, 17520.0, 87600.0,
+                             discount_rate=seven, value_rate=120.0, periods=10)
+log.failures, log.downtime          # (8, 325.0)    the plan expected about 17 failures, down about 173 hours
+round(review.variance_so_far)       # -> -26197       against the plan, so far
+review.variance_by_category["repair"]            # -> 4367.5    fewer repairs than expected
+review.variance_by_category["system_downtime"]   # -> -13893.0  but long outages
+review.variance_by_category["value"]             # -> -16671.6  and the production they lost
+review.states["pump"]               # NodeState(age=60.0, alive=True): up for 60 hours since its last repair
+round(review.plan_npv), round(review.revalued_npv)   # (7448540, 7422361)
+round(review.change)                # -> -26178
+```
+
+The pump fails at a constant rate, so the outlook for the remaining eight
+years does not depend on its state (`rest_npv` is the plan's own
+`plan_rest_npv`), and the change is the variance so far. A component that
+wears out, or one part way through a planned replacement, moves the outlook
+too.
+
+`expected_cash_flows`, `actual_cash_flows` and `variance_cash_flows` are the
+three tables, row for row; `rest_cash_flows` is the expected rest on the
+plan's clock and periods (a period that `now` falls in is split there).
+
+**What the log cannot tell is not compared.** A cost the log does not
+determine is left out of *both* sides and listed in `not_compared`, with the
+reason, rather than counted as nil: inspections and tests that find nothing
+(they leave no outage), a hidden failure's repair (charged when a test finds
+it, which the log does not record), a standby group's units' repairs (its
+log is the group's), planned replacements that take no time, a calendar
+policy's prices, a group's set-up costs and the acquisition costs. In the
+re-valued plan these are carried at the plan's expectation
+(`as_planned_so_far`):
+
+```python
+review.not_compared[0]["category"]   # 'acquisition': the log does not record purchases
+round(review.as_planned_so_far)      # -> -20000
+```
+
+**The states now.** Where the diagram's rules let the log give a
+component's state, it is read off the log: a unit renewed at each repair is
+as old as the time since its last restoration (or, down, has been down since
+its last change, for a repair or, flagged planned, for its maintenance); one
+replaced at an age, on a block calendar or on condition by maintenance that
+takes time is the same, and on a calendar is as far past its last scheduled
+time as the clock says. Where the log does not give the state (a nested
+diagram, a standby group, an imperfect repair's virtual age, a unit with
+hidden failures, a degradation level or stage, replacements that take no
+time, a calendar policy, a member of a common-cause group, a unit that may
+wait for one of too few repair crews) the method refuses, naming the
+component: give its state in `state=` (a [`NodeState`](condition-based.md#describing-the-current-state),
+or a nested diagram's dict of them). `states` and `derived_states` say what
+was used and what was read off the logs. A component missing from the logs
+is refused, never taken to have run without failing; one that never went
+down has `Timeline([], end=now)`.
+
 ### Buying redundancy
 
 A redundant copy is bought once and then runs: it fails, is repaired and

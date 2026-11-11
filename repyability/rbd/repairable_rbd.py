@@ -54,6 +54,7 @@ from repyability.rbd.results import (
     ExpectedNPV,
     Lever,
     MaintenancePlan,
+    PlanVsActual,
     RateBreakdown,
     SparesDemand,
     SparesStock,
@@ -76,6 +77,7 @@ from repyability.rbd import (
     _intervals,
     _long_run,
     _npv,
+    _plan_actual,
     _repairable_allocation,
     _repairable_capacity,
     _repairable_importance,
@@ -3966,6 +3968,136 @@ class RepairableRBD(RBD):
             broken_nodes=broken_nodes,
             method=method,
             state=state,
+        )
+
+    def plan_vs_actual(
+        self,
+        timelines,
+        now,
+        horizon,
+        *,
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        periods=None,
+        method: str = "p",
+        state=None,
+        start_state=None,
+    ) -> PlanVsActual:
+        """A plan against what happened: the plan's expected cash flows so
+        far beside those the outage log implies, where the two differ, and
+        the plan valued again from the components' states now. Exact, with
+        no simulation.
+
+        In plain terms: "we have had ``now`` on this plan; how does what
+        actually happened compare with what we expected, and what is the
+        plan worth now?" The expected side is
+        [`expected_npv`][repyability.RepairableRBD.expected_npv]'s
+        cash-flow table to ``now``. The actual side prices the log with the
+        diagram's own costs: each failure its repair and replace costs, each
+        planned outage its preventive cost, each component's and the
+        system's time down their downtime costs, and the system's time up
+        its value, each discounted at the time it fell (a rate over a span
+        exactly). The variance is the actual less the expected; a positive
+        one is in your favour. What the log does not determine is compared
+        on neither side and listed, with the reason, in ``not_compared``.
+
+        The rest of the horizon is valued from the components' states now:
+        those given in ``state``, and the others read off their logs where
+        the diagram's rules let it (a unit renewed at each repair, or
+        replaced at an age or on a block or inspection calendar by
+        maintenance that takes time); otherwise refused, naming the
+        component. See the guide's [plan against what
+        happened](../guide/costs.md#a-plan-against-what-happened).
+
+        Parameters
+        ----------
+        timelines : Mapping
+            ``{component: Timeline}``: every component's outage log, from 0
+            (the start of the plan) to ``now``, its planned outages flagged
+            (see [`Timeline`][repyability.Timeline] and
+            ``Timeline.from_outages``). A nested RBD's log is its system's.
+        now : float
+            The end of the logs, more than 0 and at most ``horizon``.
+        horizon : float
+            The plan's horizon, as for ``expected_npv``.
+        discount_rate : float, optional
+            The continuous discount rate per unit time, as for
+            ``expected_npv``, by default 0.
+        value_rate : float, optional
+            What the system earns per unit time while it works, by
+            default 0.
+        periods : int or array-like, optional
+            The periods of the tables over the whole horizon, as for
+            ``expected_npv``; a period that ``now`` falls in is split in
+            two there (and the periods numbered again). By default one
+            period to ``now`` and one after it.
+        method : str, optional
+            ``"p"`` (the default) or ``"c"``, as for ``expected_npv``.
+        state : dict, optional
+            ``{component: NodeState}`` for the components whose state now
+            is known otherwise, or not given by their logs (a nested RBD
+            takes its components' states). By default every component's
+            state is read off its log.
+        start_state : dict, optional
+            The components' states at the start of the plan, as for
+            ``expected_npv``'s ``state``. By default every component new.
+
+        Returns
+        -------
+        PlanVsActual
+            The expected, actual and variance tables to ``now``, what is
+            not compared and why, the states used, the plan and the rest
+            from now, and the plan's value then and now.
+
+        Raises
+        ------
+        ValueError
+            If ``now`` or ``horizon`` is invalid or ``now`` is past the
+            horizon; if a log is missing, is not for a component, does not
+            end at ``now``, starts unlike ``start_state`` or has a planned
+            outage of a component with nothing planned that takes it off
+            line; or as for ``expected_npv``.
+        TypeError
+            If ``timelines`` is not a mapping of Timeline objects, or
+            ``state`` or ``start_state`` is not a dict.
+        NotImplementedError
+            If a component's state now is not given by its log and not in
+            ``state``; or as for ``expected_npv``.
+
+        Examples
+        --------
+        A pump that failed twice in its first year, valued over five:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD, Timeline
+        >>> rbd = RepairableRBD(
+        ...     [("s", "p"), ("p", "t")],
+        ...     {
+        ...         "p": {
+        ...             "reliability": surv.Exponential.from_params([1e-3]),
+        ...             "repairability": surv.Exponential.from_params([0.1]),
+        ...             "repair_cost": 500.0,
+        ...         }
+        ...     },
+        ... )
+        >>> log = Timeline.from_outages([(3000, 3010), (7000, 7030)], 8760)
+        >>> result = rbd.plan_vs_actual({"p": log}, 8760.0, 5 * 8760.0)
+        >>> round(result.expected_so_far), round(result.actual_so_far)
+        (-4337, -1000)
+        >>> result.states["p"]
+        NodeState(age=1730.0, alive=True)
+        """
+        return _plan_actual.plan_vs_actual(
+            self,
+            timelines,
+            now,
+            horizon,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            periods=periods,
+            method=method,
+            state=state,
+            start_state=start_state,
         )
 
     @contextmanager
