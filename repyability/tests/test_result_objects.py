@@ -19,6 +19,7 @@ from repyability import (
     NonRepairableRBD,
     RepairableRBD,
     SparesDemand,
+    Timeline,
 )
 from repyability.rbd.results import _ResultMapping
 
@@ -81,6 +82,16 @@ def test_the_results_of_the_exact_methods_go_through_json(repairable):
         repairable.spares_stock(10.0, fill_rate=0.9)["a"],
         repairable.expected_npv(
             1000.0, discount_rate=1e-3, value_rate=1.0, periods=2
+        ),
+        repairable.plan_vs_actual(
+            {
+                "a": Timeline.from_outages([(100.0, 110.0)], end=400.0),
+                "b": Timeline([], end=400.0),
+            },
+            400.0,
+            1000.0,
+            discount_rate=1e-3,
+            value_rate=1.0,
         ),
     ]
     for result in results:

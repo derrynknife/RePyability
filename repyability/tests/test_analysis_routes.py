@@ -27,6 +27,7 @@ from repyability import (
     RepeatedNode,
     RepeatedStandbyNode,
     StandbyModel,
+    Timeline,
     network,
 )
 from repyability.rbd import _repairable_uncertainty, phased_mission, routes
@@ -191,6 +192,11 @@ def held_back(rbd):
     )
 
 
+def quiet_logs(rbd):
+    """Each component's log over [0, 100]: up throughout."""
+    return {node: Timeline([], end=100.0) for node in rbd.components}
+
+
 def a_little_better(rbd):
     """A system availability a little above the current one."""
     try:
@@ -258,6 +264,9 @@ REPAIRABLE_CALLS = {
     "expected_cost": lambda rbd: rbd.expected_cost(200.0),
     "expected_npv": lambda rbd: rbd.expected_npv(
         200.0, discount_rate=0.01, value_rate=1.0, periods=2
+    ),
+    "plan_vs_actual": lambda rbd: rbd.plan_vs_actual(
+        quiet_logs(rbd), 100.0, 200.0, discount_rate=0.01, value_rate=1.0
     ),
     "expected_events_by_window": lambda rbd: rbd.expected_events_by_window(
         width=100.0, count=2
