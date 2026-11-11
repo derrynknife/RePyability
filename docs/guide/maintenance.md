@@ -589,6 +589,15 @@ on_condition(30.0, 60.0, onset_rate=1 / 400).detection_probability   # -> 0.5
 `pf_interval` may be a fitted surpyval model instead of a number, and
 `optimal_on_condition_interval` finds the cheapest interval from the prices.
 
+## Running harder against wearing faster
+
+When how the unit is run changes its life (a fitted regression model of
+its life against a temperature or a load), `operating_schedule_value` and
+`best_switch_time` value an operating schedule for one unit replaced at
+each failure: the value it earns, its failures' cost and the NPV, and the
+best time to change from one way of running to another. See [Is it worth
+running hot?](condition-based.md#is-it-worth-running-hot).
+
 ## Results
 
 Both policy types are small typed results:

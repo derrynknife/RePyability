@@ -156,6 +156,12 @@ from repyability.maintenance._next import (  # noqa: E402
     NextReplacement,
     ReplacementChoice,
 )
+from repyability.maintenance._operating import (  # noqa: E402
+    ScheduleValue,
+    SwitchTime,
+    best_switch_time,
+    operating_schedule_value,
+)
 from repyability.maintenance._options import (  # noqa: E402
     AgeReplacementValue,
     DelayEffect,
