@@ -66,6 +66,11 @@ NOT_NODES = {
     "NodeState",
     "Opportunity",
     "PhasedMission",
+    "MissionPhase",
+    "BlockSetting",
+    "MissionSummary",
+    "MissionPhaseSummary",
+    "MissionDrivers",
     "RBD",
     # A component analysed alone: a diagram takes a NonRepairable.
     "Repairable",

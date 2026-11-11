@@ -157,6 +157,8 @@ Which analyses each model type has (the method; — where it has none):
 | Random lifetimes | `random` | — | `random` | `random` | — |
 | Top event probability | — | — | `top_event_probability` | — | — |
 | Each phase's failure probability | — | — | — | — | `phase_failure_probabilities` |
+| Reliability over a mission's time | — | — | — | — | `reliability_over_time` |
+| A mission's results from one run | — | — | — | — | `summary` |
 | **Availability and outages** | | | | | |
 | Reliability and mean time to the first failure | — | `first_failure_sf` | — | — | — |
 | Long-run availability | — | `mean_availability` | — | — | — |
@@ -184,7 +186,7 @@ Which analyses each model type has (the method; — where it has none):
 | Cut sets ranked by probability | — | — | `ranked_cut_sets` | — | — |
 | Irrelevant components | `find_irrelevant_components` | `find_irrelevant_components` | — | — | — |
 | Structure sizes (counts, depth, core) | `structure_summary` | `structure_summary` | — | — | — |
-| Convert to and from an RBD | — | — | `to_rbd` | — | — |
+| Convert to and from an RBD | — | — | `to_rbd` | — | `from_diagram` |
 | Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — |
 | Capacity over time | — | `point_capacity` | — | — | — |
 | How each analysis is computed | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` |
@@ -200,6 +202,7 @@ Which analyses each model type has (the method; — where it has none):
 | Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | — |
 | Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | — |
 | Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | — |
+| Each block's part in each phase's failures | — | — | — | — | `failure_drivers` |
 | Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — |
 | Uncertainty importance | `uncertainty_importance` | `uncertainty_importance` | — | — | — |
 | All measures given a state | `importances_given_state` | — | — | — | — |

@@ -350,6 +350,50 @@ def nonrepairable_kinds():
     }
 
 
+def mission_kinds():
+    """The phased missions drawn as one diagram whose analyses are checked
+    on: with blocks guaranteed, not needed, at a phase's covariates and a
+    phase's vote count (exact), and with a block on standby (simulated)."""
+    from repyability import BlockSetting, MissionPhase, PhasedMission
+
+    unit = W([100, 2])
+    edges = [
+        ("s", "a"),
+        ("s", "b"),
+        ("s", "c"),
+        ("a", "v"),
+        ("b", "v"),
+        ("c", "v"),
+        ("v", "d"),
+        ("d", "t"),
+    ]
+    models = {
+        "a": unit,
+        "b": unit,
+        "c": E([0.01]),
+        "v": PerfectReliability,
+        "d": RegressionNode(aft(), covariates=[1.0]),
+    }
+    vote = NonRepairableRBD(edges, models, k={"v": 2})
+    settings = [
+        MissionPhase(
+            "up",
+            20.0,
+            blocks={"a": "guaranteed", "d": BlockSetting(covariates=[2.0])},
+            k={"v": 3},
+        ),
+        MissionPhase("on", 30.0, blocks={"c": "not_needed"}),
+    ]
+    standby = [
+        MissionPhase("up", 20.0, blocks={"c": "standby"}),
+        MissionPhase("on", 30.0, k={"v": 1}),
+    ]
+    return {
+        "settings": PhasedMission.from_diagram(vote, settings),
+        "standby": PhasedMission.from_diagram(vote, standby),
+    }
+
+
 def fault_tree_kinds():
     """The fault trees of every kind the tree's analyses are checked on
     (#314): events given as probabilities, as lifetime models (surpyval
