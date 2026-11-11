@@ -19,6 +19,7 @@ import hashlib
 import json
 import math
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -511,10 +512,49 @@ def _digest(values) -> str:
     return hashlib.sha256(data).hexdigest()[:16]
 
 
-def test_diagrams_with_no_bayesian_block_are_unchanged():
-    """The guide's fitted examples (reliability.md and repairable.md),
-    recorded on dev before Bayesian blocks were drawn: every draw's value
-    to the last bit (a digest of the samples) and a summary."""
+UNCHANGED_PATH = Path(__file__).with_name("bayesian_bands_unchanged.json")
+
+# The record, every draw, was taken on macOS (arm64) on dev before Bayesian
+# blocks were drawn (#394); these are the digests of its draws' bytes,
+# which the stored record must still match to the last bit. (The bands,
+# a result's ``band``, are #394's names for where the draws came from.)
+UNCHANGED_DIGESTS = {
+    "sf": "e4c2edb103399415",
+    "sf_both_sobol": "4dc9c35c36d153ec",
+    "mean": "01ffc81a09647456",
+    "bx_life_both": "710ead24ae5b9452",
+    "mean_availability": "ca68d502f8edfc9b",
+    "point_availability": "9714884fcc483b3e",
+}
+
+# What another platform changes. A fitted node's draws pass through its
+# fit's parameter covariance, which surpyval works out numerically (an
+# optimiser and a Hessian): its last bits depend on the platform's libm and
+# BLAS, and so differ between macOS and Linux and between Linux CPUs (CI's
+# jobs gave three different digests of the same draws on one commit). The
+# seeded normals are the same everywhere; the drawn values are not. Measured
+# against the record (Linux x86-64 and arm64, numpy 2.5): every draw and
+# interval end within 1.1e-15 of its value, a first-order index (a ratio of
+# variances, so a difference of close numbers) within 1.9e-11. The checks
+# allow about a hundred times that, far below what any change to the draws
+# (a stream, a scale, a parameter) moves.
+DRAW_RTOL = 1e-13
+INDEX_RTOL = 1e-9
+
+
+def _unchanged_results() -> dict:
+    """The guide's fitted examples (reliability.md and repairable.md):
+    each result's draws (``samples``), its 90% interval's lower end
+    (``lower``) or a first-order index (``index``), and its band."""
+    out = {}
+
+    def keep(name, result):
+        out[name] = {
+            "samples": np.asarray(result.samples).tolist(),
+            "lower": np.asarray(result.interval(0.9)[0]).tolist(),
+            "band": result.band,
+        }
+
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         data = surv.Weibull.from_params([100, 2]).qf(
@@ -539,30 +579,26 @@ def test_diagrams_with_no_bayesian_block_are_unchanged():
             ("pump1", "pump2"): "fit",
             "valve": {"alpha": st.uniform(150, 100)},
         }
-        r = fitted.sf_uncertainty([25.0, 50.0], n_draws=500, seed=0)
-        assert _digest(r.samples) == "e4c2edb103399415"
-        assert r.interval(0.9)[0].tolist() == [
-            0.9431542189448492,
-            0.7859445299810227,
-        ]
-        assert r.band == "confidence"
-        r = fitted.sf_uncertainty(
-            50, both, n_draws=256, seed=3, sampling="sobol"
+        keep("sf", fitted.sf_uncertainty([25.0, 50.0], n_draws=500, seed=0))
+        keep(
+            "sf_both_sobol",
+            fitted.sf_uncertainty(
+                50, both, n_draws=256, seed=3, sampling="sobol"
+            ),
         )
-        assert _digest(r.samples) == "4dc9c35c36d153ec"
-        assert r.interval(0.9)[0] == 0.761117474257109
-        r = fitted.mean_uncertainty(n_draws=200, seed=0)
-        assert _digest(r.samples) == "01ffc81a09647456"
-        assert r.interval(0.9)[0] == 83.63534346790782
-        r = fitted.bx_life_uncertainty(10, both, n_draws=200, seed=0)
-        assert _digest(r.samples) == "710ead24ae5b9452"
-        assert r.interval(0.9)[0] == 32.16808185451278
+        keep("mean", fitted.mean_uncertainty(n_draws=200, seed=0))
+        keep(
+            "bx_life_both",
+            fitted.bx_life_uncertainty(10, both, n_draws=200, seed=0),
+        )
         parts = fitted.uncertainty_importance(50, both)
-        assert parts.first_order[("pump1", "pump2")] == 0.6004318752393955
+        out["importance_pumps"] = {
+            "index": parts.first_order[("pump1", "pump2")]
+        }
         parts = fitted.uncertainty_importance(
             50, both, method="sobol", n_draws=200, seed=0
         )
-        assert parts.first_order["valve"] == 0.41270746027881844
+        out["importance_valve_sobol"] = {"index": parts.first_order["valve"]}
 
         pump_repair = surv.LogNormal.fit(np.exp(np.linspace(-0.8, 0.8, 20)))
         valve_life = surv.Weibull.fit(
@@ -578,17 +614,56 @@ def test_diagrams_with_no_bayesian_block_are_unchanged():
                 "C": {"reliability": valve_life, "repairability": E([0.5])},
             },
         )
-        r = plant.mean_availability_uncertainty(n_draws=100, seed=0)
-        assert _digest(r.samples) == "ca68d502f8edfc9b"
-        assert r.interval(0.9)[0] == 0.9412317469519834
-        assert r.band == "confidence"
-        r = plant.point_availability_uncertainty(
-            [5.0, 20.0], n_draws=30, seed=1
+        keep(
+            "mean_availability",
+            plant.mean_availability_uncertainty(n_draws=100, seed=0),
         )
-        assert _digest(r.samples) == "9714884fcc483b3e"
-        assert r.interval(0.9)[0].tolist() == [
-            0.966728213312,
-            0.953207766600242,
-        ]
+        keep(
+            "point_availability",
+            plant.point_availability_uncertainty(
+                [5.0, 20.0], n_draws=30, seed=1
+            ),
+        )
         parts = plant.uncertainty_importance()
-        assert parts.first_order[("A", "B")] == 0.012298850106680236
+        out["importance_plant"] = {"index": parts.first_order[("A", "B")]}
+    return out
+
+
+def record_unchanged_results():
+    """Re-record ``bayesian_bands_unchanged.json``: only after a deliberate
+    change of these draws, with ``UNCHANGED_DIGESTS`` updated to match."""
+    with open(UNCHANGED_PATH, "w") as file:
+        json.dump(_unchanged_results(), file, indent=1)
+        file.write("\n")
+
+
+def test_the_unchanged_record_is_the_one_taken_before_bayesian_blocks():
+    with open(UNCHANGED_PATH) as file:
+        recorded = json.load(file)
+    for name, digest in UNCHANGED_DIGESTS.items():
+        assert _digest(recorded[name]["samples"]) == digest, name
+
+
+def test_diagrams_with_no_bayesian_block_are_unchanged():
+    """The guide's fitted examples give the draws recorded before Bayesian
+    blocks were drawn: every draw, to the platform's last bits (see
+    ``DRAW_RTOL``)."""
+    with open(UNCHANGED_PATH) as file:
+        recorded = json.load(file)
+    results = _unchanged_results()
+    assert results.keys() == recorded.keys()
+    for name, want in recorded.items():
+        got = results[name]
+        if "index" in want:
+            np.testing.assert_allclose(
+                got["index"], want["index"], rtol=INDEX_RTOL, err_msg=name
+            )
+            continue
+        assert got["band"] == want["band"], name
+        assert np.shape(got["samples"]) == np.shape(want["samples"]), name
+        np.testing.assert_allclose(
+            got["samples"], want["samples"], rtol=DRAW_RTOL, err_msg=name
+        )
+        np.testing.assert_allclose(
+            got["lower"], want["lower"], rtol=DRAW_RTOL, err_msg=name
+        )
