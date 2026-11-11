@@ -157,6 +157,12 @@ def refusal(check: Callable[[], object]) -> Optional[str]:
     return None
 
 
+#: How a Bayesian fit's posterior predictive's reliability is worked out.
+PREDICTIVE_HOW = (
+    "its Bayesian fit's posterior predictive: the survival at each "
+    "posterior point, averaged"
+)
+
 #: How a joint node's reliability is worked out.
 JOINT_HOW = (
     "its joint model's prediction, by quadrature over the unit's marker "
@@ -169,6 +175,7 @@ def model_route(model) -> Tuple[str, str]:
     and a phrase saying how."""
     from surpyval import Parametric
 
+    from ._bayesian_life import PosteriorPredictive
     from .helper_classes import PerfectReliability, PerfectUnreliability
     from .joint_node import JointNode
     from .load_sharing_node import LoadSharingModel
@@ -210,12 +217,15 @@ def model_route(model) -> Tuple[str, str]:
         return EXACT, "a closed form"
     if isinstance(model, JointNode):
         return NUMERICAL, JOINT_HOW
+    if isinstance(model, PosteriorPredictive):
+        return EXACT, PREDICTIVE_HOW
     return EXACT, "its own sf"
 
 
 def mean_route(model) -> Tuple[str, str]:
     """How a node model's mean lifetime (its ``mean()``) is found: the route,
     and a phrase saying how, or the message its ``mean()`` would raise."""
+    from ._bayesian_life import PosteriorPredictive
     from .degrading_node import DegradingNode
     from .joint_node import JointNode
     from .load_sharing_node import LoadSharingModel
@@ -252,6 +262,8 @@ def mean_route(model) -> Tuple[str, str]:
         return NUMERICAL, "the mean of its survival function on a grid"
     if isinstance(model, JointNode):
         return NUMERICAL, "the area under its prediction's survival"
+    if isinstance(model, PosteriorPredictive):
+        return EXACT, "its posterior points' means, averaged"
     return EXACT, "its model's mean"
 
 

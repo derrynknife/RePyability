@@ -612,6 +612,7 @@ class RepairableRBD(RBD):
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)
+        from repyability.rbd._bayesian_life import as_life
         from repyability.rbd._processes import as_spec
         from repyability.rbd.ccf import as_groups
 
@@ -624,11 +625,22 @@ class RepairableRBD(RBD):
                     name,
                     {
                         **component,
-                        "reliability": perfect_class(component["reliability"]),
+                        "reliability": perfect_class(
+                            as_life(component["reliability"])
+                        ),
+                        **(
+                            {
+                                "repairability": as_life(
+                                    component["repairability"]
+                                )
+                            }
+                            if "repairability" in component
+                            else {}
+                        ),
                     },
                 )
                 if isinstance(component, dict) and "reliability" in component
-                else perfect_class(component)
+                else perfect_class(as_life(component))
             )
             for name, component in components.items()
         }

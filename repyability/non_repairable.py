@@ -8,6 +8,7 @@ from repyability.maintenance import (
     NextReplacement,
     SkipValue,
 )
+from repyability.rbd._bayesian_life import PosteriorPredictive, as_life
 from repyability.rbd._degradation import check_life, is_degradation
 from repyability.rbd._model_utils import (
     distribution_name,
@@ -191,7 +192,9 @@ class NonRepairable:
         planned_cost=None,
         unplanned_cost=None,
     ):
-        reliability = perfect_class(reliability)
+        # A Bayesian fit is its posterior predictive.
+        reliability = perfect_class(as_life(reliability))
+        time_to_replace = as_life(time_to_replace)
         no_distribution(reliability, "A NonRepairable's life")
         no_distribution(time_to_replace, "A NonRepairable's time_to_replace")
         if isinstance(time_to_replace, str):
@@ -212,7 +215,11 @@ class NonRepairable:
                 "surv.Exponential.from_params([rate])), or None or 'instant' "
                 f"for replacement in no time, got {time_to_replace!r}."
             )
-        if isinstance(reliability, Parametric) or is_mixture(reliability):
+        if (
+            isinstance(reliability, Parametric)
+            or is_mixture(reliability)
+            or isinstance(reliability, PosteriorPredictive)
+        ):
             # A surpyval MixtureModel (#227) is no Parametric, but has the
             # survival function, distribution, density and mean the
             # analyses take; the simulations invert its distribution

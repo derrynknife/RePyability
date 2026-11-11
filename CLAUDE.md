@@ -527,6 +527,16 @@ limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
   `rbd/uncertainty.py` holds it where it was fitted, with a warning. Draw it
   once the minimum surpyval's covariance includes it.
 
+- **A Bayesian fit's predictive in the tails** (no surpyval issue yet).
+  surpyval 0.26's `BayesianParametric` gives `ff` as `1 - sf` and `Hf` as
+  `-log sf` (their precision lost below about 1e-8; its `dev` fixes this
+  for the conjugate Lomax only), and its `qf` (brentq on that `ff`)
+  raises `RuntimeError` near the upper tail of a grid posterior (`p` of
+  0.999 and above). `rbd/_bayesian_life.PosteriorPredictive` works out
+  `ff`, `Hf` and `qf` from the posterior's points itself (the quantile by
+  `_sampling.mixed_quantile`, a mixture's). Take the fit's own once the
+  minimum surpyval's are as precise and converge.
+
 Refused until surpyval has it: an ARA, ARI or G1 renewal model as a life,
 whose next failure surpyval cannot draw yet (surpyval #833,
 `rbd/_processes.py`).
