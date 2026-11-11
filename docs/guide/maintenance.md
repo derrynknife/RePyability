@@ -493,6 +493,37 @@ its cost and chance, most likely first). How it is worked out:
 - **`method="simulate"`** (with `mc_samples` and `seed`) draws the part's
   cycles instead, as a check; it reports `standard_error` for the mean.
 
+**Each of a run of windows.** A budget passed on by period needs each
+window's own spend and what could happen in it. `cost_by_window` takes the
+windows' `ends` (or a `width` and a `count`) and the same policy and state,
+and gives each window's distribution, worked out through every earlier
+window: a failure in one renews the part for the next, so a later window is
+not a part started afresh. Each window's outcomes are also given in four
+classes, by what a planner acts on: nothing, planned work only, one
+failure, several failures.
+
+```python
+years = bearing.cost_by_window(
+    [263.0, 629.0, 994.0, 1359.0], 180.0, resets=False, age=224.0,
+    since_renewal=159.0, budget=600.0,
+)
+[round(float(m), 1) for m in years.mean]     # -> [330.0, 382.3, 382.1, 382.2]
+years.outcome_classes          # -> ('nothing', 'planned only', 'one failure', 'several failures')
+[round(float(p), 3) for p in years.outcome_probabilities[0]]   # -> [0.0, 0.708, 0.262, 0.031]
+[round(float(p), 3) for p in years.probability_above_budget]   # -> [0.031, 0.063, 0.063, 0.064]
+round(years.mean.sum(), 1), round(years.total.mean, 1)         # -> (1476.5, 1476.5)
+[float(c) for c in years.total.percentiles]                    # -> [800.0, 1600.0, 2000.0]
+```
+
+The windows' means add up to the whole span's, but their ranges do not:
+the four windows' 90th percentiles sum to $2,400, and the whole span's is
+$2,000 (`total`, the span's own distribution). A later window's first event
+comes from the part in service at its start, put in at the last renewal
+before it (the part in now, a planned replacement in the chain from now,
+or a renewal after a failure, by the renewal measure), and from there the
+counts are worked out as for one window from now. Under block replacement
+each window's planned replacements are known.
+
 **A layered package of visits.** A cheap task at every visit and a deeper
 one at every `k`-th: `optimal_layered_visits(light, deep, visit_cost=...)`
 finds the visit interval and the ratio `k` that cost least in the long run.

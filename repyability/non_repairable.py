@@ -1666,6 +1666,117 @@ class NonRepairable:
             seed=seed,
         )
 
+    def cost_by_window(
+        self,
+        ends=None,
+        every=None,
+        *,
+        width=None,
+        count=None,
+        resets=None,
+        age=0.0,
+        since_renewal=None,
+        budget=None,
+        levels=(10.0, 50.0, 90.0),
+        method="exact",
+        mc_samples=None,
+        seed=None,
+    ):
+        """What the part's maintenance costs in each of a run of
+        consecutive windows from its state now, and how often each outcome
+        happens in each.
+
+        A budget passed on by period needs each window's own spend, not
+        the running total, and what could happen in it. Each window is
+        worked out through every earlier one (a failure in one renews the
+        part for the next), as
+        [`cost_distribution`][repyability.NonRepairable.cost_distribution]
+        works out one window from now, with the same policies and
+        arguments: each window's chance of every count and cost, its mean,
+        spread and percentiles, the chance of each outcome (nothing,
+        planned work only, one failure, several failures) and of exceeding
+        a budget, and the whole span's own distribution (ranges do not add
+        over windows). Give the windows' ``ends`` (uneven windows are
+        fine), or a ``width`` and a ``count``; the first starts now.
+
+        Parameters
+        ----------
+        ends : array_like, optional
+            The windows' end times from now, increasing.
+        every : float, optional
+            The policy's interval; by default None, run to failure.
+        width : float, optional
+            Instead of ``ends``: the length of each window.
+        count : int, optional
+            Instead of ``ends``: how many windows of ``width``.
+        resets : bool, optional
+            As for `cost_distribution`.
+        age : float, optional
+            The part's age now, by default 0.
+        since_renewal : float, optional
+            As for `cost_distribution`.
+        budget : float, optional
+            A budget for each window, for the chance it is exceeded.
+        levels : array_like, optional
+            The percentiles to report, by default 10, 50 and 90.
+        method : str, optional
+            ``"exact"`` (the default: numerical) or ``"simulate"``.
+        mc_samples : int, optional
+            With ``method="simulate"``, the number of simulations.
+        seed : int, optional
+            With ``method="simulate"``, the random seed.
+
+        Returns
+        -------
+        WindowCosts
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for `cost_distribution`, or if the windows are not given
+            properly.
+
+        Examples
+        --------
+        The bearing of `cost_distribution`, replaced at every shut, over
+        four windows of a year:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]),
+        ...     planned_cost=100.0,
+        ...     unplanned_cost=400.0,
+        ... )
+        >>> years = bearing.cost_by_window(
+        ...     [263.0, 629.0, 994.0, 1359.0], 180.0, resets=False,
+        ...     age=224.0, since_renewal=159.0,
+        ... )
+        >>> [round(float(m), 1) for m in years.mean]
+        [330.0, 382.3, 382.1, 382.2]
+        >>> years.outcome_classes
+        ('nothing', 'planned only', 'one failure', 'several failures')
+        >>> [round(float(p), 3) for p in years.outcome_probabilities[1]]
+        [0.0, 0.613, 0.324, 0.063]
+        """
+        from repyability.maintenance._window_outcomes import cost_by_window
+
+        return cost_by_window(
+            self,
+            ends,
+            every,
+            width=width,
+            count=count,
+            resets=resets,
+            age=age,
+            since_renewal=since_renewal,
+            budget=budget,
+            levels=levels,
+            method=method,
+            mc_samples=mc_samples,
+            seed=seed,
+        )
+
     def optimal_calendar_policy(
         self,
         calendar,
