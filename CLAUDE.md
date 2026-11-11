@@ -432,7 +432,10 @@ first. This file adds the internals and conventions it does not cover.
 - **Every result is a `results._ResultMapping` dataclass (#235)**, so it
   has `to_dict()` (through `results.plain`, ready for `json.dumps`); a
   result holding arrays of a run's length gets a summary `__repr__`.
-  `test_result_objects.py` sends each kind through JSON.
+  `test_result_objects.py` sends each kind through JSON. An
+  `UncertaintyResult` says what its band is (`band`, from
+  `uncertainty.band`: confidence, credible, given or mixed); a new method
+  that returns one sets it.
 - **A diagram's levers are listed in one place (#244)**:
   `_sensitivity._levers` (repairable) and `_nonrepairable_levers`, each
   lever with the range its constructor checks. `RepairableRBD`'s

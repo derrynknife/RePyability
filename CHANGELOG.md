@@ -81,14 +81,36 @@ other release, fixes included, the minor.
   and its draws a posterior point and a life from one uniform, so seeded
   simulations stream it and both engines take it. It saves with the
   diagram (the fit's own `to_dict()`, its posterior whole) and pickles.
-  The parameter-uncertainty methods refuse `"fit"` for it (its
-  uncertainty is averaged in already; give `fit.draw_models(k)` as a list)
-  and leave it out of their default draws; the credible band is not
-  carried to system results yet. A fit with an offset, a limited failure
-  population or zero inflation, or of a discrete distribution, is refused
-  for now. A surpyval Bayesian fit is no longer taken for its
-  distribution at the posterior medians by the model probes
-  (`distribution_name`).
+  Its credible band is carried to system results (the next entry). A
+  fit with an offset, a limited failure population or zero inflation, or
+  of a discrete distribution, is refused for now. A surpyval Bayesian fit
+  is no longer taken for its distribution at the posterior medians by the
+  model probes (`distribution_name`).
+- A Bayesian block's credible band, carried to the system's result. The
+  parameter-uncertainty methods (`NonRepairableRBD.sf_uncertainty`,
+  `mean_uncertainty`, `time_to_reliability_uncertainty`,
+  `bx_life_uncertainty`, `uncertainty_importance` with `method="sobol"`,
+  and `RepairableRBD.mean_availability_uncertainty`,
+  `point_availability_uncertainty`, `mission_availability_uncertainty`,
+  `expected_cost_rate_uncertainty`, `uncertainty_importance` with
+  `method="sobol"`) take `"fit"` for a block (a life or a repair) given a
+  Bayesian fit, and draw it by default: each draw a posterior point picked
+  by its probability (grid points by their unequal weights, none thinned;
+  a conjugate posterior's parameter from its exact family), the block in
+  that draw the plain distribution at that point. Its draws mix with the
+  covariance draws of ordinary fits in the same draws, seeded as before;
+  the point value stays the posterior predictive. Blocks given one fit
+  object share one draw of its posterior, as blocks given one ordinary fit
+  share theirs (`as_life` gives one `PosteriorPredictive` per fit object).
+  `UncertaintyResult` has a new field, `band`: `"confidence"` (fits'
+  covariances), `"credible"` (Bayesian fits' posteriors), `"given"`
+  (distributions or lists of models given) or `"mixed"`, a band over more
+  than one kind at once; `Network`'s uncertainty results say theirs too.
+  The delta method of `uncertainty_importance` refuses a Bayesian block in
+  plain words (a posterior has no one value of the parameters to move:
+  `method="sobol"` takes it), as does a `{parameter: distribution}` for
+  one. Results for diagrams with no Bayesian block are unchanged to the
+  last bit.
 - `RepairableRBD.expected_npv()` (and the `ExpectedNPV` result): the
   expected net present value of running a system over a horizon, from new
   or from a state. Exact, with no simulation: the discounted expected

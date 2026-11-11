@@ -212,6 +212,7 @@ result = fitted.sf_uncertainty(50, {("pump1", "pump2"): "fit"}, n_draws=10_000, 
 result.nominal                # -> 0.8426   with the fitted models
 lower, upper = result.interval(0.9)
 lower, upper                  # (0.7785, 0.8728)   the 5th to 95th percentile
+result.band                   # 'confidence'   from the fit's covariance
 ```
 
 A node's uncertainty is one of:
@@ -221,6 +222,13 @@ A node's uncertainty is one of:
 | `"fit"` | Every parameter the fit estimated, from the normal approximation of the model's maximum-likelihood fit (surpyval's `covariance()`), on the log scale for a positive parameter and the logit scale for one in (0, 1), so every draw is valid. That includes a limited failure population's share that ever fails (`lfp_p`) and a zero-inflated fit's share dead on arrival (`f0`). An offset keeps its fitted value, with a warning, since surpyval's covariance leaves it out (SurPyval#830). |
 | `{"alpha": distribution, ...}` | Each named parameter from its distribution (anything with `qf` or `ppf`: surpyval or `scipy.stats`); the others keep their values. |
 | A list of models | One of them, with replacement: for example refits to bootstrap resamples, or posterior draws, made in surpyval. |
+
+A node given a Bayesian fit (`fit_bayes`) takes `"fit"` too, drawn from its
+posterior itself rather than a covariance: see [its credible
+band](building.md#its-credible-band-carried-to-the-system). The result's
+`band` says what the interval is: `"confidence"` from covariance-based
+fits, `"credible"` from Bayesian fits, `"given"` from distributions or
+lists, `"mixed"` over more than one kind.
 
 ```python
 import scipy.stats as st

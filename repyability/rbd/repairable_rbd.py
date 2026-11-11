@@ -7053,7 +7053,10 @@ class RepairableRBD(RBD):
         - ``"fit"``: every one of its models that is a surpyval fit with a
           parameter covariance (``covariance()``), drawn from its normal
           approximation (on the log scale for a positive parameter, the
-          logit scale for one in (0, 1));
+          logit scale for one in (0, 1)), and every one that is a Bayesian
+          fit, drawn from its posterior (a point picked by its
+          probability, the model in that draw the plain distribution at
+          it; the nominal value stays the posterior predictive's);
         - ``{role: uncertainty}``: each model named drawn as its
           uncertainty says (``"fit"``, ``{parameter: distribution}`` or a
           list of models), the others kept;
@@ -7064,7 +7067,8 @@ class RepairableRBD(RBD):
         uncertainty : dict, optional
             ``{node, tuple of nodes or CCFGroup: uncertainty}`` (see above).
             By default, every model that is a fit with a parameter
-            covariance, drawn once for all the nodes holding that fitted
+            covariance or a Bayesian fit, drawn once for all the nodes
+            holding that fitted
             object in that role, and for one common-cause group's members
             together. The models inside a nested ``RepairableRBD`` are
             not drawn, by default or given: the nested diagram's own
@@ -7083,8 +7087,10 @@ class RepairableRBD(RBD):
         -------
         UncertaintyResult
             The availability of every draw (``samples``), the ``nominal``
-            value with the components' own models, and summaries (``mean``,
-            ``median``, ``std``, ``percentile``, ``interval``).
+            value with the components' own models, summaries (``mean``,
+            ``median``, ``std``, ``percentile``, ``interval``), and what
+            the band is (``band``: credible, from Bayesian fits;
+            confidence, from fits' covariances; or mixed).
 
         Raises
         ------
@@ -7324,8 +7330,9 @@ class RepairableRBD(RBD):
         ``Sigma_k`` their covariance (a fit's ``covariance()``, or the
         variances of the distributions given). The inputs are independent,
         so each one's part is its own term, and the shares add up to 1. A
-        list of models has no parameters to move: it needs
-        ``method="sobol"``.
+        list of models has no parameters to move, nor a Bayesian fit one
+        value of them (its posterior need not be near a normal): they
+        need ``method="sobol"``.
 
         ``method="sobol"`` draws the inputs as
         ``mean_availability_uncertainty`` does and estimates the first-order

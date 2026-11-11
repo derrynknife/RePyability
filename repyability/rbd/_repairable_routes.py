@@ -30,6 +30,7 @@ from repyability.rbd import (
     _spares,
     _timeline_runs,
 )
+from repyability.rbd._bayesian_life import PosteriorPredictive
 from repyability.rbd._runs import (  # noqa: E402,F401
     _UNSTREAMED,
     failure_criticality_index_per_component_failures,
@@ -730,6 +731,21 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
     # By default every fitted model is drawn: without one, the uncertain
     # nodes must be given (a nested RBD's fits are not drawn here).
     unfitted = r.refusal(partial(_repairable_uncertainty.require_fitted, rbd))
+    bayesian = [
+        node
+        for node in rbd.components
+        if any(
+            isinstance(model, PosteriorPredictive)
+            for model in _repairable_uncertainty._models(rbd, node).values()
+        )
+    ]
+    posterior = (
+        f" The Bayesian fits (of {', '.join(map(repr, bayesian))}) are "
+        "drawn from their posteriors, a credible band, the nominal value "
+        "their posterior predictives'."
+        if bayesian
+        else ""
+    )
     for name, method in (
         ("mean_availability_uncertainty", "mean_availability"),
         ("point_availability_uncertainty", "point_availability"),
@@ -745,6 +761,7 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                 "The components' models drawn from their uncertainty, "
                 f"and each draw's diagram's {method} worked out as its "
                 f"own ({own.route})."
+                + posterior
                 + (
                     f" Given no uncertainty, it refuses: {unfitted}"
                     if unfitted
@@ -761,7 +778,14 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             "The delta method: parameter_sensitivity's derivatives in "
             "each uncertain parameter, with their covariance "
             "(method='sobol' estimates Sobol indices from draws "
-            "instead).",
+            "instead)."
+            + (
+                " The delta method refuses a Bayesian fit, which has a "
+                "posterior, not one value of its parameters to move: "
+                "method='sobol' takes it."
+                if bayesian
+                else ""
+            ),
         )
     )
     return r.AnalysisRoutes(sorted(out.items()))

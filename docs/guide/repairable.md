@@ -446,7 +446,9 @@ spread.interval(0.9)   # (0.9396, 0.9596)
 ```
 
 By default every model that is a surpyval fit with a parameter covariance
-is drawn, from the normal approximation of its fit, and the nodes that hold
+is drawn, from the normal approximation of its fit (and every Bayesian fit,
+a life or a repair, from its posterior: a [credible
+band](building.md#its-credible-band-carried-to-the-system)), and the nodes that hold
 the same fitted object share its draws: here the pumps' repair, one input
 keyed `("A", "B")`, and the valve's life. A component has several models,
 its roles: its life (`"reliability"`), its repair (`"repairability"`), and
