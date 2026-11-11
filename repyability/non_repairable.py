@@ -27,6 +27,12 @@ FAILURE = 1
 REPLACE = 0
 
 
+#: The lives whose survival is a smooth curve, integrated by quadrature and
+#: searched by a gradient method: a distribution, and a degradation process
+#: (its first-passage time).
+_SMOOTH = ("parametric", "degradation")
+
+
 def _scalar_sf(model):
     """``model.sf`` as a function of one age returning a float (a
     ``StandbyModel``'s ``sf`` returns an array even for a scalar)."""
@@ -470,7 +476,7 @@ class NonRepairable:
         """
         from scipy.integrate import quad, trapezoid
 
-        if self.model_parameterization == "parametric":
+        if self.model_parameterization in _SMOOTH:
             # surpyval evaluates an offset model below its offset through a
             # fractional power of a negative number before masking it, which
             # warns although the survival (1) is right.
@@ -699,6 +705,8 @@ class NonRepairable:
           ``cp / t`` up to it and replacing at ``gamma`` itself is also
           considered. If the best age found is no cheaper than running to
           failure (see below), ``inf`` is returned.
+        - A degradation process: searched as a parametric model is, from
+          the mean of its first-passage time.
         - Non-parametric model: the cost rate is evaluated exactly at
           10,001 evenly spaced ages from 0 to the estimate's last time
           point, and at its time points, and the cheapest age is
@@ -774,7 +782,7 @@ class NonRepairable:
                     return np.inf
         # The cases above need no costs; every search below does.
         self._require_costs()
-        if self.model_parameterization == "parametric":
+        if self.model_parameterization in _SMOOTH:
             # When using a parametric distribution the optimisation is
             # straight forward. Simply find the point in the support where
             # the cost rate is minimised. Uses quadrature to integrate!

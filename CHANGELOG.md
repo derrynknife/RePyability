@@ -28,6 +28,20 @@ other release, fixes included, the minor.
   condition, the crews' and first failure's Markov chains) refuse them as
   not worked out yet. See the guide's "A measured level" and "A unit's own
   model".
+- `operating_schedule_value()` (and `ScheduleValue`): what one unit run on
+  an operating schedule is worth over a horizon. The schedule gives, in
+  model time from 0, each stretch's covariates and the value earned per
+  unit of time up there; the unit's life is a fitted surpyval regression
+  model, so a unit put in at time `v` lives along the schedule from `v`
+  (`sf_tvc`), and each failure costs `failure_cost` and a down time while
+  a new unit is put in. Returns the NPV with the value and the failures'
+  cost apart, the expected failures and time up, the undiscounted totals,
+  the equivalent annual cost and a table by stretch. Numerical, with no
+  simulation: a renewal equation whose life depends on when each unit
+  was put in, solved on a grid halved until it agrees with its halving to
+  a tolerance. `best_switch_time()` (and `SwitchTime`) finds the switch
+  time between two ways of running that maximises the NPV, with the NPV
+  of never switching and of switching at once, and the scan behind it.
 - `PhasedMission.from_diagram(rbd, phases)`: a mission drawn as one
   diagram, each phase (`MissionPhase(name, duration, blocks=..., k=...)`)
   setting how its blocks behave: `"working"` (the default), `"standby"`
@@ -167,6 +181,13 @@ other release, fixes included, the minor.
   whole span's own distribution. Numerical by default, simulated with
   `method="simulate"` (the windows of the same histories).
 
+### Changed
+
+- A phased mission's take-overs by blocks on standby are worked out for
+  all the simulated missions at once with numpy, rather than one mission
+  at a time: about 5 to 10 times faster where many missions need them.
+  Results are unchanged, to the last bit for a given seed.
+
 ### Removed
 
 - `ROADMAP.md`. Planned work is tracked privately; questions and bug
@@ -179,6 +200,15 @@ other release, fixes included, the minor.
   says how a story gets its oracle test and status. A new test checks
   `expected_npv` with limited repair crews against the Markov chain built
   by hand (story MX-13).
+
+### Fixed
+
+- Age replacement of a component whose life is a fitted degradation
+  process (a `"preventive": {"policy": "age", ...}` in a `RepairableRBD`,
+  and `NonRepairable.avg_replacement_time`, `find_optimal_replacement` and
+  `optimal_replacement_policy`) raised an `AttributeError`: its survival was
+  taken for a non-parametric estimate's. It is a smooth curve, and is now
+  integrated and searched as a distribution's is.
 
 ## [0.16] - 2026-10-31
 

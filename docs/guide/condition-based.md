@@ -350,6 +350,80 @@ ramped.sf_given_state(1000, {"m": NodeState(age=2500)})   # -> 0.7036
 - The node saves with the RBD; the fitted model round-trips through
   `surpyval.from_dict`.
 
+### Is it worth running hot?
+
+Running a unit harder often earns more but wears it out sooner. "If we run
+at 70 °C instead of 30 °C we make more, but the bearings wear out faster.
+Does it pay?" [`operating_schedule_value`][repyability.operating_schedule_value]
+answers it for one unit that is replaced whenever it fails. You give the
+operating schedule in model time from 0: when each stretch starts, the
+covariates in it, and what the unit earns per hour while it works there
+(here in proportion to the temperature, 30 and 70 an hour). Each failure
+costs `failure_cost` and stops the unit for the `down_time` while a new one
+goes in; nothing is earned while it is down, and a spare does not age on
+the shelf. A unit put in at hour `v` runs along the rest of the schedule,
+so a bearing fitted at hour 1500 has 500 cool hours before the heat.
+
+The answer is the net present value (NPV): what the unit earns less what
+its failures cost, each amount counted at what it is worth now (8% a year
+here), with the two kept apart and a row for each stretch:
+
+```python
+import math
+from repyability import best_switch_time, operating_schedule_value
+
+r = math.log(1.08) / 8760  # 8% a year, per hour
+costs = dict(failure_cost=150_000.0, down_time=24.0, discount_rate=r)
+cool = operating_schedule_value(model, [0], [30.0], [30.0], 20_000.0, **costs)
+ramp = operating_schedule_value(
+    model, [0, 2000], [30.0, 70.0], [30.0, 70.0], 20_000.0, **costs
+)
+hot = operating_schedule_value(model, [0], [70.0], [70.0], 20_000.0, **costs)
+[round(p.npv / 1000) for p in (cool, ramp, hot)]       # [177, 368, 392] thousand
+[round(p.value / 1000) for p in (cool, ramp, hot)]     # [548, 1195, 1274]
+[round(p.cost / 1000) for p in (cool, ramp, hot)]      # [371, 827, 882]
+[round(p.failures, 2) for p in (cool, ramp, hot)]      # [2.73, 6.07, 6.44]
+[(row["start"], round(row["value"] / 1000), round(row["failures"], 2))
+ for row in ramp.stretches]                            # [(0.0, 59, 0.07), (2000.0, 1136, 6.0)]
+```
+
+Running hot more than doubles the failures, but at 150,000 a failure the
+extra output pays for them: the NPV is highest running hot throughout.
+[`best_switch_time`][repyability.best_switch_time] finds the best time to
+change from one way of running to the other, and the NPV of never
+switching and of switching at once beside it:
+
+```python
+best = best_switch_time(model, [30.0, 70.0], [30.0, 70.0], 20_000.0, **costs)
+best.choice                     # 'switch at once'  run hot from the start
+round(best.never_switch_npv / 1000)   # -> 177
+```
+
+At 300,000 a failure the balance turns: cool's NPV is the higher, and the
+best switch is never. The NPV as a function of the switch time need not
+have one peak (a young unit fails rarely, so running it hard while it is
+new can pay even when running hard for good does not), so the search
+scans the horizon before it polishes the best, and returns the scan
+(`best.times`, `best.npvs`).
+
+How it is worked out, in brief: each unit's life is the model's survival
+along the schedule from the hour it was put in (`model.sf_tvc`), so the
+failures form a renewal process whose life depends on when each unit went
+in. Its expected failures and chance of being up are worked out
+numerically (no simulation) on a grid sized from the lives, halved until
+the answer agrees with its halving to `tolerance` (1e-6 by default; the
+switch search values each switch time to 1e-4). The result says how
+closely it did (`error`) and that it is numerical (`method`).
+
+- One unit only, for now: a whole diagram on a load schedule is not built
+  yet, as a `RepairableRBD` component cannot take a covariate-dependent
+  life.
+- `age` is how long the unit in service at 0 has already run, at the first
+  stretch's covariates.
+- A semiparametric (Cox) model is refused: it has no proper curve to renew.
+- The other single-unit maintenance numbers are in [Maintenance
+  policies](maintenance.md).
+
 ## A unit with readings: joint models
 
 Some components are watched: a vibration level, a wear measurement or an
