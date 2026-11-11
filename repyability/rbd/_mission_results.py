@@ -96,7 +96,9 @@ class MissionPhaseSummary(_ResultMapping):
         The probability that the mission gets through it.
     settings : dict
         Each block set in the phase: ``{block: {"state": ...,
-        "covariates": ...}}``.
+        "covariates": ...}}``, with ``"model"`` too where the phase
+        gives the block a model (its saved form, which
+        ``serialisation.deserialise_model`` reads back).
     takeovers : dict
         Each block on standby in the phase: the fraction of missions in
         which it was started in the phase (simulated).

@@ -353,7 +353,8 @@ def nonrepairable_kinds():
 def mission_kinds():
     """The phased missions drawn as one diagram whose analyses are checked
     on: with blocks guaranteed, not needed, at a phase's covariates and a
-    phase's vote count (exact), and with a block on standby (simulated)."""
+    phase's vote count (exact), on a phase's own model (exact, and with a
+    block on standby), and with a block on standby (simulated)."""
     from repyability import BlockSetting, MissionPhase, PhasedMission
 
     unit = W([100, 2])
@@ -388,9 +389,21 @@ def mission_kinds():
         MissionPhase("up", 20.0, blocks={"c": "standby"}),
         MissionPhase("on", 30.0, k={"v": 1}),
     ]
+    # A block on a model of the phase's own, exact and with standby.
+    start_up = BlockSetting(model=W([40, 0.8]))
+    models = [
+        MissionPhase("up", 20.0, blocks={"b": start_up}),
+        MissionPhase("on", 30.0, blocks={"c": BlockSetting(model=E([0.03]))}),
+    ]
+    standby_models = [
+        MissionPhase("up", 20.0, blocks={"c": "standby", "b": start_up}),
+        MissionPhase("on", 30.0, k={"v": 1}),
+    ]
     return {
         "settings": PhasedMission.from_diagram(vote, settings),
         "standby": PhasedMission.from_diagram(vote, standby),
+        "models": PhasedMission.from_diagram(vote, models),
+        "standby_models": PhasedMission.from_diagram(vote, standby_models),
     }
 
 

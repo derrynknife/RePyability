@@ -11,6 +11,23 @@ other release, fixes included, the minor.
 
 ### Added
 
+- `NodeState.level` and `NodeState.model`: a unit's own life in a state.
+  `level` is the degradation level measured now on a unit whose life is a
+  surpyval Wiener or gamma degradation process: its life from now is the
+  first passage from that level to the failure threshold, and its `age`
+  stays its operating time (it conditions the life no further, the
+  processes' increments being independent of their past). `model` is a
+  life model of the unit's own (refitted to it, or a joint model's
+  prediction from its readings), used instead of the node's for the unit in
+  service now; in a `RepairableRBD` its replacements have the node's life
+  again. Both are taken by `NonRepairableRBD.sf_given_state`,
+  `remaining_life`, `mean_residual_life` and `importances_given_state`,
+  and by a `RepairableRBD`'s exact analyses and simulations from a state,
+  for a unit on its own or on age or block replacement; the rest (tested,
+  imperfectly repaired, duty-cycled, grouped units, replacement on
+  condition, the crews' and first failure's Markov chains) refuse them as
+  not worked out yet. See the guide's "A measured level" and "A unit's own
+  model".
 - `operating_schedule_value()` (and `ScheduleValue`): what one unit run on
   an operating schedule is worth over a horizon. The schedule gives, in
   model time from 0, each stretch's covariates and the value earned per
@@ -42,6 +59,16 @@ other release, fixes included, the minor.
   with common random numbers) and `summary()`, the whole mission at once
   from one run (`MissionSummary`, `MissionPhaseSummary`,
   `MissionDrivers`).
+- `BlockSetting(model=...)`: a block's life model in one phase of a
+  mission drawn as one diagram, in place of its node's (a pump in its
+  start-up phase, say), without drawing a second block. The block keeps
+  one clock and one budget of hazard: entering the phase at age `a` it
+  uses `H(a + d) - H(a)` of the phase's model, its age carried into the
+  next phase. The model is checked as one the node could have been given;
+  it goes with every state, exact without standby and simulated with it,
+  and the summary's settings hold it in its saved form. A phase's
+  covariates are now the special case of it (the node's regression model
+  at them), worked out by the same per-phase lives.
 - A surpyval Bayesian fit (`fit_bayes`, or `BayesianParametric.from_draws`)
   as a life: a block of a `NonRepairableRBD`, a `NonRepairable` (and the
   maintenance calculators on it) and a `RepairableRBD` component's life or

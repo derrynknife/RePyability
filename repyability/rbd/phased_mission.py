@@ -62,6 +62,7 @@ from repyability.rbd._mission_settings import (
     MissionPhase,
     behaviour,
     life_of,
+    setting_to_dict,
 )
 from repyability.rbd._ordered_bdd import FALSE, TRUE, OrderedBDD
 from repyability.rbd.results import ConfidenceInterval
@@ -419,23 +420,26 @@ class PhasedMission:
     ) -> "PhasedMission":
         """A mission drawn as one diagram, run through phases that each
         set how its blocks behave: one block on standby, another unable to
-        fail, a third not needed, a regression block at the phase's
-        covariates, a vote needing fewer inputs.
+        fail, a third not needed, a block on a life model of the phase's
+        own, a regression block at the phase's covariates, a vote needing
+        fewer inputs.
 
         Each phase is a [`MissionPhase`][repyability.MissionPhase]: a
         name, a duration, and for some blocks a state (``"working"``, the
         default; ``"standby"``; ``"guaranteed"``; ``"not_needed"``) or a
-        [`BlockSetting`][repyability.BlockSetting] with the block's
-        covariates in the phase, and for some k-out-of-n nodes the number
-        of inputs the phase needs. Every block has one running clock
+        [`BlockSetting`][repyability.BlockSetting] with the block's life
+        model or covariates in the phase, and for some k-out-of-n nodes
+        the number of inputs the phase needs. Every block has one running clock
         through the mission and one budget of hazard: it ages while it
         runs, spends hazard while it runs and can fail, and fails once it
         has spent its budget. Working, it runs; guaranteed, it runs but
         spends nothing; on standby it is idle (neither ageing nor
         spending) until the phase's structure needs it, then runs to the
         phase's end; not needed, the structure takes it as working while
-        it runs on. The [phased missions guide](../guide/phased-missions.md)
-        has the rule for starting blocks on standby.
+        it runs on. Given a model in a phase, it runs on that model
+        through the phase, its age carried in and out. The [phased missions
+        guide](../guide/phased-missions.md) has the rule for starting
+        blocks on standby.
 
         A mission with no block on standby is exact, as one built from a
         diagram per phase is (each block's segments survived with its
@@ -464,9 +468,14 @@ class PhasedMission:
             two have one name, a phase names a block the diagram does not
             have (or a repeated node, the input or output node, or a
             junction), a vote count for a node not in the diagram or that
-            the diagram refuses, or covariates for a block whose model is
-            not a ``RegressionNode`` with fixed covariates, or of the wrong
-            length.
+            the diagram refuses, a phase's model the block's node could
+            not have been given (or for a block whose model is a
+            probability of failing), or covariates for a block whose model
+            is not a ``RegressionNode`` with fixed covariates, or of the
+            wrong length.
+        TypeError
+            If a phase's model is not a model the node could have been
+            given (as the diagram's own check says).
 
         Examples
         --------
@@ -2161,14 +2170,7 @@ class PhasedMission:
                     ),
                     reliability_at_end=through[j],
                     settings={
-                        node: {
-                            "state": given.state,
-                            "covariates": (
-                                None
-                                if given.covariates is None
-                                else list(given.covariates)
-                            ),
-                        }
+                        node: setting_to_dict(given)
                         for node, given in setting.blocks.items()
                     },
                     takeovers=takeovers[j],
@@ -2228,7 +2230,15 @@ class PhasedMission:
         r = routes
         # A component whose model has no exact or numerical reliability
         # refuses what is built on it, as the diagrams' routes have it.
-        nodes = {n: r.model_route(m) for n, m in self.components.items()}
+        # A block's route is the worst of its models' (one per phase where
+        # a phase sets its model or covariates).
+        nodes = {
+            n: max(
+                (r.model_route(m) for m in life.models()),
+                key=lambda found: r._RANK[found[0]],
+            )
+            for n, life in self._lives.items()
+        }
         count = len(self.phases)
         refused = r.refusal(self._require_exact) or r.refusal(
             lambda: self._plan(count)

@@ -69,8 +69,9 @@ alone = (
   its diagram working at that instant (a check before take-off, say).
 - **Not modelled here.** Repair between or during phases, and
   common-cause groups, which a phase may not have. A block on standby, a
-  block that cannot fail in a phase, and a block's covariates by phase are
-  set on a mission drawn as [one diagram](#one-diagram-each-phase-setting-its-blocks).
+  block that cannot fail in a phase, and a block's life model or
+  covariates by phase are set on a mission drawn as
+  [one diagram](#one-diagram-each-phase-setting-its-blocks).
 
 ## Exact and simulated
 
@@ -222,6 +223,9 @@ whether its clock runs and whether it uses hazard:
   model by its accumulated exposure, a proportional-hazards one by its
   hazard at each phase's values). A phase that does not name it uses the
   node's own covariates.
+- **a model**: `BlockSetting(model=...)` gives the block a life model of
+  its own in the phase, in place of its node's (see
+  [below](#a-different-life-in-one-phase)).
 - **`k`**: a phase can set the number of inputs a k-out-of-n node needs.
 
 **When a block on standby starts.** Whenever the phase's structure does not
@@ -244,6 +248,60 @@ mission by mission. `reliability()` then refuses (pointing to
 `method="simulate"` and `reliability_interval`), as do the importance
 measures and cut sets (pointing to `failure_drivers`), and
 `analysis_routes()` says which analysis is which, and why.
+
+### A different life in one phase
+
+Sometimes a block is, for one phase, a different animal: a pump fails
+far more often while it starts up than once it runs steadily, an engine
+at take-off power wears faster than in the cruise. Drawing a second
+block for the phase would give it a second life, as if a new pump took
+over; what is wanted is the same pump, on another failure behaviour for
+a while. `BlockSetting(model=...)` gives the block that model in the
+phase, in place of its node's.
+
+The block keeps one clock and one budget of hazard through the mission.
+Entering a phase at age `a`, it uses `H(a + d) - H(a)` of the phase's
+model's cumulative hazard over the phase's duration `d`, and carries its
+age, and the hazard it has left, into the next phase. So the mission's
+reliability for one block is `exp(-sum of each phase's H(a + d) - H(a))`,
+each phase's `H` its model's, `a` the block's age at the phase's start.
+Here a pump runs a two-hour start-up on a model of early failures, then
+100 hours of duty on its own:
+
+```python
+import math
+
+pump = surv.Weibull.from_params([2000.0, 1.5])
+start_up = surv.Weibull.from_params([300.0, 0.6])
+plant = NonRepairableRBD([("s", "pump"), ("pump", "t")], {"pump": pump})
+run = PhasedMission.from_diagram(plant, [
+    MissionPhase("start-up", 2.0, blocks={"pump": BlockSetting(model=start_up)}),
+    MissionPhase("duty", 100.0),
+])
+run.reliability()                # -> 0.940864
+by_hand = math.exp(
+    -(start_up.Hf(2.0) - start_up.Hf(0.0)) - (pump.Hf(102.0) - pump.Hf(2.0))
+)
+round(float(by_hand), 6)         # -> 0.940864
+run.phase_failure_probabilities()["start-up"]   # -> 0.04827
+```
+
+The phase's model must be one the node could have been given itself
+(not a probability of failing, which has no age to carry, and not for a
+standby group, a load-sharing or repeated node or a nested diagram,
+whose units take none). It goes with any state: on standby the block is
+idle until needed, then runs on the phase's model; guaranteed, it ages
+but cannot fail, so the model does not matter there; not needed, it runs
+and can fail on the phase's model. The mission stays exact unless a block
+is on standby, as above.
+
+Covariates by phase are the special case of this: `covariates=z` is the
+node's own regression model at `z` as the phase's model. With both, the
+model must be a `RegressionNode` with fixed covariates, run at the given
+ones. One fitted regression model at two covariate vectors carries the
+block's age as covariates do (an accelerated-failure-time model by its
+accumulated exposure); between two different models the age itself is
+carried. The summary's settings hold the model in its saved form.
 
 ### The whole mission at once
 

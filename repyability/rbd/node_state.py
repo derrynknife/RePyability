@@ -9,12 +9,16 @@ per-node state into ``NonRepairableRBD.sf_given_state``,
 ``NonRepairableRBD.importances_given_state``, and, with how long a down
 component has been down and where it is in its calendar, into the analyses
 of a ``RepairableRBD`` from now rather than from new (its ``state``
-argument).
+argument). Two optional fields say more about the unit in service now:
+the degradation level a sensor measured (``level``), and a life model of
+its own (``model``), such as one refitted to it.
 """
 
 import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
+
+from repyability.utils.checks import is_number
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,22 @@ class NodeState:
     ``virtual_age`` it had at its last repair; and ``stationary=True``
     puts it in its long-run state instead, for a component long in
     service whose state is not known.
+
+    Two fields say more about the unit in service now, in both kinds of
+    diagram. ``level`` is the degradation level measured on a unit whose
+    life is a fitted surpyval Wiener or gamma degradation process: its
+    life from now is the time its level takes to climb from there to the
+    failure threshold. Both processes' increments are independent of
+    their past, so once the level is known, how long the unit took to get
+    there says nothing more about its life: ``age`` is then not used to
+    condition the life, but keeps its one meaning, the operating time,
+    for what else needs it (an age replacement falls due when the
+    operating time reaches its interval). ``model`` is a life model of
+    this unit's own (refitted to it, or a joint model's prediction from
+    its readings), used instead of the node's for the unit in service
+    now, conditioned on its ``age`` as the node's would be; in a
+    ``RepairableRBD`` the units that replace it have the node's own life
+    again. A ``level`` applies to the ``model`` when both are given.
 
     Parameters
     ----------
@@ -83,17 +103,39 @@ class NodeState:
         ``virtual_age`` now and ``since_failure``: give ``age=
         since_failure`` and ``virtual_age=virtual_age - since_failure``.
         The simulations take it.
+    level : float, optional
+        For a unit whose life is a surpyval Wiener or gamma degradation
+        process (the node's, or ``model``): its degradation level measured
+        now, by default None (not measured). Its life from now is the
+        first passage from this level to the failure threshold. It must be
+        below the threshold (a unit at or past it has failed: give
+        ``alive=False``), and for a gamma process, whose level only rises,
+        at least the process's starting level ``y0``; a Wiener level may
+        be below its start.
+    model : object, optional
+        The life model of this unit, used instead of the node's for the
+        unit in service now, by default None (the node's). It may be
+        anything the node could itself have been given as its life (a
+        fitted surpyval model, a ``RegressionNode``, ...), and a joint
+        model's prediction (or ``JointNode``) of this unit from its
+        readings, whose age is the prediction's. It is checked against the
+        node when the state is used.
 
     Raises
     ------
     ValueError
         If ``age``, ``down_for``, ``since_scheduled`` or ``virtual_age``
         is negative or not finite, ``down_for`` or ``maintenance`` is given
-        for a component that is alive, or another field is given with
-        ``stationary``.
+        for a component that is alive, ``level`` or ``model`` for one that
+        is down or with a ``virtual_age``, ``level`` is not a finite
+        number, or another field is given with ``stationary``.
 
     Notes
     -----
+    A level or a unit's own model is checked against the node where the
+    state is used (``sf_given_state``, ``point_availability``, ...): a
+    level needs a degradation process for the unit's life, below its
+    threshold, and a model must be one the node could have been given.
     Only lifetime (time-varying) distributions age. A fixed-probability
     component given a state with ``alive=True`` contributes reliability 1
     whatever its age: observing it working resolves its per-demand
@@ -101,7 +143,10 @@ class NodeState:
     probability instead. Covariate/load dependence is a property of the
     *component*, not its transient state: a
     [`RegressionNode`][repyability.RegressionNode] stores the covariates, so
-    ``age`` keeps a single meaning (operating time) for every node type.
+    ``age`` keeps a single meaning (operating time) for every node type. A
+    unit run differently from its fellows is given its own model (a
+    ``RegressionNode`` at its covariates) as ``model``; the covariates
+    still belong to that model, not to the state.
 
     Examples
     --------
@@ -137,6 +182,22 @@ class NodeState:
     NodeState(age=300.0, alive=True)
     >>> NodeState(age=300.0, since_scheduled=100.0)
     NodeState(age=300.0, alive=True, since_scheduled=100.0)
+
+    A bearing whose wear is a gamma process (a mean of 0.5 a year: each
+    year's wear a gamma of shape 2 and rate 4), failing at a wear of 10,
+    measured at 6 after 3 years, against the same bearing new; its age is
+    kept as its operating time:
+
+    >>> from surpyval.degradation import GammaProcessModel
+    >>> wear = GammaProcessModel(alpha=2.0, beta=4.0, threshold=10.0)
+    >>> bearing = NonRepairableRBD([("s", "b"), ("b", "t")], {"b": wear})
+    >>> NodeState(age=3.0, level=6.0)
+    NodeState(age=3.0, alive=True, level=6.0)
+    >>> measured = {"b": NodeState(age=3.0, level=6.0)}
+    >>> round(bearing.sf_given_state(5.0, measured), 4)
+    0.9567
+    >>> round(bearing.sf_given_state(5.0, {}), 4)
+    1.0
     """
 
     age: float = 0.0
@@ -146,6 +207,8 @@ class NodeState:
     since_scheduled: Optional[float] = None
     stationary: bool = False
     virtual_age: Optional[float] = None
+    level: Optional[float] = None
+    model: Any = None
 
     def __post_init__(self) -> None:
         if self.age < 0:
@@ -159,6 +222,25 @@ class NodeState:
                     f"NodeState.{name} must be finite and non-negative, got "
                     f"{value!r}."
                 )
+        if self.level is not None and not (
+            is_number(self.level) and math.isfinite(float(self.level))
+        ):
+            raise ValueError(
+                "NodeState.level is the degradation level measured now, a "
+                f"finite number, got {self.level!r}."
+            )
+        if self.own_life and not self.alive:
+            raise ValueError(
+                "NodeState.level and model describe the unit in service, "
+                "which is working: a unit that is down has neither (the "
+                "unit that replaces it is the node's own)."
+            )
+        if self.own_life and self.virtual_age is not None:
+            raise ValueError(
+                "NodeState.virtual_age conditions the node's own life on "
+                "its imperfect repairs, and a level or a model of the "
+                "unit's own replaces that life: give one or the other."
+            )
         if self.alive and (self.down_for or self.maintenance):
             raise ValueError(
                 "NodeState.down_for and maintenance describe a component "
@@ -170,6 +252,7 @@ class NodeState:
             or self.down_for
             or self.maintenance
             or self.virtual_age
+            or self.own_life
         ):
             raise ValueError(
                 "A stationary NodeState is in its long-run state, which "
@@ -189,6 +272,10 @@ class NodeState:
             fields.append("stationary=True")
         if self.virtual_age is not None:
             fields.append(f"virtual_age={self.virtual_age!r}")
+        if self.level is not None:
+            fields.append(f"level={self.level!r}")
+        if self.model is not None:
+            fields.append(f"model={self.model!r}")
         return f"NodeState({', '.join(fields)})"
 
     @property
@@ -201,4 +288,11 @@ class NodeState:
             and not self.stationary
             and not self.since_scheduled
             and not self.virtual_age
+            and not self.own_life
         )
+
+    @property
+    def own_life(self) -> bool:
+        """Whether the unit in service now has a life of its own: a
+        measured ``level``, or its own ``model``."""
+        return self.level is not None or self.model is not None

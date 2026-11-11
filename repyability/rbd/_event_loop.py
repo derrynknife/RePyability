@@ -33,7 +33,7 @@ from repyability.rbd import (
     _curves,
 )
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.rbd import _runs, _streams, _timeline_runs
+from repyability.rbd import _overrides, _runs, _streams, _timeline_runs
 from repyability.rbd._common import (
     _safe_mean,
 )
@@ -1399,6 +1399,19 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
         if inspection is not None:
             rbd._run_state._pending_failure[node] = None
         return False, Event(left, node, True, start.maintenance)
+    if start.own_life:
+        # A life of its own (a measured level, or its own model; see
+        # _overrides), its age the operating time an age replacement
+        # counts. Its replacements are the node's own.
+        life = _overrides.life_left(
+            node, component, start, source.start_uniform()
+        )
+        source.life_drawn(start.age + life)
+        if schedule is None:
+            return True, Event(life, node, False)
+        return True, _renewal(
+            rbd, node, 0.0, source, schedule, life=life, start=-start.age
+        )
     if not start.age and not virtual:
         # New at 0, on a calendar at its phase.
         if schedule is not None:
