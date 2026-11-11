@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The checks CI's lint job runs, in the same order, before work goes into
-# dev (the one automated run is on the pull request from dev into master).
+# dev (the one automated run is on the pull request from dev into main).
 # Give test files or directories to run them too, on every core:
 #
 #   scripts/check.sh                                  # lint only
