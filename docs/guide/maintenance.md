@@ -443,6 +443,87 @@ plan = seal.renewal_forecast(944.0, 500.0, resets=False, age=340.0)
 round(plan.expected_cost, 2), plan.worth_it       # -> (407.06, False)
 ```
 
+**A window's cost and its spread.** A budget starts from the part as it
+is and should carry a range, not one figure. `cost_distribution` gives,
+over a window from the part's state, the chance of every number of
+failures and planned replacements, and so of every cost: the mean, the
+standard deviation, percentiles (10th, 50th and 90th by default) and the
+chance of exceeding a budget. The policy is run to failure (no `every`),
+age replacement (`resets=True`) or block replacement (`resets=False`), as
+for `renewal_forecast`; replacements take no time, and an event at the
+window's very end falls in the next one.
+
+```python
+bearing = NonRepairable(
+    surv.Weibull.from_params([365.0, 2.0]), planned_cost=100.0, unplanned_cost=400.0
+)
+shuts = bearing.cost_distribution(
+    1086.0, 180.0, resets=False, age=224.0, since_renewal=159.0, budget=1500.0
+)
+round(shuts.mean, 1)                          # -> 1155.0
+[float(c) for c in shuts.percentiles]         # -> [600.0, 1000.0, 1800.0]
+round(shuts.probability_above_budget, 3)      # -> 0.151
+[round(p, 3) for p in shuts.failure_probabilities[:4]]   # -> [0.224, 0.362, 0.262, 0.112]
+run = bearing.cost_distribution(1086.0, age=224.0)
+round(run.mean, 1), round(run.probability_above(1500.0), 3)   # -> (1372.9, 0.442)
+```
+
+Costs come in steps (here $100 a shut, $400 a failure), so a percentile
+jumps from one outcome to the next: read the outcomes too
+(`shuts.outcomes()`, each count of failures and planned replacements with
+its cost and chance, most likely first). How it is worked out:
+
+- **The counts decide the cost**, `unplanned × failures + planned ×
+  planned replacements`, so everything follows from their joint
+  distribution, `probabilities[i, j]`.
+- **Age replacement and run to failure:** the history is a run of
+  cycles, each ending in a failure before age `T` or a planned
+  replacement at exactly `T` (the part in now's first cycle from its age).
+  Planned cycles all last `T`, so `i` failures and `j` planned
+  replacements take the failure cycles' total plus `j T` in any order; the
+  totals' distributions are convolutions of the failure cycle's, on a grid
+  sized from the life's spread.
+- **Block replacement:** the planned replacements are at fixed times, so
+  their number is known, and the failures are a sum of independent counts,
+  one per stretch between them.
+- **Precision:** the grid's error falls as its step squared. The answer is
+  worked out again on a grid twice as coarse, and `precision` is the
+  largest change of any probability (about three times the error), plus
+  any mass left out; typically 1e-9 to 1e-6.
+- **`method="simulate"`** (with `mc_samples` and `seed`) draws the part's
+  cycles instead, as a check; it reports `standard_error` for the mean.
+
+**Each of a run of windows.** A budget passed on by period needs each
+window's own spend and what could happen in it. `cost_by_window` takes the
+windows' `ends` (or a `width` and a `count`) and the same policy and state,
+and gives each window's distribution, worked out through every earlier
+window: a failure in one renews the part for the next, so a later window is
+not a part started afresh. Each window's outcomes are also given in four
+classes, by what a planner acts on: nothing, planned work only, one
+failure, several failures.
+
+```python
+years = bearing.cost_by_window(
+    [263.0, 629.0, 994.0, 1359.0], 180.0, resets=False, age=224.0,
+    since_renewal=159.0, budget=600.0,
+)
+[round(float(m), 1) for m in years.mean]     # -> [330.0, 382.3, 382.1, 382.2]
+years.outcome_classes          # -> ('nothing', 'planned only', 'one failure', 'several failures')
+[round(float(p), 3) for p in years.outcome_probabilities[0]]   # -> [0.0, 0.708, 0.262, 0.031]
+[round(float(p), 3) for p in years.probability_above_budget]   # -> [0.031, 0.063, 0.063, 0.064]
+round(years.mean.sum(), 1), round(years.total.mean, 1)         # -> (1476.5, 1476.5)
+[float(c) for c in years.total.percentiles]                    # -> [800.0, 1600.0, 2000.0]
+```
+
+The windows' means add up to the whole span's, but their ranges do not:
+the four windows' 90th percentiles sum to $2,400, and the whole span's is
+$2,000 (`total`, the span's own distribution). A later window's first event
+comes from the part in service at its start, put in at the last renewal
+before it (the part in now, a planned replacement in the chain from now,
+or a renewal after a failure, by the renewal measure), and from there the
+counts are worked out as for one window from now. Under block replacement
+each window's planned replacements are known.
+
 **A layered package of visits.** A cheap task at every visit and a deeper
 one at every `k`-th: `optimal_layered_visits(light, deep, visit_cost=...)`
 finds the visit interval and the ratio `k` that cost least in the long run.
