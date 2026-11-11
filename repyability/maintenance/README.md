@@ -36,6 +36,7 @@ use cases, under the same numbers.
 | UC-13 | The long-run optimal replacement policy over a calendar of shuts with prices of their own | **Built**: `NonRepairable.optimal_calendar_policy` |
 | UC-19 | What a plan is worth over a horizon at a discount rate, and as a yearly cost | **Built**: `RepairableRBD.expected_npv`, `NonRepairable.age_replacement_value` |
 | UC-20 | One unit run on an operating schedule (covariates and value by stretch, in model time): the value earned, the failures' cost and the NPV, and the best time to switch from one way of running to another | **Built** (one unit): `operating_schedule_value`, `best_switch_time` |
+| UC-21 | A plan against its outage log: expected and actual cash flows so far, the variance, and the plan re-valued from the states now | **Built**: `RepairableRBD.plan_vs_actual` |
 
 ## How a use case is added
 
@@ -1343,3 +1344,52 @@ answers back into dates is Reliafy's too.)
   a schedule (covariate-dependent lives in a `RepairableRBD`), a schedule
   that varies continuously (a `CovariatePath`), and value that depends on
   more than the stretch.
+
+### UC-21: "We've had two years on this plan. How does what happened compare with what we expected, and what's the plan worth now?"
+
+- **Status:** built: `RepairableRBD.plan_vs_actual(timelines, now,
+  horizon, discount_rate=, value_rate=, periods=, state=)`.
+- **Who asks, and why:** an engineer (or an agent) reviewing a plan part
+  way through: where the plan's assumptions were wrong, and what the plan
+  is worth from today, knowing what happened.
+- **What they know:** the diagram with its costs (the plan), the outage
+  log of each component (`Timeline`s, planned outages flagged) on the
+  diagram's clock from the start of the plan to `now`, and, where the log
+  does not give it, a component's state now.
+- **How it is solved (exact, model time):** the expected side is
+  `expected_npv`'s cash-flow table, its periods cut at `now`. The actual
+  side prices the log with the same costs: each failure its repair and
+  replace costs at its instant, each planned outage its preventive cost,
+  each down span its downtime rate, the system's down and up spans (merged
+  from the components' through the structure, as `system_timeline` does)
+  its downtime rate and its value, each discounted exactly (`exp(-r t)` at
+  an event, `(exp(-r a) - exp(-r b)) / r` over a span). A cost the log
+  does not determine (tests that find nothing, a hidden failure's repair,
+  a standby group's units, replacements that take no time, calendar
+  prices, set-up and acquisition costs) is compared on neither side and
+  listed with its reason. The states now are read off the logs where the
+  diagram's rules let it (a unit renewed at each repair, or replaced at an
+  age, on a block calendar or on condition by maintenance that takes time:
+  its age since its last restoration, or how long it has been down and
+  why, and where it is on its calendar); elsewhere it refuses and asks for
+  `state=`. The rest is `expected_npv` from those states, discounted back
+  to the start, without the purchase.
+- **The answer:** the expected, actual and variance tables to `now` by
+  period, category and component (a positive variance in the plan's
+  favour), what is not compared and why, the states used, and the plan's
+  value now (what happened so far, the uncompared costs as planned, and
+  the rest from today) beside its original value.
+- **Checks:** `test_plan_vs_actual.py`: a pump's log priced by hand
+  (each discount factor written out) and its variance against
+  `expected_npv`'s table; the states read off logs by hand, and each
+  refusal; simulated histories (`simulate_timelines`) priced as logs
+  averaging to the plan's exact table, cell by cell, for a redundant pair
+  and for age and block replacement; and the tower property, the mean of
+  what happened so far plus the rest valued from each history's state
+  equal to the plan's value, for the same diagrams.
+- **Learned / open questions:** the actual prices paid are not used (the
+  log is priced at the plan's mean prices; a cost drawn from a
+  distribution at its mean); the states the log does not give are asked
+  for; and the spread of the expected side (is the actual inside what the
+  plan allowed for?) is not given for a diagram yet: the comparison is
+  against the plan's expectation.

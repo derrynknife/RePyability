@@ -84,6 +84,12 @@ from repyability.maintenance import (
 from repyability.network import Network
 from repyability.non_repairable import NonRepairable
 from repyability.rbd._bayesian_life import PosteriorPredictive
+from repyability.rbd._mission_results import (
+    MissionDrivers,
+    MissionPhaseSummary,
+    MissionSummary,
+)
+from repyability.rbd._mission_settings import BlockSetting, MissionPhase
 from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor, CCFGroup
 from repyability.rbd.chunks import SimulationChunk
 from repyability.rbd.degrading_node import DegradingNode
@@ -121,6 +127,7 @@ from repyability.rbd.results import (
     FailureForecast,
     Lever,
     MaintenancePlan,
+    PlanVsActual,
     RateBreakdown,
     RedundancyAllocation,
     ReliabilityRedundancyAllocation,
@@ -157,6 +164,11 @@ __all__ = [
     "RepairableRBD",
     "FaultTree",
     "PhasedMission",
+    "MissionPhase",
+    "BlockSetting",
+    "MissionSummary",
+    "MissionPhaseSummary",
+    "MissionDrivers",
     "Network",
     # Component models
     "NonRepairable",
@@ -210,6 +222,7 @@ __all__ = [
     "ExpectedCost",
     "ExpectedEvents",
     "ExpectedNPV",
+    "PlanVsActual",
     "EventsByWindow",
     "CostByWindow",
     "StructureSummary",

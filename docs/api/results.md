@@ -6,6 +6,12 @@
 
 ::: repyability.AvailabilityResult
 
+::: repyability.MissionSummary
+
+::: repyability.MissionPhaseSummary
+
+::: repyability.MissionDrivers
+
 ::: repyability.CapacityDistribution
 
 ::: repyability.StructureSummary
@@ -31,6 +37,8 @@
 ::: repyability.ExpectedCost
 
 ::: repyability.ExpectedNPV
+
+::: repyability.PlanVsActual
 
 ::: repyability.ConfidenceInterval
 

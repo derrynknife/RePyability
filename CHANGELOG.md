@@ -25,6 +25,23 @@ other release, fixes included, the minor.
   a tolerance. `best_switch_time()` (and `SwitchTime`) finds the switch
   time between two ways of running that maximises the NPV, with the NPV
   of never switching and of switching at once, and the scan behind it.
+- `PhasedMission.from_diagram(rbd, phases)`: a mission drawn as one
+  diagram, each phase (`MissionPhase(name, duration, blocks=..., k=...)`)
+  setting how its blocks behave: `"working"` (the default), `"standby"`
+  (cold standby, idle until the phase's structure needs it, started in a
+  set order, switching perfect and instant), `"guaranteed"` (ages but
+  cannot fail in the phase) or `"not_needed"` (taken as working by the
+  phase, while it ages and can fail), the covariates of a regression block
+  in the phase (`BlockSetting(state=..., covariates=...)`, age carried
+  over as along a step schedule), and the k of a vote. Missions with no
+  block on standby are exact (the Esary-Ziehms segments, 1 in a
+  guaranteed phase); with standby, simulated (one simulation across the
+  phases), with `analysis_routes()` saying which.
+- `PhasedMission.reliability_over_time(t)`, `failure_drivers()` (the fall
+  in each phase's failure probability if a block never failed, exact or
+  with common random numbers) and `summary()`, the whole mission at once
+  from one run (`MissionSummary`, `MissionPhaseSummary`,
+  `MissionDrivers`).
 - A surpyval Bayesian fit (`fit_bayes`, or `BayesianParametric.from_draws`)
   as a life: a block of a `NonRepairableRBD`, a `NonRepairable` (and the
   maintenance calculators on it) and a `RepairableRBD` component's life or
@@ -54,6 +71,18 @@ other release, fixes included, the minor.
   the equivalent annual cost (which tends to `expected_cost_rate` over a
   long horizon), the undiscounted totals, and a cash-flow table by period,
   category and component. Also in `analysis_routes()`.
+- `RepairableRBD.plan_vs_actual()` (and the `PlanVsActual` result): a plan
+  against what happened. The plan's expected cash flows to `now` beside
+  those an outage log implies (one `Timeline` per component, from the
+  start of the plan to `now`), priced with the diagram's own costs and
+  discounted at the times they fell, and the variance by period, category
+  and component; then the rest of the horizon valued from the components'
+  states now, read off their logs where the diagram's rules let it (or
+  given in `state=`), and the plan's value with what happened so far
+  beside its original value. Costs the log does not determine (tests that
+  find nothing, a hidden failure's repair, set-up and acquisition costs,
+  ...) are compared on neither side, listed with the reason. Exact, with no
+  simulation. Also in `analysis_routes()`.
 - `NonRepairable.age_replacement_value()` (and `AgeReplacementValue`): the
   present value (Fox, 1966) and equivalent annual cost of replacing a part
   at an age or at a failure for ever; undiscounted it is `cost_rate`.

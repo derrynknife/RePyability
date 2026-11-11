@@ -3627,3 +3627,134 @@ class StressStrengthCurve(_ResultMapping):
     failure_probability: Any
     n_loads: int
     method: str
+
+
+@dataclass
+class PlanVsActual(_ResultMapping):
+    """A plan against what happened, and what it is worth now: returned by
+    ``RepairableRBD.plan_vs_actual``.
+
+    In plain terms: the plan's expected cash flows over the time so far
+    (from ``expected_npv``) stand beside the cash flows the outage log
+    implies, priced with the diagram's own costs; the variance is the
+    actual less the expected. Amounts are signed as in ``ExpectedNPV``
+    (costs negative, value positive), so a **positive variance is in your
+    favour**: less spent, or more earned, than the plan expected. The plan
+    is then valued again from the components' states now for the rest of
+    the horizon, and "what happened so far plus what is expected from
+    here" stands beside the original plan's value.
+
+    Costs the log does not determine (inspections that found nothing, a
+    group's set-up costs, purchases, ...) are compared on neither side:
+    they are listed in ``not_compared`` with the reason, and carried at
+    the plan's expectation (``as_planned_so_far``) in the re-valued plan.
+
+    Attributes
+    ----------
+    now : float
+        The end of the log, in the models' time from the start of the
+        plan.
+    horizon : float
+        The plan's horizon.
+    discount_rate : float
+        The continuous discount rate per unit time (0: undiscounted).
+    value_rate : float
+        The value earned per unit time while the system works.
+    plan_npv : float
+        The original plan's expected net present value over the horizon.
+    revalued_npv : float
+        ``actual_so_far + as_planned_so_far + rest_npv``: the plan's value
+        knowing what happened so far, as of the start.
+    change : float
+        ``revalued_npv - plan_npv``: ``variance_so_far`` plus the change in
+        the expected value of the rest (``rest_npv - plan_rest_npv``).
+    expected_so_far : float
+        The present value of the plan's expected cash flows to ``now``, in
+        the categories compared.
+    actual_so_far : float
+        The present value of the cash flows the log implies, in the same
+        categories.
+    variance_so_far : float
+        ``actual_so_far - expected_so_far``.
+    undiscounted_expected_so_far : float
+        ``expected_so_far`` with no discounting.
+    undiscounted_actual_so_far : float
+        ``actual_so_far`` with no discounting.
+    as_planned_so_far : float
+        The present value of the plan's expected cash flows to ``now`` in
+        the cells not compared, carried as planned.
+    plan_rest_npv : float
+        The original plan's expected value of the time from ``now`` to the
+        horizon, as of the start.
+    rest_npv : float
+        The expected value of the time from ``now`` to the horizon from the
+        states now, as of the start (``rest.npv`` is it as of ``now``).
+    variance_by_category : dict
+        The variance's present value by category (``"value"`` included).
+    variance_by_component : dict
+        The variance's present value by component.
+    period_ends : list
+        The ends of the periods, the horizon last; one is at ``now``.
+    expected_cash_flows : list
+        The plan's cash-flow rows to ``now`` that are compared, as in
+        ``ExpectedNPV.cash_flows``.
+    actual_cash_flows : list
+        The rows the log implies, in the same form.
+    variance_cash_flows : list
+        Actual less expected, row for row (by period, category and
+        component).
+    rest_cash_flows : list
+        The rest's expected rows from the states now, on the plan's clock
+        and periods, present values as of the start; no acquisition.
+    not_compared : list
+        A dict for each priced cell the log does not determine:
+        ``category``, ``component`` (None for the system's) and
+        ``reason``.
+    states : dict
+        The components' states now that the rest was valued from.
+    derived_states : list
+        The components whose states came from their logs (the others were
+        given).
+    plan : ExpectedNPV
+        The original plan over the horizon, from its start.
+    rest : ExpectedNPV or None
+        The rest valued as of ``now`` (its own clock from 0), with no
+        acquisition cost; None if ``now`` is the horizon.
+    """
+
+    now: float
+    horizon: float
+    discount_rate: float
+    value_rate: float
+    plan_npv: float
+    revalued_npv: float
+    change: float
+    expected_so_far: float
+    actual_so_far: float
+    variance_so_far: float
+    undiscounted_expected_so_far: float
+    undiscounted_actual_so_far: float
+    as_planned_so_far: float
+    plan_rest_npv: float
+    rest_npv: float
+    variance_by_category: Dict[str, float]
+    variance_by_component: Dict[Hashable, float]
+    period_ends: List[float]
+    expected_cash_flows: List[Dict[str, Any]]
+    actual_cash_flows: List[Dict[str, Any]]
+    variance_cash_flows: List[Dict[str, Any]]
+    rest_cash_flows: List[Dict[str, Any]]
+    not_compared: List[Dict[str, Any]]
+    states: Dict[Hashable, Any]
+    derived_states: List[Hashable]
+    plan: ExpectedNPV
+    rest: Optional[ExpectedNPV]
+
+    def __repr__(self) -> str:
+        return (
+            f"PlanVsActual(now={self.now:g}, horizon={self.horizon:g}, "
+            f"plan_npv={self.plan_npv:.6g}, "
+            f"revalued_npv={self.revalued_npv:.6g}, "
+            f"variance_so_far={self.variance_so_far:.6g}, "
+            f"not_compared={len(self.not_compared)})"
+        )

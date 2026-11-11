@@ -69,6 +69,8 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 "Each phase's failure probability",
                 ("phase_failure_probabilities",),
             ),
+            ("Reliability over a mission's time", ("reliability_over_time",)),
+            ("A mission's results from one run", ("summary",)),
         ],
     ),
     (
@@ -121,6 +123,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Long-run cost rate", ("expected_cost_rate",)),
             ("Expected cost in a window", ("expected_cost",)),
             ("Expected net present value", ("expected_npv",)),
+            ("A plan against what happened", ("plan_vs_actual",)),
             ("Cost in each of a run of windows", ("cost_by_window",)),
             ("Simulated cost (distribution)", ("cost",)),
             ("Total cost of ownership", ("total_cost",)),
@@ -153,7 +156,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                     "count_minimal_cut_sets",
                 ),
             ),
-            ("Convert to and from an RBD", ("to_rbd", "from_rbd")),
+            (
+                "Convert to and from an RBD",
+                ("to_rbd", "from_rbd", "from_diagram"),
+            ),
             (
                 "Capacity distribution",
                 ("capacity_distribution", "system_capacity"),
@@ -186,6 +192,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Differential (DIM)", ("differential_importance",)),
             ("Joint (second order)", ("joint_importance",)),
             ("Barlow-Proschan", ("barlow_proschan_importance",)),
+            (
+                "Each block's part in each phase's failures",
+                ("failure_drivers",),
+            ),
             (
                 "Rate of change over time",
                 ("reliability_rate", "availability_rate"),
