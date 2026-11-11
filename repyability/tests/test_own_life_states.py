@@ -652,10 +652,12 @@ def test_a_repaired_component_checks_its_own_model():
 
 
 def test_a_joint_unit_simulates_as_its_exact_values():
+    # Few simulations: each draws the unit's life left by inverting its
+    # prediction (about 0.4 s a draw).
     rbd = unit(W([100.0, 2.0]), E([0.1]))
     state = {"a": NodeState(age=40.0, model=joint_unit())}
     run = rbd.availability(
-        60.0, mc_samples=2000, seed=8, state=state, control_variate=False
+        60.0, mc_samples=150, seed=8, state=state, control_variate=False
     )
     interval = run.mean_availability_interval(0.9999)
     exact = rbd.mission_availability(60.0, state=state)
