@@ -135,6 +135,19 @@ other release, fixes included, the minor.
   core that does not reduce, and the numbers of minimal path and cut sets,
   counted without listing them. These make public what callers had to
   reach through the private `_decomposition()`.
+- Replacement on condition by a measured degradation level (`"preventive":
+  {"policy": "condition", "level": ...}` on a Wiener or gamma process
+  life) is numerical, from new, where it was simulated only: the long
+  run (`mean_availability`, `expected_cost_rate`, the importance
+  measures, the sensitivities and allocations) and the values over time
+  (`point_availability`, `expected_events`, `expected_cost`,
+  `expected_npv`, `mission_availability`). Between inspections the level
+  is a Markov process, so the unit is followed from one inspection to the
+  next by the distribution of its level on a grid of levels, as
+  replacement on condition by age follows its ages; the long run is the
+  interval this settles into. From a state it is still refused (a state
+  does not give the level), as is a Wiener process with no drift towards
+  its threshold. `analysis_routes()` says so.
 - `NonRepairable.cost_distribution()` (and the `CostDistribution`
   result): what a part's maintenance costs over a window from its state
   now, with its spread, under run to failure, age replacement or block
@@ -155,6 +168,14 @@ other release, fixes included, the minor.
   `method="simulate"` (the windows of the same histories).
 
 ### Changed
+
+- With a component replaced on condition by its level, `availability()`
+  and `cost()` now give the exact (numerical) expected values as their
+  means by default, as for any component with a curve, where they gave
+  each simulation's values given that component's history (a conditional
+  run). The simulations themselves, their histories and the results with
+  `control_variate=False` are unchanged. The guide's quoted mean for the
+  liner example changes accordingly.
 
 - A phased mission's take-overs by blocks on standby are worked out for
   all the simulated missions at once with numpy, rather than one mission

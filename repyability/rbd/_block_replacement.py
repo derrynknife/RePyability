@@ -245,15 +245,23 @@ class _Grid(NamedTuple):
 
 
 def _grid(
-    life, repair, duration, interval: float, node, starts: bool = False
+    life,
+    repair,
+    duration,
+    interval: float,
+    node,
+    starts: bool = False,
+    life_checked: bool = True,
 ) -> _Grid:
     """The grid and renewal functions of a unit under block replacement
     (see ``block_cycle`` for the arguments; ``starts``: with the renewal
     function of the units put into service, for replacement on
-    condition)."""
+    condition; ``life_checked=False``: the life is a degradation
+    process, which ``_level_replacement`` checks itself)."""
     from scipy.signal import fftconvolve
 
-    _check_life(life, node)
+    if life_checked:
+        _check_life(life, node)
     fix = _Duration(repair, "repair", node)
     replace = _Duration(duration, "replacement", node)
     T = float(interval)

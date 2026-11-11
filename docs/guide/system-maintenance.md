@@ -350,19 +350,43 @@ def liner(level):
             "repairability": surv.Exponential.from_params([1 / 20])}
     return RepairableRBD([("s", "a"), ("a", "t")], {"a": spec})
 
-liner(6.0).cost(5000.0, mc_samples=400, seed=1).mean   # -> 95.06
+liner(6.0).expected_cost(5000.0).mean                # -> 95.36
+run = liner(6.0).cost(5000.0, mc_samples=400, seed=1)
+run.mean                                             # -> 95.36   the same
+run.sample_mean                                      # -> 95.06   the 400 simulations'
 ```
 
 Run to failure, the liner costs about 402 over the 5000 hours. Replaced at
-a level of 7.5, 7, 6 or 5 it costs about 250, 133, 95 and 103: a lower
+a level of 7.5, 7, 6 or 5 it costs about 249, 134, 95 and 104: a lower
 level means fewer failures but more replacements.
 
-- **By simulation only.** The level a unit is found at depends on the
-  levels before it, which only the simulation follows: the exact and
-  numerical methods (the long run, over time, the importance measures)
-  refuse such a component, and `availability()` and `cost()` simulate it,
-  on the Python engine. A start state cannot give the level either, so a
-  run from one refuses it.
+- **Numerical, from new and in the long run.** All a working unit's past
+  says about its future is its level now: between inspections the level
+  is a Markov process. So the unit is followed from one inspection to the
+  next by the *distribution* of its level, on a grid of levels below the
+  replacement level, as replacement on condition by age follows its ages.
+  Over an interval, a unit kept at level `y` fails with the process's
+  first-passage probability from `y` (and is repaired, and a new unit
+  starts at `y0`); units put into service in the interval run as an
+  alternating renewal process of lives and repairs, as under block
+  replacement; and at the inspection each unit still up is at a level
+  given that it has not failed, the law the simulation draws from. Those
+  at or past the level are replaced; the rest carry on. From new, this
+  gives the availability, failures, replacements and inspections over
+  time (`point_availability`, `expected_events`, `expected_cost`, the
+  NPV); once it repeats from one interval to the next, that interval is
+  the long run (`mean_availability`, `expected_cost_rate`, the importance
+  measures and sensitivities). The grid is sized from the process: 32
+  cells per standard deviation of the level's change over an interval
+  (at most 2,048 cells), the error falling as the square of the cells'
+  width: about 1e-8 in the availability and 1e-5 (relative) in the
+  rates of failure and replacement. `availability()` and `cost()` take
+  these values as their means by default, and their simulations (in
+  Python) give the spread.
+- **Not from a state.** A state cannot give the level a unit is at, so a
+  run or a value from a state refuses such a component (leave it out:
+  new). A Wiener process that does not drift towards its threshold
+  (`mu <= 0`) has units that never fail, and is refused too.
 - **How a level is drawn.** Between inspections a unit's failure is drawn
   from the level last measured (surpyval's first-passage quantile from it).
   If that failure falls before the next inspection, the unit fails then.
