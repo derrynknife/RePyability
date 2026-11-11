@@ -16,6 +16,8 @@
 
 ::: repyability.StructureSummary
 
+::: repyability.CoreStructure
+
 ::: repyability.Criticalities
 
 ::: repyability.UpDownImportance
@@ -45,6 +47,20 @@
 ::: repyability.ControlVariate
 
 ::: repyability.ConditionalRun
+
+::: repyability.SimulationSamples
+
+::: repyability.NodeActionRates
+
+::: repyability.CrewJob
+
+::: repyability.CrewStates
+
+::: repyability.ReplacementCycle
+
+::: repyability.ConditionalProbabilities
+
+::: repyability.ModelParameters
 
 ::: repyability.UncertaintyResult
 

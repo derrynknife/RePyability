@@ -217,6 +217,16 @@ def stepped(rbd):
     return changes
 
 
+def replaced(rbd):
+    """The first component under block replacement or replaced on
+    condition, or else the first component (which has no replacement
+    cycle)."""
+    for node, schedule in rbd._preventive.items():
+        if schedule.policy in ("block", "condition"):
+            return node
+    return next(iter(rbd.components))
+
+
 REPAIRABLE_CALLS = {
     **{
         name: (lambda name: lambda rbd: getattr(rbd, name)())(name)
@@ -324,6 +334,12 @@ REPAIRABLE_CALLS = {
     ),
     "initialize_event_queue": stepped,
     "next_event": stepped,
+    "node_action_rates": lambda rbd: rbd.node_action_rates(),
+    "crew_states": lambda rbd: rbd.crew_states(),
+    "replacement_cycle": lambda rbd: rbd.replacement_cycle(replaced(rbd)),
+    "simulation_samples": lambda rbd: rbd.simulation_samples(
+        200.0, 20, seed=1
+    ),
 }
 # What the two classes share: the methods on node probabilities.
 for calls in (NONREPAIRABLE_CALLS, REPAIRABLE_CALLS):
@@ -515,6 +531,9 @@ def test_the_report_covers_every_public_analysis(cls):
         "structure_summary",
         "count_minimal_cut_sets",
         "count_minimal_path_sets",
+        "core_structure",
+        "junctions",
+        "crew_jobs",
         "get_non_analytic_nodes",
         "is_analytically_solvable",
         "is_system_working",
@@ -1114,6 +1133,7 @@ FAULT_TREE_CALLS = {
             "joint_importance",
             "barlow_proschan_importance",
             "parameter_sensitivity",
+            "conditional_probabilities",
         )
     },
     "time_to_reliability": lambda tree: tree.time_to_reliability(0.5),

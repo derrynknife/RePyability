@@ -49,12 +49,14 @@ from repyability.rbd.modular import (
     NODE,
     Decomposition,
     GraphStructure,
+    core,
     decompose,
     fold,
 )
 from repyability.rbd.rbd_graph import RBDGraph
 from repyability.rbd.results import (
     CapacityDistribution,
+    CoreStructure,
     StructureSummary,
     _json_key,
     plain,
@@ -1235,6 +1237,109 @@ class RBD:
         2
         """
         return self._set_structure().count_sets(False)
+
+    def junctions(self) -> frozenset:
+        """The nodes that are only drawing devices: perfectly reliable
+        junctions, the nodes given ``PerfectReliability`` (such as the
+        vote of a k-out-of-n group drawn as a node). They never fail and
+        cannot be improved, so they are in no cut set, and the importance
+        measures and allocations leave them out (holding them working).
+
+        Returns
+        -------
+        frozenset
+            The junctions' node names; empty for a diagram with none (and
+            for a structure alone, an ``RBD``).
+
+        Examples
+        --------
+        Two of three pumps, their vote drawn as a node:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PerfectReliability
+        >>> pump = surv.Exponential.from_params([0.01])
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("s", "p3"), ("p1", "vote"),
+        ...      ("p2", "vote"), ("p3", "vote"), ("vote", "t")],
+        ...     {"p1": pump, "p2": pump, "p3": pump,
+        ...      "vote": PerfectReliability},
+        ...     k={"vote": 2},
+        ... )
+        >>> rbd.junctions()
+        frozenset({'vote'})
+        """
+        return frozenset(self._junctions())
+
+    def core_structure(self) -> Optional[CoreStructure]:
+        """The part of the diagram that does not reduce to modules (its
+        core), or ``None`` when the whole diagram does.
+
+        The diagram as drawn is reduced to modules (series chains,
+        parallel groups and k-out-of-n groups), each replaced by a single
+        vertex, until nothing more reduces. A series-parallel diagram
+        reduces to one module; otherwise a core is left (a bridge is the
+        smallest), a graph over modules and single nodes whose minimal path
+        sets the exact methods search. A component drawn in more than one
+        place (a ``NonRepairableRBD``'s repeated node) is kept out of
+        every module, as a module's members must be independent of the
+        rest, so it stays in the core. Use it to see, or bound, the work a
+        large diagram's core takes before working the diagram out (see
+        also [`structure_summary`][repyability.RBD.structure_summary]).
+
+        Returns
+        -------
+        CoreStructure or None
+            The core's graph, each vertex with its ``k`` and the nodes it
+            stands for, and its output vertex (see
+            [`CoreStructure`][repyability.CoreStructure]); ``None`` when
+            the diagram reduces fully.
+
+        Raises
+        ------
+        ValueError
+            If the diagram is not a valid RBD (see ``structure_check``),
+            which does not reduce to modules.
+
+        Examples
+        --------
+        A bridge does not reduce; two pumps in parallel, in series with a
+        valve, do:
+
+        >>> from repyability import RBD
+        >>> bridge = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("a", "d"),
+        ...      ("c", "d"), ("b", "e"), ("c", "e"), ("d", "t"), ("e", "t")]
+        ... )
+        >>> found = bridge.core_structure()
+        >>> sorted(
+        ...     sorted(data["components"])
+        ...     for _, data in found.graph.nodes(data=True)
+        ...     if data["components"]
+        ... )
+        [['a'], ['b'], ['c'], ['d'], ['e']]
+        >>> RBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")]
+        ... ).core_structure() is None
+        True
+        """
+        if not self.structure_check.get("is_valid") or any(
+            self.G.nodes[node]["k"] < 1 for node in self.G.nodes
+        ):
+            raise ValueError(
+                "The diagram is not a valid RBD (see structure_check), so "
+                "it does not reduce to modules."
+            )
+        aliases = self._component_aliases()
+        found = core(
+            self.G,
+            self.input_node,
+            self.output_node,
+            set(aliases) | set(aliases.values()),
+        )
+        if found is None:
+            return None
+        return CoreStructure(*found)
 
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
         """Iterate over every path from the input node to the output node.

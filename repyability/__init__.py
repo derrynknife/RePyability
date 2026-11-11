@@ -90,6 +90,8 @@ from repyability.rbd._mission_results import (
     MissionSummary,
 )
 from repyability.rbd._mission_settings import BlockSetting, MissionPhase
+from repyability.rbd._model_utils import model_parameters
+from repyability.rbd._streams import seed_entropy
 from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor, CCFGroup
 from repyability.rbd.chunks import SimulationChunk
 from repyability.rbd.degrading_node import DegradingNode
@@ -112,11 +114,15 @@ from repyability.rbd.results import (
     AvailabilityAllocation,
     AvailabilityResult,
     CapacityDistribution,
+    ConditionalProbabilities,
     ConditionalRun,
     ConfidenceInterval,
     ControlVariate,
+    CoreStructure,
     CostByWindow,
     CostResult,
+    CrewJob,
+    CrewStates,
     Criticalities,
     DemonstrationPlan,
     EventsByWindow,
@@ -127,11 +133,15 @@ from repyability.rbd.results import (
     FailureForecast,
     Lever,
     MaintenancePlan,
+    ModelParameters,
+    NodeActionRates,
     PlanVsActual,
     RateBreakdown,
     RedundancyAllocation,
     ReliabilityRedundancyAllocation,
+    ReplacementCycle,
     RestorationCriticalityIndex,
+    SimulationSamples,
     SparesDemand,
     SparesStock,
     StressStrengthCurve,
@@ -226,6 +236,14 @@ __all__ = [
     "EventsByWindow",
     "CostByWindow",
     "StructureSummary",
+    "CoreStructure",
+    "NodeActionRates",
+    "CrewJob",
+    "CrewStates",
+    "ReplacementCycle",
+    "SimulationSamples",
+    "ConditionalProbabilities",
+    "ModelParameters",
     "Lever",
     "RedundancyAllocation",
     "ReliabilityRedundancyAllocation",
@@ -282,6 +300,8 @@ __all__ = [
     "TimelineSimulation",
     "SimulationChunk",
     "run_shard",
+    "seed_entropy",
+    "model_parameters",
 ]
 
 

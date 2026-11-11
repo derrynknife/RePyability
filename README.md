@@ -171,6 +171,8 @@ Which analyses each model type has (the method; — where it has none):
 | Expected failures and events in a window | — | `expected_events` | — | — | — |
 | Simulated availability (distribution) | — | `availability` | — | — | — |
 | Simulated histories | — | `simulate_timelines` | — | — | — |
+| Each simulation's values, common random numbers | — | `simulation_samples` | — | — | — |
+| Repair crews' jobs and chain | — | `crew_jobs` | — | — | — |
 | Compare two designs | `compare` | `compare` | — | — | — |
 | **Costs and spares** | | | | | |
 | Long-run cost rate | — | `expected_cost_rate` | — | — | — |
@@ -180,6 +182,8 @@ Which analyses each model type has (the method; — where it has none):
 | Cost in each of a run of windows | — | `cost_by_window` | — | — | — |
 | Simulated cost (distribution) | — | `cost` | — | — | — |
 | Total cost of ownership | — | `total_cost` | — | — | — |
+| Each component's actions per unit time | — | `node_action_rates` | — | — | — |
+| A replaced component's renewal cycle | — | `replacement_cycle` | — | — | — |
 | Spares demand and stock | — | `spares_demand` | — | — | — |
 | **Structure** | | | | | |
 | Minimal path and cut sets | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` |
@@ -187,6 +191,8 @@ Which analyses each model type has (the method; — where it has none):
 | Cut sets ranked by probability | — | — | `ranked_cut_sets` | — | — |
 | Irrelevant components | `find_irrelevant_components` | `find_irrelevant_components` | — | — | — |
 | Structure sizes (counts, depth, core) | `structure_summary` | `structure_summary` | — | — | — |
+| The core that does not reduce | `core_structure` | `core_structure` | — | — | — |
+| Junctions (drawing nodes) | `junctions` | `junctions` | — | — | — |
 | Convert to and from an RBD | — | — | `to_rbd` | — | `from_diagram` |
 | Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — |
 | Capacity over time | — | `point_capacity` | — | — | — |
@@ -207,6 +213,7 @@ Which analyses each model type has (the method; — where it has none):
 | Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — |
 | Uncertainty importance | `uncertainty_importance` | `uncertainty_importance` | — | — | — |
 | All measures given a state | `importances_given_state` | — | — | — | — |
+| Top event given each event | — | — | `conditional_probabilities` | — | — |
 | Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — | — |
 | **Uncertainty** | | | | | |
 | Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | `sf_uncertainty` | `sf_uncertainty` | `reliability_interval` |

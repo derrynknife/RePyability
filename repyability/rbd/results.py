@@ -3778,3 +3778,420 @@ class PlanVsActual(_ResultMapping):
             f"variance_so_far={self.variance_so_far:.6g}, "
             f"not_compared={len(self.not_compared)})"
         )
+
+
+@dataclass(frozen=True)
+class NodeActionRates(_ResultMapping):
+    """A component's actions per unit time in the long run: returned, one
+    for each component, by
+    [`RepairableRBD.node_action_rates`][repyability.RepairableRBD.node_action_rates].
+
+    A long-run rate is the expected number of actions in a long window
+    over its length. Multiplied by a price per action, it is that
+    action's cost per unit time, as
+    [`expected_cost_rate`][repyability.RepairableRBD.expected_cost_rate]
+    counts them.
+
+    Attributes
+    ----------
+    corrective : float
+        Failures per unit time, each one a repair (or replacement): of a
+        standby group, its units' failures.
+    preventive : float
+        Preventive replacements per unit time, under age or block
+        replacement or on condition; 0 for a component that has none.
+
+    Examples
+    --------
+    >>> from repyability import NodeActionRates
+    >>> rates = NodeActionRates(corrective=0.002, preventive=0.01)
+    >>> rates.to_dict()
+    {'corrective': 0.002, 'preventive': 0.01}
+    """
+
+    corrective: float
+    preventive: float
+
+
+@dataclass(frozen=True)
+class CrewJob(_ResultMapping):
+    """A job the repair crews work on: returned by
+    [`RepairableRBD.crew_jobs`][repyability.RepairableRBD.crew_jobs].
+
+    A plain component is one job. Each unit of a standby group is a job of
+    its own, so a group of three units can keep three crews busy.
+
+    Attributes
+    ----------
+    node : Hashable
+        The component (or standby group) the job is for.
+    unit : int or None
+        ``None`` for a plain component; for a standby group, the unit's
+        number in the group, from 0.
+
+    Examples
+    --------
+    >>> from repyability import CrewJob
+    >>> CrewJob("pumps", 1).to_dict()
+    {'node': 'pumps', 'unit': 1}
+    """
+
+    node: Hashable
+    unit: Optional[int]
+
+
+@dataclass(frozen=True)
+class CrewStates(_ResultMapping):
+    """The repair crews' Markov chain in the long run: returned by
+    [`RepairableRBD.crew_states`][repyability.RepairableRBD.crew_states].
+
+    With fewer repair crews than jobs, a failed component may wait for a
+    crew, so the components no longer fail and recover independently. The
+    long-run values then come from a Markov chain whose states say which
+    components are up and which jobs are waiting. In each state each
+    component the crews serve is either up (1) or down (0). A long-run
+    value is the average of its value in each state, weighed by the
+    states' ``probabilities``: a node's long-run availability is
+    ``probabilities @ node_availability[node]``.
+
+    Attributes
+    ----------
+    node_availability : dict
+        ``{node: array}``: each node's availability in each state. 1 or 0
+        for a component the crews serve, and for a node held working or
+        broken; a nested RBD's own long-run availability in every state
+        (it has crews of its own); 1 for the input and output nodes.
+    probabilities : numpy.ndarray
+        Each state's long-run probability, adding up to 1.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from repyability import CrewStates
+    >>> states = CrewStates(
+    ...     {"a": np.array([1.0, 0.0])}, np.array([0.9, 0.1])
+    ... )
+    >>> float(states.probabilities @ states.node_availability["a"])
+    0.9
+    """
+
+    node_availability: Dict[Hashable, np.ndarray]
+    probabilities: np.ndarray
+
+    def __repr__(self) -> str:
+        # A summary (#235): the states' values are in the fields.
+        return (
+            f"CrewStates(n_states={len(self.probabilities)}, "
+            f"nodes={len(self.node_availability)})"
+        )
+
+
+@dataclass(frozen=True)
+class ReplacementCycle(_ResultMapping):
+    """The renewal cycle of a component under block replacement or
+    replaced on condition, in the long run: returned by
+    [`RepairableRBD.replacement_cycle`][repyability.RepairableRBD.replacement_cycle].
+
+    Under block replacement every ``T`` a unit is replaced at each multiple
+    of ``T`` at which it is up, and repaired at each failure in between;
+    replaced on condition, it is inspected every ``T`` and replaced when
+    an inspection finds it worn. Its long-run values repeat over each
+    interval, which ``phase`` cuts into cells. Each mean over the cycle's
+    ``length`` is a long-run rate: ``up / length`` is the component's
+    long-run availability, and ``failures / length`` its failures per
+    unit time.
+
+    Attributes
+    ----------
+    up : float
+        The mean time up in a cycle.
+    length : float
+        The mean length of a cycle.
+    failures : float
+        The mean number of failures in a cycle.
+    phase : numpy.ndarray
+        A grid over one interval, from 0 to ``T``: the cells' edges.
+    availability : numpy.ndarray
+        The long-run probability that the component is up in each cell
+        (at the cell's middle), one fewer than ``phase``.
+    failure_rate : numpy.ndarray
+        The long-run failure intensity in each cell.
+    before : float
+        The probability that the component is up just before a block time
+        (or an inspection).
+    after : float
+        The probability that it is up just after one.
+
+    Examples
+    --------
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> spec = {
+    ...     "reliability": surv.Weibull.from_params([1000.0, 3.0]),
+    ...     "repairability": surv.Exponential.from_params([0.5]),
+    ...     "preventive": {"interval": 400.0, "policy": "block"},
+    ... }
+    >>> rbd = RepairableRBD([("s", "c"), ("c", "t")], {"c": spec})
+    >>> cycle = rbd.replacement_cycle("c")
+    >>> round(cycle.length, 1), round(cycle.up / cycle.length, 4)
+    (400.4, 0.9997)
+
+    The cycle is a little longer than the interval: a replacement due
+    while the pump is down is skipped.
+    """
+
+    up: float
+    length: float
+    failures: float
+    phase: np.ndarray
+    availability: np.ndarray
+    failure_rate: np.ndarray
+    before: float
+    after: float
+
+    def __repr__(self) -> str:
+        # A summary (#235): the profiles over the interval are in the
+        # fields.
+        return (
+            f"ReplacementCycle(up={self.up:.6g}, length={self.length:.6g}, "
+            f"failures={self.failures:.6g}, before={self.before:.6g}, "
+            f"after={self.after:.6g}, cells={len(self.availability)})"
+        )
+
+
+@dataclass(frozen=True)
+class SimulationSamples(_ResultMapping):
+    """Each simulation's values from a run: returned by
+    [`RepairableRBD.simulation_samples`][repyability.RepairableRBD.simulation_samples].
+
+    The run's draws are common random numbers: each comes from a stream
+    named by the component it is for (its node name, down through nested
+    RBDs) and seeded from the run's entropy. So two diagrams run with the
+    same entropy draw the same numbers for a component in the same place
+    in both, and the differences between their samples come from how they
+    differ rather than from chance.
+
+    Attributes
+    ----------
+    availability : numpy.ndarray
+        Each simulation's fraction of the window the system was up.
+    cost : numpy.ndarray or None
+        Each simulation's running cost over the window (as
+        [`cost`][repyability.RepairableRBD.cost] counts it, without the
+        acquisition cost); ``None`` for a diagram with no running costs.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from repyability import SimulationSamples
+    >>> samples = SimulationSamples(np.array([1.0, 0.98]), None)
+    >>> samples
+    SimulationSamples(n_simulations=2, mean_availability=0.99, cost=None)
+    """
+
+    availability: np.ndarray
+    cost: Optional[np.ndarray]
+
+    def __repr__(self) -> str:
+        # A summary (#235): each simulation's values are in the fields.
+        cost = (
+            "None"
+            if self.cost is None
+            else f"{float(np.mean(self.cost)):.6g} (mean)"
+        )
+        return (
+            f"SimulationSamples(n_simulations={len(self.availability)}, "
+            "mean_availability="
+            f"{float(np.mean(self.availability)):.6g}, cost={cost})"
+        )
+
+
+@dataclass(frozen=True)
+class CoreStructure(_ResultMapping):
+    """The part of a diagram that does not reduce to modules (its core):
+    returned by
+    [`RBD.core_structure`][repyability.RBD.core_structure].
+
+    A diagram is reduced to modules (series chains, parallel groups and
+    k-out-of-n groups, each independent of the rest) by replacing each
+    with a single vertex. What is left when nothing more reduces is the
+    core: a graph from the input to the output whose vertices are modules
+    and single nodes. Its minimal path sets are what the exact methods
+    must search. A component drawn in more than one place (a repeated
+    node) stays out of every module, as the modules' members must be
+    independent of the rest, so it is left in the core.
+
+    Attributes
+    ----------
+    graph : networkx.DiGraph
+        The core. Its vertices are numbers; each has ``k`` (how many of
+        its predecessors must work for it to be reached) and
+        ``components``, the frozenset of the diagram's nodes it stands
+        for (empty for the input and output). The input vertex is the
+        one with no predecessors.
+    output : int
+        The output vertex.
+
+    Examples
+    --------
+    >>> from repyability import RBD
+    >>> bridge = RBD(
+    ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("a", "d"),
+    ...      ("c", "d"), ("b", "e"), ("c", "e"), ("d", "t"), ("e", "t")]
+    ... )
+    >>> core = bridge.core_structure()
+    >>> core.graph.in_degree(core.output)
+    2
+    """
+
+    graph: Any
+    output: int
+
+    def to_dict(self) -> dict:
+        """The core as plain data, ready for ``json.dumps``: its vertices,
+        each with its ``k`` and the components it stands for, its edges,
+        and the output vertex.
+
+        Returns
+        -------
+        dict
+            ``{"vertices": [...], "edges": [[u, v], ...], "output": v}``.
+        """
+        return {
+            "vertices": [
+                {
+                    "vertex": int(v),
+                    "k": int(data["k"]),
+                    "components": [
+                        _json_key(n)
+                        for n in sorted(data["components"], key=str)
+                    ],
+                }
+                for v, data in self.graph.nodes(data=True)
+            ],
+            "edges": [[int(u), int(v)] for u, v in self.graph.edges],
+            "output": int(self.output),
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"CoreStructure(vertices={self.graph.number_of_nodes()}, "
+            f"edges={self.graph.number_of_edges()}, output={self.output})"
+        )
+
+
+@dataclass(frozen=True)
+class ConditionalProbabilities(_ResultMapping):
+    """A fault tree's top event probability, alone and given each basic
+    event: returned by
+    [`FaultTree.conditional_probabilities`][repyability.FaultTree.conditional_probabilities].
+
+    Every importance measure of a basic event is made of these three
+    numbers and the event's own probability: Birnbaum's is
+    ``given_occurred[e] - given_not_occurred[e]``, the risk achievement
+    worth ``given_occurred[e] / top`` and the risk reduction worth
+    ``top / given_not_occurred[e]``.
+
+    Attributes
+    ----------
+    top : float or numpy.ndarray
+        The top event's probability: a float for a number ``t``, an array
+        for an array.
+    given_occurred : dict
+        ``{event: probability}``: the top event's probability given that
+        the event has occurred.
+    given_not_occurred : dict
+        ``{event: probability}``: the top event's probability given that
+        it has not.
+
+    Examples
+    --------
+    >>> from repyability import FaultTree
+    >>> tree = FaultTree(
+    ...     {"top": ("or", ["valve", "flow"]),
+    ...      "flow": ("and", ["pump 1", "pump 2"])},
+    ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+    ... )
+    >>> given = tree.conditional_probabilities()
+    >>> round(given.top, 4), given.given_occurred["valve"]
+    (0.0595, 1.0)
+    """
+
+    top: Any
+    given_occurred: Dict[Hashable, Any]
+    given_not_occurred: Dict[Hashable, Any]
+
+
+@dataclass(frozen=True)
+class ModelParameters(_ResultMapping):
+    """A parametric model's parameters, to rebuild it with them moved:
+    returned by [`model_parameters`][repyability.model_parameters].
+
+    Attributes
+    ----------
+    cls : object
+        The surpyval distribution the model is of (``surpyval.Weibull``,
+        say), whose ``from_params`` rebuilds it.
+    params : list of float
+        The parameters' values: the distribution's, then the share that
+        ever fails (``lfp_p``, a limited failure population) and the share
+        dead on arrival (``f0``, zero inflation) where it has them, the
+        order of surpyval's ``covariance()``.
+    names : list of str
+        The parameters' names, in the order of ``params``.
+    extras : dict
+        surpyval's ``model.extras`` (the offset ``gamma`` among them),
+        which the rebuilt model keeps.
+    bounds : list of tuple
+        Each parameter's range as its distribution bounds it, ``(low,
+        high)``, ``None`` where it does not.
+
+    Examples
+    --------
+    >>> import surpyval as surv
+    >>> from repyability import model_parameters
+    >>> found = model_parameters(surv.Weibull.from_params([100.0, 2.0]))
+    >>> found.names, found.params
+    (['alpha', 'beta'], [100.0, 2.0])
+    >>> round(float(found.build([200.0, 2.0]).sf(200.0)), 4)
+    0.3679
+    """
+
+    cls: Any
+    params: List[float]
+    names: List[str]
+    extras: Dict[str, Any]
+    bounds: List[Tuple[Any, Any]]
+
+    def build(self, values) -> Any:
+        """The model with its parameters at ``values``.
+
+        Parameters
+        ----------
+        values : sequence of float
+            A value for each parameter, in the order of ``params``.
+
+        Returns
+        -------
+        object
+            The surpyval model, with ``extras`` as the original's and the
+            shares (``lfp_p``, ``f0``) at their given values.
+        """
+        from repyability.rbd._model_utils import ParametricSpec
+
+        return ParametricSpec(
+            self.cls, self.params, self.names, self.extras, self.bounds
+        ).build(values)
+
+    def to_dict(self) -> dict:
+        """The parameters as plain data, ready for ``json.dumps``: the
+        distribution by its name.
+
+        Returns
+        -------
+        dict
+            The fields, ``cls`` as the distribution's name.
+        """
+        out = super().to_dict()
+        out["cls"] = getattr(self.cls, "name", str(self.cls))
+        return out

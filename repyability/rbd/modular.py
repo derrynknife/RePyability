@@ -59,6 +59,7 @@ from typing import (
     List,
     Optional,
     Sequence,
+    Tuple,
 )
 
 import numpy as np
@@ -1340,6 +1341,39 @@ class _Reduction:
             for w in successors:
                 graph.add_edge(v, w)
         return graph
+
+
+def core(
+    graph: RBDGraph, input_node, output_node, pinned: Iterable[Hashable]
+) -> Optional[Tuple[RBDGraph, int]]:
+    """The core the reduction leaves of ``graph``, with the ``pinned`` nodes
+    kept out of every module (see ``_Reduction``), as ``(core, output)``:
+    each vertex with its ``k`` and the ``components`` (the nodes of
+    ``graph``) it stands for; or None when the diagram reduces to one
+    module (or to a direct edge)."""
+    reduction = _Reduction(graph, input_node, output_node, pinned=pinned)
+    reduction.run()
+    if len(reduction.alive) <= 1:
+        return None
+    found = reduction.core_graph()
+    terms = reduction.terms
+
+    def components(v: int) -> frozenset:
+        if v < 0:
+            return frozenset()
+        out: set = set()
+        stack = [v]
+        while stack:
+            term = terms[stack.pop()]
+            if term[0] == NODE:
+                out.add(term[1])
+            else:
+                stack.extend(term[1])
+        return frozenset(out)
+
+    for v in found.nodes:
+        found.nodes[v]["components"] = components(v)
+    return found, _SINK
 
 
 def _tree(terms: list, roots: Iterable[int]) -> tuple[list, Dict[int, int]]:

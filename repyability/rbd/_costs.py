@@ -8,6 +8,7 @@ those names call these.
 from functools import partial
 from typing import (
     Collection,
+    Dict,
     Hashable,
     Optional,
     Tuple,
@@ -24,6 +25,7 @@ from repyability.rbd._common import (
     _squeeze_values,
 )
 from repyability.rbd._spec import _mean_cost
+from repyability.rbd.results import NodeActionRates
 
 
 def expected_cost_rate(
@@ -146,6 +148,47 @@ def _node_actions(rbd, node, availability: float) -> Tuple[float, float]:
         )
     failures, maintained, _ = _long_run._node_frequencies(rbd, node)
     return failures, maintained
+
+
+def node_action_rates(
+    rbd,
+    working_nodes: Optional[Collection[Hashable]],
+    broken_nodes: Optional[Collection[Hashable]],
+) -> Dict[Hashable, NodeActionRates]:
+    """See ``RepairableRBD.node_action_rates``."""
+    from repyability.rbd import _ccf_groups
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
+    _ccf_groups._require_ccf_frequencies(rbd)
+    coupled = rbd._crews_couple()
+    if coupled:
+        probabilities, weights = _crews._chain_probabilities(
+            rbd, working, broken
+        )
+        availability = {
+            node: float(weights @ probabilities[node])
+            for node in rbd.components
+        }
+    else:
+        availability = _squeeze_values(
+            rbd._probabilities_with_overrides(
+                rbd.node_availability(), working, broken
+            )
+        )
+    out: Dict[Hashable, NodeActionRates] = {}
+    for node, component in rbd.components.items():
+        if node in working or node in broken:
+            # Held, it never changes state: no actions.
+            out[node] = NodeActionRates(0.0, 0.0)
+            continue
+        if coupled and isinstance(component, RepairableRBD):
+            # A nested RBD has crews of its own: its own frequencies.
+            failures, maintained, _ = _long_run._node_frequencies(rbd, node)
+        else:
+            failures, maintained = _node_actions(rbd, node, availability[node])
+        out[node] = NodeActionRates(float(failures), float(maintained))
+    return out
 
 
 def acquisition_cost(rbd) -> float:

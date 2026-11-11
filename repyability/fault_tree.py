@@ -76,7 +76,11 @@ from repyability.utils.wrappers import outside_level
 
 if TYPE_CHECKING:  # pragma: no cover
     from repyability.rbd.non_repairable_rbd import NonRepairableRBD
-    from repyability.rbd.results import Lever, UncertaintyResult
+    from repyability.rbd.results import (
+        ConditionalProbabilities,
+        Lever,
+        UncertaintyResult,
+    )
 
 #: The kinds of gate.
 GATE_KINDS = ("or", "and", "vote")
@@ -1482,6 +1486,57 @@ class FaultTree:
         top = np.broadcast_to(np.asarray(top_sum, dtype=float), (size,))
         return works, top, occurred, not_occurred, up, down, shape
 
+    def conditional_probabilities(
+        self, t: Optional[ArrayLike] = None
+    ) -> "ConditionalProbabilities":
+        """The top event's probability, and for each basic event the top
+        event's probability given that the event has occurred and given
+        that it has not.
+
+        Every importance measure of a basic event is made of these and the
+        event's own probability (Birnbaum's is the difference of the two
+        conditionals): use them for a measure of your own, or for several
+        measures from one pass. With common-cause groups, a member's
+        occurrence says something of the other members', so the top
+        event's probability given it is summed over its group's outcomes,
+        as the importance measures take it.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s, a number or an array. May be left out when no event's
+            probability depends on time.
+
+        Returns
+        -------
+        ConditionalProbabilities
+            ``top``, ``given_occurred`` and ``given_not_occurred`` (see
+            [`ConditionalProbabilities`][repyability.ConditionalProbabilities]):
+            floats for a number ``t``, arrays for an array.
+
+        Examples
+        --------
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["valve", "flow"]),
+        ...      "flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+        ... )
+        >>> given = tree.conditional_probabilities()
+        >>> round(given.given_occurred["pump 1"], 4)
+        0.145
+        >>> round(given.given_not_occurred["pump 1"], 4)
+        0.05
+        """
+        from repyability.rbd.results import ConditionalProbabilities
+
+        _, top, occurred, not_occurred, _, _, shape = self._conditioned(t)
+        return ConditionalProbabilities(
+            top=self._out(top, shape),
+            given_occurred=self._out(occurred, shape),
+            given_not_occurred=self._out(not_occurred, shape),
+        )
+
     def birnbaum_importance(self, t: Optional[ArrayLike] = None) -> dict:
         """Birnbaum importance of each basic event.
 
@@ -2598,6 +2653,7 @@ class FaultTree:
                 "risk_achievement_worth",
                 "risk_reduction_worth",
                 "criticality_importance",
+                "conditional_probabilities",
             ),
             built(
                 r.EXACT,

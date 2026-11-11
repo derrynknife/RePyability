@@ -30,6 +30,10 @@ models provided here (see [Building an RBD](../guide/building.md) and
 
 ::: repyability.ComponentOption
 
+## A model's parameters
+
+::: repyability.model_parameters
+
 ## Common-cause failures
 
 ::: repyability.CCFGroup

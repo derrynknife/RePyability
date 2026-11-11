@@ -11,6 +11,34 @@ other release, fixes included, the minor.
 
 ### Added
 
+- Public, documented versions of values that were reachable only through
+  private calls (the private ones keep working as they were):
+  - `RepairableRBD.node_action_rates()` (and `NodeActionRates`): each
+    component's corrective and preventive actions per unit time in the
+    long run, its availability worked out within (repair crews, standby
+    groups and held nodes included).
+  - `RepairableRBD.crew_jobs()` (and `CrewJob`): the jobs the repair crews
+    work on, a standby group's units each a job.
+  - `RepairableRBD.crew_states()` (and `CrewStates`): with limited repair
+    crews, each node's availability in each state of their Markov chain,
+    and the states' long-run probabilities.
+  - `RepairableRBD.replacement_cycle(node)` (and `ReplacementCycle`): the
+    renewal cycle of a component under block replacement or replaced on
+    condition.
+  - `RepairableRBD.simulation_samples()` (and `SimulationSamples`): each
+    simulation's availability and running cost, every draw from a stream
+    named by its component (common random numbers), with held nodes and a
+    seed or an entropy; and `seed_entropy(seed)`, the entropy a seed
+    makes.
+  - `RBD.junctions()` and `RBD.core_structure()` (and `CoreStructure`):
+    a diagram's perfectly reliable drawing nodes, and the part of it that
+    does not reduce to modules, repeated components kept in it.
+  - `model_parameters(model)` (and `ModelParameters`): a parametric
+    model's parameters, names and ranges, and `build(values)` to rebuild
+    it with them moved.
+  - `FaultTree.conditional_probabilities(t)` (and
+    `ConditionalProbabilities`): the top event's probability, and given
+    each basic event occurred and not.
 - `NodeState.level` and `NodeState.model`: a unit's own life in a state.
   `level` is the degradation level measured now on a unit whose life is a
   surpyval Wiener or gamma degradation process: its life from now is the

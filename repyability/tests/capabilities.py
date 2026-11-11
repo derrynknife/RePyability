@@ -114,6 +114,14 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ),
             ),
             ("Simulated histories", ("simulate_timelines",)),
+            (
+                "Each simulation's values, common random numbers",
+                ("simulation_samples",),
+            ),
+            (
+                "Repair crews' jobs and chain",
+                ("crew_jobs", "crew_states"),
+            ),
             ("Compare two designs", ("compare",)),
         ],
     ),
@@ -127,6 +135,14 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Cost in each of a run of windows", ("cost_by_window",)),
             ("Simulated cost (distribution)", ("cost",)),
             ("Total cost of ownership", ("total_cost",)),
+            (
+                "Each component's actions per unit time",
+                ("node_action_rates",),
+            ),
+            (
+                "A replaced component's renewal cycle",
+                ("replacement_cycle",),
+            ),
             ("Spares demand and stock", ("spares_demand", "spares_stock")),
         ],
     ),
@@ -156,6 +172,8 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                     "count_minimal_cut_sets",
                 ),
             ),
+            ("The core that does not reduce", ("core_structure",)),
+            ("Junctions (drawing nodes)", ("junctions",)),
             (
                 "Convert to and from an RBD",
                 ("to_rbd", "from_rbd", "from_diagram"),
@@ -202,6 +220,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ),
             ("Uncertainty importance", ("uncertainty_importance",)),
             ("All measures given a state", ("importances_given_state",)),
+            (
+                "Top event given each event",
+                ("conditional_probabilities",),
+            ),
             (
                 "Parameter sensitivity, levers",
                 ("parameter_sensitivity", "levers", "with_levers"),
