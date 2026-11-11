@@ -1,0 +1,826 @@
+"""A part's cost over a window from its state now, with its spread (UC-8
+of this package's ``README.md``).
+
+One part, renewed as new at every failure (at its ``unplanned_cost``) and
+by a policy (at its ``planned_cost``), in no time either way. From its
+state now (its age, and for block replacement how far it is into the
+interval), the cost over a window ``[0, W)`` is ``cu N_f + cp N_p``, with
+``N_f`` the failures and ``N_p`` the planned replacements in the window.
+Everything follows from the joint distribution of the two counts: the
+mean, the standard deviation, the percentiles, the chance of exceeding a
+budget. An event at exactly ``W`` falls in the next window, as for
+[`RepairableRBD.expected_events`][repyability.RepairableRBD.expected_events].
+
+**Cycles.** The policies renew the part, so its history is a run of
+cycles, each ending in a failure or a planned replacement. Under age
+replacement at ``T`` a new part's cycle ends in a failure before ``T``
+(sub-distribution ``G(x) = F(min(x, T))``, mass ``q = F(T)``) or in a
+planned replacement at exactly ``T`` (chance ``p = R(T)``). The part in
+now, ``a`` old, has a first cycle of its own: a failure before ``tau =
+T - a``, ``G_1(x) = 1 - S(min(x, tau))`` with ``S(u) = R(a + u) /
+R(a)``, or a planned replacement at ``tau`` (chance ``p_1 = S(tau)``; a
+part at or past ``T`` is replaced at once, ``tau = 0``). Run to failure is
+``T`` infinite: no planned replacement.
+
+**The counts.** A planned cycle has a fixed length, so the time taken by
+``i`` failure cycles and ``j`` planned ones is the failure cycles' total
+plus ``j T``, whatever their order: the ``C(i + j - 1, j)`` orders of the
+later cycles share one distribution. With ``A_i`` the distribution
+function of the first failure cycle plus ``i - 1`` new ones, and ``B_i``
+of ``i`` new failure cycles (both sub-distributions), the chance that a
+total ``U`` of cycles ends before ``y`` and the next cycle runs past it is
+``Q[K](y) = K(y) - K'(y) - p K(y - T)``, ``K'`` the next of the sequence,
+and::
+
+    P(0, 0)     = S(W)                                   (W <= tau)
+    P(0, j)     = p_1 p^(j-1) R(z)                       (0 < z <= T)
+    P(i, j)    += C(i - 1 + j, j) p^j Q[A_i](W - j T)     (i >= 1)
+    P(i, j)    += C(i + j - 1, i) p_1 p^(j-1) Q[B_i](z)   (i, j >= 1)
+
+with ``z = W - tau - (j - 1) T``. Under block replacement every ``T``, the
+planned replacements fall at fixed times, so ``N_p`` is known, and the
+part runs to failure between them, from new after each: ``N_f`` is the
+sum of independent counts, one for each stretch between planned
+replacements (the first from the part's age), each from run to failure,
+and its distribution their convolution.
+
+**Numerically.** ``A_i`` and ``B_i`` are worked out on a grid of step
+``h`` sized from the lives (``_STEPS_PER_SPREAD`` steps per interquartile
+range of the life new and of the part's life left, at least
+``_MIN_STEPS`` over the span and at most ``_MAX_STEPS``; never in
+absolute time): ``K_(i+1)(x) = integral of K_i(x - u) dG(u)``, with the
+exact increments of ``G`` over each cell and ``K_i`` averaged over the
+cell (the trapezoidal rule in the measure), whose error falls as ``h **
+2``; each step is one convolution by FFT. ``A_1`` and ``B_1`` are taken
+exactly, and the others between grid points linearly. The sequences stop
+when what is left is below ``_TAIL``. The same is worked out with a step
+of ``2 h``, and ``precision`` is the largest difference of a probability
+between the two (about three times the error at ``h``), plus the mass
+the counts leave out.
+
+**Simulated** (``method="simulate"``): the part's cycles drawn, seeded,
+from its life (the part's life left from its age first), as a check, with
+each probability's share of the simulations.
+"""
+
+import math
+from dataclasses import dataclass
+from typing import NamedTuple, Optional, Tuple
+
+import numpy as np
+from scipy.special import gammaln
+
+from repyability.rbd.results import _ResultMapping
+from repyability.utils import checks
+
+#: Grid steps per interquartile range of a life, at least over the span,
+#: and at most (see the module's docstring).
+_STEPS_PER_SPREAD = 200
+_MIN_STEPS = 2_000
+_MAX_STEPS = 2**16
+#: The sequences of counts stop when the chance of more is below this.
+_TAIL = 1e-13
+#: The most failures in a window the numerical route follows.
+_MAX_COUNT = 5_000
+#: The simulations by default.
+_SIMULATIONS = 10_000
+#: The percentiles reported by default.
+LEVELS = (10.0, 50.0, 90.0)
+
+RUN_TO_FAILURE = "run to failure"
+AGE = "age replacement"
+BLOCK = "block replacement"
+
+
+@dataclass
+class CostDistribution(_ResultMapping):
+    """What a part's maintenance costs over a window from its state now,
+    and how widely that can vary: returned by
+    [`NonRepairable.cost_distribution`][repyability.NonRepairable.cost_distribution].
+
+    The cost over the window is the failures in it at the unplanned cost
+    plus the planned replacements at the planned cost, so it comes in
+    steps: ``costs`` lists every amount it can be and
+    ``cost_probabilities`` the chance of each, from which the mean, the
+    spread, the percentiles and the chance of exceeding a budget follow.
+    ``probabilities[i, j]`` is the chance of exactly ``i`` failures and
+    ``j`` planned replacements.
+
+    Attributes
+    ----------
+    window : float
+        The window's length, from now.
+    policy : str
+        ``"run to failure"``, ``"age replacement"`` or ``"block
+        replacement"``.
+    every : float or None
+        The policy's interval (None for run to failure).
+    age : float
+        The part's age now.
+    since_renewal : float or None
+        For block replacement, how far into the interval the part is now.
+    unplanned_cost : float
+        What a failure costs.
+    planned_cost : float or None
+        What a planned replacement costs (None for run to failure).
+    method : str
+        ``"numerical"`` (worked out on a grid, to ``precision``) or
+        ``"simulated"``.
+    probabilities : numpy.ndarray
+        The chance of each number of failures (rows, from 0) and of
+        planned replacements (columns, from 0).
+    failure_probabilities : numpy.ndarray
+        The chance of each number of failures, from 0.
+    planned_probabilities : numpy.ndarray
+        The chance of each number of planned replacements, from 0.
+    costs : numpy.ndarray
+        Every cost the window can have, cheapest first.
+    cost_probabilities : numpy.ndarray
+        The chance of each of ``costs``.
+    mean : float
+        The expected cost.
+    standard_deviation : float
+        The cost's standard deviation.
+    expected_failures : float
+        The expected number of failures.
+    expected_planned : float
+        The expected number of planned replacements.
+    levels : tuple of float
+        The percentiles of ``percentiles``, from 0 to 100.
+    percentiles : numpy.ndarray
+        The cost at each of ``levels``: the least cost not exceeded with
+        at least that chance.
+    budget : float or None
+        The budget given, if any.
+    probability_above_budget : float or None
+        The chance the cost exceeds ``budget``.
+    precision : float or None
+        For the numerical route, the largest error of any probability
+        (estimated, see the guide); None when simulated.
+    standard_error : float or None
+        For a simulation, the standard error of ``mean``; None otherwise.
+    n_simulations : int or None
+        The number of simulations, or None.
+
+    Examples
+    --------
+    See
+    [`NonRepairable.cost_distribution`][repyability.NonRepairable.cost_distribution].
+    """
+
+    window: float
+    policy: str
+    every: Optional[float]
+    age: float
+    since_renewal: Optional[float]
+    unplanned_cost: float
+    planned_cost: Optional[float]
+    method: str
+    probabilities: np.ndarray
+    failure_probabilities: np.ndarray
+    planned_probabilities: np.ndarray
+    costs: np.ndarray
+    cost_probabilities: np.ndarray
+    mean: float
+    standard_deviation: float
+    expected_failures: float
+    expected_planned: float
+    levels: Tuple[float, ...]
+    percentiles: np.ndarray
+    budget: Optional[float]
+    probability_above_budget: Optional[float]
+    precision: Optional[float]
+    standard_error: Optional[float]
+    n_simulations: Optional[int]
+
+    def percentile(self, q: float) -> float:
+        """The cost at the ``q``-th percentile: the least cost not
+        exceeded with a chance of at least ``q`` / 100.
+
+        Parameters
+        ----------
+        q : float
+            The percentile, from 0 to 100.
+        """
+        return _percentile(self.costs, self.cost_probabilities, _level(q))
+
+    def probability_above(self, budget: float) -> float:
+        """The chance the cost exceeds ``budget``.
+
+        Parameters
+        ----------
+        budget : float
+            The cost to exceed.
+        """
+        return _above(self.costs, self.cost_probabilities, _budget(budget))
+
+    def outcomes(self) -> list:
+        """Each outcome with a chance of at least 1e-12, most likely
+        first: ``[{"failures": i, "planned": j, "cost": ..., "probability":
+        ...}]``."""
+        rows, cols = np.nonzero(self.probabilities >= 1e-12)
+        out = [
+            {
+                "failures": int(i),
+                "planned": int(j),
+                "cost": float(self._cost(i, j)),
+                "probability": float(self.probabilities[i, j]),
+            }
+            for i, j in zip(rows, cols)
+        ]
+        return sorted(out, key=lambda o: -o["probability"])
+
+    def _cost(self, i, j):
+        return self.unplanned_cost * i + (self.planned_cost or 0.0) * j
+
+
+# -- inputs -------------------------------------------------------------------
+
+
+def _number(value, name: str, strict: bool = False) -> float:
+    ok = (
+        checks.is_number(value)
+        and math.isfinite(float(value))
+        and (float(value) > 0.0 if strict else float(value) >= 0.0)
+    )
+    if not ok:
+        bound = "more than 0" if strict else "at least 0"
+        raise ValueError(f"{name} must be a number, {bound}; got {value!r}.")
+    return float(value)
+
+
+def _level(q) -> float:
+    if not (checks.is_number(q) and 0.0 <= float(q) <= 100.0):
+        raise ValueError(
+            f"A percentile must be a number from 0 to 100; got {q!r}."
+        )
+    return float(q)
+
+
+def _budget(budget) -> float:
+    if not (checks.is_number(budget) and not math.isnan(float(budget))):
+        raise ValueError(f"budget must be a number; got {budget!r}.")
+    return float(budget)
+
+
+class _Plan(NamedTuple):
+    """The policy and the part's state, checked."""
+
+    policy: str
+    every: float  # inf for run to failure
+    age: float
+    since: Optional[float]  # block replacement only
+
+
+def _plan(part, every, resets, age, since_renewal) -> _Plan:
+    """The policy from ``every`` and ``resets`` (as ``renewal_forecast``
+    takes them), and the part's state, checked."""
+    age = _number(age, "age")
+    if every is None:
+        if resets is not None or since_renewal is not None:
+            raise ValueError(
+                "Run to failure (no every given) has no interval: give "
+                "resets and since_renewal only with every."
+            )
+        return _Plan(RUN_TO_FAILURE, math.inf, age, None)
+    every = _number(every, "every", strict=True)
+    if not isinstance(resets, bool):
+        raise TypeError(
+            "resets must be True (age replacement: each interval starts at "
+            "the last replacement, planned or not) or False (block "
+            "replacement: the planned replacements keep to fixed times); "
+            f"got {resets!r}."
+        )
+    if not hasattr(part, "cp"):
+        raise ValueError(
+            "A policy with planned replacements needs the part's "
+            "planned_cost: give NonRepairable(..., planned_cost=...)."
+        )
+    if resets:
+        if since_renewal is not None:
+            raise ValueError(
+                "Age replacement counts its interval from the last "
+                "replacement, which is the part's age: give no "
+                "since_renewal."
+            )
+        return _Plan(AGE, every, age, None)
+    since = age if since_renewal is None else since_renewal
+    since = _number(since, "since_renewal")
+    if since >= every:
+        raise ValueError(
+            f"The part is {since:g} into an interval of {every:g}: a "
+            "planned replacement is due now or past. Give a time into the "
+            "interval less than every."
+        )
+    return _Plan(BLOCK, every, age, since)
+
+
+def _check_part(part) -> None:
+    """The part's life must have a survival function in closed form and
+    no failures at age 0, and it must be replaced in no time."""
+    if not hasattr(part, "cu"):
+        raise ValueError(
+            "The cost over a window needs the part's unplanned_cost: give "
+            "NonRepairable(..., unplanned_cost=...)."
+        )
+    if part.model_parameterization not in ("parametric", "degradation"):
+        raise NotImplementedError(
+            "cost_distribution needs a life with a survival function in "
+            "closed form (a surpyval parametric distribution, mixture or "
+            "degradation process); this part's is "
+            f"{part.model_parameterization}."
+        )
+    if float(np.ravel(part.reliability_function(0.0))[0]) < 1.0:
+        raise ValueError(
+            "The part's life fails at age 0 with a chance above 0 (a "
+            "zero-inflated life): a new part could fail at once, again and "
+            "again, so the counts have no distribution. Give a life with "
+            "no failures at age 0."
+        )
+    replace = float(np.ravel(part.time_to_replace.mean())[0])
+    if replace != 0.0:
+        raise ValueError(
+            "cost_distribution takes a replacement as done in no time, and "
+            f"this part takes {replace:g} on average: give a part replaced "
+            "in no time (time_to_replace None or 'instant')."
+        )
+
+
+# -- the lives ----------------------------------------------------------------
+
+
+class _Life:
+    """The part's survival function, new and from its age now."""
+
+    def __init__(self, part, age: float):
+        self.sf = part.reliability_function
+        self.age = age
+        self.base = float(np.ravel(self.sf(age))[0])
+        if not self.base > 0.0:
+            raise ValueError(
+                f"The life gives no chance of a part working at age {age:g}."
+            )
+
+    def R(self, x) -> np.ndarray:
+        """The new part's survival function, ``R(x)``."""
+        x = np.asarray(x, dtype=float)
+        return np.asarray(self.sf(x), dtype=float).reshape(x.shape)
+
+    def S(self, u) -> np.ndarray:
+        """The part's in now: ``S(u) = R(age + u) / R(age)``."""
+        u = np.asarray(u, dtype=float)
+        return self.R(self.age + u) / self.base
+
+
+def _quantile(survival, level: float, start: float) -> Optional[float]:
+    """The time at which ``survival`` falls to ``level``, by bisection
+    (None if it never does)."""
+    high = start
+    for _ in range(400):
+        if float(survival(high)) <= level:
+            break
+        high *= 2.0
+    else:
+        return None
+    low = 0.0
+    for _ in range(100):
+        middle = 0.5 * (low + high)
+        if float(survival(middle)) <= level:
+            high = middle
+        else:
+            low = middle
+    return high
+
+
+def _spread(survival, start: float) -> Optional[float]:
+    """The interquartile range of a life given by its survival function."""
+    lower = _quantile(survival, 0.75, start)
+    upper = _quantile(survival, 0.25, start)
+    if lower is None or upper is None or not upper > lower:
+        return None
+    return upper - lower
+
+
+def _step(life: _Life, part, span: float) -> float:
+    """The grid step over ``span``: ``_STEPS_PER_SPREAD`` steps per
+    interquartile range of the life new and of the part's life left, from
+    ``_MIN_STEPS`` to ``_MAX_STEPS`` steps over the span."""
+    from repyability.rbd._model_utils import failure_time_scale
+
+    scale = failure_time_scale(part.reliability)
+    if not (math.isfinite(scale) and scale > 0.0):
+        scale = span
+    spreads = [
+        s
+        for s in (
+            _spread(lambda x: life.R(x), scale),
+            _spread(lambda u: life.S(u), scale),
+        )
+        if s is not None
+    ]
+    step = min(spreads + [span]) / _STEPS_PER_SPREAD
+    return min(max(step, span / _MAX_STEPS), span / _MIN_STEPS)
+
+
+class _Grid:
+    """A grid ``0, h, ..., n h`` covering a span, and the convolutions of
+    distribution functions on it."""
+
+    def __init__(self, h: float, span: float):
+        self.h = h
+        self.n = int(math.ceil(span / h - 1e-9))
+        self.x = h * np.arange(self.n + 1)
+        self.size = 1 << int(math.ceil(math.log2(2 * (self.n + 1))))
+
+    def kernel(self, G: np.ndarray) -> np.ndarray:
+        """The transform of the cell weights for ``K -> integral of
+        K(x - u) dG(u)``: each cell's exact increment of ``G``, ``K``
+        averaged over the cell (``c_k = (dG_k + dG_(k-1)) / 2``)."""
+        dG = np.diff(G)
+        c = np.zeros(self.n + 1)
+        c[:-1] += 0.5 * dG
+        c[1:] += 0.5 * dG
+        return np.fft.rfft(c, self.size)
+
+    def convolve(self, K: np.ndarray, kernel: np.ndarray) -> np.ndarray:
+        """``integral of K(x - u) dG(u)`` at the grid points, for a ``K``
+        that is 0 at 0."""
+        out = np.fft.irfft(np.fft.rfft(K, self.size) * kernel, self.size)
+        return np.clip(out[: self.n + 1], 0.0, None)
+
+    def at(self, K: np.ndarray, y) -> np.ndarray:
+        """``K`` at the times ``y``, linearly between grid points, 0 before
+        0."""
+        return np.interp(y, self.x, K, left=0.0, right=K[-1])
+
+
+def _powers(grid: _Grid, first: np.ndarray, kernel: np.ndarray) -> list:
+    """``first``, then each convolved once more, until the last is below
+    ``_TAIL``; the list ends with one below it."""
+    out = [first]
+    while out[-1][-1] >= _TAIL:
+        if len(out) > _MAX_COUNT:
+            raise NotImplementedError(
+                f"More than {_MAX_COUNT} failures in the window are "
+                "likely: the numerical route stops there. Use "
+                "method='simulate'."
+            )
+        out.append(grid.convolve(out[-1], kernel))
+    return out
+
+
+def _weight(m, k, p: float, extra: float = 1.0) -> np.ndarray:
+    """``C(m, k) p^(m - k) extra``, for arrays ``m``, ``k`` (from logs)."""
+    m = np.asarray(m, dtype=float)
+    k = np.asarray(k, dtype=float)
+    j = m - k
+    if p == 0.0:
+        return np.where(j == 0, extra, 0.0)
+    log = gammaln(m + 1) - gammaln(k + 1) - gammaln(j + 1) + j * math.log(p)
+    return extra * np.exp(log)
+
+
+# -- run to failure and age replacement ---------------------------------------
+
+
+def _age_counts(life: _Life, every: float, window: float, h: float):
+    """``P[i, j]``: the chance of ``i`` failures and ``j`` planned
+    replacements in ``[0, window)`` under age replacement at ``every``
+    (``inf``: run to failure) from the part's age, on a grid of step
+    ``h``. Returns the array and the grid points' count."""
+    T = every
+    tau = max(T - life.age, 0.0)
+    if tau == 0.0:
+        p1 = 1.0  # at or past the age: replaced at once
+    elif math.isinf(tau):
+        p1 = 0.0
+    else:
+        p1 = float(life.S(tau))
+    p = 0.0 if math.isinf(T) else float(life.R(T))
+
+    def G(x):  # a new part's failure cycle
+        return 1.0 - life.R(np.minimum(x, T))
+
+    def G1(x):  # the part in now's
+        if tau == 0.0:
+            return np.zeros(np.shape(x))
+        return 1.0 - life.S(np.minimum(x, tau))
+
+    grid = _Grid(h, window)
+    kernel = grid.kernel(G(grid.x))
+    A = _powers(grid, G1(grid.x), kernel)
+    B = _powers(grid, G(grid.x), kernel)
+    count = max(len(A), len(B))
+    A += [grid.convolve(A[-1], kernel) for _ in range(count + 1 - len(A))]
+    B += [grid.convolve(B[-1], kernel) for _ in range(count + 1 - len(B))]
+
+    def at(K, which: list, i: int, y):
+        # K_i at y: the first exactly, the others from the grid.
+        y = np.asarray(y, dtype=float)
+        if i == 1:
+            return np.where(y > 0.0, K(np.maximum(y, 0.0)), 0.0)
+        return grid.at(which[i - 1], y)
+
+    def Q(K, which, i, y):
+        # P(the cycles end before y and the next runs past it).
+        y = np.asarray(y, dtype=float)
+        out = at(K, which, i, y) - at(K, which, i + 1, y)
+        if p > 0.0:
+            out = out - p * at(K, which, i, y - T)
+        return np.where(y > 0.0, np.maximum(out, 0.0), 0.0)
+
+    planned = 0 if math.isinf(T) else int(math.ceil(window / T)) + 1
+    j = np.arange(planned + 1)
+    P = np.zeros((count + 1, planned + 1))
+    if window <= tau:
+        P[0, 0] = float(life.S(window))
+    if p1 > 0.0:
+        z = window - tau - (j[1:] - 1) * T
+        alive = np.where((z > 0.0) & (z <= T), life.R(np.clip(z, 0.0, T)), 0.0)
+        P[0, 1:] = p1 * np.power(p, j[1:] - 1) * alive
+    for i in range(1, count + 1):
+        y = window - j * T if planned else np.array([window])
+        P[i] += _weight(i - 1 + j, i - 1, p) * Q(G1, A, i, y)
+        if p1 > 0.0 and planned:
+            z = window - tau - (j[1:] - 1) * T
+            P[i, 1:] += _weight(i + j[1:] - 1, i, p, p1) * Q(G, B, i, z)
+    return P
+
+
+# -- block replacement --------------------------------------------------------
+
+
+def _run_to_failure_pmf(life: _Life, grid: _Grid, kernel, first, S, length):
+    """The chance of each number of failures in ``[0, length)`` of a part
+    run to failure, its first life's distribution function ``first`` (and
+    survival function ``S``), the later ones new."""
+    if length <= 0.0:
+        return np.ones(1)
+    K = _powers(grid, first(grid.x), kernel)
+    K.append(grid.convolve(K[-1], kernel))
+    values = [float(S(length))]
+    values.append(float(first(length)) - float(grid.at(K[1], length)))
+    for i in range(2, len(K)):
+        values.append(
+            float(grid.at(K[i - 1], length)) - float(grid.at(K[i], length))
+        )
+    return np.clip(np.array(values), 0.0, None)
+
+
+def _power(pmf: np.ndarray, k: int) -> np.ndarray:
+    """The distribution of the sum of ``k`` independent counts of
+    distribution ``pmf``."""
+    out = np.ones(1)
+    while k:
+        if k & 1:
+            out = _trim(np.convolve(out, pmf))
+        k >>= 1
+        if k:
+            pmf = _trim(np.convolve(pmf, pmf))
+    return out
+
+
+def _trim(pmf: np.ndarray) -> np.ndarray:
+    keep = np.flatnonzero(pmf >= 1e-20)
+    return pmf[: keep[-1] + 1] if len(keep) else pmf[:1]
+
+
+def _block_counts(life: _Life, every: float, since: float, window, h):
+    """``P[i, j]`` under block replacement every ``every``, the next
+    ``every - since`` from now: ``j`` is known, and the failures are the
+    sum of each stretch's, run to failure."""
+    T = every
+    tau = T - since
+    planned = int(math.ceil((window - tau) / T)) if window > tau else 0
+    first = min(tau, window)
+    span = max(first, T if planned else 0.0)
+    grid = _Grid(h, span)
+
+    def F(x):
+        return 1.0 - life.R(x)
+
+    def F1(x):
+        return 1.0 - life.S(x)
+
+    kernel = grid.kernel(F(grid.x))
+    pmf = _run_to_failure_pmf(life, grid, kernel, F1, life.S, first)
+    if planned:
+        last = window - tau - (planned - 1) * T
+        full = planned - 1 + (last >= T)
+        new = _run_to_failure_pmf(life, grid, kernel, F, life.R, T)
+        pmf = np.convolve(pmf, _power(new, full))
+        if last < T:
+            rest = _run_to_failure_pmf(life, grid, kernel, F, life.R, last)
+            pmf = np.convolve(pmf, rest)
+    P = np.zeros((len(pmf), planned + 1))
+    P[:, planned] = pmf
+    return P
+
+
+# -- simulated ---------------------------------------------------------------
+
+
+def _sampler(part):
+    from repyability.rbd._sampling import stream_sampler
+
+    quantile = stream_sampler(part.reliability)
+    if quantile is None:
+        raise NotImplementedError(
+            "The part's life cannot be drawn by its quantile function: "
+            "use the default, method='exact'."
+        )
+    return quantile
+
+
+def _simulate(part, plan: _Plan, window: float, mc_samples: int, seed):
+    """The counts of ``mc_samples`` seeded histories of the part."""
+    rng = np.random.default_rng(seed)
+    quantile = _sampler(part)
+    life = _Life(part, plan.age)
+    used = 1.0 - life.base  # F(age)
+
+    def draw(n: int, aged: bool) -> np.ndarray:
+        u = rng.random(n)
+        if aged:
+            return np.asarray(quantile(used + u * life.base)) - plan.age
+        return np.asarray(quantile(u), dtype=float)
+
+    failures = np.zeros(mc_samples, dtype=int)
+    planned = np.zeros(mc_samples, dtype=int)
+    T = plan.every
+    if plan.policy == BLOCK:
+        tau = T - float(plan.since or 0.0)
+        starts = [0.0] + list(np.arange(tau, window, T))
+        planned[:] = len(starts) - 1
+        for k, start in enumerate(starts):
+            end = min(starts[k + 1] if k + 1 < len(starts) else window, window)
+            t = start + draw(mc_samples, k == 0)
+            active = np.flatnonzero(t < end)
+            while len(active):
+                failures[active] += 1
+                t[active] += draw(len(active), False)
+                active = active[t[active] < end]
+        return failures, planned
+    # Run to failure and age replacement: cycle by cycle.
+    t = np.zeros(mc_samples)
+    age = np.full(mc_samples, plan.age)
+    life_left = draw(mc_samples, True)
+    active = np.arange(mc_samples)
+    while len(active):
+        until = np.maximum(T - age[active], 0.0)
+        failed = life_left[active] < until
+        ends = t[active] + np.where(failed, life_left[active], until)
+        inside = ends < window
+        active, failed, ends = active[inside], failed[inside], ends[inside]
+        failures[active[failed]] += 1
+        planned[active[~failed]] += 1
+        t[active] = ends
+        age[active] = 0.0
+        life_left[active] = draw(len(active), False)
+    return failures, planned
+
+
+# -- the answer ---------------------------------------------------------------
+
+
+def _percentile(costs, probabilities, q: float) -> float:
+    cumulative = np.cumsum(probabilities)
+    index = int(np.searchsorted(cumulative, q / 100.0 - 1e-12))
+    return float(costs[min(index, len(costs) - 1)])
+
+
+def _above(costs, probabilities, budget: float) -> float:
+    return float(np.sum(probabilities[costs > budget]))
+
+
+def _by_cost(P: np.ndarray, cu: float, cp: float):
+    """The distinct costs of the outcomes, cheapest first, and the chance
+    of each."""
+    i, j = np.indices(P.shape)
+    cost = (cu * i + cp * j).ravel()
+    order = np.argsort(cost, kind="stable")
+    cost, mass = cost[order], P.ravel()[order]
+    scale = max(float(np.max(np.abs(cost))), 1.0)
+    new = np.concatenate([[True], np.diff(cost) > 1e-12 * scale])
+    groups = np.cumsum(new) - 1
+    costs = cost[new]
+    probabilities = np.bincount(groups, weights=mass)
+    keep = probabilities > 0.0
+    keep[0] = True
+    return costs[keep], probabilities[keep]
+
+
+def _counts(part, plan: _Plan, window: float, h: float) -> np.ndarray:
+    life = _Life(part, plan.age)
+    if plan.policy == BLOCK:
+        since = float(plan.since or 0.0)
+        return _block_counts(life, plan.every, since, window, h)
+    return _age_counts(life, plan.every, window, h)
+
+
+def _numerical(part, plan: _Plan, window: float):
+    """The counts' distribution, and its precision: the largest change of
+    a probability from a grid twice as coarse, plus the mass left out."""
+    life = _Life(part, plan.age)
+    span = window
+    if plan.policy == BLOCK:
+        tau = plan.every - float(plan.since or 0.0)
+        span = max(min(tau, window), plan.every)
+    h = _step(life, part, span)
+    fine = _counts(part, plan, window, h)
+    coarse = _counts(part, plan, window, 2.0 * h)
+    rows = max(fine.shape[0], coarse.shape[0])
+    cols = max(fine.shape[1], coarse.shape[1])
+    a = np.zeros((rows, cols))
+    b = np.zeros((rows, cols))
+    a[: fine.shape[0], : fine.shape[1]] = fine
+    b[: coarse.shape[0], : coarse.shape[1]] = coarse
+    precision = float(np.max(np.abs(a - b))) + max(0.0, 1.0 - float(a.sum()))
+    return fine, precision
+
+
+def cost_distribution(
+    part,
+    window,
+    every=None,
+    *,
+    resets=None,
+    age=0.0,
+    since_renewal=None,
+    budget=None,
+    levels=LEVELS,
+    method: str = "exact",
+    mc_samples: Optional[int] = None,
+    seed=None,
+) -> CostDistribution:
+    """The work of ``NonRepairable.cost_distribution`` (see there)."""
+    window = _number(window, "window", strict=True)
+    _check_part(part)
+    plan = _plan(part, every, resets, age, since_renewal)
+    levels = tuple(_level(q) for q in np.atleast_1d(levels))
+    if budget is not None:
+        budget = _budget(budget)
+    checks.one_of("method", method, ("exact", "simulate"))
+    seed = checks.seed(seed)
+    if method == "exact":
+        if mc_samples is not None or seed is not None:
+            raise ValueError(
+                "mc_samples and seed are for method='simulate'; the "
+                "default, method='exact', draws nothing."
+            )
+        P, precision = _numerical(part, plan, window)
+        standard_error, n = None, None
+    else:
+        n = _SIMULATIONS if mc_samples is None else mc_samples
+        if not (
+            isinstance(n, (int, np.integer))
+            and not isinstance(n, bool)
+            and n > 1
+        ):
+            raise ValueError(
+                f"mc_samples must be a whole number, more than 1; got {n!r}."
+            )
+        n = int(n)
+        failures, planned = _simulate(part, plan, window, n, seed)
+        P = np.zeros((failures.max() + 1, planned.max() + 1))
+        np.add.at(P, (failures, planned), 1.0 / n)
+        precision = None
+    cu = float(part.cu)
+    cp = 0.0 if plan.policy == RUN_TO_FAILURE else float(part.cp)
+    costs, cost_probabilities = _by_cost(P, cu, cp)
+    i = np.arange(P.shape[0])
+    j = np.arange(P.shape[1])
+    by_failures = P.sum(axis=1)
+    by_planned = P.sum(axis=0)
+    total = float(P.sum())
+    mean = float(costs @ cost_probabilities) / total
+    variance = float((costs - mean) ** 2 @ cost_probabilities) / total
+    if method == "simulate":
+        each = cu * failures + cp * planned
+        standard_error = float(np.std(each, ddof=1) / math.sqrt(len(each)))
+    return CostDistribution(
+        window,
+        plan.policy,
+        None if plan.policy == RUN_TO_FAILURE else plan.every,
+        plan.age,
+        plan.since,
+        cu,
+        None if plan.policy == RUN_TO_FAILURE else cp,
+        "numerical" if method == "exact" else "simulated",
+        P,
+        by_failures,
+        by_planned,
+        costs,
+        cost_probabilities,
+        mean,
+        math.sqrt(max(variance, 0.0)),
+        float(i @ by_failures),
+        float(j @ by_planned),
+        levels,
+        np.array([_percentile(costs, cost_probabilities, q) for q in levels]),
+        budget,
+        None if budget is None else _above(costs, cost_probabilities, budget),
+        precision,
+        standard_error,
+        n,
+    )

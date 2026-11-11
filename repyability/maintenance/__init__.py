@@ -175,3 +175,4 @@ from repyability.maintenance._visits import (  # noqa: E402
     layered_cost_rate,
     optimal_layered_visits,
 )
+from repyability.maintenance._window_cost import CostDistribution  # noqa: E402

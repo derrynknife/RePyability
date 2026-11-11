@@ -92,6 +92,8 @@
 
 ::: repyability.RenewalForecast
 
+::: repyability.CostDistribution
+
 ::: repyability.LayeredVisits
 
 ::: repyability.RatioChoice

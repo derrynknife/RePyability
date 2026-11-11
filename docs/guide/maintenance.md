@@ -443,6 +443,56 @@ plan = seal.renewal_forecast(944.0, 500.0, resets=False, age=340.0)
 round(plan.expected_cost, 2), plan.worth_it       # -> (407.06, False)
 ```
 
+**A window's cost and its spread.** A budget starts from the part as it
+is and should carry a range, not one figure. `cost_distribution` gives,
+over a window from the part's state, the chance of every number of
+failures and planned replacements, and so of every cost: the mean, the
+standard deviation, percentiles (10th, 50th and 90th by default) and the
+chance of exceeding a budget. The policy is run to failure (no `every`),
+age replacement (`resets=True`) or block replacement (`resets=False`), as
+for `renewal_forecast`; replacements take no time, and an event at the
+window's very end falls in the next one.
+
+```python
+bearing = NonRepairable(
+    surv.Weibull.from_params([365.0, 2.0]), planned_cost=100.0, unplanned_cost=400.0
+)
+shuts = bearing.cost_distribution(
+    1086.0, 180.0, resets=False, age=224.0, since_renewal=159.0, budget=1500.0
+)
+round(shuts.mean, 1)                          # -> 1155.0
+[float(c) for c in shuts.percentiles]         # -> [600.0, 1000.0, 1800.0]
+round(shuts.probability_above_budget, 3)      # -> 0.151
+[round(p, 3) for p in shuts.failure_probabilities[:4]]   # -> [0.224, 0.362, 0.262, 0.112]
+run = bearing.cost_distribution(1086.0, age=224.0)
+round(run.mean, 1), round(run.probability_above(1500.0), 3)   # -> (1372.9, 0.442)
+```
+
+Costs come in steps (here $100 a shut, $400 a failure), so a percentile
+jumps from one outcome to the next: read the outcomes too
+(`shuts.outcomes()`, each count of failures and planned replacements with
+its cost and chance, most likely first). How it is worked out:
+
+- **The counts decide the cost**, `unplanned × failures + planned ×
+  planned replacements`, so everything follows from their joint
+  distribution, `probabilities[i, j]`.
+- **Age replacement and run to failure:** the history is a run of
+  cycles, each ending in a failure before age `T` or a planned
+  replacement at exactly `T` (the part in now's first cycle from its age).
+  Planned cycles all last `T`, so `i` failures and `j` planned
+  replacements take the failure cycles' total plus `j T` in any order; the
+  totals' distributions are convolutions of the failure cycle's, on a grid
+  sized from the life's spread.
+- **Block replacement:** the planned replacements are at fixed times, so
+  their number is known, and the failures are a sum of independent counts,
+  one per stretch between them.
+- **Precision:** the grid's error falls as its step squared. The answer is
+  worked out again on a grid twice as coarse, and `precision` is the
+  largest change of any probability (about three times the error), plus
+  any mass left out; typically 1e-9 to 1e-6.
+- **`method="simulate"`** (with `mc_samples` and `seed`) draws the part's
+  cycles instead, as a check; it reports `standard_error` for the mean.
+
 **A layered package of visits.** A cheap task at every visit and a deeper
 one at every `k`-th: `optimal_layered_visits(light, deep, visit_cost=...)`
 finds the visit interval and the ratio `k` that cost least in the long run.
