@@ -174,6 +174,15 @@ other release, fixes included, the minor.
   `expected_npv` with limited repair crews against the Markov chain built
   by hand (story MX-13).
 
+### Fixed
+
+- Age replacement of a component whose life is a fitted degradation
+  process (a `"preventive": {"policy": "age", ...}` in a `RepairableRBD`,
+  and `NonRepairable.avg_replacement_time`, `find_optimal_replacement` and
+  `optimal_replacement_policy`) raised an `AttributeError`: its survival was
+  taken for a non-parametric estimate's. It is a smooth curve, and is now
+  integrated and searched as a distribution's is.
+
 ## [0.16] - 2026-10-31
 
 surpyval 0.26. RePyability is tested against surpyval 0.26 and needs it:
