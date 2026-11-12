@@ -27,6 +27,8 @@ between preventive and corrective maintenance:
 | `cost` | Charged at each preventive replacement: a number or a distribution (under `"calendar"`, none: the calendar's price is charged). |
 | `restoration` | The task restores the unit only partly: Kijima's model and restoration factor `q` (see [below](#planned-maintenance-that-restores-partly)). Left out, each task renews the unit. |
 | `replace_every`, `replacement_cost` | With a `restoration`: every `N`-th task replaces the unit as new instead, at this cost (by default the task's `cost`). |
+| `shutdown` | The task is done at every shut of the diagram's shutdown of this name, whose calendar and duration it takes (no `interval` or `duration`; see [Shutdowns](#shutdowns)). |
+| `older_than` | With a `shutdown`: replaced at a shut only if its age then is at least this. |
 
 A replacement renews the unit, so the failure it was heading for never
 happens. A failure due at the same time as a replacement comes first.
@@ -983,3 +985,119 @@ of plans that cost the same the most available is chosen. The
 `offset_shares` searched are shares of the interval; the result's
 `offsets` are the times of the first tests, as `with_intervals(offsets=)`
 takes them, and a plan has them whether they were searched or not.
+
+## Shutdowns
+
+A plant often does its maintenance in shutdowns: the line stops for a
+few days every year, every block gets its work then, and some parts are
+changed only if they have run long enough. Give the diagram its
+`shutdowns`, each with a name, and say on each block what is done at
+which shut.
+
+**What a shut does.** It starts every `period` from its `offset` (or at
+given `times`) and lasts `duration`. While it lasts, the blocks in its
+`scope` are off line, a planned outage, whatever their own states; with
+no scope, the whole system is down. Its `cost` is charged at each start,
+and its downtime is the system's, priced by `downtime_cost_rate` as lost
+production.
+
+**What is done in it.** A block whose `"preventive"` names the shut
+(`{"shutdown": "line"}`) is renewed at every shut; with `"older_than"`,
+only if its age then is at least that; with `"policy": "condition"` and a
+`"threshold"`, if it is more likely than that to fail before the next
+shut; with a `"restoration"`, restored partly. An `"inspection"` naming
+the shut tests a block with hidden failures at every shut. The work
+takes the shut's time, and a block worked on must be in its scope. A
+block down when a shut starts (in a repair) is not worked on in it: its
+repair carries on.
+
+**Idle blocks.** A block in scope that is not worked on keeps ageing by
+default (`idle_ageing=True`): it is off line because the plant is, and
+can fail (the repair is then charged as usual). With
+`idle_ageing=False` it stands still: its own clock stops for the shut
+and carries on from where it was.
+
+| Key | Meaning |
+|---|---|
+| `period`, `offset` | Every `period`, the first at `offset` (0, the default, puts the first at `period`). |
+| `times` | Or the shuts' start times, increasing (simulated). |
+| `duration` | How long each shut lasts (0 for one that takes no time); shorter than the period or the gaps. |
+| `scope` | The nodes it holds off line (None, the default: the whole system). |
+| `cost` | Charged at each shut. |
+| `idle_ageing` | True (the default): idle blocks keep ageing; False: they stand still. |
+
+A line of a pump, a motor and a bearing in series, shut 72 h a year at
+10,000 a shut and 500 an hour of lost production; each block has its PM
+at the shut, and the bearing is changed only once older than 18 months:
+
+```python
+def shut_line(months, older_than=13140.0):
+    W, E = surv.Weibull.from_params, surv.Exponential.from_params
+    lives = {"pump": W([30000.0, 2.0]), "motor": W([60000.0, 1.5]),
+             "bearing": W([20000.0, 3.0])}
+    pm = {"pump": 3000.0, "motor": 2000.0, "bearing": 1500.0}
+    blocks = {}
+    for name, life in lives.items():
+        preventive = {"shutdown": "line", "cost": pm[name]}
+        if name == "bearing":
+            preventive["older_than"] = older_than
+        blocks[name] = {
+            "reliability": life,
+            "repairability": E([1 / 24.0]),
+            "repair_cost": 20000.0,
+            "preventive": preventive,
+        }
+    return RepairableRBD(
+        [("s", "pump"), ("pump", "motor"), ("motor", "bearing"),
+         ("bearing", "t")],
+        blocks,
+        shutdowns={"line": {"period": months * 730.0, "duration": 72.0,
+                            "cost": 10000.0}},
+        downtime_cost_rate=500.0,
+    )
+
+annual = shut_line(12)
+annual.mean_availability()                        # -> 0.99042
+annual.mean_unavailability()                      # -> 0.009580   72 h a year is 0.00822 of it
+annual.expected_cost_rate() * 8760                # -> 65899   a year
+annual.system_failure_frequency() * 8760          # -> 0.4237   failures a year, between shuts
+ten = annual.expected_cost(87600.0)
+ten.by_category["shutdown"]                       # -> 90000.0   9 shuts
+annual.expected_events(87600.0).shutdowns         # -> 9.0
+shut_line(18).expected_cost_rate() * 8760         # -> 51866   every 18 months
+```
+
+The shut is 86% of the downtime and, with its lost production, 70% of
+the cost; shutting every 18 months is cheaper (51,866 a year against
+65,899, and 81,448 every 9 months), though the failures between shuts
+rise by a third.
+
+- **Exact or simulated.** Shuts on a period are exact (and numerical
+  where the blocks' own values are): the long run averages over the
+  shuts' period with the blocks in scope held at 0 inside them, the
+  values over time hold their curves at 0 there (a block that stands
+  still is its own curve at its own time), and each start is a planned
+  outage at an exact time. "Older than" is numerical, from shut to shut
+  on a grid of ages. Shuts at given `times`, a restoration at a shut,
+  and anything that ties the blocks together (repair crews, common
+  causes, maintenance groups) are simulated, in Python; numba's loop
+  runs only shuts that take no time and cost nothing (their tasks
+  alone).
+- **The age at a shut.** A block renewed at a shut is `period -
+  duration` old at the next, so "older than 12 months" at 12-month shuts
+  changes it every other shut.
+- **From a state.** The shuts' calendar is from now (its `offset` the
+  time to the next shut), and a block worked on at a shut takes its
+  calendar from it: leave its `since_scheduled` out.
+- **What is counted.** `expected_events`, `expected_events_by_window`
+  and a simulation's result give the number of `shutdowns` started in
+  the window; a shut that takes the system down from up is one of its
+  planned outages. Costs gain the category `"shutdown"`.
+- **Levers.** Each shut's `period`, `offset`, `duration` and `cost`
+  (`shutdown.<name>.period`, ...) and a task's `preventive.older_than`.
+- **Not taken yet** (refused, in plain words): shuts that overlap, a
+  block standing still that has a calendar of its own or is tied to
+  others, a diagram with shutdowns nested in another, and with
+  shutdowns the importance measures, capacities, the first failure,
+  spares, allocations, parameter uncertainty, the interval searches,
+  `plan_vs_actual` and the crews' chain.

@@ -1056,6 +1056,53 @@ def test_the_readme_says_what_is_simulated():
                 ("simulate_timelines", "simulated"),
             )
         ],
+        "Shutdowns: outages that hold the system or some blocks off line "
+        "for a fixed time, the blocks' work done in them": [
+            (repairable[name], analysis, route)
+            for name, analysis, route in (
+                (
+                    "shutdown of the line, tasks at it",
+                    "mean_availability",
+                    "numerical",
+                ),
+                (
+                    "shutdown of the line, tasks at it",
+                    "point_availability",
+                    "numerical",
+                ),
+                (
+                    "shutdown of the line, tasks at it",
+                    "expected_npv",
+                    "numerical",
+                ),
+                (
+                    "shutdown of the line, tasks at it",
+                    "availability",
+                    "simulated",
+                ),
+                (
+                    "shutdown of the line, tasks at it",
+                    "birnbaum_importance",
+                    "refused",
+                ),
+                (
+                    "shutdown of some blocks, idle ones paused",
+                    "expected_cost",
+                    "numerical",
+                ),
+                (
+                    "shutdowns at given times, restoring",
+                    "mean_availability",
+                    "refused",
+                ),
+                (
+                    "shutdowns at given times, restoring",
+                    "expected_cost",
+                    "refused",
+                ),
+                ("shutdowns at given times, restoring", "cost", "simulated"),
+            )
+        ],
         "Replacement on condition by a measured degradation level": [
             (repairable["replaced on condition by level"], name, route)
             for name, route in (

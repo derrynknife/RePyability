@@ -85,11 +85,22 @@ class ConditionCycle(NamedTuple):
 class _Ages:
     """A life on a grid of ages ``0, h, 2h, ...``, extended as needed: its
     survival and CDF, its integrated survival, and whether an inspection
-    replaces a unit of each age."""
+    replaces a unit of each age: one more likely than ``threshold`` to
+    fail before the next, or, given ``older_than`` (at a shutdown, see
+    ``_shutdowns``), one at least that old. Either rule replaces every
+    unit older than the youngest it replaces."""
 
-    def __init__(self, life, h: float, interval: float, threshold: float):
+    def __init__(
+        self,
+        life,
+        h: float,
+        interval: float,
+        threshold: float,
+        older_than: Optional[float] = None,
+    ):
         self.life, self.h = life, h
         self.interval, self.threshold = interval, threshold
+        self.older_than = older_than
         self.size = 0
         self.R = self.F = self.up = np.empty(0)
         self.replace = np.empty(0, dtype=bool)
@@ -124,8 +135,15 @@ class _Ages:
         self.up = _cumulative(
             lambda v: np.clip(_values(self.life.sf, v), 0.0, 1.0), x
         )
-        self.replace = self.likely(x) > self.threshold
+        self.replace = self.replaces(x)
         self.size = size
+
+    def replaces(self, ages: np.ndarray) -> np.ndarray:
+        """Whether an inspection replaces a unit of each of ``ages``."""
+        if self.older_than is not None:
+            # A grid age within rounding of the rule's is at it.
+            return ages >= self.older_than * (1.0 - 1e-12)
+        return self.likely(ages) > self.threshold
 
 
 def _never_replaced(ages: _Ages, steps: int) -> bool:
@@ -160,7 +178,13 @@ def _merge(lo_a: int, a: np.ndarray, lo_b: int, b: np.ndarray):
 
 
 def condition_cycle(
-    life, repair, duration, interval: float, threshold: float, node=None
+    life,
+    repair,
+    duration,
+    interval: float,
+    threshold: float,
+    node=None,
+    older_than: Optional[float] = None,
 ) -> ConditionCycle:
     """The regeneration cycle of a component replaced on condition.
 
@@ -172,6 +196,9 @@ def condition_cycle(
     threshold : float
         The chance of failing before the next inspection above which an
         inspection replaces the unit.
+    older_than : float, optional
+        In place of the threshold, the age at or past which an inspection
+        replaces the unit (at a shutdown).
 
     Returns
     -------
@@ -189,7 +216,7 @@ def condition_cycle(
     g = _grid(life, repair, duration, interval, node, starts=True)
     assert g.renewals is not None and g.done is not None  # starts=True
     steps, h, T = g.steps, g.h, g.interval
-    ages = _Ages(life, h, T, threshold)
+    ages = _Ages(life, h, T, threshold, older_than)
     if _never_replaced(ages, steps):
         # Then a plain alternating renewal process of lives and repairs.
         mttf = float(model_mean(life))
@@ -433,6 +460,7 @@ def condition_availability(
     horizon: float,
     node=None,
     head: Optional[ConditionHead] = None,
+    older_than: Optional[float] = None,
 ) -> BlockAvailability:
     """The point availability of a component replaced on condition, new at
     0 (or after ``head``), over ``[0, horizon]`` or until it repeats from
@@ -449,6 +477,8 @@ def condition_availability(
     head : ConditionHead, optional
         How the unit reaches its first inspection, started from a state;
         by default None: new at 0.
+    older_than : float, optional
+        As for ``condition_cycle``.
 
     Returns
     -------
@@ -468,7 +498,7 @@ def condition_availability(
     g = _grid(life, repair, duration, interval, node, starts=True)
     assert g.renewals is not None and g.done is not None  # starts=True
     steps, h, T = g.steps, g.h, g.interval
-    ages = _Ages(life, h, T, threshold)
+    ages = _Ages(life, h, T, threshold, older_than)
     ages.cover(steps)
     most = max(3, _MAX_VALUES // (steps + 1))
     count = (
@@ -503,7 +533,7 @@ def condition_availability(
         if first is not None:
             chance, age = first
             inspected += chance
-            if ages.likely(np.array([age]))[0] > threshold:
+            if ages.replaces(np.array([age]))[0]:
                 replaced += chance
                 first = None
         return replaced, inspected, lo, aged, first

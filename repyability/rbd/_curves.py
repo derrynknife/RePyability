@@ -30,6 +30,7 @@ from repyability.rbd import (
     _overrides,
     _repairable_capacity,
     _requirements,
+    _shutdowns,
     _standby_chain,
     _windows,
 )
@@ -281,6 +282,13 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
             "replacement on condition by level: followed from one "
             "inspection to the next on a grid, the units kept by level",
         )
+    if calendar and schedule.older_than is not None:  # type: ignore
+        return (
+            r.NUMERICAL,
+            "replacement at a shutdown once older than older_than: "
+            "followed from one shut to the next on a grid, the units kept "
+            "by age",
+        )
     if calendar and schedule.policy == "condition":  # type: ignore
         return (
             r.NUMERICAL,
@@ -312,6 +320,9 @@ def _over_time(
     ``_crew_over_time``)."""
     from repyability.rbd import routes as r
 
+    refusal = r.refusal(partial(_shutdowns.require_exact, rbd))
+    if refusal:
+        return r.refused(refusal)
     if rbd._crews_couple():
         return _crew_over_time(rbd, kind)
     if rbd.ccf_groups:
@@ -331,6 +342,8 @@ def _over_time(
     }
     if refusals:
         return r.refused(next(iter(refusals.values())), tuple(refusals))
+    if _shutdowns.timed(rbd):
+        reason = reason + _shutdowns.HELD
     return r.with_nodes(r.NUMERICAL, reason, nodes, "availabilities")
 
 
@@ -493,7 +506,9 @@ def _availability_curves(
                 plain.append((node, start, node in degrading))
         if memo is not None and key is not None:
             memo[(key, counts)] = curves[node]
-    return curves
+    # The nodes a shutdown holds off line, held down inside its windows
+    # (see _shutdowns.MaskedCurve).
+    return _shutdowns.masked_curves(rbd, curves)
 
 
 def _plain_unit(rbd, node) -> bool:
@@ -734,6 +749,7 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
     imperfectly repaired one's, outside a simulation)."""
     schedule = rbd._preventive.get(node)
     inspection = rbd._inspection.get(node)
+    _shutdowns.check_state(rbd, node, state)
     if state.virtual_age is not None and not _keeps_virtual_age(rbd, node):
         raise ValueError(
             f"Component {node!r} is not repaired imperfectly (it has no "
@@ -1037,6 +1053,12 @@ def _curves_down_at(
     ``_closed_form_down``)."""
     failures = {}
     for node, curve in curves.items():
+        if isinstance(curve, _shutdowns.MaskedCurve):
+            # Held down inside a shut's windows; its own otherwise.
+            failures[node] = curve.down_at(
+                x, partial(_closed_form_at, rbd, node, states)
+            )
+            continue
         down = _closed_form_down(rbd, node, x, states)
         failures[node] = 1.0 - curve.at(x) if down is None else down
     probabilities = {node: 1.0 - q for node, q in failures.items()}
@@ -1073,6 +1095,11 @@ def _closed_form_down(rbd, node, x, states) -> Optional[np.ndarray]:
     if math.isinf(total):
         return np.zeros(len(x))
     return -(life / total) * np.expm1(-total * np.asarray(x, float))
+
+
+def _closed_form_at(rbd, node, states, x) -> Optional[np.ndarray]:
+    """``_closed_form_down`` with the times last."""
+    return _closed_form_down(rbd, node, x, states)
 
 
 def _closed_form_pair(rbd, node) -> Tuple[float, float]:
@@ -1829,14 +1856,36 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
             return level_model(rbd, node).availability(horizon)
         if schedule.policy == "condition":
             return condition_availability(
-                *models, float(schedule.threshold), horizon, node, head
+                *models,
+                float(schedule.threshold),
+                horizon,
+                node,
+                head,
+                older_than=schedule.older_than,
             )
         return block_availability(*models, horizon, node, head)
 
-    if start is not None and not start.new and not stationary:
-        length = schedule.interval - (start.since_scheduled or 0.0)
+    if schedule.offset and start is None:
+        # New at 0 on a shutdown's calendar: its own curve until the
+        # shut's first time (see StartedBlockCurve).
+        start = NodeState()
+    if (
+        start is not None
+        and (not start.new or schedule.offset)
+        and not stationary
+    ):
+        if schedule.shutdown is not None:
+            # The shut's calendar places it (since_scheduled is refused).
+            length = schedule.offset or schedule.interval
+        else:
+            length = schedule.interval - (start.since_scheduled or 0.0)
         head = _unit_curve(
-            rbd, node, length, counts=True, start=start, unscheduled=True
+            rbd,
+            node,
+            length,
+            counts=True,
+            start=None if start.new else start,
+            unscheduled=True,
         )
         down_sf = None
         first = None
@@ -1867,7 +1916,12 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     if not stationary:
         return curve
     assert start is not None
-    return ShiftedCurve(curve, curve.settle + (start.since_scheduled or 0.0))
+    since = start.since_scheduled or 0.0
+    if schedule.shutdown is not None and schedule.offset:
+        # Its last replacement on the shut's calendar was period - offset
+        # before 0.
+        since = schedule.interval - schedule.offset
+    return ShiftedCurve(curve, curve.settle + since)
 
 
 def _first_unit(

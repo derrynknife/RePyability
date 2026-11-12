@@ -38,6 +38,8 @@ use cases, under the same numbers.
 | UC-20 | One unit run on an operating schedule (covariates and value by stretch, in model time): the value earned, the failures' cost and the NPV, and the best time to switch from one way of running to another | **Built** (one unit): `operating_schedule_value`, `best_switch_time` |
 | UC-21 | A plan against its outage log: expected and actual cash flows so far, the variance, and the plan re-valued from the states now | **Built**: `RepairableRBD.plan_vs_actual` |
 | UC-22 | Overhauls that restore a unit only partly (a Kijima restoration factor), every Nth replacing it: availability, failures and cost per year against overhauls that renew it, and the cheapest interval | **Built**: a `"preventive"` spec's `"restoration"`, `"replace_every"` and `"replacement_cost"`, simulated (#398) |
+| UC-23 | The line is shut 3 days every 12 months, every block gets its PM then and the bearing is replaced if older than X: availability, the shut's share of the downtime and cost, failures between shuts, and whether a 9- or 18-month shut is cheaper | **Built**: `RepairableRBD(shutdowns=...)`, tasks bound with `"shutdown"` and `"older_than"`; exact and numerical |
+| UC-24 | Outages on a timeline: shuts at given times with a duration and a scope (renew some blocks, restore others), the plan's cost by window and its NPV | **Built in part**: the same `shutdowns` at `"times"`, simulated (`availability`, `cost`); the exact cost by window and NPV take shuts on a period only |
 
 ## How a use case is added
 
@@ -1596,3 +1598,192 @@ answers back into dates is Reliafy's too.)
   - Exact routes for a restoration that is clearly a renewal or clearly
     nothing are open: `q = 1` with instant tasks is no task at all (the
     unit's own renewal process), which the exact methods could take.
+
+### UC-23: "The line is shut 3 days every 12 months (in hours); every block gets its PM then, and the bearing is replaced if it is older than 18 months. What availability, how much of the downtime and cost is the shut's, how many failures between shuts, and is a 9- or 18-month shut cheaper?"
+
+- **Status:** built: `RepairableRBD(..., shutdowns={"line": {"period",
+  "offset", "duration", "scope", "cost", "idle_ageing"}})`, and the work
+  given on each block (`"preventive": {"shutdown": "line"}`, with
+  `"older_than"`; `"inspection": {"shutdown": "line"}`). Exact and
+  numerical by default, simulated on request.
+- **Who asks, and why:** a maintenance planner whose line stops for an
+  annual shutdown: every block's PM is done in it, the bearing is changed
+  only if it has run long enough, and the shutdown itself costs (crews,
+  scaffolding) and loses production. They want to know what the shut
+  costs against what it buys, and whether to shut more or less often.
+- **What they know:** three blocks in series: a pump (Weibull 30,000 h,
+  shape 2), a motor (Weibull 60,000 h, shape 1.5) and a bearing (Weibull
+  20,000 h, shape 3), each repaired in about 24 h (exponential) at 20,000
+  a failure; PM at the shut 3,000, 2,000 and 1,500; the shut every 8,760 h
+  for 72 h, 10,000 each; lost production 500 an hour; the bearing
+  replaced at a shut once older than 13,140 h (18 months). Model time
+  only: hours from new, no dates.
+- **What they want back:** the long-run availability and cost a year;
+  how much of the downtime and of the cost is the shut's; the failures a
+  year (between shuts); the same at 9- and 18-month shuts; and over 10
+  years the cost by category, with the shut's own.
+- **How it is solved:** a task bound to a periodic shut *is* today's
+  schedule aligned with it: a block renewed at every shut is block
+  replacement with the shut's period, its offset (the time of the first
+  shut, a new field of `_Preventive`, which numba's loop takes too) and
+  a fixed duration; a test at every shut an inspection likewise (which
+  has its offset already). They are translated so at construction, and
+  every exact method takes them as it is. The shut's windows are a
+  deterministic mask: the blocks in scope held at 0 inside them (the
+  long run's grid and the integrals' pieces get the windows' edges), each
+  start a planned outage at an exact time, and their Birnbaum importance
+  0 while held. "Older than X" is replacement on condition with the
+  decision on the age (`_condition_replacement`'s recursion, the rule
+  generalised; numerical). The simulation has the windows as events of
+  their own, the scope masked from the structure while the blocks' own
+  processes go on (`"idle_ageing"`), or a paused block's pending event
+  shifted by the shut's length.
+- **Today (by hand):** equal block schedules approximate the shut: each
+  block replaced every 8,760 h for 72 h (the bearing every 17,520 h,
+  whatever its age), and the shut's cost added by hand:
+
+  ```python
+  def today(months, bearing_every=2):
+      fixed = surv.ExactEventTime.from_params([72.0])
+      blocks = {}
+      for name, life in LIVES.items():
+          every = bearing_every if name == "bearing" else 1
+          blocks[name] = {
+              "reliability": life,
+              "repairability": E([1 / 24.0]),
+              "repair_cost": 20000.0,
+              "preventive": {
+                  "interval": every * months * YEAR / 12, "policy": "block",
+                  "duration": fixed, "cost": PM[name],
+              },
+          }
+      return RepairableRBD(EDGES, blocks, downtime_cost_rate=500.0)
+
+  rbd = today(12)
+  rbd.mean_availability()                                  # 0.99053
+  rbd.expected_cost_rate() * YEAR + 10000                  # 64,991 a year
+  rbd.system_failure_frequency() * YEAR                    # 0.3869
+  ```
+
+  | Shut every | 9 months | 12 months | 18 months |
+  |---|---|---|---|
+  | Availability | 0.98826 | 0.99053 | 0.99292 |
+  | Cost a year (shut's cost by hand) | 77,893 | 64,991 | 52,235 |
+  | Failures a year | 0.2726 | 0.3869 | 0.5344 |
+
+  Its shortcomings: the bearing is replaced every second block time
+  whatever its age (one renewed by a repair a week before is changed
+  anyway), so "older than X" cannot be said; the shut's cost is outside
+  the model, and its downtime is the blocks' own (a block in scope with
+  no PM of its own is not held down, and its failures in the shut count
+  against the system); the shut's share of the downtime cannot be read
+  off; shuts at given times cannot be said at all.
+- **Built:**
+
+  ```python
+  def line(months, older_than=1.5 * YEAR):
+      blocks = {}
+      for name, life in LIVES.items():
+          preventive = {"shutdown": "line", "cost": PM[name]}
+          if name == "bearing":
+              preventive["older_than"] = older_than
+          blocks[name] = {"reliability": life, "repairability": E([1 / 24.0]),
+                          "repair_cost": 20000.0, "preventive": preventive}
+      return RepairableRBD(
+          EDGES, blocks,
+          shutdowns={"line": {"period": months * YEAR / 12, "duration": 72.0,
+                              "cost": 10000.0}},
+          downtime_cost_rate=500.0,
+      )
+  ```
+
+  | Shut every | 9 months | 12 months | 18 months |
+  |---|---|---|---|
+  | Availability | 0.98791 | 0.99042 | 0.99301 |
+  | Cost a year | 81,448 | 65,899 | **51,866** |
+  | Failures a year (between shuts) | 0.4004 | 0.4237 | 0.5464 |
+
+  At 12 months the unavailability is 0.00958, of which the shut's 72 h a
+  year (0.00822) is 86%; of 65,899 a year, the shut's own cost and its
+  lost production (10,000 + 36,000) are 70%. Over 10 years from new
+  (`expected_cost(87600)`): 594,092, of which repairs 82,334, PM 48,672,
+  lost production 373,086 and the shuts 90,000; 9 shuts, 8.98 planned
+  outages, 4.10 failures. Simulated (2,000 runs, seed 1): 592,899 ±
+  1,331, availability 0.991480 against the exact 0.991482, 4.04 failures
+  and 8.99 planned outages. The 18-month shut is the cheapest: the
+  shuts' downtime and cost fall faster than the failures between them
+  rise.
+- **Checks:** `test_shutdowns.py`: closed forms for one exponential
+  block shut every period (long-run availability `(1 - D/P) mu/(lam +
+  mu)`, the point availability in and out of a shut, the planned outages
+  `sum A(s-)`, the failures, the costs and the NPV's discounting); a
+  block renewed at a shut in no time against block replacement from the
+  matching state, and a test at a shut against an inspection with its
+  offset; a block renewed at each shut (instant repair) against
+  `lam (1 - D/P)`; a paused block against its own curve shifted by the
+  shuts' time; "older than" between renewing at every shut and never;
+  the simulation against all of these, and the catalogue's diagrams
+  exact against simulated (`test_catalogue.py`); both engines to the last
+  bit on tasks at a shut in no time (`test_simulation_engines.py`);
+  units (`test_units.py`); saving; the refusals.
+- **Learned / open questions:**
+  - A block's age at a shut is its age since it was put in service: one
+    renewed at the last shut is `period - duration` old at the next, so
+    "older than 12 months" at 12-month shuts replaces it every *other*
+    shut.
+  - In this example the 18-month shut is cheapest, though the failures
+    between shuts rise by a third; the "today" approximation agreed on
+    the ranking but not the failures (it changes the bearing on a fixed
+    count of shuts, whatever its age).
+  - Not built: the masked windows in numba's loop (it runs shuts in no
+    time that cost nothing, which are their tasks alone); shuts of
+    different calendars that overlap; standing still a block with a
+    calendar of its own, inspected and kept at a shut, nested, in a
+    standby or common-cause group, a maintenance group or behind limited
+    repair crews (refused); importance measures, capacities, the first
+    failure, spares, allocations, parameter uncertainty, the interval
+    searches, `plan_vs_actual` and the crews' chain with shutdowns
+    (refused, in plain words); adding the shut's period to
+    `optimal_replacement_intervals`.
+
+### UC-24: "Our outages are planned at given times, each with a duration and a scope: some blocks are renewed in them, others restored. What does the plan cost by window, and what is it worth?"
+
+- **Status:** built in part: the same `shutdowns`, at `"times"` with a
+  `"scope"`, and the work on each block (`"preventive": {"shutdown":
+  ..., "restoration": ...}`), simulated by `availability` and `cost`.
+  `expected_npv`, `expected_cost` and `cost_by_window` (whose mean is
+  exact) take shuts on a period only, and refuse given times, as does a
+  restoration (UC-22) anywhere.
+- **Who asks, and why:** a planner laying out the next four years of
+  outages, irregularly spaced, who wants the plan's cash flows.
+- **What they know:** the line of UC-23; outages at 3,000, 12,000 and
+  26,000 h, 72 h each, holding the pump and motor off line, 10,000 each;
+  the pump renewed in each, the motor restored (Kijima I, `q = 0.5`).
+- **What they want back:** the cost in each year, and its present value.
+- **How it is solved:** simulated: the windows at their times, the tasks
+  bound to them at those times (`_Preventive.due` and `_Inspection.due`
+  read the times).
+- **Today (by hand, and as built):** the cost to each year's end by
+  `cost(..., seed=1)`, differenced (2,000 runs each):
+
+  ```python
+  ends = YEAR * np.arange(1, 5)
+  runs = np.vstack([rbd.cost(float(t), mc_samples=2000, seed=1).samples
+                    for t in ends])
+  np.diff(runs, axis=0, prepend=0.0).mean(axis=1)
+  # [56,733, 68,541, 78,070, 21,466]  (± 317, 489, 577, 525)
+  ```
+
+  Discounted at 8% a year at each year's middle, about 195,400. The
+  shutdowns' own cost is 10,000 at each of the three, and each run's
+  `shutdowns` is 3.
+- **Checks:** `test_shutdowns.py` (shuts at given times simulated, their
+  count and cost, the exact methods' refusal).
+- **Learned / open questions:**
+  - The exact cost by window and NPV of shuts at given times need the
+    over-time machinery to take windows at given times (a curve's
+    settling, the integrals' pieces): the mask works on any windows, but
+    the long run and the curves' periods assume a period. Small to add
+    where nothing settles before the last shut; not done here.
+  - `cost_by_window` and `expected_npv` could take the simulated mean
+    where the exact one refuses, as `cost_by_window` does for its spread.

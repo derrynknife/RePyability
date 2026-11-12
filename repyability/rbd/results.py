@@ -253,6 +253,9 @@ class EventsByWindow(_ResultMapping):
         Each component's expected tests in each window.
     node_downtime : dict
         Each component's expected down time in each window.
+    shutdowns : numpy.ndarray
+        The shuts of the diagram's ``shutdowns`` that start in each
+        window (planned, so exact counts; zeros without shutdowns).
 
     Examples
     --------
@@ -288,6 +291,7 @@ class EventsByWindow(_ResultMapping):
     node_preventive: Dict[Hashable, np.ndarray]
     node_inspections: Dict[Hashable, np.ndarray]
     node_downtime: Dict[Hashable, np.ndarray]
+    shutdowns: Any = None
 
 
 @dataclass
@@ -1592,7 +1596,13 @@ class ExpectedEvents(_ResultMapping):
     node_inspections : dict
         Each component's expected number of tests (of hidden failures).
     node_downtime : dict
-        Each component's expected time down in the window.
+        Each component's expected time down in the window (with a
+        shutdown, the time it holds the component off line included).
+    shutdowns : float or numpy.ndarray
+        The number of shuts of the diagram's ``shutdowns`` that start in
+        the window (0 without shutdowns). A shut is down time of the
+        system (``system_downtime``) and, where it takes the system down
+        from up, one of its planned outages.
 
     Examples
     --------
@@ -1627,6 +1637,7 @@ class ExpectedEvents(_ResultMapping):
     node_preventive: Dict[Hashable, Any]
     node_inspections: Dict[Hashable, Any]
     node_downtime: Dict[Hashable, Any]
+    shutdowns: Any = 0.0
 
 
 @dataclass
@@ -2676,6 +2687,11 @@ class AvailabilityResult(_ResultMapping):
         counts (floats), the curve (on a grid, its chance of being up at
         each time) and the cost's ``samples``; ``criticalities`` is then
         None. None otherwise.
+    shutdowns : int
+        The number of shuts of the diagram's ``shutdowns`` that start in
+        the window, the same in every simulation (they are planned); 0
+        without shutdowns. A shut that takes the system down from up is
+        one of its ``system_planned_outages``.
 
     Examples
     --------
@@ -2731,6 +2747,7 @@ class AvailabilityResult(_ResultMapping):
     control_variate: Optional[ControlVariate] = None
     conditional: Optional[ConditionalRun] = None
     delivered_control: Optional[ControlVariate] = None
+    shutdowns: int = 0
 
     @property
     def mean_capacity(self) -> Optional[float]:

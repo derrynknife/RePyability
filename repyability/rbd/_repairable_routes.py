@@ -27,6 +27,7 @@ from repyability.rbd import (
     _repairable_uncertainty,
     _requirements,
     _runs,
+    _shutdowns,
     _spares,
     _timeline_runs,
 )
@@ -832,4 +833,16 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             else r.refused(_UNSTREAMED)
         )
     )
+    if rbd._shutdowns:
+        # What does not take shutdowns in yet refuses them.
+        for name in _shutdowns.NOT_TAKEN:
+            out[name] = r.refused(
+                r.refusal(partial(_shutdowns.refuse, rbd, name)) or ""
+            )
+        stepping = r.refusal(
+            partial(_shutdowns.require_none, rbd, _shutdowns.STEPPING)
+        )
+        give(
+            ("initialize_event_queue", "next_event"), r.refused(stepping or "")
+        )
     return r.AnalysisRoutes(sorted(out.items()))

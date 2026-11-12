@@ -139,6 +139,17 @@ def _unsupported_level(
         return "standby groups"
     if rbd._maintenance:
         return "maintenance groups"
+    if rbd._shutdowns and (
+        not numba
+        or any(
+            shut.duration > 0.0 or shut.cost or not shut.periodic
+            for shut in rbd._shutdowns.values()
+        )
+    ):
+        # numba's own loop runs the tasks bound to shuts on a period that
+        # take no time and cost nothing (block replacement and tests with
+        # the shut's offset), which are those shuts entirely.
+        return "shutdowns"
     if rbd._imperfect:
         return "imperfect repair"
     if rbd._restoring:
@@ -503,6 +514,10 @@ class _System:
         #: ``unsupported``).
         policy = np.zeros(n_all, np.int8)
         interval = np.zeros(n_all)
+        # The time of a block's first replacement on a shutdown's calendar
+        # (then every interval: see _Preventive.due), -1 for one on the
+        # multiples of its interval.
+        phase = np.full(n_all, -1.0)
         duration = np.full(n_all, -1, np.int64)
         charge = np.full(n_all, -2, np.int64)
         amount = np.zeros(n_all)
@@ -512,6 +527,8 @@ class _System:
                 continue
             policy[c] = 1 if schedule.policy == "age" else 2
             interval[c] = float(schedule.interval)
+            if schedule.shutdown is not None or schedule.offset:
+                phase[c] = float(schedule.offset)
             if schedule.duration is not None:
                 duration[c] = stream((path, _streams.DURATION))
             charge[c], amount[c] = charge_of(c, "preventive_cost")
@@ -601,6 +618,7 @@ class _System:
             level_start,
             level_stop,
             level_order,
+            phase,
         )
         initial_up = rbd.is_system_working(
             {node: bool(start[c]) for c, node in enumerate(nodes)}, method

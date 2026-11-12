@@ -59,12 +59,13 @@ from ._model_utils import CovariateSpec, lever_spec
 QUANTITIES = ("availability", "cost_rate")
 #: The maintenance options a lever moves, by spec key; those that move a
 #: curve's breaks are differenced on the system over a window.
-_PREVENTIVE = ("interval", "threshold", "opportunity")
+_PREVENTIVE = ("interval", "threshold", "opportunity", "older_than")
 _INSPECTION = ("interval", "coverage", "offset")
 _MOVES_BREAKS = {
     "preventive.interval",
     "preventive.threshold",
     "preventive.opportunity",
+    "preventive.older_than",
     "inspection.interval",
     "inspection.offset",
 }
@@ -164,6 +165,8 @@ def _option_bounds(key: str, option: str, options: dict) -> tuple:
         return (0.0 if math.isnan(floor) else floor, math.inf)
     if option in ("offset", "opportunity"):
         return (0.0, float(options.get("interval", math.inf)))
+    if option == "older_than":
+        return (0.0, math.inf)
     return _UNIT
 
 
@@ -417,6 +420,7 @@ def _levers(rbd) -> List[_Lever]:
                 )
             )
         out += members_own
+    out += _shutdown_levers(args)
     crews = args.get("repair_crews")
     if crews is not None:
 
@@ -536,6 +540,57 @@ def _model_levers_of(
                     build_ccf,
                     None,
                     _UNIT,
+                    float(value),
+                )
+            )
+    return out
+
+
+def _shutdown_levers(args: dict) -> List[_Lever]:
+    """The levers of a diagram's shutdowns (the system's, key None): each
+    one's period, offset, duration and cost, as given, with the ranges
+    the constructor checks (an offset and a duration within the period, a
+    duration within the gaps between given times)."""
+    out: List[_Lever] = []
+    for name, spec in (args.get("shutdowns") or {}).items():
+        period = spec.get("period")
+        times = spec.get("times")
+        gap = math.inf
+        if times is not None:
+            starts = np.atleast_1d(np.asarray(times, dtype=float))
+            if starts.size > 1:
+                gap = float(np.diff(starts).min())
+        bounds = {
+            "period": (
+                max(
+                    float(spec.get("offset", 0.0)),
+                    float(spec.get("duration", 0.0)),
+                ),
+                math.inf,
+            ),
+            "offset": (0.0, math.inf if period is None else float(period)),
+            "duration": (0.0, gap if period is None else float(period)),
+            "cost": (0.0, math.inf),
+        }
+        for option, (low, high) in bounds.items():
+            value = spec.get(option)
+            if not is_number(value):
+                continue
+
+            def build(v, name=name, option=option):
+                changed = dict(args["shutdowns"])
+                changed[name] = {**changed[name], option: v}
+                return {**args, "shutdowns": changed}
+
+            out.append(
+                _Lever(
+                    None,
+                    f"shutdown.{name}.{option}",
+                    float(value),
+                    False,
+                    build,
+                    None,
+                    (low, high),
                     float(value),
                 )
             )

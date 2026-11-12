@@ -89,6 +89,7 @@ from repyability.rbd import (
     _repairable_routes,
     _repairable_uncertainty,
     _runs,
+    _shutdowns,
     _spec,
     _window_report,
     _windows,
@@ -448,6 +449,26 @@ class RepairableRBD(RBD):
         group's chain followed from every member up. The simulations draw
         each cause as a Poisson process, failing the members it names that
         are up; they need exponential lives alone.
+    shutdowns : dict, optional
+        Outages planned on a period or at given times that hold the whole
+        system, or a named set of its nodes, off line for a fixed time
+        (see [Shutdowns](../guide/system-maintenance.md#shutdowns)), by
+        default none: a name and a spec for each, of ``"period"`` and
+        ``"offset"`` (the first shut's start, in ``[0, period)``; 0 puts
+        the first at ``period``) or ``"times"`` (the shuts' starts,
+        increasing), ``"duration"`` (0 or more, shorter than the period or
+        the gaps between the times), ``"scope"`` (a list of the diagram's
+        nodes; None, the default, for the whole system), ``"cost"``
+        (charged at each shut) and ``"idle_ageing"`` (True, the default:
+        a block in scope not worked on keeps ageing; False: it stands
+        still until the shut ends). The work done at a shut is given on
+        the block: ``"preventive": {"shutdown": name}`` renews it at every
+        shut (with ``"older_than"``, only once that old; with ``"policy":
+        "condition"``, on its condition; with a ``"restoration"``,
+        partly), and ``"inspection": {"shutdown": name}`` tests it there;
+        either takes the shut's calendar and duration, and the block must
+        be in its scope. Shuts on a period are exact where the blocks fail
+        independently; the rest is simulated, in Python.
 
 
     Attributes
@@ -496,7 +517,8 @@ class RepairableRBD(RBD):
         policy's ``"opportunity"``, a ``"condition"`` policy's
         ``"level"``, a ``"calendar"`` policy's ``"calendar"``, and a
         task's ``"restoration"``, ``"replace_every"`` and
-        ``"replacement_cost"``.
+        ``"replacement_cost"``, and a task's ``"shutdown"`` and
+        ``"older_than"``.
     GROUP_KEYS : tuple[str, ...]
         The keys of a maintenance group's options: ``"setup_cost"`` and
         ``"system_down"``.
@@ -505,10 +527,15 @@ class RepairableRBD(RBD):
         ``"kijima1"`` and ``"kijima2"``.
     INSPECTION_KEYS : tuple[str, ...]
         The keys of an ``"inspection"`` spec: ``"interval"``, ``"duration"``,
-        ``"cost"``, ``"offset"``, ``"coverage"`` and ``"full_test"``.
+        ``"cost"``, ``"offset"``, ``"coverage"``, ``"full_test"`` and
+        ``"shutdown"``.
     STANDBY_KEYS : tuple[str, ...]
         The keys of a ``"standby"`` spec: ``"units"``, ``"k"``,
         ``"dormancy_factor"`` and ``"switching_probability"``.
+    SHUTDOWN_KEYS : tuple[str, ...]
+        The keys of a shutdown's spec: ``"period"``, ``"offset"``,
+        ``"times"``, ``"duration"``, ``"scope"``, ``"cost"`` and
+        ``"idle_ageing"``.
 
     Raises
     ------
@@ -560,7 +587,16 @@ class RepairableRBD(RBD):
         anything but ``CCFGroup`` instances, a member that is not a
         component (or is a nested RBD or a standby group), a component in
         two groups, or a group of components with different life or
-        repair models.
+        repair models; or if a shutdown's spec has an unknown key, neither
+        or both of a period and times, a duration as long as its period
+        or a gap, an offset outside its period, or a negative cost; two
+        shutdowns overlap; a scope names what is not a component; a
+        task names a shutdown the diagram has not, gives what the shut
+        gives (an interval, a duration, an offset, ...), or is on a block
+        outside its scope; ``"older_than"`` is given without a shutdown,
+        with a condition policy or a restoration; a shut stands still a
+        block it cannot (one with a calendar of its own, nested, or tied
+        to others); or a nested RBD has shutdowns of its own.
     TypeError
         If a component is not a spec dict, a ``NonRepairable`` or a
         ``RepairableRBD`` (a ``Repairable``, which models imperfect repair,
@@ -641,6 +677,7 @@ class RepairableRBD(RBD):
     GROUP_KEYS = _spec.GROUP_KEYS
     INSPECTION_KEYS = _spec.INSPECTION_KEYS
     STANDBY_KEYS = _spec.STANDBY_KEYS
+    SHUTDOWN_KEYS = _shutdowns.SHUTDOWN_KEYS
     _PER_ACTION_COST_KEYS = _spec._PER_ACTION_COST_KEYS
 
     def __init__(
@@ -656,6 +693,7 @@ class RepairableRBD(RBD):
         repair_crews: Optional[int] = None,
         maintenance_groups: Optional[dict[Any, dict]] = None,
         ccf_groups: Optional[Sequence[Any]] = None,
+        shutdowns: Optional[dict[Any, dict]] = None,
     ):
         _check_on_infeasible_rbd(on_infeasible_rbd)
         # Capture the constructor inputs verbatim (before any mutation) so the
@@ -708,7 +746,15 @@ class RepairableRBD(RBD):
                 dict(maintenance_groups) if maintenance_groups else None
             ),
             "ccf_groups": list(ccf_groups) if ccf_groups else None,
+            "shutdowns": (
+                {name: dict(spec) for name, spec in shutdowns.items()}
+                if isinstance(shutdowns, dict) and shutdowns
+                else shutdowns or None
+            ),
         }
+        # Outages planned at given times, holding blocks off line (see
+        # _shutdowns); their scopes are checked once the diagram is built.
+        self._shutdowns = _shutdowns.validate(shutdowns)
         # A component that operates part of the time takes its life on
         # the calendar from here on; the spec as given keeps its life in
         # operating time, for its levers, draws and saving.
@@ -780,7 +826,10 @@ class RepairableRBD(RBD):
                         node_costs[key] = cost
                 if component.get("preventive") is not None:
                     schedule, cost, inspecting = _spec._validate_preventive(
-                        name, component["preventive"], component["reliability"]
+                        name,
+                        component["preventive"],
+                        component["reliability"],
+                        self._shutdowns,
                     )
                     if cost is not None:
                         node_costs["preventive_cost"] = cost
@@ -799,7 +848,7 @@ class RepairableRBD(RBD):
                             "other."
                         )
                     inspection, cost = _spec._validate_inspection(
-                        name, component["inspection"]
+                        name, component["inspection"], self._shutdowns
                     )
                     if cost is not None:
                         node_costs["inspection_cost"] = cost
@@ -927,6 +976,7 @@ class RepairableRBD(RBD):
         self.repairability = copy(repairability)
         self._maintenance = _spec._validate_groups(self, maintenance_groups)
         self.ccf_groups = _spec._validate_ccf_groups(self, ccf_groups)
+        _shutdowns.check(self)
         _spec._warn_nested_costs(components)
 
     #: Whether a diagram this one is nested in has warned that it carries
@@ -1089,7 +1139,8 @@ class RepairableRBD(RBD):
         or inspection ``"cost"`` or ``"replacement_cost"`` (a cost
         distribution always counts), is
         on a ``"calendar"`` policy (charged its calendar's prices), a
-        maintenance group has a set-up cost, or ``downtime_cost_rate`` is
+        maintenance group has a set-up cost, a shutdown has a cost, or
+        ``downtime_cost_rate`` is
         non-zero: whether running the system costs anything. Costs of 0
         price nothing, costs declared inside a nested ``RepairableRBD`` do
         not count (a nested diagram that carries any is warned of when
@@ -1114,6 +1165,9 @@ class RepairableRBD(RBD):
             or any(
                 group.setup_cost
                 for group in getattr(self, "_maintenance", {}).values()
+            )
+            or any(
+                shut.cost for shut in getattr(self, "_shutdowns", {}).values()
             )
         )
 
@@ -1474,6 +1528,7 @@ class RepairableRBD(RBD):
         >>> demand.stock(0.95)
         62
         """
+        _shutdowns.refuse(self, "spares_demand")
         return _spares.spares_demand(
             self,
             horizon=horizon,
@@ -1618,6 +1673,7 @@ class RepairableRBD(RBD):
         >>> round(stock.fill_rate, 4)
         0.9665
         """
+        _shutdowns.refuse(self, "spares_stock")
         return _spares.spares_stock(
             self,
             lead_time=lead_time,
@@ -1823,6 +1879,7 @@ class RepairableRBD(RBD):
         >>> best.units, round(best.total_cost)
         ({'train 1': 2}, 295306)
         """
+        _shutdowns.refuse(self, "allocate_redundancy")
         return _repairable_allocation.allocate_redundancy(
             self,
             horizon=horizon,
@@ -1957,6 +2014,7 @@ class RepairableRBD(RBD):
         >>> round(need.mttf["v"]), round(need.mttr["v"], 2)
         (128, 0.78)
         """
+        _shutdowns.refuse(self, "availability_allocation")
         return _repairable_allocation.availability_allocation(
             self,
             target=target,
@@ -2105,6 +2163,7 @@ class RepairableRBD(RBD):
         >>> {node: round(t, 2) for node, t in repairs.mttr.items()}
         {'p1': 0.74, 'p2': 0.74, 'v': 0.78}
         """
+        _shutdowns.refuse(self, "mttf_mttr_allocation")
         return _repairable_allocation.mttf_mttr_allocation(
             self,
             target=target,
@@ -2286,6 +2345,7 @@ class RepairableRBD(RBD):
         The pump alone in the line is replaced later than those with a
         standby: its replacements stop the plant too.
         """
+        _shutdowns.refuse(self, "optimal_replacement_intervals")
         return _intervals.optimal_replacement_intervals(
             self,
             nodes=nodes,
@@ -2465,6 +2525,7 @@ class RepairableRBD(RBD):
         >>> round(staggered.cost_rate, 4), round(1 - staggered.availability, 7)
         (0.1142, 0.0004925)
         """
+        _shutdowns.refuse(self, "optimal_inspection_intervals")
         return _intervals.optimal_inspection_intervals(
             self,
             nodes=nodes,
@@ -2952,6 +3013,7 @@ class RepairableRBD(RBD):
         >>> round(pair.mean_time_to_first_failure(), 1)
         650.0
         """
+        _shutdowns.refuse(self, "first_failure_sf")
         return _first_failure.first_failure_sf(
             self, x, state, method, t_simulation, mc_samples, seed, engine
         )
@@ -3019,6 +3081,7 @@ class RepairableRBD(RBD):
         --------
         See [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf].
         """
+        _shutdowns.refuse(self, "mean_time_to_first_failure")
         return _first_failure.mean_time_to_first_failure(
             self,
             state,
@@ -4156,6 +4219,7 @@ class RepairableRBD(RBD):
         >>> result.states["p"]
         NodeState(age=1730.0, alive=True)
         """
+        _shutdowns.refuse(self, "plan_vs_actual")
         return _plan_actual.plan_vs_actual(
             self,
             timelines,
@@ -4268,6 +4332,7 @@ class RepairableRBD(RBD):
         >>> round(capacity.mean, 2)  # 150 * 10 / 11
         136.36
         """
+        _shutdowns.refuse(self, "capacity_distribution")
         return _repairable_capacity.capacity_distribution(
             self, working_nodes=working_nodes, broken_nodes=broken_nodes
         )
@@ -4364,6 +4429,7 @@ class RepairableRBD(RBD):
         >>> round(plant.capacity_distribution().meets(100), 4)  # long run
         0.9767
         """
+        _shutdowns.refuse(self, "point_capacity")
         return _repairable_capacity.point_capacity(
             self,
             x=x,
@@ -4447,6 +4513,7 @@ class RepairableRBD(RBD):
         >>> round(plant.capacity_distribution().delivered_fraction(100), 4)
         0.988
         """
+        _shutdowns.refuse(self, "mission_capacity")
         return _repairable_capacity.mission_capacity(
             self,
             t=t,
@@ -4557,6 +4624,7 @@ class RepairableRBD(RBD):
         >>> changes[4]
         (30.0, True)
         """
+        _shutdowns.require_none(self, _shutdowns.STEPPING)
         return _event_loop.next_event(self, method=method, sources=sources)
 
     def availability(
@@ -5543,6 +5611,8 @@ class RepairableRBD(RBD):
         them."""
         from repyability.rbd import routes as r
 
+        # A shut holds the modules and the other nodes off line together.
+        _shutdowns.require_none(self, "a conditional run")
         held = working | broken
         chosen = {
             node
@@ -6078,6 +6148,7 @@ class RepairableRBD(RBD):
         ``: lambda^2 / mu^2`` (each); pump ``a`` is up in the first and
         while ``b`` alone is repaired, ``1.1 / 1.22`` of the time.
         """
+        _shutdowns.refuse(self, "crew_states")
         return _crews.crew_states(self, working_nodes, broken_nodes)
 
     def replacement_cycle(self, node: Hashable) -> ReplacementCycle:
@@ -6603,6 +6674,7 @@ class RepairableRBD(RBD):
         >>> round(rbd.birnbaum_importance(working_nodes=["a"])["b"], 4)
         1.0
         """
+        _shutdowns.refuse(self, "birnbaum_importance")
         return _repairable_importance.birnbaum_importance(
             self,
             working_nodes=working_nodes,
@@ -6694,6 +6766,7 @@ class RepairableRBD(RBD):
         >>> {node: round(p, 4) for node, p in potential.items()}
         {'a': 0.1111, 'b': 0.2778}
         """
+        _shutdowns.refuse(self, "improvement_potential")
         return _repairable_importance.improvement_potential(
             self,
             working_nodes=working_nodes,
@@ -6791,6 +6864,7 @@ class RepairableRBD(RBD):
         >>> {node: round(r, 4) for node, r in raw.items()}
         {'a': 2.25, 'b': 2.25}
         """
+        _shutdowns.refuse(self, "risk_achievement_worth")
         return _repairable_importance.risk_achievement_worth(
             self,
             working_nodes=working_nodes,
@@ -6886,6 +6960,7 @@ class RepairableRBD(RBD):
         >>> {node: round(r, 4) for node, r in rrw.items()}
         {'a': 1.3333, 'b': 2.6667}
         """
+        _shutdowns.refuse(self, "risk_reduction_worth")
         return _repairable_importance.risk_reduction_worth(
             self,
             working_nodes=working_nodes,
@@ -7010,6 +7085,7 @@ class RepairableRBD(RBD):
         >>> {node: round(c, 4) for node, c in criticality.items()}
         {'a': 1.0, 'b': 1.0}
         """
+        _shutdowns.refuse(self, "criticality_importance")
         return _repairable_importance.criticality_importance(
             self,
             working_nodes=working_nodes,
@@ -7132,6 +7208,7 @@ class RepairableRBD(RBD):
         >>> {node: round(v, 4) for node, v in fv.items()}
         {'a': 0.375, 'b': 0.75}
         """
+        _shutdowns.refuse(self, "fussell_vesely")
         return _repairable_importance.fussell_vesely(
             self,
             fv_type=fv_type,
@@ -7519,6 +7596,7 @@ class RepairableRBD(RBD):
         >>> round(lower, 4), round(upper, 4)
         (0.9392, 0.9577)
         """
+        _shutdowns.refuse(self, "mean_availability_uncertainty")
         return _repairable_uncertainty.mean_availability_uncertainty(
             self,
             uncertainty=uncertainty,
@@ -7572,6 +7650,7 @@ class RepairableRBD(RBD):
             As for ``mean_availability_uncertainty`` and
             ``point_availability``.
         """
+        _shutdowns.refuse(self, "point_availability_uncertainty")
         return _repairable_uncertainty.point_availability_uncertainty(
             self,
             x=x,
@@ -7625,6 +7704,7 @@ class RepairableRBD(RBD):
             As for ``mean_availability_uncertainty`` and
             ``mission_availability``.
         """
+        _shutdowns.refuse(self, "mission_availability_uncertainty")
         return _repairable_uncertainty.mission_availability_uncertainty(
             self,
             t=t,
@@ -7671,6 +7751,7 @@ class RepairableRBD(RBD):
             As for ``mean_availability_uncertainty`` and
             ``expected_cost_rate``.
         """
+        _shutdowns.refuse(self, "expected_cost_rate_uncertainty")
         return _repairable_uncertainty.expected_cost_rate_uncertainty(
             self,
             uncertainty=uncertainty,
@@ -7794,6 +7875,7 @@ class RepairableRBD(RBD):
         >>> {n: round(s, 2) for n, s in parts.first_order.items()}
         {'pump': 0.74, 'valve': 0.26}
         """
+        _shutdowns.refuse(self, "uncertainty_importance")
         return _repairable_uncertainty.uncertainty_importance(
             self,
             x=x,
@@ -7944,6 +8026,7 @@ class RepairableRBD(RBD):
         >>> round(shares["b"], 4)
         0.7143
         """
+        _shutdowns.refuse(self, "differential_importance")
         return _repairable_importance.differential_importance(
             self,
             working_nodes=working_nodes,
@@ -8079,6 +8162,7 @@ class RepairableRBD(RBD):
         >>> rate.node_rate["p1"].round(5).tolist()
         [-3e-05, -0.00156]
         """
+        _shutdowns.refuse(self, "availability_rate")
         return _repairable_importance.availability_rate(
             self,
             x=x,
@@ -8174,6 +8258,7 @@ class RepairableRBD(RBD):
         >>> {node: round(share, 4) for node, share in shares.items()}
         {'a': 0.2857, 'b': 0.7143}
         """
+        _shutdowns.refuse(self, "barlow_proschan_importance")
         return _repairable_importance.barlow_proschan_importance(
             self,
             working_nodes=working_nodes,
@@ -8261,6 +8346,7 @@ class RepairableRBD(RBD):
         >>> {pair: round(v, 4) for pair, v in rbd.joint_importance().items()}
         {('a', 'b'): -0.9091, ('a', 'c'): 0.0909, ('b', 'c'): 0.0909}
         """
+        _shutdowns.refuse(self, "joint_importance")
         return _repairable_importance.joint_importance(
             self,
             working_nodes=working_nodes,

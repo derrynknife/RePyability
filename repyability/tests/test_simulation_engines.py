@@ -1928,3 +1928,63 @@ def test_the_curve_is_the_same_from_changes_in_order(changes):
         time, working = ordered
         assert time[0] == 0.0 and time[-1] == 100.0
         assert working[0] == start + deltas[times == 0.0].sum()
+
+
+def shutdown_rbd(duration=0.0, cost=0.0, **shut):
+    """Block replacement and tests at a shutdown's times (offset 33.3,
+    every 70): in no time and free, the shutdown is its tasks alone."""
+    return RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {
+            "a": {
+                "reliability": W([150.0, 2.0]),
+                "repairability": L([1.0, 0.5]),
+                "preventive": {"shutdown": "s0", "cost": 2.0},
+                "repair_cost": 3.0,
+            },
+            "b": {
+                "reliability": surv.Exponential.from_params([0.004]),
+                "repairability": L([1.0, 0.5]),
+                "inspection": {"shutdown": "s0", "cost": 1.0},
+            },
+        },
+        shutdowns={
+            "s0": {
+                "period": 70.0,
+                "offset": 33.3,
+                "duration": duration,
+                "cost": cost,
+                **shut,
+            }
+        },
+    )
+
+
+@needs_numba
+def test_the_engines_agree_on_tasks_at_a_shutdown():
+    # numba's loop takes block replacement on a shutdown's calendar (its
+    # first time at the offset) as the Python loop does, to the last bit.
+    rbd = shutdown_rbd()
+    run = dict(
+        t_simulation=900.0, mc_samples=60, seed=8, control_variate=False
+    )
+    identical(
+        rbd.availability(engine="numba", **run),
+        rbd.availability(engine="python", **run),
+    )
+    identical(
+        rbd.cost(engine="numba", **run), rbd.cost(engine="python", **run)
+    )
+
+
+def test_numba_leaves_shutdowns_that_take_time_or_cost_to_python():
+    for rbd in (shutdown_rbd(duration=2.0), shutdown_rbd(cost=1.0)):
+        plan, _ = _event_loop._stream_plan(rbd, 100.0, 1, False)
+        assert _compiled.unsupported(rbd, plan, None, numba=True) == (
+            "shutdowns"
+        )
+    rbd = shutdown_rbd()
+    plan, _ = _event_loop._stream_plan(rbd, 100.0, 1, False)
+    assert _compiled.unsupported(rbd, plan, None, numba=True) is None
+    # An engine of the interface's version runs plain components only.
+    assert _compiled.unsupported(rbd, plan, None) == "shutdowns"
