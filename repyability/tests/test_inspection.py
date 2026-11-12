@@ -73,6 +73,7 @@ def test_a_hidden_failure_is_down_until_the_next_inspection():
         "component_downtime": 0.0,
         "system_downtime": 0.0,
         "setup": 0.0,
+        "shutdown": 0.0,
     }
 
 

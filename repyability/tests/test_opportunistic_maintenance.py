@@ -123,6 +123,7 @@ def test_a_timeline_worked_by_hand():
         "component_downtime": 0.0,
         "system_downtime": 0.0,
         "setup": 2500.0,
+        "shutdown": 0.0,
     }
     used = rbd.spares_demand(200.0, method="simulate", mc_samples=2, seed=1)
     assert used["b"].probabilities[5] == 1.0
