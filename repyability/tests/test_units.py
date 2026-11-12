@@ -337,6 +337,31 @@ def test_a_shutdown_scales_with_the_unit(c, idle_ageing):
     assert runs[0].system_planned_outages == runs[1].system_planned_outages
 
 
+@pytest.mark.parametrize("c", [1e-6, 1e3, 1e6])
+def test_planned_against_unplanned_scales_with_the_unit(c):
+    # UC-25: the shares of the time down planned and unplanned, and the
+    # failures avoided per unit time, do not depend on the unit.
+    base, scaled = shut_line(1.0), shut_line(c)
+    left, right = base.maintenance_effect(), scaled.maintenance_effect()
+    for name in ("system_planned_downtime", "system_unplanned_downtime"):
+        assert getattr(right, name) == pytest.approx(
+            getattr(left, name), rel=1e-7
+        )
+    assert right.system_failures_avoided * c == pytest.approx(
+        left.system_failures_avoided, rel=1e-7
+    )
+    window = [
+        rbd.maintenance_effect(2000.0 * scale)
+        for rbd, scale in ((base, 1.0), (scaled, c))
+    ]
+    assert window[1].system_unplanned_downtime / c == pytest.approx(
+        window[0].system_unplanned_downtime, rel=1e-6
+    )
+    assert window[1].system_failures_avoided == pytest.approx(
+        window[0].system_failures_avoided, rel=1e-6
+    )
+
+
 def test_a_duty_of_one_changes_nothing():
     assert duty_rbd(W([100, 2]), 1.0).mean_availability() == (
         duty_rbd(W([100, 2]), None).mean_availability()

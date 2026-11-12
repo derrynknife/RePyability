@@ -33,7 +33,13 @@ from repyability.rbd import (
     _curves,
 )
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.rbd import _overrides, _runs, _streams, _timeline_runs
+from repyability.rbd import (
+    _overrides,
+    _runs,
+    _streams,
+    _timeline_runs,
+    _unplanned,
+)
 from repyability.rbd._common import (
     _keeps_virtual_age,
     _safe_mean,
@@ -117,6 +123,7 @@ class _StreamedRBD:
             "p",
             self._sources,
             state or {},
+            follow=True,
         )
 
     def next_event(self):
@@ -129,6 +136,38 @@ class _StreamedRBD:
     @property
     def last_change_planned(self) -> bool:
         return self._rbd._run_state.last_change_planned
+
+    @property
+    def unplanned_down(self) -> bool:
+        """Whether the nested RBD is down unplanned (see ``_unplanned``):
+        down, with every planned outage in it counted as over. One that
+        takes no planned outage is down unplanned whenever it is down."""
+        sound = self._rbd._run_state._sound
+        if sound is None:
+            return not self._rbd._run_state.system_state
+        return sound.down
+
+    def take_trail(self) -> list:
+        """The changes of ``unplanned_down`` since the last call, as
+        ``(time, down)`` pairs in order (none where it is not
+        followed)."""
+        sound = self._rbd._run_state._sound
+        if sound is None or not sound.trail:
+            return []
+        trail, sound.trail = sound.trail, []
+        return trail
+
+
+def _failed(event: Event, source) -> bool:
+    """Whether ``event``, a change of its component's state, leaves it
+    failed (see ``_unplanned``): down, not for planned work (maintenance,
+    or a test of a working unit, that takes time); a nested RBD
+    (``source``), down unplanned."""
+    if event.status:
+        return False
+    if isinstance(source, _StreamedRBD):
+        return source.unplanned_down
+    return not (event.preventive or event.inspection)
 
 
 def _planned(source, status: bool) -> bool:
@@ -1363,9 +1402,14 @@ def _start_queue(
     method: str,
     sources: Optional[dict],
     states: dict,
+    follow: bool = False,
+    works: Optional[Callable] = None,
 ) -> None:
     """``initialize_event_queue``, with ``states`` checked (see
-    ``_simulation_states``)."""
+    ``_simulation_states``). With ``follow``, a diagram that can take
+    planned outages follows its unplanned downtime (see ``_unplanned``):
+    the system's, given its structure function ``works``, or a nested
+    RBD's (no ``works``), for its parent."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     rbd._run_state = _Run()
@@ -1437,6 +1481,12 @@ def _start_queue(
     # The components down at the start in a repair or maintenance going
     # on, which holds a repair crew.
     in_hand: list = []
+    # Following the unplanned downtime: which components start failed
+    # (those held broken, or in a repair), and the nested RBDs, whose
+    # changes to their first are taken once it is followed.
+    follow = follow and _unplanned.takes_planned_outages(rbd)
+    failed_at_start: dict = {node: True for node in broken_nodes}
+    nested_starts: list = []
 
     # For each component add in the initial failure
     for component_id in rbd.components.keys():
@@ -1452,7 +1502,11 @@ def _start_queue(
         if isinstance(component, RepairableRBD):
             source.initialize_event_queue(t_simulation, state=start)
             component_status[component_id] = source.system_state
+            if follow:
+                failed_at_start[component_id] = source.unplanned_down
             t_event, event = source.next_event()
+            if follow:
+                nested_starts.append(component_id)
             first = Event(
                 t_event, component_id, event, _planned(source, event)
             )
@@ -1461,6 +1515,9 @@ def _start_queue(
             component_status[component_id] = up
             if not up and first.status:
                 in_hand.append(component_id)
+            if not up:
+                # In a repair, or failed unseen; or in maintenance.
+                failed_at_start[component_id] = not start.maintenance
         elif component_id in rbd._preventive:
             # Put into service as new at 0: it fails, or is maintained.
             source.reset()
@@ -1536,6 +1593,24 @@ def _start_queue(
         component_status, method
     )
     rbd._run_state.component_status = component_status
+    if follow:
+        top = works is not None
+        if works is None:
+
+            def works(status) -> bool:
+                return rbd.is_system_working(status, method)
+
+        sound = rbd._run_state._sound = _unplanned._Sound(
+            {
+                node: not failed_at_start.get(node, not component_status[node])
+                for node in rbd.components
+            },
+            works,
+            top,
+            rbd._run_state.system_state,
+        )
+        for node in nested_starts:
+            sound.take(node, sources[node])
 
 
 def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
@@ -2103,16 +2178,26 @@ def next_event(rbd, method, sources: Optional[dict]):
         if sources is None:
             sources = rbd.components
     new_system_state = copy(rbd._run_state.system_state)
+    # Following its unplanned downtime, for its parent (see _unplanned).
+    sound = rbd._run_state._sound
 
     # Use a while loop to find the next time/event at which the system
     # status changes.
     while new_system_state == rbd._run_state.system_state:
         if rbd._run_state._event_queue.qsize() == 0:
+            if sound is not None:
+                sound.catch_up(
+                    math.inf, rbd._run_state.component_status, new_system_state
+                )
             del rbd._run_state._event_queue
             rbd._run_state.last_change_planned = False
             return rbd._run_state.t_simulation, rbd._run_state.system_state
 
         event = rbd._run_state._event_queue.get()
+        if sound is not None and sound.side:
+            sound.catch_up(
+                event.time, rbd._run_state.component_status, new_system_state
+            )
         if (
             rbd._run_state._cancelled
             and rbd._run_state._cancelled.get(id(event)) is event
@@ -2145,6 +2230,10 @@ def next_event(rbd, method, sources: Optional[dict]):
                 new_system_state = rbd.is_system_working(
                     rbd._run_state.component_status, method
                 )
+            if sound is not None:
+                sound.change(
+                    event.component, not now, event.time, new_system_state
+                )
             continue  # the group has queued its next event
         was = rbd._run_state.component_status[event.component]
         rbd._run_state.component_status[event.component] = event.status
@@ -2170,8 +2259,17 @@ def next_event(rbd, method, sources: Optional[dict]):
                     if spec.system_down:
                         for renewal in _stop(rbd, name, event.time):
                             rbd._run_state._event_queue.put(renewal)
+        if sound is not None and event.status != was:
+            sound.change(
+                node,
+                _failed(event, sources[node]),
+                event.time,
+                new_system_state,
+            )
 
         follow = _follow_up(rbd, event, sources[event.component])
+        if sound is not None and isinstance(sources[node], _StreamedRBD):
+            sound.take(node, sources[node])
         next_event: Optional[Event] = (
             follow
             if rbd._run_state._crews is None
@@ -2398,8 +2496,14 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         ctx.method,
         sources,
         ctx.states,
+        follow=True,
+        works=ctx.works,
     )
     status = rbd._run_state.component_status
+    # Which components have failed, against down for planned work, and
+    # the time the system is down unplanned (see _unplanned): None for a
+    # diagram that takes no planned outage.
+    sound = rbd._run_state._sound
     index, plain, works = ctx.position, ctx.plain, ctx.works
     # Shutdowns (see _shutdowns): the nodes a shut holds off line, and
     # what the system and the time kept for each node see, each node down
@@ -2515,6 +2619,9 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     # simulation runs until the queue is empty.
     while heap:
         event = pop(heap)[1]
+        if sound is not None and sound.side:
+            # Nested RBDs' failures up to now (see _unplanned).
+            sound.catch_up(event.time, status, up)
         if cancelled and cancelled.get(id(event)) is event:
             del cancelled[id(event)]
             continue  # superseded by an early renewal, or a strike
@@ -2664,6 +2771,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             both_down[c] += system_down_t - down_at[c]
         if not masked:
             last[c], up_at[c], down_at[c] = t, system_up_t, system_down_t
+        was = status[node]
         status[node] = event.status
         if not masked:
             view[node] = event.status
@@ -2735,6 +2843,8 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
                     if spec.system_down:
                         # Any system outage is a stop of this group.
                         rep_cost += stop(name, t)
+        if sound is not None and event.status != was:
+            sound.change(node, _failed(event, sources[node]), t, up)
 
         if grouped:
             continue  # the group has queued its next event
@@ -2746,6 +2856,8 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             next_event = Event(t + delay, node, next_status)
         else:
             next_event = _follow_up(rbd, event, sources[node])
+            if sound is not None and isinstance(sources[node], _StreamedRBD):
+                sound.take(node, sources[node])
         if crews is not None:
             # A job waits for a repair crew (see _Crews).
             next_event = _crew_follow_up(rbd, event, next_event)
@@ -2758,6 +2870,9 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         if ccf_members and node in ccf_members:
             ccf_pending[node] = next_event
     rbd._run_state.system_state = up
+    unplanned = (
+        None if sound is None else sound.close(t_simulation, status, up)
+    )
 
     # Close the system's time, and each component's, at the end of the
     # window.
@@ -2792,6 +2907,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     rec.counts = (failed, caused_down, restored, caused_up)
     rec.failures, rec.restorations = failures, restorations
     rec.planned = planned
+    rec.unplanned = unplanned
     rec.changes, rec.deltas = changes, deltas
     rec.cost = rep_cost if ctx.has_costs else None
     rec.by_category, rec.by_node = by_category, by_node

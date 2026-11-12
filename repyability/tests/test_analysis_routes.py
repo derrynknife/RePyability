@@ -340,6 +340,9 @@ REPAIRABLE_CALLS = {
     "simulation_samples": lambda rbd: rbd.simulation_samples(
         200.0, 20, seed=1
     ),
+    "maintenance_effect": lambda rbd: rbd.maintenance_effect(
+        200.0, mc_samples=20, seed=1
+    ),
 }
 # What the two classes share: the methods on node probabilities.
 for calls in (NONREPAIRABLE_CALLS, REPAIRABLE_CALLS):
@@ -1102,6 +1105,34 @@ def test_the_readme_says_what_is_simulated():
                 ),
                 ("shutdowns at given times, restoring", "cost", "simulated"),
             )
+        ],
+        "Planned against unplanned downtime, and the failures a plan "
+        "avoids (`maintenance_effect`)": [
+            (
+                repairable["planned outages, nested and in a pair"],
+                "maintenance_effect",
+                "numerical",
+            ),
+            (
+                repairable["shutdown of the line, tasks at it"],
+                "maintenance_effect",
+                "numerical",
+            ),
+            (
+                repairable["planned outages, one repair crew"],
+                "maintenance_effect",
+                "simulated",
+            ),
+            (
+                repairable["common cause, timed tests and repairs"],
+                "maintenance_effect",
+                "simulated",
+            ),
+            (
+                repairable["shutdowns at given times, restoring"],
+                "maintenance_effect",
+                "simulated",
+            ),
         ],
         "Replacement on condition by a measured degradation level": [
             (repairable["replaced on condition by level"], name, route)

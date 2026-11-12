@@ -29,6 +29,7 @@ from repyability.rbd import (
     _rates,
     _requirements,
     _shutdowns,
+    _unplanned,
 )
 from repyability.rbd._common import (
     _DISCOUNT_ROUNDS,
@@ -426,14 +427,39 @@ def expected_events(
             for node in rbd.components
         }
 
-    downtime = {
-        node: shaped(
+    down = {
+        node: (
             counts["downtime"][node]
             if node in curves
             else (ends if node in broken else zero)
         )
         for node in rbd.components
     }
+    downtime = {node: shaped(values) for node, values in down.items()}
+    system_down = np.maximum(ends - counts["uptime"], 0.0)
+    split = _split(rbd, curves, ends, working, broken, state, system_down)
+    planned_fields: dict = {}
+    if split is not None:
+        unplanned, failed = split
+        node_unplanned = {
+            node: failed.get(node, down[node]) for node in rbd.components
+        }
+        planned_fields = dict(
+            system_planned_downtime=shaped(
+                np.maximum(system_down - unplanned, 0.0)
+            ),
+            system_unplanned_downtime=shaped(
+                np.minimum(unplanned, system_down)
+            ),
+            node_planned_downtime={
+                node: shaped(np.maximum(down[node] - value, 0.0))
+                for node, value in node_unplanned.items()
+            },
+            node_unplanned_downtime={
+                node: shaped(np.minimum(value, down[node]))
+                for node, value in node_unplanned.items()
+            },
+        )
     return ExpectedEvents(
         window=shaped(ends),
         system_failures=shaped(counts["failures"]),
@@ -445,7 +471,24 @@ def expected_events(
         node_inspections=per_node("inspections"),
         node_downtime=downtime,
         shutdowns=shaped(_shutdowns.started_before(rbd, ends)),
+        **planned_fields,
     )
+
+
+def _split(rbd, curves, ends, working, broken, state, system_down):
+    """The system's expected time down unplanned to each of ``ends``, and
+    each component's time failed where it differs from its downtime (see
+    ``_unplanned.window_split``); all the downtime without planned
+    outages; None where the exact methods cannot tell them apart."""
+    if not _unplanned.takes_planned_outages(rbd):
+        return system_down, {}
+    states = _curves._states(rbd, state, working | broken)
+    try:
+        return _unplanned.window_split(
+            rbd, curves, ends, working, broken, states
+        )
+    except NotImplementedError:
+        return None
 
 
 def expected_cost(

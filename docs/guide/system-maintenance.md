@@ -1101,3 +1101,82 @@ rise by a third.
   shutdowns the importance measures, capacities, the first failure,
   spares, allocations, parameter uncertainty, the interval searches,
   `plan_vs_actual` and the crews' chain.
+
+## Planned and unplanned downtime
+
+How much of the downtime is the plan's own, and how much is from
+failures? And how many failures does the plan avoid against running to
+failure? [`RepairableRBD.maintenance_effect`][repyability.RepairableRBD.maintenance_effect]
+answers both, in the long run or over a window from a state.
+
+**The definition, in plain words.** The system is down *unplanned* when
+it would still be down if every planned task, test and shut in progress
+were finished: down because of failures. Its *planned* downtime is the
+rest: down only because blocks are in planned work (preventive
+maintenance or a test of a working unit that takes time, or held off line
+by a shut). A block that has failed (in a repair, waiting for a crew, or
+failed unseen until a test finds it) is down unplanned, also while a shut
+holds it. So a parallel pair with one unit in its maintenance and the
+other failed is down *planned*: with the maintenance over it would be up
+(though the change that took it down was a failure, which
+`system_planned_outages` and `system_failures` count by). Lost production
+(`downtime_cost_rate`) splits the same way, and a block's own downtime
+cost by its own state.
+
+**In symbols.** With independent blocks, the system is down unplanned at
+`t` with probability `1 - phi(P(block i has not failed at t))`: the
+structure function over each block's probability of not having failed.
+Every exact route that tells a block's failed state from its planned work
+gives the split exactly, and the simulation follows the same thing path by
+path, so the two check each other.
+
+**Against running to failure.** The same diagram with no planned work: no
+`"preventive"` task, no shutdowns and no maintenance groups; its tests of
+hidden failures are kept, as a test does not avoid failures. The result
+gives each value with the plan, without it (`*_without`) and the
+difference (`*_avoided`, `*_saved`).
+
+For the line above, shut every 12 months:
+
+```python
+effect = annual.maintenance_effect()              # the long run, per hour
+effect.system_planned_downtime * 8760             # -> 70.55   hours a year down for the shut
+effect.system_unplanned_downtime * 8760           # -> 13.37   from failures
+effect.lost_production_planned * 8760             # -> 35274
+effect.lost_production_unplanned * 8760           # -> 6687
+effect.system_failures * 8760                     # -> 0.4237   failures a year
+effect.system_failures_without * 8760             # -> 0.9791   running to failure
+effect.system_failures_avoided * 8760             # -> 0.5554
+effect.cost_saved * 8760                          # -> -34526   the plan costs more than it saves
+```
+
+The shut is 72 hours a year; 70.55 of them are planned downtime, and the
+rest is failures that start or carry on in the shut (the blocks keep
+ageing through it). The plan avoids more than half the failures, but
+here its shut and the production it loses cost more than the failures
+it saves.
+
+- **Over a window.** `maintenance_effect(t, state=...)` gives the
+  expected totals over `[0, t)` from the components' states.
+  `expected_events` and `expected_events_by_window` give the same split
+  natively (`system_planned_downtime`, `system_unplanned_downtime`, and
+  each block's `node_planned_downtime` and `node_unplanned_downtime`), and
+  a simulation's result its own (`AvailabilityResult`'s, and
+  `CostResult.lost_production_planned` and `lost_production_unplanned`).
+- **Exact or simulated.** Exact (numerical) wherever the exact methods
+  work out each block's probability of having failed beside its
+  downtime: plain units, age and block replacement and replacement on
+  condition with a time to maintain, tests that take time, shuts on a
+  period, nested RBDs. With planned outages and limited repair crews or
+  common-cause groups (whose chains do not tell a block in planned work
+  from one in a repair), shuts at given times, or a partial restoration,
+  a window is simulated: the plan and running to failure from one seed,
+  on the same streams, so each simulation of the plan is paired with one
+  without it, and `standard_errors` gives the paired errors of
+  `downtime_saved` and `cost_saved`. The long run is exact or refused.
+- **Not the same as a twin with zero-length work.** Setting every task
+  and the shut to take no time, and reading that diagram's downtime as
+  "unplanned", gives 10.29 hours a year here, not 13.37: without the
+  shut's 72 hours the blocks age on a different timeline, and the
+  failures that start or are still being repaired in a shut are lost.
+  The split here is of the plan as it runs.

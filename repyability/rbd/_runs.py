@@ -32,6 +32,7 @@ from repyability.rbd import (
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import _overrides, _streams, _timeline_runs
 from repyability.rbd._exact import (
+    ExactSum,
     bin_totals,
 )
 from repyability.rbd._model_utils import (
@@ -2222,6 +2223,15 @@ def _availability_result(
 
     system_uptime = float(tally.system_uptime)
     system_downtime = float(tally.system_downtime)
+    # Planned against unplanned (see _unplanned): the time down unplanned,
+    # and the rest of the downtime, each exactly and then rounded.
+    unplanned_total = tally.unplanned_downtime()
+    system_unplanned = float(unplanned_total)
+    system_planned = float(
+        ExactSum(tally.system_downtime.partials).add(
+            [-part for part in unplanned_total.partials]
+        )
+    )
     both_up = rounded(tally.intersection_uptime)
     both_down = rounded(tally.intersection_downtime)
     # Collect Importance/Criticality measures from the simulation
@@ -2307,6 +2317,12 @@ def _availability_result(
             antithetic=antithetic,
             control_variate=controls[1],
             conditional=conditional,
+            lost_production_planned=(
+                diagram.downtime_cost_rate * system_planned / N
+            ),
+            lost_production_unplanned=(
+                diagram.downtime_cost_rate * system_unplanned / N
+            ),
         )
 
     capacity_fields: dict = {}
@@ -2377,6 +2393,8 @@ def _availability_result(
         shutdowns=int(
             _shutdowns.started_before(diagram, np.array([t_simulation]))[0]
         ),
+        system_planned_downtime=system_planned,
+        system_unplanned_downtime=system_unplanned,
         **capacity_fields,
     )
 

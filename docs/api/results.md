@@ -40,6 +40,8 @@
 
 ::: repyability.ExpectedNPV
 
+::: repyability.MaintenanceEffect
+
 ::: repyability.PlanVsActual
 
 ::: repyability.ConfidenceInterval

@@ -93,6 +93,12 @@ def test_the_results_of_the_exact_methods_go_through_json(repairable):
             discount_rate=1e-3,
             value_rate=1.0,
         ),
+        repairable.maintenance_effect(),
+        repairable.maintenance_effect(1000.0),
+        repairable.maintenance_effect(
+            1000.0, method="simulate", mc_samples=50
+        ),
+        repairable.expected_events_by_window(width=500.0, count=2),
     ]
     for result in results:
         assert isinstance(result, _ResultMapping)

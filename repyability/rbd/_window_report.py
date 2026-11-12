@@ -64,6 +64,11 @@ def _between(cumulative) -> np.ndarray:
     return values
 
 
+def _split_between(cumulative):
+    """``_between``, or None where the split was not worked out."""
+    return None if cumulative is None else _between(cumulative)
+
+
 def expected_events_by_window(
     rbd, ends, width, count, state, working_nodes, broken_nodes, method
 ) -> EventsByWindow:
@@ -92,6 +97,20 @@ def expected_events_by_window(
         node_inspections=per_node(total.node_inspections),
         node_downtime=per_node(total.node_downtime),
         shutdowns=_between(total.shutdowns),
+        system_planned_downtime=_split_between(total.system_planned_downtime),
+        system_unplanned_downtime=_split_between(
+            total.system_unplanned_downtime
+        ),
+        node_planned_downtime=(
+            None
+            if total.node_planned_downtime is None
+            else per_node(total.node_planned_downtime)
+        ),
+        node_unplanned_downtime=(
+            None
+            if total.node_unplanned_downtime is None
+            else per_node(total.node_unplanned_downtime)
+        ),
     )
 
 

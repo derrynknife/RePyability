@@ -407,6 +407,82 @@ def _node_unavailability(rbd, node) -> float:
     return min(1.0, down / cycle)
 
 
+def _node_failed(rbd, node) -> float:
+    """A component's long-run probability of having failed (in a repair,
+    or failed unseen: down unplanned, see ``_unplanned``), for one whose
+    value is constant over the long-run grid: all its unavailability,
+    but under age replacement the share of its cycle in a repair after a
+    failure (its maintenance, the rest, is planned); a nested RBD's own
+    unplanned unavailability."""
+    from repyability.rbd import _unplanned
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    component = rbd.components[node]
+    if isinstance(component, RepairableRBD):
+        return _unplanned.long_run_split(component, set(), set())[1]
+    schedule = rbd._preventive.get(node)
+    if schedule is None or schedule.duration is None:
+        return _node_unavailability(rbd, node)
+    assert schedule.policy == "age", "a calendar's profile, not a constant"
+    _, cycle, fails, _ = _maintenance_cycle(rbd, node, schedule)
+    return min(1.0, fails * model_mean(component.time_to_replace) / cycle)
+
+
+def _failed_at(rbd, times: np.ndarray) -> dict:
+    """Every node's long-run probability of having failed (see
+    ``_node_failed``) at each of ``times`` (see ``_long_run_grid``), as
+    ``_unavailabilities_at`` gives its unavailability, but not held off
+    line by a shut (held, it is down for planned work): less, for a
+    component with hidden failures, its tests of a working unit that
+    take time, and for one replaced on a calendar, its replacements that
+    take time (planned)."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    out = _unavailabilities_at(rbd, times, masked=False)
+    blocks = set(_block_nodes(rbd))
+    for node, component in rbd.components.items():
+        if node in rbd.in_or_out:
+            continue
+        if node in rbd._inspection:
+            unit = _requirements._tested_unit(rbd, node)
+            if unit is not None:
+                planned = unit.long_run.planned_profile(
+                    _requirements._unit_phase(rbd, node, times)
+                )
+                out[node] = np.clip(out[node] - planned, 0.0, 1.0)
+        elif node in blocks:
+            out[node] = _block_failed(rbd, node, times)
+        elif isinstance(component, RepairableRBD) or node in rbd._preventive:
+            out[node] = np.full(len(times), _node_failed(rbd, node))
+    return out
+
+
+def _block_failed(rbd, node, times: np.ndarray) -> np.ndarray:
+    """A component replaced on a calendar: its long-run probability of
+    being in a repair at each of ``times``, its profile's unavailability
+    less its replacement in progress (the chance that the action at the
+    calendar's time before replaced it, times the chance that the
+    replacement is not over), at the middle of the profile's cell."""
+    schedule = rbd._preventive[node]
+    down = 1.0 - _block_profile(rbd, node, times)
+    if schedule.duration is None:
+        return down
+    cycle = _block_cycle(rbd, node)
+    _, length, _, replaced = _maintenance_cycle(rbd, node, schedule)
+    interval = float(cycle.phase[-1])
+    share = replaced * interval / length
+    shifted = times - schedule.offset
+    phase = shifted - interval * np.floor(shifted / interval)
+    cell = np.clip(
+        np.searchsorted(cycle.phase, phase, side="right") - 1,
+        0,
+        len(cycle.phase) - 2,
+    )
+    middle = 0.5 * (cycle.phase[cell] + cycle.phase[cell + 1])
+    left = np.asarray(schedule.duration.sf(middle), dtype=float)
+    return np.clip(down - share * left, 0.0, 1.0)
+
+
 def _block_nodes(rbd) -> list:
     """The components renewed on a calendar, whose long-run values vary
     with it: under block replacement, or replaced on condition at

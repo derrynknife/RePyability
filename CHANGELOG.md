@@ -11,6 +11,33 @@ other release, fixes included, the minor.
 
 ### Added
 
+- Planned against unplanned downtime, and the failures a plan avoids
+  (UC-25). The system is down *unplanned* when it would still be down
+  with every planned task, test and shut in progress finished (its
+  structure, with every block in planned work counted as up, is down),
+  and *planned* otherwise; a block that has failed is down unplanned,
+  also while a shut holds it. `RepairableRBD.maintenance_effect(t=None,
+  state=..., method=None)` (and `MaintenanceEffect`) gives the split of
+  the downtime and of the lost production (and the blocks' own downtime
+  costs), and the failures, downtime and cost with the plan and against
+  running to failure (no `"preventive"`, shutdowns or maintenance groups;
+  tests of hidden failures kept), in the long run or over a window from a
+  state: exact where both diagrams' values and the split are (plain
+  units, age and block replacement and replacement on condition with a
+  time to maintain, tests that take time, shuts on a period, nested
+  RBDs), otherwise simulated from one seed, with the paired standard
+  errors of the downtime and cost saved. `ExpectedEvents` and
+  `EventsByWindow` gain `system_planned_downtime`,
+  `system_unplanned_downtime`, `node_planned_downtime` and
+  `node_unplanned_downtime` (None where the exact methods cannot tell
+  them apart: planned outages with limited repair crews or common-cause
+  groups); `AvailabilityResult` gains `system_planned_downtime` and
+  `system_unplanned_downtime` (totals over the simulations, as
+  `system_downtime` is), and `CostResult` `lost_production_planned` and
+  `lost_production_unplanned` (the simulations' own means), both engines
+  following the split path by path and agreeing to the last bit. Existing
+  fields and seeded results are unchanged, and a diagram with no planned
+  outage does no extra work.
 - Shutdowns (UC-23): `RepairableRBD(..., shutdowns={name: spec})`, each
   an outage every `"period"` from its `"offset"` (or at given
   `"times"`) lasting a fixed `"duration"`, that holds its `"scope"` (by

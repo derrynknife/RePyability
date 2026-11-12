@@ -430,6 +430,7 @@ class _Run:
         "_calendar_price",
         "_held",
         "_paused_pending",
+        "_sound",
     )
 
     #: The events to come, in time order.
@@ -487,9 +488,14 @@ class _Run:
     #: if it has none in the window).
     _held: set
     _paused_pending: dict
+    #: Which components have failed, against down for planned work, and
+    #: whether the system is down unplanned (see ``_unplanned``); None
+    #: where that is not followed.
+    _sound: Any
 
     def __init__(self) -> None:
         self._step_sources = None
+        self._sound = None
 
 
 @dataclass(order=True, slots=True)

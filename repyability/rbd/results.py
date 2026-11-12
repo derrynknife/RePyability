@@ -256,6 +256,17 @@ class EventsByWindow(_ResultMapping):
     shutdowns : numpy.ndarray
         The shuts of the diagram's ``shutdowns`` that start in each
         window (planned, so exact counts; zeros without shutdowns).
+    system_planned_downtime : numpy.ndarray, optional
+        The part of ``system_downtime`` in each window that is planned,
+        and ``system_unplanned_downtime`` the rest (see
+        [`ExpectedEvents`][repyability.ExpectedEvents]); None where the
+        exact methods cannot tell them apart.
+    system_unplanned_downtime : numpy.ndarray, optional
+        The system's unplanned downtime in each window.
+    node_planned_downtime : dict, optional
+        Each component's planned downtime in each window.
+    node_unplanned_downtime : dict, optional
+        Each component's time failed in each window.
 
     Examples
     --------
@@ -292,6 +303,10 @@ class EventsByWindow(_ResultMapping):
     node_inspections: Dict[Hashable, np.ndarray]
     node_downtime: Dict[Hashable, np.ndarray]
     shutdowns: Any = None
+    system_planned_downtime: Optional[np.ndarray] = None
+    system_unplanned_downtime: Optional[np.ndarray] = None
+    node_planned_downtime: Optional[Dict[Hashable, np.ndarray]] = None
+    node_unplanned_downtime: Optional[Dict[Hashable, np.ndarray]] = None
 
 
 @dataclass
@@ -1265,6 +1280,20 @@ class CostResult(_ResultMapping):
         ``conditional=True``, ``samples`` are those expected costs, so
         ``mean`` is ``sample_mean``, and ``std`` and ``percentile`` refuse.
         None otherwise.
+    lost_production_planned : float, optional
+        The lost production (``downtime_cost_rate`` times the system's
+        downtime) of the system's *planned* downtime, the simulations' own
+        mean per window: while it is down only because blocks are in
+        planned work (preventive maintenance or a test of a working unit
+        that takes time, or a shut). See
+        [`RepairableRBD.maintenance_effect`][repyability.RepairableRBD.maintenance_effect]
+        for the definition, and its exact value. None for a result built
+        without it (a run with ``conditional=True``).
+    lost_production_unplanned : float, optional
+        The same for the system's *unplanned* downtime: while it would
+        still be down with every planned task, test and shut in progress
+        finished. The two add up to the simulations' own mean of the
+        ``"system_downtime"`` cost.
 
     Examples
     --------
@@ -1323,6 +1352,8 @@ class CostResult(_ResultMapping):
     antithetic: bool = False
     control_variate: Optional[ControlVariate] = None
     conditional: Optional[ConditionalRun] = None
+    lost_production_planned: Optional[float] = None
+    lost_production_unplanned: Optional[float] = None
 
     def _estimate(self) -> Tuple[float, float, str]:
         """The run's estimate of the expected cost of a window, its
@@ -1603,6 +1634,28 @@ class ExpectedEvents(_ResultMapping):
         the window (0 without shutdowns). A shut is down time of the
         system (``system_downtime``) and, where it takes the system down
         from up, one of its planned outages.
+    system_planned_downtime : float or numpy.ndarray, optional
+        The part of ``system_downtime`` that is *planned*: the system down
+        only because blocks are in planned work (preventive maintenance
+        or a test of a working unit that takes time, or a shut). See
+        [`RepairableRBD.maintenance_effect`][repyability.RepairableRBD.maintenance_effect]
+        for the definition. None where the exact methods cannot tell the
+        two apart (planned outages with limited repair crews or
+        common-cause groups): ``availability`` simulates them.
+    system_unplanned_downtime : float or numpy.ndarray, optional
+        The rest of ``system_downtime``, *unplanned*: the system down
+        because of failures, so that it would still be down with every
+        planned task, test and shut in progress finished. The two add up
+        to ``system_downtime``.
+    node_planned_downtime : dict, optional
+        Each component's part of its ``node_downtime`` in planned work
+        (maintenance or a test that takes time, or held off line by a
+        shut while it has not failed; a nested RBD's, its own planned
+        downtime).
+    node_unplanned_downtime : dict, optional
+        Each component's time failed: in a repair, waiting for one, or
+        failed unseen until a test finds it. The two add up to its
+        ``node_downtime``.
 
     Examples
     --------
@@ -1638,6 +1691,10 @@ class ExpectedEvents(_ResultMapping):
     node_inspections: Dict[Hashable, Any]
     node_downtime: Dict[Hashable, Any]
     shutdowns: Any = 0.0
+    system_planned_downtime: Any = None
+    system_unplanned_downtime: Any = None
+    node_planned_downtime: Optional[Dict[Hashable, Any]] = None
+    node_unplanned_downtime: Optional[Dict[Hashable, Any]] = None
 
 
 @dataclass
@@ -1859,6 +1916,160 @@ class ExpectedCost(_ResultMapping):
         with np.errstate(invalid="ignore", divide="ignore"):
             rate = np.divide(self.mean, self.window)
         return float(rate) if np.ndim(rate) == 0 else rate
+
+
+@dataclass
+class MaintenanceEffect(_ResultMapping):
+    """What a diagram's planned work does: how much of its downtime and
+    lost production is planned and how much is from failures, and the
+    failures, downtime and cost it saves against running to failure.
+    Returned by
+    [`RepairableRBD.maintenance_effect`][repyability.RepairableRBD.maintenance_effect].
+
+    **Planned and unplanned.** The system is down *unplanned* at an
+    instant if it would still be down with every planned task, test and
+    shut in progress finished: if its structure, with every block in
+    planned work counted as up, is down. Its *planned* downtime is the
+    rest: down only because blocks are in planned work (preventive
+    maintenance or a test of a working unit that takes time, or held off
+    line by a shut). A block that has failed (in a repair, waiting for a
+    crew, or failed unseen until a test finds it) is down unplanned, also
+    while a shut holds it. Lost production (the system's
+    ``downtime_cost_rate``) splits the same way, and a block's own
+    downtime cost by its own state.
+
+    **Against running to failure.** The same diagram with no planned work
+    (no ``"preventive"`` task, no shutdowns, no maintenance groups; its
+    tests of hidden failures kept, as a test does not avoid failures):
+    ``*_without`` its values, and ``*_avoided`` or ``*_saved`` the plan's
+    less them.
+
+    Over a ``window`` each value is the expected total in it (from the
+    state given); in the long run (``window`` None) each is per unit
+    time: a downtime is a share of the time (an unavailability), failures
+    and costs are rates.
+
+    Attributes
+    ----------
+    window : float or None
+        The window's length, or None for the long run.
+    method : str
+        ``"exact"`` (numerical, no simulation) or ``"simulated"``.
+    system_downtime : float
+        The system's expected downtime with the plan.
+    system_planned_downtime : float
+        Its planned part.
+    system_unplanned_downtime : float
+        Its unplanned part; the two add up to ``system_downtime``.
+    lost_production : float
+        ``downtime_cost_rate`` times ``system_downtime``.
+    lost_production_planned : float
+        Of the planned downtime.
+    lost_production_unplanned : float
+        Of the unplanned downtime.
+    component_downtime_cost_planned : float
+        The blocks' own downtime costs (their ``downtime_cost``) while in
+        planned work; None when simulated.
+    component_downtime_cost_unplanned : float
+        While failed; None when simulated.
+    node_planned_downtime : dict
+        Each component's downtime in planned work; None when simulated.
+    node_unplanned_downtime : dict
+        Each component's time failed; None when simulated.
+    system_failures : float
+        The system's expected failures with the plan.
+    system_failures_without : float
+        Running to failure.
+    system_failures_avoided : float
+        ``system_failures_without - system_failures``.
+    node_failures : dict
+        Each component's expected failures with the plan (its corrective
+        actions in the long run).
+    node_failures_without : dict
+        Running to failure.
+    node_failures_avoided : dict
+        Without less with.
+    system_downtime_without : float
+        The system's downtime running to failure.
+    downtime_saved : float
+        ``system_downtime_without - system_downtime`` (negative when the
+        plan's own downtime is more than the failures' it saves).
+    cost : float
+        The expected running cost with the plan (a rate in the long run;
+        0 with nothing priced).
+    cost_without : float
+        Running to failure.
+    cost_saved : float
+        ``cost_without - cost`` (negative when the plan costs more than it
+        saves).
+    mc_samples : int or None
+        Simulated: the simulations of each diagram; None when exact.
+    standard_errors : dict or None
+        Simulated: the standard errors of ``downtime_saved`` and
+        ``cost_saved``, from the differences of paired simulations (the
+        two diagrams run with the same seed, so each simulation of the
+        plan draws the lives the one without it draws, as far as their
+        events agree); ``system_failures_avoided`` is the difference of
+        the two runs' means. None when exact.
+
+    Examples
+    --------
+    A pump under age replacement every 600 hours, each taking 8 hours,
+    repaired in about 20 hours when it fails, at 100 an hour of lost
+    production:
+
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> pump = {
+    ...     "reliability": surv.Weibull.from_params([1000.0, 3.0]),
+    ...     "repairability": surv.Exponential.from_params([1 / 20.0]),
+    ...     "preventive": {
+    ...         "interval": 600.0,
+    ...         "duration": surv.ExactEventTime.from_params([8.0]),
+    ...     },
+    ... }
+    >>> rbd = RepairableRBD(
+    ...     [("s", "p"), ("p", "t")], {"p": pump}, downtime_cost_rate=100.0
+    ... )
+    >>> effect = rbd.maintenance_effect()  # the long run
+    >>> round(effect.system_planned_downtime, 5)  # share of the time
+    0.01112
+    >>> round(effect.system_unplanned_downtime, 5)
+    0.0067
+    >>> year = 8760.0
+    >>> round(effect.system_failures * year, 2)  # failures a year
+    2.93
+    >>> round(effect.system_failures_avoided * year, 2)  # the plan avoids
+    6.66
+    >>> round(effect.lost_production_unplanned * year)  # a year
+    5870
+    """
+
+    window: Optional[float]
+    method: str
+    system_downtime: float
+    system_planned_downtime: float
+    system_unplanned_downtime: float
+    lost_production: float
+    lost_production_planned: float
+    lost_production_unplanned: float
+    component_downtime_cost_planned: Optional[float]
+    component_downtime_cost_unplanned: Optional[float]
+    node_planned_downtime: Optional[Dict[Hashable, float]]
+    node_unplanned_downtime: Optional[Dict[Hashable, float]]
+    system_failures: float
+    system_failures_without: float
+    system_failures_avoided: float
+    node_failures: Dict[Hashable, float]
+    node_failures_without: Dict[Hashable, float]
+    node_failures_avoided: Dict[Hashable, float]
+    system_downtime_without: float
+    downtime_saved: float
+    cost: float
+    cost_without: float
+    cost_saved: float
+    mc_samples: Optional[int] = None
+    standard_errors: Optional[Dict[str, float]] = None
 
 
 @dataclass
@@ -2692,6 +2903,19 @@ class AvailabilityResult(_ResultMapping):
         the window, the same in every simulation (they are planned); 0
         without shutdowns. A shut that takes the system down from up is
         one of its ``system_planned_outages``.
+    system_planned_downtime : float, optional
+        The part of ``system_downtime`` (summed over all simulations, as
+        it is) that is *planned*: the system down only because blocks are
+        in planned work (preventive maintenance or a test of a working
+        unit that takes time, or a shut). See
+        [`RepairableRBD.maintenance_effect`][repyability.RepairableRBD.maintenance_effect]
+        for the definition. None for a result built without it (a run
+        with ``conditional=True``).
+    system_unplanned_downtime : float, optional
+        The rest of ``system_downtime``, *unplanned*: the system down
+        because of failures, so that it would still be down if every
+        planned task, test and shut in progress were finished. The two
+        add up to ``system_downtime``.
 
     Examples
     --------
@@ -2748,6 +2972,8 @@ class AvailabilityResult(_ResultMapping):
     conditional: Optional[ConditionalRun] = None
     delivered_control: Optional[ControlVariate] = None
     shutdowns: int = 0
+    system_planned_downtime: Optional[float] = None
+    system_unplanned_downtime: Optional[float] = None
 
     @property
     def mean_capacity(self) -> Optional[float]:

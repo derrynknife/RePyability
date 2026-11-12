@@ -344,9 +344,10 @@ class First(NamedTuple):
     its life; ``splits`` its quantiles) and its preventive maintenance due
     at ``due`` (0 if it is due now, None if it has none); or down (``cdf``
     None), with ``down_sf`` the survival function of what is left of its
-    repair or maintenance (``down_splits`` its quantiles). ``stages``, for
-    a unit up that degrades through stages, gives the probability that it
-    is in each of them at each time from 0."""
+    repair or maintenance (``down_splits`` its quantiles; ``maintenance``
+    whether it is maintenance, planned work, rather than a repair).
+    ``stages``, for a unit up that degrades through stages, gives the
+    probability that it is in each of them at each time from 0."""
 
     cdf: Optional[Callable] = None
     splits: Any = ()
@@ -354,6 +355,7 @@ class First(NamedTuple):
     down_sf: Optional[Callable] = None
     down_splits: Any = ()
     stages: Optional[Callable] = None
+    maintenance: bool = False
 
 
 def _capped(cdf: Callable, limit: float, at_limit: float) -> Callable:
@@ -529,6 +531,8 @@ def unit_curve(
     # Later units, through the grid.
     later_failures = convolve(later, fails)
     down += convolve(later_failures, hat)
+    # Down in a repair, after a failure (the rest is maintenance).
+    failed = down.copy()
     chain = None
     chained = None
     # The units that each reach their age, one after another: the n-th
@@ -592,12 +596,22 @@ def unit_curve(
     elif atom1 > 0.0:
         dips.append((atom1, 0.0, repair_sf, repair_splits))
     dips += [(jump, at, repair_sf, repair_splits) for at, jump in exact]
+    # The repairs' dips, the rest being maintenance's (see failed_at).
+    repairs_dips = list(dips)
+    if first_cdf is None and first is not None and first.maintenance:
+        repairs_dips = repairs_dips[1:]
     if first_survive > 0.0 and maintenance_sf is not None:
         assert first_due is not None
         dips.append(
             (first_survive, first_due, maintenance_sf, maintenance_splits)
         )
     curve = GridCurve(step, smooth, dips, chain=chain)
+    if maintenance_sf is not None or (first is not None and first.maintenance):
+        # Down in a repair alone, on the same grid, for the split of its
+        # downtime into planned and unplanned.
+        failed_smooth = 1.0 - failed
+        failed_smooth[0] = 1.0
+        curve.failed_curve = GridCurve(step, failed_smooth, repairs_dips)
     if stages is not None:
         # In each stage: the first unit by its own age, the later ones by
         # the renewals against the probability at each age (a unit renewed
@@ -1261,6 +1275,18 @@ class StageCurves:
         )
 
 
+def failed_at(curve, x: np.ndarray) -> np.ndarray:
+    """A node's probability of being down unplanned (in a repair, or
+    failed unseen: see ``_unplanned``) at each time ``x``, from its curve:
+    the curve's own ``failed_at`` where it has planned work it tells
+    apart, else all its downtime."""
+    x = np.asarray(x, dtype=float)
+    own = getattr(curve, "failed_at", None)
+    if own is not None:
+        return own(x)
+    return 1.0 - np.asarray(curve.at(x), dtype=float)
+
+
 def curve_breaks(curve, start: float, stop: float) -> np.ndarray:
     """The times in ``[start, stop]`` at which ``curve`` may bend or jump
     other than on its grids (see ``curve_grids``): all its knots, for a
@@ -1306,6 +1332,19 @@ class GridCurve:
         self.chain = chain
         self.unit_events: Optional[UnitEvents] = None
         self.stages: Optional[StageCurves] = None
+        #: For a unit whose maintenance takes time: the curve of its
+        #: probability of not being in a repair (see ``failed_at``).
+        self.failed_curve: Optional["GridCurve"] = None
+
+    def failed_at(self, x: np.ndarray) -> np.ndarray:
+        """Its probability of being in a repair, after a failure, at each
+        time ``x`` (down unplanned; the rest of its downtime is its
+        maintenance, planned): worked out in its own right where its
+        maintenance takes time, else all its downtime."""
+        x = np.asarray(x, dtype=float)
+        if self.failed_curve is None:
+            return 1.0 - self.at(x)
+        return 1.0 - self.failed_curve.at(x)
 
     def stages_at(self, x: np.ndarray) -> np.ndarray:
         """The probability that the unit is up and in each of its stages
@@ -1526,6 +1565,15 @@ class BlockCurve:
         if self.fresh:
             back = np.where(k == 0.0, 1.0, back)
         return np.clip(smooth + self.replaced[row] * back, 0.0, 1.0)
+
+    def failed_at(self, x: np.ndarray) -> np.ndarray:
+        """Its probability of being in a repair at each time ``x`` (down
+        unplanned): down, but not in the replacement at the block time
+        before (planned, ``replaced`` there times what of its time is
+        left)."""
+        x = np.asarray(x, dtype=float)
+        _, _, row, smooth = self._place(x)
+        return np.clip(1.0 - smooth - self.replaced[row], 0.0, 1.0)
 
     def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
         """Its rate of change at each ``x`` (see ``GridCurve.derivative``): its
@@ -1805,15 +1853,26 @@ class SteadyCurve:
         preventive_rate: float = 0.0,
         takedown: bool = False,
         fractions: Optional[np.ndarray] = None,
+        failed: Optional[float] = None,
     ):
         self.availability = float(availability)
         self.failure_rate = float(failure_rate)
         self.preventive_rate = float(preventive_rate)
         self.takedown = takedown
         self.fractions = fractions
+        #: Its long-run probability of being in a repair (down unplanned;
+        #: None: all its downtime).
+        self.failed = failed
 
     def at(self, x: np.ndarray) -> np.ndarray:
         return np.full(np.shape(x), self.availability)
+
+    def failed_at(self, x: np.ndarray) -> np.ndarray:
+        """Its probability of being in a repair at each time ``x`` (see
+        ``GridCurve.failed_at``)."""
+        if self.failed is None:
+            return np.full(np.shape(x), 1.0 - self.availability)
+        return np.full(np.shape(x), float(self.failed))
 
     def knots(self, start: float, stop: float) -> np.ndarray:
         return np.empty(0)
@@ -2085,6 +2144,10 @@ class ShiftedCurve:
     def at(self, x: np.ndarray) -> np.ndarray:
         return self.curve.at(self._position(x))
 
+    def failed_at(self, x: np.ndarray) -> np.ndarray:
+        """Its curve's probability of being in a repair, ``shift`` on."""
+        return failed_at(self.curve, self._position(x))
+
     def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
         """Its curve's rate (see ``_rates.derivative``), ``shift`` on."""
         from repyability.rbd._rates import derivative
@@ -2167,6 +2230,18 @@ class StartedBlockCurve:
             out[before] = self.head.at(x[before])
         if (~before).any():
             out[~before] = self.tail.at(x[~before] - self.length)
+        return out
+
+    def failed_at(self, x: np.ndarray) -> np.ndarray:
+        """The head's probability of being in a repair before its end and
+        the tail's from it."""
+        x = np.asarray(x, dtype=float)
+        before = x < self.length
+        out = np.empty(x.shape)
+        if before.any():
+            out[before] = failed_at(self.head, x[before])
+        if (~before).any():
+            out[~before] = failed_at(self.tail, x[~before] - self.length)
         return out
 
     def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
@@ -2255,6 +2330,16 @@ class SystemCurve:
         from . import _curves
 
         return _curves._curves_at(self.rbd, self.curves, x, set(), set(), "p")
+
+    def failed_at(self, x: np.ndarray) -> np.ndarray:
+        """The nested RBD's probability of being down unplanned at each time
+        ``x``: its structure over its nodes' probabilities of having failed
+        (see ``_unplanned``)."""
+        from . import _unplanned
+
+        return _unplanned.system_failed_at(
+            self.rbd, self.curves, np.asarray(x, dtype=float), set(), set(), {}
+        )
 
     def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
         """Its rate of change at each ``x``: each of its nodes' (see

@@ -55,6 +55,7 @@ from repyability.rbd.results import (
     ExpectedEvents,
     ExpectedNPV,
     Lever,
+    MaintenanceEffect,
     MaintenancePlan,
     NodeActionRates,
     PlanVsActual,
@@ -91,6 +92,7 @@ from repyability.rbd import (
     _runs,
     _shutdowns,
     _spec,
+    _unplanned,
     _window_report,
     _windows,
 )
@@ -3831,6 +3833,92 @@ class RepairableRBD(RBD):
             working_nodes,
             broken_nodes,
             method,
+        )
+
+    def maintenance_effect(
+        self,
+        t: Optional[float] = None,
+        *,
+        state=None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: Optional[str] = None,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        engine: str = "auto",
+    ) -> MaintenanceEffect:
+        """What the plan does: how much of the downtime and lost production
+        is planned and how much is from failures, and the failures,
+        downtime and cost the plan saves against running to failure.
+
+        The system is down *unplanned* when it would still be down with
+        every planned task, test and shut in progress finished: its
+        structure, with every block in planned work counted as up, is down.
+        Its *planned* downtime is the rest, down only because blocks are in
+        planned work (preventive maintenance or a test of a working unit
+        that takes time, or a shut). A block that has failed (in a repair,
+        waiting for a crew, or failed unseen until a test finds it) is down
+        unplanned. Lost production splits the same way, and a block's own
+        downtime cost by its own state. Running to failure is the same
+        diagram with no planned work: no ``"preventive"`` task, no
+        shutdowns, no maintenance groups; its tests of hidden failures
+        kept, as a test does not avoid failures. See the guide's
+        [planned and unplanned
+        downtime](../guide/system-maintenance.md#planned-and-unplanned-downtime).
+
+        Parameters
+        ----------
+        t : float, optional
+            The window, ``[0, t)`` from the components' ``state``. By
+            default None: the long run, each value per unit time.
+        state : dict, optional
+            ``{node: NodeState}``, the components' states at 0 (see
+            [`point_availability`][repyability.RepairableRBD.point_availability]),
+            for a window. Without planned work a component in its
+            maintenance now is taken as up, as new.
+        working_nodes : list, optional
+            Nodes held working throughout.
+        broken_nodes : list, optional
+            Nodes held failed throughout.
+        method : {None, "exact", "simulate"}, optional
+            By default exact (numerical) where both diagrams' values and
+            the split are, and otherwise simulated over a window;
+            ``"exact"`` refuses rather than simulate, and ``"simulate"``
+            simulates. The long run is exact or refused.
+        mc_samples : int, optional
+            Simulated: the simulations of each diagram, by default 10,000.
+        seed : int, optional
+            Simulated: seeds both diagrams' simulations alike.
+        engine : str, optional
+            Simulated: the engine, as for
+            [`availability`][repyability.RepairableRBD.availability].
+
+        Returns
+        -------
+        MaintenanceEffect
+            The split, the values with the plan and without it, and their
+            differences.
+
+        Raises
+        ------
+        NotImplementedError
+            In the long run, or with ``method="exact"``, if the exact
+            methods cannot work it out (see ``analysis_routes()``).
+
+        Examples
+        --------
+        See [`MaintenanceEffect`][repyability.MaintenanceEffect].
+        """
+        return _unplanned.maintenance_effect(
+            self,
+            t,
+            state=state,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            method=method,
+            mc_samples=mc_samples,
+            seed=seed,
+            engine=engine,
         )
 
     def expected_cost(
