@@ -451,5 +451,31 @@ def test_the_simulation_agrees_with_the_exact_values(name):
                 Z * interval.standard_error + 1e-9 * abs(exact)
             ), (interval, exact)
             checked += 1
+        if (
+            computed(report["expected_events"])
+            and report["availability"].route == routes.SIMULATED
+        ):
+            # Planned against unplanned downtime (UC-25), each within Z
+            # standard errors of a simulation's downtime (which bounds its
+            # parts': each is at most the downtime).
+            events = rbd.expected_events(window)
+            if events.system_unplanned_downtime is not None:
+                run = rbd.availability(window, **plain)
+                down = window - np.asarray(run.uptimes)
+                error = math.sqrt(float(np.mean(down**2)) / n)
+                for exact, total in (
+                    (
+                        events.system_planned_downtime,
+                        run.system_planned_downtime,
+                    ),
+                    (
+                        events.system_unplanned_downtime,
+                        run.system_unplanned_downtime,
+                    ),
+                ):
+                    assert close(
+                        total / (n * window), exact / window, error / window, n
+                    ), (total / n, exact)
+                checked += 1
     if not checked:
         pytest.skip("Nothing here is exact or numerical.")

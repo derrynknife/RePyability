@@ -770,6 +770,16 @@ class MaskedCurve:
             down = 1.0 - np.asarray(self.curve.at(u), dtype=float)
         return np.where(self.held(x), 1.0, down)
 
+    def failed_at(self, x: np.ndarray) -> np.ndarray:
+        """Its probability of having failed at each time ``x`` (see
+        ``_unplanned``): its own, at its own time, whether or not a shut
+        holds it off line (held, but not failed, it is down for planned
+        work)."""
+        from repyability.rbd._point_availability import failed_at
+
+        x = np.asarray(x, dtype=float)
+        return failed_at(self.curve, self.tau(x))
+
     def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
         """Its rate of change at each ``x``: its own at its own time, 0
         inside a window (the jumps at the windows' edges are not

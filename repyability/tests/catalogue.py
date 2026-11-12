@@ -1040,6 +1040,47 @@ def repairable_kinds():
                 },
                 repair_crews=1,
             ),
+            # Planned outages (#319, UC-25): maintenance that takes time
+            # in a nested pair and at block times, its downtime split into
+            # planned and unplanned exactly; and with a repair crew, whose
+            # chain does not tell them apart (simulated).
+            "planned outages, nested and in a pair": RepairableRBD(
+                EDGES,
+                {
+                    "a": RepairableRBD(
+                        [("s", "x"), ("s", "y"), ("x", "t"), ("y", "t")],
+                        {
+                            "x": unit(
+                                preventive={
+                                    "interval": 250.0,
+                                    "duration": E([0.25]),
+                                }
+                            ),
+                            "y": unit(),
+                        },
+                    ),
+                    "b": unit(
+                        preventive={
+                            "interval": 300.0,
+                            "policy": "block",
+                            "duration": surv.ExactEventTime.from_params([6.0]),
+                            "cost": 3.0,
+                        },
+                        downtime_cost=1.0,
+                    ),
+                    "c": unit(),
+                },
+                downtime_cost_rate=5.0,
+            ),
+            "planned outages, one repair crew": system(
+                unit(
+                    preventive={
+                        "interval": 300.0,
+                        "duration": E([0.5]),
+                    }
+                ),
+                repair_crews=1,
+            ),
             "one repair crew, exponential": RepairableRBD(
                 EDGES,
                 {

@@ -172,6 +172,86 @@ def _level_works(kept, value, working, L):
 
 
 @njit(cache=True, inline="always")
+def _unsound(split, sound, level_ud, c, failed, L, t):
+    """Component ``c`` of level ``L`` has ``failed`` (or not) at ``t`` (see
+    ``_unplanned._Sound.change``): the levels' structures on the
+    components that have not failed kept up to date (``split``'s), the
+    system's time down unplanned added up, and a followed nested RBD's
+    changes of it recorded for its parent (its trail). Returns -1 when
+    the trail has no room, else 0."""
+    kept_f, state_f, tracking, trail, acc = (
+        split[0],
+        split[1],
+        split[2],
+        split[3],
+        split[6],
+    )
+    now = 0 if failed else 1
+    if sound[c] == now:
+        return 0
+    sound[c] = now
+    value_f, count_f, down_f, working_f = state_f
+    _keep(kept_f, value_f, count_f, down_f, working_f, c, now)
+    ud = 1 - _level_works(kept_f, value_f, working_f, L)
+    if ud == level_ud[L]:
+        return 0
+    level_ud[L] = ud
+    if L == 0:
+        if ud:
+            acc[0] = t
+        else:
+            acc[1] += t - acc[0]
+    elif tracking[L]:
+        trail_t, trail_ud, trail_n = trail
+        k = trail_n[L]
+        if k == trail_t.shape[1]:
+            return -1
+        trail_t[L, k] = t
+        trail_ud[L, k] = ud
+        trail_n[L] = k + 1
+    return 0
+
+
+@njit(cache=True, inline="always")
+def _catch_up(split, sound, level_ud, status, L, t):
+    """Take level ``L``'s nested RBDs' changes at or before ``t`` (see
+    ``_unplanned._Sound.catch_up``): each, of a nested RBD that is down,
+    as a change of whether it has failed. Returns -1 when out of room,
+    else 0."""
+    side, side_n = split[4], split[5]
+    heap = (side[0][L], side[1][L], side[2][L], side[3][L])
+    size = side_n[L]
+    while size > 0 and heap[0][0] <= t:
+        at, c, sound_now, _, size = _pop(heap, size)
+        side_n[L] = size
+        if status[c] == 0:
+            if _unsound(split, sound, level_ud, c, sound_now == 0, L, at) < 0:
+                return -1
+    return 0
+
+
+@njit(cache=True, inline="always")
+def _take_trail(split, child, L, c):
+    """Queue nested RBD ``c``'s (level ``child``) changes of whether it is
+    down unplanned since it last gave them, on its parent's (level
+    ``L``) side (see ``_unplanned._Sound.take``). Returns -1 when out of
+    room, else 0."""
+    trail_t, trail_ud, trail_n = split[3]
+    side, side_n = split[4], split[5]
+    heap = (side[0][L], side[1][L], side[2][L], side[3][L])
+    size = side_n[L]
+    for k in range(trail_n[child]):
+        if size == heap[0].size:
+            return -1
+        size = _push(
+            heap, size, trail_t[child, k], c, 1 - trail_ud[child, k], 0
+        )
+    side_n[L] = size
+    trail_n[child] = 0
+    return 0
+
+
+@njit(cache=True, inline="always")
 def _renewal(c, t, maintenance, fail, lives, limit, flat, base):
     """``RepairableRBD._renewal`` for a unit under age or block replacement
     put into service as new at ``t``: its life drawn, and its next event,
@@ -569,6 +649,7 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
         change_cause,
         change_index,
         change_planned,
+        unplanned_out,
     ) = out
     # The system's own components, and every level's.
     n = node_out.shape[1]
@@ -617,6 +698,18 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
     level_start, level_stop = upkeep[29], upkeep[30]
     child_level = upkeep[27]
     levels = level_start.size
+    # Planned against unplanned downtime (see ``_unplanned``), for a
+    # diagram that takes planned outages: each level's structure on the
+    # components that have not failed (kept up to date as ``kept`` is),
+    # whether each level is followed for its parent, each component that
+    # has not failed, each level down unplanned, a nested RBD's changes of
+    # that for its parent (its trail) and on its parent's side (a heap a
+    # level), whether a nested RBD's next change down is unplanned, and the
+    # system's last time down unplanned and its time down unplanned.
+    split_on = upkeep[33]
+    tracking = upkeep[34]
+    kept_f = upkeep[35]
+    sides = levels if split_on else 0
     m = unit_fail.size
     # Each unit's life left (as of when it last started operating or
     # waiting), that time, its next event's time, order and kind and
@@ -757,11 +850,35 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
     up_at = np.empty(n)
     down_at = np.empty(n)
     seen = np.zeros(n, np.int64)
-    value0, count0, down0, working0 = kept[12:]
+    value0, count0, down0, working0 = kept[12:16]
     value = np.empty(value0.size, np.int8)
     count = np.empty(count0.size, np.int32)
     down = np.empty(down0.size, np.int32)
     working = np.empty(levels, np.int64)
+    value_f0, count_f0, down_f0, working_f0 = kept_f[12:16]
+    state_f = (
+        np.empty(value_f0.size, np.int8),
+        np.empty(count_f0.size, np.int32),
+        np.empty(down_f0.size, np.int32),
+        np.empty(levels, np.int64),
+    )
+    sound = np.empty(n_all, np.int8)
+    level_ud = np.zeros(levels, np.int8)
+    nested_failed = np.zeros(n_all, np.int8)
+    acc = np.zeros(2)
+    trail = (
+        np.empty((sides, room + 1)),
+        np.empty((sides, room + 1), np.int8),
+        np.zeros(sides, np.int64),
+    )
+    side = (
+        np.empty((sides, room + 1)),
+        np.empty((sides, room + 1), np.int64),
+        np.empty((sides, room + 1), np.int8),
+        np.empty((sides, room + 1), np.int64),
+    )
+    side_n = np.zeros(sides, np.int64)
+    split = (kept_f, state_f, tracking, trail, side, side_n, acc)
     for i in range(lo, hi):
         r = todo[i]
         row = r - first
@@ -813,6 +930,21 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
         down_at[:] = 0.0
         cursor[:] = -1
         cursor[0] = 0
+        if split_on:
+            state_f[0][:] = value_f0
+            state_f[1][:] = count_f0
+            state_f[2][:] = down_f0
+            state_f[3][:] = working_f0
+            sound[:] = start
+            for level in range(levels):
+                level_ud[level] = 1 - _level_works(
+                    kept_f, state_f[0], state_f[3], level
+                )
+            nested_failed[:] = 0
+            trail[2][:] = 0
+            side_n[:] = 0
+            acc[0] = 0.0
+            acc[1] = 0.0
         # The system's tallies: whether it works and as of when (every
         # level's structure kept up to date as components change, see
         # ``_compiled._kept``); and its capacity trace's and histories'
@@ -855,6 +987,13 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                 returned = False
                 c = awaiting[L]
                 awaiting[L] = -1
+                if split_on:
+                    # Whether its change is unplanned, and its changes of
+                    # that since it last gave them (see _unplanned).
+                    nested_failed[c] = level_ud[child_level[c]]
+                    if _take_trail(split, child_level[c], L, c) < 0:
+                        code = -1
+                        break
                 if rt < t_end:
                     if size == heap[0].size:
                         code = -1
@@ -974,7 +1113,15 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                     status[awaiting[stack[depth - 2]]] = level_up[L]
                 continue
             if size == 0:
-                # No change before the end: its queue is used up.
+                # No change before the end: its queue is used up (its
+                # nested RBDs' changes all taken).
+                if split_on and L > 0:
+                    if (
+                        _catch_up(split, sound, level_ud, status, L, np.inf)
+                        < 0
+                    ):
+                        code = -1
+                        break
                 rt = t_end
                 rs = level_up[L]
                 rp = False
@@ -983,6 +1130,11 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                 continue
             t, c, kind_now, tag_now, size = _pop(heap, size)
             sizes[L] = size
+            if split_on and split[5][L] > 0:
+                # Its nested RBDs' failures up to now (see _unplanned).
+                if _catch_up(split, sound, level_ud, status, L, t) < 0:
+                    code = -1
+                    break
             grouped = kind_now == _GROUP
             broken = False
             if grouped:
@@ -1320,6 +1472,24 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                                 failures += 1
                                 counts_out[row, 1, c] += 1
                         changes += 1
+                    if split_on:
+                        # Failed, or down for planned work (see
+                        # _unplanned): a nested RBD as its change says.
+                        if state_now:
+                            failed = False
+                        elif child_level[c] >= 0:
+                            failed = nested_failed[c] == 1
+                        else:
+                            failed = (
+                                kind_now != _PM_START
+                                and kind_now != _TEST_DOWN
+                            )
+                        if (
+                            _unsound(split, sound, level_ud, c, failed, 0, t)
+                            < 0
+                        ):
+                            code = -1
+                            break
             else:
                 # A nested RBD's component: whether its system changes.
                 if grouped and state_now == status[c]:
@@ -1329,6 +1499,22 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                     # leaves the structure as it is.)
                     status[c] = state_now
                     _keep(kept, value, count, down, working, c, state_now)
+                    if split_on:
+                        if state_now:
+                            failed = False
+                        elif child_level[c] >= 0:
+                            failed = nested_failed[c] == 1
+                        else:
+                            failed = (
+                                kind_now != _PM_START
+                                and kind_now != _TEST_DOWN
+                            )
+                        if (
+                            _unsound(split, sound, level_ud, c, failed, L, t)
+                            < 0
+                        ):
+                            code = -1
+                            break
                 new = level_up[L]
                 if state_now != level_up[L]:
                     new = _level_works(kept, value, working, L)
@@ -1506,9 +1692,17 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                 rp = planned
                 depth -= 1
                 returned = True
+        if code == 0 and split_on:
+            # The system's nested RBDs' last failures, and its time down
+            # unplanned to the end (see _unplanned._Sound.close).
+            if _catch_up(split, sound, level_ud, status, 0, np.inf) < 0:
+                code = -1
+            elif level_ud[0]:
+                acc[1] += t_end - acc[0]
         status_out[row] = code
         if code != 0:
             continue
+        unplanned_out[row] = acc[1]
         # The system's tallies, to the end.
         if up:
             system_up += t_end - since

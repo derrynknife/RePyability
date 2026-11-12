@@ -143,6 +143,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 "A replaced component's renewal cycle",
                 ("replacement_cycle",),
             ),
+            (
+                "Planned and unplanned downtime, failures the plan avoids",
+                ("maintenance_effect",),
+            ),
             ("Spares demand and stock", ("spares_demand", "spares_stock")),
         ],
     ),

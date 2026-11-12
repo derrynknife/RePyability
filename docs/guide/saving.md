@@ -84,7 +84,7 @@ Every Monte-Carlo method takes a `seed`:
 | Where | Methods |
 |---|---|
 | `NonRepairableRBD` | `random`, `mean`, `mean_time_to_failure` and `compare` with `method="simulate"`, `mean_time_to_failure_interval` |
-| `RepairableRBD` | `availability`, `cost`, `compare` with `control_variate=False` (or where the exact methods do not reach), `spares_demand` with `method="simulate"` |
+| `RepairableRBD` | `availability`, `cost`, `compare` with `control_variate=False` (or where the exact methods do not reach), `spares_demand` and `maintenance_effect` with `method="simulate"` (or, over a window, where the exact methods do not reach) |
 | Node models | `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random`, `DegradingNode.random`, and the `mean` of a `StandbyModel`, `LoadSharingModel` or `DegradingNode` with `method="simulate"` (or with `mc_samples` or `seed`, where it has no exact mean) |
 | `PhasedMission` | `reliability`, `unreliability` and `phase_failure_probabilities` with `method="simulate"`, `reliability_interval` |
 | `Network` | `sf`, `ff` and `mean` with `method="simulate"`, `random`, `sf_uncertainty`, `mean_uncertainty` |
@@ -153,6 +153,7 @@ maintenance or hidden failures):
 | `point_availability`, `mission_availability` | numerical | Each component's renewal equation, from new or from its state, solved numerically (to about `1e-7`), and the system at its components' availabilities at each time; with repair crews, and for a standby group, a Markov chain followed by uniformization (to about `1e-13`). |
 | `availability_rate` | numerical | Each component's point availability differentiated on the grid it is solved on, times its Birnbaum importance; the jumps at scheduled events split along the path between the values either side. With limited repair crews or common-cause groups, their chains' transitions split by the component or cause that makes each (exact), and a hidden group's tests' jumps by the Shapley value. |
 | `expected_failures`, `expected_events` | numerical | Each component's expected events from its renewal equation, on the grid of its availability (to about `1e-7`), and the system's failures by the time-dependent Birnbaum/Vesely formula; `expected_cost` prices them, numerically when anything is priced. |
+| `maintenance_effect` | numerical | The diagram's and its run-to-failure twin's `expected_events` and `expected_cost` over a window (their long-run values with no window), the downtime split into planned and unplanned by each block's probability of having failed (all of a plain component's downtime); simulated, both from one seed, where the exact methods do not reach. |
 | `availability` (with the capacity over time and the delivered fraction), `cost` | simulated | Discrete-event simulation. |
 | `compare` | numerical | The difference of the two designs' expected values: their MTTFs (`mean`), or a repairable system's mission availability and expected cost (#236); with `method="simulate"` (`control_variate=False` for a repairable one), both simulated with common random numbers. |
 | `spares_demand`, `spares_stock` | numerical | Each component's replacements, a renewal process, counted on a grid (to about `1e-6`); `spares_demand(method="simulate")` counts them in simulations instead. |

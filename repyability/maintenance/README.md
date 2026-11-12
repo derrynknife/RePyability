@@ -40,6 +40,7 @@ use cases, under the same numbers.
 | UC-22 | Overhauls that restore a unit only partly (a Kijima restoration factor), every Nth replacing it: availability, failures and cost per year against overhauls that renew it, and the cheapest interval | **Built**: a `"preventive"` spec's `"restoration"`, `"replace_every"` and `"replacement_cost"`, simulated (#398) |
 | UC-23 | The line is shut 3 days every 12 months, every block gets its PM then and the bearing is replaced if older than X: availability, the shut's share of the downtime and cost, failures between shuts, and whether a 9- or 18-month shut is cheaper | **Built**: `RepairableRBD(shutdowns=...)`, tasks bound with `"shutdown"` and `"older_than"`; exact and numerical |
 | UC-24 | Outages on a timeline: shuts at given times with a duration and a scope (renew some blocks, restore others), the plan's cost by window and its NPV | **Built in part**: the same `shutdowns` at `"times"`, simulated (`availability`, `cost`); the exact cost by window and NPV take shuts on a period only |
+| UC-25 | How much of the downtime and lost production is planned and how much is from failures, and how many failures the plan avoids against running to failure | **Built**: `RepairableRBD.maintenance_effect`, and the split in `ExpectedEvents`, `EventsByWindow`, `AvailabilityResult` and `CostResult`; exact where the blocks fail independently, simulated otherwise |
 
 ## How a use case is added
 
@@ -1787,3 +1788,111 @@ answers back into dates is Reliafy's too.)
     where nothing settles before the last shut; not done here.
   - `cost_by_window` and `expected_npv` could take the simulated mean
     where the exact one refuses, as `cost_by_window` does for its spread.
+
+### UC-25: "How much of our downtime and lost production is planned and how much is from failures, and how many failures does the plan avoid each year against running to failure?"
+
+- **Status:** built: `RepairableRBD.maintenance_effect(t=None,
+  state=..., method=None)` returning a `MaintenanceEffect`; the split
+  natively in `ExpectedEvents` and `EventsByWindow`
+  (`system_planned_downtime`, `system_unplanned_downtime`,
+  `node_planned_downtime`, `node_unplanned_downtime`),
+  `AvailabilityResult` (`system_planned_downtime`,
+  `system_unplanned_downtime`) and `CostResult`
+  (`lost_production_planned`, `lost_production_unplanned`).
+- **Who asks, and why:** the planner of UC-23, reporting to operations:
+  of the hours the line is down, how many are the plan's own (which they
+  scheduled and can move) and how many are breakdowns; and whether the
+  plan earns its keep, the failures it avoids against what it costs.
+- **What they know:** the line of UC-23 (pump, motor and bearing in
+  series, shut 72 h every 12 months at 10,000 a shut, every block's PM
+  done in it, the bearing changed only once older than 18 months, 500 an
+  hour of lost production). Model time only.
+- **What they want back:** a year's downtime split into planned and
+  unplanned hours, and the lost production likewise; the failures a year
+  with the plan and running to failure, and the difference; the cost a
+  year either way.
+- **How it is solved:** the definition, in plain words: the system is
+  down *unplanned* if it would still be down with every planned task,
+  test and shut in progress finished; *planned* otherwise. A block in a
+  repair, waiting for a crew or failed unseen is failed (unplanned, also
+  while a shut holds it); one in maintenance or a test of a working unit
+  that takes time, or held by a shut, is in planned work. With
+  independent blocks, `P(down unplanned at t) = 1 - phi(P(block not
+  failed at t))`, so each exact route that tells a block's failed state
+  from its planned work gives the split: the renewal grid of age
+  replacement keeps its repairs' part apart (`GridCurve.failed_at`), a
+  block-replaced unit's replacement in progress is the share replaced at
+  the block time not yet back (`BlockCurve.failed_at`), a tested unit's
+  test of a working unit is its rows' `tested` share not yet over
+  (`TestedCurve.failed_at`), a shut's mask is planned, the block's own
+  process underneath (`MaskedCurve.failed_at`), and a nested RBD's is its
+  own structure's (`SystemCurve.failed_at`); the long run over the long
+  run's grid likewise. Running to failure is the diagram rebuilt without
+  `"preventive"`, shutdowns and maintenance groups (its tests kept: a test
+  avoids no failure). The simulation follows each block's failed state
+  path by path, the system's unplanned downtime added up as it changes,
+  on both engines (`_unplanned`, `_kernel`); a nested RBD running ahead
+  of its parent passes up whether it is down unplanned, and each change
+  of that while it is down, taken in time order. Crews and common-cause
+  groups with planned outages (whose chains do not tell planned work
+  from a repair) are simulated.
+- **Today (by hand):** the twin with zero-length planned work that some
+  callers use: the same line with a shut that takes no time (so its
+  tasks too), its unavailability read as the unplanned part:
+
+  ```python
+  today = shut_line(12, duration=0.0)
+  today.mean_unavailability() * 8760          # 10.29 h a year
+  annual.mean_unavailability() * 8760         # 83.92 h a year in all
+  ```
+
+  so 73.63 h planned and 10.29 unplanned. It is not the same thing: with
+  no shut the blocks age on another timeline (renewed 72 h earlier each
+  year), and the failures that start in a shut, or are still being
+  repaired when it starts, are not there to count. Failures avoided
+  needed a second diagram drawn by hand without the tasks and shut.
+- **Built:**
+
+  ```python
+  effect = annual.maintenance_effect()        # per hour, the long run
+  ```
+
+  | A year | With the plan | Running to failure | The plan's effect |
+  |---|---|---|---|
+  | Downtime | 83.92 h: 70.55 planned, 13.37 unplanned | 23.52 h | 60.40 h more |
+  | Lost production | 41,960: 35,274 planned, 6,687 unplanned | 11,759 | |
+  | Failures | 0.4237 | 0.9791 | 0.5554 avoided |
+  | Cost | 65,899 | 31,372 | 34,526 more |
+
+  The shut's 72 h a year are 70.55 h planned: the rest is failures that
+  start or carry on in it (the blocks keep ageing through it). Over 10
+  years from new (`maintenance_effect(87600.0)`): 746.2 h down, 647.4
+  planned and 98.7 unplanned; 4.10 failures against 8.73, 4.62 avoided;
+  simulated (2,000 runs, seed 1) 647.4 and 98.9 h, 4.70 avoided, and the
+  cost saved -312,190 ± 1,440 against the exact -314,499. At a 9-month
+  shut 96.3 h planned and 9.7 unplanned a year, at 18 months 48.1 and
+  13.1.
+- **Checks:** `test_planned_split.py`: one block under age replacement
+  (planned `E[PM time] / E[cycle]`, unplanned `E[repair time] /
+  E[cycle]`), a parallel pair (unplanned `f^2`, planned `(f + m)^2 -
+  f^2`), one unit in maintenance and the other failed (planned), a
+  periodic shut of the whole system (unplanned `q`, planned `D / P (1 -
+  q)`, ageing or standing still), a timed test of a hidden failure
+  (planned `w D / T`); exact against simulated on a nested diagram and on
+  the catalogue's (`test_catalogue.py`); both engines to the last bit
+  (`test_simulation_engines.py` compares every field); the parts adding up
+  to the downtime in every result; failures avoided against two runs
+  differenced and two diagrams' exact values; units; saving to JSON.
+- **Learned / open questions:**
+  - By the definition, a parallel pair with one unit in maintenance and
+    the other failed is down *planned* (it would be up with the
+    maintenance over), though the change that took it down was a
+    failure: `system_failures` and `system_planned_outages` count by that
+    change, the split by the state.
+  - Here the plan avoids more than half the failures but costs more than
+    it saves: the shut's lost production dominates. The split shows where
+    to look (moving the shut, or shortening it).
+  - Not built: the split through the crews' and common-cause groups'
+    chains (they could keep a block in planned work apart from one in a
+    repair), and shuts at given times exactly (as UC-24).
+

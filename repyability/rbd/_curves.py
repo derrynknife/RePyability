@@ -1713,6 +1713,7 @@ def _unit_curve(
             failures,
             maintained,
             takedown=duration is not None,
+            failed=_long_run._node_failed(rbd, node),
             fractions=(
                 None if stage_model is None else stage_model.stage_fractions()
             ),
@@ -1825,6 +1826,8 @@ def _unit_curve(
             break
         end = min(horizon, _settling_end(curve, long_run, cycle, end))
     curve.long_run = long_run
+    if curve.failed_curve is not None and long_run is not None:
+        curve.failed_curve.long_run = 1.0 - _long_run._node_failed(rbd, node)
     if curve.unit_events is not None and long_run is None:
         # Followed to the horizon: no rates past it.
         curve.unit_events.failure_rate = None
@@ -1976,4 +1979,8 @@ def _first_unit(
         return _sf_values(model.sf, r + s) / left
 
     splits = point_knots(model) - r
-    return First(down_sf=down_sf, down_splits=splits[splits > 0.0])
+    return First(
+        down_sf=down_sf,
+        down_splits=splits[splits > 0.0],
+        maintenance=bool(start.maintenance),
+    )

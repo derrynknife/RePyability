@@ -30,6 +30,7 @@ from repyability.rbd import (
     _shutdowns,
     _spares,
     _timeline_runs,
+    _unplanned,
 )
 from repyability.rbd._bayesian_life import PosteriorPredictive
 from repyability.rbd._runs import (  # noqa: E402,F401
@@ -845,4 +846,7 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         give(
             ("initialize_event_queue", "next_event"), r.refused(stepping or "")
         )
+    # What the plan does (planned against unplanned, failures avoided):
+    # from the routes above, the plan's and running to failure's.
+    out["maintenance_effect"] = _unplanned.effect_route(rbd, out)
     return r.AnalysisRoutes(sorted(out.items()))
