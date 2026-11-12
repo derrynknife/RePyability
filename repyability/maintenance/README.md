@@ -37,7 +37,7 @@ use cases, under the same numbers.
 | UC-19 | What a plan is worth over a horizon at a discount rate, and as a yearly cost | **Built**: `RepairableRBD.expected_npv`, `NonRepairable.age_replacement_value` |
 | UC-20 | One unit run on an operating schedule (covariates and value by stretch, in model time): the value earned, the failures' cost and the NPV, and the best time to switch from one way of running to another | **Built** (one unit): `operating_schedule_value`, `best_switch_time` |
 | UC-21 | A plan against its outage log: expected and actual cash flows so far, the variance, and the plan re-valued from the states now | **Built**: `RepairableRBD.plan_vs_actual` |
-| UC-22 | Overhauls that restore a unit only partly (a Kijima restoration factor), every Nth replacing it: availability, failures and cost per year against overhauls that renew it, and the cheapest interval | **Built**: a `"preventive"` spec's `"restoration"`, `"replace_every"` and `"replacement_cost"` (simulated) |
+| UC-22 | Overhauls that restore a unit only partly (a Kijima restoration factor), every Nth replacing it: availability, failures and cost per year against overhauls that renew it, and the cheapest interval | **Built**: a `"preventive"` spec's `"restoration"`, `"replace_every"` and `"replacement_cost"`, simulated (#398) |
 
 ## How a use case is added
 
@@ -1397,7 +1397,7 @@ answers back into dates is Reliafy's too.)
 
 ### UC-22: "A pump's 6-monthly overhaul restores it only partly (a fitted Kijima restoration factor), and every third overhaul replaces it. What availability, failures and cost per year, against overhauls that renew it, and which overhaul interval is cheapest?"
 
-- **Status:** built: a `"preventive"` spec's `"restoration"` (Kijima's
+- **Status:** built (#398): a `"preventive"` spec's `"restoration"` (Kijima's
   model and `q`, or a fitted `GeneralizedRenewal`), `"replace_every"` and
   `"replacement_cost"`, simulated by `availability`, `cost`,
   `simulate_timelines`, `cost_by_window` and
