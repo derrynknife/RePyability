@@ -243,6 +243,23 @@ other release, fixes included, the minor.
   only, one failure, several failures) and of exceeding a budget, and the
   whole span's own distribution. Numerical by default, simulated with
   `method="simulate"` (the windows of the same histories).
+- Preventive maintenance that restores a unit only partly (UC-22): a
+  `"preventive"` spec's `"restoration"`, Kijima's model and restoration
+  factor `q` (0 as new, 1 as old as before; Kijima I takes away the share
+  `1 - q` of the age gained since the last action, Kijima II scales the
+  whole virtual age), given as a dict like `"repair"` or as a fitted
+  surpyval `GeneralizedRenewal`. The unit keeps a virtual age, and its
+  next life is drawn given it. `"replace_every": N` replaces the unit as
+  new at every `N`-th task since it was last renewed, charged
+  `"replacement_cost"` (by default the task's cost); only that task uses
+  a spare. Under the age, block and condition policies (an inspection
+  judges the unit by its virtual age); not with a calendar policy, a
+  level or an opportunity. The simulations follow it, in Python, from new
+  or from a state's `virtual_age`; the exact methods refuse it and say to
+  simulate. `q` is a lever (`preventive.restoration.q`), and the diagram
+  saves and loads with it. `q = 0` under Kijima II (or Kijima I with
+  repairs that renew) is taken as no restoration, so its answers are
+  today's.
 
 ### Changed
 
@@ -274,6 +291,15 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- A unit repaired imperfectly and started from a state (a `virtual_age`
+  or an `age`) drew what is left of its life from numpy's global random
+  numbers rather than its own stream, so a seeded run from that state
+  could differ between calls. It now draws from its own stream, as
+  every other component started from a state does: such runs are
+  reproducible, and their numbers differ from before.
+- Stepping a simulation by hand (`initialize_event_queue` and
+  `next_event`) from a state of a unit repaired imperfectly raised an
+  `AttributeError`; it now starts from its virtual age.
 - Age replacement of a component whose life is a fitted degradation
   process (a `"preventive": {"policy": "age", ...}` in a `RepairableRBD`,
   and `NonRepairable.avg_replacement_time`, `find_optimal_replacement` and

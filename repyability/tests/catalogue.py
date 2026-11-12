@@ -646,6 +646,66 @@ def repairable_kinds():
                     replace_cost=10.0,
                 )
             ),
+            # Preventive maintenance that restores a unit only partly
+            # (Kijima): by age, on the calendar with every third task
+            # replacing it, on condition, with imperfect repair too, and
+            # on a duty.
+            "maintenance restores partly, by age": system(
+                unit(
+                    preventive={
+                        "interval": 300.0,
+                        "cost": 2.0,
+                        "restoration": {"model": "kijima1", "q": 0.3},
+                    },
+                    repair_cost=1.0,
+                    replace_cost=10.0,
+                )
+            ),
+            "maintenance restores partly, every third replaces": system(
+                unit(
+                    preventive={
+                        "interval": 300.0,
+                        "policy": "block",
+                        "duration": E([0.5]),
+                        "cost": 2.0,
+                        "restoration": {"model": "kijima2", "q": 0.5},
+                        "replace_every": 3,
+                        "replacement_cost": 8.0,
+                    },
+                    repair_cost=1.0,
+                )
+            ),
+            "maintenance restores partly, on condition": system(
+                unit(
+                    preventive={
+                        "interval": 100.0,
+                        "policy": "condition",
+                        "threshold": 0.1,
+                        "inspection_cost": 1.0,
+                        "restoration": {"model": "kijima1", "q": 0.5},
+                    },
+                    replace_cost=10.0,
+                )
+            ),
+            "imperfect repair, maintenance restores partly": system(
+                unit(
+                    repair={"model": "kijima1", "q": 0.5},
+                    preventive={
+                        "interval": 300.0,
+                        "restoration": {"model": "kijima1", "q": 0.0},
+                    },
+                    repair_cost=1.0,
+                )
+            ),
+            "operated part of the time, maintenance restores partly": system(
+                unit(
+                    duty=0.25,
+                    preventive={
+                        "interval": 300.0,
+                        "restoration": {"model": "kijima2", "q": 0.4},
+                    },
+                )
+            ),
             "tested, constant rate": system(
                 {
                     "reliability": E([0.002]),

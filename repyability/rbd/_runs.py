@@ -62,6 +62,7 @@ from repyability.rbd import (
     _curves,
     _long_run,
     _requirements,
+    _spec,
     _windows,
 )
 from repyability.rbd._common import (
@@ -1293,14 +1294,21 @@ def _twin_simpler(diagram, node, spec: dict) -> Tuple[Any, str]:
             if schedule.policy == "block"
             else "replacement on condition"
         )
-    if not drop:
+    restored = node in diagram._restoring and "preventive" not in drop
+    if not drop and not restored:
         return spec, ""
+    simpler = {key: value for key, value in spec.items() if key not in drop}
     what = list(dict.fromkeys(drop[key] for key in drop if key in spec))
+    if restored:
+        # Its tasks renew it.
+        simpler["preventive"] = {
+            key: value
+            for key, value in spec["preventive"].items()
+            if key not in _spec.RESTORATION_KEYS
+        }
+        what.append("partial restoration by maintenance")
     note = " (its failures are revealed)" if "inspection" in drop else ""
-    return (
-        {key: value for key, value in spec.items() if key not in drop},
-        f"the {' and '.join(what)} of {node!r}{note}",
-    )
+    return simpler, f"the {' and '.join(what)} of {node!r}{note}"
 
 
 def _simulated(

@@ -35,6 +35,7 @@ from repyability.rbd import (
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import _overrides, _runs, _streams, _timeline_runs
 from repyability.rbd._common import (
+    _keeps_virtual_age,
     _safe_mean,
 )
 from repyability.rbd._curves import (
@@ -54,6 +55,7 @@ from repyability.rbd._events import (
     _Imperfect,
     _Inspection,
     _Preventive,
+    _Restoration,
     _Run,
     _Standby,
     _StandbyDraws,
@@ -299,17 +301,25 @@ def _aged_life(model, age: float, u: float) -> float:
 
 
 class _ImperfectComponent(_StreamedComponent):
-    """Stands in for a component repaired imperfectly (a spec's
-    ``"repair"``; see ``RepairableRBD``) during a simulation, keeping the
-    unit's virtual age (Kijima): a repair after an operating time ``x``
-    takes it from ``v`` to ``v + q * x`` (Kijima I) or ``q * (v + x)``
-    (Kijima II), and its next life is drawn given it (``_aged_life``),
-    from a stream of its own. A unit as new draws from its life stream, as
-    any component does. At the ``replace_after``-th failure since it was
-    renewed it is replaced instead, as new, and a scheduled replacement
-    renews it too (``reset``). ``operated`` is its operating time since it
-    was renewed, which age replacement counts. Without streams, it draws
-    from its models and numpy's global RNG."""
+    """Stands in during a simulation for a component that keeps a virtual
+    age (Kijima, see ``_common._keeps_virtual_age``): one repaired
+    imperfectly (a spec's ``"repair"``; see ``RepairableRBD``), or
+    restored only partly by its preventive maintenance (a
+    ``"restoration"``), or both. A repair after an operating time ``x``
+    since the last action takes the virtual age from ``v`` to ``v + q *
+    x`` (Kijima I) or ``q * (v + x)`` (Kijima II), or without a
+    ``"repair"`` renews the unit; a restoring task (``maintained``) does
+    the same with its own model and ``q``, ``x`` then the operating time
+    since the start of the current sojourn (``since``: the end of the
+    last repair or task, or put in service). Each life is drawn given the
+    virtual age (``_aged_life``), from a stream of its own; a unit as new
+    draws from its life stream, as any component does. At the
+    ``replace_after``-th failure since it was renewed it is replaced
+    instead, as new, and at the ``replace_every``-th task too, as by any
+    task that does not restore it partly (``reset``). ``operated`` is its
+    operating time since it was renewed or last maintained, which age
+    replacement counts. Without streams, it draws from its models and
+    numpy's global RNG."""
 
     __slots__ = (
         "_unit",
@@ -317,37 +327,46 @@ class _ImperfectComponent(_StreamedComponent):
         "_q",
         "_second",
         "_limit",
+        "_renews",
+        "_restoration",
         "_x",
         "age",
         "operated",
         "count",
+        "tasks",
+        "since",
     )
 
     def __init__(
         self,
         unit,
-        imperfect: "_Imperfect",
+        imperfect: Optional["_Imperfect"],
         failure=None,
         repair=None,
         aged=None,
         duration=None,
         model=None,
         test=None,
+        restoration: Optional["_Restoration"] = None,
+        start=None,
     ):
-        super().__init__(failure, repair, duration, model, test=test)
+        super().__init__(failure, repair, duration, model, start, test=test)
         self._unit = unit
         self._aged = aged
-        self._q = imperfect.q
-        self._second = imperfect.kijima == "kijima2"
-        self._limit = imperfect.replace_after
+        # Without imperfect repair, a repair renews the unit.
+        self._renews = imperfect is None
+        self._q = 0.0 if imperfect is None else imperfect.q
+        self._second = imperfect is not None and imperfect.kijima == "kijima2"
+        self._limit = None if imperfect is None else imperfect.replace_after
+        self._restoration = restoration
         self._x = 0.0
-        self.age = self.operated = 0.0
-        self.count = 0
+        self.age = self.operated = self.since = 0.0
+        self.count = self.tasks = 0
 
     def reset(self):
         self._fails_next = True
         self.age = self.operated = 0.0
-        self.count = 0
+        self.count = self.tasks = 0
 
     def life_drawn(self, x: float = 0.0) -> None:
         # Its repair after the failure drawn takes its virtual age on by
@@ -357,9 +376,43 @@ class _ImperfectComponent(_StreamedComponent):
 
     @property
     def replacing(self) -> bool:
-        """Whether the unit's failure (the last drawn) is the
-        ``replace_after``-th since it was renewed, which replaces it."""
-        return self._limit is not None and self.count + 1 >= self._limit
+        """Whether the unit's failure (the last drawn) is renewed by its
+        repair: a repair that renews, or the ``replace_after``-th failure
+        since it was renewed, which replaces it."""
+        return self._renews or (
+            self._limit is not None and self.count + 1 >= self._limit
+        )
+
+    @property
+    def task_replaces(self) -> bool:
+        """Whether the unit's next preventive task replaces it as new: a
+        task that does not restore it partly, or the ``replace_every``-th
+        since it was renewed."""
+        restoration = self._restoration
+        return restoration is None or (
+            restoration.replace_every is not None
+            and self.tasks + 1 >= restoration.replace_every
+        )
+
+    def maintained(self, t: float) -> None:
+        """A preventive task starts on the working unit at ``t``: it
+        restores the unit partly, by the operating time since the start of
+        its sojourn, or replaces it (``task_replaces``). The failure drawn
+        for it never happens: its next draw is a life, given its new
+        virtual age."""
+        if self.task_replaces:
+            self.reset()
+            return
+        restoration: Any = self._restoration
+        x = t - self.since
+        self.age = (
+            restoration.q * (self.age + x)
+            if restoration.kijima == "kijima2"
+            else self.age + restoration.q * x
+        )
+        self._fails_next = True
+        self.operated = 0.0
+        self.tasks += 1
 
     def next_event(self):
         if self._fails_next:
@@ -380,7 +433,7 @@ class _ImperfectComponent(_StreamedComponent):
         self._fails_next = True
         if self.replacing:
             self.age = self.operated = 0.0
-            self.count = 0
+            self.count = self.tasks = 0
         else:
             x = self._x
             self.count += 1
@@ -402,6 +455,7 @@ def _stand_in(
     path: tuple,
     duration=None,
     imperfect: Optional["_Imperfect"] = None,
+    restoration: Optional["_Restoration"] = None,
 ):
     """What a component draws its events from during ``availability()``
     (see ``RepairableRBD._streamed_components``): a stand-in taking its
@@ -409,8 +463,9 @@ def _stand_in(
     streamed (a model other than a surpyval parametric one, or a subclass,
     which may draw its events its own way), which then draws from numpy's
     global RNG. ``path`` is the node's place, nested RBDs included, which
-    names its streams; ``duration`` its maintenance or test time model, and
-    ``imperfect`` its imperfect repair (see ``_ImperfectComponent``)."""
+    names its streams; ``duration`` its maintenance or test time model,
+    ``imperfect`` its imperfect repair and ``restoration`` its partial
+    restoration by its maintenance (see ``_ImperfectComponent``)."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     if type(component) is RepairableRBD:
@@ -422,9 +477,11 @@ def _stand_in(
         return component
     failure = run.stream(path, _streams.FAILURE)
     repair = run.stream(path, _streams.REPAIR)
-    if imperfect is not None:
+    if imperfect is not None or restoration is not None:
         if failure is None or repair is None:
-            return _ImperfectComponent(component, imperfect, model=duration)
+            return _ImperfectComponent(
+                component, imperfect, model=duration, restoration=restoration
+            )
         return _ImperfectComponent(
             component,
             imperfect,
@@ -434,6 +491,8 @@ def _stand_in(
             run.stream(path, _streams.DURATION),
             duration,
             run.stream(path, _streams.TEST),
+            restoration,
+            run.stream(path, _streams.START),
         )
     if failure is None or repair is None:
         return component
@@ -641,7 +700,7 @@ class _ShardRunner:
 
 
 #: The per-action costs: charged at each preventive action or inspection.
-_ACTION_COST_KEYS = ("preventive_cost", "inspection_cost")
+_ACTION_COST_KEYS = ("preventive_cost", "inspection_cost", "replacement_cost")
 
 
 def _validate_crews(crews) -> Optional[int]:
@@ -836,7 +895,10 @@ def _stream_specs(
         add(path, _streams.REPAIR, repair, expected["repair"])
         if _draws_start(states.get(name)):
             add(path, _streams.START, _uniforms, 1.0)
-        if name in rbd._imperfect:
+        if name in rbd._restoring:
+            # A life after each repair or task, given its virtual age.
+            add(path, _streams.AGED, _uniforms, expected["failure"])
+        elif name in rbd._imperfect:
             # A life after each repair, given the unit's virtual age.
             add(path, _streams.AGED, _uniforms, expected["repair"])
         schedule = rbd._preventive.get(name)
@@ -996,6 +1058,7 @@ def _streamed_components(
                     prefix + (name,),
                     _duration_model(rbd, name),
                     rbd._imperfect.get(name),
+                    rbd._restoring.get(name),
                 )
                 if arrangement is None
                 else _standby_draws(
@@ -1029,7 +1092,7 @@ def _own_draws(rbd, node, own: float) -> "_StreamedComponent":
     )
 
 
-def _keyed_charges(rbd, run: _streams.Run) -> Tuple[
+def _keyed_charges(rbd, run: _streams.Run, sources: dict) -> Tuple[
     dict[Any, list[tuple[int, Any]]],
     dict[Any, Any],
     dict[Any, Any],
@@ -1039,7 +1102,10 @@ def _keyed_charges(rbd, run: _streams.Run) -> Tuple[
     ``_CATEGORIES``); and, for each node with a preventive-maintenance
     or an inspection cost, what is charged at each preventive action or
     inspection. ``charges.draw()`` gives the next amount: a fixed cost,
-    or the next draw from the cost's own stream (see ``_streams``)."""
+    or the next draw from the cost's own stream (see ``_streams``).
+    ``sources`` are what the components draw their events from (a
+    restoring task that replaces is charged its ``replacement_cost``,
+    see ``_RestorationCharge``)."""
 
     def charges(node, key: str):
         cost = rbd.costs[node][key]
@@ -1078,12 +1144,36 @@ def _keyed_charges(rbd, run: _streams.Run) -> Tuple[
                     None,
                 ),
             )
+    for node in rbd._restoring:
+        if "replacement_cost" in rbd.costs.get(node, {}):
+            preventive[node] = _RestorationCharge(
+                sources[node],
+                preventive.get(node),
+                charges(node, "replacement_cost"),
+            )
     inspection = {
         node: charges(node, "inspection_cost")
         for node, node_costs in rbd.costs.items()
         if "inspection_cost" in node_costs
     }
     return failures, preventive, inspection
+
+
+class _RestorationCharge:
+    """What a component whose preventive task restores it partly is
+    charged at a task (see ``_ImperfectComponent``): the task's ``cost``
+    (``restore``), or at the ``replace_every``-th, which replaces it, its
+    ``replacement_cost`` (``replace``); None charges nothing. Asked
+    before the task changes the unit."""
+
+    __slots__ = ("source", "restore", "replace")
+
+    def __init__(self, source, restore, replace):
+        self.source, self.restore, self.replace = source, restore, replace
+
+    def draw(self) -> float:
+        charges = self.replace if self.source.task_replaces else self.restore
+        return 0.0 if charges is None else charges.draw()
 
 
 class _CalendarCharge:
@@ -1134,6 +1224,7 @@ def _context(
     run = _streams.Run(plan, reseed=not complete)
     has_costs = rbd.has_costs
     nodes = list(rbd.components)
+    sources = _streamed_components(rbd, run)
     return _Context(
         t_simulation=t_simulation,
         working=set(working_nodes),
@@ -1141,8 +1232,10 @@ def _context(
         method=method,
         capacity=capacity,
         run=run,
-        sources=_streamed_components(rbd, run),
-        charges=_keyed_charges(rbd, run) if has_costs else ({}, {}, {}),
+        sources=sources,
+        charges=(
+            _keyed_charges(rbd, run, sources) if has_costs else ({}, {}, {})
+        ),
         downtime_cost_rates={
             node: c["downtime_cost"]
             for node, c in rbd.costs.items()
@@ -1580,9 +1673,17 @@ def _maintained_follow_up(
         # still ahead of it.
         return _condition_next(rbd, node, t, schedule, source)
     if event.preventive:
-        # Replaced: the new unit has its own life ahead of it (the
-        # failure drawn for the old one never happens).
-        source.reset()
+        if node in rbd._restoring:
+            # Restored partly, or replaced, as the task starts (an instant
+            # one, or one taking the unit down): the failure drawn for it
+            # never happens, and its next life is drawn given its new
+            # virtual age, from the end of the task.
+            if schedule.duration is None or not event.status:
+                source.maintained(t)
+        else:
+            # Replaced: the new unit has its own life ahead of it (the
+            # failure drawn for the old one never happens).
+            source.reset()
         if not event.status:
             # Down for maintenance: back, as new, once it is done.
             if isinstance(source, _StreamedComponent):
@@ -1615,6 +1716,11 @@ def _renewal(
     ``start``, before ``t``, and has ``life`` left."""
     if life is None:
         life, _ = source.next_event()
+    restoring = node in rbd._restoring
+    if restoring:
+        # Its sojourn starts now (or, from a state, at start), from the
+        # virtual age it keeps.
+        source.since = t if start is None else start
     if schedule.policy == "condition":
         failure = t + life
         if schedule.level is not None:
@@ -1624,18 +1730,21 @@ def _renewal(
             rbd._run_state._levels[node] = (t, level)
             rbd._run_state._in_service[node] = (failure, math.inf)
             return _condition_next(rbd, node, t, schedule, source)
+        renewed = t if start is None else start
+        if restoring:
+            # At virtual age v at the start of its sojourn, the unit is as
+            # one renewed v before (it ages as such until its next action).
+            renewed -= source.age
         rbd._run_state._in_service[node] = (
             failure,
-            _replaced_at(
-                rbd, node, t if start is None else start, failure, schedule, t
-            ),
+            _replaced_at(rbd, node, renewed, failure, schedule, t),
         )
         return _condition_next(rbd, node, t, schedule, source)
     if start is None:
         # Back from an imperfect repair, the unit is as old as its
-        # operating time since it was renewed, which age replacement
-        # counts.
-        start = t - source.operated if node in rbd._imperfect else t
+        # operating time since it was renewed or last maintained, which
+        # age replacement counts.
+        start = t - source.operated if _keeps_virtual_age(rbd, node) else t
     if schedule.policy == "calendar":
         # On the calendar policy's thresholds, from when the unit was put
         # in; charged its opportunity's price when it falls.
@@ -1662,16 +1771,24 @@ def _renewal(
 
 def _own_sources(rbd, states: Optional[dict] = None) -> dict:
     """What the components draw their events from when no streams are
-    given: themselves, but for an imperfectly repaired one, a stand-in
-    keeping its virtual age (see ``_ImperfectComponent``), and for one
+    given: themselves, but for one that keeps a virtual age (repaired
+    imperfectly, or restored partly by its maintenance), a stand-in
+    keeping it (see ``_ImperfectComponent``), and for another
     started from a state in ``states`` that draws what is left of its
     life or repair, a stand-in whose next draw can be set (see
     ``_started``): drawing from their models and numpy's global
     RNG."""
     starting = [
-        node for node, start in (states or {}).items() if _draws_start(start)
+        node
+        for node, start in (states or {}).items()
+        if _draws_start(start) and not _keeps_virtual_age(rbd, node)
     ]
-    if not rbd._imperfect and not starting and not rbd.ccf_groups:
+    if (
+        not rbd._imperfect
+        and not rbd._restoring
+        and not starting
+        and not rbd.ccf_groups
+    ):
         return rbd.components
     sources = dict(rbd.components)
     for group in rbd.ccf_groups:
@@ -1682,11 +1799,12 @@ def _own_sources(rbd, states: Optional[dict] = None) -> dict:
                 sources[member] = _own_draws(rbd, member, own)
     for cause in _ccf_groups._shared_causes(rbd):
         sources[cause] = _CauseDraws(cause.rate)
-    for node, imperfect in rbd._imperfect.items():
+    for node in {**rbd._imperfect, **rbd._restoring}:
         sources[node] = _ImperfectComponent(
             rbd.components[node],
-            imperfect,
+            rbd._imperfect.get(node),
             model=_duration_model(rbd, node),
+            restoration=rbd._restoring.get(node),
         )
     for node in starting:
         component = rbd.components[node]
@@ -2207,6 +2325,8 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     # Imperfect repair (#109): a failure repaired, not replaced, uses no
     # spare and is charged only its repair.
     imperfect = rbd._imperfect
+    # A task that restores a unit partly uses no spare either.
+    restoring = rbd._restoring
     # Opportunistic maintenance (#108): each member's early renewals.
     maintenance, member_group = rbd._maintenance, rbd._member_group
     cancelled, early = rbd._run_state._cancelled, rbd._run_state._early
@@ -2337,7 +2457,10 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             # working unit (renewed in place, or found working), or a
             # test that finds a hidden failure, whose repair starts now.
             if event.preventive:
-                replaced[index[node]] += 1
+                if not restoring or node not in restoring:
+                    replaced[index[node]] += 1
+                elif sources[node].task_replaces:
+                    replaced[index[node]] += 1
                 rep_cost += pay(node, 2, preventive_charges.get(node))
                 # Replaced on condition: at an inspection, charged too.
                 rep_cost += pay(node, 3, inspection_charges.get(node))
@@ -2386,8 +2509,12 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         elif event.preventive:
             # A planned outage: charged the preventive cost, and the
             # inspection's if replaced on condition (a nested RBD's own
-            # costs are not counted).
-            replaced[c] += 1
+            # costs are not counted). A task that restores the unit
+            # partly uses no spare.
+            if not restoring or node not in restoring:
+                replaced[c] += 1
+            elif sources[node].task_replaces:
+                replaced[c] += 1
             rep_cost += pay(node, 2, preventive_charges.get(node))
             rep_cost += pay(node, 3, inspection_charges.get(node))
             if node in member_group and not renewing_early:

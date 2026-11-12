@@ -1557,8 +1557,21 @@ def test_what_numba_does_not_run_inside_a_nested_rbd():
         [("s", "a"), ("a", "t")],
         {"a": {**unit, "repair": {"model": "kijima1", "q": 0.5}}},
     )
+    restoring = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {
+            "a": {
+                **unit,
+                "preventive": {
+                    "interval": 30.0,
+                    "restoration": {"model": "kijima1", "q": 0.5},
+                },
+            }
+        },
+    )
     for inner, reason in [
         (imperfect, "imperfect repair"),
+        (restoring, "partial restoration by preventive maintenance"),
         (on_condition(), "replacement on condition"),
     ]:
         rbd = outer(inner)

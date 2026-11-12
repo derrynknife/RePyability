@@ -40,6 +40,7 @@ from repyability.rbd._block_replacement import (
 from repyability.rbd._common import (
     _common_period,
     _constant_rate,
+    _keeps_virtual_age,
     _repair_rate,
     _sf_values,
 )
@@ -240,6 +241,10 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
     if not message:
         message = r.refusal(
             partial(_requirements._require_no_opportunities, rbd, node)
+        )
+    if not message:
+        message = r.refusal(
+            partial(_requirements._require_full_restoration, rbd, node)
         )
     if not message and node in rbd._imperfect:
         message = r.refusal(
@@ -729,10 +734,12 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
     imperfectly repaired one's, outside a simulation)."""
     schedule = rbd._preventive.get(node)
     inspection = rbd._inspection.get(node)
-    if state.virtual_age is not None and node not in rbd._imperfect:
+    if state.virtual_age is not None and not _keeps_virtual_age(rbd, node):
         raise ValueError(
             f"Component {node!r} is not repaired imperfectly (it has no "
-            "'repair'), so it has no virtual age: give its age alone."
+            "'repair') nor restored partly by its maintenance (no "
+            "'restoration'), so it has no virtual age: give its age "
+            "alone."
         )
     if (
         schedule is not None
@@ -790,6 +797,24 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
             f"Component {node!r} is a standby group, whose units' "
             "states are not taken as a state: leave it out (new)."
         )
+    restoration = rbd._restoring.get(node)
+    if restoration is not None:
+        if not simulated:
+            raise NotImplementedError(
+                f"Component {node!r} is restored only partly by its "
+                "maintenance: its state (its age and virtual age) is "
+                "taken by the simulations (availability, cost, "
+                "simulate_timelines), not here: leave it out (new)."
+            )
+        if restoration.replace_every is not None and not (
+            state.alive and not state.age and not state.virtual_age
+        ):
+            raise NotImplementedError(
+                f"Component {node!r} is replaced at every "
+                f"{restoration.replace_every} tasks since it was renewed, "
+                "and a state does not say how many it has had since: "
+                "leave it out (new), or give no replace_every."
+            )
     imperfect = rbd._imperfect.get(node)
     if imperfect is not None:
         if not simulated:
@@ -888,6 +913,8 @@ def _check_own_life(rbd, node, state: NodeState, simulated: bool):
         what = "is tested for hidden failures"
     elif node in rbd._imperfect:
         what = "is repaired imperfectly"
+    elif node in rbd._restoring:
+        what = "is restored partly by its maintenance"
     elif node in rbd._standby:
         what = "is a standby group"
     elif isinstance(spec, dict) and spec.get("duty") is not None:
@@ -1611,6 +1638,7 @@ def _unit_curve(
     block-replacement curve, up to its first block time."""
     _requirements._require_time_models(rbd, node)
     _requirements._require_no_opportunities(rbd, node)
+    _requirements._require_full_restoration(rbd, node)
     component = rbd.components[node]
     if node in rbd._imperfect:
         return _minimal_repair_curve(rbd, node, horizon, counts)

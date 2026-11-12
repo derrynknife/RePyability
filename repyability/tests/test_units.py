@@ -216,6 +216,59 @@ def test_a_duty_is_the_life_on_the_calendar():
     assert again._init_args["components"]["a"]["duty"] == 0.25
 
 
+def restored(life, c=1.0, **more):
+    """A unit whose task every ``300 c`` restores it partly, every third
+    replacing it, its repairs and tasks taking time."""
+    spec = {
+        "reliability": life,
+        "repairability": E([0.5 / c]),
+        "preventive": {
+            "interval": 300.0 * c,
+            "policy": "block",
+            "duration": E([1.0 / c]),
+            "restoration": {"model": "kijima2", "q": 0.4},
+            "replace_every": 3,
+        },
+        **more,
+    }
+    return RepairableRBD(ONE, {"a": spec})
+
+
+@pytest.mark.parametrize("c", [1e-6, 1e3, 1e6])
+def test_a_partial_restoration_does_not_depend_on_the_unit(c):
+    # The same draws, every time scaled: the same failures and outages,
+    # and the availability to rounding.
+    runs = [
+        restored(W([100 * scale, 2]), scale).availability(
+            t_simulation=2000.0 * scale,
+            mc_samples=200,
+            seed=4,
+            control_variate=False,
+        )
+        for scale in (1.0, c)
+    ]
+    assert runs[0].system_failures == runs[1].system_failures
+    assert runs[0].system_planned_outages == runs[1].system_planned_outages
+    assert runs[1].mean_availability == pytest.approx(
+        runs[0].mean_availability, rel=1e-9
+    )
+
+
+def test_a_partial_restoration_on_a_duty_is_on_the_calendar():
+    # The virtual age is on the calendar, the life having been put there;
+    # q is a fraction, with no unit.
+    first = restored(W([100, 2]), duty=0.25).availability(
+        t_simulation=4000.0, mc_samples=100, seed=3
+    )
+    second = restored(W([400, 2])).availability(
+        t_simulation=4000.0, mc_samples=100, seed=3
+    )
+    assert first.system_failures == second.system_failures
+    assert first.sample_mean_availability == pytest.approx(
+        second.sample_mean_availability, rel=1e-12
+    )
+
+
 def test_a_duty_of_one_changes_nothing():
     assert duty_rbd(W([100, 2]), 1.0).mean_availability() == (
         duty_rbd(W([100, 2]), None).mean_availability()

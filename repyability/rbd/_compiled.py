@@ -141,6 +141,8 @@ def _unsupported_level(
         return "maintenance groups"
     if rbd._imperfect:
         return "imperfect repair"
+    if rbd._restoring:
+        return "partial restoration by preventive maintenance"
     if rbd._preventive:
         if not numba:
             return "scheduled preventive maintenance"

@@ -31,6 +31,15 @@ from repyability.utils.checks import (
 from repyability.utils.wrappers import outside_level
 
 
+def _keeps_virtual_age(rbd, node) -> bool:
+    """Whether a component keeps a virtual age (Kijima) in a simulation:
+    one repaired imperfectly (a spec's ``"repair"``), or restored only
+    partly by its preventive maintenance (a ``"restoration"``). Its next
+    life is drawn given that age, so a repair or a task does not renew
+    it (see ``_event_loop._ImperfectComponent``)."""
+    return node in rbd._imperfect or node in rbd._restoring
+
+
 def _safe_mean(model) -> float:
     """A model's mean (see ``model_mean``), or NaN if it has none."""
     try:

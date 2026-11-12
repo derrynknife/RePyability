@@ -143,6 +143,11 @@ def _log_state_refusal(rbd, node) -> Optional[str]:
             f"Component {node!r} is repaired imperfectly: its log does not "
             "give its virtual age." + ask
         )
+    if node in rbd._restoring:
+        return (
+            f"Component {node!r} is restored only partly by its "
+            "maintenance: its log does not give its virtual age." + ask
+        )
     if node in rbd._inspection:
         return (
             f"Component {node!r} has hidden failures: its log does not say "

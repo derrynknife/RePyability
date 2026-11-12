@@ -379,6 +379,23 @@ def _serialise_schedule(spec: dict) -> dict:
             out[key] = serialise_model(cost)
         elif cost:
             out[key] = float(cost)
+    if spec.get("restoration") is not None:
+        # A task that restores partly: its Kijima model and factor (a
+        # fitted process given has been written as these, see
+        # _processes.as_spec), the task that replaces and its cost.
+        out["restoration"] = {
+            "model": spec["restoration"]["model"],
+            "q": float(spec["restoration"]["q"]),
+        }
+    if spec.get("replace_every") is not None:
+        out["replace_every"] = int(spec["replace_every"])
+    cost = spec.get("replacement_cost")
+    if hasattr(cost, "qf"):
+        out["replacement_cost"] = serialise_model(cost)
+    elif cost is not None:
+        # Kept at 0 too: a replacement then costs nothing, not the task's
+        # cost.
+        out["replacement_cost"] = float(cost)
     return out
 
 
@@ -386,7 +403,9 @@ def _deserialise_schedule(d: dict) -> dict:
     out = dict(d)
     if isinstance(d["duration"], dict):
         out["duration"] = deserialise_model(d["duration"])
-    for key in ("cost", "inspection_cost"):
+    if "restoration" in d:
+        out["restoration"] = dict(d["restoration"])
+    for key in ("cost", "inspection_cost", "replacement_cost"):
         if isinstance(d.get(key), dict):
             out[key] = deserialise_model(d[key])
     return out

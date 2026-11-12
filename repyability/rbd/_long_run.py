@@ -399,7 +399,8 @@ def _block_cycle(rbd, node):
     ``_block_replacement``) or replaced on condition (see
     ``_condition_replacement``, or by its level: ``_level_replacement``,
     whose cycle is one inspection interval of the long run), computed
-    once and kept."""
+    once and kept. A unit its tasks restore only partly has none."""
+    _requirements._require_full_restoration(rbd, node)
     component = rbd.components[node]
     schedule = rbd._preventive[node]
     if schedule.level is not None:

@@ -211,6 +211,18 @@ def _spec_levers(spec: dict) -> List[tuple]:
                     float(value),
                 )
             )
+        restoration = options.get("restoration")
+        if isinstance(restoration, dict) and "q" in restoration:
+            # The restoration factor of a task that restores partly.
+
+            def moved_restoration(v, key=key, options=options):
+                restored = {**options["restoration"], "q": v}
+                return {**spec, key: {**options, "restoration": restored}}
+
+            q = float(restoration["q"])
+            out.append(
+                (f"{key}.restoration.q", q, moved_restoration, False, _UNIT, q)
+            )
         duration = options.get("duration")
         if duration is not None and not isinstance(duration, str):
             for name, value, moved, bounds, scale in _model_levers(

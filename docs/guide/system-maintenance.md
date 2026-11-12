@@ -25,6 +25,8 @@ between preventive and corrective maintenance:
 | `calendar` | Under `"calendar"`: the [`CalendarPolicy`][repyability.CalendarPolicy] of [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]. |
 | `duration` | `"instant"` (the default): renewed in place, never down. Or a time-to-maintain model: the unit is down meanwhile, a *planned outage*. |
 | `cost` | Charged at each preventive replacement: a number or a distribution (under `"calendar"`, none: the calendar's price is charged). |
+| `restoration` | The task restores the unit only partly: Kijima's model and restoration factor `q` (see [below](#planned-maintenance-that-restores-partly)). Left out, each task renews the unit. |
+| `replace_every`, `replacement_cost` | With a `restoration`: every `N`-th task replaces the unit as new instead, at this cost (by default the task's `cost`). |
 
 A replacement renews the unit, so the failure it was heading for never
 happens. A failure due at the same time as a replacement comes first.
@@ -491,6 +493,110 @@ down less (12.0 an hour of lost production against 16.7).
   failing before an instant age replacement), whose replacements share
   stops.
 - Members cannot have hidden failures or be standby groups.
+
+### Planned maintenance that restores partly
+
+An overhaul seldom leaves a unit as good as new. Say how much of its age
+it takes away with a restoration factor `q`: `q = 0` is as new, `q = 1`
+leaves the unit as old as it was (a service that changes nothing), and
+`q = 0.3` takes away 70% of the age the unit gained since its last
+overhaul or repair. The unit then has a *virtual age*, the age its next
+life is drawn from (`H(v + X) = H(v) + E`, `H` the life's cumulative
+hazard, `E` exponential), as for [imperfect repair](repairable.md#imperfect-repair).
+
+Kijima's two models say which age it is a share of. With `x` the
+operating time since the last action (a repair, a task, or put in
+service) and `v` the virtual age then:
+
+- **Kijima I** (`"kijima1"`): `v <- v + q x`. The task takes away the
+  share `1 - q` of the age added since the last action; age left by
+  earlier ones stays.
+- **Kijima II** (`"kijima2"`): `v <- q (v + x)`. The task scales the
+  whole virtual age, so old age is worked off too.
+
+Give it as the `"restoration"` of the `"preventive"` spec, a dict of a
+`"model"` and `"q"` as a `"repair"` takes them, or a fitted surpyval
+`GeneralizedRenewal`, whose Kijima model and `q` are taken. With
+`"replace_every": N`, every `N`-th task since the unit was last put in
+as new replaces it instead, charged `"replacement_cost"`.
+
+A pump wears out (Weibull, 9,000 h, shape 2.5); a failure is repaired
+by replacing it (about 24 h, 20,000 with the lost production), and it is
+overhauled every 6 months (4,380 h, 24 h, 2,500), every third overhaul
+replacing it (9,000). The overhaul history fits Kijima I with `q = 0.3`:
+
+```python
+def overhauled(interval, restoration=None, every=None):
+    preventive = {
+        "interval": interval,                                  # hours
+        "policy": "block",
+        "duration": surv.ExactEventTime.from_params([24.0]),
+        "cost": 2500.0,
+    }
+    if restoration is not None:
+        preventive["restoration"] = restoration
+    if every is not None:
+        preventive["replace_every"] = every
+        preventive["replacement_cost"] = 9000.0
+    return RepairableRBD(
+        [("s", "pump"), ("pump", "t")],
+        {"pump": {
+            "reliability": surv.Weibull.from_params([9000.0, 2.5]),
+            "repairability": surv.Exponential.from_params([1 / 24.0]),
+            "repair_cost": 20000.0,
+            "preventive": preventive,
+        }},
+    )
+
+years = 10 * 8760.0
+overhauled(4380.0).expected_cost(years).mean / 10   # -> 10851.0   as new: exact, a year
+
+kijima = {"model": "kijima1", "q": 0.3}
+partly = overhauled(4380.0, kijima).cost(years, mc_samples=2000, seed=1)
+partly.mean / 10                                    # -> 18370.5   never replaced (± 70)
+replaced = overhauled(4380.0, kijima, every=3).cost(years, mc_samples=2000, seed=1)
+replaced.mean / 10                                  # -> 17291.6   every third replaces
+replaced.by_category["repair"] / 20000 / 10         # -> 0.4987    failures a year
+```
+
+Priced as if each overhaul renewed the pump, the plan costs about 10,900
+a year; with the fitted restoration about 17,300, and the failures (0.50
+a year) are half as many again as the renewals would allow (0.31).
+Replacing at every third overhaul pays against never replacing. The
+interval is chosen by simulating each, with one seed:
+
+| Overhaul every (months) | 3 | 4 | 6 | 9 | 12 |
+|---|---|---|---|---|---|
+| Cost a year (± about 70) | 21,550 | 18,574 | **17,292** | 18,176 | 18,961 |
+| Cost a year, if each renewed (exact) | 11,991 | **10,685** | 10,851 | 13,166 | 15,565 |
+
+- **When the task falls.** Under `"block"` on the calendar, as before.
+  Under `"age"`, when the operating time since the last task or renewal
+  reaches the interval (an imperfect repair does not restart it).
+  Under `"condition"`, an inspection judges the unit by its virtual age:
+  restored when it is more likely than the threshold to fail before the
+  next inspection, given that age.
+- **What a task does.** The failure the unit was heading for never
+  happens; its next life is drawn given its new virtual age, from the end
+  of the task (it does not age while down). A repair renews the unit
+  unless it has a `"repair"` of its own, which keeps its virtual age too.
+  `q = 0` under Kijima II is as new (as is Kijima I when the repairs
+  renew the unit), and is taken as no restoration, with today's exact
+  answers.
+- **Costs and spares.** Each task is charged its `cost`; the `N`-th its
+  `replacement_cost`, and only that one uses a spare.
+- **Exact or simulated.** A task that restores partly does not renew the
+  unit, so its failures are not a renewal process's: the exact long-run
+  values, the values over time and the exact spares counts refuse it, and
+  `availability`, `cost`, `simulate_timelines`, `cost_by_window` and
+  `spares_demand(method="simulate")` simulate it, in Python. From a
+  state, the simulations take its `virtual_age` at its last action and
+  its `age` since (and `since_scheduled` on a calendar), but not with
+  `replace_every`, whose count a state does not give. `q` is a lever
+  (`preventive.restoration.q`, from 0 to 1).
+- Not taken with a `"calendar"` policy (worked out for a unit renewed at
+  each replacement), a `"level"` (a degradation level is not a virtual
+  age), or an `"opportunity"`.
 
 ## Hidden failures and inspection
 

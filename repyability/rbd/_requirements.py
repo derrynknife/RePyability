@@ -197,12 +197,44 @@ def _repairs_take_time(component) -> bool:
     return float(np.ravel(_sf_values(repair.sf, np.zeros(1)))[0]) > 0.0
 
 
+def _restoration_phrase(rbd, node) -> str:
+    """How a component's preventive maintenance restores it, in words."""
+    restoration = rbd._restoring[node]
+    kind = "I" if restoration.kijima == "kijima1" else "II"
+    phrase = f"Kijima {kind}, q = {restoration.q:g}"
+    if restoration.replace_every is not None:
+        phrase += (
+            f", replaced at task {restoration.replace_every} since it was "
+            "renewed"
+        )
+    return phrase
+
+
+def _require_full_restoration(rbd, node) -> None:
+    """Raise if a component's preventive maintenance restores it only
+    partly (a ``"restoration"``): a task does not renew it, so its
+    failures are not a renewal process's, and its long-run values and
+    values over time are known only by simulation."""
+    if node in rbd._restoring:
+        raise NotImplementedError(
+            f"Component {node!r} is restored only partly by its "
+            f"preventive maintenance ({_restoration_phrase(rbd, node)}), "
+            "so a task does not renew it: its failures are not a renewal "
+            "process's, and its availability and costs have no exact "
+            "value here. Estimate them by simulation, with "
+            "availability(), cost(), simulate_timelines() or "
+            "cost_by_window()."
+        )
+
+
 def _require_perfect_repair(rbd, node) -> None:
     """Raise if a component is repaired imperfectly (a spec's
     ``"repair"``): a repair does not renew it, so its long-run values
     are known only by simulation (its values over time, only by
     simulation too, but for minimal repair: see
-    ``_require_minimal_repair``)."""
+    ``_require_minimal_repair``); or if its maintenance restores it only
+    partly (``_require_full_restoration``)."""
+    _require_full_restoration(rbd, node)
     if node in rbd._imperfect:
         if _minimal_repair_blocker(rbd, node) is not None:
             over_time = "nor its values over time"
