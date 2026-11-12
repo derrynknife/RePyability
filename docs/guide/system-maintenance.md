@@ -29,6 +29,7 @@ between preventive and corrective maintenance:
 | `replace_every`, `replacement_cost` | With a `restoration`: every `N`-th task replaces the unit as new instead, at this cost (by default the task's `cost`). |
 | `shutdown` | The task is done at every shut of the diagram's shutdown of this name, whose calendar and duration it takes (no `interval` or `duration`; see [Shutdowns](#shutdowns)). |
 | `older_than` | With a `shutdown`: replaced at a shut only if its age then is at least this. |
+| `basis` | What the task's times are counted in: `"calendar"` (the default) or `"operating"`, the block's running hours, put on the calendar through its `"duty"` (see [Operating part of the time](repairable.md#operating-part-of-the-time)). |
 
 A replacement renews the unit, so the failure it was heading for never
 happens. A failure due at the same time as a replacement comes first.
@@ -618,6 +619,7 @@ component's dict makes its failures hidden:
 | `offset` | The time of the first test, from 0 to less than `τ`: tests at `offset, offset + τ, …`, so that redundant components can be tested apart (staggered). By default 0, no offset: the first test at `τ`, none at the start. A positive offset puts one there, so an offset just above 0 adds a test (and its outage and cost) at the start; one within a billionth of `τ` of 0 is taken as 0. |
 | `coverage` | The chance that a test finds a failure, from 0 to 1 (by default 1): its *proof-test coverage*. A failure a test misses stays hidden until a full test. |
 | `full_test` | With a coverage below 1, required: the time between full tests, which find every failure, a whole multiple of `τ` (the tests at `offset` and every `full_test` after it). Often the mission time, after which the component is renewed. |
+| `basis` | What the test's times (`interval`, `offset`, `full_test`) are counted in: `"calendar"` (the default) or `"operating"`, the block's running hours (see [Operating part of the time](repairable.md#operating-part-of-the-time)). |
 
 A failure found by an inspection is repaired once the test is done (taking a
 time drawn from the component's `"repairability"`), and its repair and

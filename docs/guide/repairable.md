@@ -81,16 +81,21 @@ failure/repair cycle whether or not the system is up.
 
 ### Operating part of the time
 
-A life fitted to operating hours is the wrong clock for a component that
-runs only part of the time (a duty pump, a standby generator's monthly
-runs): the diagram runs on the calendar, and the component ages only while
-it operates. `"duty"`, the fraction `d` of the time it operates (in
-`(0, 1]`), puts its life on the calendar: its life there is its operating
-life over `d`, `R(d t)`, the same kind of distribution with its scale
-moved, which every exact method and simulation then takes. Its repairs,
-maintenance and tests stay on the calendar, and its levers and saved spec
-keep the life as given, in operating time. So is a
-[state](#from-the-plant-as-it-is-now)'s `age`: on the diagram's clock,
+**In plain words:** a block that runs only part of the time (a duty pump,
+a standby generator's monthly runs) ages only while it runs. Give its
+`"duty"`, the share of the time it runs, and its life in running hours:
+the diagram, which runs on the calendar, stretches the life to match. A
+task counted in running hours (an overhaul every 4,000 hours on the hour
+meter) says so with `"basis": "operating"`, and is stretched the same
+way. Everything else stays on the calendar: repairs and their times, tasks
+given without a basis, and shutdowns.
+
+`"duty"`, the fraction `d` of the time the block operates (in `(0, 1]`),
+puts its life on the calendar: its life there is its operating life over
+`d`, `R(d t)`, the same kind of distribution with its scale moved, which
+every exact method and simulation then takes. Its levers and saved spec
+keep the life as given, in operating time. A
+[state](#from-the-plant-as-it-is-now)'s `age` is on the diagram's clock:
 the calendar time since it was put into service (an operating age `a`
 is `NodeState(age=a / d)`).
 
@@ -103,6 +108,54 @@ always.mean_availability()                   # -> 0.99105
 part.mean_availability()                     # -> 0.9964
 part.system_failure_frequency() * 8760       # -> 3.94   failures a year, against 9.796
 ```
+
+**Tasks counted in running hours.** A `"preventive"` or `"inspection"`
+spec's `"basis"` says what its times are counted in: `"calendar"` (the
+default) or `"operating"`, the block's running hours. A task every `N`
+running hours falls due every `N / d` hours on the calendar, so its times
+(a task's `"interval"` and `"opportunity"`, a test's `"interval"`,
+`"offset"` and `"full_test"`) are divided by the duty when the diagram is
+built, and every method takes the schedule on the calendar as it would
+one given there. The spec keeps the running hours: saving, the levers,
+[`with_intervals`][repyability.RepairableRBD.with_intervals] and the
+interval choices
+([`optimal_replacement_intervals`][repyability.RepairableRBD.optimal_replacement_intervals],
+[`optimal_inspection_intervals`][repyability.RepairableRBD.optimal_inspection_intervals])
+take and give its intervals in running hours.
+
+A pump that runs 60% of the time, overhauled every 4,000 running hours:
+
+```python
+FIXED = surv.ExactEventTime.from_params
+
+def overhauled(duty):
+    return RepairableRBD([("s", "p"), ("p", "t")], {"p": {
+        "reliability": surv.Weibull.from_params([5000, 2.5]),   # running hours
+        "repairability": FIXED([48.0]),
+        "replace_cost": 30000.0,
+        "duty": duty,
+        "preventive": {"interval": 4000.0, "basis": "operating",
+                       "duration": FIXED([24.0]), "cost": 8000.0},
+    }})
+
+sixty, eighty = overhauled(0.6), overhauled(0.8)
+sixty._preventive["p"].interval              # -> 6666.67   hours on the calendar
+round(sixty.mean_availability(), 5)          # -> 0.99403
+round(sixty.expected_cost_rate() * 8760)     # -> 26699   a year
+round(eighty.mean_availability(), 5)         # -> 0.99205
+round(eighty.expected_cost_rate() * 8760)    # -> 35529   a year at 80%
+```
+
+Run 80% of the time, it fails and is overhauled more often on the
+calendar, at the same rate per running hour. Without `"basis"` the
+interval would be 4,000 calendar hours, about 2,400 running hours.
+
+A task in running hours needs the block's duty (else give the interval in
+calendar time), and is refused at a [shutdown](system-maintenance.md#shutdowns)
+(a shut is on the calendar) and under a `"calendar"` policy (whose
+thresholds are its own). A block with a duty idle in a shut keeps ageing
+on its calendar life, at its duty on average (`"idle_ageing"`, the
+default), or stands still.
 
 The life must be a surpyval parametric distribution of a time; a
 probability per demand, a mixture, a degradation process or a nested

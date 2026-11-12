@@ -11,6 +11,20 @@ other release, fixes included, the minor.
 
 ### Added
 
+- Tasks counted in running hours (UC-26). A `"preventive"` or
+  `"inspection"` spec takes `"basis"`: `"calendar"` (the default, as
+  before) or `"operating"`, the block's operating time. On a block with a
+  `"duty"` `d`, a task every `N` operating hours is every `N / d` on the
+  calendar: its times (a task's `"interval"` and `"opportunity"`, a
+  test's `"interval"`, `"offset"` and `"full_test"`) are divided by the
+  duty when the diagram is built, so every exact method, both engines and
+  the planned split take it as they take a schedule given on the
+  calendar, to the last bit. The spec keeps the operating hours and the
+  basis: saving, the levers, `with_intervals` and the interval choices
+  (`optimal_replacement_intervals`, `optimal_inspection_intervals`) take
+  and give the intervals in operating time. Refused: `"operating"` with no
+  duty, at a shutdown, or under a `"calendar"` policy. Seeded results are
+  unchanged.
 - Planned against unplanned downtime, and the failures a plan avoids
   (UC-25). The system is down *unplanned* when it would still be down
   with every planned task, test and shut in progress finished (its
