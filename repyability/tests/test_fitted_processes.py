@@ -234,3 +234,27 @@ def test_a_virtual_age_needs_imperfect_repair_and_a_simulation():
             mc_samples=2,
             state={"a": NodeState(age=5.0, virtual_age=3.0)},
         )
+
+
+def test_a_seeded_run_from_a_virtual_age_is_its_own():
+    # What is left of the life at the start is drawn from the unit's own
+    # stream, not numpy's global random numbers.
+    rbd = kijima("kijima1", 0.5)
+    state = {"a": NodeState(age=40.0, virtual_age=90.0)}
+    runs = []
+    for global_seed in (1, 2):
+        np.random.seed(global_seed)
+        run = rbd.availability(
+            t_simulation=200.0, mc_samples=200, seed=5, state=state
+        )
+        runs.append(run.system_failures)
+    assert runs[0] == runs[1]
+
+
+def test_a_simulation_stepped_by_hand_starts_from_a_virtual_age():
+    rbd = kijima("kijima1", 0.5)
+    rbd.initialize_event_queue(
+        200.0, state={"a": NodeState(age=40.0, virtual_age=90.0)}
+    )
+    t, up = rbd.next_event()
+    assert 0.0 < t < 200.0 and not up

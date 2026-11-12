@@ -1957,6 +1957,14 @@ def _replacements(rbd, node, long_run: bool = False):
         )
     if node in rbd._inspection:
         return _tested_replacements(rbd, node, simulate)
+    if node in rbd._restoring:
+        raise NotImplementedError(
+            f"Component {node!r} is restored only partly by its "
+            "preventive maintenance "
+            f"({_requirements._restoration_phrase(rbd, node)}), so its "
+            "replacements are not a renewal process of lives as new: "
+            f"{simulate}"
+        )
     schedule = rbd._preventive.get(node)
     if schedule is not None and schedule.policy == "block":
         component = rbd.components[node]

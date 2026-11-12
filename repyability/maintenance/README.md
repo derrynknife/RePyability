@@ -37,6 +37,7 @@ use cases, under the same numbers.
 | UC-19 | What a plan is worth over a horizon at a discount rate, and as a yearly cost | **Built**: `RepairableRBD.expected_npv`, `NonRepairable.age_replacement_value` |
 | UC-20 | One unit run on an operating schedule (covariates and value by stretch, in model time): the value earned, the failures' cost and the NPV, and the best time to switch from one way of running to another | **Built** (one unit): `operating_schedule_value`, `best_switch_time` |
 | UC-21 | A plan against its outage log: expected and actual cash flows so far, the variance, and the plan re-valued from the states now | **Built**: `RepairableRBD.plan_vs_actual` |
+| UC-22 | Overhauls that restore a unit only partly (a Kijima restoration factor), every Nth replacing it: availability, failures and cost per year against overhauls that renew it, and the cheapest interval | **Built**: a `"preventive"` spec's `"restoration"`, `"replace_every"` and `"replacement_cost"`, simulated (#398) |
 
 ## How a use case is added
 
@@ -1393,3 +1394,205 @@ answers back into dates is Reliafy's too.)
   for; and the spread of the expected side (is the actual inside what the
   plan allowed for?) is not given for a diagram yet: the comparison is
   against the plan's expectation.
+
+### UC-22: "A pump's 6-monthly overhaul restores it only partly (a fitted Kijima restoration factor), and every third overhaul replaces it. What availability, failures and cost per year, against overhauls that renew it, and which overhaul interval is cheapest?"
+
+- **Status:** built (#398): a `"preventive"` spec's `"restoration"` (Kijima's
+  model and `q`, or a fitted `GeneralizedRenewal`), `"replace_every"` and
+  `"replacement_cost"`, simulated by `availability`, `cost`,
+  `simulate_timelines`, `cost_by_window` and
+  `spares_demand(method="simulate")`. The record below is the
+  hand-worked answer it was checked against.
+- **Who asks, and why:** a reliability engineer who has fitted a
+  generalised renewal process (Kijima I, restoration factor `q = 0.3`)
+  to the overhaul history of a fleet of pumps, and finds an overhaul
+  takes away only 70% of the age the pump gained since its last one. The
+  plan has always been priced as if each overhaul renewed the pump.
+- **What they know:** the pump's life in operating hours (Weibull,
+  `alpha = 9000`, `beta = 2.5`); a failure is repaired by replacing the
+  pump (as new; exponential repair, mean 24 h; 20,000 a failure, lost
+  production included); an overhaul every 6 months (4380 h, on the
+  calendar, skipped while the pump is down), 24 h long, 2,500 each;
+  every third overhaul replaces the pump instead, at 9,000; a horizon of
+  10 years (87,600 h), from new. Model time only: hours, no dates.
+- **What they want back:** per year, the expected failures, overhauls
+  that restore and overhauls that replace, the cost, and the
+  availability; the same with overhauls that renew (today's plan); and
+  the cost per year at overhaul intervals of 3, 4, 6, 9 and 12 months.
+- **How it is solved:** simulated (a partial restoration does not renew
+  the unit, so its failures are not a renewal process's and the exact
+  methods do not apply). The overhaul keeps the unit's virtual age
+  (Kijima I: `v <- v + q x`; Kijima II: `v <- q (v + x)`, `x` the
+  operating time since the last action), and the next life is drawn
+  given it, as an imperfect repair's is; every Nth overhaul since the
+  unit was last put in as new replaces it. The event loop's imperfect
+  repair stand-in keeps the virtual age, so it is extended to the
+  overhaul; `availability`, `cost`, `simulate_timelines` and
+  `cost_by_window` then answer. The interval is chosen by simulating each
+  candidate with the same seed.
+- **Today (by hand):** RePyability takes an overhaul only as a renewal.
+  The overhauls that renew are exact; the partial restoration is
+  simulated directly, written out from Kijima's definition in numpy
+  (`direct` below, 4,000 runs a case).
+
+  ```python
+  import numpy as np
+  import surpyval as surv
+  from repyability import RepairableRBD
+
+  ALPHA, BETA, YEAR = 9000.0, 2.5, 8760.0
+  HORIZON = 10 * YEAR
+  COSTS = dict(failure=20000.0, overhaul=2500.0, replacement=9000.0)
+
+  def as_new(interval):  # today: the overhaul renews the pump
+      return RepairableRBD(
+          [("s", "pump"), ("pump", "t")],
+          {"pump": {
+              "reliability": surv.Weibull.from_params([ALPHA, BETA]),
+              "repairability": surv.Exponential.from_params([1 / 24.0]),
+              "repair_cost": COSTS["failure"],
+              "preventive": {
+                  "interval": interval, "policy": "block",
+                  "duration": surv.ExactEventTime.from_params([24.0]),
+                  "cost": COSTS["overhaul"],
+              },
+          }},
+      )
+
+  def direct(interval, q, kijima, every, n, seed):
+      """Per year: failures, restoring and replacing overhauls, cost;
+      and the availability, simulated from Kijima's definition."""
+      rng = np.random.default_rng(seed)
+      out = np.zeros((n, 5))
+      for r in range(n):
+          t = v = up = 0.0
+          count = fails = restored = replaced = 0
+          while t < HORIZON:
+              # A life from virtual age v: H(v + X) = H(v) + E.
+              life = ALPHA * ((v / ALPHA) ** BETA + rng.exponential()) ** (1 / BETA) - v
+              due = (np.floor(t / interval) + 1.0) * interval
+              if t + life <= due:  # fails first: repaired as new
+                  if t + life >= HORIZON:
+                      up += HORIZON - t
+                      break
+                  up += life
+                  fails += 1
+                  t += life + rng.exponential(24.0)
+                  v, count = 0.0, 0
+                  continue
+              if due >= HORIZON:
+                  up += HORIZON - t
+                  break
+              x = due - t  # operated since the last action
+              up += x
+              if every is not None and count + 1 >= every:
+                  v, count, replaced = 0.0, 0, replaced + 1
+              else:
+                  v = v + q * x if kijima == "kijima1" else q * (v + x)
+                  count, restored = count + 1, restored + 1
+              t = due + 24.0  # down, not ageing, for the overhaul
+          cost = (fails * COSTS["failure"] + restored * COSTS["overhaul"]
+                  + replaced * COSTS["replacement"])
+          out[r] = (fails, restored, replaced, cost, up / HORIZON)
+      return out.mean(axis=0), out.std(axis=0, ddof=1) / np.sqrt(n)
+  ```
+
+  Per year (± one standard error of the simulated ones):
+
+  | Overhaul every 6 months | Failures | Restoring | Replacing | Cost | Availability |
+  |---|---|---|---|---|---|
+  | Renews (today, exact) | 0.3055 | 1.896 | 0 | 10,851 | 0.99397 |
+  | Renews (`direct`, `q = 0`) | 0.3015 ± 0.0026 | 1.896 | 0 | 10,771 ± 52 | 0.99398 |
+  | `q = 0.3`, never replaced | 0.6819 ± 0.0024 | 1.895 | 0 | 18,375 ± 47 | 0.99296 |
+  | `q = 0.3`, every third replaces | 0.4976 ± 0.0029 | 1.498 | 0.397 | 17,273 ± 51 | 0.99345 |
+  | `q = 1` (as bad as old) | 1.0495 ± 0.0023 | 1.894 | 0 | 25,726 ± 46 | 0.99194 |
+
+  The interval, with `q = 0.3` and every third overhaul replacing (seed
+  2), against overhauls that renew (exact):
+
+  | Interval | 3 months | 4 months | 6 months | 9 months | 12 months |
+  |---|---|---|---|---|---|
+  | Cost per year, `q = 0.3`, every third | 21,530 ± 37 | 18,577 ± 45 | **17,259 ± 51** | 18,117 ± 52 | 19,046 ± 50 |
+  | Availability | 0.98876 | 0.99123 | 0.99346 | 0.99453 | 0.99526 |
+  | Cost per year, renewing | 11,991 | **10,685** | 10,851 | 13,166 | 15,565 |
+
+  Priced as renewals the plan costs about 10,900 a year; with the fitted
+  restoration it costs about 17,300, and the failures more than double.
+  Replacing at every third overhaul pays (17,300 against 18,400 for
+  never replacing), and 6 months stays the cheapest interval, where the
+  renewal model put it at 4.
+
+- **Built:** the overhaul's `"restoration"` and every third replacing,
+  simulated (4,000 runs, seed 1):
+
+  ```python
+  def restored(interval, q, every=None):  # as as_new, the overhaul partial
+      preventive = {
+          "interval": interval, "policy": "block",
+          "duration": surv.ExactEventTime.from_params([24.0]),
+          "cost": COSTS["overhaul"],
+          "restoration": {"model": "kijima1", "q": q},  # or the fitted
+      }                                                 # GeneralizedRenewal
+      if every is not None:
+          preventive["replace_every"] = every
+          preventive["replacement_cost"] = COSTS["replacement"]
+      return RepairableRBD(
+          [("s", "pump"), ("pump", "t")],
+          {"pump": {
+              "reliability": surv.Weibull.from_params([ALPHA, BETA]),
+              "repairability": surv.Exponential.from_params([1 / 24.0]),
+              "repair_cost": COSTS["failure"],
+              "preventive": preventive,
+          }},
+      )
+
+  run = restored(YEAR / 2, 0.3, every=3).availability(
+      HORIZON, mc_samples=4000, seed=1, control_variate=False
+  )
+  run.cost.by_category["repair"] / COSTS["failure"] / 10   # failures a year
+  run.cost.mean / 10, run.mean_availability
+  ```
+
+  | Overhaul every 6 months | Failures a year | Cost a year | Availability | `direct` |
+  |---|---|---|---|---|
+  | `q = 0.3`, never replaced | 0.6785 | 18,308 | 0.99294 | 0.6819 ± 0.0024, 18,375 ± 47 |
+  | `q = 0.3`, every third replaces | 0.4960 | 17,247 | 0.99344 | 0.4976 ± 0.0029, 17,273 ± 51 |
+  | `q = 1` | 1.0454 | 25,642 | 0.99194 | 1.0495 ± 0.0023, 25,726 ± 46 |
+
+  The interval, as the guide's example runs it (2,000 runs, seed 1):
+  21,550, 18,574, **17,292**, 18,176 and 18,961 a year at 3, 4, 6, 9 and
+  12 months, against `direct`'s 21,530, 18,577, 17,259, 18,117 and
+  19,046 (± about 50).
+- **Checks:** `test_pm_restoration.py`: the simulation against a direct
+  simulation written in the test from Kijima's definition (failures,
+  tasks that restore and that replace, up time) for Kijima I and II,
+  the block, age and condition policies, every third replacing, and
+  tasks and repairs that take time, within four standard errors; from a
+  virtual age; with minimal repairs and Kijima II overhauls in no time,
+  every second replacing, the cost over whole cycles is
+  `Repairable.overhaul_replace_cost_rate`'s, which is exact; `q = 1` with
+  instant tasks fails as often as with no task at all (the renewal
+  function, exact); `q = 0` is today's diagram to the last bit, with its
+  exact routes; the replacement's cost and spares; the refusals.
+- **Learned / open questions:**
+  - Priced as renewals the plan understates the failures by more than
+    half and the cost by 60%, and puts the cheapest interval at 4 months
+    instead of 6.
+  - Kijima I with `q = 0` is a renewal only while the unit's repairs
+    renew it: after imperfect repairs the unit is older than new at its
+    task, and Kijima I takes away only the age since the last action.
+    Only the exact renewals are taken as no restoration.
+  - From a state, a unit restored partly takes its virtual age at its
+    last action and its age since, and the age policy's clock is taken
+    to start at that action (true when its repairs renew it; with
+    imperfect repairs too, a state is refused, as for imperfect repair
+    alone). With `"replace_every"` a state is refused: it does not say
+    how many tasks the unit has had since it was renewed.
+  - Not built: with a calendar policy (worked out for a unit put in as
+    new), a degradation level (not a virtual age) or an opportunity (an
+    early renewal at a group's stop); imperfect repair under the
+    condition policy stays refused (the same code may take it, but it
+    needs checks of its own).
+  - Exact routes for a restoration that is clearly a renewal or clearly
+    nothing are open: `q = 1` with instant tasks is no task at all (the
+    unit's own renewal process), which the exact methods could take.

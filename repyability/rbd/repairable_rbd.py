@@ -107,6 +107,7 @@ from repyability.rbd._events import (
     _Imperfect,
     _Inspection,
     _Preventive,
+    _Restoration,
     _Standby,
     _Unit,
 )
@@ -216,6 +217,38 @@ class RepairableRBD(RBD):
           ``"opportunity"`` (an age from 0 to ``interval``) renews the
           unit early, from that age, at a stop of its maintenance group
           (see ``"group"``), as its scheduled replacement would.
+          A ``"restoration"`` makes each task restore the unit only
+          partly, by Kijima's virtual-age models, under the ``"age"``,
+          ``"block"`` and ``"condition"`` policies: a dict of a
+          ``"model"``, ``"kijima1"`` or ``"kijima2"``, and a restoration
+          factor ``"q"`` in [0, 1] (as ``"repair"`` takes them), or a
+          fitted surpyval ``GeneralizedRenewal``, whose Kijima model and
+          restoration factor are taken. A task after the unit has
+          operated ``x`` since its last action (a repair, a task, or put
+          in service) takes its virtual age from ``v`` to ``v + q * x``
+          (Kijima I: the task takes away the share ``1 - q`` of the age
+          added since) or ``q * (v + x)`` (Kijima II: it scales the whole
+          virtual age); the failure the unit had yet to reach never
+          happens, and its next life is drawn given its new virtual age,
+          from the end of the task (it does not age while down). ``q = 0``
+          is as new under Kijima II, and under Kijima I when its repairs
+          renew it (taken as no restoration); ``q = 1`` leaves it as old
+          as it was. A repair renews the unit unless it has a ``"repair"``
+          of its own. Under ``"age"`` the task falls due when the
+          operating time since the last task or renewal reaches the
+          interval; under ``"condition"`` an inspection judges the unit by
+          its virtual age. ``"replace_every"``, a whole number ``N`` of at
+          least 2 (with a ``q`` above 0), replaces the unit as new at
+          every ``N``-th task since it was last put in as new (by a
+          replacement, a repair that renews it, or the last such task),
+          charged ``"replacement_cost"`` (a number or a distribution, by
+          default the task's ``"cost"``); only that task uses a spare.
+          Not taken with a ``"calendar"`` policy, a ``"level"`` or an
+          ``"opportunity"``. The exact methods refuse such a component,
+          and the simulations follow it, in Python; started from a
+          state, it takes its ``virtual_age`` at its last action and its
+          ``age`` since (and its ``since_scheduled``), but not with
+          ``"replace_every"``.
           ``"inspection"`` makes the component's failures *hidden*: a
           failure takes it down, but nobody knows until an inspection (a
           proof test) finds it, and only then does its repair start. It
@@ -459,8 +492,11 @@ class RepairableRBD(RBD):
     PREVENTIVE_KEYS : tuple[str, ...]
         The keys of a ``"preventive"`` spec: ``"interval"``, ``"policy"``,
         ``"duration"`` and ``"cost"``, a ``"condition"`` policy's
-        ``"threshold"`` and ``"inspection_cost"``, and an ``"age"``
-        policy's ``"opportunity"``.
+        ``"threshold"`` and ``"inspection_cost"``, an ``"age"``
+        policy's ``"opportunity"``, a ``"condition"`` policy's
+        ``"level"``, a ``"calendar"`` policy's ``"calendar"``, and a
+        task's ``"restoration"``, ``"replace_every"`` and
+        ``"replacement_cost"``.
     GROUP_KEYS : tuple[str, ...]
         The keys of a maintenance group's options: ``"setup_cost"`` and
         ``"system_down"``.
@@ -514,7 +550,13 @@ class RepairableRBD(RBD):
         [0, 1], a ``"replace_after"`` is not a whole number of at least 1
         given with a ``q`` above 0, or an imperfectly repaired component
         is a standby group, is replaced on condition, or has a lifetime
-        model with no ``Hf`` and ``qf``; or if ``ccf_groups`` holds
+        model with no ``Hf`` and ``qf``; or if a ``"restoration"`` is
+        not a dict of a known ``"model"`` and a ``"q"`` in [0, 1] (or a
+        fitted ``GeneralizedRenewal`` of Kijima's), is given with a
+        ``"calendar"`` policy, a ``"level"``, an ``"opportunity"`` or to
+        a standby group, a ``"replace_every"`` is not a whole number of
+        at least 2 given with a restoration of ``q`` above 0, or a
+        ``"replacement_cost"`` is given without one; or if ``ccf_groups`` holds
         anything but ``CCFGroup`` instances, a member that is not a
         component (or is a nested RBD or a standby group), a component in
         two groups, or a group of components with different life or
@@ -694,6 +736,9 @@ class RepairableRBD(RBD):
         self._member_group: dict[Any, Hashable] = {}
         # Components repaired imperfectly, by node (see _ImperfectComponent).
         self._imperfect: dict[Any, _Imperfect] = {}
+        # Components their preventive maintenance restores only partly, by
+        # node (see _ImperfectComponent).
+        self._restoring: dict[Any, _Restoration] = {}
         # The base class checks the names given components against the
         # edges; a component for a name in no edge is not part of the
         # diagram (the structure check reports it).
@@ -772,6 +817,20 @@ class RepairableRBD(RBD):
                 imperfect = _spec._validate_imperfect(self, name, component)
                 if imperfect is not None:
                     self._imperfect[name] = imperfect
+                restoration, replacing = _spec._validate_restoration(
+                    name, component, self._preventive.get(name), imperfect
+                )
+                if restoration is not None:
+                    self._restoring[name] = restoration
+                    if replacing is not None and (
+                        "preventive_cost" in node_costs
+                        or not (
+                            isinstance(replacing, float) and replacing == 0.0
+                        )
+                    ):
+                        # A replacement in place of a task with a cost is
+                        # priced, even at 0.
+                        node_costs["replacement_cost"] = replacing
                 if component.get("acquisition_cost") is not None:
                     acquisition = _spec._validate_cost(
                         name, "acquisition_cost", component["acquisition_cost"]
@@ -892,6 +951,10 @@ class RepairableRBD(RBD):
             (len(getattr(self, "_inspection", {})), "tested"),
             (len(getattr(self, "_standby", {})), "standby group(s)"),
             (len(getattr(self, "_imperfect", {})), "repaired imperfectly"),
+            (
+                len(getattr(self, "_restoring", {})),
+                "restored partly by maintenance",
+            ),
             (
                 sum(
                     isinstance(c, RepairableRBD)
@@ -1023,7 +1086,8 @@ class RepairableRBD(RBD):
 
         True if some component declares a non-zero ``"repair_cost"``,
         ``"replace_cost"``, ``"downtime_cost"``, or preventive-maintenance
-        or inspection ``"cost"`` (a cost distribution always counts), is
+        or inspection ``"cost"`` or ``"replacement_cost"`` (a cost
+        distribution always counts), is
         on a ``"calendar"`` policy (charged its calendar's prices), a
         maintenance group has a set-up cost, or ``downtime_cost_rate`` is
         non-zero: whether running the system costs anything. Costs of 0

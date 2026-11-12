@@ -587,6 +587,19 @@ class _Imperfect(NamedTuple):
     replace_after: Optional[int]
 
 
+class _Restoration(NamedTuple):
+    """A component's preventive maintenance that restores it only partly
+    (a ``"preventive"`` spec's ``"restoration"``): ``kijima``
+    (``"kijima1"`` or ``"kijima2"``) and its restoration factor ``q`` (0
+    as new, 1 as bad as old), and the task, counting from the unit's last
+    renewal, that replaces it as new instead (``"replace_every"``; None
+    for never)."""
+
+    kijima: str
+    q: float
+    replace_every: Optional[int]
+
+
 class _MaintenanceGroup(NamedTuple):
     """A maintenance group (#108): its members, the set-up cost charged
     once at each of its stops, and whether every system outage is a stop

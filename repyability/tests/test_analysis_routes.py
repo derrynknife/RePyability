@@ -1039,6 +1039,23 @@ def test_the_readme_says_what_is_simulated():
             (timed_minimal, "expected_cost", "numerical"),
             (timed_minimal, "mean_availability", "refused"),
         ],
+        "Preventive maintenance that restores a unit only partly (Kijima), "
+        "with or without replacement at every *N*-th task": [
+            (repairable[name], analysis, route)
+            for name in (
+                "maintenance restores partly, by age",
+                "maintenance restores partly, every third replaces",
+                "maintenance restores partly, on condition",
+            )
+            for analysis, route in (
+                ("mean_availability", "refused"),
+                ("point_availability", "refused"),
+                ("expected_cost", "refused"),
+                ("availability", "simulated"),
+                ("cost", "simulated"),
+                ("simulate_timelines", "simulated"),
+            )
+        ],
         "Replacement on condition by a measured degradation level": [
             (repairable["replaced on condition by level"], name, route)
             for name, route in (
@@ -1049,8 +1066,15 @@ def test_the_readme_says_what_is_simulated():
             )
         ],
         "Spares with repair crews, standby groups, opportunistic "
-        "maintenance or imperfect repair": [
+        "maintenance, imperfect repair or partial restoration": [
             (crew, "spares_stock", "refused"),
+            (
+                repairable[
+                    "maintenance restores partly, every third replaces"
+                ],
+                "spares_demand",
+                "refused",
+            ),
             (group, "spares_demand", "refused"),
             (
                 repairable["opportunistic maintenance"],

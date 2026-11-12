@@ -224,6 +224,9 @@ def repairable_kinds(rbd, components, options) -> set:
             found.add(f"policy {preventive.get('policy', 'age')!r}")
         if component.get("repair"):
             found.add(f"repair model {component['repair']['model']!r}")
+        restoration = (preventive or {}).get("restoration")
+        if isinstance(restoration, dict):
+            found.add(f"restoration model {restoration['model']!r}")
     for group in (options.get("maintenance_groups") or {}).values():
         found |= {f"maintenance group key {key!r}" for key in group}
     if options.get("k"):
@@ -258,6 +261,7 @@ def required_repairable() -> set:
         | {f"standby key {key!r}" for key in cls.STANDBY_KEYS}
         | {"repair key 'model'", "repair key 'q'"}
         | {f"repair model {model!r}" for model in cls.REPAIR_MODELS}
+        | {f"restoration model {model!r}" for model in cls.REPAIR_MODELS}
         | {f"maintenance group key {key!r}" for key in cls.GROUP_KEYS}
         | {"repairability 'instant'"}
         | {"a k-out-of-n vote", "capacities", "downtime_cost_rate"}
