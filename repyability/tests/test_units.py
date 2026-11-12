@@ -362,6 +362,60 @@ def test_planned_against_unplanned_scales_with_the_unit(c):
     )
 
 
+def running_hours(c):
+    """A pump run 60% of the time, overhauled every ``4000 c`` running
+    hours and tested every ``500 c`` from ``100 c``, in parallel."""
+    unit = {
+        "reliability": W([5000.0 * c, 2.5]),
+        "repairability": E([0.02 / c]),
+        "duty": 0.6,
+        "replace_cost": 10.0,
+    }
+    return RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {
+            "a": {
+                **unit,
+                "preventive": {
+                    "interval": 4000.0 * c,
+                    "basis": "operating",
+                    "cost": 2.0,
+                },
+            },
+            "b": {
+                **unit,
+                "inspection": {
+                    "interval": 500.0 * c,
+                    "offset": 100.0 * c,
+                    "basis": "operating",
+                },
+            },
+        },
+    )
+
+
+@pytest.mark.parametrize("c", [1e-6, 1e3, 1e6])
+def test_tasks_in_running_hours_scale_with_the_unit(c):
+    base, scaled = running_hours(1.0), running_hours(c)
+    assert scaled.mean_availability() == pytest.approx(
+        base.mean_availability(), rel=1e-9
+    )
+    assert scaled.expected_cost_rate() * c == pytest.approx(
+        base.expected_cost_rate(), rel=1e-9
+    )
+    runs = [
+        rbd.availability(
+            t_simulation=20000.0 * scale,
+            mc_samples=100,
+            seed=4,
+            control_variate=False,
+        )
+        for rbd, scale in ((base, 1.0), (scaled, c))
+    ]
+    assert runs[0].system_failures == runs[1].system_failures
+    assert runs[0].system_planned_outages == runs[1].system_planned_outages
+
+
 def test_a_duty_of_one_changes_nothing():
     assert duty_rbd(W([100, 2]), 1.0).mean_availability() == (
         duty_rbd(W([100, 2]), None).mean_availability()

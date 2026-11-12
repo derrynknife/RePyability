@@ -331,6 +331,14 @@ def _choose_from(
     return best
 
 
+def _per_given(rbd, node) -> float:
+    """How much of the unit a component's task is counted in passes in
+    a unit of the diagram's clock: its duty for a task counted in
+    operating time, else 1. The interval choices take and give its
+    intervals in that unit, as given, and work on the calendar inside."""
+    return getattr(rbd, "_operating_tasks", {}).get(node, 1.0)
+
+
 def _with_intervals(
     rbd, preventive=None, inspection=None, offsets=None
 ) -> "RepairableRBD":
@@ -348,7 +356,7 @@ def _with_intervals(
         plan._preventive = dict(rbd._preventive)
         for node, interval in preventive.items():
             plan._preventive[node] = rbd._preventive[node]._replace(
-                interval=float(interval)
+                interval=float(interval) / _per_given(rbd, node)
             )
     if inspection:
         plan._inspection = dict(rbd._inspection)
@@ -357,8 +365,9 @@ def _with_intervals(
             # An offset keeps its share of the interval (a pair tested
             # half an interval apart stays so).
             share = schedule.offset / schedule.interval
+            interval = float(interval) / _per_given(rbd, node)
             plan._inspection[node] = schedule._replace(
-                interval=float(interval), offset=share * float(interval)
+                interval=interval, offset=share * interval
             )
     if offsets:
         plan._inspection = dict(plan._inspection)
@@ -460,10 +469,17 @@ def _searched_replacements(
     for node in chosen:
         life = failure_time_scale(rbd.components[node].reliability)
         scale[node] = life if np.isfinite(life) and life > 0.0 else 1.0
+        # In the unit its interval is given in.
+        scale[node] *= _per_given(rbd, node)
     low = np.array([math.log(1e-3 * scale[n]) for n in chosen])
     high = np.array([math.log(1e3 * scale[n]) for n in chosen])
     current = [
-        math.log(min(rbd._preventive[n].interval, 1e3 * scale[n]))
+        math.log(
+            min(
+                rbd._preventive[n].interval * _per_given(rbd, n),
+                1e3 * scale[n],
+            )
+        )
         for n in chosen
     ]
     starts = [
@@ -519,7 +535,11 @@ def optimal_inspection_intervals(
             max_cost_rate=max_cost_rate,
             offset_shares=offset_shares,
         )
-    rates = {node: _requirements._tested_scale(rbd, node) for node in chosen}
+    # Each failure rate per unit its interval is given in.
+    rates = {
+        node: _requirements._tested_scale(rbd, node) / _per_given(rbd, node)
+        for node in chosen
+    }
 
     def evaluate(intervals: dict) -> Tuple[float, float]:
         plan = _with_intervals(rbd, inspection=intervals)
@@ -547,7 +567,7 @@ def optimal_inspection_intervals(
         best = _choose_divisor(
             node,
             # Its full tests' interval (see _Inspection.period).
-            rbd._inspection[node].period,
+            rbd._inspection[node].period * _per_given(rbd, node),
             (1e-4 / rate, 10.0 / rate),
             evaluate,
             min_availability,
@@ -559,7 +579,9 @@ def optimal_inspection_intervals(
         rate = rates[node]
         low = np.array([math.log(1e-4 / rate)])
         high = np.array([math.log(10.0 / rate)])
-        current = math.log(rbd._inspection[node].interval)
+        current = math.log(
+            rbd._inspection[node].interval * _per_given(rbd, node)
+        )
         starts = [
             np.clip([current], low, high),
             np.array([math.log(0.01 / rate)]),
@@ -607,7 +629,7 @@ def _dividing(rbd, options: dict) -> dict:
         schedule = rbd._inspection[node]
         if not schedule.partial:
             continue
-        full = schedule.period
+        full = schedule.period * _per_given(rbd, node)
         bad = [i for i in intervals if not _divides(i, full)]
         if bad:
             some = ", ".join(f"{full / k:g}" for k in range(1, 5))

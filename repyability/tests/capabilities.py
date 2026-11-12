@@ -423,6 +423,10 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("A fitted degradation process life", "degradation process life"),
         ("Operated part of the time (duty)", "operated part of the time"),
         (
+            "Tasks counted in running hours (duty)",
+            "operated part of the time, maintained by running hours",
+        ),
+        (
             "A standby or load-sharing life, simulated",
             "simulated standby life",
         ),

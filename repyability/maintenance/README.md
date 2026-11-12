@@ -41,6 +41,7 @@ use cases, under the same numbers.
 | UC-23 | The line is shut 3 days every 12 months, every block gets its PM then and the bearing is replaced if older than X: availability, the shut's share of the downtime and cost, failures between shuts, and whether a 9- or 18-month shut is cheaper | **Built**: `RepairableRBD(shutdowns=...)`, tasks bound with `"shutdown"` and `"older_than"`; exact and numerical |
 | UC-24 | Outages on a timeline: shuts at given times with a duration and a scope (renew some blocks, restore others), the plan's cost by window and its NPV | **Built in part**: the same `shutdowns` at `"times"`, simulated (`availability`, `cost`); the exact cost by window and NPV take shuts on a period only |
 | UC-25 | How much of the downtime and lost production is planned and how much is from failures, and how many failures the plan avoids against running to failure | **Built**: `RepairableRBD.maintenance_effect`, and the split in `ExpectedEvents`, `EventsByWindow`, `AvailabilityResult` and `CostResult`; exact where the blocks fail independently, simulated otherwise |
+| UC-26 | A pump run part of the time with its overhaul counted in running hours: availability and cost, and at another duty | **Built**: a `"preventive"` or `"inspection"` spec's `"basis": "operating"`, put on the calendar through the block's `"duty"` |
 
 ## How a use case is added
 
@@ -1895,4 +1896,93 @@ answers back into dates is Reliafy's too.)
   - Not built: the split through the crews' and common-cause groups'
     chains (they could keep a block in planned work apart from one in a
     repair), and shuts at given times exactly (as UC-24).
+
+### UC-26: "Our pump runs 60% of the time and its overhaul is every 4,000 running hours: what does that do to availability and cost, and what if it ran 80%?"
+
+- **Status:** built: a `"preventive"` or `"inspection"` spec's `"basis":
+  "operating"`, with the block's `"duty"`.
+- **Who asks, and why:** a reliability engineer whose maintenance plan
+  counts the pump's tasks by its hour meter, as the maker's manual does,
+  while the plant is planned on the calendar. Production wants to run
+  the pump harder (80% of the time): what does that cost?
+- **What they know:** the pump's life fitted in running hours (a Weibull
+  of scale 5,000 h and shape 2.5), its share of the time running (60%),
+  the overhaul every 4,000 running hours (24 h, 8,000; it renews the
+  pump), a failure's repair (48 h) and cost (30,000). Model time only.
+  (Not UC-10: there the duty follows an operating schedule on dates,
+  Reliafy's; here it is one average share.)
+- **What they want back:** the availability, the failures and the cost a
+  year, the downtime split into planned and unplanned, at 60% and at
+  80%; and the best overhaul interval, in running hours.
+- **How it is solved:** at construction. A block of duty `d` ages only
+  while it runs, so its life on the diagram's clock is `R(d t)` (the
+  `"duty"` already did this); a task counted in running hours falls due
+  every `N` of them, every `N / d` hours on the clock, so its times
+  (`interval`, `opportunity`, `older_than`; a test's `interval`,
+  `offset`, `full_test`) are divided by `d`. Every exact route, both
+  engines and the planned split then take the converted schedule as
+  they take any other: no new code in the analyses. The spec as given
+  keeps the running hours, for saving, the levers, `with_intervals` and
+  the interval choices (`optimal_replacement_intervals` takes and gives
+  the intervals in running hours). Refused: a task in running hours with
+  no duty (say what share of the time the block runs, or give the
+  interval on the calendar), at a shut (on the calendar), or under a
+  `"calendar"` policy (whose thresholds are its own).
+- **Today (by hand):** the life and the interval converted by hand,
+  `5000 / 0.6` and `4000 / 0.6` calendar hours. The trap is to convert
+  the life and not the task (an overhaul every 4,000 calendar hours,
+  about 2,400 running hours):
+
+  | A year | By running hours (6,667 h on the calendar) | Every 4,000 calendar hours |
+  |---|---|---|
+  | Availability | 0.99403 | 0.99285 |
+  | Failures | 0.6616 | 0.3354 |
+  | Cost | 26,699 | 25,566 |
+  | Downtime, planned + unplanned | 20.55 h + 31.76 h | 46.51 h + 16.10 h |
+
+- **Built:**
+
+  ```python
+  pump = {
+      "reliability": W([5000.0, 2.5]),        # running hours
+      "repairability": FIXED([48.0]),
+      "replace_cost": 30000.0,
+      "duty": 0.6,
+      "preventive": {
+          "interval": 4000.0, "basis": "operating",
+          "duration": FIXED([24.0]), "cost": 8000.0,
+      },
+  }
+  ```
+
+  | A year | 60% of the time | 80% of the time |
+  |---|---|---|
+  | Availability | 0.99403 | 0.99205 |
+  | Failures | 0.6616 | 0.8804 |
+  | Cost | 26,699 | 35,529 |
+  | Downtime, planned + unplanned | 20.55 h + 31.76 h | 27.35 h + 42.26 h |
+  | Best overhaul interval | 2,870 running hours | 2,868 running hours |
+
+  The 60% figures are the hand conversion's to the last bit (the same
+  objects). Running harder costs a third more a year, almost all of it
+  the pump's own running: per running hour nothing changed. The best
+  interval in running hours hardly moves with the duty (only the repair
+  and overhaul times, on the calendar, weigh differently).
+- **Checks:** `test_duty_tasks.py`: every task in running hours against
+  the same block given on the calendar by hand (age, block and condition
+  policies, an opportunity, tests with an offset and full tests, a
+  restoring task, a shut with the block ageing or standing still), exact
+  values and seeded simulations equal, both engines to the last bit; the
+  planned split exact against simulated; the levers and the interval
+  choices in running hours (a sensitivity per running hour is the
+  calendar's over `d`); saving keeps the running hours and the basis;
+  the refusals. `test_units.py`: tasks in running hours scale with the
+  unit.
+- **Learned / open questions:**
+  - A shut is on the calendar, so a task bound to one is refused in
+    running hours, `"older_than"` with it too. "Replace at the shut if it
+    has run more than X hours" would read naturally; it is `older_than`
+    over `d` on the calendar, which a caller can give today.
+  - A starting state (`NodeState`) stays on the diagram's clock: an age
+    and a time since the last task in calendar hours.
 

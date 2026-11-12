@@ -314,9 +314,18 @@ class RepairableRBD(RBD):
           the component operates, for a ``"reliability"`` fitted in
           operating time: it ages only while it operates, so its life on
           the diagram's clock is its operating life over ``d``
-          (``R(d t)``), which every method then takes; its repairs,
-          maintenance and tests stay on the clock. The life must be a
-          surpyval parametric distribution of a time.
+          (``R(d t)``), which every method then takes; its repairs stay
+          on the clock, and so do its maintenance and tests unless
+          counted in operating time: a ``"preventive"`` or
+          ``"inspection"`` spec's ``"basis"``, ``"calendar"`` (the
+          default) or ``"operating"``, says what its times are counted
+          in, and those in operating time (a task's ``"interval"`` and
+          ``"opportunity"``, a test's ``"interval"``, ``"offset"`` and
+          ``"full_test"``) go onto the clock divided by ``d``. The spec
+          keeps them as given, for saving, the levers,
+          ``with_intervals`` and the interval choices, which take and
+          give them in operating time. The life must be a surpyval
+          parametric distribution of a time.
           ``"standby"`` makes the node a standby group of identical units,
           each failing and repaired as ``"reliability"`` and
           ``"repairability"`` say: a dict of ``"units"`` (by default 2),
@@ -519,8 +528,8 @@ class RepairableRBD(RBD):
         policy's ``"opportunity"``, a ``"condition"`` policy's
         ``"level"``, a ``"calendar"`` policy's ``"calendar"``, and a
         task's ``"restoration"``, ``"replace_every"`` and
-        ``"replacement_cost"``, and a task's ``"shutdown"`` and
-        ``"older_than"``.
+        ``"replacement_cost"``, a task's ``"shutdown"`` and
+        ``"older_than"``, and its times' ``"basis"``.
     GROUP_KEYS : tuple[str, ...]
         The keys of a maintenance group's options: ``"setup_cost"`` and
         ``"system_down"``.
@@ -529,8 +538,8 @@ class RepairableRBD(RBD):
         ``"kijima1"`` and ``"kijima2"``.
     INSPECTION_KEYS : tuple[str, ...]
         The keys of an ``"inspection"`` spec: ``"interval"``, ``"duration"``,
-        ``"cost"``, ``"offset"``, ``"coverage"``, ``"full_test"`` and
-        ``"shutdown"``.
+        ``"cost"``, ``"offset"``, ``"coverage"``, ``"full_test"``,
+        ``"shutdown"`` and ``"basis"``.
     STANDBY_KEYS : tuple[str, ...]
         The keys of a ``"standby"`` spec: ``"units"``, ``"k"``,
         ``"dormancy_factor"`` and ``"switching_probability"``.
@@ -598,7 +607,10 @@ class RepairableRBD(RBD):
         outside its scope; ``"older_than"`` is given without a shutdown,
         with a condition policy or a restoration; a shut stands still a
         block it cannot (one with a calendar of its own, nested, or tied
-        to others); or a nested RBD has shutdowns of its own.
+        to others); or a nested RBD has shutdowns of its own; or a task's
+        ``"basis"`` is not ``"calendar"`` or ``"operating"``, or is
+        ``"operating"`` on a component with no ``"duty"``, at a
+        shutdown or under a ``"calendar"`` policy.
     TypeError
         If a component is not a spec dict, a ``NonRepairable`` or a
         ``RepairableRBD`` (a ``Repairable``, which models imperfect repair,
@@ -759,8 +771,12 @@ class RepairableRBD(RBD):
         self._shutdowns = _shutdowns.validate(shutdowns)
         # A component that operates part of the time takes its life on
         # the calendar from here on; the spec as given keeps its life in
-        # operating time, for its levers, draws and saving.
-        components = _on_duty(components)
+        # operating time, for its levers, draws and saving; and a task
+        # counted in operating time is put on the calendar through the
+        # duty, its spec as given keeping its times in operating time.
+        # The duty of each such component, by node, converts the
+        # intervals the interval choices give and take (see _intervals).
+        components, self._operating_tasks = _on_duty(components)
         self.repair_crews = _validate_crews(repair_crews)
         # Each component's place in the queue for a crew (higher first).
         self._priority: dict[Any, float] = {}

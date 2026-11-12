@@ -761,6 +761,30 @@ def repairable_kinds():
             "operated part of the time": system(
                 unit(duty=0.25, preventive={"interval": 300.0})
             ),
+            # Tasks counted in operating time, put on the calendar
+            # through the block's duty.
+            "operated part of the time, maintained by running hours": system(
+                unit(
+                    duty=0.25,
+                    preventive={
+                        "interval": 75.0,
+                        "basis": "operating",
+                        "cost": 2.0,
+                    },
+                    replace_cost=10.0,
+                )
+            ),
+            "operated part of the time, tested by running hours": system(
+                unit(
+                    duty=0.5,
+                    repairability="instant",
+                    inspection={
+                        "interval": 50.0,
+                        "offset": 10.0,
+                        "basis": "operating",
+                    },
+                )
+            ),
             "mixture life, maintained": system(
                 unit(
                     reliability=mixture_life(),

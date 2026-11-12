@@ -860,24 +860,39 @@ def _failures_between(model, ages: np.ndarray) -> np.ndarray:
     return out
 
 
-def _on_duty(components: dict) -> dict:
+def _on_duty(components: dict) -> Tuple[dict, dict]:
     """The components, each spec with a ``"duty"`` given its life on the
     calendar (see ``_duty.on_calendar``): one object for each model and
-    duty, so that components sharing a model still share it."""
-    from repyability.rbd._duty import duty_fraction, on_calendar
+    duty, so that components sharing a model still share it; and each
+    task counted in operating time put on the calendar through its
+    block's duty (``_duty.tasks_on_calendar``). Return them, and the duty
+    of each component with such a task (its tasks' times in operating
+    time per unit of calendar time)."""
+    from repyability.rbd._duty import (
+        duty_fraction,
+        on_calendar,
+        tasks_on_calendar,
+    )
 
     moved: dict = {}
     out = {}
+    operating: dict = {}
     for name, component in components.items():
-        if isinstance(component, dict) and component.get("duty") is not None:
-            d = duty_fraction(name, component["duty"])
-            life = component["reliability"]
-            key = (id(life), d)
-            if key not in moved:
-                moved[key] = on_calendar(name, life, d)
-            component = {**component, "reliability": moved[key]}
+        if isinstance(component, dict):
+            d = None
+            if component.get("duty") is not None:
+                d = duty_fraction(name, component["duty"])
+                life = component["reliability"]
+                key = (id(life), d)
+                if key not in moved:
+                    moved[key] = on_calendar(name, life, d)
+                component = {**component, "reliability": moved[key]}
+            component, counted = tasks_on_calendar(name, component, d)
+            if counted:
+                assert d is not None  # refused without one
+                operating[name] = d
         out[name] = component
-    return out
+    return out, operating
 
 
 def _is_junction(name, component) -> bool:

@@ -365,6 +365,9 @@ def _serialise_schedule(spec: dict) -> dict:
             out["older_than"] = float(spec["older_than"])
     else:
         out["interval"] = float(spec["interval"])
+    if spec.get("basis") is not None:
+        # What its times are counted in, as given: they are kept in it.
+        out["basis"] = spec["basis"]
     if "policy" in spec:
         out["policy"] = spec["policy"]
     if spec.get("threshold") is not None:

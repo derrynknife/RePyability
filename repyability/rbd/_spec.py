@@ -86,6 +86,7 @@ PREVENTIVE_KEYS = (
     "replacement_cost",
     "shutdown",
     "older_than",
+    "basis",
 )
 
 #: The keys of a ``"preventive"`` spec that make its task restore the unit
@@ -109,6 +110,7 @@ INSPECTION_KEYS = (
     "coverage",
     "full_test",
     "shutdown",
+    "basis",
 )
 
 #: The keys of a component's ``"standby"`` spec.
