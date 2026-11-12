@@ -179,6 +179,7 @@ def _renewal(c, t, maintenance, fail, lives, limit, flat, base):
     the same time first). Returns a status code (a stream's number + 1 if
     it ran out of draws), the event's time and its kind."""
     policy, interval, duration = maintenance[0], maintenance[1], maintenance[2]
+    phase = maintenance[32]
     s = fail[c]
     k = lives[c]
     if k >= limit[s]:
@@ -187,6 +188,13 @@ def _renewal(c, t, maintenance, fail, lives, limit, flat, base):
     life = flat[base[s] + k]
     if policy[c] == 1:
         due = t + interval[c]
+    elif phase[c] >= 0.0:
+        # On a shutdown's calendar: its first time, then every interval
+        # (``_Preventive.due``, as ``_Inspection.due`` with an offset).
+        k = np.floor((t - phase[c]) / interval[c]) + 1.0
+        due = phase[c] + k * interval[c]
+        if not due > t:
+            due = phase[c] + (k + 1.0) * interval[c]
     else:
         # The next multiple of the interval after t.
         due = (np.floor(t / interval[c]) + 1.0) * interval[c]

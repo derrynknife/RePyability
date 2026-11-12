@@ -79,6 +79,7 @@ from repyability.rbd._sampling import MixtureLife, stream_sampler
 from repyability.rbd._tally import (
     _CATEGORIES,
     _REPAIR,
+    _SHUTDOWN,
     _CapacityRecorder,
     _Replication,
     _shard_bytes,
@@ -565,6 +566,71 @@ def _simulate_block(span: Tuple[int, int]) -> "_Tally":
     for replication in range(*span):
         tally.add(_replicate(rbd, context, replication))
     return tally.compact()
+
+
+class _Shut:
+    """A shutdown in a simulation (see ``_shutdowns``), the component of
+    the events of its windows: a start (status False), which holds its
+    ``nodes`` off line, charges its ``cost`` and stands its ``paused``
+    nodes' own processes still, and an end ``duration`` later (status
+    True), which lets them go."""
+
+    __slots__ = ("name", "nodes", "paused", "duration", "cost")
+
+    def __init__(self, name, nodes, paused, duration: float, cost: float):
+        self.name, self.nodes, self.paused = name, nodes, paused
+        self.duration, self.cost = duration, cost
+
+
+def _shut_events(rbd, t_simulation: float, forced: set) -> list:
+    """The events of the shutdowns' windows in ``[0, t_simulation)``: each
+    start, and its end if it falls in the window, the nodes held at
+    ``forced`` left out (they are held whatever a shut does)."""
+    from repyability.rbd import _shutdowns
+
+    out = []
+    for shut in _shutdowns.timed(rbd):
+        nodes = tuple(
+            node for node in _shutdowns.scope(rbd, shut) if node not in forced
+        )
+        paused = tuple(
+            node
+            for node in nodes
+            if not shut.idle_ageing
+            and shut.name not in _shutdowns.bound_to(rbd, node)
+        )
+        source = _Shut(shut.name, nodes, paused, shut.duration, shut.cost)
+        for start in shut.starts(t_simulation):
+            out.append(Event(float(start), source, False))
+            end = float(start) + shut.duration
+            if end < t_simulation:
+                out.append(Event(end, source, True))
+    return out
+
+
+def _shifted(rbd, node, t: float, by: float) -> Optional[Event]:
+    """Stand ``node`` still for ``by`` from ``t`` (a shut that pauses it,
+    see ``_shutdowns``): its pending event, cancelled, falls ``by`` later
+    (its own process shifted by the shut's length). Returns the event to
+    queue, or None."""
+    run = rbd._run_state
+    pending = run._paused_pending.get(node)
+    if pending is None:
+        return None
+    run._cancelled[id(pending)] = pending
+    moved = Event(
+        pending.time + by,
+        node,
+        pending.status,
+        pending.preventive,
+        pending.inspection,
+        pending.missed,
+    )
+    if moved.time < run.t_simulation:
+        run._paused_pending[node] = moved
+        return moved
+    run._paused_pending[node] = None
+    return None
 
 
 class _Context(NamedTuple):
@@ -1274,6 +1340,9 @@ def initialize_event_queue(
     state,
 ):
     """See ``RepairableRBD.initialize_event_queue``."""
+    from repyability.rbd import _shutdowns
+
+    _shutdowns.require_none(rbd, _shutdowns.STEPPING)
     working_nodes = set() if working_nodes is None else set(working_nodes)
     broken_nodes = set() if broken_nodes is None else set(broken_nodes)
     states = _curves._simulation_states(
@@ -1418,6 +1487,22 @@ def _start_queue(
         first = Event(sources[cause].gap(), cause, False)
         if first.time < t_simulation:
             event_queue.put(first)
+    # Shutdowns (see _shutdowns): the nodes they hold off line now, and
+    # each node a shut may stand still with its pending event.
+    rbd._run_state._held = set()
+    rbd._run_state._paused_pending = {}
+    if rbd._shutdowns:
+        for event in _shut_events(
+            rbd, t_simulation, working_nodes | broken_nodes
+        ):
+            event_queue.put(event)
+            if not event.status:
+                for node in event.component.paused:
+                    rbd._run_state._paused_pending.setdefault(node, None)
+        for item in event_queue._heap:
+            event = item[1] if isinstance(item, tuple) else item
+            if event.component in rbd._run_state._paused_pending:
+                rbd._run_state._paused_pending[event.component] = event
     rbd._run_state._event_queue = event_queue
     # The repair crews, when there are fewer than the components that
     # may need one (with enough, no job ever waits).
@@ -1882,6 +1967,10 @@ def _replaced_at(
         return math.inf
     # Its ages at those inspections, and at the one after the last.
     ages = np.array(dues + [due]) - renewed
+    if schedule.older_than is not None:
+        # At a shutdown: replaced once it is that old (see _shutdowns).
+        above = np.flatnonzero(ages[:-1] >= schedule.older_than)
+        return dues[above[0]] if above.size else math.inf
     likely = _failures_between(rbd.components[node].reliability, ages)
     above = np.flatnonzero(likely > schedule.threshold)
     return dues[above[0]] if above.size else math.inf
@@ -2312,6 +2401,12 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     )
     status = rbd._run_state.component_status
     index, plain, works = ctx.position, ctx.plain, ctx.works
+    # Shutdowns (see _shutdowns): the nodes a shut holds off line, and
+    # what the system and the time kept for each node see, each node down
+    # while it is held (its own state, status, goes on underneath).
+    held = rbd._run_state._held
+    paused_pending = rbd._run_state._paused_pending
+    view = dict(status) if rbd._shutdowns else status
     inspected = rbd._inspection
     crews = rbd._run_state._crews
     groups = rbd._run_state._groups
@@ -2352,7 +2447,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         by_node[node] += charge
         return charge
 
-    trace = None if ctx.capacity is None else ctx.capacity.trace(status)
+    trace = None if ctx.capacity is None else ctx.capacity.trace(view)
     # With ctx.history (see simulate_timelines): each component's state
     # at 0, the times of its changes, and which of them (their places
     # among its changes) were planned changes down, maintenance or a
@@ -2360,7 +2455,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     # component whose change made each, which of its changes that was,
     # and whether it was planned.
     history = ctx.history
-    at_start = [status[node] for node in index] if history else None
+    at_start = [view[node] for node in index] if history else None
     times_of: list = [[] for _ in range(n)] if history else []
     planned_of: list = [[] for _ in range(n)] if history else []
     system_record: tuple = ([], [], [], []) if history else ()
@@ -2429,6 +2524,73 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             for follow in _strike(rbd, event, sources[node]):
                 push(heap, (follow.time, follow))
             continue
+        if node.__class__ is _Shut:
+            # A shutdown's window starts (status False) or ends: its nodes
+            # are held off line, or let go, as planned changes of what the
+            # system sees (see _shutdowns).
+            t = event.time
+            if up:
+                system_up_t, system_down_t = (
+                    system_up + (t - since),
+                    system_down,
+                )
+            else:
+                system_up_t = system_up
+                system_down_t = system_down + (t - since)
+            changed = None
+            for member in node.nodes:
+                if event.status:
+                    held.discard(member)
+                    if view[member] == status[member]:
+                        continue
+                elif member in held or not view[member]:
+                    held.add(member)
+                    continue
+                else:
+                    held.add(member)
+                c = index[member]
+                if view[member]:
+                    node_up[c] += t - last[c]
+                    both_up[c] += system_up_t - up_at[c]
+                else:
+                    both_down[c] += system_down_t - down_at[c]
+                last[c], up_at[c], down_at[c] = t, system_up_t, system_down_t
+                view[member] = event.status
+                changed = c
+                if trace is not None:
+                    trace.change(t, member, event.status)
+                if history:
+                    times_of[c].append(t)
+                    if not event.status:
+                        planned_of[c].append(len(times_of[c]) - 1)
+            if not event.status:
+                # Charged at its start; its paused nodes stand still.
+                if node.cost:
+                    by_category[_SHUTDOWN] += node.cost
+                    rep_cost += node.cost
+                for member in node.paused:
+                    moved = _shifted(rbd, member, t, node.duration)
+                    if moved is not None:
+                        push(heap, (moved.time, moved))
+            if changed is not None and works(view) != up:
+                system_up, system_down, since = system_up_t, system_down_t, t
+                up = not up
+                changes.append(t)
+                if history:
+                    system_record[0].append(t)
+                    system_record[1].append(changed)
+                    system_record[2].append(len(times_of[changed]) - 1)
+                    system_record[3].append(not up)
+                if up:
+                    deltas.append(1)
+                    restorations += 1
+                else:
+                    deltas.append(-1)
+                    planned += 1
+                    for name, spec in maintenance.items():
+                        if spec.system_down:
+                            rep_cost += stop(name, t)
+            continue
         renewing_early = False
         if early and early.get(id(event)) is event:
             del early[id(event)]
@@ -2484,6 +2646,8 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             continue
         t = event.time
         c = index[node]
+        # Held off line by a shut, its own change is not seen.
+        masked = bool(held) and node in held
         if up:
             system_up_t, system_down_t = (
                 system_up + (t - since),
@@ -2491,19 +2655,24 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             )
         else:
             system_up_t, system_down_t = system_up, system_down + (t - since)
-        if status[node]:
+        if masked:
+            pass
+        elif status[node]:
             node_up[c] += t - last[c]
             both_up[c] += system_up_t - up_at[c]
         else:
             both_down[c] += system_down_t - down_at[c]
-        last[c], up_at[c], down_at[c] = t, system_up_t, system_down_t
+        if not masked:
+            last[c], up_at[c], down_at[c] = t, system_up_t, system_down_t
         status[node] = event.status
-        if trace is not None:
-            trace.change(t, node, event.status)
-        if history:
-            times_of[c].append(t)
-            if not event.status and (event.preventive or event.inspection):
-                planned_of[c].append(len(times_of[c]) - 1)
+        if not masked:
+            view[node] = event.status
+            if trace is not None:
+                trace.change(t, node, event.status)
+            if history:
+                times_of[c].append(t)
+                if not event.status and (event.preventive or event.inspection):
+                    planned_of[c].append(len(times_of[c]) - 1)
         if event.status:
             restored[c] += 1
         elif event.preventive:
@@ -2540,7 +2709,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         # The structure is coherent: a restoration can't take the
         # system down, nor a failure bring it up, so only a change
         # against the system's state needs the structure function.
-        if event.status != up and works(status) != up:
+        if not masked and event.status != up and works(view) != up:
             system_up, system_down, since = system_up_t, system_down_t, t
             up = not up
             changes.append(t)
@@ -2582,6 +2751,10 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             next_event = _crew_follow_up(rbd, event, next_event)
         if next_event is not None and next_event.time < t_simulation:
             push(heap, (next_event.time, next_event))
+            if paused_pending and node in paused_pending:
+                paused_pending[node] = next_event
+        elif paused_pending and node in paused_pending:
+            paused_pending[node] = None
         if ccf_members and node in ccf_members:
             ccf_pending[node] = next_event
     rbd._run_state.system_state = up
@@ -2593,7 +2766,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     else:
         system_down += t_simulation - since
     for c, node in enumerate(index):
-        if status[node]:
+        if view[node]:
             node_up[c] += t_simulation - last[c]
             both_up[c] += system_up - up_at[c]
         else:

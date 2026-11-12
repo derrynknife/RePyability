@@ -29,6 +29,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
+import numpy as np
+
 from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
 from repyability.rbd._bayesian_life import PosteriorPredictive, as_life
@@ -355,7 +357,14 @@ def _serialise_schedule(spec: dict) -> dict:
             "is worked out from its part and calendar, not saved. Save the "
             "diagram without it, and work the policy out again."
         )
-    out: dict[str, Any] = {"interval": float(spec["interval"])}
+    out: dict[str, Any] = {}
+    if spec.get("shutdown") is not None:
+        # Done at a shutdown, whose calendar and duration it takes.
+        out["shutdown"] = spec["shutdown"]
+        if spec.get("older_than") is not None:
+            out["older_than"] = float(spec["older_than"])
+    else:
+        out["interval"] = float(spec["interval"])
     if "policy" in spec:
         out["policy"] = spec["policy"]
     if spec.get("threshold") is not None:
@@ -370,9 +379,12 @@ def _serialise_schedule(spec: dict) -> dict:
         if spec.get(key) is not None:
             out[key] = float(spec[key])
     duration = spec.get("duration", "instant")
-    out["duration"] = (
-        "instant" if isinstance(duration, str) else serialise_model(duration)
-    )
+    if spec.get("shutdown") is None:
+        out["duration"] = (
+            "instant"
+            if isinstance(duration, str)
+            else serialise_model(duration)
+        )
     for key in ("cost", "inspection_cost"):
         cost = spec.get(key)
         if hasattr(cost, "qf"):
@@ -401,7 +413,9 @@ def _serialise_schedule(spec: dict) -> dict:
 
 def _deserialise_schedule(d: dict) -> dict:
     out = dict(d)
-    if isinstance(d["duration"], dict):
+    if "shutdown" in d:
+        out["shutdown"] = _node_name(d["shutdown"])
+    if isinstance(d.get("duration"), dict):
         out["duration"] = deserialise_model(d["duration"])
     if "restoration" in d:
         out["restoration"] = dict(d["restoration"])
@@ -592,6 +606,12 @@ def rbd_to_dict(rbd: RBD) -> dict:
             ]
         if args.get("ccf_groups"):
             out["ccf_groups"] = _ccf_to_list(args["ccf_groups"])
+        if args.get("shutdowns"):
+            # Each shutdown's spec, by name (a name may not be a JSON key).
+            out["shutdowns"] = [
+                {"shutdown": name, **_shutdown_spec(spec)}
+                for name, spec in args["shutdowns"].items()
+            ]
     else:
         nodes = set(args["reliabilities"].keys())
         out["reliabilities"] = [
@@ -602,6 +622,22 @@ def rbd_to_dict(rbd: RBD) -> dict:
             for n, v in args["reliabilities"].items()
         ]
         out["ccf_groups"] = _ccf_to_list(args.get("ccf_groups"))
+    return out
+
+
+def _shutdown_spec(spec: dict) -> dict:
+    """A shutdown's spec as plain data: its numbers as floats, its times
+    as a list, its scope's nodes as they are."""
+    out: dict = {}
+    for key, value in spec.items():
+        if key == "times":
+            out[key] = [float(t) for t in np.atleast_1d(value)]
+        elif key == "scope":
+            out[key] = None if value is None else list(value)
+        elif key == "idle_ageing":
+            out[key] = bool(value)
+        elif value is not None:
+            out[key] = float(value)
     return out
 
 
@@ -631,6 +667,18 @@ def rbd_from_dict(d: dict) -> RBD:
             }
             for e in d.get("maintenance_groups") or ()
         }
+        shutdowns = {
+            _node_name(e["shutdown"]): {
+                key: (
+                    [_node_name(n) for n in value]
+                    if key == "scope" and value is not None
+                    else value
+                )
+                for key, value in e.items()
+                if key != "shutdown"
+            }
+            for e in d.get("shutdowns") or ()
+        }
         return RepairableRBD(
             edges,
             components,
@@ -638,6 +686,7 @@ def rbd_from_dict(d: dict) -> RBD:
             repair_crews=d.get("repair_crews"),
             maintenance_groups=groups or None,
             ccf_groups=_ccf_from_list(d.get("ccf_groups")),
+            shutdowns=shutdowns or None,
             **common,
         )
     if rbd_type == "NonRepairableRBD":

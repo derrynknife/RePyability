@@ -17,6 +17,7 @@ import numpy as np
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _long_run,
+    _shutdowns,
 )
 from repyability.rbd._block_replacement import (
     _check_life,
@@ -411,6 +412,8 @@ def _require_calendars(rbd) -> None:
         )
     intervals = {rbd._preventive[node].interval for node in blocks}
     intervals |= {rbd._inspection[node].interval for node in rbd._inspection}
+    _shutdowns.require_exact(rbd)
+    intervals |= {shut.period for shut in _shutdowns.timed(rbd)}
     if not intervals:
         return
     period = _common_period(intervals)

@@ -428,6 +428,8 @@ class _Run:
         "_ccf_pending",
         "_ccf_coins",
         "_calendar_price",
+        "_held",
+        "_paused_pending",
     )
 
     #: The events to come, in time order.
@@ -480,6 +482,11 @@ class _Run:
     #: (``inf``: the calendar allows none then, see
     #: ``_event_loop._CalendarCharge``).
     _calendar_price: dict
+    #: Shutdowns (see ``_shutdowns``): the nodes a shut holds off line
+    #: now, and each node a shut stands still with its pending event (None
+    #: if it has none in the window).
+    _held: set
+    _paused_pending: dict
 
     def __init__(self) -> None:
         self._step_sources = None
@@ -560,6 +567,19 @@ class _Preventive(NamedTuple):
     #: Under ``"calendar"`` (#319): the ``CalendarPolicy`` whose threshold
     #: at each time replaces the unit, at its calendar's price there.
     calendar: Any = None
+    #: Under ``"block"`` or ``"condition"``: the time of the first action
+    #: (then every ``interval``), from a shutdown's calendar; 0 puts the
+    #: first at ``interval``, as an inspection's offset does.
+    offset: float = 0.0
+    #: Under ``"condition"`` at a shutdown's times: the age at or past
+    #: which the unit is replaced there, in place of the ``threshold``;
+    #: None for none.
+    older_than: Optional[float] = None
+    #: At a shutdown's given times (sorted, from 0) rather than every
+    #: ``interval``: those times; None for a period.
+    times: Optional[Tuple[float, ...]] = None
+    #: The name of the shutdown the actions are done at; None for none.
+    shutdown: Any = None
 
     def due(self, renewed: float) -> float:
         """When the next preventive action (under ``"condition"``, the next
@@ -569,6 +589,16 @@ class _Preventive(NamedTuple):
             return renewed + self.interval
         if self.policy == "calendar":
             return self.calendar._next_planned(renewed, renewed)[0]
+        if self.times is not None:
+            return _next_time(self.times, renewed)
+        if self.offset or self.shutdown is not None:
+            # From a shutdown's first time on (as _Inspection.due, with or
+            # without an offset: its times are offset + k * interval).
+            k = np.floor((renewed - self.offset) / self.interval) + 1.0
+            due = float(self.offset + k * self.interval)
+            if due > renewed:
+                return due
+            return float(self.offset + (k + 1.0) * self.interval)
         # Block, or inspections: the next multiple of the interval after
         # ``renewed`` (a unit renewed on the schedule is not renewed again
         # there).
@@ -624,6 +654,11 @@ class _Inspection(NamedTuple):
     offset: float = 0.0
     coverage: float = 1.0
     full_test: Optional[float] = None
+    #: At a shutdown's given times (sorted, from 0) rather than every
+    #: ``interval``: those times; None for a period.
+    times: Optional[Tuple[float, ...]] = None
+    #: The name of the shutdown the tests are done at; None for none.
+    shutdown: Any = None
 
     @property
     def partial(self) -> bool:
@@ -645,6 +680,8 @@ class _Inspection(NamedTuple):
 
     def due(self, t: float) -> float:
         """The first inspection after ``t``."""
+        if self.times is not None:
+            return _next_time(self.times, t)
         if not self.offset:
             k = np.floor(t / self.interval) + 1.0
             due = float(k * self.interval)
@@ -658,6 +695,8 @@ class _Inspection(NamedTuple):
     def finds(self, t: float) -> float:
         """The inspection that finds a failure at ``t``: the first at or
         after it."""
+        if self.times is not None:
+            return _next_time(self.times, t, at=True)
         if not self.offset:
             k = np.ceil(t / self.interval)
             due = float(k * self.interval)
@@ -680,6 +719,70 @@ class _Inspection(NamedTuple):
         """The schedule on a calendar from 0 (a start from a state, whose
         ``since_scheduled`` places it)."""
         return self._replace(offset=0.0) if self.offset else self
+
+
+def _next_time(times: Tuple[float, ...], t: float, at: bool = False) -> float:
+    """The first of the sorted ``times`` after ``t`` (with ``at``, at or
+    after it); ``inf`` if none is."""
+    k = int(np.searchsorted(times, t, side="left" if at else "right"))
+    return float(times[k]) if k < len(times) else math.inf
+
+
+class _Shutdown(NamedTuple):
+    """A shutdown (a diagram's ``shutdowns``): the times it starts, every
+    ``period`` from ``offset`` (0 puts the first at ``period``, as an
+    inspection's offset does) or at the sorted ``times``; the time it
+    lasts, ``duration``; the nodes it holds off line (``scope``, None for
+    the whole system); its ``cost``, charged at each; and whether the
+    blocks in its scope not worked on keep ageing through it
+    (``idle_ageing``) or stand still until it ends."""
+
+    name: Any
+    #: A float, or None at given times.
+    period: Any
+    offset: float
+    times: Optional[Tuple[float, ...]]
+    duration: float
+    scope: Optional[Tuple[Any, ...]]
+    cost: float
+    idle_ageing: bool
+
+    @property
+    def periodic(self) -> bool:
+        """Whether it starts every ``period`` (else at given times)."""
+        return self.times is None
+
+    def due(self, t: float) -> float:
+        """The first start after ``t`` (as a task bound to it falls due:
+        see ``_Preventive.due``)."""
+        if self.times is not None:
+            return _next_time(self.times, t)
+        return _Preventive(
+            float(self.period), "block", None, offset=self.offset, shutdown=0
+        ).due(t)
+
+    def starts(self, stop: float) -> np.ndarray:
+        """Its starts in ``[0, stop)``: ``offset + k * period`` (from the
+        first ``k`` that is more than 0 with no offset), as ``due`` and a
+        task bound to it work them out, to the last bit."""
+        if self.times is not None:
+            times = np.asarray(self.times, dtype=float)
+            return times[times < stop]
+        if not stop > 0.0:
+            return np.empty(0)
+        first = 0.0 if self.offset else 1.0
+        last = np.floor((stop - self.offset) / self.period) + 1.0
+        k = np.arange(first, max(first, last) + 1.0)
+        times = self.offset + k * float(self.period)
+        return times[times < stop]
+
+    def windows(self, stop: float) -> Tuple[np.ndarray, np.ndarray]:
+        """Its windows that start before ``stop``: their starts and ends
+        (none for a shutdown in no time)."""
+        if not self.duration > 0.0:
+            return np.empty(0), np.empty(0)
+        starts = self.starts(stop)
+        return starts, starts + self.duration
 
 
 class _Standby(NamedTuple):

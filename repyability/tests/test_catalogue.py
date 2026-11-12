@@ -229,6 +229,8 @@ def repairable_kinds(rbd, components, options) -> set:
             found.add(f"restoration model {restoration['model']!r}")
     for group in (options.get("maintenance_groups") or {}).values():
         found |= {f"maintenance group key {key!r}" for key in group}
+    for shut in (options.get("shutdowns") or {}).values():
+        found |= {f"shutdown key {key!r}" for key in shut}
     if options.get("k"):
         found.add("a k-out-of-n vote")
     if options.get("capacity"):
@@ -263,6 +265,7 @@ def required_repairable() -> set:
         | {f"repair model {model!r}" for model in cls.REPAIR_MODELS}
         | {f"restoration model {model!r}" for model in cls.REPAIR_MODELS}
         | {f"maintenance group key {key!r}" for key in cls.GROUP_KEYS}
+        | {f"shutdown key {key!r}" for key in cls.SHUTDOWN_KEYS}
         | {"repairability 'instant'"}
         | {"a k-out-of-n vote", "capacities", "downtime_cost_rate"}
         | {"repair crews", "repair crews around a nested RepairableRBD"}

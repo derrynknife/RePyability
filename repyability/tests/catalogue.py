@@ -940,6 +940,87 @@ def repairable_kinds():
                 downtime_cost_rate=5.0,
             ),
             "fitted life": system(unit(reliability=fitted_life())),
+            # Shutdowns: the line shut every 300 for 5 (from 100), every
+            # block's work done there.
+            "shutdown of the line, tasks at it": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={"shutdown": "line", "cost": 2.0},
+                        repair_cost=3.0,
+                    ),
+                    "b": unit(
+                        preventive={"shutdown": "line", "older_than": 400.0}
+                    ),
+                    "c": {
+                        "reliability": E([0.001]),
+                        "repairability": E([0.5]),
+                        "inspection": {"shutdown": "line", "cost": 1.0},
+                    },
+                },
+                shutdowns={
+                    "line": {
+                        "period": 300.0,
+                        "offset": 100.0,
+                        "duration": 5.0,
+                        "cost": 20.0,
+                    }
+                },
+                downtime_cost_rate=5.0,
+            ),
+            "shutdown of some blocks, idle ones paused": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(preventive={"shutdown": "unit"}),
+                    "b": unit(repair_cost=2.0),
+                    "c": unit(),
+                },
+                shutdowns={
+                    "unit": {
+                        "period": 200.0,
+                        "duration": 10.0,
+                        "scope": ["a", "b"],
+                        "idle_ageing": False,
+                    }
+                },
+            ),
+            "shutdowns at given times, restoring": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={
+                            "shutdown": "outage",
+                            "restoration": {"model": "kijima1", "q": 0.5},
+                            "cost": 2.0,
+                        }
+                    ),
+                    "b": unit(),
+                    "c": unit(),
+                },
+                shutdowns={
+                    "outage": {
+                        "times": [150.0, 400.0, 700.0],
+                        "duration": 8.0,
+                        "scope": ["a"],
+                        "cost": 30.0,
+                    }
+                },
+            ),
+            "shutdown in no time": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(preventive={"shutdown": "check"}),
+                    "b": unit(),
+                    "c": {
+                        "reliability": E([0.001]),
+                        "repairability": E([0.5]),
+                        "inspection": {"shutdown": "check"},
+                    },
+                },
+                shutdowns={
+                    "check": {"period": 250.0, "offset": 40.0, "duration": 0}
+                },
+            ),
             "standby group, two needed": system(
                 {
                     "reliability": E([0.002]),

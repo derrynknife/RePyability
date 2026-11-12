@@ -11,6 +11,33 @@ other release, fixes included, the minor.
 
 ### Added
 
+- Shutdowns (UC-23): `RepairableRBD(..., shutdowns={name: spec})`, each
+  an outage every `"period"` from its `"offset"` (or at given
+  `"times"`) lasting a fixed `"duration"`, that holds its `"scope"` (by
+  default the whole system) off line, at a `"cost"` per shut; idle
+  blocks in scope keep ageing, or with `"idle_ageing": False` stand
+  still. The work is given on the block: `"preventive": {"shutdown":
+  name}` renews it at every shut (or, with the new `"older_than"`, only
+  once that old; with `"policy": "condition"`, on its condition; with a
+  `"restoration"`, partly), and `"inspection": {"shutdown": name}` tests
+  it there, each translated into the block replacement or inspection it
+  is, on the shut's calendar (block replacement gains an offset, which
+  numba's loop takes too). Shuts on a period are exact or numerical
+  where the blocks fail independently (the long run, the values over
+  time, the expected events, costs and NPV, the levers); shuts at given
+  times, a restoration at a shut and blocks tied together by crews,
+  common causes or maintenance groups are simulated, in Python (numba's
+  loop runs shuts that take no time and cost nothing). The results count
+  the shuts (`shutdowns` in `ExpectedEvents`, `EventsByWindow` and
+  `AvailabilityResult`), and the costs have a new category,
+  `"shutdown"`, appended to the categories (so each engine's array of
+  costs by category is one longer; the others keep their places). The
+  importance measures, capacities, first failure, spares, allocations,
+  parameter uncertainty, interval searches, `plan_vs_actual`, the crews'
+  chain and stepping a simulation by hand refuse a diagram with
+  shutdowns, in plain words, for now. Saved and loaded with the diagram.
+  Outages at given times (UC-24) are simulated; their exact cost by
+  window and NPV are open.
 - Public, documented versions of values that were reachable only through
   private calls (the private ones keep working as they were):
   - `RepairableRBD.node_action_rates()` (and `NodeActionRates`): each

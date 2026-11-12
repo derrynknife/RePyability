@@ -17,7 +17,7 @@ from typing import (
 
 import numpy as np
 
-from repyability.rbd import _crews, _long_run, _requirements
+from repyability.rbd import _crews, _long_run, _requirements, _shutdowns
 from repyability.rbd._common import (
     _discount_rate,
     _horizons,
@@ -44,7 +44,9 @@ def expected_cost_rate(
     if setups:
         _requirements._require_separate_setups(rbd)
 
-    rate = 0.0
+    _shutdowns.require_exact(rbd)
+    # The shutdowns' own costs, at each shut.
+    rate = _shutdowns.cost_rate(rbd)
 
     # Production lost while the *system* is down.
     if rbd.downtime_cost_rate:
@@ -147,7 +149,9 @@ def _node_actions(rbd, node, availability: float) -> Tuple[float, float]:
             0.0,
         )
     failures, maintained, _ = _long_run._node_frequencies(rbd, node)
-    return failures, maintained
+    # A shut that stands it still stops its own process for its windows.
+    share = _shutdowns.running_share(rbd, node)
+    return failures * share, maintained * share
 
 
 def node_action_rates(
@@ -160,6 +164,7 @@ def node_action_rates(
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     working, broken = rbd._held_nodes(working_nodes, broken_nodes)
+    _shutdowns.require_exact(rbd)
     _ccf_groups._require_ccf_frequencies(rbd)
     coupled = rbd._crews_couple()
     if coupled:

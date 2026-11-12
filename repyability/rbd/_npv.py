@@ -144,9 +144,9 @@ def expected_npv(
                 )
             else:
                 plain, nominal_cells = got, present_cells
-            # The system's downtime and a group's set-up costs are no
-            # component's.
-            for category in ("system_downtime", "setup"):
+            # The system's downtime, a group's set-up and a shutdown's
+            # costs are no component's.
+            for category in ("system_downtime", "setup", "shutdown"):
                 a = np.atleast_1d(got.by_category[category])
                 if np.any(a):
                     systems[category] = (

@@ -84,6 +84,8 @@ PREVENTIVE_KEYS = (
     "restoration",
     "replace_every",
     "replacement_cost",
+    "shutdown",
+    "older_than",
 )
 
 #: The keys of a ``"preventive"`` spec that make its task restore the unit
@@ -106,6 +108,7 @@ INSPECTION_KEYS = (
     "offset",
     "coverage",
     "full_test",
+    "shutdown",
 )
 
 #: The keys of a component's ``"standby"`` spec.
@@ -625,12 +628,14 @@ def _validate_calendar(node, spec: dict, policy: str, life):
 
 
 def _validate_preventive(
-    node, spec, life=None
+    node, spec, life=None, shutdowns: Optional[dict] = None
 ) -> Tuple[_Preventive, Any, Any]:
     """A component's ``"preventive"`` spec, validated: its schedule,
     and the cost of each replacement and of each inspection (None if
     it prices nothing); ``life`` is the component's life model, which a
-    ``"level"`` needs to be a degradation process (#271)."""
+    ``"level"`` needs to be a degradation process (#271). A task done at
+    one of the diagram's ``shutdowns`` (its ``"shutdown"``) is the
+    schedule the shut gives it (see ``_shutdowns.bound_preventive``)."""
     if not isinstance(spec, dict):
         raise ValueError(
             f"Component {node!r}: preventive must be a dict with "
@@ -642,6 +647,16 @@ def _validate_preventive(
             f"Component {node!r} has unknown preventive key(s) "
             f"{sorted(map(str, unknown))}. A preventive spec takes "
             f"{', '.join(PREVENTIVE_KEYS)}."
+        )
+    bound: dict = {}
+    if spec.get("shutdown") is not None:
+        from repyability.rbd import _shutdowns
+
+        spec, bound = _shutdowns.bound_preventive(node, spec, shutdowns or {})
+    elif spec.get("older_than") is not None:
+        raise ValueError(
+            f"Component {node!r}: older_than replaces the unit at a "
+            "shutdown if it is that old, so it needs a shutdown."
         )
     policy = spec.get("policy", "age")
     if policy not in PREVENTIVE_POLICIES:
@@ -738,7 +753,14 @@ def _validate_preventive(
                 cost = None
         costs.append(cost)
     schedule = _Preventive(
-        interval, policy, duration, threshold, opportunity, level, calendar
+        interval,
+        policy,
+        duration,
+        threshold,
+        opportunity,
+        level,
+        calendar,
+        **bound,
     )
     return schedule, costs[0], costs[1]
 
@@ -847,9 +869,13 @@ def _validate_standby(node, spec: dict) -> _Standby:
     )
 
 
-def _validate_inspection(node, spec) -> Tuple[_Inspection, Any]:
+def _validate_inspection(
+    node, spec, shutdowns: Optional[dict] = None
+) -> Tuple[_Inspection, Any]:
     """A component's ``"inspection"`` spec, validated: its schedule, and
-    its cost (None if it prices nothing)."""
+    its cost (None if it prices nothing). Tests done at one of the
+    diagram's ``shutdowns`` take the shut's calendar and duration (see
+    ``_shutdowns.bound_inspection``)."""
     if not isinstance(spec, dict):
         raise ValueError(
             f"Component {node!r}: inspection must be a dict with "
@@ -862,6 +888,11 @@ def _validate_inspection(node, spec) -> Tuple[_Inspection, Any]:
             f"{sorted(map(str, unknown))}. An inspection spec takes "
             f"{', '.join(INSPECTION_KEYS)}."
         )
+    bound: dict = {}
+    if spec.get("shutdown") is not None:
+        from repyability.rbd import _shutdowns
+
+        spec, bound = _shutdowns.bound_inspection(node, spec, shutdowns or {})
     try:
         interval = number_or_nan(spec["interval"])
     except KeyError:
@@ -931,7 +962,9 @@ def _validate_inspection(node, spec) -> Tuple[_Inspection, Any]:
             "interval (the mission time, say, after which it is "
             "renewed)."
         )
-    schedule = _Inspection(interval, duration, offset, coverage, full_test)
+    schedule = _Inspection(
+        interval, duration, offset, coverage, full_test, **bound
+    )
     return schedule, cost
 
 

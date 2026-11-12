@@ -28,6 +28,7 @@ from repyability.rbd import (
     _quadrature,
     _rates,
     _requirements,
+    _shutdowns,
 )
 from repyability.rbd._common import (
     _DISCOUNT_ROUNDS,
@@ -125,6 +126,7 @@ def _system_at(
     over ``[0, horizon]``, as a function of the times; the curves whose
     bends its integral's pieces follow; and the crews' curve, where a
     component can wait for a crew (else None)."""
+    _shutdowns.require_exact(rbd)
     if rbd._crews_couple():
         crew = _curves._crew_curve(
             rbd, horizon, working_nodes, broken_nodes, method, states
@@ -344,6 +346,7 @@ def _window(
     ``causes``, the system failures each node (or common cause)
     causes."""
     method = structure_method(method)
+    _shutdowns.require_exact(rbd)
     windows = nonnegative_times(t)
     working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     forced = working | broken
@@ -441,6 +444,7 @@ def expected_events(
         node_preventive=per_node("preventive"),
         node_inspections=per_node("inspections"),
         node_downtime=downtime,
+        shutdowns=shaped(_shutdowns.started_before(rbd, ends)),
     )
 
 
@@ -534,6 +538,9 @@ def expected_cost(
         categories["system_downtime"] = rbd.downtime_cost_rate * (
             np.maximum(ends - counts["uptime"], 0.0)
         )
+    if rbd._shutdowns:
+        # Each shut's cost, at its start (see _shutdowns).
+        categories["shutdown"] = _shutdowns.cost_before(rbd, ends)
     for name, spec in rbd._maintenance.items():
         if not spec.setup_cost:
             continue
@@ -917,6 +924,8 @@ def _window_counts(
             importance, works, fails, _, _ = rbd._importances(
                 _filled(rbd, at_points, len(x), working_nodes, broken_nodes)
             )
+            # A node a shut holds off line changes nothing then.
+            importance = _shutdowns.held_importance(curves, importance, x)
             up = works if structure_method(method) == "p" else 1.0 - fails
         out: Dict[Hashable, np.ndarray] = {
             "uptime": _quadrature.summed(up, half)

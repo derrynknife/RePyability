@@ -91,6 +91,7 @@ def expected_events_by_window(
         node_preventive=per_node(total.node_preventive),
         node_inspections=per_node(total.node_inspections),
         node_downtime=per_node(total.node_downtime),
+        shutdowns=_between(total.shutdowns),
     )
 
 

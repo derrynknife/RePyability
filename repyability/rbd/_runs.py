@@ -62,6 +62,7 @@ from repyability.rbd import (
     _curves,
     _long_run,
     _requirements,
+    _shutdowns,
     _spec,
     _windows,
 )
@@ -1239,6 +1240,7 @@ def _twin_from(
         on_infeasible_rbd=args["on_infeasible_rbd"],
         downtime_cost_rate=args["downtime_cost_rate"],
         ccf_groups=args.get("ccf_groups") if groups else None,
+        shutdowns=args.get("shutdowns"),
     )
 
 
@@ -1628,7 +1630,8 @@ def _conditional_applies(
     groups the exact methods over time refuse, prevent."""
     from repyability.rbd import routes as r
 
-    if diagram._too_meshed() is not None:
+    if diagram._too_meshed() is not None or diagram._shutdowns:
+        # (Shutdowns hold the modules and the rest off line together.)
         return []
     if diagram.ccf_groups and r.refusal(
         partial(
@@ -2371,6 +2374,9 @@ def _availability_result(
         ),
         control_variate=controls[0],
         conditional=conditional,
+        shutdowns=int(
+            _shutdowns.started_before(diagram, np.array([t_simulation]))[0]
+        ),
         **capacity_fields,
     )
 

@@ -787,11 +787,16 @@ _CATEGORIES = (
     "component_downtime",
     "system_downtime",
     "setup",
+    # Appended: the categories' places index the engines'
+    # arrays and seeded costs, so a new one goes at the end.
+    "shutdown",
 )
 
 
 # The category of a repair's own cost (all an imperfect repair is charged).
 _REPAIR = _CATEGORIES.index("repair")
+# The category of a shutdown's own cost, charged at each of its starts.
+_SHUTDOWN = _CATEGORIES.index("shutdown")
 
 
 class _Replication:

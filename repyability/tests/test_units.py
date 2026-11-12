@@ -269,6 +269,74 @@ def test_a_partial_restoration_on_a_duty_is_on_the_calendar():
     )
 
 
+def shut_line(c=1.0, idle_ageing=True):
+    """Two units in series shut every ``300 c`` for ``5 c`` from ``40 c``,
+    one renewed there and the other replaced there once older than
+    ``500 c``."""
+    unit = {"reliability": W([200 * c, 2]), "repairability": E([0.5 / c])}
+    return RepairableRBD(
+        [("s", "a"), ("a", "b"), ("b", "t")],
+        {
+            "a": {**unit, "preventive": {"shutdown": "line"}},
+            "b": (
+                {
+                    **unit,
+                    "preventive": {
+                        "shutdown": "line",
+                        "older_than": 500.0 * c,
+                    },
+                }
+                if idle_ageing
+                else unit
+            ),
+        },
+        shutdowns={
+            "line": {
+                "period": 300.0 * c,
+                "offset": 40.0 * c,
+                "duration": 5.0 * c,
+                "cost": 7.0,
+                "idle_ageing": idle_ageing,
+            }
+        },
+    )
+
+
+@pytest.mark.parametrize("idle_ageing", [True, False])
+@pytest.mark.parametrize("c", [1e-6, 1e3, 1e6])
+def test_a_shutdown_scales_with_the_unit(c, idle_ageing):
+    base, scaled = shut_line(1.0, idle_ageing), shut_line(c, idle_ageing)
+    assert scaled.mean_availability() == pytest.approx(
+        base.mean_availability(), rel=1e-9
+    )
+    assert scaled.expected_cost_rate() * c == pytest.approx(
+        base.expected_cost_rate(), rel=1e-9
+    )
+    x = np.array([30.0, 42.0, 900.0])
+    np.testing.assert_allclose(
+        scaled.point_availability(x * c), base.point_availability(x), atol=1e-9
+    )
+    left, right = base.expected_events(2000.0), scaled.expected_events(
+        2000 * c
+    )
+    assert right.system_failures == pytest.approx(left.system_failures, 1e-7)
+    assert right.system_planned_outages == pytest.approx(
+        left.system_planned_outages, 1e-7
+    )
+    assert right.shutdowns == left.shutdowns == 7.0
+    runs = [
+        rbd.availability(
+            t_simulation=2000.0 * scale,
+            mc_samples=100,
+            seed=4,
+            control_variate=False,
+        )
+        for rbd, scale in ((base, 1.0), (scaled, c))
+    ]
+    assert runs[0].system_failures == runs[1].system_failures
+    assert runs[0].system_planned_outages == runs[1].system_planned_outages
+
+
 def test_a_duty_of_one_changes_nothing():
     assert duty_rbd(W([100, 2]), 1.0).mean_availability() == (
         duty_rbd(W([100, 2]), None).mean_availability()
