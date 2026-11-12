@@ -420,7 +420,9 @@ def test_a_nested_rbd_counts_as_the_flat_one_does():
     np.testing.assert_allclose(
         left.node_preventive["n"], own.system_planned_outages, rtol=1e-6
     )
-    assert np.all(left.node_preventive["n"] > 0.0)
+    # None before the first task at 200 (zero to rounding), some after.
+    np.testing.assert_allclose(left.node_preventive["n"][0], 0.0, atol=1e-12)
+    assert np.all(left.node_preventive["n"][1:] > 0.0)
     assert not np.any(left.node_inspections["n"])
 
 
