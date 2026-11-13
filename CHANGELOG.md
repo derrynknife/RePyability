@@ -418,6 +418,19 @@ Every other seeded result is unchanged.
   `optimal_replacement_policy`) raised an `AttributeError`: its survival was
   taken for a non-parametric estimate's. It is a smooth curve, and is now
   integrated and searched as a distribution's is.
+- The expected events of a nested RBD whose components repeat with a
+  period (a block replacement, say), counted at a time a rounding past
+  one of its events at an exact time and before its curves have
+  settled, raised an `IndexError` (`index ... is out of bounds`): the
+  end was taken for the end of the period the counts are extended by,
+  moved down to the event, and extended a negative number of periods.
+  It reached `availability()` and `cost()` through their exact means of
+  a diagram with timed maintenance at several levels (both engines),
+  and `expected_events()` and the other window counts of a diagram with
+  such a nested RBD, at the end of a window. The bug was in 0.16 too.
+  Only the end of the period the counts are extended by is moved now:
+  an end a rounding past an event counts it, as any other end does.
+  Nothing that ran before gives a different number.
 
 ## [0.16] - 2026-10-31
 
