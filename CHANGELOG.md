@@ -9,6 +9,20 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- **A `JointNode` takes its readings as surpyval `Measurements`.**
+  `JointNode(joint_model, markers=readings, i=unit_id, age=...)` reads the
+  unit's readings out of a `surpyval.Measurements` (`for_unit(i)`), naming
+  the measurement with `measurement=` where it holds several
+  (`with_measurement`). The node gives the same prediction as the unit's
+  `{age: value}` dict, and keeps the unit's id, the measurement's name and
+  its unit label as typed (`i`, `measurement`, `marker_unit`) in its
+  `repr`, `to_dict` and `from_dict` (so a saved diagram keeps them). An
+  unknown unit, an unknown measurement, or several measurements and none
+  named are refused, listing what there is. A plain dict works as before
+  and saves as before.
+
 ## [0.17] - 2026-11-14
 
 surpyval 0.27, and maintenance in model time. A `RepairableRBD` takes
