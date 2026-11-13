@@ -59,6 +59,11 @@ from repyability.maintenance import (
     _cycles,
 )
 from repyability.rbd._model_utils import MODEL_ERRORS, failure_time_scale
+from repyability.rbd._processes import (
+    is_poisson_process,
+    is_renewal_process,
+    is_surpyval_model,
+)
 from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.wrappers import numpy_seed, outside_level
 
@@ -152,6 +157,39 @@ def _cut_short(caught: warnings.WarningMessage) -> bool:
     )
 
 
+_TAKES = (
+    "Repairable takes a surpyval Poisson process (HPP, CrowAMSAA, Duane "
+    "or CoxLewis), whose cif(t) is the expected number of failures by "
+    "age t, or a surpyval renewal process (GeneralizedRenewal, "
+    "GeneralizedOneRenewal, ARA or ARI), whose mcf is simulated; or a "
+    "model of your own with cif(t) or mcf(t, items=..., random_state=...)"
+)
+
+
+def _check_surpyval_model(model) -> None:
+    """Refuse a surpyval model whose ``cif`` or ``mcf`` is not the
+    expected number of failures by an age of one unit repaired and never
+    scrapped, which is what ``Repairable`` prices."""
+    from surpyval.recurrent import JointFrailtyModel
+
+    if is_poisson_process(model) or is_renewal_process(model):
+        return
+    name = type(model).__name__
+    if isinstance(model, JointFrailtyModel):
+        raise ValueError(
+            f"model is a surpyval {name}, which also models the unit being "
+            "scrapped; its cif counts the repairs as if it never were, and "
+            "Repairable does not price scrapping, so it would overstate "
+            f"the repairs. {_TAKES}."
+        )
+    raise ValueError(
+        f"model is a surpyval {name}, whose cif or mcf is not the "
+        "expected number of failures by an age of one unit (it needs "
+        "covariates or a cause, leaves out an event, or is an estimate "
+        f"from data). {_TAKES}."
+    )
+
+
 @refuse_removed_names
 class Repairable:
     """Repairable component with optimal overhaul and failure-limit policies.
@@ -206,7 +244,13 @@ class Repairable:
     Raises
     ------
     ValueError
-        If ``model`` exposes neither ``cif`` nor ``mcf``.
+        If ``model`` exposes neither ``cif`` nor ``mcf``, or is a surpyval
+        model other than a Poisson process (``HPP``, ``CrowAMSAA``,
+        ``Duane``, ``CoxLewis``) or a renewal process
+        (``GeneralizedRenewal``, ``GeneralizedOneRenewal``, ``ARA``,
+        ``ARI``): one whose ``cif`` needs covariates or a cause, or, as a
+        ``JointFrailtyModel``'s does, leaves out the unit being scrapped,
+        is not the expected number of failures it prices.
 
     Examples
     --------
@@ -243,6 +287,8 @@ class Repairable:
     """
 
     def __init__(self, model):
+        if is_surpyval_model(model):
+            _check_surpyval_model(model)
         self._analytic = hasattr(model, "cif")
         if not (self._analytic or hasattr(model, "mcf")):
             raise ValueError(
