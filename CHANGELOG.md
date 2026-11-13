@@ -9,6 +9,23 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- Diagrams read their models' unit labels (surpyval's `unit=`, kept as
+  `model.unit`). A `NonRepairableRBD`, `RepairableRBD` (lives and repairs
+  alike), `FaultTree`, `Network` or `PhasedMission` whose models name
+  different units, such as one block in hours and another in days, is built
+  with a `UserWarning` naming the blocks and their units: RePyability
+  converts nothing, so its answers would mix the two. Models with no unit
+  say nothing, so diagrams of unlabelled models are as before. Labels are
+  compared as units with surpyval's `same_unit` (`"h"`, `"hrs"` and
+  `"hours"` agree), public from surpyval 0.28; with surpyval 0.27 they are
+  compared as text.
+- The diagram keeps its models' unit as `unit` (in its printout and its
+  `to_dict()`), and the results its methods return carry it as
+  `model_unit`, in their `to_dict()` too. Both are `None` when the models
+  name no unit or name different ones.
+
 ## [0.17] - 2026-11-14
 
 surpyval 0.27, and maintenance in model time. A `RepairableRBD` takes

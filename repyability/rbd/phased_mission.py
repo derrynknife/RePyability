@@ -65,6 +65,7 @@ from repyability.rbd._mission_settings import (
     setting_to_dict,
 )
 from repyability.rbd._ordered_bdd import FALSE, TRUE, OrderedBDD
+from repyability.rbd._units import diagram_unit
 from repyability.rbd.results import ConfidenceInterval
 from repyability.rbd.shannon import _plan_rows, replay, room
 from repyability.utils.checks import one_of, real_array, simulation_options
@@ -398,6 +399,10 @@ class PhasedMission:
             end += float(duration)
             self.phases.append(_Phase(name, float(duration), rbd, end, used))
         self.duration = end
+        # The unit the components' models (and so the phases' durations)
+        # are in, None if they name none; a warning names the components
+        # when they name different units.
+        self.unit: Optional[str] = diagram_unit(self.components, "mission")
         # Each phase's settings of its blocks (none here: every block
         # working; see ``from_diagram``), and each component's life on its
         # running clock.
@@ -2326,4 +2331,5 @@ class PhasedMission:
         phases = ", ".join(
             f"{phase.name!r} ({phase.duration:g})" for phase in self.phases
         )
-        return f"PhasedMission({phases})"
+        unit = "" if self.unit is None else f"; unit {self.unit!r}"
+        return f"PhasedMission({phases}{unit})"

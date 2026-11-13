@@ -69,6 +69,7 @@ from repyability.rbd._mean_lifetime import (
 from repyability.rbd._model_utils import is_fixed_probability
 from repyability.rbd._repairable_uncertainty import half_named
 from repyability.rbd._sampling import lifetime_sampler
+from repyability.rbd._units import diagram_unit
 from repyability.rbd.modular import _critical_closures
 from repyability.rbd.non_repairable_rbd import (
     NonRepairableRBD,
@@ -260,6 +261,9 @@ class Network:
             self.nodes[node] = self.models[node] = model
         self.source, self.target = source, target
         self._adjacent = adjacent
+        # The unit the models are in (None if they name none); a warning
+        # names the links and nodes when they name different units.
+        self.unit: Optional[str] = diagram_unit(self.models, "network")
         self.is_fixed = all(
             is_fixed_probability(m) for m in self.models.values()
         )
@@ -2184,9 +2188,10 @@ class Network:
         return r.AnalysisRoutes(sorted(out.items()))
 
     def __repr__(self) -> str:
+        unit = "" if self.unit is None else f", unit {self.unit!r}"
         return (
             f"Network({len(self.links)} links, {len(self.nodes)} failing "
-            f"nodes, {self.source!r} to {self.target!r})"
+            f"nodes, {self.source!r} to {self.target!r}{unit})"
         )
 
 

@@ -9,11 +9,15 @@ import surpyval as surv
 from surpyval import AcceleratedLife, life_models
 
 from repyability import (
+    FaultTree,
+    Network,
     NonRepairableRBD,
+    PhasedMission,
     RegressionNode,
     RepairableRBD,
     StandbyModel,
 )
+from repyability.rbd import _units
 from repyability.rbd._duty import _SCALED, on_calendar
 from repyability.rbd.serialisation import rbd_from_json, rbd_to_json
 
@@ -434,3 +438,127 @@ def test_a_duty_of_one_changes_nothing():
 def test_a_duty_is_checked(life, duty, match):
     with pytest.raises(ValueError, match=match):
         duty_rbd(life, duty)
+
+
+# The models' unit labels --------------------------------------------------
+
+#: Whether surpyval reads labels as units ("h" is "hours"): 0.28 and later.
+PINT = _units._surpyval_same_unit is not None
+needs_pint = pytest.mark.skipif(
+    not PINT, reason="surpyval before 0.28 compares unit labels as text"
+)
+
+
+def mixed_warning(record):
+    return [w for w in record if "different units" in str(w.message)]
+
+
+def test_a_diagram_mixing_units_warns_naming_the_blocks():
+    with pytest.warns(UserWarning, match="different units") as record:
+        rbd = NonRepairableRBD(
+            SERIES,
+            {"a": W([1000, 2], unit="hours"), "b": W([40, 2], unit="days")},
+        )
+    message = str(mixed_warning(record)[0].message)
+    assert "'hours' for 'a'" in message and "'days' for 'b'" in message
+    assert "converts nothing" in message
+    assert rbd.unit is None
+
+
+def test_models_in_one_unit_give_the_diagram_its_unit(recwarn):
+    rbd = NonRepairableRBD(
+        SERIES, {"a": W([1000, 2], unit="hours"), "b": E([0.01])}
+    )
+    assert not mixed_warning(recwarn.list)
+    assert rbd.unit == "hours"
+    assert "unit 'hours'" in repr(rbd)
+    assert rbd.to_dict()["unit"] == "hours"
+    assert rbd_from_json(rbd_to_json(rbd)).unit == "hours"
+
+
+def test_models_with_no_unit_say_nothing(recwarn):
+    rbd = NonRepairableRBD(SERIES, {"a": W([1000, 2]), "b": E([0.01])})
+    assert not mixed_warning(recwarn.list)
+    assert rbd.unit is None
+    assert "unit" not in repr(rbd) and "unit" not in rbd.to_dict()
+    assert "model_unit" not in rbd.structure_summary().to_dict()
+
+
+@needs_pint
+def test_labels_are_compared_as_units(recwarn):
+    rbd = NonRepairableRBD(
+        SERIES, {"a": W([1000, 2], unit="hrs"), "b": E([0.01], unit="h")}
+    )
+    assert not mixed_warning(recwarn.list)
+    assert rbd.unit == "hrs"  # the first label, as typed
+
+
+def test_results_carry_the_unit():
+    rbd = NonRepairableRBD(
+        SERIES, {"a": W([1000, 2], unit="hours"), "b": W([500, 1.5])}
+    )
+    summary = rbd.structure_summary()
+    assert summary.model_unit == "hours"
+    assert summary.to_dict()["model_unit"] == "hours"
+    # Not a field: the mapping view and equality are as they were.
+    assert "model_unit" not in dict(summary)
+    plain = NonRepairableRBD(SERIES, {"a": E([1]), "b": E([1])})
+    assert summary == plain.structure_summary()
+
+
+def test_a_repairable_component_s_repairs_are_read_too():
+    with pytest.warns(UserWarning, match="'days' for 'a'"):
+        rbd = RepairableRBD(
+            ONE,
+            {
+                "a": {
+                    "reliability": W([1000, 2], unit="hours"),
+                    "repairability": E([0.5], unit="days"),
+                }
+            },
+        )
+    assert rbd.unit is None
+    same = RepairableRBD(
+        ONE,
+        {
+            "a": {
+                "reliability": W([1000, 2], unit="hours"),
+                "repairability": E([0.5], unit="hours"),
+            }
+        },
+    )
+    assert same.unit == "hours"
+    assert same.expected_events(100.0).model_unit == "hours"
+
+
+def test_node_models_and_nested_diagrams_are_read():
+    inner = NonRepairableRBD(ONE, {"a": W([10, 2], unit="days")})
+    assert inner.unit == "days"
+    with pytest.warns(UserWarning, match="'days' for 'b'"):
+        NonRepairableRBD(
+            SERIES,
+            {"a": StandbyModel([W([100, 2], unit="hours")] * 2), "b": inner},
+        )
+
+
+def test_fault_trees_networks_and_missions_read_the_units():
+    with pytest.warns(UserWarning, match="fault tree's models"):
+        tree = FaultTree(
+            {"top": ("or", ["x", "y"])},
+            {"x": W([100, 2], unit="hours"), "y": W([5, 2], unit="days")},
+        )
+    assert tree.unit is None
+    net = Network({"l": ("s", "t", W([100, 2], unit="km"))}, "s", "t")
+    assert net.unit == "km" and "unit 'km'" in repr(net)
+    phase = NonRepairableRBD(ONE, {"a": W([100, 2], unit="cycles")})
+    mission = PhasedMission([("one", 1.0, phase), ("two", 2.0, phase)])
+    assert mission.unit == "cycles" and "unit 'cycles'" in repr(mission)
+
+
+def test_same_unit_falls_back_to_text_before_surpyval_0_28(monkeypatch):
+    monkeypatch.setattr(_units, "_surpyval_same_unit", None)
+    assert _units.same_unit("hours", " hours ")
+    assert not _units.same_unit("h", "hours")
+    assert _units.same_unit(None, None) and not _units.same_unit("h", None)
+    message = _units.mixed_units_message([("h", ["a"]), ("hours", ["b"])])
+    assert "upgrade surpyval" in message
