@@ -11,10 +11,7 @@ import pytest
 import surpyval as surv
 from scipy import stats
 from scipy.integrate import quad
-from surpyval.degradation.process_models import (
-    GammaProcessModel,
-    WienerProcessModel,
-)
+from surpyval.degradation import GammaProcessModel, WienerProcessModel
 
 import repyability.rbd._level_replacement as level_module
 from repyability import NodeState, RepairableRBD

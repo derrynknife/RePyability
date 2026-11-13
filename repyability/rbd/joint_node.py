@@ -38,8 +38,10 @@ NOT_REPAIRABLE = (
 
 
 def _joint_classes() -> tuple:
-    """surpyval's ``JointModel`` and ``DynamicPrediction``."""
-    from surpyval.univariate.joint import DynamicPrediction, JointModel
+    """surpyval's ``JointModel`` and ``DynamicPrediction``. (The latter
+    has no public home in surpyval yet, so it comes from its module.)"""
+    from surpyval import JointModel
+    from surpyval.univariate.joint import DynamicPrediction
 
     return JointModel, DynamicPrediction
 
