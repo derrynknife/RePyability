@@ -100,6 +100,10 @@
 
 ::: repyability.FailureLimitPolicy
 
+::: repyability.RepairOrReplacePolicy
+
+::: repyability.UnitDecision
+
 ::: repyability.OverhaulReplacePolicy
 
 ::: repyability.FailureForecast

@@ -9,6 +9,28 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- Repair again or replace, for a fleet whose units differ (UC-27).
+  `RepairOrReplace` takes a surpyval `JointFrailtyModel` (repeat failures
+  and write-offs fitted together, with each unit's frailty) and the costs
+  of a repair, a failure's downtime, a replacement and a write-off, with
+  an optional continuous discount rate. `fleet_policy()` gives, for a new
+  unit, the cost rate of keeping on repairing it until it is written off,
+  of replacing it at the best age, and of replacing it at the best count
+  of failures, with the cheapest (`RepairOrReplacePolicy`).
+  `unit_decision()` (and `unit_decisions()` for many) gives, for one unit
+  at its age (and `just_failed`), whether to replace it now or which rule
+  to keep it under, what each saves against replacing now, and the
+  frailty at which the answer turns (`UnitDecision`;
+  `break_even_frailty()`). Numerical, from the model's own functions at
+  each frailty, with no simulation; every cost rate has a 90% two-sided
+  band from draws of the fitted parameters (seeded), and every result
+  says what its bands are. Refused: a model on the gap time scale. A
+  model built from parameters has no bands. surpyval's joint frailty
+  model is experimental. `Repairable`'s refusal of a joint frailty model
+  now points here.
+
 ## [0.17] - 2026-11-14
 
 surpyval 0.27, and maintenance in model time. A `RepairableRBD` takes
