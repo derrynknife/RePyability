@@ -539,10 +539,13 @@ limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
   life in operating time on the calendar, `R(d t)`, by `_duty._SCALED`, one rule per surpyval distribution (a new
   one needs its rule there, which `test_units` checks against `R(d t)`).
   Take surpyval's rescaling once the minimum surpyval has it.
-- **A fit's offset under parameter uncertainty** (surpyval #830).
-  surpyval's `covariance()` leaves an offset fit's `gamma` out, so
-  `rbd/uncertainty.py` holds it where it was fitted, with a warning. Draw it
-  once the minimum surpyval's covariance includes it.
+- **Parameter ranges for drawing fits other than distributions** (no
+  surpyval issue yet). `"fit"` draws a regression, a degradation or
+  repairable-unit process or a mixture from its covariance on the
+  parameters' own scale, since surpyval gives no range per parameter for
+  these, and draws again what `with_params` refuses, counting them
+  (`uncertainty._rebuilt_draws`). Draw on each parameter's log or logit
+  scale, as for a distribution, once the minimum surpyval says the ranges.
 
 - **A Bayesian fit's predictive in the tails** (no surpyval issue yet).
   surpyval 0.26's `BayesianParametric` gives `ff` as `1 - sf` and `Hf` as

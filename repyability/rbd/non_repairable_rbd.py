@@ -114,12 +114,16 @@ from .standby_node import StandbyModel
 from .uncertainty import (
     GIVEN,
     band,
+    carried,
     check_draws,
     draw_ccf_models,
     draw_models,
     draw_with,
     fitted_together,
     input_band,
+    model_values,
+    moved_model,
+    shares_fit,
     split_group_levers,
     varied_ccf_parameters,
     varied_parameters,
@@ -2586,19 +2590,23 @@ class NonRepairableRBD(RBD):
         for k, (_, members, _) in enumerate(sources):
             model = self.reliabilities[members[0]]
             positions = varied[k][0]
-            spec = parametric_spec(model)
-            assert spec is not None
+            values = model_values(model)
+            label = (
+                f"Node {members[0]!r}"
+                if len(members) == 1
+                else f"Nodes {list(members)!r}"
+            )
             models = []
             for which, move in configurations:
                 if which != k:
                     models.append(model)
                     continue
                 j, moved = move
-                changed = list(spec.params)
+                changed = values.copy()
                 changed[positions[j]] = moved
-                models.append(spec.build(changed))
+                models.append(moved_model(model, changed, label))
             for node in members:
-                drawn[node] = models
+                drawn[node] = carried(models, model, self.reliabilities[node])
         drawn_groups: list = [None] * len(self.ccf_groups)
         for offset, i in enumerate(groups):
             k = len(sources) + offset
@@ -2729,11 +2737,12 @@ class NonRepairableRBD(RBD):
                     if len(members) == 1
                     else f"Nodes {list(members)!r}"
                 )
-                models = draw_models(
-                    self.reliabilities[members[0]], spec, n, source, label
-                )
+                first = self.reliabilities[members[0]]
+                models = draw_models(first, spec, n, source, label)
                 for node in members:
-                    drawn[node] = models
+                    drawn[node] = carried(
+                        models, first, self.reliabilities[node]
+                    )
             # The common-cause models after the nodes', so that the nodes'
             # draws are the same whether or not they are uncertain.
             groups: list = [
@@ -2834,10 +2843,15 @@ class NonRepairableRBD(RBD):
                 seen.add(node)
             model = self.reliabilities[members[0]]
             for node in members[1:]:
-                if not self._same_model(self.reliabilities[node], model):
+                theirs = self.reliabilities[node]
+                if not (
+                    self._same_model(theirs, model)
+                    or shares_fit(theirs, model)
+                ):
                     raise ValueError(
                         f"Nodes {list(members)!r} share their uncertainty, "
-                        "so they must have the same model."
+                        "so they must have the same model (or regression "
+                        "nodes of the same regression fit)."
                     )
             sources.append((key, tuple(members), spec))
         # A common-cause group's members carry one model, so they share
@@ -2867,7 +2881,7 @@ class NonRepairableRBD(RBD):
                     for node in self.nodes
                     if node not in seen
                     and node not in self.repeated
-                    and self.reliabilities[node] is model
+                    and shares_fit(self.reliabilities[node], model)
                 ]
                 if others:
                     label = (

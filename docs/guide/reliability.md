@@ -219,9 +219,32 @@ A node's uncertainty is one of:
 
 | Given | Draws |
 |---|---|
-| `"fit"` | Every parameter the fit estimated, from the normal approximation of the model's maximum-likelihood fit (surpyval's `covariance()`), on the log scale for a positive parameter and the logit scale for one in (0, 1), so every draw is valid. That includes a limited failure population's share that ever fails (`lfp_p`) and a zero-inflated fit's share dead on arrival (`f0`). An offset keeps its fitted value, with a warning, since surpyval's covariance leaves it out (SurPyval#830). |
+| `"fit"` | Every parameter the fit estimated, from the normal approximation of the model's maximum-likelihood fit (surpyval's `covariance()`), on the log scale for a positive parameter and the logit scale for one in (0, 1), so every draw is valid. That includes a limited failure population's share that ever fails (`lfp_p`) and a zero-inflated fit's share dead on arrival (`f0`). An offset fit is drawn from surpyval's refits to resampled data (`bootstrap()`, 200 refits), each with its own offset; where surpyval cannot resample its data (interval-censored data, say) the offset keeps its fitted value, with a warning. Other fitted blocks are drawn as below. |
 | `{"alpha": distribution, ...}` | Each named parameter from its distribution (anything with `qf` or `ppf`: surpyval or `scipy.stats`); the others keep their values. |
 | A list of models | One of them, with replacement: for example refits to bootstrap resamples, or posterior draws, made in surpyval. |
+
+`"fit"` takes every fitted kind of block, not only a distribution: a
+regression node (`RegressionNode`, at its own covariates), a Wiener or
+gamma degradation process, a mixture, a Royston-Parmar model, and, as a
+`RepairableRBD` component's life, a fitted Crow-AMSAA, Duane, HPP or
+generalised renewal process (its restoration factor drawn too). These
+are drawn from the fit's covariance on the parameters' own scale and
+rebuilt by surpyval's `with_params`. surpyval does not yet say each
+parameter's range for these models, so a draw it refuses (a negative
+scale, say) is drawn again, and a warning counts them; where more are
+refused than asked for, the normal approximation is too poor and `"fit"`
+refuses, asking for a list of models (refits to resampled data). A
+fitted scale with a wide standard error (a Crow-AMSAA process fitted to
+a few dozen failures, say) is where this shows. Regression nodes of one
+fit (two pumps at different loads) share its draws, each at its own
+covariates, as nodes holding one fitted model do. A joint model's
+prediction (`JointNode`) is not drawn: surpyval cannot rebuild it at
+other parameters, so give it a list of predictions.
+
+The delta method of `uncertainty_importance` varies these fits'
+parameters in a `NonRepairableRBD`; in a `RepairableRBD` their
+parameters are not levers of `parameter_sensitivity`, so the delta
+method refuses them and `method="sobol"` takes them.
 
 A node given a Bayesian fit (`fit_bayes`) takes `"fit"` too, drawn from its
 posterior itself rather than a covariance: see [its credible

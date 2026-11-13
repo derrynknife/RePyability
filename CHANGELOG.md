@@ -9,6 +9,41 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+Behaviour changes: `"fit"` uncertainty now draws every fitted kind of
+block, so diagrams holding a fitted regression, degradation process,
+mixture or repairable-unit process are drawn by default where they were
+held at their fit, and an offset fit's draws now include its offset.
+Numbers that change on purpose: the bands of such diagrams widen to
+include those fits' uncertainty (the narrower bands understated it).
+Seeded draws of a plain distribution without an offset are unchanged.
+
+### Changed
+
+- `"fit"` parameter uncertainty (`sf_uncertainty` and the other
+  `*_uncertainty` methods, `uncertainty_importance`, a network's and a
+  repairable diagram's) takes every fitted kind of block RePyability
+  accepts, through surpyval 0.27's `covariance_names` and `with_params`:
+  a regression node (at its own covariates), a Wiener or gamma
+  degradation process, a mixture, a Royston-Parmar model, and a fitted
+  Crow-AMSAA, Duane, HPP or generalised renewal process given as a
+  repairable component's life (its restoration factor drawn too). Regression
+  nodes of one regression fit share its draws, each at its own
+  covariates. surpyval gives no range per parameter for these models, so
+  they are drawn on the parameters' own scale: a draw surpyval refuses is
+  drawn again, with a warning counting them, and `"fit"` refuses (asking
+  for a list of models) where more are refused than asked for. A joint
+  model's prediction is refused plainly: surpyval cannot rebuild it at
+  other parameters.
+- An offset fit's `"fit"` draws are surpyval's refits to resampled data
+  (`bootstrap()`, 200 refits seeded 0, picked with replacement), so the
+  offset is drawn too; before, it was held where it was fitted, with a
+  warning. Where surpyval cannot resample the data (left- or
+  interval-censored data, a model without its data), the offset is held,
+  with the warning, as before.
+- `NonRepairableRBD.uncertainty_importance`'s delta method varies these
+  fits' parameters; a `RepairableRBD`'s refuses them (their parameters
+  are not levers of `parameter_sensitivity`), naming `method="sobol"`.
+
 ## [0.17] - 2026-11-14
 
 surpyval 0.27, and maintenance in model time. A `RepairableRBD` takes

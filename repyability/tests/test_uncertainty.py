@@ -10,6 +10,7 @@ models give, worked out by building the diagram with them.
 
 import itertools
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -75,19 +76,17 @@ def test_fit_draws_agree_with_surpyvals_confidence_bounds():
 def test_fit_draws_keep_an_offset():
     model = surv.Weibull.fit(np.linspace(200, 1800, 50) + 100, offset=True)
     rbd = one_node(model)
-    # Before the offset nothing can fail, in every draw. surpyval's
-    # covariance leaves the offset out (SurPyval#830), so it is held, and
-    # the draws say so.
-    with (
-        np.errstate(invalid="ignore"),
-        pytest.warns(UserWarning, match="offset.*SurPyval#830"),
-    ):
-        early = rbd.sf_uncertainty(
-            0.5 * model.gamma, {"c": "fit"}, n_draws=200
-        )
-    np.testing.assert_array_equal(early.samples, 1.0)
-    with pytest.warns(UserWarning, match="offset"):
+    # An offset fit's draws are surpyval's refits to resampled data, each
+    # with an offset of its own (the covariance leaves the offset out):
+    # before the smallest of them nothing can fail, in every draw, and no
+    # warning is needed (one was, before 0.18, when the offset was held).
+    refits = model.bootstrap(200, random_state=0)
+    first = float(np.min(refits.gamma))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        early = rbd.sf_uncertainty(0.5 * first, {"c": "fit"}, n_draws=200)
         later = rbd.sf_uncertainty(1000.0, {"c": "fit"}, n_draws=200, seed=2)
+    np.testing.assert_array_equal(early.samples, 1.0)
     assert later.std > 0
 
 
