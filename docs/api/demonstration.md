@@ -1,5 +1,11 @@
 # Demonstration test planning
 
+!!! warning "Deprecated in 0.18"
+    These functions are calls to `surpyval.test_planning`'s of the same
+    names, which take `alpha_ci = 1 - confidence`; they warn with a
+    `FutureWarning`, and 0.19 removes them. See the
+    [guide](../guide/demonstration.md).
+
 ::: repyability.demonstration_sample_size
 
 ::: repyability.demonstrated_reliability

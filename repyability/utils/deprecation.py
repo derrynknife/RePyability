@@ -1,12 +1,14 @@
 """Deprecated names, arguments and calls.
 
-A deprecation gives one minor release's notice: what 0.17 deprecates goes
-in 0.18 (``NEXT_REMOVAL``). Each warns with a ``FutureWarning``, which
+A deprecation gives one minor release's notice: what 0.18 deprecates goes
+in 0.19 (``NEXT_REMOVAL``). Each warns with a ``FutureWarning``, which
 Python always shows, as the notice is short: an argument renamed
 (``renamed``; an attribute, ``renamed_attribute``), a result's value
-called that is now a property (``called``), or arguments a method ignores
-(``ignored``). 0.17 deprecates nothing, nor did 0.16 or 0.15, so 0.16
-and 0.17 remove nothing.
+called that is now a property (``called``), arguments a method ignores
+(``ignored``), or a function that moved to surpyval (``moved``). 0.18
+deprecates ``repyability.demonstration``'s nine functions for
+``surpyval.test_planning``'s. 0.17 deprecated nothing, nor did 0.16 or
+0.15, so 0.16, 0.17 and 0.18 remove nothing.
 
 What 0.14 deprecated went in 0.15: ``NodeState``'s ``phase``, renamed
 ``since_scheduled`` (#350). What 0.13 deprecated went in 0.14:
@@ -32,8 +34,8 @@ import numpy as np
 
 from repyability.utils.wrappers import outside_level
 
-#: The release that removes what 0.17 deprecates.
-NEXT_REMOVAL = "0.18"
+#: The release that removes what 0.18 deprecates.
+NEXT_REMOVAL = "0.19"
 
 
 def _called_warning(name: str, removal: str) -> None:
@@ -133,6 +135,18 @@ def renamed(
     warnings.warn(
         f"{method}'s {old}= is renamed {new}=, as {why}. Passing {old}= is "
         f"deprecated, and {removal} will refuse it.",
+        FutureWarning,
+        stacklevel=outside_level(),
+    )
+
+
+def moved(old: str, new: str, why: str, removal: str = NEXT_REMOVAL) -> None:
+    """Warn that the function ``old`` (``"repyability.name"``) is
+    deprecated for ``new``, another package's, for the reason ``why``: it
+    is removed in ``removal`` (``NEXT_REMOVAL`` by default)."""
+    warnings.warn(
+        f"{old} is deprecated: use {new}, as {why}. {old} will be removed "
+        f"in {removal}.",
         FutureWarning,
         stacklevel=outside_level(),
     )

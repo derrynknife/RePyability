@@ -1,89 +1,115 @@
-"""Reliability demonstration test planning (#129).
+"""Reliability demonstration test planning (#129), deprecated: use
+``surpyval.test_planning``.
 
 A demonstration test shows, at a confidence level, that a design meets a
 reliability target: test ``n`` units for a time, allow ``failures`` of them,
-and if no more fail, the design has demonstrated the target. These functions
-plan such tests the usual way round, from the target to the test, and give
-what a finished test demonstrated:
+and if no more fail, the design has demonstrated the target. Planning such
+a test is test planning, which surpyval owns: ``surpyval.test_planning``
+has these nine functions under the same names (with the sequential and
+group-sequential tests beside them), and each function here is now a call
+to surpyval's that warns with a ``FutureWarning``. They are removed in 0.19.
 
-- **Attribute (binomial) tests.** Each of ``n`` units runs for the mission
-  time, or ``test_multiple`` times it, and passes or fails.
-  ``demonstration_sample_size`` gives the fewest units that demonstrate a
-  reliability, ``demonstrated_reliability`` what a test demonstrated (the
-  Clopper-Pearson lower bound, which with no failures is surpyval's
-  ``success_run``), ``demonstration_test_multiple`` how long each of ``n``
-  units must run, and ``demonstration_pass_probability`` the chance a design
-  of a given true reliability passes (the test's operating characteristic).
-- **Extended tests (Weibayes).** Testing each unit for ``k`` times the
-  mission time trades units for test time when the Weibull shape ``beta`` of
-  the lifetime is known: a unit that survives ``k`` missions survives one
-  with reliability ``R`` exactly when ``R ** (k ** beta)`` is its reliability
-  over the test. Give ``test_multiple=k`` and ``shape=beta``.
-- **Constant failure rate (chi-squared) tests.** Units run for a total
-  ``test_time``, failed ones replaced or repaired, and the test passes with at
-  most ``failures`` failures. ``mtbf_test_time`` gives the total time that
-  demonstrates an MTBF, ``demonstrated_mtbf`` what a test demonstrated, and
-  ``mtbf_pass_probability`` the chance a design of a given true MTBF passes.
-  A test is time-terminated (it stops at its time) unless
-  ``failure_terminated`` says it stops at its ``failures``-th failure.
+surpyval's take ``alpha_ci``, the consumer's risk, where these take
+``confidence``: ``alpha_ci = 1 - confidence``, given by keyword, after the
+other numbers (``demonstration_sample_size(0.95, 0.9, 1)`` here is
+``demonstration_sample_size(0.95, 1, alpha_ci=0.1)`` there). Their numbers
+are these functions' to the last bit or two (the ``1 - confidence`` taken
+and given back), and a plan is the same plan: these give it as
+RePyability's ``DemonstrationPlan`` (a read-only mapping, as the other
+results are), surpyval as its own (with ``to_dict``).
 
-A test has two risks: the consumer's, that a design no better than the
-target passes (at most ``1 - confidence``), and the producer's, that a good
-design fails. ``demonstration_plan`` and ``mtbf_demonstration_plan`` design
-the smallest test that keeps both (#184).
+- **Attribute (binomial) tests.** ``demonstration_sample_size``,
+  ``demonstrated_reliability``, ``demonstration_test_multiple`` and
+  ``demonstration_pass_probability``; extended (Weibayes) tests with
+  ``test_multiple`` and the Weibull ``shape``.
+- **Constant failure rate (chi-squared) tests.** ``mtbf_test_time``,
+  ``demonstrated_mtbf`` and ``mtbf_pass_probability``, time- or
+  failure-terminated.
+- **Plans that keep both risks** (#184). ``demonstration_plan`` and
+  ``mtbf_demonstration_plan``.
 
-The functions plan tests from targets and results; they fit nothing (surpyval
-does that). Each but the two plans takes arrays for its numbers too, and
-answers for each element, broadcast together (#179).
+Each but the two plans takes arrays for its numbers too, and answers for
+each element, broadcast together (#179).
 """
 
 import functools
 import inspect
-from typing import Callable, Optional, TypeVar
+import warnings
+from typing import Any, Callable, Optional, TypeVar
 
 import numpy as np
-from scipy import stats
+from surpyval import test_planning
 
 from repyability.rbd.results import DemonstrationPlan
-from repyability.utils.checks import is_whole
+from repyability.utils import deprecation
 
 _Function = TypeVar("_Function", bound=Callable)
 
 
-def _elementwise(function: _Function) -> _Function:
-    """``function``, of numbers, answering for each element of the
-    arguments given as arrays, broadcast together: an array of its answers,
-    or its answer when every argument is a number."""
-    signature = inspect.signature(function)
+def _moved(function: _Function) -> _Function:
+    """``function``, warning that it is deprecated for surpyval's of the
+    same name in ``surpyval.test_planning``."""
+    name = function.__name__
+    why = "test planning is surpyval's"
+    if "confidence" in inspect.signature(function).parameters:
+        why += " (give alpha_ci=1 - confidence there, by keyword)"
 
     @functools.wraps(function)
     def wrapper(*args, **kwargs):
-        bound = signature.bind(*args, **kwargs)
-        bound.apply_defaults()
-        arrays = {
-            name: np.asarray(value)
-            for name, value in bound.arguments.items()
-            if value is not None and np.ndim(value) > 0
-        }
-        if not arrays:
-            return function(*bound.args, **bound.kwargs)
-        shaped = dict(zip(arrays, np.broadcast_arrays(*arrays.values())))
-        shape = next(iter(shaped.values())).shape
-        answers = [
-            function(
-                **{
-                    **bound.arguments,
-                    **{name: a[index].item() for name, a in shaped.items()},
-                }
-            )
-            for index in np.ndindex(shape)
-        ]
-        return np.array(answers).reshape(shape)
+        deprecation.moved(
+            f"repyability.{name}", f"surpyval.test_planning.{name}", why
+        )
+        return function(*args, **kwargs)
 
     return wrapper  # type: ignore[return-value]
 
 
-@_elementwise
+def _alpha_ci(confidence: Any) -> Any:
+    """``1 - confidence``, surpyval's ``alpha_ci``, each confidence checked
+    to be between 0 and 1 (as these functions said it)."""
+    levels = np.asarray(confidence)
+    for level in np.unique(levels):
+        value = level.item()
+        try:
+            inside = not isinstance(value, bool) and 0.0 < value < 1.0
+        except TypeError:
+            inside = False
+        if not inside:
+            raise ValueError(
+                f"confidence must be between 0 and 1, got {value!r}."
+            )
+    return 1.0 - levels if levels.ndim else 1.0 - float(confidence)
+
+
+def _call(function: Callable, *args, alpha_ci: Any = None, **kwargs) -> Any:
+    """surpyval's ``function`` with these arguments, without its warning of
+    an ``alpha_ci`` above 0.5: a confidence below 0.5 was given as such."""
+    if alpha_ci is None:
+        return function(*args, **kwargs)
+    if np.all(np.asarray(alpha_ci) <= 0.5):
+        return function(*args, alpha_ci=alpha_ci, **kwargs)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="alpha_ci is the significance level",
+            category=UserWarning,
+        )
+        return function(*args, alpha_ci=alpha_ci, **kwargs)
+
+
+def _plan(plan: Any) -> DemonstrationPlan:
+    """surpyval's ``DemonstrationPlan`` as RePyability's."""
+    return DemonstrationPlan(
+        n=plan.n,
+        test_multiple=plan.test_multiple,
+        test_time=plan.test_time,
+        failures=plan.failures,
+        consumer_risk=plan.consumer_risk,
+        producer_risk=plan.producer_risk,
+    )
+
+
+@_moved
 def demonstration_sample_size(
     reliability: float,
     confidence: float = 0.95,
@@ -94,14 +120,14 @@ def demonstration_sample_size(
 ) -> int:
     """The fewest units whose test demonstrates a reliability.
 
+    Deprecated: use ``surpyval.test_planning.demonstration_sample_size``
+    (``alpha_ci=1 - confidence``); removed in 0.19.
+
     The smallest ``n`` for which ``n`` units tested, with at most
     ``failures`` of them failing, demonstrate ``reliability`` over a mission
-    at ``confidence``: the chance that so few fail, were the reliability
-    only the target, is at most ``1 - confidence``. With no failures this is
-    the success run, ``n = ln(1 - confidence) / ln(reliability)`` rounded
-    up, the inverse of surpyval's ``success_run``. Testing each unit for
-    ``test_multiple`` missions, with the lifetime's Weibull ``shape`` known,
-    needs fewer units (the extended success run, or Weibayes).
+    at ``confidence``. With no failures this is the success run. Testing
+    each unit for ``test_multiple`` missions, with the lifetime's Weibull
+    ``shape`` known, needs fewer units (Weibayes).
 
     Parameters
     ----------
@@ -130,43 +156,26 @@ def demonstration_sample_size(
 
     Examples
     --------
-    59 units with no failures demonstrate 95% reliability at 95%
-    confidence, and allowing one failure takes 93:
+    surpyval's call: 59 units with no failures demonstrate 95% reliability
+    at 95% confidence, and allowing one failure takes 93:
 
-    >>> from repyability import demonstration_sample_size
-    >>> demonstration_sample_size(0.95, 0.95)
+    >>> from surpyval.test_planning import demonstration_sample_size
+    >>> demonstration_sample_size(0.95, alpha_ci=0.05)
     59
-    >>> demonstration_sample_size(0.95, 0.95, failures=1)
+    >>> demonstration_sample_size(0.95, 1, alpha_ci=0.05)
     93
-
-    Testing each unit for two missions, for a wear-out shape of 2, needs a
-    quarter of the units:
-
-    >>> demonstration_sample_size(0.95, 0.95, test_multiple=2.0, shape=2.0)
-    15
     """
-    _check_probability(reliability, "reliability")
-    _check_probability(confidence, "confidence")
-    failures = _check_failures(failures)
-    per_test = _test_reliability(reliability, test_multiple, shape)
-    alpha = 1.0 - confidence
-
-    def passes_too_often(n: int) -> bool:
-        return stats.binom.cdf(failures, n, 1.0 - per_test) > alpha
-
-    low, high = failures + 1, 2 * failures + 2
-    while passes_too_often(high):
-        low, high = high + 1, 2 * high
-    while low < high:
-        middle = (low + high) // 2
-        if passes_too_often(middle):
-            low = middle + 1
-        else:
-            high = middle
-    return int(low)
+    return _call(
+        test_planning.demonstration_sample_size,
+        reliability,
+        failures,
+        alpha_ci=_alpha_ci(confidence),
+        test_multiple=test_multiple,
+        shape=shape,
+    )
 
 
-@_elementwise
+@_moved
 def demonstrated_reliability(
     n: int,
     confidence: float = 0.95,
@@ -177,14 +186,12 @@ def demonstrated_reliability(
 ) -> float:
     """The reliability a finished test demonstrated.
 
-    The lower one-sided confidence bound on the reliability over a mission,
-    from ``n`` units tested with ``failures`` of them failing: the
-    Clopper-Pearson bound, the smallest reliability for which so few
-    failures have a chance of at least ``1 - confidence``. With no failures
-    it is ``(1 - confidence) ** (1 / n)``, surpyval's ``success_run``. A test
-    of ``test_multiple`` missions per unit, with the lifetime's Weibull
-    ``shape`` known, demonstrates that bound to the power
-    ``1 / test_multiple ** shape`` over one mission.
+    Deprecated: use ``surpyval.test_planning.demonstrated_reliability``
+    (``alpha_ci=1 - confidence``); removed in 0.19.
+
+    The Clopper-Pearson lower one-sided bound on the reliability over a
+    mission, from ``n`` units tested with ``failures`` failing; with no
+    failures, ``(1 - confidence) ** (1 / n)``, surpyval's ``success_run``.
 
     Parameters
     ----------
@@ -213,25 +220,23 @@ def demonstrated_reliability(
 
     Examples
     --------
-    >>> from repyability import demonstrated_reliability
-    >>> round(demonstrated_reliability(59), 4)
+    surpyval's call:
+
+    >>> from surpyval.test_planning import demonstrated_reliability
+    >>> round(demonstrated_reliability(59, alpha_ci=0.05), 4)
     0.9505
-    >>> round(demonstrated_reliability(93, failures=1), 5)
-    0.95001
     """
-    _check_probability(confidence, "confidence")
-    n = _check_count(n)
-    failures = _check_failures(failures)
-    if failures > n:
-        raise ValueError(f"failures must be at most n ({n}), got {failures}.")
-    exponent = _test_exponent(test_multiple, shape)
-    if failures == n:
-        return 0.0
-    upper = stats.beta.ppf(confidence, failures + 1, n - failures)
-    return float((1.0 - upper) ** (1.0 / exponent))
+    return _call(
+        test_planning.demonstrated_reliability,
+        n,
+        failures,
+        alpha_ci=_alpha_ci(confidence),
+        test_multiple=test_multiple,
+        shape=shape,
+    )
 
 
-@_elementwise
+@_moved
 def demonstration_test_multiple(
     reliability: float,
     n: int,
@@ -243,11 +248,8 @@ def demonstration_test_multiple(
     """How many missions long each unit's test must be to demonstrate a
     reliability with ``n`` units.
 
-    The shortest test, as a multiple of the mission time, for which ``n``
-    units with at most ``failures`` failing demonstrate ``reliability`` at
-    ``confidence``, the lifetime's Weibull ``shape`` known (the extended
-    success run, or Weibayes). Below 1, a test shorter than a mission is
-    enough.
+    Deprecated: use ``surpyval.test_planning.demonstration_test_multiple``
+    (``alpha_ci=1 - confidence``); removed in 0.19.
 
     Parameters
     ----------
@@ -274,27 +276,24 @@ def demonstration_test_multiple(
 
     Examples
     --------
-    Twenty units, for a wear-out shape of 2, each run about 1.7 missions to
-    demonstrate 95% reliability at 95% confidence (with a test of one
-    mission, 59 units would be needed):
+    surpyval's call: twenty units, for a wear-out shape of 2, each run
+    about 1.7 missions to demonstrate 95% reliability at 95% confidence:
 
-    >>> from repyability import demonstration_test_multiple
+    >>> from surpyval.test_planning import demonstration_test_multiple
     >>> round(demonstration_test_multiple(0.95, 20, shape=2.0), 3)
     1.709
     """
-    _check_probability(reliability, "reliability")
-    n = _check_count(n)
-    failures = _check_failures(failures)
-    if failures >= n:
-        raise ValueError(
-            f"n must be more than the failures allowed ({failures}), got {n}."
-        )
-    _check_shape(shape)
-    per_test = demonstrated_reliability(n, confidence, failures)
-    return float((np.log(per_test) / np.log(reliability)) ** (1.0 / shape))
+    return _call(
+        test_planning.demonstration_test_multiple,
+        reliability,
+        n,
+        failures,
+        alpha_ci=_alpha_ci(confidence),
+        shape=shape,
+    )
 
 
-@_elementwise
+@_moved
 def demonstration_pass_probability(
     reliability: float,
     n: int,
@@ -305,12 +304,9 @@ def demonstration_pass_probability(
 ) -> float:
     """The chance that a design of a given true reliability passes a test.
 
-    The probability that at most ``failures`` of ``n`` units fail when each
-    survives a mission with probability ``reliability`` (the test's
-    operating characteristic). At the target reliability it is at most
-    ``1 - confidence`` for a planned test, the consumer's risk; one minus
-    it at a good design's reliability is the producer's risk, the chance of
-    failing a design that should pass.
+    Deprecated: use
+    ``surpyval.test_planning.demonstration_pass_probability`` (the same
+    arguments); removed in 0.19.
 
     Parameters
     ----------
@@ -339,23 +335,18 @@ def demonstration_pass_probability(
 
     Examples
     --------
-    The 59-unit, no-failure test passes a design at the 95% target about
-    one time in twenty, and one of 99% reliability five times in nine:
+    surpyval's call:
 
-    >>> from repyability import demonstration_pass_probability
+    >>> from surpyval.test_planning import demonstration_pass_probability
     >>> round(demonstration_pass_probability(0.95, 59), 3)
     0.048
-    >>> round(demonstration_pass_probability(0.99, 59), 3)
-    0.553
     """
-    _check_probability(reliability, "reliability")
-    n = _check_count(n)
-    failures = _check_failures(failures)
-    per_test = _test_reliability(reliability, test_multiple, shape)
-    return float(stats.binom.cdf(failures, n, 1.0 - per_test))
+    return test_planning.demonstration_pass_probability(
+        reliability, n, failures, test_multiple=test_multiple, shape=shape
+    )
 
 
-@_elementwise
+@_moved
 def mtbf_test_time(
     mtbf: float,
     confidence: float = 0.95,
@@ -366,14 +357,8 @@ def mtbf_test_time(
     """The total test time that demonstrates an MTBF, at a constant
     failure rate.
 
-    The unit time (summed over the units, failed ones repaired or replaced)
-    a time-terminated test needs, with at most ``failures`` failures, to
-    demonstrate ``mtbf`` at ``confidence``:
-    ``mtbf * chi2.ppf(confidence, 2 * failures + 2) / 2``. A
-    failure-terminated test, which runs until its ``failures``-th failure,
-    demonstrates ``mtbf`` if that failure comes after
-    ``mtbf * chi2.ppf(confidence, 2 * failures) / 2``: the time of a
-    time-terminated test that allows one failure fewer.
+    Deprecated: use ``surpyval.test_planning.mtbf_test_time``
+    (``alpha_ci=1 - confidence``); removed in 0.19.
 
     Parameters
     ----------
@@ -400,25 +385,22 @@ def mtbf_test_time(
 
     Examples
     --------
-    With no failures, about 3 MTBFs of testing demonstrate the MTBF at 95%
-    confidence:
+    surpyval's call:
 
-    >>> from repyability import mtbf_test_time
+    >>> from surpyval.test_planning import mtbf_test_time
     >>> round(mtbf_test_time(1000.0), 1)
     2995.7
-    >>> round(mtbf_test_time(1000.0, failures=2), 1)
-    6295.8
-    >>> round(mtbf_test_time(1000.0, failures=3, failure_terminated=True), 1)
-    6295.8
     """
-    _check_positive(mtbf, "mtbf")
-    _check_probability(confidence, "confidence")
-    failures = _check_failures(failures)
-    freedom = _degrees_of_freedom(failures, failure_terminated)
-    return float(mtbf * stats.chi2.ppf(confidence, freedom) / 2.0)
+    return _call(
+        test_planning.mtbf_test_time,
+        mtbf,
+        failures,
+        alpha_ci=_alpha_ci(confidence),
+        failure_terminated=failure_terminated,
+    )
 
 
-@_elementwise
+@_moved
 def demonstrated_mtbf(
     test_time: float,
     confidence: float = 0.95,
@@ -428,12 +410,8 @@ def demonstrated_mtbf(
 ) -> float:
     """The MTBF a finished test demonstrated, at a constant failure rate.
 
-    The lower one-sided confidence bound on the MTBF from a total test time
-    with ``failures`` failures. A test stopped at its time
-    (time-terminated) gives ``2 * test_time / chi2.ppf(confidence,
-    2 * failures + 2)``; one stopped at its ``failures``-th failure
-    (``failure_terminated``), with ``2 * failures`` degrees of freedom
-    instead.
+    Deprecated: use ``surpyval.test_planning.demonstrated_mtbf``
+    (``alpha_ci=1 - confidence``); removed in 0.19.
 
     Parameters
     ----------
@@ -461,24 +439,22 @@ def demonstrated_mtbf(
 
     Examples
     --------
-    >>> from repyability import demonstrated_mtbf
+    surpyval's call:
+
+    >>> from surpyval.test_planning import demonstrated_mtbf
     >>> round(demonstrated_mtbf(2995.7), 1)
     1000.0
-
-    Three failures, the test stopped at the third, 6,295.8 hours in all:
-
-    >>> mtbf = demonstrated_mtbf(6295.8, failures=3, failure_terminated=True)
-    >>> round(mtbf, 1)
-    1000.0
     """
-    _check_positive(test_time, "test_time")
-    _check_probability(confidence, "confidence")
-    failures = _check_failures(failures)
-    freedom = _degrees_of_freedom(failures, failure_terminated)
-    return float(2.0 * test_time / stats.chi2.ppf(confidence, freedom))
+    return _call(
+        test_planning.demonstrated_mtbf,
+        test_time,
+        failures,
+        alpha_ci=_alpha_ci(confidence),
+        failure_terminated=failure_terminated,
+    )
 
 
-@_elementwise
+@_moved
 def mtbf_pass_probability(
     mtbf: float,
     test_time: float,
@@ -489,11 +465,8 @@ def mtbf_pass_probability(
     """The chance that a design of a given true MTBF passes a test, at a
     constant failure rate.
 
-    The probability of at most ``failures`` failures in ``test_time`` when
-    failures come at rate ``1 / mtbf``: the Poisson distribution's, the
-    test's operating characteristic. A failure-terminated test passes if
-    its ``failures``-th failure comes after ``test_time``: at most one
-    fewer by then.
+    Deprecated: use ``surpyval.test_planning.mtbf_pass_probability`` (the
+    same arguments); removed in 0.19.
 
     Parameters
     ----------
@@ -521,24 +494,18 @@ def mtbf_pass_probability(
 
     Examples
     --------
-    A test planned to demonstrate an MTBF of 1000 passes a design at that
-    MTBF one time in twenty, and one with three times the MTBF only a
-    little more than one time in three:
+    surpyval's call:
 
-    >>> from repyability import mtbf_pass_probability, mtbf_test_time
-    >>> time = mtbf_test_time(1000.0)
-    >>> round(mtbf_pass_probability(1000.0, time), 3)
+    >>> from surpyval.test_planning import mtbf_pass_probability
+    >>> round(mtbf_pass_probability(1000.0, 2995.7), 3)
     0.05
-    >>> round(mtbf_pass_probability(3000.0, time), 3)
-    0.368
     """
-    _check_positive(mtbf, "mtbf")
-    _check_positive(test_time, "test_time")
-    failures = _check_failures(failures)
-    allowed = _degrees_of_freedom(failures, failure_terminated) // 2 - 1
-    return float(stats.poisson.cdf(allowed, test_time / mtbf))
+    return test_planning.mtbf_pass_probability(
+        mtbf, test_time, failures, failure_terminated=failure_terminated
+    )
 
 
+@_moved
 def demonstration_plan(
     reliability: float,
     good_reliability: float,
@@ -553,21 +520,10 @@ def demonstration_plan(
     """The smallest attribute test that demonstrates a reliability and that
     a good design passes.
 
-    A plan's consumer's risk is the chance that a design of the target
-    ``reliability`` passes it, at most ``1 - confidence``; its producer's
-    risk is the chance that a design of ``good_reliability``, which should
-    pass, fails it, at most ``producer_risk``. A test allowing no
-    failures keeps the first with the fewest units, but often fails a good
-    design: allowing failures, with more units, keeps both. For each number
-    of failures allowed, from none, the fewest units that keep the
-    consumer's risk (``demonstration_sample_size``) pass the good design
-    most often, and the first of those plans that keeps the producer's risk
-    tests the fewest units of all.
-
-    Given ``n``, the test length is searched instead, with the lifetime's
-    Weibull ``shape``: the shortest test of ``n`` units that keeps both
-    risks (each failure allowed takes a longer test, as
-    ``demonstration_test_multiple`` gives it).
+    Deprecated: use ``surpyval.test_planning.demonstration_plan``
+    (``alpha_ci=1 - confidence``, and the rest by keyword); removed in
+    0.19. surpyval's returns its own ``DemonstrationPlan``, with the same
+    fields.
 
     Parameters
     ----------
@@ -609,103 +565,31 @@ def demonstration_plan(
 
     Examples
     --------
-    Demonstrating 90% reliability at 90% confidence, so that a design of
-    95% passes at least 80% of the time: a test of 22 units with no
-    failures would pass that design only a third of the time, and the plan
-    tests 128, allowing 8 to fail:
+    surpyval's call: demonstrating 90% reliability at 90% confidence, so
+    that a design of 95% passes at least 80% of the time, tests 128 units,
+    allowing 8 to fail:
 
-    >>> from repyability import demonstration_plan
-    >>> from repyability import demonstration_pass_probability
-    >>> round(demonstration_pass_probability(0.95, 22), 2)
-    0.32
-    >>> plan = demonstration_plan(0.9, 0.95, confidence=0.9)
+    >>> from surpyval.test_planning import demonstration_plan
+    >>> plan = demonstration_plan(0.9, 0.95, alpha_ci=0.1)
     >>> plan.n, plan.failures
     (128, 8)
-    >>> round(plan.consumer_risk, 3), round(plan.producer_risk, 3)
-    (0.097, 0.192)
     """
-    _check_probability(reliability, "reliability")
-    _check_probability(good_reliability, "good_reliability")
-    _check_probability(confidence, "confidence")
-    _check_probability(producer_risk, "producer_risk")
-    if good_reliability <= reliability:
-        raise ValueError(
-            "good_reliability must be more than the reliability to "
-            f"demonstrate ({reliability!r}), got {good_reliability!r}: no "
-            "test can pass a design no better than the target more often "
-            "than the target."
-        )
-    most = _check_failures(max_failures)
-    if n is not None:
-        n = _check_count(n)
-        if shape is None:
-            raise ValueError(
-                "Given n, the test length is searched: give the lifetime's "
-                "Weibull shape."
-            )
-        _check_shape(shape)
-        for failures in range(min(most, n - 1) + 1):
-            multiple = demonstration_test_multiple(
-                reliability, n, confidence, failures, shape=shape
-            )
-            plan = _attribute_plan(
-                reliability, good_reliability, n, failures, multiple, shape
-            )
-            if plan.producer_risk <= producer_risk:
-                return plan
-        raise ValueError(
-            f"No test of {n} units keeps both risks: test more units, or "
-            "allow a larger producer's risk."
-        )
-    _test_exponent(test_multiple, shape)
-    for failures in range(most + 1):
-        count = demonstration_sample_size(
-            reliability,
-            confidence,
-            failures,
-            test_multiple=test_multiple,
-            shape=shape,
-        )
-        plan = _attribute_plan(
+    return _plan(
+        _call(
+            test_planning.demonstration_plan,
             reliability,
             good_reliability,
-            count,
-            failures,
-            test_multiple,
-            shape,
+            alpha_ci=_alpha_ci(confidence),
+            producer_risk=producer_risk,
+            n=n,
+            test_multiple=test_multiple,
+            shape=shape,
+            max_failures=max_failures,
         )
-        if plan.producer_risk <= producer_risk:
-            return plan
-    raise ValueError(
-        f"No plan allowing at most {most} failures keeps both risks: the "
-        "good reliability is too close to the target (raise max_failures, "
-        "or allow larger risks)."
     )
 
 
-def _attribute_plan(
-    reliability, good_reliability, n, failures, test_multiple, shape
-) -> DemonstrationPlan:
-    """An attribute test's plan, with its risks."""
-    return DemonstrationPlan(
-        n=int(n),
-        test_multiple=float(test_multiple),
-        test_time=None,
-        failures=int(failures),
-        consumer_risk=demonstration_pass_probability(
-            reliability, n, failures, test_multiple=test_multiple, shape=shape
-        ),
-        producer_risk=1.0
-        - demonstration_pass_probability(
-            good_reliability,
-            n,
-            failures,
-            test_multiple=test_multiple,
-            shape=shape,
-        ),
-    )
-
-
+@_moved
 def mtbf_demonstration_plan(
     mtbf: float,
     good_mtbf: float,
@@ -717,17 +601,10 @@ def mtbf_demonstration_plan(
     """The shortest constant-failure-rate test that demonstrates an MTBF and
     that a good design passes.
 
-    The total test time and the failures it allows, for a time-terminated
-    test, such that a design of the target ``mtbf`` passes with a chance of
-    at most ``1 - confidence`` (the consumer's risk) and one of
-    ``good_mtbf`` fails with a chance of at most ``producer_risk``:
-    the fixed-length test plans of MIL-HDBK-781, for a discrimination ratio
-    ``good_mtbf / mtbf``. For each number of failures allowed, from none,
-    the shortest test that keeps the consumer's risk (``mtbf_test_time``)
-    passes the good design most often, and the first that keeps the
-    producer's risk is the shortest of all. Both risks are kept, where
-    some of the handbook's plans exceed one a little for a shorter test;
-    those that keep both are these (plans XI-D, XV-D and XVII-D).
+    Deprecated: use ``surpyval.test_planning.mtbf_demonstration_plan``
+    (``alpha_ci=1 - confidence``, and the rest by keyword); removed in
+    0.19. surpyval's returns its own ``DemonstrationPlan``, with the same
+    fields.
 
     Parameters
     ----------
@@ -756,115 +633,21 @@ def mtbf_demonstration_plan(
 
     Examples
     --------
-    Demonstrating an MTBF of 1000 hours at 90% confidence, so that a design
-    of 2000 passes at least 80% of the time (a discrimination ratio of 2):
-    the test runs about 14,200 unit hours, and passes with at most 9
-    failures:
+    surpyval's call: an MTBF of 1000 hours at 90% confidence, so that a
+    design of 2000 passes at least 80% of the time:
 
-    >>> from repyability import mtbf_demonstration_plan
-    >>> plan = mtbf_demonstration_plan(1000.0, 2000.0, confidence=0.9)
+    >>> from surpyval.test_planning import mtbf_demonstration_plan
+    >>> plan = mtbf_demonstration_plan(1000.0, 2000.0, alpha_ci=0.1)
     >>> round(plan.test_time), plan.failures
     (14206, 9)
-    >>> round(plan.consumer_risk, 3), round(plan.producer_risk, 3)
-    (0.1, 0.18)
     """
-    _check_positive(mtbf, "mtbf")
-    _check_positive(good_mtbf, "good_mtbf")
-    _check_probability(confidence, "confidence")
-    _check_probability(producer_risk, "producer_risk")
-    if good_mtbf <= mtbf:
-        raise ValueError(
-            f"good_mtbf must be more than the MTBF to demonstrate ({mtbf!r}), "
-            f"got {good_mtbf!r}."
+    return _plan(
+        _call(
+            test_planning.mtbf_demonstration_plan,
+            mtbf,
+            good_mtbf,
+            alpha_ci=_alpha_ci(confidence),
+            producer_risk=producer_risk,
+            max_failures=max_failures,
         )
-    most = _check_failures(max_failures)
-    for failures in range(most + 1):
-        time = mtbf_test_time(mtbf, confidence, failures)
-        missed = 1.0 - mtbf_pass_probability(good_mtbf, time, failures)
-        if missed <= producer_risk:
-            return DemonstrationPlan(
-                n=None,
-                test_multiple=None,
-                test_time=float(time),
-                failures=failures,
-                consumer_risk=mtbf_pass_probability(mtbf, time, failures),
-                producer_risk=float(missed),
-            )
-    raise ValueError(
-        f"No plan allowing at most {most} failures keeps both risks: the "
-        "good MTBF is too close to the target (raise max_failures, or allow "
-        "larger risks)."
     )
-
-
-def _test_reliability(
-    reliability: float, test_multiple: float, shape: Optional[float]
-) -> float:
-    """A unit's reliability over the whole test."""
-    return float(reliability ** _test_exponent(test_multiple, shape))
-
-
-def _test_exponent(test_multiple: float, shape: Optional[float]) -> float:
-    """The power a mission's reliability is raised to over a test of
-    ``test_multiple`` missions: ``test_multiple ** shape``."""
-    if not (np.isfinite(test_multiple) and test_multiple > 0.0):
-        raise ValueError(
-            f"test_multiple must be positive, got {test_multiple!r}."
-        )
-    if test_multiple == 1.0:
-        return 1.0
-    if shape is None:
-        raise ValueError(
-            "A test longer or shorter than a mission needs the lifetime's "
-            "Weibull shape: give shape."
-        )
-    _check_shape(shape)
-    return float(test_multiple**shape)
-
-
-def _check_probability(value: float, name: str) -> None:
-    if not 0.0 < value < 1.0:
-        raise ValueError(f"{name} must be between 0 and 1, got {value!r}.")
-
-
-def _check_positive(value: float, name: str) -> None:
-    if not (np.isfinite(value) and value > 0.0):
-        raise ValueError(f"{name} must be positive, got {value!r}.")
-
-
-def _check_shape(shape: float) -> None:
-    if not (np.isfinite(shape) and shape > 0.0):
-        raise ValueError(f"shape must be positive, got {shape!r}.")
-
-
-def _check_count(n) -> int:
-    if not is_whole(n) or n < 1:
-        raise ValueError(f"n must be a positive whole number, got {n!r}.")
-    return int(n)
-
-
-def _check_failures(failures) -> int:
-    if not is_whole(failures) or failures < 0:
-        raise ValueError(
-            f"failures must be a whole number, 0 or more, got {failures!r}."
-        )
-    return int(failures)
-
-
-def _degrees_of_freedom(failures: int, failure_terminated) -> int:
-    """The chi-squared degrees of freedom of a test with ``failures``
-    failures: ``2 * failures + 2`` if it stopped at its time, ``2 *
-    failures`` at its last failure."""
-    if not isinstance(failure_terminated, (bool, np.bool_)):
-        raise ValueError(
-            "failure_terminated must be True or False, got "
-            f"{failure_terminated!r}."
-        )
-    if not failure_terminated:
-        return 2 * failures + 2
-    if failures < 1:
-        raise ValueError(
-            "A failure-terminated test stops at a failure: failures must be "
-            "at least 1."
-        )
-    return 2 * failures
