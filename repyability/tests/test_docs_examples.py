@@ -158,6 +158,22 @@ def literal(comment: str):
     return None
 
 
+#: A block that opens ``# Needs surpyval's <name>`` runs only with a
+#: surpyval that has ``<name>`` (one newer than the minimum, whose block
+#: the minimum-dependencies run leaves out). Drop the line once the
+#: minimum surpyval has it.
+NEEDS = re.compile(r"\A# Needs surpyval's (\w+)")
+
+
+def available(code: str) -> bool:
+    """Whether a block's code runs with the surpyval installed (see
+    ``NEEDS``)."""
+    import surpyval
+
+    needs = NEEDS.match(code)
+    return needs is None or hasattr(surpyval, needs.group(1))
+
+
 def examples(text: str):
     """Each top-level statement of each python block, in page order: its
     first line in the page, its AST node (line numbers set to the page's),
@@ -165,6 +181,8 @@ def examples(text: str):
     ``Literal``)."""
     for block in BLOCK.finditer(text):
         code = textwrap.dedent(block.group(1))
+        if not available(code):
+            continue
         offset = text.count("\n", 0, block.start()) + 1
         lines = code.splitlines()
         for node in ast.parse(code).body:
@@ -229,6 +247,14 @@ def test_every_page_is_covered():
     ]
     assert sum(isinstance(check, Number) for check in quoted) > 100
     assert sum(isinstance(check, Literal) for check in quoted) > 50
+
+
+def test_a_block_needing_a_newer_surpyval_is_left_out_without_it():
+    assert available("x = 1\n")
+    assert available("# Needs surpyval's Weibull (any)\nx = 1\n")
+    assert not available("# Needs surpyval's NoSuchThing (9.9)\nx = 1\n")
+    page = "```python\n# Needs surpyval's NoSuchThing (9.9)\nx = 1\n```\n"
+    assert list(examples(page)) == []
 
 
 def test_literals_are_read_as_quoted():

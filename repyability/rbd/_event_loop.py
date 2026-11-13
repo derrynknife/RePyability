@@ -861,7 +861,9 @@ def _failures_between(model, ages: np.ndarray) -> np.ndarray:
 
 
 def _on_duty(components: dict) -> Tuple[dict, dict]:
-    """The components, each spec with a ``"duty"`` given its life on the
+    """The components, each spec whose life is at a usage rate given the
+    surpyval distribution it is (``_usage.first_clock_life``), each spec
+    with a ``"duty"`` given its life on the
     calendar (see ``_duty.on_calendar``): one object for each model and
     duty, so that components sharing a model still share it; and each
     task counted in operating time put on the calendar through its
@@ -873,6 +875,7 @@ def _on_duty(components: dict) -> Tuple[dict, dict]:
         on_calendar,
         tasks_on_calendar,
     )
+    from repyability.rbd._usage import first_clock_life, is_life_at_usage
 
     moved: dict = {}
     out = {}
@@ -880,6 +883,14 @@ def _on_duty(components: dict) -> Tuple[dict, dict]:
     for name, component in components.items():
         if isinstance(component, dict):
             d = None
+            life = component.get("reliability")
+            if is_life_at_usage(life):
+                if ("usage", id(life)) not in moved:
+                    moved["usage", id(life)] = first_clock_life(name, life)
+                component = {
+                    **component,
+                    "reliability": moved["usage", id(life)],
+                }
             if component.get("duty") is not None:
                 d = duty_fraction(name, component["duty"])
                 life = component["reliability"]

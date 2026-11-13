@@ -53,6 +53,9 @@ def as_life(model: Any) -> Any:
     that blocks given one fit share one model (and, under parameter
     uncertainty, one draw of its posterior), as blocks given one ordinary
     fit do."""
+    from ._usage import refuse_two_clocks
+
+    refuse_two_clocks(model)
     if not is_bayesian_fit(model):
         return model
     life = _PREDICTIVES.get(id(model))
