@@ -239,6 +239,11 @@ def exact_life_left(age, u):
     return float((lo + hi) / 2 - L(age))
 
 
+@pytest.mark.skipif(
+    np.finfo(np.longdouble).eps >= np.finfo(float).eps,
+    reason="the reference needs a long double wider than a double "
+    "(arm64 macOS and Windows have none)",
+)
 def test_a_life_given_an_age_is_the_root_to_the_last_bits():
     # #295: the mixture's life left at an age, by Newton's steps on its
     # cumulative hazard, is the root to a few bits of age + x, from new to
