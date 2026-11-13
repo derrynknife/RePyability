@@ -9,6 +9,32 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+## [0.17] - 2026-11-14
+
+surpyval 0.27, and maintenance in model time. A `RepairableRBD` takes
+shutdowns, tasks counted in running hours, preventive maintenance that
+restores a unit only partly, and replacement on condition by a measured
+level; it splits the downtime into planned and unplanned and gives the
+failures a plan avoids (`maintenance_effect`), a plan against its outage
+log (`plan_vs_actual`), the net present value of a plan (`expected_npv`),
+the time to the first failure, and the expected events and costs by
+window. A `NonRepairable` gives the numbers behind each maintenance
+decision for a failure mode, from new or from its state. A phased mission
+can be drawn from one diagram with a model per phase, a Bayesian fit is a
+block with its credible band carried to the system, and stress-strength
+interference is new. RePyability is tested against surpyval 0.27 and
+needs it: 0.27 removes no name and deprecates nothing RePyability uses,
+and the fitted models RePyability takes give the same values. Nothing
+was deprecated in 0.16, so nothing is removed.
+
+Behaviour changes: surpyval 0.27 is required. Numbers that change on
+purpose: with a component replaced on condition by its level,
+`availability()` and `cost()` give the exact expected values as their
+means by default (the liner example's quoted mean moves); a seeded run
+from the state of a unit repaired imperfectly now draws from the unit's
+own stream, so its numbers differ from 0.16 (and are now reproducible).
+Every other seeded result is unchanged.
+
 ### Added
 
 - Tasks counted in running hours (UC-26). A `"preventive"` or
@@ -331,6 +357,7 @@ other release, fixes included, the minor.
 
 ### Changed
 
+- surpyval 0.27 is required, the release this one is tested against.
 - With a component replaced on condition by its level, `availability()`
   and `cost()` now give the exact (numerical) expected values as their
   means by default, as for any component with a curve, where they gave

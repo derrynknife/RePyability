@@ -4,10 +4,10 @@ Setup, branches, the checks a change needs, where tests go, pull requests,
 deprecations and releases are in [CONTRIBUTING.md](CONTRIBUTING.md); read it
 first. This file adds the internals and conventions it does not cover.
 
-**Versions (11 Nov 2026):** 0.16 is the latest release (31 Oct 2026; PyPI,
-`v0.16`, `main`). `dev` holds the work for 0.17 under the CHANGELOG's
-`[Unreleased]`; `_version.py` reads 0.16 until the release branch bumps it.
-`dev` needs surpyval 0.26 or later.
+**Versions (14 Nov 2026):** 0.17 is being released (`_version.py` reads
+0.17; 0.16, of 31 Oct 2026, is the latest on PyPI until it publishes).
+New work goes under the CHANGELOG's `[Unreleased]`. `dev` needs surpyval
+0.27 or later.
 
 ## Architecture & scope
 
@@ -450,10 +450,10 @@ first. This file adds the internals and conventions it does not cover.
   `FutureWarning` through `repyability/utils/deprecation.py`). Each
   release's removals stay gone through `test_removed_in_0_12.py`,
   `_0_13.py`, `_0_14.py` and `_0_15.py` (`NodeState`'s `phase`, #350):
-  a removed argument raises `TypeError`. 0.15 and 0.16 deprecated nothing,
-  so 0.16 removed nothing and 0.17 has nothing to remove. `NEXT_REMOVAL`
-  (0.17) names the release that removes what 0.16 deprecates: the first
-  deprecation made for 0.17 raises it to 0.18. A new deprecation warns
+  a removed argument raises `TypeError`. 0.15, 0.16 and 0.17 deprecated
+  nothing, so 0.16 and 0.17 removed nothing. `NEXT_REMOVAL` (0.18) names
+  the release that removes what 0.17 deprecates: the first deprecation
+  made for 0.18 raises it to 0.19. A new deprecation warns
   through `deprecation.renamed`, `renamed_attribute`, `called` or
   `ignored`, with a test that fails once the version reaches its removal
   (as `test_what_0_14_deprecates_goes_in_0_15` did).
@@ -498,8 +498,9 @@ CONTRIBUTING.md. What it leaves to the maintainer's say:
 
 ## surpyval workarounds to remove
 
-surpyval 0.26 is the minimum (the release 0.16 is tested against; it
-removed what 0.25 deprecated, none of which RePyability used). 0.25 has
+surpyval 0.27 is the minimum (the release 0.17 is tested against; it
+removes nothing, and 0.26 removed what 0.25 deprecated, none of which
+RePyability used). 0.25 has
 the joint models a `JointNode` takes; 0.24
 gives a mixture a precise tail (`sf`, #671) and
 has `conditional_gaps` read a limited failure population's `lfp_p`, not a
