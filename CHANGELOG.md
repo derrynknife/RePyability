@@ -28,10 +28,13 @@ Seeded draws of a plain distribution without an offset are unchanged.
   Crow-AMSAA, Duane, HPP or generalised renewal process given as a
   repairable component's life (its restoration factor drawn too). Regression
   nodes of one regression fit share its draws, each at its own
-  covariates. surpyval gives no range per parameter for these models, so
-  they are drawn on the parameters' own scale: a draw surpyval refuses is
+  covariates. Each parameter is drawn on its own scale (log for one
+  surpyval refuses below 0, logit for one it also refuses above 1 and
+  for a renewal process's restoration factor, as it is otherwise; a
+  mixture's weights as log-ratios), its covariance carried there by the
+  delta method, so no draw is cut off. A draw surpyval still refuses is
   drawn again, with a warning counting them, and `"fit"` refuses (asking
-  for a list of models) where more are refused than asked for. A joint
+  for a list of models) past 2% of the draws. A joint
   model's prediction is refused plainly: surpyval cannot rebuild it at
   other parameters.
 - An offset fit's `"fit"` draws are surpyval's refits to resampled data

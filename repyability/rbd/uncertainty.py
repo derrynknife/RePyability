@@ -25,14 +25,24 @@ in surpyval, already provides. A node's uncertainty is one of
   interval-censored data), the offset is held where it was fitted, with
   a warning.
   The other fitted models a diagram takes are drawn from their
-  covariance on the parameters' own scale and rebuilt by surpyval's
-  ``with_params`` (in the order of ``covariance_names``): a regression
-  (a ``RegressionNode``'s model, its covariates kept), a Wiener or gamma
-  degradation process, a mixture, a Royston-Parmar model, and a fitted
-  repairable-unit process (Crow-AMSAA, Duane, HPP or generalised
-  renewal). surpyval gives no range per parameter for these, so a draw
-  it refuses (a negative scale, say) is drawn again and counted, with a
-  warning; past as many refused as asked for, the draws are refused.
+  covariance and rebuilt by surpyval's ``with_params`` (in the order of
+  ``covariance_names``): a regression (a ``RegressionNode``'s model, its
+  covariates kept), a Wiener or gamma degradation process, a mixture, a
+  Royston-Parmar model, and a fitted repairable-unit process
+  (Crow-AMSAA, Duane, HPP or generalised renewal). Each parameter is
+  drawn on its own scale, as a distribution's is: surpyval gives no range
+  per parameter for these models, so the range is read from what
+  ``with_params`` refuses, the others at their estimates. A parameter it
+  refuses just below 0 (a scale, a shape, a rate) is drawn on the log
+  scale; one it also refuses just above 1, and a renewal process's
+  restoration factor (which a diagram takes in [0, 1]), on the logit
+  scale; any other (a regression coefficient, a location) on its
+  own. A mixture's weights are drawn as their log-ratios to the last
+  (surpyval's ``w_logits``). The covariance is carried to those scales
+  by the delta method, so every draw is valid and none is cut off. A
+  draw surpyval still refuses (where parameters are tied together, as a
+  spline's are) is drawn again and counted, with a warning, and past
+  ``MOST_REFUSED`` (2%) of the draws ``"fit"`` refuses.
   Nodes whose ``RegressionNode`` share one regression fit share its
   draws, each at its own covariates.
   For a Bayesian fit (a ``PosteriorPredictive``) the draws are its
@@ -419,91 +429,219 @@ def _kind(fit) -> str:
     return type(fit).__name__
 
 
-def _redrawable(model, label: str):
-    """For a fitted model drawn through surpyval's ``with_params`` (see
-    the module docstring): its parameters' names (``covariance_names``),
-    their fitted values, their covariance and ``rebuild(values)``, the
-    node model at other values; a ValueError, saying what to give
-    instead, for a model whose parameters cannot be drawn."""
-    from .joint_node import is_joint
-    from .regression_node import RegressionNode
+#: The largest share of a fit's draws surpyval may refuse (``with_params``)
+#: before ``"fit"`` refuses: drawn on each parameter's scale, a draw
+#: should never be refused, so more says the scales are wrong for it.
+MOST_REFUSED = 0.02
 
-    if is_joint(model):
-        raise ValueError(
-            f"{label}: its model is a surpyval joint model's prediction, "
-            "which surpyval cannot rebuild at other parameters (it has no "
-            "with_params), so 'fit' cannot draw it. Give a list of "
-            "alternative models instead (predictions of refits to "
-            "resampled data, say)."
-        )
-    if isinstance(model, PosteriorPredictive):
-        raise ValueError(
-            f"{label}: its model is a Bayesian fit, drawn from its "
-            "posterior, not rebuilt from its parameters."
-        )
-    fit = fitted_object(model)
-    rebuild_fit = getattr(fit, "with_params", None)
-    names = getattr(fit, "covariance_names", None)
-    if callable(names):
-        names = names()
-    if not callable(rebuild_fit) or names is None:
-        raise ValueError(
-            f"{label}: its model has no parameters to draw (it is not a "
-            "surpyval parametric distribution or a surpyval model with a "
-            "parameter covariance and with_params). Give a list of "
-            "alternative models instead."
-        )
-    names = [str(name) for name in names]
-    try:
-        covariance = fit.covariance()
-    except (ValueError, *MODEL_ERRORS):
-        covariance = None
-    if covariance is None:
-        raise ValueError(
-            f"{label}: 'fit' draws from the fitted model's parameter "
-            "covariance (surpyval's covariance(), from a maximum-likelihood "
-            f"fit), which this {_kind(fit)} does not have (built from "
-            "parameters, say). Give a list of models instead (refits to "
-            "resampled data, say)."
-        )
-    covariance = np.atleast_2d(np.asarray(covariance, dtype=float))
-    params = np.ravel(np.asarray(fit.params, dtype=float))
-    if is_mixture(fit):
-        params = np.r_[params, np.ravel(np.asarray(fit.w, dtype=float))]
-    k = len(names)
-    if len(params) != k:
-        raise ValueError(
-            f"{label}: its {_kind(fit)}'s parameters ({len(params)}) do not "
-            f"line up with its covariance's ({names}). Give a list of "
-            "models instead."
-        )
-    if covariance.shape != (k, k) or not np.all(np.isfinite(covariance)):
-        raise ValueError(
-            f"{label}: the fitted model's parameter covariance is not a "
-            f"finite {k} x {k} matrix (a parameter on the edge of its "
-            "range, say); give a list of models instead (refits to "
-            "resampled data, say)."
-        )
 
-    def rebuild(values):
+class _Rebuilt:
+    """A fitted model drawn through surpyval's ``with_params`` (see the
+    module docstring): its parameters' ``names`` (``covariance_names``),
+    their fitted values (``params``), their ``covariance``, each one's
+    range as surpyval refuses values past it (``bounds``; a mixture's
+    weights (0, 1)), and the node model at other values (``rebuild``)
+    or at a point of the scales the draws are made on (``unscaled``)."""
+
+    def __init__(self, model, label: str):
+        from .joint_node import is_joint
+
+        if is_joint(model):
+            raise ValueError(
+                f"{label}: its model is a surpyval joint model's "
+                "prediction, which surpyval cannot rebuild at other "
+                "parameters (it has no with_params), so 'fit' cannot draw "
+                "it. Give a list of alternative models instead "
+                "(predictions of refits to resampled data, say)."
+            )
+        if isinstance(model, PosteriorPredictive):
+            raise ValueError(
+                f"{label}: its model is a Bayesian fit, drawn from its "
+                "posterior, not rebuilt from its parameters."
+            )
+        self.model, self.label = model, label
+        fit = self.fit = fitted_object(model)
+        names = getattr(fit, "covariance_names", None)
+        if callable(names):
+            names = names()
+        if not callable(getattr(fit, "with_params", None)) or names is None:
+            raise ValueError(
+                f"{label}: its model has no parameters to draw (it is not "
+                "a surpyval parametric distribution or a surpyval model "
+                "with a parameter covariance and with_params). Give a list "
+                "of alternative models instead."
+            )
+        self.names = [str(name) for name in names]
+        try:
+            covariance = fit.covariance()
+        except (ValueError, *MODEL_ERRORS):
+            covariance = None
+        if covariance is None:
+            raise ValueError(
+                f"{label}: 'fit' draws from the fitted model's parameter "
+                "covariance (surpyval's covariance(), from a "
+                f"maximum-likelihood fit), which this {_kind(fit)} does not "
+                "have (built from parameters, say). Give a list of models "
+                "instead (refits to resampled data, say)."
+            )
+        covariance = np.atleast_2d(np.asarray(covariance, dtype=float))
+        params = np.ravel(np.asarray(fit.params, dtype=float))
+        # A mixture's last m parameters are its weights.
+        self.m = len(np.ravel(fit.w)) if is_mixture(fit) else 0
+        if self.m:
+            params = np.r_[params, np.ravel(np.asarray(fit.w, dtype=float))]
+        k = len(self.names)
+        if len(params) != k:
+            raise ValueError(
+                f"{label}: its {_kind(fit)}'s parameters ({len(params)}) do "
+                f"not line up with its covariance's ({self.names}). Give a "
+                "list of models instead."
+            )
+        if covariance.shape != (k, k) or not np.all(np.isfinite(covariance)):
+            raise ValueError(
+                f"{label}: the fitted model's parameter covariance is not a "
+                f"finite {k} x {k} matrix (a parameter on the edge of its "
+                "range, say); give a list of models instead (refits to "
+                "resampled data, say)."
+            )
+        self.params, self.covariance = params, covariance
+        if _tried(self.rebuild, params) is None:
+            raise ValueError(
+                f"{label}: surpyval refuses to rebuild its fitted model at "
+                "its own parameters; give a list of models instead."
+            )
+        self.bounds = self._bounds()
+
+    def rebuild(self, values):
+        """The node model with the fit's parameters at ``values`` (in the
+        order of ``names``; a mixture's last weight is the rest)."""
         values = np.asarray(values, dtype=float)
-        if is_mixture(fit):
-            # The weights sum to 1, which the covariance keeps (it is
-            # singular that way) but rounding does not: the last is the
-            # rest.
-            m = len(np.ravel(fit.w))
-            weights = values[-m:].copy()
+        if self.m:
+            weights = values[-self.m :].copy()  # noqa: E203
             weights[-1] = 1.0 - weights[:-1].sum()
-            drawn = rebuild_fit(values[:-m], w=weights)
+            drawn = self.fit.with_params(values[: -self.m], w=weights)
         else:
-            drawn = rebuild_fit(values)
-        if isinstance(model, RegressionNode):
+            drawn = self.fit.with_params(values)
+        return self._node(drawn)
+
+    def _node(self, drawn):
+        from .regression_node import RegressionNode
+
+        if isinstance(self.model, RegressionNode):
             return RegressionNode(
-                drawn, covariates=model.covariates, schedule=model.schedule
+                drawn,
+                covariates=self.model.covariates,
+                schedule=self.model.schedule,
             )
         return drawn
 
-    return names, params, covariance, rebuild
+    def _bounds(self) -> list:
+        """Each parameter's range, read from what surpyval refuses (it
+        gives no range per parameter for these models): bounded below by
+        0 where ``with_params`` refuses the parameter just below 0 (the
+        others at their estimates), and above by 1 too where it also
+        refuses it just above 1 (or it is a renewal process's restoration
+        factor, which a diagram takes in [0, 1]); unbounded otherwise (a
+        regression coefficient, a location). A parameter the fit holds
+        fixed (no variance) is left as it is; a mixture's weights are in
+        (0, 1)."""
+        k = len(self.params) - self.m
+        variances = np.diag(self.covariance)
+        out: list = []
+        for j in range(k):
+            value = self.params[j]
+            if variances[j] <= 0.0:
+                out.append((None, None))
+                continue
+            tiny = 1e-9 * max(1.0, abs(value))
+            if self._accepts(j, -tiny):
+                out.append((None, None))
+                continue
+            if value <= 0.0:
+                raise ValueError(
+                    f"{self.label}: its fitted {self.names[j]}, "
+                    f"{value!r}, is on the edge of its range (surpyval "
+                    "refuses it below 0), so it has no normal "
+                    "approximation there; give a list of models instead "
+                    "(refits to resampled data, say)."
+                )
+            restoration = j == 0 and _restores(self.fit)
+            upper = (
+                1.0
+                if restoration
+                or (value < 1.0 and not self._accepts(j, 1 + tiny))
+                else None
+            )
+            if upper is not None and value >= upper:
+                raise ValueError(
+                    f"{self.label}: its fitted {self.names[j]}, "
+                    f"{value!r}, is at or past the edge of its range (0, "
+                    "1), so it has no normal approximation there; give a "
+                    "list of models instead (refits to resampled data, "
+                    "say)."
+                )
+            out.append((0.0, upper))
+        for w in self.params[k:]:
+            if not 0.0 < w < 1.0:
+                raise ValueError(
+                    f"{self.label}: a fitted weight, {w!r}, is on the edge "
+                    "of its range, so it has no normal approximation there; "
+                    "give a list of models instead."
+                )
+            out.append((0.0, 1.0))
+        return out
+
+    def _accepts(self, j: int, value: float) -> bool:
+        moved = self.params.copy()
+        moved[j] = value
+        return _tried(self.rebuild, moved) is not None
+
+    def scaled(self) -> Tuple[np.ndarray, np.ndarray]:
+        """The centre and covariance of the draws, on each parameter's
+        scale (log for one bounded below by 0, logit for one in (0, 1),
+        its own otherwise; a mixture's weights as their m - 1 log-ratios
+        to the last, ``w_logits``), the covariance carried there by the
+        delta method: ``G Sigma G^T``, ``G`` the scales' slopes."""
+        k = len(self.params) - self.m
+        scales = [_Scale(*b) for b in self.bounds[:k]]
+        centre = [sc.forward(v) for sc, v in zip(scales, self.params)]
+        rows = len(self.params) - (1 if self.m else 0)
+        slopes = np.zeros((rows, len(self.params)))
+        for j, (sc, v) in enumerate(zip(scales, self.params)):
+            slopes[j, j] = sc.slope(v)
+        if self.m:
+            w = self.params[k:]
+            centre += list(np.log(w[:-1] / w[-1]))
+            for i in range(self.m - 1):
+                slopes[k + i, k + i] = 1.0 / w[i]
+                slopes[k + i, -1] = -1.0 / w[-1]
+        return np.asarray(centre), slopes @ self.covariance @ slopes.T
+
+    def unscaled(self, z):
+        """The node model at a point ``z`` of the draws' scales."""
+        k = len(self.params) - self.m
+        values = np.array(
+            [_Scale(*b).inverse(v) for b, v in zip(self.bounds[:k], z[:k])]
+        )
+        if not self.m:
+            return self.rebuild(values)
+        return self._node(self.fit.with_params(values, w_logits=z[k:]))
+
+
+def _restores(fit) -> bool:
+    """Whether ``fit`` is a surpyval renewal process, whose first
+    parameter is its restoration factor: in [0, 1] as a diagram takes it
+    (0 renews, 1 is minimal repair), where surpyval allows a generalised
+    renewal process's past 1."""
+    from ._processes import _is_renewal
+
+    return _is_renewal(fit)
+
+
+def _redrawable(model, label: str) -> _Rebuilt:
+    """``model`` as ``_Rebuilt``, or a ValueError, saying what to give
+    instead, for a model whose parameters cannot be drawn."""
+    return _Rebuilt(model, label)
 
 
 def _tried(rebuild, values):
@@ -522,24 +660,20 @@ def _rebuilt_draws(
     model, n: int, rng: np.random.Generator, label: str
 ) -> list:
     """``n`` draws of a model rebuilt by surpyval's ``with_params`` (see
-    ``_redrawable``): from the normal approximation on the parameters'
-    own scale, a draw surpyval refuses drawn again (from ``rng`` itself,
-    or, for a Sobol sequence's points, from a generator seeded by them),
-    and counted. More refused than asked for is refused."""
-    names, params, covariance, rebuild = _redrawable(model, label)
-    if _tried(rebuild, params) is None:
-        raise ValueError(
-            f"{label}: surpyval refuses to rebuild its fitted model at its "
-            "own parameters; give a list of models instead."
-        )
+    ``_Rebuilt``), from the normal approximation on each parameter's scale.
+    A draw surpyval still refuses (a joint constraint, say) is drawn again
+    (from ``rng`` itself, or, for a Sobol sequence's points, from a
+    generator seeded by them) and counted, with a warning; more than
+    ``MOST_REFUSED`` of them is refused."""
+    rebuilt = _redrawable(model, label)
     if n == 0:
         return []
-    k = len(params)
-    scaled = 0.5 * (covariance + covariance.T)
-    values, vectors = np.linalg.eigh(scaled)
+    centre, covariance = rebuilt.scaled()
+    k = len(centre)
+    values, vectors = np.linalg.eigh(0.5 * (covariance + covariance.T))
     root = vectors * np.sqrt(np.clip(values, 0.0, None))
-    z = params + rng.standard_normal((n, k)) @ root.T
-    out = [_tried(rebuild, row) for row in z]
+    z = centre + rng.standard_normal((n, k)) @ root.T
+    out = [_tried(rebuilt.unscaled, row) for row in z]
     missing = [i for i, m in enumerate(out) if m is None]
     if not missing:
         return out
@@ -551,27 +685,27 @@ def _rebuilt_draws(
         digest = hashlib.sha256(np.ascontiguousarray(z).tobytes()).digest()
         spare = np.random.default_rng(int.from_bytes(digest[:8], "little"))
     refused = 0
+    allowed = max(1, int(MOST_REFUSED * n))
     while missing:
         refused += len(missing)
-        if refused > n:
+        if refused > allowed:
             raise ValueError(
-                f"{label}: of the parameter vectors drawn from its "
-                f"{_kind(fitted_object(model))} fit's covariance "
-                f"({', '.join(names)}), more were outside the parameters' "
-                f"ranges (surpyval's with_params refused {refused}) than "
-                f"the {n} asked for, so the normal approximation of this "
-                "fit is poor. Give a list of models instead (refits to "
-                "resampled data, say)."
+                f"{label}: surpyval refused {refused} of the {n} parameter "
+                f"vectors drawn from its {_kind(rebuilt.fit)} fit's "
+                f"covariance ({', '.join(rebuilt.names)}), drawn on each "
+                "parameter's scale: more than "
+                f"{MOST_REFUSED:.0%}, so the normal approximation of this "
+                "fit is poor (its parameters are tied by a constraint, "
+                "say). Give a list of models instead (refits to resampled "
+                "data, say)."
             )
-        again = params + spare.standard_normal((len(missing), k)) @ root.T
+        again = centre + spare.standard_normal((len(missing), k)) @ root.T
         for i, row in zip(missing, again):
-            out[i] = _tried(rebuild, row)
+            out[i] = _tried(rebuilt.unscaled, row)
         missing = [i for i in missing if out[i] is None]
     warnings.warn(
-        f"{label}: {refused} of the parameter vectors drawn from its fit's "
-        "covariance were outside the parameters' ranges (surpyval's "
-        "with_params refused them) and were drawn again, so its draws "
-        "follow the normal approximation cut to the parameters' ranges.",
+        f"{label}: surpyval refused {refused} of the {n} parameter vectors "
+        "drawn from its fit's covariance, and they were drawn again.",
         UserWarning,
         stacklevel=outside_level(),
     )
@@ -864,7 +998,7 @@ def model_values(model) -> np.ndarray:
     ``varied_parameters`` gives their positions and ``moved_model``
     takes them."""
     if rebuilt_by_surpyval(model):
-        return np.asarray(_redrawable(model, "")[1], dtype=float)
+        return np.asarray(_redrawable(model, "").params, dtype=float)
     spec = parametric_spec(model)
     assert spec is not None  # a varied model is parametric
     return np.asarray(spec.params, dtype=float)
@@ -879,7 +1013,9 @@ def moved_model(model, values, label: str):
         spec = parametric_spec(model)
         assert spec is not None  # a varied model is parametric
         return spec.build(list(values))
-    built = _tried(_redrawable(model, label)[3], np.asarray(values, float))
+    built = _tried(
+        _redrawable(model, label).rebuild, np.asarray(values, float)
+    )
     if built is None:
         raise ValueError(
             f"{label}: a step of the delta method took a parameter of its "
@@ -926,10 +1062,14 @@ def varied_parameters(model, spec: Any, label: str):
                 "itself."
             )
         if rebuilt_by_surpyval(model):
-            # surpyval gives no range per parameter for these: unbounded.
-            _, params, covariance, _ = _redrawable(model, label)
-            k = len(params)
-            return list(range(k)), params, covariance, [(None, None)] * k
+            # Their ranges as surpyval refuses values past them.
+            rebuilt = _redrawable(model, label)
+            return (
+                list(range(len(rebuilt.params))),
+                rebuilt.params,
+                rebuilt.covariance,
+                rebuilt.bounds,
+            )
         _, params, covariance, bounds = _fit_covariance(model, label, True)
         return list(range(len(params))), params, covariance, bounds
     if isinstance(spec, Mapping):

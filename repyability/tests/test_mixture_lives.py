@@ -12,6 +12,7 @@ the engines against each other in ``test_catalogue``.
 """
 
 import json
+import warnings
 
 import numpy as np
 import pytest
@@ -185,10 +186,11 @@ def test_its_parameters_are_drawn_from_its_fit(mix, cls):
         rbd = cls(EDGES, {"a": {"reliability": mix, "repairability": REPAIR}})
         method = rbd.mean_availability_uncertainty
         spec, args = {"a": {"reliability": "fit"}}, ()
-    # Fitted to 15 early failures, its infant-mortality scale is loosely
-    # known: some draws on its own scale are negative, refused by surpyval
-    # and drawn again, and counted.
-    with pytest.warns(UserWarning, match="drawn again"):
+    # Each scale and shape is drawn on the log scale and the weights as
+    # log-ratios, so surpyval refuses no draw (on the parameters' own
+    # scale, about three in ten of this loosely known infant mortality's).
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         result = method(*args, spec, n_draws=20, seed=0)
         again = method(*args, spec, n_draws=20, seed=0)
     assert result.band == "confidence"

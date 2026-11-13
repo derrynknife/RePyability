@@ -228,14 +228,20 @@ regression node (`RegressionNode`, at its own covariates), a Wiener or
 gamma degradation process, a mixture, a Royston-Parmar model, and, as a
 `RepairableRBD` component's life, a fitted Crow-AMSAA, Duane, HPP or
 generalised renewal process (its restoration factor drawn too). These
-are drawn from the fit's covariance on the parameters' own scale and
-rebuilt by surpyval's `with_params`. surpyval does not yet say each
-parameter's range for these models, so a draw it refuses (a negative
-scale, say) is drawn again, and a warning counts them; where more are
-refused than asked for, the normal approximation is too poor and `"fit"`
-refuses, asking for a list of models (refits to resampled data). A
-fitted scale with a wide standard error (a Crow-AMSAA process fitted to
-a few dozen failures, say) is where this shows. Regression nodes of one
+are drawn from the fit's covariance and rebuilt by surpyval's
+`with_params`, each parameter on its own scale so that every draw is
+valid and none is cut off. surpyval does not yet say each parameter's
+range for these models, so RePyability reads it from what `with_params`
+refuses (the others at their estimates): a parameter refused just below
+0 (a scale, a shape, a rate) is drawn on the log scale, one also refused
+just above 1, and a renewal process's restoration factor (which a
+diagram takes in [0, 1]), on the logit scale, and any other (a
+regression coefficient, a location) as it is. A mixture's weights are
+drawn as their log-ratios to the last. The covariance is carried to
+those scales by the delta method. A draw surpyval still refuses (where
+parameters are tied together, as a spline's are) is drawn again and
+counted in a warning; past 2% of the draws, `"fit"` refuses, asking for
+a list of models (refits to resampled data). Regression nodes of one
 fit (two pumps at different loads) share its draws, each at its own
 covariates, as nodes holding one fitted model do. A joint model's
 prediction (`JointNode`) is not drawn: surpyval cannot rebuild it at

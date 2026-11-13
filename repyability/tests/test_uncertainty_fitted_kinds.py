@@ -29,7 +29,7 @@ def regression():
     """A Weibull proportional-hazards fit to 80 lives at two loads."""
     rng = np.random.default_rng(1)
     Z = rng.binomial(1, 0.5, 80).reshape(-1, 1).astype(float)
-    x = surv.Weibull.random(80, 10, 2) * np.exp(-0.5 * Z[:, 0])
+    x = 10 * rng.weibull(2, 80) * np.exp(-0.5 * Z[:, 0])
     return surv.WeibullPH.fit(x=x, Z=Z)
 
 
@@ -183,8 +183,8 @@ def test_a_fitted_crow_amsaa_life_is_drawn_from_its_fit():
     # Given as a component's life, a Crow-AMSAA fit is minimal repair of a
     # Weibull: each draw is the process at drawn parameters, made that
     # Weibull and minimal repair again. Its scale's standard error is
-    # two-thirds of it, so some draws on its own scale are negative:
-    # surpyval refuses them, and they are drawn again and counted.
+    # two-thirds of it: drawn on the log scale, no draw is negative, so
+    # surpyval refuses none (on its own scale about one in ten was).
     process = crow_amsaa()
     rbd = RepairableRBD(
         [("s", "a"), ("a", "t")],
@@ -197,7 +197,8 @@ def test_a_fitted_crow_amsaa_life_is_drawn_from_its_fit():
     )
     assert repairable.fitted(rbd) == {"a": {"reliability": "fit"}}
     inputs, groups = repairable.sources(rbd, None)
-    with pytest.warns(UserWarning, match="3 of the parameter vectors"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         drawn, drawn_groups = repairable.draws(rbd, inputs, groups, 30, 0)
     alphas = []
     for i in range(30):
@@ -210,9 +211,8 @@ def test_a_fitted_crow_amsaa_life_is_drawn_from_its_fit():
         assert spec["repair"] == {"model": "kijima1", "q": 1.0}
         alphas.append(float(np.ravel(process_i.params)[0]))
     assert np.std(alphas) > 0
-    with pytest.warns(UserWarning, match="drawn again"):
-        result = rbd.point_availability_uncertainty(50.0, n_draws=40, seed=0)
-        again = rbd.point_availability_uncertainty(50.0, n_draws=40, seed=0)
+    result = rbd.point_availability_uncertainty(50.0, n_draws=40, seed=0)
+    again = rbd.point_availability_uncertainty(50.0, n_draws=40, seed=0)
     assert result.nominal == pytest.approx(rbd.point_availability(50.0))
     assert result.std > 0
     np.testing.assert_array_equal(result.samples, again.samples)
@@ -289,25 +289,69 @@ def test_a_joint_models_prediction_is_refused_plainly(monkeypatch):
         _redrawable(fake, "Node 'c'")
 
 
-def test_draws_surpyval_refuses_are_drawn_again_and_counted():
+@pytest.mark.parametrize(
+    "make",
+    [
+        crow_amsaa,
+        generalised_renewal,
+        wiener,
+        lambda: RegressionNode(regression(), covariates=[1.0]),
+    ],
+    ids=["Crow-AMSAA", "generalised renewal", "Wiener", "regression"],
+)
+def test_each_parameter_is_drawn_on_its_scale(make):
+    # The ranges, read from what surpyval refuses: scales, shapes and
+    # rates are positive (the log scale); a renewal process's restoration
+    # factor is in (0, 1), as a diagram takes it (the logit scale);
+    # regression coefficients and a Wiener drift are not bounded. Drawn
+    # so, surpyval refuses none of 4,000 draws.
+    from repyability.rbd.uncertainty import _redrawable
+
+    fit = make()
+    rebuilt = _redrawable(fit, "c")
+    expected = {
+        "alpha": (0.0, None),
+        "beta": (0.0, None),
+        "q": (0.0, 1.0),
+        "sigma": (0.0, None),
+        "mu": (None, None),
+        "coef_0": (None, None),
+    }
+    for name, bounds in zip(rebuilt.names, rebuilt.bounds):
+        assert bounds == expected[name], name
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        drawn = draw_models(fit, "fit", 4_000, np.random.default_rng(0), "c")
+    assert len(drawn) == 4_000
+
+
+def test_a_draw_surpyval_still_refuses_is_drawn_again_and_counted():
+    # A constraint tying parameters together (as a spline's are) is not a
+    # range of one parameter: a draw surpyval refuses is drawn again and
+    # counted, and past 2% of the draws "fit" refuses. Here surpyval is
+    # made to refuse a coefficient past its estimate plus 3 or 1 standard
+    # errors (0.1% and 16% of the draws).
     model = regression()
     node = RegressionNode(model, covariates=[0.0])
-    # A covariance wide enough that some drawn scales are negative.
-    alpha = float(model.params[0])
-    wide = np.diag([(0.5 * alpha) ** 2, 1e-4, 1e-4])
-    model.covariance = lambda: wide
-    with pytest.warns(UserWarning, match=r"\d+ of the parameter vectors"):
+    centre = float(model.params[2])
+    sd = float(np.sqrt(model.covariance()[2, 2]))
+    original = model.with_params
+
+    def refusing(limit):
+        def with_params(values):
+            if values[2] > centre + limit * sd:
+                raise ValueError("refused")
+            return original(values)
+
+        return with_params
+
+    model.with_params = refusing(3.0)
+    with pytest.warns(UserWarning, match=r"refused \d+ of the 2000"):
         drawn = draw_models(node, "fit", 2_000, np.random.default_rng(0), "c")
-    assert all(float(m.model.params[0]) > 0 for m in drawn)
-    # Too wide: more refused than asked for, refused.
-    # Both the scale and the shape must be positive: about three in four
-    # draws are not.
-    beta = float(model.params[1])
-    model.covariance = lambda: np.diag(
-        [(50 * alpha) ** 2, (50 * beta) ** 2, 1e-4]
-    )
-    with pytest.raises(ValueError, match="normal approximation of this fit"):
-        draw_models(node, "fit", 200, np.random.default_rng(0), "c")
+    assert len(drawn) == 2_000
+    model.with_params = refusing(1.0)
+    with pytest.raises(ValueError, match="more than 2%.*list of models"):
+        draw_models(node, "fit", 2_000, np.random.default_rng(0), "c")
 
 
 def test_the_delta_method_varies_a_regressions_parameters():

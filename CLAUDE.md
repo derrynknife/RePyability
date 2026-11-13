@@ -540,12 +540,11 @@ limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
   one needs its rule there, which `test_units` checks against `R(d t)`).
   Take surpyval's rescaling once the minimum surpyval has it.
 - **Parameter ranges for drawing fits other than distributions** (no
-  surpyval issue yet). `"fit"` draws a regression, a degradation or
-  repairable-unit process or a mixture from its covariance on the
-  parameters' own scale, since surpyval gives no range per parameter for
-  these, and draws again what `with_params` refuses, counting them
-  (`uncertainty._rebuilt_draws`). Draw on each parameter's log or logit
-  scale, as for a distribution, once the minimum surpyval says the ranges.
+  surpyval issue yet). surpyval gives no range per parameter for a
+  regression, a degradation or repairable-unit process or a mixture, so
+  `uncertainty._Rebuilt._bounds` reads each from what `with_params`
+  refuses just below 0 and just above 1, to draw it on the log or logit
+  scale. Take surpyval's ranges once the minimum surpyval says them.
 
 - **A Bayesian fit's predictive in the tails** (no surpyval issue yet).
   surpyval 0.26's `BayesianParametric` gives `ff` as `1 - sf` and `Hf` as
