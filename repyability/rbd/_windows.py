@@ -916,7 +916,10 @@ def _window_counts(
     followed = list(curves.values()) + ([crew.curve] if crew else [])
     settle, period = _settling(followed)
     reach = min(horizon, settle if period is None else settle + period)
-    if period is not None:
+    if period is not None and reach < horizon:
+        # Only the end of the period the counts are extended by moves:
+        # an end at the horizon (within it) is counted as it is, events
+        # a rounding short of it included.
         reach = _before_period_end(reach, curves, crew)
     beyond = ends > reach
     atoms = {node: curve.atoms(reach) for node, curve in curves.items()}
@@ -927,11 +930,14 @@ def _window_counts(
     # ``totals_at``), so that a nested RBD counted at many times costs
     # no more pieces.
     fixed = [jumps.times] + [own.times for own in atoms.values()]
-    cycles = rest = np.empty(0)
+    cycles = stop = np.empty(0)
     if period is not None and beyond.any():
         cycles = np.floor((ends[beyond] - settle) / period)
         rest = np.clip(ends[beyond] - settle - cycles * period, 0.0, period)
-        fixed += [np.array([settle]), settle + rest]
+        # The period counted is ``[settle, reach)``: an end past ``reach``
+        # (moved a rounding short of the period's end) has the whole of it.
+        stop = np.minimum(settle + rest, reach)
+        fixed += [np.array([settle]), stop]
 
     # Each node's events at exact times, kept apart (taken together,
     # below): their running totals, by time.
@@ -1106,7 +1112,7 @@ def _window_counts(
                 totals[beyond] = values[-1] + (ends[beyond] - reach) * rate
             else:
                 base = values[np.searchsorted(edges, settle)]
-                partial = values[np.searchsorted(edges, settle + rest)]
+                partial = values[np.searchsorted(edges, stop)]
                 totals[beyond] = (
                     base + cycles * (values[-1] - base) + (partial - base)
                 )
