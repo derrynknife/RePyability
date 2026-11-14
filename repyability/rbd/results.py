@@ -4366,6 +4366,38 @@ class ConditionalProbabilities(_ResultMapping):
 
 
 @dataclass(frozen=True)
+class PrimeImplicant(_ResultMapping):
+    """A prime implicant of a fault tree's top event: a smallest
+    combination of basic events occurring and not occurring that makes it
+    occur, returned by
+    [`FaultTree.prime_implicants`][repyability.FaultTree.prime_implicants].
+    In a tree without NOT gates it is a minimal cut set, and
+    ``not_occurred`` is empty.
+
+    Attributes
+    ----------
+    occurred : frozenset
+        The events that occur.
+    not_occurred : frozenset
+        The events that do not.
+
+    Examples
+    --------
+    >>> from repyability import FaultTree
+    >>> tree = FaultTree(
+    ...     {"top": ("and", ["a", "not b"]), "not b": ("not", ["b"])},
+    ...     {"a": 0.1, "b": 0.2},
+    ... )
+    >>> [implicant] = tree.prime_implicants()
+    >>> sorted(implicant.occurred), sorted(implicant.not_occurred)
+    (['a'], ['b'])
+    """
+
+    occurred: frozenset
+    not_occurred: frozenset
+
+
+@dataclass(frozen=True)
 class ModelParameters(_ResultMapping):
     """A parametric model's parameters, to rebuild it with them moved:
     returned by [`model_parameters`][repyability.model_parameters].

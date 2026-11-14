@@ -1266,8 +1266,9 @@ def test_every_fault_tree_analysis_is_called():
 
 
 def test_the_fault_tree_report_covers_every_public_analysis():
-    # Everything public but building, saving, converting, the logic at one
-    # state, the cut and path sets, and the levers.
+    # Everything public but building, saving, converting (Open-PSA too),
+    # the logic at one state, the cut and path sets and prime implicants,
+    # and the levers.
     not_analyses = {
         "analysis_routes",
         "from_dict",
@@ -1281,6 +1282,8 @@ def test_the_fault_tree_report_covers_every_public_analysis():
         "get_min_path_sets",
         "minimal_cut_sets",
         "minimal_path_sets",
+        "prime_implicants",
+        "to_open_psa",
         "levers",
         "with_levers",
     }
