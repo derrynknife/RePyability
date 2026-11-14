@@ -58,6 +58,11 @@ of ``2 h``, and ``precision`` is the largest difference of a probability
 between the two (about three times the error at ``h``), plus the mass
 the counts leave out.
 
+**A calendar policy** (a ``CalendarPolicy``: at each opportunity, replace
+the part if it is at least that time's threshold age) prices its planned
+replacements by kind of opportunity and starts each cycle at a time of
+its own: ``_window_calendar`` works it out.
+
 **Simulated** (``method="simulate"``): the part's cycles drawn, seeded,
 from its life (the part's life left from its age first), as a check, with
 each probability's share of the simulations.
@@ -65,7 +70,7 @@ each probability's share of the simulations.
 
 import math
 from dataclasses import dataclass
-from typing import NamedTuple, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 from scipy.special import gammaln
@@ -90,6 +95,7 @@ LEVELS = (10.0, 50.0, 90.0)
 RUN_TO_FAILURE = "run to failure"
 AGE = "age replacement"
 BLOCK = "block replacement"
+CALENDAR = "calendar"
 
 
 @dataclass
@@ -114,10 +120,12 @@ class CostDistribution(_ResultMapping):
     window : float
         The window's length.
     policy : str
-        ``"run to failure"``, ``"age replacement"`` or ``"block
-        replacement"``.
+        ``"run to failure"``, ``"age replacement"``, ``"block
+        replacement"`` or ``"calendar"`` (a
+        [`CalendarPolicy`][repyability.CalendarPolicy]).
     every : float or None
-        The policy's interval (None for run to failure).
+        The policy's interval (None for run to failure and a calendar
+        policy).
     age : float
         The part's age now.
     since_renewal : float or None
@@ -125,7 +133,9 @@ class CostDistribution(_ResultMapping):
     unplanned_cost : float
         What a failure costs.
     planned_cost : float or None
-        What a planned replacement costs (None for run to failure).
+        What a planned replacement costs (None for run to failure, and for
+        a calendar policy, whose price depends on the opportunity:
+        ``kind_prices``).
     method : str
         ``"numerical"`` (worked out on a grid, to ``precision``) or
         ``"simulated"``.
@@ -164,6 +174,18 @@ class CostDistribution(_ResultMapping):
         For a simulation, the standard error of ``mean``; None otherwise.
     n_simulations : int or None
         The number of simulations, or None.
+    kinds : tuple of str or None
+        For a calendar policy, the kinds of planned replacement it makes
+        in the window (its opportunities' names, ``"anytime"`` for a day
+        with none), in the order of ``kind_prices``; None otherwise.
+    kind_prices : tuple of float or None
+        For a calendar policy, the price of a planned replacement of each
+        of ``kinds``.
+    kind_outcomes : list of dict or None
+        For a calendar policy, each outcome with a chance of at least
+        1e-12, by kind: ``{"failures": i, "planned": {kind: count},
+        "cost": ..., "probability": ...}``, most likely first (what
+        ``outcomes()`` returns).
 
     Examples
     --------
@@ -196,6 +218,9 @@ class CostDistribution(_ResultMapping):
     precision: Optional[float]
     standard_error: Optional[float]
     n_simulations: Optional[int]
+    kinds: Optional[Tuple[str, ...]] = None
+    kind_prices: Optional[Tuple[float, ...]] = None
+    kind_outcomes: Optional[List[Dict[str, Any]]] = None
 
     def percentile(self, q: float) -> float:
         """The cost at the ``q``-th percentile: the least cost not
@@ -221,7 +246,10 @@ class CostDistribution(_ResultMapping):
     def outcomes(self) -> list:
         """Each outcome with a chance of at least 1e-12, most likely
         first: ``[{"failures": i, "planned": j, "cost": ..., "probability":
-        ...}]``."""
+        ...}]``; for a calendar policy, ``"planned"`` is a count by kind,
+        ``{kind: count}``."""
+        if self.kind_outcomes is not None:
+            return list(self.kind_outcomes)
         rows, cols = np.nonzero(self.probabilities >= 1e-12)
         out = [
             {
@@ -271,15 +299,27 @@ class _Plan(NamedTuple):
     """The policy and the part's state, checked."""
 
     policy: str
-    every: float  # inf for run to failure
+    every: float  # inf for run to failure and a calendar policy
     age: float
     since: Optional[float]  # block replacement only
+    calendar: Any = None  # a calendar policy's CalendarPolicy
 
 
-def _plan(part, every, resets, age, since_renewal) -> _Plan:
+def _plan(part, every, resets, age, since_renewal, calendar=None) -> _Plan:
     """The policy from ``every`` and ``resets`` (as ``renewal_forecast``
-    takes them), and the part's state, checked."""
+    takes them) or ``calendar``, and the part's state, checked."""
     age = _number(age, "age")
+    if calendar is not None:
+        from repyability.maintenance._window_calendar import check_policy
+
+        if not (every is None and resets is None and since_renewal is None):
+            raise ValueError(
+                "A calendar policy says when to replace by its thresholds "
+                "at its opportunities: give no every, resets or "
+                "since_renewal with calendar."
+            )
+        check_policy(part, calendar)
+        return _Plan(CALENDAR, math.inf, age, None, calendar)
     if every is None:
         if resets is not None or since_renewal is not None:
             raise ValueError(
@@ -785,7 +825,8 @@ def _sampler(part):
 def _simulate(part, plan: _Plan, edges: np.ndarray, mc_samples: int, seed):
     """The failures and planned replacements of ``mc_samples`` seeded
     histories of the part in each window between ``edges`` (from 0):
-    two arrays of shape ``(windows, mc_samples)``."""
+    two arrays of shape ``(windows, mc_samples)``; for a calendar policy,
+    the planned replacements by kind too, ``{kind: (price, array)}``."""
     rng = np.random.default_rng(seed)
     quantile = _sampler(part)
     life = _Life(part, plan.age)
@@ -804,6 +845,8 @@ def _simulate(part, plan: _Plan, edges: np.ndarray, mc_samples: int, seed):
     def tally(counts, who, when):
         np.add.at(counts, (np.searchsorted(edges, when, "right") - 1, who), 1)
 
+    if plan.policy == CALENDAR:
+        return _simulate_calendar(plan, edges, draw, tally, mc_samples)
     T = plan.every
     if plan.policy == BLOCK:
         tau = T - float(plan.since or 0.0)
@@ -839,6 +882,48 @@ def _simulate(part, plan: _Plan, edges: np.ndarray, mc_samples: int, seed):
     return failures, planned
 
 
+def _simulate_calendar(plan: _Plan, edges, draw, tally, mc_samples: int):
+    """``_simulate`` under a calendar policy: each cycle ends in a failure
+    or at the planned replacement the policy fixes for a unit put in when
+    the cycle starts (the part in now: put in ``age`` before 0)."""
+    policy = plan.calendar
+    horizon = float(edges[-1])
+    windows = len(edges) - 1
+    failures = np.zeros((windows, mc_samples), dtype=int)
+    by_kind: dict = {}
+    t = np.zeros(mc_samples)
+    put_in = np.full(mc_samples, -plan.age)
+    life_left = draw(mc_samples, True)
+    active = np.arange(mc_samples)
+    while len(active):
+        due = [
+            policy._next_planned(put_in[r], max(put_in[r], 0.0))
+            for r in active
+        ]
+        until = np.array([d[0] for d in due]) - t[active]
+        failed = life_left[active] < until
+        ends = t[active] + np.where(failed, life_left[active], until)
+        inside = ends < horizon
+        tally(failures, active[failed & inside], ends[failed & inside])
+        for k in np.flatnonzero(~failed & inside):
+            _, price, kind = due[k]
+            if kind not in by_kind:
+                by_kind[kind] = (
+                    float(price),
+                    np.zeros((windows, mc_samples), dtype=int),
+                )
+            tally(by_kind[kind][1], active[k : k + 1], ends[k : k + 1])
+        active, ends = active[inside], ends[inside]
+        t[active] = ends
+        put_in[active] = ends
+        life_left[active] = draw(len(active), False)
+    planned = sum(
+        (counts for _, counts in by_kind.values()),
+        np.zeros((windows, mc_samples), dtype=int),
+    )
+    return failures, planned, by_kind
+
+
 # -- the answer ---------------------------------------------------------------
 
 
@@ -856,9 +941,14 @@ def _by_cost(P: np.ndarray, cu: float, cp: float):
     """The distinct costs of the outcomes, cheapest first, and the chance
     of each."""
     i, j = np.indices(P.shape)
-    cost = (cu * i + cp * j).ravel()
+    return _merged((cu * i + cp * j).ravel(), P.ravel())
+
+
+def _merged(cost: np.ndarray, mass: np.ndarray):
+    """The distinct values of ``cost``, cheapest first, and the total
+    ``mass`` of each."""
     order = np.argsort(cost, kind="stable")
-    cost, mass = cost[order], P.ravel()[order]
+    cost, mass = cost[order], mass[order]
     scale = max(float(np.max(np.abs(cost))), 1.0)
     new = np.concatenate([[True], np.diff(cost) > 1e-12 * scale])
     groups = np.cumsum(new) - 1
@@ -867,6 +957,40 @@ def _by_cost(P: np.ndarray, cu: float, cp: float):
     keep = probabilities > 0.0
     keep[0] = True
     return costs[keep], probabilities[keep]
+
+
+class _ByKind(NamedTuple):
+    """A calendar policy's counts by kind: the kinds and their prices, and
+    for each vector of planned replacements by kind, the chance of each
+    number of failures."""
+
+    names: Tuple[str, ...]
+    prices: Tuple[float, ...]
+    by_vector: Dict[Tuple[int, ...], np.ndarray]
+
+    def costs(self, cu: float):
+        cost, mass = [], []
+        for vector, column in self.by_vector.items():
+            planned = float(np.dot(vector, self.prices))
+            cost.append(cu * np.arange(len(column)) + planned)
+            mass.append(column)
+        return _merged(np.concatenate(cost), np.concatenate(mass))
+
+    def outcomes(self, cu: float) -> list:
+        out = []
+        for vector, column in self.by_vector.items():
+            planned = dict(zip(self.names, (int(v) for v in vector)))
+            spent = float(np.dot(vector, self.prices))
+            for i in np.flatnonzero(column >= 1e-12):
+                out.append(
+                    {
+                        "failures": int(i),
+                        "planned": planned,
+                        "cost": cu * int(i) + spent,
+                        "probability": float(column[i]),
+                    }
+                )
+        return sorted(out, key=lambda o: -o["probability"])
 
 
 def _counts(part, plan: _Plan, start: float, window: float, h: float):
@@ -882,10 +1006,18 @@ def _padded(P: np.ndarray, shape) -> np.ndarray:
     return out
 
 
-def _numerical(part, plan: _Plan, edges: np.ndarray) -> list:
-    """Each window's counts' distribution and its precision: the largest
+def _change(fine: np.ndarray, coarse: np.ndarray) -> float:
+    shape = np.maximum(fine.shape, coarse.shape)
+    return float(np.abs(_padded(fine, shape) - _padded(coarse, shape)).max())
+
+
+def _numerical(part, plan: _Plan, edges: np.ndarray, cache: dict) -> list:
+    """Each window's counts' distribution, its precision (the largest
     change of a probability from a grid twice as coarse, plus the mass
-    left out."""
+    left out) and, for a calendar policy, its counts by kind (``cache``
+    keeps what its windows share)."""
+    if plan.policy == CALENDAR:
+        return _numerical_calendar(part, plan, edges, cache)
     life = _Life(part, plan.age)
     span = float(edges[-1])
     if plan.policy == BLOCK:
@@ -896,27 +1028,79 @@ def _numerical(part, plan: _Plan, edges: np.ndarray) -> list:
     for start, end in zip(edges[:-1], edges[1:]):
         fine = _counts(part, plan, float(start), float(end - start), h)
         coarse = _counts(part, plan, float(start), float(end - start), 2 * h)
-        shape = np.maximum(fine.shape, coarse.shape)
-        change = np.abs(_padded(fine, shape) - _padded(coarse, shape))
         missing = max(0.0, 1.0 - float(fine.sum()))
-        out.append((fine, float(change.max()) + missing))
+        out.append((fine, _change(fine, coarse) + missing, None))
+    return out
+
+
+def _numerical_calendar(part, plan: _Plan, edges, cache: dict) -> list:
+    """``_numerical`` under a calendar policy: on grids of half the
+    policy's step and of its step (``_window_calendar``)."""
+    from repyability.maintenance._window_calendar import (
+        grid_step,
+        window_counts,
+    )
+
+    step = grid_step(plan.calendar)
+    life = _Life(part, plan.age)
+    out = []
+    for start, end in zip(edges[:-1], edges[1:]):
+        found = {}
+        for h in (step / 2.0, step):
+            found[h] = window_counts(
+                life, plan.calendar, float(start), float(end), h, cache
+            )
+        fine, by_vector, dropped = found[step / 2.0]
+        coarse = found[step][0]
+        kinds = cache["kinds"]
+        missing = max(0.0, 1.0 - float(fine.sum())) + dropped
+        by_kind = _ByKind(
+            tuple(kinds.names),
+            tuple(kinds.prices),
+            {kinds.full(v): c for v, c in by_vector.items()},
+        )
+        out.append((fine, _change(fine, coarse) + missing, by_kind))
     return out
 
 
 def _simulated(part, plan: _Plan, edges, n: int, seed, whole: bool) -> list:
-    """Each window's share of the simulations with each count, and each
-    simulation's cost in it; with ``whole``, the whole span's last, from
-    the same histories."""
-    failures, planned = _simulate(part, plan, edges, n, seed)
+    """Each window's share of the simulations with each count, each
+    simulation's cost in it and, for a calendar policy, the shares by
+    kind; with ``whole``, the whole span's last, from the same
+    histories."""
+    found = _simulate(part, plan, edges, n, seed)
+    failures, planned = found[0], found[1]
+    by_kind = found[2] if plan.policy == CALENDAR else None
     if whole:
         failures = np.vstack([failures, failures.sum(axis=0)])
         planned = np.vstack([planned, planned.sum(axis=0)])
-    cp = 0.0 if plan.policy == RUN_TO_FAILURE else float(part.cp)
-    out = []
-    for f, j in zip(failures, planned):
+        if by_kind is not None:
+            by_kind = {
+                kind: (price, np.vstack([c, c.sum(axis=0)]))
+                for kind, (price, c) in by_kind.items()
+            }
+    cu = float(part.cu)
+    out: List[Tuple[np.ndarray, np.ndarray, Optional[_ByKind]]] = []
+    for w, (f, j) in enumerate(zip(failures, planned)):
         P = np.zeros((f.max() + 1, j.max() + 1))
         np.add.at(P, (f, j), 1.0 / n)
-        out.append((P, float(part.cu) * f + cp * j))
+        if by_kind is None:
+            cp = 0.0 if plan.policy == RUN_TO_FAILURE else float(part.cp)
+            out.append((P, cu * f + cp * j, None))
+            continue
+        names = tuple(by_kind)
+        prices = tuple(by_kind[k][0] for k in names)
+        counts = np.array([by_kind[k][1][w] for k in names]).reshape(
+            len(names), n
+        )
+        spent = np.asarray(prices) @ counts if names else np.zeros(n)
+        vectors: Dict[Tuple[int, ...], np.ndarray] = {}
+        for r in range(n):
+            vector = tuple(int(c) for c in counts[:, r])
+            if vector not in vectors:
+                vectors[vector] = np.zeros(f.max() + 1)
+            vectors[vector][f[r]] += 1.0 / n
+        out.append((P, cu * f + spent, _ByKind(names, prices, vectors)))
     return out
 
 
@@ -943,12 +1127,19 @@ def _route(method, mc_samples, seed):
 
 
 def _distribution(
-    part, plan: _Plan, start, end, P, levels, budget, precision, costs_each
+    part, plan: _Plan, start, end, found, levels, budget, simulated
 ) -> CostDistribution:
-    """A window's ``CostDistribution`` from its counts' distribution."""
+    """A window's ``CostDistribution`` from its counts' distribution:
+    ``found`` is ``(P, precision or each simulation's cost, by kind)``."""
+    P, extra, by_kind = found
+    precision, costs_each = (None, extra) if simulated else (extra, None)
     cu = float(part.cu)
-    cp = 0.0 if plan.policy == RUN_TO_FAILURE else float(part.cp)
-    costs, cost_probabilities = _by_cost(P, cu, cp)
+    priced = plan.policy in (AGE, BLOCK)
+    cp = float(part.cp) if priced else 0.0
+    if by_kind is None:
+        costs, cost_probabilities = _by_cost(P, cu, cp)
+    else:
+        costs, cost_probabilities = by_kind.costs(cu)
     i = np.arange(P.shape[0])
     j = np.arange(P.shape[1])
     by_failures = P.sum(axis=1)
@@ -964,12 +1155,12 @@ def _distribution(
         float(start),
         float(end - start),
         plan.policy,
-        None if plan.policy == RUN_TO_FAILURE else plan.every,
+        plan.every if priced else None,
         plan.age,
         plan.since,
         cu,
-        None if plan.policy == RUN_TO_FAILURE else cp,
-        "numerical" if costs_each is None else "simulated",
+        cp if priced else None,
+        "simulated" if simulated else "numerical",
         P,
         by_failures,
         by_planned,
@@ -986,6 +1177,9 @@ def _distribution(
         precision,
         standard_error,
         n,
+        None if by_kind is None else by_kind.names,
+        None if by_kind is None else by_kind.prices,
+        None if by_kind is None else by_kind.outcomes(cu),
     )
 
 
@@ -1002,12 +1196,13 @@ def distributions(
     mc_samples,
     seed,
     whole: bool = False,
+    calendar=None,
 ) -> list:
     """A ``CostDistribution`` for each window between ``edges`` (from 0),
     the inputs checked (the work of ``cost_distribution`` and
     ``cost_by_window``); with ``whole``, the whole span's last."""
     _check_part(part)
-    plan = _plan(part, every, resets, age, since_renewal)
+    plan = _plan(part, every, resets, age, since_renewal, calendar)
     levels = tuple(_level(q) for q in np.atleast_1d(levels))
     if budget is not None:
         budget = _budget(budget)
@@ -1017,18 +1212,15 @@ def distributions(
     if whole:
         pairs.append((0.0, edges[-1]))
     if n is None:
-        counts = _numerical(part, plan, edges)
+        cache: dict = {}
+        found = _numerical(part, plan, edges, cache)
         if whole:
-            counts += _numerical(part, plan, edges[[0, -1]])
-        return [
-            _distribution(part, plan, a, b, P, levels, budget, precision, None)
-            for (a, b), (P, precision) in zip(pairs, counts)
-        ]
+            found += _numerical(part, plan, edges[[0, -1]], cache)
+    else:
+        found = _simulated(part, plan, edges, n, seed, whole)
     return [
-        _distribution(part, plan, a, b, P, levels, budget, None, each)
-        for (a, b), (P, each) in zip(
-            pairs, _simulated(part, plan, edges, n, seed, whole)
-        )
+        _distribution(part, plan, a, b, f, levels, budget, n is not None)
+        for (a, b), f in zip(pairs, found)
     ]
 
 
@@ -1040,6 +1232,7 @@ def cost_distribution(
     resets=None,
     age=0.0,
     since_renewal=None,
+    calendar=None,
     budget=None,
     levels=LEVELS,
     method: str = "exact",
@@ -1060,4 +1253,5 @@ def cost_distribution(
         method,
         mc_samples,
         seed,
+        calendar=calendar,
     )[0]

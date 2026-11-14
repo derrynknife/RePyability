@@ -9,11 +9,14 @@ from repyability.maintenance import (
     SkipValue,
 )
 from repyability.rbd._bayesian_life import PosteriorPredictive, as_life
+from repyability.rbd._covariate_schedule import is_scheduled
 from repyability.rbd._degradation import check_life, is_degradation
 from repyability.rbd._model_utils import (
+    by_functions,
     distribution_name,
     is_exponential,
     is_mixture,
+    life_functions,
     model_mean,
     never_fails,
 )
@@ -31,6 +34,43 @@ REPLACE = 0
 #: searched by a gradient method: a distribution, and a degradation process
 #: (its first-passage time).
 _SMOOTH = ("parametric", "degradation")
+
+
+def _why_not(model) -> str:
+    """What a surpyval model given as a life or a repair lacks of a life's
+    functions, for a refusal's message ("." for another object)."""
+    if not type(model).__module__.startswith("surpyval."):
+        return "."
+    missing = life_functions(model)
+    if not missing:
+        return "."
+    hint = ""
+    if callable(getattr(model, "at", None)):
+        hint = (
+            " It is a regression, whose functions need covariates: give "
+            "the life of a unit at its covariates, model.at(Z) (or a "
+            "RegressionNode in a NonRepairableRBD); for covariates that "
+            "change over time in a RepairableRBD, give the model with the "
+            "spec's 'covariates' (a StepSchedule)."
+        )
+    reasons = "; ".join(f"{name}: {why}" for name, why in missing.items())
+    return f", which cannot work out {', '.join(missing)} ({reasons}).{hint}"
+
+
+def _check_functions(model, what: str) -> None:
+    """Refuse a surpyval model, given as a time to replace, that lacks a
+    life's functions (a regression without its covariates, a curve that
+    ends at its data), saying what it lacks: the repairs are drawn, and
+    the exact methods integrate them, through those functions."""
+    if not type(model).__module__.startswith("surpyval.") or isinstance(
+        model, (Parametric, NonParametric)
+    ):
+        return
+    if is_mixture(model) or isinstance(model, PosteriorPredictive):
+        return
+    if is_degradation(model) or by_functions(model):
+        return
+    raise ValueError(f"{what} is a {type(model).__name__}" + _why_not(model))
 
 
 def _scalar_sf(model):
@@ -221,6 +261,10 @@ class NonRepairable:
                 "surv.Exponential.from_params([rate])), or None or 'instant' "
                 f"for replacement in no time, got {time_to_replace!r}."
             )
+        else:
+            _check_functions(
+                time_to_replace, "A NonRepairable's time_to_replace"
+            )
         if (
             isinstance(reliability, Parametric)
             or is_mixture(reliability)
@@ -237,6 +281,13 @@ class NonRepairable:
             self.reliability_function, self._knots = _piecewise_linear_sf(
                 reliability
             )
+        elif by_functions(reliability):
+            # Any other surpyval model with a life's functions (#93): a
+            # Royston-Parmar fit, a regression at a unit's covariates
+            # (regression.at(Z)), a destructive degradation model. Its
+            # survival is a smooth curve, as a distribution's.
+            self.model_parameterization = "parametric"
+            self.reliability_function = reliability.sf
         elif is_degradation(reliability):
             # A fitted Wiener or gamma degradation process (#271): its life
             # is the time its level first reaches its threshold.
@@ -249,6 +300,12 @@ class NonRepairable:
             # is only simulated, and its sf refuses.
             self.model_parameterization = "standby"
             self.reliability_function = _scalar_sf(reliability)
+        elif is_scheduled(reliability):
+            # A life under a covariate schedule on a RepairableRBD's clock
+            # (a spec's "covariates"): only its simulations take it, and
+            # its survival function refuses, saying so.
+            self.model_parameterization = "covariate schedule"
+            self.reliability_function = reliability.sf
         elif is_joint(reliability):
             raise ValueError(NOT_REPAIRABLE)
         elif reliability is PerfectReliability:
@@ -260,11 +317,13 @@ class NonRepairable:
             )
         else:
             raise ValueError(
-                "A NonRepairable's life must be a surpyval parametric "
-                "distribution or MixtureModel (fitted, or built with "
-                "from_params), a surpyval Wiener or gamma degradation "
-                "process, a surpyval non-parametric estimate or a "
-                f"StandbyModel; got a {type(reliability).__name__}."
+                "A NonRepairable's life must be a surpyval model with a "
+                "life's functions of time (sf, ff, df, hf, Hf, qf and "
+                "mean: a distribution, a MixtureModel, a Bayesian fit, a "
+                "Royston-Parmar fit, a regression at one unit's covariates "
+                "with regression.at(Z), a degradation process), a surpyval "
+                "non-parametric estimate or a StandbyModel; got a "
+                f"{type(reliability).__name__}" + _why_not(reliability)
             )
 
         self.reliability = reliability
@@ -491,6 +550,8 @@ class NonRepairable:
             ages = np.linspace(0.0, float(t), 4001)
             R = np.ravel(np.asarray(self.reliability.sf(ages), dtype=float))
             out = float(trapezoid(np.clip(R, 0.0, 1.0), ages))
+        elif self.model_parameterization == "covariate schedule":
+            raise self.reliability._no_reliability()
         else:
             # The survival function is linear between its knots, so the
             # trapezoidal rule over the knots below t, and t, is exact.
@@ -1578,6 +1639,7 @@ class NonRepairable:
         resets=None,
         age=0.0,
         since_renewal=None,
+        calendar=None,
         budget=None,
         levels=(10.0, 50.0, 90.0),
         method="exact",
@@ -1596,10 +1658,13 @@ class NonRepairable:
         ``every``), age replacement (``every`` with ``resets=True``) or
         block replacement (``resets=False``), as
         [`renewal_forecast`][repyability.NonRepairable.renewal_forecast]
-        takes it; replacements take no time. Numerical by default (to the
-        ``precision`` reported, about 1e-6), simulated with
-        ``method="simulate"``. How it is worked out: the [maintenance
-        guide](../guide/maintenance.md).
+        takes it, or a calendar policy (``calendar``, from
+        [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]:
+        at each opportunity, replace the part if it is at least that
+        time's threshold age, at that opportunity's price); replacements
+        take no time. Numerical by default (to the ``precision``
+        reported, about 1e-6), simulated with ``method="simulate"``. How
+        it is worked out: the [maintenance guide](../guide/maintenance.md).
 
         Parameters
         ----------
@@ -1618,6 +1683,12 @@ class NonRepairable:
         since_renewal : float, optional
             For block replacement: how far into the interval it is, less
             than ``every``, by default the age.
+        calendar : CalendarPolicy, optional
+            Instead of ``every``: a calendar policy worked out for this
+            part, its calendar's times counted from now. Failures cost the
+            part's ``unplanned_cost``; each planned replacement, the price
+            of its opportunity (``kinds`` and ``kind_prices`` in the
+            result, and the outcomes by kind).
         budget : float, optional
             A budget, for the chance the cost exceeds it.
         levels : array_like, optional
@@ -1642,7 +1713,9 @@ class NonRepairable:
             If an argument is out of range, a cost the policy needs is not
             given, or the part takes time to replace.
         NotImplementedError
-            If the life has no survival function in closed form.
+            If the life has no survival function in closed form, or, by
+            default, for a calendar policy worked out by integration
+            (simulate it).
 
         Examples
         --------
@@ -1674,6 +1747,7 @@ class NonRepairable:
             resets=resets,
             age=age,
             since_renewal=since_renewal,
+            calendar=calendar,
             budget=budget,
             levels=levels,
             method=method,
@@ -1691,6 +1765,7 @@ class NonRepairable:
         resets=None,
         age=0.0,
         since_renewal=None,
+        calendar=None,
         budget=None,
         levels=(10.0, 50.0, 90.0),
         method="exact",
@@ -1729,6 +1804,8 @@ class NonRepairable:
         age : float, optional
             The part's age now, by default 0.
         since_renewal : float, optional
+            As for `cost_distribution`.
+        calendar : CalendarPolicy, optional
             As for `cost_distribution`.
         budget : float, optional
             A budget for each window, for the chance it is exceeded.
@@ -1785,6 +1862,7 @@ class NonRepairable:
             resets=resets,
             age=age,
             since_renewal=since_renewal,
+            calendar=calendar,
             budget=budget,
             levels=levels,
             method=method,

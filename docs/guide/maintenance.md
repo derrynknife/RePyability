@@ -127,8 +127,8 @@ finds the long-run optimal policy over such a calendar
 date and the part's age, and the policy is a **threshold for each date**:
 replace the part if it is at least `a*(t)` old.
 
-Times are numbers in the life model's unit (days here), from 0: turning dates
-into them is Reliafy's.
+Times are numbers in the life model's unit (days here), from 0. Which dates a
+rule gives is [`repyability.schedule`](schedule.md)'s.
 
 ```python
 import surpyval as surv
@@ -384,6 +384,111 @@ Behind the numbers: period `j` starts at the age `v` the overhauls have left (`v
 
 Take the result as a comparison of a few policies, not a sharp optimum. The cost rate is flat, here the best of two periods saves about 1% over replacing every 280, and it need not fall steadily with the number of periods: it can have a local minimum at a few periods and a slightly lower value at many (overhaul for ever, never replace). A result equal to `max_cycles` may mean more periods pay, so try a few limits. A unit that does not wear out is never overhauled (`interval` is `inf`, `cycles` is 1). The result is an [`OverhaulReplacePolicy`][repyability.OverhaulReplacePolicy]. It needs an analytic (`cif`) model: a simulation-backed imperfect-repair model counts failures from new only and is refused.
 
+## Repair again or replace? A fleet with lemons (`RepairOrReplace`)
+
+Some units are lemons: they fail more often than the rest, and they tend
+to be written off sooner too. surpyval's joint frailty model
+(`surpyval.JointFrailty`) fits a fleet's repeat failures and its
+write-offs together, and gives each unit a *frailty*: how many times as
+often as a typical unit it fails (1 is typical, 2 fails twice as often).
+`RepairOrReplace` turns that into money: for a new unit, which rule is
+cheapest; for a unit that has just failed, repair it again or replace it.
+
+Here 120 pumps were followed for up to 4,000 hours: every failure (each
+repaired) and every write-off. A repair costs 2,000, a failure's downtime
+3,000 more, and a new pump 20,000 (a write-off costs a new pump and the
+downtime, 23,000, unless given):
+
+```python
+from surpyval import JointFrailty
+from repyability import RepairOrReplace
+
+truth = JointFrailty.from_params(
+    recurrent=(1500.0, 2.0), terminal=(6000.0, 2.0), theta=0.5, alpha=1.0
+)
+history = truth.random(120, end=4000.0, random_state=11)   # x, i, c, terminal
+model = JointFrailty.fit(**history)
+round(model.theta, 2), round(model.alpha, 2)   # (0.39, 0.88)
+
+pumps = RepairOrReplace(
+    model, repair_cost=2000, replacement_cost=20000, failure_cost=3000
+)
+policy = pumps.fleet_policy(mc_samples=200, seed=1)
+policy.recommended                    # 'replace at failure'
+policy.best_failure_count             # 4
+policy.cost_rate                      # -> 11.97   per hour
+policy.bands["replace at failure"]    # (11.15, 12.99)   90% two-sided
+policy.keep_repairing_cost_rate       # -> 17.87
+policy.best_age, policy.age_cost_rate   # (3155.0, 13.98)
+```
+
+Three rules are compared for a new pump, whose frailty is not yet known:
+keep repairing it until it is written off (17.87 an hour), replace it at
+the best age (3,155 hours, 13.98 an hour), or replace it at its fourth
+failure (11.97 an hour). Counting failures wins because a pump that has
+failed four times is likely a lemon, and because replacing at a failure
+saves that failure's repair.
+
+For one pump, its frailty is the model's estimate from its own history
+(`model.frailties`), taken as known. `unit_decision` prices each way of
+keeping it against replacing it now, with whatever comes after a
+replacement valued at the fleet's cost rate:
+
+```python
+frail = max(model.frailties, key=model.frailties.get)
+sound = min(model.frailties, key=model.frailties.get)
+round(model.frailties[frail], 2), round(model.frailties[sound], 2)   # (2.52, 0.24)
+
+lemon = pumps.unit_decision(2500.0, unit=frail, just_failed=True, seed=1)
+lemon.recommended          # 'replace now'
+
+keeper = pumps.unit_decision(2500.0, unit=sound, just_failed=True, seed=1)
+keeper.recommended, keeper.best_failure_count   # ('replace at failure', 11)
+keeper.saving              # -> 26677   against replacing it now
+
+pumps.break_even_frailty(2500.0, just_failed=True)   # -> 0.827
+```
+
+At 2,500 hours, a pump that has just failed is replaced if its frailty is
+0.83 or more, so even a typical pump (frailty 1) is replaced at that age;
+only the sounder ones are worth repairing again. The lemon is replaced;
+the sound pump is repaired, and is worth keeping until its eleventh
+failure from now. `unit_decisions({unit: age, ...})` decides
+for many units on the same draws.
+
+How it is worked out. Given its frailty `u`, a unit fails at the rate `u`
+times the model's power law (each failure repaired minimally) and is
+written off at the hazard `u ** alpha` times the write-off's; a new unit's
+frailty is drawn from the frailty distribution. Each rule's cost rate is
+the expected cost of a cycle (from new until the unit is replaced or
+written off) over its expected length, by integrals over age and over the
+frailty of the model's own `iif`, `cif`, `hf` and `Hf` at each frailty:
+numerical, with no simulation. A discount rate (`discount_rate=`, per unit
+of time, continuous) gives equivalent cost rates, as for
+`age_replacement_value`. The bands are 90% two-sided, from draws of the
+fitted parameters from their covariance; a unit's band holds its frailty
+at its estimate. `result.bounds` says so on every result.
+
+What it cannot do, and says so:
+
+- The model must be on the calendar time scale (`time_scale="calendar"`,
+  the default). On the gap scale each failure renews the unit's rate, and
+  surpyval 0.27 gives no expected count of failures and cannot simulate a
+  unit of a given frailty, so `RepairOrReplace` refuses it.
+- A model built with `from_params` (or restored from a file) has no
+  covariance, so its results have no bands (`bands` is None and
+  `bounds` says why). surpyval 0.27 has no bootstrap for this model.
+- Undiscounted, a new unit's expected life can be infinite (a gamma
+  frailty whose variance is large against the write-off's shape): keeping
+  on repairing then has no long-run rate (`nan`, with a note); give a
+  discount rate.
+- A unit's frailty is a plug-in: decide again as its history grows.
+
+surpyval's joint frailty model is new in 0.27 and experimental: its design
+is proposed, not yet settled, so names and defaults may change. Its
+baselines are Weibull only. `Repairable` refuses this model, because its
+count of failures leaves out the write-offs.
+
 ## From the part's state: options, delays and renewals (`NonRepairable`)
 
 These answer questions about one part, asked from its age now, in the
@@ -524,6 +629,46 @@ or a renewal after a failure, by the renewal measure), and from there the
 counts are worked out as for one window from now. Under block replacement
 each window's planned replacements are known.
 
+**Under a calendar policy.** Both take `calendar=`, the `CalendarPolicy`
+of [`optimal_calendar_policy`](#replacement-over-a-calendar-of-shuts-nonrepairable)
+worked out for the part, in place of `every` and `resets`: at each
+opportunity the part is replaced if it is at least that time's threshold
+age, at that opportunity's price, and a failure costs the part's
+`unplanned_cost`. The calendar's times are counted from now. Here, UC-7's
+best policy for the bearing, with a shut every 180 days, the next in 21:
+
+```python
+from repyability import Calendar, Opportunity
+
+plant = Calendar([Opportunity("shut", 100.0, period=180.0, offset=21.0)], anytime=None)
+best = bearing.optimal_calendar_policy(plant)
+best.schedule()[0][1:3]                        # -> ('shut', 138.0)
+spend = bearing.cost_distribution(1086.0, calendar=best, age=224.0, budget=1500.0)
+round(spend.mean, 1), [float(c) for c in spend.percentiles]   # -> (1090.0, [600.0, 1000.0, 1600.0])
+round(spend.probability_above_budget, 3)      # -> 0.15
+spend.outcomes()[0]["planned"], spend.outcomes()[0]["failures"]   # -> ({'shut': 5}, 1)
+years = bearing.cost_by_window(
+    [263.0, 629.0, 994.0, 1359.0], calendar=best, age=224.0, budget=600.0
+)
+[round(float(m), 1) for m in years.mean]     # -> [306.9, 358.7, 358.9, 359.0]
+[round(float(p), 3) for p in years.outcome_probabilities[1]]   # -> [0.0, 0.599, 0.306, 0.095]
+```
+
+The prices of planned replacements can differ by opportunity (an annual
+shut cheaper than a weekly stop), so a calendar policy's outcomes count the
+planned replacements by kind (`outcomes()` gives `"planned": {kind:
+count}`; `kinds` and `kind_prices` name them). A part put in at time `s`
+is next replaced at a time the policy fixes, so the cycles differ by when
+they start and are not convolutions of one cycle's. Instead, on a grid of
+half the policy's step, the expected renewals at each time are kept by the
+counts so far (failures, and planned replacements by kind); each count's
+failures are a convolution of its renewals, cut at their planned times, so
+the counts are taken in order without a sweep in time, and before the
+window the renewals are followed forward uncounted. `precision` compares
+it with the policy's own step, as above (about 3e-7 for the bearing,
+half a second a window). A policy worked out by `method="integration"` has
+no grid, so it is simulated (`method="simulate"`).
+
 **A layered package of visits.** A cheap task at every visit and a deeper
 one at every `k`-th: `optimal_layered_visits(light, deep, visit_cost=...)`
 finds the visit interval and the ratio `k` that cost least in the long run.
@@ -603,6 +748,8 @@ running hot?](condition-based.md#is-it-worth-running-hot).
 Both policy types are small typed results:
 [`MaintenancePolicy`][repyability.MaintenancePolicy] (`interval`,
 `cost_rate`) and [`FailureLimitPolicy`][repyability.FailureLimitPolicy]
-(`failure_count`, `cost_rate`). A calendar's policy is a
+(`failure_count`, `cost_rate`). A fleet's repair-or-replace answers are a
+[`RepairOrReplacePolicy`][repyability.RepairOrReplacePolicy] and, for one
+unit, a [`UnitDecision`][repyability.UnitDecision]. A calendar's policy is a
 [`CalendarPolicy`][repyability.CalendarPolicy] (`cost_rate`,
 `replacement_rates`, `cost_rates`, `schedule()`, `next_replacement()`). Costs are per event and undiscounted.

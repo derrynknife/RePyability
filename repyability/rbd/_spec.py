@@ -19,6 +19,7 @@ from typing import (
 import numpy as np
 
 from repyability.rbd import _requirements
+from repyability.rbd._covariate_schedule import is_scheduled
 from repyability.rbd._degradation import (
     is_degradation,
 )
@@ -64,6 +65,7 @@ COMPONENT_SPEC_KEYS = (
         "repair",
         "replace_after",
         "duty",
+        "covariates",
     )
 )
 
@@ -237,8 +239,11 @@ def _validate_imperfect(rbd, node, spec: dict) -> Optional[_Imperfect]:
     repair, limit = spec.get("repair"), spec.get("replace_after")
     if repair is None and limit is None:
         return None
-    q, model = 0.0, ""
-    if repair is not None:
+    q, model, process = 0.0, "", None
+    if isinstance(repair, dict) and repair.get("model") == "process":
+        process = _validate_process(node, spec)
+        model, q = "process", 1.0
+    elif repair is not None:
         model, q = _kijima_factor(node, repair, "repair", "is minimal repair")
     if limit is not None:
         if (
@@ -274,7 +279,23 @@ def _validate_imperfect(rbd, node, spec: dict) -> Optional[_Imperfect]:
             "age as new, so it cannot be repaired imperfectly."
         )
     life = spec["reliability"]
-    if not (is_mixture(life) or (hasattr(life, "Hf") and hasattr(life, "qf"))):
+    if process is not None:
+        if isinstance(preventive, dict) and (
+            preventive.get("restoration") is not None
+        ):
+            raise ValueError(
+                f"Component {node!r} is repaired by its fitted "
+                f"{process.kind} model's own rule, which a task restoring "
+                "it partly cannot be put together with: give its "
+                "preventive maintenance no 'restoration' (a task then "
+                "replaces it)."
+            )
+        return _Imperfect(model, q, limit, process)
+    if not (
+        is_mixture(life)
+        or is_scheduled(life)
+        or (hasattr(life, "Hf") and hasattr(life, "qf"))
+    ):
         raise ValueError(
             f"Component {node!r}: an imperfectly repaired unit's lives "
             "are drawn given its virtual age, which needs a lifetime "
@@ -282,6 +303,42 @@ def _validate_imperfect(rbd, node, spec: dict) -> Optional[_Imperfect]:
             "such as a surpyval distribution."
         )
     return _Imperfect(model, q, limit)
+
+
+def _validate_process(node, spec: dict):
+    """The fitted renewal process of a ``"repair"`` of ``{"model":
+    "process", "process": model}`` (see ``_processes``), checked: a
+    surpyval renewal process whose repairs are not Kijima's, given with
+    its own life from new as the spec's ``"reliability"``."""
+    from repyability.rbd._processes import first_life, is_renewal_process
+
+    repair = spec["repair"]
+    process = repair.get("process")
+    if (
+        set(repair) != {"model", "process"}
+        or not is_renewal_process(process)
+        or str(process.kind) == "Generalized Renewal"
+    ):
+        raise ValueError(
+            f"Component {node!r}: a 'process' repair is a dict of 'model' "
+            "('process') and 'process', a fitted surpyval G1, ARA or ARI "
+            f"model, got {repair!r}. Give the fitted model as the "
+            "component's 'reliability' instead, with no 'repair'."
+        )
+    life, own = spec["reliability"], first_life(process)
+    probe = np.asarray(own.qf(np.array([0.1, 0.5, 0.9])), dtype=float)
+    if not np.allclose(
+        np.asarray(life.sf(probe), dtype=float),
+        np.asarray(own.sf(probe), dtype=float),
+        rtol=1e-12,
+        atol=0.0,
+    ):
+        raise ValueError(
+            f"Component {node!r}: its reliability is not the life from new "
+            f"of its fitted {process.kind} model. Give the fitted model as "
+            "the component's 'reliability' instead, with no 'repair'."
+        )
+    return process
 
 
 def _kijima_factor(
@@ -412,7 +469,11 @@ def _validate_restoration(
         # No task, or one that renews the unit.
         return None, None
     life = spec["reliability"]
-    if not (is_mixture(life) or (hasattr(life, "Hf") and hasattr(life, "qf"))):
+    if not (
+        is_mixture(life)
+        or is_scheduled(life)
+        or (hasattr(life, "Hf") and hasattr(life, "qf"))
+    ):
         raise ValueError(
             f"Component {node!r}: a unit restored partly draws its lives "
             "given its virtual age, which needs a lifetime model with a "

@@ -1,8 +1,8 @@
 """Maintenance: the single-unit optimisers' result types, and the choices
 about a part's next replacement (#319).
 
-RePyability is about timelines: the calendar side of maintenance planning
-(tasks on dates, operating schedules, meters read by date) is Reliafy's.
+These work in model time; the calendar side (tasks on dates, recurrence
+rules, operating schedules) is ``repyability.schedule``.
 ``README.md`` in this package records the use cases, the question each
 answers and how it is solved."""
 
@@ -169,6 +169,11 @@ from repyability.maintenance._options import (  # noqa: E402
     RenewalForecast,
     ReplacementComparison,
     SlackEffect,
+)
+from repyability.maintenance._repair_or_replace import (  # noqa: E402
+    RepairOrReplace,
+    RepairOrReplacePolicy,
+    UnitDecision,
 )
 from repyability.maintenance._replacement import (  # noqa: E402
     CalendarPolicy,

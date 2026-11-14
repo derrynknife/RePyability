@@ -425,11 +425,11 @@ def test_what_is_refused():
         rbd.availability(10.0, mc_samples=5, working_nodes=["a"])
     with pytest.raises(NotImplementedError, match="cannot be held"):
         rbd.point_availability([1.0], broken_nodes=["b"])
-    down = {"a": NodeState(alive=False, down_for=1.0)}
-    with pytest.raises(NotImplementedError, match="current state"):
-        rbd.point_availability([1.0], state=down)
-    with pytest.raises(NotImplementedError, match="starts from a state"):
-        rbd.availability(10.0, mc_samples=5, state=down)
+    # A member's state is taken (#106, see test_ccf_general.py), but not
+    # a long run for some members alone.
+    mixed = {"a": NodeState(stationary=True)}
+    with pytest.raises(NotImplementedError, match="long-run state"):
+        rbd.point_availability([1.0], state=mixed)
 
 
 def test_a_member_that_is_not_exponential_is_not_simulated():

@@ -105,6 +105,21 @@ def aft():
 
 
 @_fitted_once
+def ph():
+    """A pump's life at its load (surpyval's ExponentialPH): 500 at load
+    1, 125 at load 2."""
+    x = np.array([250.0, 500.0, 750.0, 62.5, 125.0, 187.5])
+    load = np.array([[1.0], [1.0], [1.0], [2.0], [2.0], [2.0]])
+    return surv.ExponentialPH.fit(x, Z=load)
+
+
+def load_steps():
+    """Load 1 for the first 200, and 2 after (a covariate schedule on the
+    diagram's clock)."""
+    return surv.StepSchedule.from_changepoints([0.0, 200.0], [[1.0], [2.0]])
+
+
+@_fitted_once
 def joint_model():
     """A Weibull joint model (surpyval's WeibullJointPH) of a fleet of 60
     pumps, each with a marker read every 10 hours and a load: a pump's
@@ -182,6 +197,14 @@ def crow_amsaa():
     return surv.CrowAMSAA.fit(np.cumsum(gaps))
 
 
+def ara_process():
+    """An ARA process (arithmetic reduction of age, memory 1) with a
+    Weibull life and half its age taken away at each repair, which the
+    simulation steps with surpyval (a repair surpyval fits that is not
+    Kijima's)."""
+    return surv.ARA.fit_from_parameters([300.0, 1.5], 0.5)
+
+
 @_fitted_once
 def bayes_life():
     """A Bayesian Weibull fit, its posterior 400 draws about alpha 500
@@ -192,6 +215,40 @@ def bayes_life():
         500 * g.lognormal(0, 0.1, 400), 1.5 * g.lognormal(0, 0.1, 400)
     ]
     return surv.bayes.BayesianParametric.from_draws(surv.Weibull, draws)
+
+
+@_fitted_once
+def bayes_shares_life():
+    """A Bayesian Weibull fit with an offset and a limited failure
+    population: 400 draws about an offset of 20, alpha 500, beta 1.5 and
+    a share that ever fails of 0.8, each draw its own model."""
+    g = np.random.default_rng(7)
+    draws = np.c_[
+        g.uniform(10.0, 30.0, 400),
+        500 * g.lognormal(0, 0.1, 400),
+        1.5 * g.lognormal(0, 0.1, 400),
+        g.uniform(0.7, 0.9, 400),
+    ]
+    return surv.bayes.BayesianParametric.from_draws(
+        surv.Weibull, draws, ["gamma", "alpha", "beta", "lfp_p"]
+    )
+
+
+@_fitted_once
+def royston_parmar_life():
+    """A Royston-Parmar fit (a spline on the log cumulative hazard) to 40
+    lives about a Weibull of alpha 500 and beta 1.5: a surpyval model
+    taken as a life by its functions (#93)."""
+    x = 500 * np.random.default_rng(7).weibull(1.5, 40)
+    return surv.RoystonParmar.fit(x)
+
+
+@_fitted_once
+def life_at_load():
+    """The pump of ``aft()`` at a load of 1.5: a regression at one unit's
+    covariates (``regression.at(Z)``), taken as a life by its functions
+    (#93)."""
+    return aft().at([[1.5]])
 
 
 @_fitted_once
@@ -228,6 +285,20 @@ def nonrepairable_kinds():
             EDGES,
             {
                 "a": StandbyModel([unit] * 3, k=2, dormancy_factor=0.5),
+                **rest,
+            },
+        ),
+        "exact warm standby": NonRepairableRBD(
+            EDGES,
+            {
+                # Warm, two operating, a spare that may fail to start:
+                # exact for exponential units (#339).
+                "a": StandbyModel(
+                    [E([0.01])] * 3,
+                    k=2,
+                    dormancy_factor=0.5,
+                    start_probability=0.9,
+                ),
                 **rest,
             },
         ),
@@ -326,6 +397,12 @@ def nonrepairable_kinds():
         "degradation process": NonRepairableRBD(EDGES, {"a": wear(), **rest}),
         "mixture": NonRepairableRBD(EDGES, {"a": mixture_life(), **rest}),
         "Bayesian fit": NonRepairableRBD(EDGES, {"a": bayes_life(), **rest}),
+        "Bayesian fit with shares": NonRepairableRBD(
+            EDGES, {"a": bayes_shares_life(), **rest}
+        ),
+        "Royston-Parmar fit": NonRepairableRBD(
+            EDGES, {"a": royston_parmar_life(), **rest}
+        ),
         "degrading": NonRepairableRBD(
             EDGES,
             {
@@ -354,7 +431,9 @@ def mission_kinds():
     """The phased missions drawn as one diagram whose analyses are checked
     on: with blocks guaranteed, not needed, at a phase's covariates and a
     phase's vote count (exact), on a phase's own model (exact, and with a
-    block on standby), and with a block on standby (simulated)."""
+    block on standby), with a block on standby (simulated), and with
+    blocks on standby, warm and switching imperfectly, every life of a
+    constant rate (exact, by the Markov chain)."""
     from repyability import BlockSetting, MissionPhase, PhasedMission
 
     unit = W([100, 2])
@@ -399,7 +478,36 @@ def mission_kinds():
         MissionPhase("up", 20.0, blocks={"c": "standby", "b": start_up}),
         MissionPhase("on", 30.0, k={"v": 1}),
     ]
+    constant = NonRepairableRBD(
+        edges,
+        {
+            "a": E([0.01]),
+            "b": E([0.02]),
+            "c": E([0.01]),
+            "v": PerfectReliability,
+            "d": RegressionNode(aft(), covariates=[1.0]),
+        },
+        k={"v": 2},
+    )
+    warm = BlockSetting(
+        state="standby", dormancy_factor=0.2, start_probability=0.9
+    )
+    chain = [
+        MissionPhase(
+            "up",
+            20.0,
+            blocks={"c": warm, "a": "guaranteed"},
+            k={"v": 2},
+        ),
+        MissionPhase(
+            "on",
+            30.0,
+            blocks={"b": "standby", "d": BlockSetting(covariates=[2.0])},
+            k={"v": 1},
+        ),
+    ]
     return {
+        "standby_exact": PhasedMission.from_diagram(constant, chain),
         "settings": PhasedMission.from_diagram(vote, settings),
         "standby": PhasedMission.from_diagram(vote, standby),
         "models": PhasedMission.from_diagram(vote, models),
@@ -411,7 +519,8 @@ def fault_tree_kinds():
     """The fault trees of every kind the tree's analyses are checked on
     (#314): events given as probabilities, as lifetime models (surpyval
     distributions, a fit with its covariance) and as both, a repeated
-    event, and common-cause groups of each model and basis."""
+    event, common-cause groups of each model and basis, a NOT gate, a
+    functional dependency, and dynamic gates integrated or shared."""
     unit = W([100, 2])
     gates = {"top": ("or", ["pair", "c"]), "pair": ("and", ["a", "b"])}
     rest = {"b": W([80, 1.5]), "c": E([0.002])}
@@ -451,6 +560,41 @@ def fault_tree_kinds():
             gates,
             {"a": 0.05, "b": 0.05, "c": 0.01},
             ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+        ),
+        # A NOT gate (non-coherent): exact, its prime implicants for cut
+        # sets, Birnbaum's the one importance measure.
+        "not gate": FaultTree(
+            {
+                "top": ("or", ["pair", "c and not a"]),
+                "pair": ("and", ["a", "b"]),
+                "c and not a": ("and", ["c", "not a"]),
+                "not a": ("not", ["a"]),
+            },
+            {"a": unit, **rest},
+        ),
+        # A functional dependency: the static tree it is written out as.
+        "functional dependency": FaultTree(
+            {**gates, "power": ("fdep", "p", ["a", "b"])},
+            {"a": unit, **rest, "p": E([0.0005])},
+        ),
+        # Dynamic gates, each an independent module: integrated.
+        "dynamic": FaultTree(
+            {
+                "top": ("or", ["order", "spare"]),
+                "order": ("pand", ["a", "b"]),
+                "spare": ("spare", 0.2, ["c", "d"]),
+            },
+            {"a": unit, **rest, "d": W([150, 1.2])},
+        ),
+        # A dynamic gate sharing an event with the rest: simulated on
+        # request (method="simulate"), refused exactly.
+        "dynamic, shared": FaultTree(
+            {
+                "top": ("or", ["order", "pair"]),
+                "order": ("seq", ["a", "b"]),
+                "pair": ("and", ["b", "c"]),
+            },
+            {"a": unit, **rest},
         ),
     }
 
@@ -754,10 +898,38 @@ def repairable_kinds():
             "Bayesian fit life": system(
                 unit(reliability=bayes_life(), replace_cost=10.0)
             ),
+            "Bayesian fit with shares life": system(
+                unit(reliability=bayes_shares_life(), replace_cost=10.0)
+            ),
+            "Royston-Parmar life": system(
+                unit(reliability=royston_parmar_life(), replace_cost=10.0)
+            ),
+            "life at a regression's covariates": system(
+                unit(reliability=life_at_load(), replace_cost=10.0)
+            ),
             "fitted Crow-AMSAA process": system(
                 unit(reliability=crow_amsaa(), repair_cost=1.0)
             ),
+            "fitted ARA process": system(
+                unit(reliability=ara_process(), repair_cost=1.0)
+            ),
             "degradation process life": system(unit(reliability=wear())),
+            "covariate schedule, proportional hazards, maintained": system(
+                unit(
+                    reliability=ph(),
+                    covariates=load_steps(),
+                    preventive={"interval": 300.0},
+                    replace_cost=10.0,
+                )
+            ),
+            "covariate schedule, accelerated failure time": system(
+                unit(
+                    reliability=aft(),
+                    covariates=surv.StepSchedule.cyclic(
+                        [0.0, 60.0], [[1.0], [2.0]], 100.0
+                    ),
+                )
+            ),
             "operated part of the time": system(
                 unit(duty=0.25, preventive={"interval": 300.0})
             ),
@@ -920,6 +1092,21 @@ def repairable_kinds():
                 | {"c": unit(repair_cost=2.0)},
                 ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
                 downtime_cost_rate=5.0,
+            ),
+            # A repair of any length (#106; a test of any length is in
+            # test_ccf_general.py).
+            "common cause, tests and repairs of any length": RepairableRBD(
+                EDGES,
+                {
+                    node: {
+                        "reliability": E([0.002]),
+                        "repairability": W([8.0, 2.0]),
+                        "inspection": {"interval": 100.0, "offset": offset},
+                    }
+                    for node, offset in (("a", 0.0), ("b", 50.0))
+                }
+                | {"c": unit(repair_cost=2.0)},
+                ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
             ),
             "common cause, one repair crew": RepairableRBD(
                 EDGES,

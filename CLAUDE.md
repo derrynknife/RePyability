@@ -4,10 +4,11 @@ Setup, branches, the checks a change needs, where tests go, pull requests,
 deprecations and releases are in [CONTRIBUTING.md](CONTRIBUTING.md); read it
 first. This file adds the internals and conventions it does not cover.
 
-**Versions (14 Nov 2026):** 0.17 is being released (`_version.py` reads
-0.17; 0.16, of 31 Oct 2026, is the latest on PyPI until it publishes).
-New work goes under the CHANGELOG's `[Unreleased]`. `dev` needs surpyval
-0.27 or later.
+**Versions:** `repyability/_version.py` holds the version `dev` will
+release; the latest published release is on PyPI
+(`https://pypi.org/pypi/repyability/json`) and the CHANGELOG's newest
+dated section. New work goes under the CHANGELOG's `[Unreleased]`. The
+minimum surpyval is in `pyproject.toml` (0.27 as of 0.17).
 
 ## Architecture & scope
 
@@ -22,22 +23,25 @@ New work goes under the CHANGELOG's `[Unreleased]`. `dev` needs surpyval
   handles plotting/dashboards/reporting. RePyability is the
   computational reliability engine; keep it free of plotting dependencies.
 
-- **RePyability is about timelines; Reliafy is about calendars.**
-  RePyability works in model time (the models' own unit, from 0 or from
-  a state: ages, phases and meter readings as numbers) and answers in
-  plain data. Dates, calendars, operating schedules, meters read by date,
-  financial years, and the CMMS (work orders, the asset register, the
-  history store, the forecast by date) and RCM's records and workflow
-  belong to Reliafy, which turns dates into model time, calls
-  RePyability, and turns the answers back into dates. A calendar of
-  opportunities in model time (shuts on periods or at given times, each
-  with a price: `maintenance.Calendar`) is RePyability's; laying it on
-  real dates is Reliafy's. RePyability keeps
-  the quantitative questions: RCM's per failure mode (run to failure,
-  scheduled replacement, failure finding, on-condition, the options at a
-  planned replacement), a failure's consequences at system level, and
-  the probabilities a forecast is made of (expected failures and costs
-  over a window from a state, and their distribution).
+- **RePyability computes; Reliafy records.** RePyability's models work
+  in model time (the models' own unit, from 0 or from a state: ages,
+  phases and meter readings as numbers), and `repyability.schedule`
+  connects model time to the calendar: recurrence rules (which dates),
+  duty plans (how many operating hours by when), and forecasts through
+  them (tasks on dates; failures and costs by calendar period). It takes
+  dates, rules, plans, readings and a time zone as plain data and returns
+  plain data; it never reads the clock, stores anything or knows a
+  workspace. Reliafy (or any caller) holds the records (tasks, plans,
+  readings as recorded, fitments, work orders, the asset hierarchy, RCM's
+  records and workflow), decides what "today" and the time zone are,
+  works out the state from the history (ages, last done, the recent
+  rate), and turns the answers into screens and work orders. When Reliafy
+  needs calendar or model-time maths, it calls RePyability. RePyability
+  keeps the quantitative questions: RCM's per failure mode (run to
+  failure, scheduled replacement, failure finding, on-condition, the
+  options at a planned replacement), a failure's consequences at system
+  level, and the probabilities a forecast is made of (expected failures
+  and costs over a window from a state, and their distribution).
 
 - **Model behaviour belongs in surpyval too.** When a surpyval model
   misbehaves (its draws, means, densities or save format), raise an issue in
@@ -89,16 +93,18 @@ New work goes under the CHANGELOG's `[Unreleased]`. `dev` needs surpyval
   inside the functions that use them, as they import the modules above
   them.
 
-- **Maintenance (#319) is built one use case at a time.** Its calendar
-  side (tasks on dates, operating schedules, meters read by date) moved
-  to Reliafy (Reliafy/reliafy#389), by the scope note above; what stays
-  works in model time (`NonRepairable.failures`, the choice at a planned
-  replacement). `repyability/maintenance/README.md` records each use case
-  (who asks, what they know and want back, how it is solved, the
-  hand-worked answer with today's methods, the checks, what was learned)
-  before it is built. Add a use case there before the code that answers
-  it, and add nothing no use case needs; the maintainer chooses which is
-  next.
+- **Maintenance (#319) and schedules are built one use case at a
+  time.** `repyability/maintenance/README.md` records the use cases in
+  model time (`NonRepairable.failures`, the choice at a planned
+  replacement, ...), and `repyability/schedule/README.md` those on the
+  calendar (tasks on dates, rules, duty plans), each with who asks, what
+  they know and want back, how it is solved, the hand-worked answer with
+  today's methods, the checks and what was learned, before it is built.
+  Add a use case there before the code that answers it, and add nothing
+  no use case needs; the maintainer chooses which is next. The schedule
+  module takes no clock reads (the caller passes dates), stores nothing,
+  works in whole local dates for rules (time zones only for duty plans),
+  and rests on python-dateutil's `rrule` behind its own types.
 
 ## Simulation engines and seeded results
 
@@ -220,6 +226,28 @@ New work goes under the CHANGELOG's `[Unreleased]`. `dev` needs surpyval
   simulation. Likewise a standby group's chain (`_standby_chain.py`) copies
   `_events._StandbyGroup`'s rules (switching, spares, repairs), checked by
   `test_repairable_standby.py`.
+- **A phased mission's Markov chain (`repyability/rbd/_mission_chain.py`)
+  copies the simulation's take-overs** (`_mission_runs._take_over`,
+  `_after_standby`, `draw_switches`): spares called on in the phase's
+  order, each starting if alive and it starts on demand (one outcome per
+  spare and phase, so a spare stood down after starting starts again),
+  the ones not needed stood down latest first, idle spares failing at
+  their dormancy, every live spare idle again at a phase's start. A
+  change to one goes into the other: `test_mission_standby_chain.py`
+  checks the chain against closed forms, the decision diagram and the
+  simulation.
+- **A `StandbyModel`'s rules are stated in its draws (`_played`, and
+  `_random_warm` and the cold samplers where no spare may fail on
+  demand)**: the first `k` units left operate, a waiting spare ages at
+  `dormancy_factor` and is passed over once dead, and a spare reached
+  alive is switched in (a failed switch ends the arrangement) and then
+  starts (or is lost, and the next is tried). The exact and numerical
+  methods copy them: the Markov chain of exponential units
+  (`_markov_standby.py`), the warm recursion, the convolution (a spare
+  that may not start as one of life 0, `MayNotStart`) and the renewal
+  counts (`served_probabilities`). A change to one goes into the others:
+  `test_standby_cases.py` checks the chain against closed forms, the
+  numerical methods against the chain, and each against the draws (#339).
 - **A common-cause group's chains (`repyability/rbd/_ccf_chain.py`) copy
   the simulation's causes** (`_events._Cause`, `_event_loop._strike`, #158): each cause, a
   member's own or a shared one, strikes at its share of the failure rate
@@ -244,7 +272,19 @@ New work goes under the CHANGELOG's `[Unreleased]`. `dev` needs surpyval
   and the chain's bends (`OverTime._bends`: the tests, the fixed ends,
   geometric offsets at an exponential length's scale) are the integrals'
   pieces' edges, with the integral of the unavailability refined to those
-  scales (`_ccf_groups._timing_rates`).
+  scales (`_ccf_groups._timing_rates`). A test or repair of any other
+  length (#106) ends at a rate that varies with the time since the
+  member's test (`_ccf_chain._Episode`): the chain is followed on pieces
+  of that time (`_Timed._advance`), each at constant rates that keep the
+  member's own chance of being in its test or repair exact at the knots,
+  the knots halved until a constant rate follows it within each piece
+  (`_refined`); it needs each test and repair over by the next test (but
+  for `TAIL`). A group started from its members' states (`_Hidden.started`,
+  `_ccf_groups._group_start`) follows the causes from when each member was
+  last known up (`_ccf_groups._known_up`), as the simulation draws its own
+  cause's life from then and each shared cause's last strike before 0
+  (`_event_loop._past_strikes`, the `CAUSE_START` stream): a change to one
+  goes into the other; `test_ccf_general.py` checks them.
 - **A tested unit's numerical model (`repyability/rbd/_hidden_tests.py`,
   #159) copies the simulation's inspections** (`_event_loop._inspected_follow_up`,
   `_event_loop._inspected_next`): a test takes a working unit off line without ageing
@@ -258,6 +298,9 @@ New work goes under the CHANGELOG's `[Unreleased]`. `dev` needs surpyval
   measured at every multiple of the interval, a unit at or past the level
   is replaced (taking the replacement's time), an inspection in a repair
   or replacement is not done, and a unit put into service starts at `y0`.
+  Started from a state, the unit up at 0 is at its measured level (`y0`
+  if new; `_renewal`'s `level`, `LevelHead.level`), which the first
+  inspection reads from.
   The level's law between inspections is stated once,
   `_degradation.level_below`, which the simulation's draw inverts and the
   grid of levels takes differences of. A change to one goes into the
@@ -450,13 +493,14 @@ New work goes under the CHANGELOG's `[Unreleased]`. `dev` needs surpyval
   `FutureWarning` through `repyability/utils/deprecation.py`). Each
   release's removals stay gone through `test_removed_in_0_12.py`,
   `_0_13.py`, `_0_14.py` and `_0_15.py` (`NodeState`'s `phase`, #350):
-  a removed argument raises `TypeError`. 0.15, 0.16 and 0.17 deprecated
-  nothing, so 0.16 and 0.17 removed nothing. `NEXT_REMOVAL` (0.18) names
-  the release that removes what 0.17 deprecates: the first deprecation
-  made for 0.18 raises it to 0.19. A new deprecation warns
-  through `deprecation.renamed`, `renamed_attribute`, `called` or
-  `ignored`, with a test that fails once the version reaches its removal
-  (as `test_what_0_14_deprecates_goes_in_0_15` did).
+  a removed argument raises `TypeError`. 0.15 and 0.16 deprecated
+  nothing, so 0.16 and 0.17 remove nothing. 0.17 deprecates
+  `repyability.demonstration`'s nine functions for
+  `surpyval.test_planning`'s (`deprecation.moved`), so `NEXT_REMOVAL` is
+  0.18, which `test_what_0_17_deprecates_goes_in_0_18` reminds. A new
+  deprecation warns through `deprecation.renamed`, `renamed_attribute`,
+  `called`, `ignored` or `moved`, with a test that fails once the version
+  reaches its removal.
 - **No result depends on the unit of time (or of a covariate).** A step,
   grid or probe is sized from the models (a typical life,
   `failure_time_scale`), never in absolute time, and a proportional
@@ -506,24 +550,36 @@ gives a mixture a precise tail (`sf`, #671) and
 has `conditional_gaps` read a limited failure population's `lfp_p`, not a
 mixture's `p` (#626); 0.23 pickles its fits (#573), names the
 limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
-`alpha_ci` (#580). RePyability uses these directly. What remains:
+`alpha_ci` (#580). RePyability uses these directly, as it does 0.27's
+`MixtureModel.qf` (a mixture's draws, #821) and `BayesianParametric`'s
+`ff`, `Hf` and `qf` (a Bayesian fit's predictive), which replaced
+RePyability's own in 0.17 with the same values.
 
-- **A mixture's quantile** (surpyval #821). surpyval 0.24's `MixtureModel`
-  has a `qf` (#651), but it inverts `F` in the upper tail, losing the long
-  lives' precision (about 1e-4), and takes some 200 times as long as
-  RePyability's (fixed on surpyval's `dev`, for its next release).
-  `_sampling.mixture_quantile` inverts the distribution (with its components' `sf` summed above the median), which
-  `stream_sampler` gives a `RepairableRBD`'s streams (a change to it
-  changes seeded results). Take the mixture's own `qf` once the minimum
-  surpyval's is as precise and fast.
-- **A mixture's life left at a virtual age** (surpyval #857, #295:
-  `conditional_gaps` inverts `H` past its quantile's limit in 12–15
-  evaluations where Newton's steps take 3–4, and `MixtureModel.Hf` costs
-  about 100 µs a call). `MixtureLife.aged`
-  draws it for `_aged_life` by Newton's steps on the mixture's `H`,
-  worked out from its components, from a table of `H` (a change to it
-  changes seeded results in the last bits). Take `conditional_gaps`
-  again, and drop `MixtureLife`, once the minimum surpyval has both.
+**surpyval's public interface only.** RePyability imports from the names
+surpyval's deprecation policy calls public (the top level, its listed
+subpackages' `__all__`, `surpyval.univariate.regression.kinds`) and reads
+no underscored attribute; `test_public_surpyval_api.py` fails on anything
+else. Two names have no public home yet and are listed there
+(`NO_PUBLIC_HOME`): `DynamicPrediction` (`rbd/joint_node.py`) and
+`conditional_gaps` (`rbd/_event_loop._aged_life`). Take each from its
+public home once surpyval gives it one; that test fails when it does.
+
+What remains (each checked against surpyval 0.27, and against its `dev`
+for 0.28, on 14 Nov 2026: none is fixed in 0.27, so none could go; only
+the joint frailty `mcf` is fixed on `dev`, for 0.28):
+
+- **A mixture's life left at a virtual age** (surpyval #857, #295).
+  0.27's `conditional_gaps` inverts the quantile function wherever the
+  cumulative hazard to reach is under 20, which loses about `eps *
+  exp(H)` of the age found (some 1e-10 relative at `u = 1e-6`), and takes
+  3–15 times as long a draw. `MixtureLife.aged` draws it for `_aged_life`
+  by Newton's steps on the mixture's `H`, worked out from its
+  components, from a table of `H` (a change to it changes seeded results
+  in the last bits). Take `conditional_gaps` again, and drop
+  `MixtureLife`, once the minimum surpyval's draw is as precise. (On
+  the issue's mixture against a 50-digit reference, 0.27's draw was off
+  by up to 4e-11 of `age + x` and `aged` by 7e-16, in a seventh of the
+  time; unchanged on surpyval's `dev`.)
 - **A degradation process's level given survival** (surpyval #836).
   Replacement on condition by level (#271) needs the level at the next
   inspection of a unit that has not failed by then, which surpyval's
@@ -532,31 +588,53 @@ limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
   method of images for a Wiener path; a gamma increment truncated at the
   threshold), and `_condition_next` draws it from the `LEVEL` stream (a
   change to it changes seeded results). Take surpyval's once the minimum
-  surpyval has it.
+  surpyval has it. (0.27's `level_at(t, y0=, t0=)` is the level with no
+  condition on survival, which for a Wiener path keeps the units that
+  crossed and came back, so it is not this.)
 
 - **Rescaling a model's time for a duty cycle.** surpyval has no
   rescaling (#845 gave models only a unit label). A spec's `"duty"` puts a
   life in operating time on the calendar, `R(d t)`, by `_duty._SCALED`, one rule per surpyval distribution (a new
   one needs its rule there, which `test_units` checks against `R(d t)`).
-  Take surpyval's rescaling once the minimum surpyval has it.
-- **A fit's offset under parameter uncertainty** (surpyval #830).
-  surpyval's `covariance()` leaves an offset fit's `gamma` out, so
-  `rbd/uncertainty.py` holds it where it was fitted, with a warning. Draw it
-  once the minimum surpyval's covariance includes it.
+  Take surpyval's rescaling once the minimum surpyval has it. (0.28's
+  `EquivalenceModel.at_usage` turns a two-clock life into one clock at a
+  usage rate; it does not rescale a model's time.)
+- **Parameter ranges for drawing fits other than distributions** (no
+  surpyval issue yet). surpyval gives no range per parameter for a
+  regression, a degradation or repairable-unit process or a mixture, so
+  `uncertainty._Rebuilt._bounds` reads each from what `with_params`
+  refuses just below 0 and just above 1, to draw it on the log or logit
+  scale. Take surpyval's ranges once the minimum surpyval says them.
+  (0.27 keeps them private, such as a regression's `_parameter_bounds`.)
 
-- **A Bayesian fit's predictive in the tails** (no surpyval issue yet).
-  surpyval 0.26's `BayesianParametric` gives `ff` as `1 - sf` and `Hf` as
-  `-log sf` (their precision lost below about 1e-8; its `dev` fixes this
-  for the conjugate Lomax only), and its `qf` (brentq on that `ff`)
-  raises `RuntimeError` near the upper tail of a grid posterior (`p` of
-  0.999 and above). `rbd/_bayesian_life.PosteriorPredictive` works out
-  `ff`, `Hf` and `qf` from the posterior's points itself (the quantile by
-  `_sampling.mixed_quantile`, a mixture's). Take the fit's own once the
-  minimum surpyval's are as precise and converge.
+- **A joint frailty model's expected failures far past its write-off
+  life** (no surpyval issue yet). surpyval 0.27's
+  `JointFrailtyModel.mcf` integrates on a fixed Gauss-Legendre grid in
+  the cumulative intensity, so far past the units' write-off ages it
+  falls (and tends to 0) where it should level off. `RepairOrReplace`
+  (`maintenance/_repair_or_replace.py`) integrates each frailty's `iif`,
+  `hf` and `Hf` itself instead. Take `mcf` once the minimum surpyval's
+  holds at every age: **surpyval 0.28 fixes it** (on its `dev`,
+  unreleased on 14 Nov 2026: integrated over log age, rising to its limit
+  and staying there), so this can go when the minimum is 0.28. On 0.27,
+  `JointFrailty.from_params((100, 2), (400, 1.5), 0.5, 1.0).mcf` is 21.7
+  at 4e4, 13.2 at 4e6 and 3e-4 at 4e8.
 
-Refused until surpyval has it: an ARA, ARI or G1 renewal model as a life,
-whose next failure surpyval cannot draw yet (surpyval #833,
-`rbd/_processes.py`).
+- **A Bayesian fit's quantile with an offset or shares** (no surpyval
+  issue yet). surpyval 0.27's `BayesianParametric.qf` fails to bracket
+  some roots of a fit with an offset and a limited failure population
+  (`ValueError: f(a) and f(b) must have different signs`, e.g. `p` of
+  0.04 with an offset of 20 and `lfp_p` 0.8), and of arrays with zero
+  inflation. `PosteriorPredictive._extras_qf` inverts the fit's own `ff`
+  (0 up to `ff(0)`, `inf` from the share that ever fails). Take the fit's
+  `qf` again once the minimum surpyval's brackets these. (Still raised
+  by 0.27 for that example; `surpyval.bayes` is unchanged on its `dev`.)
+
+An ARA, ARI or G1 renewal model is no longer refused (surpyval #833 is
+in 0.27): the Python simulation steps the fitted model itself with its
+`states`, `next_failure_qf` and `advance` (`rbd/_processes.py`), and the
+exact methods refuse it as they refuse any imperfect repair but minimal
+repair.
 
 List each new workaround here with its surpyval issue and where it lives,
 so it can go once the minimum surpyval in `pyproject.toml` includes the

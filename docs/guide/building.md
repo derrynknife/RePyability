@@ -166,8 +166,16 @@ their covariance, which a posterior has not, and refuses it. A
 `{parameter: distribution}` for a Bayesian block is refused too: give
 `"fit"`, or a list of models.
 
-A fit with an offset, a limited failure population or zero inflation is
-not taken yet.
+A fit with an offset, a limited failure population or zero inflation
+(`fit_bayes(offset=True)`, `lfp=True`, `zi=True`, or draws with `gamma`,
+`lfp_p` or `f0` columns) is taken too: each posterior point is its own
+model, with its own offset and shares, and the predictive is their
+average. Its functions are the fit's own; a draw picks a point and inverts
+that point's model (0 for a unit dead on arrival, `inf` for one that never
+fails); its share that never fails is the points' `1 - lfp_p` averaged, so
+in the long run a repaired unit is up for good; and its credible band
+draws each point with its offset and shares. A fit of a discrete
+distribution is refused: it is of a count, not a life.
 
 ## k-out-of-n nodes
 

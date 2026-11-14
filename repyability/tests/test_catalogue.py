@@ -40,7 +40,11 @@ from repyability import (
 from repyability.rbd import routes
 from repyability.rbd._bayesian_life import as_life
 from repyability.rbd._degradation import is_degradation
-from repyability.rbd._model_utils import is_fixed_probability, is_mixture
+from repyability.rbd._model_utils import (
+    by_functions,
+    is_fixed_probability,
+    is_mixture,
+)
 from repyability.rbd.results import _ResultMapping
 from repyability.rbd.uncertainty import is_fit
 from repyability.tests import catalogue
@@ -62,6 +66,8 @@ NOT_NODES = {
     "FaultTree",
     "MGL",
     "MaintenancePolicy",
+    "RepairOrReplacePolicy",
+    "UnitDecision",
     "Network",
     "NodeState",
     "Opportunity",
@@ -74,6 +80,8 @@ NOT_NODES = {
     "RBD",
     # A component analysed alone: a diagram takes a NonRepairable.
     "Repairable",
+    # A fleet's repair-or-replace economics, from a joint frailty model.
+    "RepairOrReplace",
     # A part's maintenance plan, valued alone (#319).
     "ReplacementPlan",
     "SimulationChunk",
@@ -178,6 +186,8 @@ def model_kinds(model) -> set:
         return {"surpyval MixtureModel"}
     if is_degradation(model):
         return {"surpyval degradation process"}
+    if by_functions(model):
+        return {"surpyval model by its functions"}
     if "Regression" in cls.__name__:
         return {"surpyval regression model"}
     if is_fixed_probability(model):
@@ -278,7 +288,7 @@ def required_repairable() -> set:
         | {"a structure too meshed to work out", "StandbyModel, simulated"}
         | {node.__name__ for node in REPAIRABLE_NODES}
         | SURPYVAL_KINDS
-        | {"surpyval degradation process"}
+        | {"surpyval degradation process", "surpyval model by its functions"}
     )
 
 
@@ -287,6 +297,7 @@ def required_nonrepairable() -> set:
         {node.__name__ for node in NONREPAIRABLE_NODES}
         | SURPYVAL_KINDS
         | {"surpyval MixtureModel", "surpyval regression model"}
+        | {"surpyval model by its functions"}
         | {"surpyval degradation process"}
         | {"a k-out-of-n vote", "capacities"}
         | {

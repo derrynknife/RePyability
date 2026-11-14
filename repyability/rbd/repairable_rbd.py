@@ -31,6 +31,7 @@ from surpyval import ExactEventTime
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _ccf_modules,
+    _covariate_schedule,
     _importance_time,
     _sensitivity,
     _spares,
@@ -58,6 +59,7 @@ from repyability.rbd.results import (
     MaintenanceEffect,
     MaintenancePlan,
     NodeActionRates,
+    PFDBreakdown,
     PlanVsActual,
     RateBreakdown,
     ReplacementCycle,
@@ -326,6 +328,16 @@ class RepairableRBD(RBD):
           ``with_intervals`` and the interval choices, which take and
           give them in operating time. The life must be a surpyval
           parametric distribution of a time.
+          ``"covariates"``, a surpyval ``StepSchedule``, runs a block
+          whose ``"reliability"`` is a fitted surpyval regression model
+          (proportional or additive hazards, accelerated failure time or
+          accelerated life) under covariates that change over the
+          diagram's time, from 0: each unit's life is drawn from when it
+          is put into service, at the covariates in force as it ages,
+          its age reset by its repairs and tasks as for any block while
+          the schedule runs on. Only the simulations take it
+          (``availability``, ``cost``, ``simulate_timelines``, in
+          Python); see the guide's "Covariates that change over time".
           ``"standby"`` makes the node a standby group of identical units,
           each failing and repaired as ``"reliability"`` and
           ``"repairability"`` say: a dict of ``"units"`` (by default 2),
@@ -713,6 +725,14 @@ class RepairableRBD(RBD):
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)
+        # The lives as given: a fitted process is held below as the life
+        # and repair it is, and drawn from its own fit by the uncertainty
+        # methods (_repairable_uncertainty).
+        self._given_lives = {
+            name: component.get("reliability")
+            for name, component in components.items()
+            if isinstance(component, dict)
+        }
         from repyability.rbd._bayesian_life import as_life
         from repyability.rbd._processes import as_spec
         from repyability.rbd.ccf import as_groups
@@ -776,6 +796,10 @@ class RepairableRBD(RBD):
         # duty, its spec as given keeping its times in operating time.
         # The duty of each such component, by node, converts the
         # intervals the interval choices give and take (see _intervals).
+        # A block on a covariate schedule takes its life under it (see
+        # _covariate_schedule); the spec as given keeps the regression
+        # model and the schedule, for saving and drawing.
+        components = _covariate_schedule.on_schedules(components)
         components, self._operating_tasks = _on_duty(components)
         self.repair_crews = _validate_crews(repair_crews)
         # Each component's place in the queue for a crew (higher first).
@@ -995,6 +1019,7 @@ class RepairableRBD(RBD):
         self._maintenance = _spec._validate_groups(self, maintenance_groups)
         self.ccf_groups = _spec._validate_ccf_groups(self, ccf_groups)
         _shutdowns.check(self)
+        _covariate_schedule.check(self)
         _spec._warn_nested_costs(components)
 
     #: Whether a diagram this one is nested in has warned that it carries
@@ -8369,6 +8394,96 @@ class RepairableRBD(RBD):
             broken_nodes=broken_nodes,
             window=window,
             state=state,
+        )
+
+    def pfd_breakdown(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> PFDBreakdown:
+        """Where a safety function's average probability of failure on
+        demand (PFDavg) comes from: each component's share, and each
+        common-cause group's, adding up to the PFDavg.
+
+        For a protective function tested periodically, the long-run
+        unavailability (``mean_unavailability``) is its PFDavg; for any
+        other diagram this splits its long-run unavailability the same way.
+
+        In plain words: the function is down whenever every component of
+        some minimal cut set is down. The **common-cause share** is what
+        the PFDavg would fall by if the groups' shared causes never struck
+        (each member keeping its own failures), split among the groups by
+        their Shapley value where there are several. The rest, the
+        **independent part**, is the PFDavg of the diagram without shared
+        causes, and is shared among the components: each moment the
+        function is down because a set of components is down together is
+        shared equally among them, so a single element in series takes
+        all of its own downtime and a redundant pair splits its
+        coincident downtime half and half (overlaps of cut sets are
+        corrected by inclusion-exclusion, and the corrections shared out
+        the same way, so nothing is counted twice).
+
+        As a formula: at each time ``t`` of the test schedules' period the
+        components of the diagram without shared causes are independent,
+        the system down with probability ``Q(q(t))``, multilinear in the
+        components' ``q``; component ``i`` takes its Aumann-Shapley value
+        ``q_i(t) integral_0^1 dQ/dq_i(s q(t)) ds``, averaged over the
+        period. The shares add up to ``Q`` at every time, so to the
+        PFDavg; each term ``c q_A q_B ...`` of ``Q`` gives ``1/k`` of
+        itself to each of its ``k`` components; and to first order (rare
+        failures) a component's share is the sum, over its minimal cut
+        sets, of each set's own PFDavg over its size. See [where the
+        PFDavg comes
+        from](../guide/system-maintenance.md#where-the-pfdavg-comes-from).
+
+        Exact (or numerical) as ``mean_unavailability`` is, and refused
+        where it is; see ``analysis_routes()``.
+
+        Parameters
+        ----------
+        working_nodes : Collection[Hashable], optional
+            Nodes held working (they take no share).
+        broken_nodes : Collection[Hashable], optional
+            Nodes held failed (they take their share of the downtime they
+            are part of).
+
+        Returns
+        -------
+        PFDBreakdown
+            The PFDavg, its independent and common-cause parts, each
+            component's and group's share, and each as a fraction.
+
+        Raises
+        ------
+        NotImplementedError
+            As ``mean_unavailability`` does, or with more than eight
+            common-cause groups.
+
+        Examples
+        --------
+        Two shutdown valves in parallel (1oo2), proof-tested yearly, with a
+        5% common cause: the shared failures are most of the PFDavg.
+
+        >>> import surpyval as surv
+        >>> from repyability import BetaFactor, CCFGroup, RepairableRBD
+        >>> valve = {
+        ...     "reliability": surv.Exponential.from_params([2e-6]),
+        ...     "repairability": "instant",
+        ...     "inspection": {"interval": 8760.0},
+        ... }
+        >>> rbd = RepairableRBD(
+        ...     [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+        ...     {"v1": valve, "v2": valve},
+        ...     ccf_groups=[CCFGroup(["v1", "v2"], BetaFactor(0.05))],
+        ... )
+        >>> result = rbd.pfd_breakdown()
+        >>> f"{result.pfd_avg:.4e}"
+        '5.2901e-04'
+        >>> {key: round(share, 3) for key, share in result.fractions.items()}
+        {'v1': 0.086, 'v2': 0.086, ('v1', 'v2'): 0.828}
+        """
+        return _repairable_importance.pfd_breakdown(
+            self, working_nodes=working_nodes, broken_nodes=broken_nodes
         )
 
     @_times_first()

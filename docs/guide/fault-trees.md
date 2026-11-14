@@ -11,7 +11,10 @@ failing) and works down, through **gates**, to the **basic events** that
 cause it (component failures). Safety and risk analyses are usually written
 this way. [`FaultTree`][repyability.FaultTree] evaluates static fault trees
 exactly, with the same engine as the diagrams, and converts them to and from
-`NonRepairableRBD`s.
+`NonRepairableRBD`s. It also takes [NOT gates](#not-gates-non-coherent-trees)
+and the [dynamic gates](#dynamic-gates) (priority AND, spares, sequences and
+functional dependencies), and writes the
+[Open-PSA](#exporting-to-open-psa) exchange format.
 
 ## Building a tree
 
@@ -46,6 +49,11 @@ A tree answers to an RBD's names too, so the same code runs on either:
 | OR | `("or", inputs)` | any input occurs |
 | AND | `("and", inputs)` | every input occurs |
 | VOTE | `("vote", k, inputs)` | at least `k` of the inputs occur (`k` out of `n`) |
+| NOT | `("not", [input])` | the input has not occurred ([non-coherent](#not-gates-non-coherent-trees)) |
+| PAND | `("pand", inputs)` | every input occurs, in order, left to right ([dynamic](#dynamic-gates)) |
+| SPARE | `("spare", inputs)`, `("spare", dormancy, inputs)` | the primary (first) and every spare after it have failed |
+| SEQ | `("seq", inputs)` | every input occurs; each starts ageing once the one before has occurred |
+| FDEP | `("fdep", trigger, dependents)` | (no output) the trigger occurring makes each dependent occur |
 
 An input is a gate or a basic event. The top event is the one gate that is
 no other gate's input, or pass `top=`. Gates must not form a loop, every gate
@@ -340,11 +348,196 @@ models as RePyability saves a diagram's node models, and the common-cause
 groups as a diagram saves them. A tree built by `with_levers` saves the
 same way: an event given as a probability is still one.
 
+## NOT gates: non-coherent trees
+
+A NOT gate occurs while its input has not occurred. With one, an event
+occurring can make the top event *less* likely, and the tree is
+*non-coherent*. Here an alarm is missed if the detector has failed, or if
+a test is running while the bypass that should cover it is not in place:
+
+```python
+alarm = FaultTree(
+    {
+        "missed": ("or", ["detector", "masked"]),
+        "masked": ("and", ["test running", "not bypassed"]),
+        "not bypassed": ("not", ["bypass"]),
+    },
+    {"detector": 0.01, "test running": 0.05, "bypass": 0.2},
+)
+alarm.is_coherent                   # False
+alarm.top_event_probability()       # -> 0.0496   0.01 + 0.99 × 0.05 × 0.8
+alarm.birnbaum_importance()["bypass"]   # -> -0.0495   the bypass helps
+[(sorted(i.occurred), sorted(i.not_occurred)) for i in alarm.prime_implicants()]
+# [(['detector'], []), (['test running'], ['bypass'])]
+```
+
+- **Exact.** The tree is evaluated through its binary decision diagram,
+  built from the gates with the NOT gates' inputs complemented, so the top
+  event probability (and `sf`, worked out in its own right) is exact,
+  repeated events included, with probabilities or lifetime models.
+- **Prime implicants, not cut sets.** A non-coherent tree has no minimal
+  cut sets: an event *not* occurring can be what makes the top event occur.
+  `prime_implicants()` lists the smallest combinations of events occurring
+  and not occurring that make it occur, each a
+  [`PrimeImplicant`][repyability.PrimeImplicant], every one of them,
+  including those the gates do not spell out (for `a b + a' c`, also
+  `b c`). For a coherent tree they are the minimal cut sets.
+- **Measures that still apply.** `birnbaum_importance` and
+  `conditional_probabilities` are the top event conditioned on each
+  event, which a non-coherent tree has; the Birnbaum importance of an
+  event under a NOT gate can be negative. The other importance measures,
+  the cut sets, the lifetime analyses (the top event can stop occurring,
+  so it has no time to occur), the sensitivities and the uncertainty
+  analyses, and the conversion to a block diagram, assume a coherent tree:
+  each refuses, saying so, and `analysis_routes()` says which.
+- Common-cause groups are not taken with NOT gates.
+
+## Dynamic gates
+
+A dynamic gate's output depends on the order in which things fail, so a
+tree with one is worked out over time. A standby pump is a **SPARE** gate:
+the duty pump is its primary (the first input), and the standby is
+switched in when it fails. A standby that cannot fail while waiting (a
+*cold* spare) makes loss of flow much less likely than two pumps running
+together:
+
+```python
+pump = surv.Weibull.from_params([8000, 1.8])
+standby = FaultTree(
+    {"no flow": ("spare", ["duty", "standby"])},
+    {"duty": pump, "standby": pump},
+)
+standby.ff(5000)                    # -> 0.0321   against 0.1217 for an AND
+```
+
+| Gate | Occurs when | Worked out exactly as |
+|---|---|---|
+| PAND `("pand", inputs)` | all inputs have occurred, in order, left to right (inputs that occur at one instant are in order) | `G_k(t) = ∫ G_{k−1}(s) dF_k(s)` over `[0, t]`, `G_1 = F_1` |
+| SPARE `("spare", dormancy, inputs)` | the primary and every spare have failed; a spare waiting in reserve ages at the dormancy factor (0 cold, the default; 1 hot; between them warm), and one found failed when needed is passed over | the measure of each unit's failure time carried to the next: switched in at `s`, a spare has age `a s` and fails by `t` with `F(a s + t − s)` (for one cold spare, the convolution `∫ F_2(t − s) dF_1(s)`) |
+| SEQ `("seq", inputs)` | all inputs have occurred; each starts ageing when the one before it occurs | the cold SPARE of its inputs: the sum of their lives |
+| FDEP `("fdep", trigger, dependents)` | (no output) the trigger occurring makes each dependent occur at once | each dependent replaced by an OR of itself and the trigger: the static tree it is equal to |
+
+A SPARE's spares and a SEQ's inputs are basic events (a SPARE's primary
+may be a gate); an event may be a spare or a member of a sequence in one
+gate only. A **warm** spare ages at `dormancy` units of age per unit of
+time in reserve, and from its age then once at work:
+
+```python
+warm = FaultTree(
+    {"no flow": ("spare", 0.2, ["duty", "standby"])},
+    {"duty": pump, "standby": pump},
+)
+warm.ff(5000)                       # -> 0.0448
+```
+
+**PAND**: a guard that fails before the motor overheats lets the hazard
+through; one that fails after it has already tripped the motor:
+
+```python
+plant = FaultTree(
+    {
+        "loss": ("or", ["hazard", "no flow"]),
+        "hazard": ("pand", ["guard", "overheat"]),
+        "no flow": ("spare", 0.2, ["duty", "standby"]),
+    },
+    {
+        "guard": surv.Exponential.from_params([1 / 20000]),
+        "overheat": surv.Weibull.from_params([12000, 2.5]),
+        "duty": pump,
+        "standby": pump,
+    },
+)
+plant.ff(np.array([2000, 5000, 10000]))
+# array([0.002755, 0.06105, 0.4108])
+plant.analysis_routes()["ff"].route        # 'numerical'
+```
+
+**How it is worked out.** Each dynamic gate that is an independent module
+(nothing below it is shared with the rest of the tree, and its inputs
+share nothing with each other) is integrated over its inputs'
+distributions, as in the table: on a grid fine at every scale below `t`,
+halved until two Richardson-extrapolated passes, and the spline between
+their points, agree (to about `1e-9` for smooth lives, `1e-7` or so for a
+spare whose life has an unbounded density at 0, a Weibull shape below 1;
+a warning says if a grid reached its limit first). Its inputs'
+distributions are the events' models or an independent gate's own; the
+static gates around the dynamic ones are exact, by the tree's own engine,
+the dynamic gates its events.
+
+A dynamic gate that shares events with the rest of the tree (here the duty
+pump also feeds the PAND) is not a module, and cannot be integrated: the
+exact method refuses, and `method="simulate"` simulates the smallest
+independent part of the tree holding it, `mc_samples` times (seeded with
+`seed`), keeping the rest exact:
+
+```python
+shared = FaultTree(
+    {
+        "loss": ("or", ["hazard", "no flow"]),
+        "hazard": ("pand", ["guard", "duty"]),
+        "no flow": ("spare", 0.2, ["duty", "standby"]),
+    },
+    {"guard": surv.Exponential.from_params([1 / 20000]), "duty": pump, "standby": pump},
+)
+shared.analysis_routes()["ff"].route       # 'refused'
+shared.ff(5000, method="simulate", mc_samples=100_000, seed=1)   # ~> 0.0887
+```
+
+`random(size, seed)` simulates the whole tree's times to the top event:
+each event's life drawn from its model (by its quantile function), the
+spares aged at their dormancy, the sequences and priorities followed. Each
+event has a random stream of its own, keyed by the seed and its place
+among the events, so a part simulated alone draws what the whole tree
+draws. A **functional dependency** is written out before any of this, so
+a tree whose only dynamic gates are FDEPs is a static tree, with every
+static analysis:
+
+```python
+powered = FaultTree(
+    {
+        "no flow": ("and", ["pump 1", "pump 2"]),
+        "power": ("fdep", "supply", ["pump 1", "pump 2"]),
+    },
+    {"pump 1": pump, "pump 2": pump, "supply": surv.Exponential.from_params([1 / 50000])},
+)
+powered.ff(5000)                    # -> 0.2053
+powered.minimal_cut_sets()
+# [frozenset({'supply'}), frozenset({'pump 1', 'pump 2'})]
+```
+
+A tree with PAND, SPARE or SEQ gates gives the probability of its top event
+over time (`top_event_probability`, `ff`, `sf`) and simulated times to it
+(`random`); its other analyses (cut sequences, importance, the mean time to
+the top event, the conversion to a block diagram) are not available yet,
+and refuse, saying so. NOT gates and dynamic gates in one tree, and
+common-cause groups with dynamic gates, are refused. For repairable
+standby and load sharing, see [Redundancy models](redundancy-models.md).
+
+## Exporting to Open-PSA
+
+`to_open_psa()` writes the tree as an Open-PSA Model Exchange Format (MEF)
+document, the XML that PRA tools read: the OR, AND, VOTE (`atleast`) and
+NOT gates, an FDEP gate as its static equivalent, events given as
+probabilities, exponential and Weibull lives as expressions of the mission
+time, and common-cause groups of the beta-factor model splitting a
+probability. A name that is not an MEF identifier is made one, the name as
+given kept as its label. `to_open_psa(t)` writes every event's probability
+at `t` instead, for models the format has no expression for. The format
+has no dynamic gates, so a tree with PAND, SPARE or SEQ gates is refused:
+
+```python
+print(cooling.to_open_psa().splitlines()[3])
+# <define-gate name="no_cooling"><label>no cooling</label><or><gate name="no_flow"/><basic-event name="valve"/></or></define-gate>
+```
+
 ## The model and its limits
 
-- **Static gates only.** OR, AND and VOTE. Dynamic gates (priority-AND,
-  spares, sequence dependence) and NOT gates are not supported; for standby
-  and load sharing, see [Redundancy models](redundancy-models.md).
+- **Gates.** OR, AND, VOTE and NOT, exactly; PAND, SPARE and SEQ over
+  time, integrated where each is an independent module and simulated
+  otherwise; FDEP as its static equivalent. Shared spares, and a SPARE's
+  spare or a SEQ's member forced by an FDEP, are not supported; for
+  standby and load sharing with repair, see
+  [Redundancy models](redundancy-models.md).
 - **Independent basic events,** but for the events they share and their
   [common causes](#common-causes).
 - **Non-repairable.** A tree gives the probability that the top event has

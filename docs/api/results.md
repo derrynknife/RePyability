@@ -36,6 +36,8 @@
 
 ::: repyability.RateBreakdown
 
+::: repyability.PFDBreakdown
+
 ::: repyability.ExpectedCost
 
 ::: repyability.ExpectedNPV
@@ -61,6 +63,8 @@
 ::: repyability.ReplacementCycle
 
 ::: repyability.ConditionalProbabilities
+
+::: repyability.PrimeImplicant
 
 ::: repyability.ModelParameters
 
@@ -99,6 +103,10 @@
 ::: repyability.MaintenancePolicy
 
 ::: repyability.FailureLimitPolicy
+
+::: repyability.RepairOrReplacePolicy
+
+::: repyability.UnitDecision
 
 ::: repyability.OverhaulReplacePolicy
 

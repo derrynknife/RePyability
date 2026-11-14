@@ -11,10 +11,7 @@ import pytest
 import surpyval as surv
 from scipy import stats
 from scipy.integrate import quad
-from surpyval.degradation.process_models import (
-    GammaProcessModel,
-    WienerProcessModel,
-)
+from surpyval.degradation import GammaProcessModel, WienerProcessModel
 
 import repyability.rbd._level_replacement as level_module
 from repyability import NodeState, RepairableRBD
@@ -331,10 +328,97 @@ def test_the_model_is_built_once_and_kept():
     assert level_model(rbd, "a").cycle() is level_model(rbd, "a").cycle()
 
 
-def test_a_state_is_refused_where_a_unit_is_not_new():
+# From a state ---------------------------------------------------------------
+
+
+def test_a_state_that_does_not_give_the_level_is_refused():
+    # An age alone does not say the level (nor what the inspections so
+    # far did); a model of its own is not what the inspections read.
     rbd = unit(PROCESSES["gamma"]())
-    with pytest.raises(NotImplementedError, match="leave it out"):
-        rbd.expected_cost(100.0, state={"a": NodeState(age=10.0)})
+    for method in (rbd.expected_cost, rbd.cost):
+        with pytest.raises(ValueError, match="give the level measured now"):
+            method(100.0, state={"a": NodeState(age=10.0)})
+    own = GammaProcessModel(alpha=0.6, beta=1.0, threshold=40.0)
+    with pytest.raises(NotImplementedError, match="model of its own"):
+        rbd.expected_cost(100.0, state={"a": NodeState(model=own)})
+
+
+@pytest.mark.parametrize("name", sorted(PROCESSES))
+def test_a_level_at_the_threshold_from_a_state_is_the_plain_unit(name):
+    # As from new (see above): the unit at its measured level, then its
+    # renewals, all but never replaced.
+    model = PROCESSES[name]()
+    rbd = unit(model, level=40.0 * (1 - 1e-9), duration="instant")
+    plain = plain_unit(model)
+    t = np.array([5.0, 19.0, 21.0, 150.0, 400.0])
+    measured = NodeState(level=20.0, since_scheduled=40.0)
+    np.testing.assert_allclose(
+        rbd.point_availability(t, state={"a": measured}),
+        plain.point_availability(t, state={"a": NodeState(level=20.0)}),
+        atol=2e-4,
+    )
+    np.testing.assert_allclose(
+        rbd.expected_failures(t, state={"a": measured}),
+        plain.expected_failures(t, state={"a": NodeState(level=20.0)}),
+        rtol=5e-5,
+        atol=2e-4,
+    )
+
+
+@pytest.mark.parametrize("name", sorted(PROCESSES))
+def test_a_level_at_y0_is_a_new_unit(name):
+    # Measured at the process's starting level is new: on its calendar's
+    # phase, exactly the same path; at phase 0, from new (by another path,
+    # the unit's own curve to its first inspection), to the grid's error.
+    model = PROCESSES[name]()
+    rbd = unit(model)
+    y0 = float(model.y0)
+    t = np.array([5.0, 19.5, 20.5, 59.5, 60.5, 150.0, 400.0])
+    np.testing.assert_allclose(
+        rbd.point_availability(
+            t, state={"a": NodeState(level=y0, since_scheduled=40.0)}
+        ),
+        rbd.point_availability(
+            t, state={"a": NodeState(since_scheduled=40.0)}
+        ),
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        rbd.point_availability(t, state={"a": NodeState(level=y0)}),
+        rbd.point_availability(t),
+        atol=2e-4,
+    )
+    assert rbd.expected_cost(500.0, state={"a": NodeState(level=y0)}).mean == (
+        pytest.approx(rbd.expected_cost(500.0).mean, rel=1e-4)
+    )
+
+
+@pytest.mark.parametrize("name", sorted(PROCESSES))
+def test_the_long_run_state_repeats_the_long_run(name):
+    # In its long-run state, the mean over an interval is the long run's,
+    # and the availability repeats from one interval to the next.
+    rbd = unit(PROCESSES[name]())
+    t = np.array([10.0, 30.0, 59.5])
+    first = rbd.point_availability(t, state="stationary")
+    later = rbd.point_availability(t + 120.0, state="stationary")
+    np.testing.assert_allclose(first, later, atol=1e-9)
+    assert rbd.mission_availability(60.0, state="stationary") == (
+        pytest.approx(rbd.mean_availability(), abs=1e-6)
+    )
+
+
+#: States of each kind: a measured level (well short of, and close to, the
+#: replacement level), new on its calendar's phase, in a repair and in a
+#: replacement.
+STATES = {
+    "level": NodeState(level=20.0, since_scheduled=40.0),
+    "close to the level": NodeState(level=30.0, since_scheduled=40.0),
+    "new on its phase": NodeState(since_scheduled=40.0),
+    "in a repair": NodeState(alive=False, down_for=1.0, since_scheduled=40.0),
+    "in a replacement": NodeState(
+        alive=False, maintenance=True, down_for=1.0, since_scheduled=10.0
+    ),
+}
 
 
 # Against the simulation, run plainly ----------------------------------------
@@ -435,3 +519,89 @@ def test_grids_too_large_or_unsettled_are_refused(monkeypatch):
     monkeypatch.setattr(level_module, "_MAX_VALUES", 1)
     with pytest.raises(NotImplementedError, match="has not settled"):
         LevelModel(model, REPAIR, DURATION, 60.0, 25.0).cycle()
+
+
+@pytest.mark.parametrize("name", sorted(PROCESSES))
+@pytest.mark.parametrize("kind", sorted(STATES))
+def test_from_a_state_agrees_with_the_simulation(name, kind):
+    # The availability at times about the first inspections (at 20 and 80,
+    # or 50 and 110 from a replacement) and later, within the simulation's
+    # 99.9% band where it is away from 1 (where a binomial band is too
+    # narrow to judge); the failures, replacements and inspections over
+    # the window within 4 standard errors (priced at powers of 1000).
+    model = PROCESSES[name]()
+    rbd = unit(model)
+    state = {"a": STATES[kind]}
+    run = rbd.availability(
+        300.0, mc_samples=1000, seed=8, curve_points=600, state=state, **PLAIN
+    )
+    at = np.array([5.0, 19.5, 20.5, 49.5, 50.5, 79.5, 80.5, 110.5, 299.5])
+    index = np.rint(at * 2).astype(int)
+    assert np.allclose(run.timeline[index], at)
+    exact = rbd.point_availability(at, state=state)
+    lower, upper = run.availability_interval(0.999)
+    judged = exact < 0.99
+    assert np.all(lower[index][judged] <= exact[judged]), (exact, lower[index])
+    assert np.all(exact[judged] <= upper[index][judged]), (exact, upper[index])
+    counted = RepairableRBD(
+        EDGES,
+        {
+            "a": {
+                "reliability": model,
+                "repairability": REPAIR,
+                "repair_cost": 1.0,
+                "preventive": {
+                    "policy": "condition",
+                    "interval": 60.0,
+                    "level": 25.0,
+                    "duration": DURATION,
+                    "cost": 1e3,
+                    "inspection_cost": 1e6,
+                },
+            }
+        },
+    )
+    window, n = 300.0, 1000
+    events = counted.expected_events(window, state=state)
+    samples = counted.cost(
+        window, mc_samples=n, seed=9, state=state, **PLAIN
+    ).samples
+    inspections = np.floor(samples / 1e6)
+    replacements = np.floor((samples - 1e6 * inspections) / 1e3)
+    failures = samples - 1e6 * inspections - 1e3 * replacements
+    for exact_count, drawn in (
+        (events.node_failures["a"], failures),
+        (events.node_preventive["a"], replacements),
+        (events.node_inspections["a"], inspections),
+    ):
+        error = drawn.std() / math.sqrt(n)
+        assert abs(drawn.mean() - float(exact_count)) <= 4.0 * error + 1e-9
+
+
+def test_a_run_from_a_measured_level_is_seeded():
+    rbd = unit(PROCESSES["wiener"]())
+    state = {"a": NodeState(level=20.0, since_scheduled=40.0)}
+    runs = [
+        rbd.cost(200.0, mc_samples=50, seed=12, state=state, **PLAIN).samples
+        for _ in range(2)
+    ]
+    np.testing.assert_array_equal(runs[0], runs[1])
+    # The measured level is what the unit goes on from: one closer to the
+    # threshold fails more often before its first inspection.
+    close = {"a": NodeState(level=30.0, since_scheduled=40.0)}
+    far = rbd.expected_events(20.0, state=state).node_failures["a"]
+    near = rbd.expected_events(20.0, state=close).node_failures["a"]
+    assert near > 2.0 * far
+
+
+def test_a_plan_against_its_log_takes_the_measured_level():
+    # The log does not give the level (see test_plan_vs_actual); given in
+    # state=, the plan is revalued from it.
+    from repyability import Timeline
+
+    rbd = unit(PROCESSES["gamma"]())
+    state = {"a": NodeState(level=20.0, since_scheduled=40.0)}
+    result = rbd.plan_vs_actual(
+        {"a": Timeline([], end=100.0)}, 100.0, 300.0, state=state
+    )
+    assert np.isfinite(result.revalued_npv)

@@ -48,6 +48,7 @@ counts are the members' own levels, in the same order, and the chain is
 the group's own.
 """
 
+import bisect
 import math
 from itertools import product
 from typing import (
@@ -72,9 +73,14 @@ UP, FOUND, MISSED = 0, 1, 2
 #: for a test while working, under a test while failed, under repair.
 OFF, TESTING, REPAIR = 3, 4, 5
 
+#: A member's level when it starts in a repair under way (#106) whose end
+#: is not at a rate: the repair it is in at the start, on its own clock.
+LEFT = 6
+
 #: What happens at a ``ProofTest``'s time: the member's test, or the end of
-#: one of its tests (``TESTED``) or repairs (``REPAIRED``) of a fixed length.
-TEST, TESTED, REPAIRED = 0, 1, 2
+#: one of its tests (``TESTED``) or repairs (``REPAIRED``) of a fixed length,
+#: or of the repair of a fixed length under way at the start (``ENDED``).
+TEST, TESTED, REPAIRED, ENDED = 0, 1, 2, 3
 
 
 class GroupStates(NamedTuple):
@@ -317,14 +323,61 @@ class ProofTest(NamedTuple):
 
 class Duration(NamedTuple):
     """How long a member's tests, or its repairs, take: a fixed
-    time (``fixed``, 0 for none), or an exponential one (at ``rate``)."""
+    time (``fixed``, 0 for none), an exponential one (at ``rate``), or
+    one of any other length (``model``, a surpyval model, #106)."""
 
     fixed: float = 0.0
     rate: Optional[float] = None
+    model: Any = None
 
     @property
     def takes_time(self) -> bool:
-        return self.fixed > 0.0 or self.rate is not None
+        return self.fixed > 0.0 or self.rate is not None or self.general
+
+    @property
+    def general(self) -> bool:
+        """Whether it is of a length neither fixed nor exponential."""
+        return self.model is not None
+
+    @property
+    def random(self) -> bool:
+        """Whether its length is drawn (exponential, or general)."""
+        return self.rate is not None or self.general
+
+    def sf(self, s) -> np.ndarray:
+        """``P(length > s)``, 1 before 0."""
+        s = np.asarray(s, dtype=float)
+        if self.general:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                values = np.asarray(
+                    self.model.sf(np.maximum(s, 0.0).ravel()), dtype=float
+                ).reshape(s.shape)
+            return np.where(s < 0.0, 1.0, np.clip(values, 0.0, 1.0))
+        if self.rate is not None:
+            return np.exp(-self.rate * np.maximum(s, 0.0))
+        return (s < self.fixed).astype(float)
+
+    def quantiles(self, p) -> np.ndarray:
+        """The lengths below which it is with the probabilities ``p``."""
+        p = np.asarray(p, dtype=float)
+        if self.general:
+            return np.asarray(self.model.qf(p.ravel()), dtype=float).reshape(
+                p.shape
+            )
+        if self.rate is not None:
+            return -np.log1p(-p) / self.rate
+        return np.full(p.shape, self.fixed)
+
+    def tail(self) -> float:
+        """A length it is all but surely over by (but for a chance of
+        ``TAIL``)."""
+        return float(self.quantiles(np.array([1.0 - TAIL]))[0])
+
+
+#: The chance a test or repair of a random length may still run, past
+#: its ``tail``: what the chain leaves out where it takes their ends from
+#: the time since the test that started them (#106).
+TAIL = 1e-12
 
 
 class Timing(NamedTuple):
@@ -336,6 +389,224 @@ class Timing(NamedTuple):
     @property
     def takes_time(self) -> bool:
         return self.test.takes_time or self.repair.takes_time
+
+    @property
+    def repair_jumps(self) -> bool:
+        """Whether its repair ends a fixed time after its test: a repair
+        of a fixed length after a test of none or a fixed one."""
+        return self.repair.fixed > 0.0 and not self.test.random
+
+    @property
+    def varies(self) -> Tuple[bool, bool]:
+        """Whether its test, and its repair, end at a rate that varies
+        with the time since the test (#106): a test of a general length;
+        a repair of a general length, or of a fixed one after a test of a
+        random length (whose end is then no fixed time after the test)."""
+        repair = self.repair.general or (
+            self.repair.fixed > 0.0 and self.test.random
+        )
+        return self.test.general, repair
+
+
+#: The chances at which a member's test and repair of a general length are
+#: cut into pieces of a constant rate (#106), and the evenly spaced pieces
+#: laid over them.
+_PIECE_CHANCES = np.unique(
+    np.concatenate(
+        [
+            10.0 ** -np.arange(12.0, 1.0, -1.0),
+            np.linspace(0.0, 1.0, 25)[1:-1],
+            1.0 - 10.0 ** -np.arange(2.0, 13.0),
+        ]
+    )
+)
+_EVEN_PIECES = 16
+#: The cells of equal chance a test of a random length is split into, to
+#: add a repair of a general length to it.
+_SUM_CELLS = 4096
+
+
+def _pieces(knots: np.ndarray, end: float) -> np.ndarray:
+    """``knots`` from 0 to ``end``, with ``_EVEN_PIECES`` even pieces
+    laid over them."""
+    knots = np.concatenate(
+        [[0.0, end], knots, np.linspace(0.0, end, _EVEN_PIECES + 1)]
+    )
+    knots = knots[np.isfinite(knots) & (knots >= 0.0) & (knots <= end)]
+    knots = np.unique(knots)
+    # Pieces too short for their rates to keep their precision (a
+    # difference of logarithms over them) are merged into the next.
+    keep = np.concatenate([[True], np.diff(knots) > 1e-7 * end])
+    keep[-1] = True
+    knots = knots[keep]
+    if len(knots) > 2 and knots[-1] - knots[-2] <= 1e-7 * end:
+        knots = np.delete(knots, -2)
+    return knots
+
+
+#: How far a length's chance of running may be from a rate held constant
+#: on a piece, within it (see ``_refined``), and the most knots.
+_PIECE_ERROR = 1e-5
+_MAX_KNOTS = 2000
+
+
+def _refined(knots: np.ndarray, sf, end: float) -> np.ndarray:
+    """``knots`` with each piece halved, again and again, until a rate
+    held constant on it (see ``_hazard_rates``) follows a length of
+    survival function ``sf`` within it to ``_PIECE_ERROR``: its halves'
+    rates differ by so little that, over the piece, the chance of
+    running they give at its middle is off by less (``S(a)`` times a
+    quarter of the piece's width times their difference). The values at
+    times between the knots come from the rates held constant."""
+    for _ in range(30):
+        a, b = knots[:-1], knots[1:]
+        m = 0.5 * (a + b)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            Sa, Sm, Sb = (np.clip(sf(x), 0.0, 1.0) for x in (a, m, b))
+            Ha, Hm, Hb = (-np.log(x) for x in (Sa, Sm, Sb))
+            left, right = (Hm - Ha) / (m - a), (Hb - Hm) / (b - m)
+            off = Sa * np.abs(left - right) * (b - a) / 4.0
+        split = (off > _PIECE_ERROR) & np.isfinite(off) & (b - a > 1e-7 * end)
+        if not split.any() or len(knots) + split.sum() > _MAX_KNOTS:
+            break
+        knots = np.sort(np.concatenate([knots, m[split]]))
+    return knots
+
+
+def _hazard_rates(sf, knots: np.ndarray) -> np.ndarray:
+    """The constant rate on each piece between ``knots`` that ends a
+    length of survival function ``sf`` on its own: ``(H(b) - H(a)) / (b
+    - a)``, ``H = -log sf``, so that its chance of running is exact at the
+    knots. Where ``sf`` has reached 0, the last finite rate before."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        H = -np.log(np.clip(sf(knots), 0.0, 1.0))
+        rates = np.diff(H) / np.diff(knots)
+    last = 0.0
+    out = np.empty_like(rates)
+    for k, rate in enumerate(rates):
+        if np.isfinite(rate):
+            last = max(float(rate), 0.0)
+        out[k] = last
+    return out
+
+
+def _repair_rate(testing, repair, r1, dt, target) -> float:
+    """The constant rate on a piece of length ``dt`` at which a repair
+    ends so that a member alone, in its test with the chance ``testing``
+    (which ends at the rate ``r1`` into the repair) and in its repair with
+    the chance ``repair`` at the piece's start, is in its repair with the
+    chance ``target`` at its end."""
+    if repair <= 0.0 and testing * r1 <= 0.0:
+        return 0.0
+    if target <= 0.0:
+        return 50.0 / dt
+    if testing * r1 <= 0.0:
+        return max(math.log(repair / target) / dt, 0.0)
+    e1 = math.exp(-r1 * dt)
+
+    def left(r2: float) -> float:
+        e2 = math.exp(-r2 * dt)
+        gap = (r1 - r2) * dt
+        if abs(gap) > 1e-6:
+            moved = (e2 - e1) / (r1 - r2)
+        else:
+            moved = dt * math.exp(-0.5 * (r1 + r2) * dt)
+        return repair * e2 + testing * r1 * moved - target
+
+    if left(0.0) <= 0.0:
+        return 0.0
+    hi = 1.0 / dt
+    while left(hi) > 0.0:
+        hi *= 4.0
+        if hi * dt > 50.0:
+            return hi
+    from scipy.optimize import brentq
+
+    return float(brentq(left, 0.0, hi, xtol=1e-300, rtol=1e-13))
+
+
+class _Episode:
+    """A member's test and repair after its test, where one ends at a
+    rate that varies with the time ``s`` since the test (#106, see
+    ``Timing.varies``): followed on pieces of ``s`` (``knots``), each with
+    a constant rate for the test's end (``test``) and the repair's
+    (``repair``). The member is apart from the causes then, so its own
+    path through them is that of the member alone: each test rate keeps
+    the chance that its test is running exact at the knots, and each
+    repair rate the chance that a member found failed is in its repair
+    (the test and repair's sum taken on a grid where both are random).
+    Past the last knot (where either runs with a chance below ``TAIL``),
+    the last piece's rates."""
+
+    def __init__(self, timing: Timing):
+        test, repair = timing.test, timing.repair
+        test_varies, repair_varies = timing.varies
+        chances = _PIECE_CHANCES
+        parts = [np.array([test.fixed])]
+        shift = test.fixed
+        if test.random:
+            parts.append(test.quantiles(chances))
+            shift = float(test.quantiles(np.array([0.5]))[0])
+        if repair.random:
+            parts.append(shift + repair.quantiles(chances))
+        elif repair.fixed > 0.0 and test.random:
+            parts.append(repair.fixed + test.quantiles(chances))
+        end = test.tail() + (repair.tail() if repair_varies else 0.0)
+        knots = _pieces(np.concatenate(parts), end)
+        if test.random:
+            knots = _refined(knots, test.sf, end)
+        if repair_varies:
+            knots = _refined(
+                knots, lambda s: self._running(test, repair, s), end
+            )
+        self.knots = knots
+        widths = np.diff(knots)
+        pieces = len(widths)
+        self.test = np.zeros(pieces)
+        if test_varies:
+            self.test = _hazard_rates(test.sf, knots)
+        self.repair = np.zeros(pieces)
+        if repair_varies:
+            testing = test.sf(knots)
+            running = np.clip(self._running(test, repair, knots), testing, 1)
+            in_repair = running - testing
+            r1 = self.test if test_varies else np.full(pieces, test.rate or 0)
+            self.repair = np.array(
+                [
+                    _repair_rate(
+                        float(testing[k]),
+                        float(in_repair[k]),
+                        float(r1[k]),
+                        float(widths[k]),
+                        float(in_repair[k + 1]),
+                    )
+                    for k in range(pieces)
+                ]
+            )
+
+    @staticmethod
+    def _running(test: Duration, repair: Duration, s: np.ndarray):
+        """``P(test + repair > s)``: exact where either is fixed (or
+        none); otherwise ``1 - E[F_R(s - T)]`` by the midpoint rule on
+        ``_SUM_CELLS`` cells of equal chance of the test."""
+        if not test.random:
+            return repair.sf(s - test.fixed)
+        if not repair.random:
+            return test.sf(s - repair.fixed)
+        edges = np.linspace(0.0, 1.0, _SUM_CELLS + 1)
+        middles = test.quantiles(0.5 * (edges[1:] + edges[:-1]))
+        out = np.empty(len(s))
+        for start in range(0, len(s), 64):
+            chunk = s[start : start + 64]
+            done = 1.0 - repair.sf(chunk[:, None] - middles[None, :])
+            out[start : start + 64] = 1.0 - done.mean(axis=1)
+        return np.clip(out, 0.0, 1.0)
+
+    def rates(self, s: float) -> Tuple[float, float]:
+        """The test's and the repair's rate at ``s`` after the test."""
+        k = int(np.searchsorted(self.knots, s, side="right")) - 1
+        k = min(max(k, 0), len(self.test) - 1)
+        return float(self.test[k]), float(self.repair[k])
 
 
 #: The most memory a chain's transitions over the steps it has taken more
@@ -404,6 +675,7 @@ class _Hidden:
                 after[full] = space.index(found, missed)
             self.found.append(after)
         self.combinations, self.combination = space.combinations()
+        self.space = space
 
     def evolve(self, v: np.ndarray, dt: float) -> np.ndarray:
         """``v exp(G dt)``, by uniformization: ``exp(G dt)`` worked out as
@@ -457,25 +729,84 @@ class _Hidden:
         v[0] = 1.0
         return v
 
+    def _placed(self, member: int, level: int) -> np.ndarray:
+        """The state each state goes to with ``member`` put at
+        ``level``."""
+        space = self.space
+        found, missed = space.found.copy(), space.missed.copy()
+        found[:, member] = int(level == FOUND)
+        missed[:, member] = int(level == MISSED)
+        return space.index(found, missed)
+
+    def placed(self, v: np.ndarray, member: int, level: int) -> np.ndarray:
+        """``v`` with ``member`` put at ``level``, whatever its level
+        was."""
+        target = self._placed(member, level)
+        return np.bincount(target, weights=v, minlength=self.size)
+
+    def started(self, known: Sequence[float], levels: dict) -> np.ndarray:
+        """The states at 0 from the members' states (#106): each member
+        ``i`` known to be up ``known[i]`` before 0 (when it was last
+        tested and found working, or put into service), and the members
+        in ``levels`` at their level at 0. Each cause strikes the members
+        up since they were known up, alike, as from 0 on: from every
+        member up at the earliest, the members are put up as they come to
+        be known up, the causes followed between (what a member's level
+        was before it was known up does not change the others': a cause
+        strikes each up member whatever the others' levels are)."""
+        v = self.start()
+        now = -max(list(known) + [0.0])
+        for member in sorted(range(len(known)), key=lambda i: -known[i]):
+            v = self._uniformized(v, -known[member] - now)
+            now = -known[member]
+            v = self.placed(v, member, UP)
+        v = self._uniformized(v, -now)
+        for member, level in levels.items():
+            v = self.placed(v, member, level)
+        return v
+
+    def _advance(self, v: np.ndarray, start: float, stop: float):
+        """``v`` followed from ``start`` to ``stop``, with no test
+        between."""
+        return self.evolve(v, stop - start)
+
+    def _advance_many(self, v: np.ndarray, start: float, times: np.ndarray):
+        """``v`` followed from ``start`` to each of ``times`` (rows;
+        increasing, none before ``start``), with no test between."""
+        out = np.empty((len(times), self.size))
+        now = start
+        for row, t in enumerate(times):
+            v = self._advance(v, now, float(t))
+            now = float(t)
+            out[row] = v
+        return out
+
     def follow(self, tests, times: np.ndarray, v=None, now: float = 0.0):
         """The state at each of ``times`` (rows), from ``v`` (every member
         up) at ``now``, through the ``tests`` in order (tests at a time come
         before it)."""
         order = sorted(tests)
         v = self.start() if v is None else v
+        times = np.asarray(times, dtype=float)
         out = np.empty((len(times), self.size))
-        upcoming = 0
-        for row in np.argsort(times, kind="stable"):
-            t = float(times[row])
+        rows = np.argsort(times, kind="stable")
+        upcoming, k = 0, 0
+        while k < len(rows):
+            t = float(times[rows[k]])
             while upcoming < len(order) and order[upcoming].time <= t:
                 test = order[upcoming]
                 if test.time >= now:
-                    v = self.tested_at(self.evolve(v, test.time - now), test)
+                    v = self._advance(v, now, test.time)
+                    v = self.tested_at(v, test)
                     now = test.time
                 upcoming += 1
-            v = self.evolve(v, t - now)
-            now = t
-            out[row] = v
+            # The times before the next test, followed together.
+            stop = order[upcoming].time if upcoming < len(order) else np.inf
+            end = k + int(np.searchsorted(times[rows[k:]], stop, side="left"))
+            batch = rows[k:end]
+            values = self._advance_many(v, now, times[batch])
+            out[batch] = values
+            v, now, k = values[-1], float(times[batch[-1]]), end
         return out
 
     def grouped(self, states: np.ndarray) -> np.ndarray:
@@ -487,29 +818,93 @@ class _Hidden:
         return out
 
 
+class Left(NamedTuple):
+    """A repair under way at the start (#106): how long the member's
+    repairs take (``repair``), and how long this one has run
+    (``down_for``)."""
+
+    repair: Duration
+    down_for: float
+
+    def sf(self, s) -> np.ndarray:
+        """``P(what is left of it > s)``."""
+        s = np.asarray(s, dtype=float)
+        known = float(self.repair.sf(np.array([self.down_for]))[0])
+        return np.clip(self.repair.sf(self.down_for + s) / known, 0.0, 1.0)
+
+    @property
+    def level(self) -> int:
+        """The member's level at the start: under repair, where it ends
+        at a rate (``REPAIR``); otherwise in the repair under way
+        (``LEFT``)."""
+        return REPAIR if self.repair.rate is not None else LEFT
+
+    @property
+    def end(self) -> Optional[float]:
+        """When a repair of a fixed length ends; None for another."""
+        if self.repair.random:
+            return None
+        return self.repair.fixed - self.down_for
+
+    def pieces(self) -> Tuple[np.ndarray, np.ndarray]:
+        """For a repair of a general length: the knots of the time from
+        the start, and the rate on each piece between them, that keep its
+        chance of running exact at the knots (see ``_hazard_rates``)."""
+        known = float(self.repair.sf(np.array([self.down_for]))[0])
+        chances = 1.0 - (1.0 - _PIECE_CHANCES) * known
+        knots = self.repair.quantiles(chances) - self.down_for
+        end = float(
+            self.repair.quantiles(np.array([1.0 - TAIL * known]))[0]
+            - self.down_for
+        )
+        knots = _pieces(knots, end)
+        return knots, _hazard_rates(self.sf, knots)
+
+
 class _Timed(_Hidden):
     """``_Hidden`` for members whose tests or repairs take time (#220,
     see the module's notes), one copy of each member: each member's level
     is one of ``levels`` (``UP``, ``FOUND``, ``MISSED`` where tests can
     miss a failure, ``OFF`` and ``TESTING`` where tests take time,
-    ``REPAIR`` where repairs do), a state one level for each member (see
-    ``_states``). Causes strike the members that are up; a test or repair
-    of an exponential length ends at its rate; one of a fixed length ends
-    at a ``ProofTest`` of its ``kind``, a fixed time after the test."""
+    ``REPAIR`` where repairs do, ``LEFT`` for a repair under way at the
+    start), a state one level for each member (see ``_states``). Causes
+    strike the members that are up; a test or repair of an exponential
+    length ends at its rate; one of a fixed length ends at a
+    ``ProofTest`` of its ``kind``, a fixed time after the test; and one
+    of any other length (#106) at a rate that varies with the time since
+    the member's last test (``_Episode``): the chain is then followed
+    piece by piece (``_advance``), each piece's rates constant. A
+    member in ``lefts`` may start in a repair under way (``Left``): one
+    of a fixed length ends at an ``ENDED`` event, one of a general length
+    at a rate that varies with the time from 0."""
 
-    def __init__(self, model, members, rate: float, coverage: float, timings):
+    def __init__(
+        self,
+        model,
+        members,
+        rate: float,
+        coverage: float,
+        timings,
+        lefts: Optional[Dict[int, "Left"]] = None,
+    ):
         n = len(members)
+        lefts = {} if lefts is None else dict(lefts)
         self.partial = partial = coverage < 1.0
         tests_take = any(t.test.takes_time for t in timings)
         repairs_take = any(t.repair.takes_time for t in timings)
         ladder = [UP, FOUND] + ([MISSED] if partial else [])
         ladder += [OFF, TESTING] if tests_take else []
         ladder += [REPAIR] if repairs_take else []
+        ladder += (
+            [LEFT]
+            if any(left.level == LEFT for left in lefts.values())
+            else []
+        )
         #: The levels a member may be at.
         self.ladder = ladder
         self.levels = count = len(ladder)
-        code = {level: k for k, level in enumerate(ladder)}
-        states = _states(n, count)
+        self.code = code = {level: k for k, level in enumerate(ladder)}
+        self.states = states = _states(n, count)
         self.size = size = len(states)
         _check_size(size, members)
         source = np.arange(size)
@@ -527,8 +922,12 @@ class _Timed(_Hidden):
                     target[column == code[old], member] = code[new]
             return index(target)
 
-        #: The continuous moves, labelled (see ``Move``).
+        #: The continuous moves at constant rates, labelled (see ``Move``).
         self.moves: List[Move] = []
+        #: The moves at rates that vary (#106): whose, which end (of the
+        #: ``"test"``, the ``"repair"``, or the repair under way at the
+        #: start, ``"left"``), and their sources and targets.
+        self.varying: List[Tuple[int, str, np.ndarray, np.ndarray]] = []
         for number, (struck, cause) in enumerate(causes(model, members, rate)):
             for level, share in ((FOUND, coverage), (MISSED, 1.0 - coverage)):
                 if share <= 0.0 or (level == MISSED and not partial):
@@ -549,12 +948,20 @@ class _Timed(_Hidden):
                     )
                 )
         self.jumps: Dict[Tuple[int, int, bool], np.ndarray] = {}
+        #: Each member's test and repair where one varies (see
+        #: ``_Episode``), and the pieces of a general repair under way at
+        #: the start.
+        self.episodes: Dict[int, _Episode] = {}
+        self.left_pieces: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
         for i, timing in enumerate(timings):
             after = REPAIR if timing.repair.takes_time else UP
             ends = {
                 "test": {OFF: UP, TESTING: after},
                 "repair": {REPAIR: UP},
             }
+            varies = dict(zip(("test", "repair"), timing.varies))
+            if any(varies.values()):
+                self.episodes[i] = _Episode(timing)
             for which, duration in (
                 ("test", timing.test),
                 ("repair", timing.repair),
@@ -571,6 +978,14 @@ class _Timed(_Hidden):
                                 np.full(int(hit.sum()), duration.rate),
                             )
                         )
+                elif varies[which]:
+                    for old, new in ends[which].items():
+                        target = moving(i, {old: new})
+                        hit = target != source
+                        if hit.any():
+                            self.varying.append(
+                                (i, which, source[hit], target[hit])
+                            )
                 elif duration.fixed > 0.0:
                     kind = TESTED if which == "test" else REPAIRED
                     target = moving(i, ends[which])
@@ -590,6 +1005,16 @@ class _Timed(_Hidden):
                 if partial and full:
                     rules[MISSED] = found
                 self.jumps[(i, TEST, full)] = moving(i, rules)
+            left = lefts.get(i)
+            if left is not None and left.level == LEFT:
+                target = moving(i, {LEFT: UP})
+                if left.end is not None:
+                    self.jumps[(i, ENDED, False)] = target
+                    self.jumps[(i, ENDED, True)] = target
+                else:
+                    self.left_pieces[i] = left.pieces()
+                    hit = target != source
+                    self.varying.append((i, "left", source[hit], target[hit]))
         outflow = np.zeros(size)
         for _, sources, _, value in self.moves:
             np.add.at(outflow, sources, value)
@@ -600,8 +1025,13 @@ class _Timed(_Hidden):
                 np.add.at(step, (sources, targets), value / pace)
         np.fill_diagonal(step, 1.0 - outflow / pace if pace > 0.0 else 1.0)
         self.step = step
+        self._outflow = outflow
         self.combinations = _states(n, 2).astype(bool)
         self.combination = _index((states != code[UP]).astype(np.int8), 2)
+        #: Each member's tests' times in a period of the calendar, and the
+        #: period (see ``calendar``): where the time since a member's last
+        #: test comes from.
+        self.calendar: Optional[Tuple[List[np.ndarray], float]] = None
 
     def tested_at(self, v: np.ndarray, test: "ProofTest") -> np.ndarray:
         """``v`` after the member's test, or the end of its test or repair,
@@ -612,26 +1042,276 @@ class _Timed(_Hidden):
             return v
         return np.bincount(target, weights=v, minlength=self.size)
 
+    def _placed(self, member: int, level: int) -> np.ndarray:
+        target = self.states.copy()
+        target[:, member] = self.code[level]
+        return _index(target, self.levels)
 
-def timed_events(tests, timings, period: float) -> List[ProofTest]:
+    def set_calendar(self, tests, period: float) -> None:
+        """Take each member's tests' times from ``tests`` (``ProofTest``,
+        one period of the calendar, repeating every ``period``)."""
+        members = len(self.states[0]) if self.size else 0
+        times: List[list] = [[] for _ in range(members)]
+        for test in tests:
+            if test.kind == TEST:
+                times[test.member].append(float(test.time))
+        self.calendar = ([np.array(sorted(t)) for t in times], float(period))
+
+    def _last_tests(self, t: float) -> np.ndarray:
+        """Each member's last test at or before ``t`` (-inf for none)."""
+        assert self.calendar is not None, "the chain needs its calendar"
+        times, period = self.calendar
+        out = np.full(len(times), -np.inf)
+        at = t + 1e-9 * period
+        cycle = math.floor(at / period)
+        within = at - cycle * period
+        for i, mine in enumerate(times):
+            if len(mine):
+                k = bisect.bisect_right(mine.tolist(), within)
+                if k:
+                    out[i] = float(mine[k - 1]) + cycle * period
+                else:
+                    out[i] = float(mine[-1]) + (cycle - 1) * period
+        return out
+
+    def _advance(self, v: np.ndarray, start: float, stop: float):
+        """``v`` followed from ``start`` to ``stop``, with no test
+        between: at once where every rate is constant (see ``evolve``);
+        otherwise piece by piece where a rate varies (#106), at the
+        knots of each member's test and repair after its last test, and
+        of a repair under way from 0, each piece by uniformization with
+        its rates."""
+        if not self.varying:
+            return self.evolve(v, stop - start)
+        if not stop > start:
+            return v
+        last, edges = self._edges(start, stop)
+        for a, b in zip(edges[:-1], edges[1:]):
+            v = self._piece(v, float(b - a), self._rates(last, a, b))
+        return v
+
+    def _edges(self, start: float, stop: float):
+        """Each member's last test at ``start``, and the edges of the
+        pieces from ``start`` to ``stop``: the knots of each member's
+        test and repair after its last test, and of a repair under way
+        from 0."""
+        last = self._last_tests(start)
+        cuts = [np.array([start, stop])]
+        for i, episode in self.episodes.items():
+            if np.isfinite(last[i]):
+                cuts.append(last[i] + episode.knots)
+        for knots, _ in self.left_pieces.values():
+            cuts.append(knots)
+        edges = np.unique(np.concatenate(cuts))
+        return last, edges[(edges >= start) & (edges <= stop)]
+
+    def _rates(self, last: np.ndarray, a: float, b: float) -> List[float]:
+        """The varying moves' rates on the piece from ``a`` to ``b``."""
+        middle = 0.5 * (a + b)
+        rates = []
+        for i, which, _, _ in self.varying:
+            if which == "left":
+                knots, values = self.left_pieces[i]
+                k = int(np.searchsorted(knots, middle, side="right")) - 1
+                rates.append(float(values[min(max(k, 0), len(values) - 1)]))
+            elif np.isfinite(last[i]):
+                test, repair = self.episodes[i].rates(middle - last[i])
+                rates.append(test if which == "test" else repair)
+            else:
+                rates.append(0.0)
+        return rates
+
+    def _advance_many(self, v: np.ndarray, start: float, times: np.ndarray):
+        """``v`` followed from ``start`` to each of ``times`` (see
+        ``_Hidden._advance_many``): where rates vary, piece by piece, the
+        times within a piece all from its start by uniformization, whose
+        terms (the start's state times the step's powers) they share, each
+        with its own Poisson weights."""
+        if not self.varying or not len(times):
+            return super()._advance_many(v, start, times)
+        out = np.empty((len(times), self.size))
+        last, edges = self._edges(start, float(times[-1]))
+        now, row = start, 0
+        for b in list(edges[1:]):
+            inside = int(np.searchsorted(times, b, side="right"))
+            rates = self._rates(last, now, b)
+            if inside > row:
+                out[row:inside] = self._spread(
+                    v, times[row:inside] - now, rates
+                )
+                row = inside
+            v = self._piece(v, float(b - now), rates)
+            now = b
+        while row < len(times):  # at ``start`` itself
+            out[row] = v
+            row += 1
+        return out
+
+    def _spread(self, v: np.ndarray, gaps: np.ndarray, rates) -> np.ndarray:
+        """``v exp(G gap)`` for each of ``gaps`` (rows; ``G`` as for
+        ``_piece``), by uniformization sharing its terms: where the
+        longest gap is short next to the uniformization's rate, else one
+        by one."""
+        step, pace = self._step_with(rates)
+        if not pace > 0.0:
+            return np.repeat(v[None, :], len(gaps), axis=0)
+        x = pace * gaps
+        if float(x.max()) > 8.0:
+            return np.array([self._piece(v, float(g), rates) for g in gaps])
+        top = float(x.max())
+        weight = np.exp(-x)
+        out = weight[:, None] * v[None, :]
+        term, k, peak = v, 0, math.exp(-top)
+        while True:
+            k += 1
+            term = term @ step
+            weight = weight * x / k
+            peak *= top / k
+            out += weight[:, None] * term[None, :]
+            if k > top and peak < 1e-34:
+                break
+        return out
+
+    def _piece(self, v: np.ndarray, dt: float, rates: List[float]):
+        """``v exp(G dt)``, ``G`` the constant moves' rates and the
+        varying moves' at ``rates``, by uniformization: worked out as a
+        matrix and kept once the same piece comes again (as pieces
+        repeat, period after period, and past each test and repair's
+        knots, where the rates no longer change), as ``evolve`` keeps
+        its steps."""
+        if not dt > 0.0:
+            return v
+        key = (float(dt), tuple(rates))
+        kept = self.__dict__.setdefault("_pieces", {})
+        found = kept.get(key)
+        if found is None:
+            if len(kept) * 8 * self.size**2 >= _TRANSITION_BYTES:
+                kept.clear()
+            kept[key] = False
+            return self._uniformized_with(v, dt, rates)
+        if found is False:
+            found = kept[key] = self._uniformized_with(
+                np.eye(self.size), dt, rates
+            )
+        return v @ found
+
+    def _step_with(self, rates) -> Tuple[np.ndarray, float]:
+        """A step of the chain uniformized at its fastest outflow, ``G``
+        the constant moves' rates and the varying moves' at ``rates``:
+        the step, and that rate."""
+        key = tuple(rates)
+        kept = self.__dict__.setdefault("_steps", {})
+        found = kept.get(key)
+        if found is not None:
+            return found
+        outflow = self._outflow.copy()
+        for (_, _, sources, _), value in zip(self.varying, rates):
+            if value > 0.0:
+                np.add.at(outflow, sources, value)
+        pace = float(outflow.max()) if self.size else 0.0
+        step = self.step * (self.pace / pace) if pace > 0.0 else self.step
+        if pace > 0.0:
+            step = step.copy()
+            for (_, _, sources, targets), value in zip(self.varying, rates):
+                if value > 0.0:
+                    np.add.at(step, (sources, targets), value / pace)
+            np.fill_diagonal(step, 1.0 - outflow / pace)
+        if len(kept) * 8 * self.size**2 >= _TRANSITION_BYTES:
+            kept.clear()
+        kept[key] = (step, pace)
+        return step, pace
+
+    def _uniformized_with(self, v: np.ndarray, dt: float, rates):
+        """``v exp(G dt)`` (see ``_piece``; ``v`` a vector, or a
+        matrix's rows): the whole steps of ``8 / pace`` (short enough for
+        ``exp(-x)`` not to underflow) through their matrices for 1, 2,
+        4, ... steps, kept by rates (each the square of the one before:
+        sums of positive terms), and what is left by uniformization's
+        series."""
+        step, pace = self._step_with(rates)
+        if not pace > 0.0:
+            return v
+        whole = 8.0 / pace
+        count = int(dt // whole)
+        powers = None
+        if count:
+            kept = self.__dict__.setdefault("_powers", {})
+            held = sum(len(p) for p in kept.values())
+            if held * 8 * self.size**2 >= _TRANSITION_BYTES:
+                kept.clear()
+            powers = kept.setdefault(tuple(rates), [])
+            if not powers:
+                powers.append(_series(np.eye(self.size), step, 8.0))
+        k = 0
+        while count:
+            assert powers is not None
+            if k == len(powers):
+                powers.append(powers[-1] @ powers[-1])
+            if count & 1:
+                v = v @ powers[k]
+            count >>= 1
+            k += 1
+        left = dt - whole * int(dt // whole)
+        return _series(v, step, pace * left) if left > 0.0 else v
+
+
+def _series(v: np.ndarray, step: np.ndarray, x: float) -> np.ndarray:
+    """``v`` times uniformization's series for a time of ``x`` steps of
+    the uniformized chain ``step`` (``x`` at most 8, so that ``exp(-x)``
+    does not underflow), to a term below 1e-34."""
+    weight = math.exp(-x)
+    term = v
+    out = weight * term
+    k = 0
+    while True:
+        k += 1
+        term = term @ step
+        weight *= x / k
+        out = out + weight * term
+        if k > x and weight < 1e-34:
+            break
+    return out
+
+
+def timed_events(
+    tests, timings, period: float, lefts: Optional[Dict[int, Left]] = None
+) -> List[ProofTest]:
     """``tests`` (each member's, in ``(0, period]``) with the ends of the
-    tests and repairs of a fixed length after each, each in
-    ``(0, period]`` as the schedule repeats: an end past the period is the
-    previous period's test's, at the start of this one (where, from all up
-    at 0, it ends nothing)."""
+    tests and repairs of a fixed length after each (see ``Timing``), each
+    in ``(0, period]`` as the schedule repeats: an end past the period is
+    the previous period's test's, at the start of this one (where, from
+    all up at 0, it ends nothing)."""
     out = [test._replace(kind=TEST) for test in tests]
     for test in tests:
         timing = timings[test.member]
         ends = []
-        if timing.test.rate is None and timing.test.fixed > 0.0:
+        if not timing.test.random and timing.test.fixed > 0.0:
             ends.append((timing.test.fixed, TESTED))
-        if timing.repair.rate is None and timing.repair.fixed > 0.0:
+        if timing.repair_jumps:
             ends.append((timing.test.fixed + timing.repair.fixed, REPAIRED))
         for length, kind in ends:
             time = test.time + length
             time = time - period * math.floor((time - 1e-12 * period) / period)
             out.append(ProofTest(time, test.member, True, kind))
     return sorted(out)
+
+
+def started_ends(lefts: Optional[Dict[int, Left]]) -> List[ProofTest]:
+    """The ends of the repairs of a fixed length under way at the start
+    (#106): once each, not every period."""
+    return sorted(
+        ProofTest(left.end, member, True, ENDED)
+        for member, left in (lefts or {}).items()
+        if left.level == LEFT and left.end is not None
+    )
+
+
+def _scale(duration: Duration) -> float:
+    """The time scale of a test or repair of a random length: its mean
+    if exponential, its median otherwise (#106)."""
+    if duration.rate is not None:
+        return 1.0 / duration.rate
+    return float(duration.quantiles(np.array([0.5]))[0])
 
 
 def _timed(timings) -> bool:
@@ -664,6 +1344,7 @@ def hidden(
     if _timed(timings):
         timed = _Timed(model, members, rate, coverage, timings)
         events = timed_events(tests, timings, period)
+        timed.set_calendar(events, period)
         v = timed.follow(events, np.array([period]))[0]
         v = timed.follow(
             _shifted(events, period), np.array([2.0 * period]), v, period
@@ -687,12 +1368,27 @@ def hidden(
     return GroupStates(tuple(members), chain.combinations, chain.grouped(out))
 
 
+class Start(NamedTuple):
+    """Where a group's members start (#106), for its chain over time:
+    in its long run (``stationary``), or each member ``i`` known to be up
+    ``known[i]`` before 0 (when last tested and found working, or put into
+    service: it may have failed since, unseen) but those in ``down``,
+    each down at 0: in a repair under way (a ``Left``) where its failures
+    are hidden, and (``True``) in a repair at a rate where they are
+    revealed."""
+
+    known: Tuple[float, ...] = ()
+    down: Dict[int, Any] = {}
+    stationary: bool = False
+
+
 class OverTime:
     """A group's members' joint states over time from every member up at
-    0 (see ``probabilities``): from its chain followed by uniformization
-    (``revealed`` failures), or (``hidden``) through its tests' first
-    period, by the end of which every member has had a full test and the
-    states repeat the long run's every period."""
+    0, or from their states (``Start``, #106) (see ``probabilities``):
+    from its chain followed by uniformization (``revealed`` failures), or
+    (``hidden``) through its tests' first periods, by the end of which
+    every member has had a full test and the states repeat the long run's
+    every period."""
 
     def __init__(self, members, combinations, settle: float, period):
         self.members = tuple(members)
@@ -704,6 +1400,10 @@ class OverTime:
         self._tests: Optional[list] = None
         self._timings: Optional[Sequence[Timing]] = None
         self._settled: Any = None
+        #: The states at 0, and the events that happen once (the ends of
+        #: repairs of a fixed length under way at 0).
+        self._start: Any = None
+        self._once: List[ProofTest] = []
         #: The chain's moves, labelled (see ``Move``), and the combination
         #: of the members up or down of each of its states (#199).
         self.moves: List[Move] = []
@@ -711,11 +1411,19 @@ class OverTime:
 
     @classmethod
     def revealed(
-        cls, model, members, rate: float, repair: float, uniformized
+        cls,
+        model,
+        members,
+        rate: float,
+        repair: float,
+        uniformized,
+        start: Optional[Start] = None,
     ) -> "OverTime":
         """A group whose failures are revealed (see ``revealed``), its
         chain followed by ``uniformized(generator, start, steady,
-        vectors)`` (a ``_chain_transient.Uniformized``)."""
+        vectors)`` (a ``_chain_transient.Uniformized``): from every
+        member up, or from ``start`` (its long run, or the members in
+        ``start.down`` in a repair)."""
         size, moves = _revealed_moves(model, members, rate, repair)
         flow = np.zeros((size, size))
         for _, begin, end, value in moves:
@@ -724,9 +1432,13 @@ class OverTime:
         generator = flow.copy()
         np.fill_diagonal(generator, 0.0)
         np.fill_diagonal(generator, -generator.sum(axis=1))
-        start = np.zeros(size)
-        start[0] = 1.0
-        chain = uniformized(generator, start, steady, np.identity(size))
+        if start is not None and start.stationary:
+            initial = steady
+        else:
+            initial = np.zeros(size)
+            down = () if start is None else start.down
+            initial[sum(2**i for i in down)] = 1.0
+        chain = uniformized(generator, initial, steady, np.identity(size))
         out = cls(
             members, _states(len(members), 2).astype(bool), chain.settle, None
         )
@@ -745,14 +1457,21 @@ class OverTime:
         tests,
         period,
         timings: Optional[Sequence[Timing]] = None,
+        start: Optional[Start] = None,
     ) -> "OverTime":
         """A group whose failures are hidden (see ``hidden``): with
         ``timings`` that take time, its tests' and repairs' ends
-        among its tests, and settling after two periods."""
+        among its tests, and settling after two periods. From every
+        member up at 0, or from ``start``: its long run at 0 (on the
+        calendar of ``tests``), or the states its members' give (see
+        ``_Hidden.started``), settling once the repairs under way at 0
+        are over too."""
         chain: _Hidden
-        if _timed(timings):
-            chain = _Timed(model, members, rate, coverage, timings)
+        lefts = {} if start is None else start.down
+        if _timed(timings) or lefts:
+            chain = _Timed(model, members, rate, coverage, timings, lefts)
             tests = timed_events(tests, timings, period)
+            chain.set_calendar(tests, period)
             settle = 2.0 * float(period)
         else:
             chain = _Hidden(model, members, rate, coverage)
@@ -762,10 +1481,100 @@ class OverTime:
         out._chain = chain
         out._tests = sorted(tests)
         out._timings = timings
+        out._start = chain.start()
+        if start is not None and start.stationary:
+            # The long run at 0: where the states repeat from every
+            # member up, a whole number of periods on.
+            out._start = chain.follow(out._early(settle), np.array([settle]))[
+                0
+            ]
+            out.settle = 0.0
+        elif start is not None:
+            out._start = chain.started(
+                start.known,
+                {member: left.level for member, left in lefts.items()},
+            )
+            out._once = started_ends(lefts)
+            longest = max(
+                [0.0]
+                + [
+                    (
+                        left.end
+                        if left.end is not None
+                        else float(left.pieces()[0][-1])
+                    )
+                    for left in lefts.values()
+                ]
+            )
+            out.settle = settle + float(period) * math.ceil(
+                longest / float(period)
+            )
         # The states at the start of the period that repeats.
-        out._settled = chain.follow(out._early(settle), np.array([settle]))[0]
+        out._settled = out._follow_early(np.array([out.settle]))[0]
         out.moves = chain.moves
         out.combination = chain.combination
+        return out
+
+    def _follow_early(self, x: np.ndarray) -> np.ndarray:
+        """The chain's states at the times ``x`` up to the settling time,
+        from its states at 0."""
+        marks = self.__dict__.get("_early_marks")
+        if marks is None:
+            events = sorted(self._early(self.settle) + self._once)
+            events = [e for e in events if e.time <= self.settle]
+            marks = self._early_marks = self._marked(events, self._start, 0.0)
+        return self._from_marks(x, *marks)
+
+    def _follow_late(self, x: np.ndarray) -> np.ndarray:
+        """The chain's states at the times ``x`` in the period after the
+        settling time, from its states then."""
+        marks = self.__dict__.get("_late_marks")
+        if marks is None:
+            stop = self.settle + self.period
+            events = [
+                e for e in _shifted(self._tests, self.settle) if e.time <= stop
+            ]
+            marks = self._late_marks = self._marked(
+                sorted(events), self._settled, self.settle
+            )
+        return self._from_marks(x, *marks)
+
+    def _marked(self, events, v, now: float):
+        """The chain's states just after each time ``events`` happen at,
+        from ``v`` at ``now``: its times and states, ``now``'s first. The
+        states at any time come from the last mark before it, as there is
+        no event between (see ``_from_marks``), so that each call need
+        not follow the chain from the start again."""
+        chain = self._chain
+        times, vectors = [now], [v]
+        k = 0
+        while k < len(events):
+            at = events[k].time
+            v = chain._advance(v, now, at)
+            while k < len(events) and events[k].time == at:
+                v = chain.tested_at(v, events[k])
+                k += 1
+            now = at
+            times.append(at)
+            vectors.append(v)
+        return np.array(times), vectors
+
+    def _from_marks(self, x: np.ndarray, times: np.ndarray, vectors):
+        """The chain's states at the times ``x``, each followed from the
+        last mark at or before it (see ``_marked``), or from the time
+        before it, where that is later."""
+        chain = self._chain
+        out = np.empty((len(x), chain.size))
+        order = np.argsort(x, kind="stable")
+        ordered = x[order]
+        marks = np.maximum(
+            np.searchsorted(times, ordered, side="right") - 1, 0
+        )
+        for mark in np.unique(marks):
+            rows = order[marks == mark]
+            out[rows] = chain._advance_many(
+                vectors[mark], float(times[mark]), x[rows]
+            )
         return out
 
     def _early(self, stop: float) -> List[ProofTest]:
@@ -789,15 +1598,10 @@ class OverTime:
             values = np.empty((len(x), chain.size))
             early = x <= settle
             if early.any():
-                values[early] = chain.follow(self._early(settle), x[early])
+                values[early] = self._follow_early(x[early])
             if (~early).any():
                 phase = np.mod(x[~early] - settle, period)
-                values[~early] = chain.follow(
-                    _shifted(self._tests, settle),
-                    settle + phase,
-                    self._settled,
-                    settle,
-                )
+                values[~early] = self._follow_late(settle + phase)
         values = np.maximum(values, 0.0)
         total = values.sum(axis=1, keepdims=True)
         return values / np.where(total > 0.0, total, 1.0)
@@ -875,10 +1679,10 @@ class OverTime:
                 continue
             timing = self._timings[test.member]
             scales = []
-            if timing.test.rate is not None:
-                scales.append(1.0 / timing.test.rate)
-            if timing.repair.rate is not None:
-                scales.append(sum(scales) + 1.0 / timing.repair.rate)
+            if timing.test.random:
+                scales.append(_scale(timing.test))
+            if timing.repair.random:
+                scales.append(sum(scales) + _scale(timing.repair))
             for scale in scales:
                 stop = math.ceil(math.log2(period / scale))
                 offsets = scale * 2.0 ** np.arange(-3.0, stop + 1.0)
@@ -900,6 +1704,14 @@ class OverTime:
         every = (
             times[None, :] + self.period * np.arange(first, last + 1)[:, None]
         ).ravel()
+        # The ends of the repairs under way at 0, and the transient of
+        # one of a general length (#106), at geometric times on its scale.
+        once = [test.time for test in self._once]
+        for knots, _ in getattr(self._chain, "left_pieces", {}).values():
+            scale = float(np.median(knots[1:])) if len(knots) > 1 else 0.0
+            if scale > 0.0:
+                once += list(scale * 2.0 ** np.arange(-3.0, 8.0))
+        every = np.concatenate([every, once])
         return np.concatenate(
             [[start], every[(every >= start) & (every <= stop)]]
         )

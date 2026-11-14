@@ -68,6 +68,39 @@ A component can be given as:
   (`FixedEventProbability` at 0), is one too: a what-if of a part that
   never fails.
 
+A life (`"reliability"`) or repair (`"repairability"`) is any surpyval
+model with a life's functions of time alone (`sf`, `ff`, `df`, `hf`, `Hf`,
+`qf` and `mean`): a distribution (with an offset, a limited failure
+population or zero inflation too), a `MixtureModel`, a Bayesian fit (its
+posterior predictive; see [Building](building.md#a-bayesian-fit-as-a-life)),
+a degradation process, a Royston-Parmar fit, a destructive degradation
+model, a regression at one unit's covariates (`regression.at(Z)`, surpyval's
+`LifeAtCovariates`), or any other surpyval model with those functions. Such a
+model is taken by what it can do, not by its class: the exact methods
+integrate it through its functions and the simulations draw it through its
+quantile function, from the component's own random stream, so a seed gives
+the same run on either engine. It saves with the diagram in surpyval's own
+format (a regression at its covariates as the regression and the row).
+What lacks a function is refused, saying which and why: a regression
+without its covariates (give `model.at(Z)`), a Cox model at its covariates
+or a non-parametric estimate (their curves end at the data, so they have
+no mean), a joint model's prediction (see [Condition-based](condition-based.md)).
+
+```python
+import numpy as np
+import surpyval as surv
+from repyability import RepairableRBD
+
+lives = 500 * np.random.default_rng(7).weibull(1.5, 40)
+spline = surv.RoystonParmar.fit(lives)        # no single distribution
+rbd = RepairableRBD(
+    [("s", "pump"), ("pump", "t")],
+    {"pump": {"reliability": spline,
+              "repairability": surv.Exponential.from_params([0.05])}},
+)
+round(rbd.mean_availability(), 4)            # -> 0.9555   MTTF / (MTTF + 20)
+```
+
 The constructor also takes `k`, `input_node`, `output_node` and
 `on_infeasible_rbd` exactly as for a
 [`NonRepairableRBD`](building.md), `downtime_cost_rate` (see
@@ -162,6 +195,81 @@ probability per demand, a mixture, a degradation process or a nested
 diagram is refused (give its life on the calendar instead). The duty is a
 fixed share of the time: a component that runs only while the system runs,
 or ages while idle too, needs that modelled in its life.
+
+### Covariates that change over time
+
+**In plain words:** a block whose life depends on how hard it is run (a
+pump's load, a motor's temperature) can be run under a load that changes
+over time: 60% for the first 2,000 hours, say, then 85%. Fit a
+regression model in surpyval, then give the block the load as a
+schedule on the diagram's clock with `"covariates"`. The schedule is the
+system's, not the unit's: the pump fitted at hour 2,500 is new, but runs
+at 85% from its first hour. A repair or replacement resets the unit's age
+as it always does (a replacement makes it new, imperfect repair leaves it
+a virtual age), and the load keeps following the clock. (At covariates
+that never change, give the life at them, `model.at(Z)`, instead: an
+ordinary block, which every method takes.)
+
+`"covariates"` takes a surpyval `StepSchedule` that says the covariates
+from 0 on: built with `StepSchedule.from_changepoints` (its last value
+held on) or `StepSchedule.cyclic` (a pattern repeated, such as a day
+shift and a night shift). The `"reliability"` is the fitted regression
+model, of one of these kinds:
+
+- **Proportional or additive hazards** (`WeibullPH`, `ExponentialAH`,
+  ...): the unit's hazard at any moment is the model's at its age and the
+  covariates in force then, `h0(a) exp(beta Z(t))` for proportional
+  hazards. Within a step, where `Z` is constant, the cumulative hazard
+  from age `a` to `b` is `Hf(b, Z) - Hf(a, Z)`.
+- **Accelerated failure time or accelerated life** (`WeibullAFT`, ...):
+  the covariates speed the unit's clock up or slow it down (the
+  cumulative exposure model). At each change it carries its cumulative
+  hazard over, at the age with that hazard under the new covariates. A
+  virtual age has no one meaning on a clock that changes speed, so such
+  a block takes no imperfect repair, no partial restoration and no start
+  at an age.
+- Proportional odds and other kinds have no hazard that follows the
+  covariates in force alone, and are refused.
+
+Each life is drawn from when the unit is put into service: from one
+uniform `u`, the time at which its cumulative hazard along the steps
+reaches `-log(1 - u)`, found within its step to the last bits. A first
+life from 0 is the one surpyval's `sf_tvc` gives along the path.
+
+```python
+import numpy as np
+
+# Field data: hours to failure and the load (share of rated) each pump ran at.
+rng = np.random.default_rng(3)
+load = rng.uniform(0.5, 0.9, size=200)
+hours = 3000 * rng.weibull(1.8, size=200) * np.exp(-3.0 * (load - 0.6))
+model = surv.WeibullPH.fit(hours, Z=load.reshape(-1, 1))
+
+# 60% load for the first 2,000 hours, then 85% from then on.
+duty = surv.StepSchedule.from_changepoints([0, 2000], [[0.6], [0.85]])
+pump = {"reliability": model,
+        "repairability": surv.Exponential.from_params([1 / 24]),
+        "covariates": duty}
+rbd = RepairableRBD([("s", "p"), ("p", "t")], {"p": pump})
+run = rbd.availability(8760.0, mc_samples=1000, seed=1)
+run.mean_availability                        # -> 0.9837
+run.system_failures / run.n_simulations     # -> 5.92   failures in the year
+# At 60% all year: 0.9924 and 2.71 failures.
+```
+
+**Which methods take it.** A unit's life depends on when it starts, so
+the block is no renewal process, and only the simulations take it:
+`availability`, `cost` and `simulate_timelines` (in Python; the compiled
+engine leaves it to the event loop), with maintenance, tests, repair
+crews and Kijima repair as for any block, and a start from a state
+(a proportional or additive hazards unit at an age draws what is left of
+its life at the covariates in force from 0). The exact and numerical
+methods (`mean_availability`, `point_availability`, the first failure,
+the frequencies, the allocations, ...) refuse it, saying so, as
+`analysis_routes()` reports. Not taken with a schedule: a `"duty"` (give
+the covariates the block runs at on the calendar instead), a standby or
+common-cause group, replacement on condition by a threshold, and a
+shutdown that stands the block still.
 
 ### Junctions
 
@@ -892,13 +1000,20 @@ every few failures (or on a preventive schedule) bounds it.
 what surpyval fits to a repairable unit's failure times (#269), and the
 component is then the life and repair that model is:
 
-- a Poisson process, `CrowAMSAA`, `Duane` or `HPP`, is minimal repair of the
-  life whose cumulative hazard is the process's cumulative intensity
-  (Crow-AMSAA's `(t / alpha) ** beta` is a Weibull life, and a homogeneous
-  process an exponential one), so with repairs in no time its expected
-  failures are the process's own;
+- a Poisson process, `CrowAMSAA`, `Duane`, `CoxLewis` or `HPP`, is minimal
+  repair of the life whose cumulative hazard is the process's cumulative
+  intensity (Crow-AMSAA's `(t / alpha) ** beta` is a Weibull life,
+  Cox-Lewis's `exp(alpha) * (exp(beta * t) - 1) / beta` a life of that
+  cumulative hazard, and a homogeneous process an exponential one), so with
+  repairs in no time its expected failures are the process's own;
 - a `GeneralizedRenewal` (Kijima I or II) is its life distribution with the
-  `"repair"` of its Kijima model and restoration factor `q`.
+  `"repair"` of its Kijima model and restoration factor `q`;
+- a `GeneralizedOneRenewal` (G1), `ARA` or `ARI` repairs the unit by its
+  own rule, which the simulation follows with the fitted model itself:
+  the unit's first life is the model's life from new, and after each
+  failure surpyval gives its state after the repair (`advance`) and the
+  time to its next failure from that state (`next_failure_qf`, at a
+  uniform from the unit's own stream, so a seed gives the same run).
 
 ```python
 from surpyval import CrowAMSAA
@@ -910,8 +1025,23 @@ rbd.expected_failures(8760.0)   # -> 4.8952, gearbox.cif(8760.0)
 ```
 
 Such a spec takes no `"repair"` of its own, and is saved as the life and
-repair it is. surpyval's other renewal models (ARA, ARI, G1) are refused:
-their repairs are not Kijima's.
+repair it is (a G1, ARA or ARI as the fitted model). A G1, ARA or ARI unit
+is taken only by the simulations (`availability`, `cost`,
+`simulate_timelines`, in Python): the exact methods refuse it, as for any
+imperfect repair but minimal repair, and each of its failures costs about
+60 to 140 microseconds more than a plain unit's, the price of stepping the
+fitted model. It may be started from its age (the time it has run since
+new without a failure), not from a virtual age, and its preventive
+maintenance replaces it (a partial `"restoration"` is refused).
+
+```python
+from surpyval import ARA
+
+pump = ARA.fit_from_parameters([1000, 2.0], 0.5)
+rbd = RepairableRBD([("s", "p"), ("p", "t")],
+                    {"p": {"reliability": pump, "repairability": "instant"}})
+run = rbd.availability(t_simulation=5000.0, mc_samples=1000, seed=1)
+```
 
 - **Costs and spares.** A repair is charged its `"repair_cost"`; a
   replacement, at the `N`-th failure or at any failure of a unit renewed by

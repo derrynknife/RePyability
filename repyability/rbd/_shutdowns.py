@@ -434,6 +434,15 @@ def _pause_refusal(rbd, node, shut: _Shutdown) -> Optional[str]:
         " is not taken yet: let its idle blocks age (idle_ageing True), "
         "or leave it out of the scope."
     )
+    from repyability.rbd._covariate_schedule import scheduled
+
+    if scheduled(rbd.components.get(node)) is not None:
+        return (
+            f"{lead} runs on a covariate schedule on the diagram's clock, "
+            "which standing it still would put out of step with its "
+            "covariates: let its idle blocks age (idle_ageing True), or "
+            "leave it out of the scope."
+        )
     schedule = rbd._preventive.get(node)
     inspection = rbd._inspection.get(node)
     if schedule is not None and schedule.shutdown == shut.name:

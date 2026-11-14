@@ -7,11 +7,15 @@ the uncertainty in the parameters averaged in, is the posterior predictive
 distribution, ``S(t) = sum_i w_i S(t | theta_i)``: a mixture of the
 distribution at the posterior's points, weighted by their probabilities
 (equal for draws). ``PosteriorPredictive`` is that mixture as a node model,
-each function to its own precision (``ff`` the points' ``ff`` averaged, not
-``1 - sf``), its quantile by inverting the mixture (``_sampling``'s), and its
-draws a point and a life from one uniform. Where the fit has the predictive
+each function to its own precision (its ``ff``, ``Hf`` and ``qf`` are the
+fit's own, which keep their digits in both tails from surpyval 0.27), and
+its draws a point and a life from one uniform. Where the fit has the predictive
 in closed form (an Exponential with a Gamma posterior on its rate: a Lomax;
-a Normal mean with the spread known), that is used, as surpyval does.
+a Normal mean with the spread known), that is used, as surpyval does. A fit
+with an offset, a limited failure population or zero inflation is a mixture
+of those models, the posterior's points each holding its own offset, share
+that ever fails and share dead on arrival: every function is then the
+fit's own, and a draw inverts the point's model, as for the plain ones.
 
 A diagram, a ``NonRepairable`` and a ``RepairableRBD``'s component take a
 Bayesian fit as it is, and wrap it in this (``as_life``): one fit object is
@@ -31,13 +35,17 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from ._model_utils import is_bayesian_fit
-from ._sampling import RowSampler, mixed_quantile
+from ._sampling import RowSampler
 
 #: The most values of the points' functions worked out at once (16 MB):
 #: a query is taken in rows of at most this many over the points.
 _BLOCK = 1 << 21
 #: The largest double below 1, a draw's share of a point's life at most.
 _BELOW_ONE = float(np.nextafter(1.0, 0.0))
+#: The extras a surpyval parametric model may have after its
+#: distribution's parameters (an offset, the share that ever fails, the
+#: share dead on arrival), each with the value that means it has none.
+_EXTRAS = (("gamma", 0.0), ("lfp_p", 1.0), ("f0", 0.0))
 
 
 #: The predictive of each Bayesian fit given as a life, by the fit's id
@@ -77,10 +85,11 @@ class PosteriorPredictive:
     [`RepairableRBD`][repyability.RepairableRBD] take the fit itself and
     wrap it in this; it can be built by hand too.
 
-    Each function is the predictive's, to its own precision: ``sf``,
-    ``ff`` and ``df`` are the points' averaged, ``Hf`` and ``hf`` follow
-    from them, ``qf`` inverts the mixture, and ``mean`` is the points'
-    means averaged (``inf`` if any is). Where the fit has the predictive
+    Each function is the predictive's, to its own precision: ``sf`` and
+    ``df`` are the points' averaged, ``hf`` follows from them, ``ff``,
+    ``Hf`` and ``qf`` are the fit's own (surpyval's, which keep their
+    digits in both tails), and ``mean`` is the points' means averaged
+    (``inf`` if any is). Where the fit has the predictive
     in closed form (an Exponential with a Gamma posterior on its rate,
     whose predictive is a Lomax; a Normal mean with the spread known),
     that is used, as surpyval does. A life is drawn from one uniform: it
@@ -94,8 +103,16 @@ class PosteriorPredictive:
     to the system: each draw takes a point of the posterior by its
     probability (from the exact family of a conjugate posterior) and the
     plain distribution at it (see the guide's "A Bayesian fit as a
-    life"). A fit with an offset, a limited failure population or zero
-    inflation, or of a discrete distribution, is not taken yet.
+    life").
+
+    A fit with an offset, a limited failure population or zero inflation
+    (``fit_bayes(offset=True)``, ``lfp=True``, ``zi=True``, or draws with
+    ``gamma``, ``lfp_p`` or ``f0`` columns) is the mixture of those
+    models: each posterior point has its own offset and shares, its
+    functions are the fit's own (surpyval's predictive), a draw inverts
+    the point's model (0 for a unit dead on arrival, ``inf`` for one that
+    never fails), and the credible band draws each point with them. A fit
+    of a discrete distribution is refused: it is of a count, not a life.
 
     Parameters
     ----------
@@ -110,6 +127,10 @@ class PosteriorPredictive:
     points : numpy.ndarray
         The posterior's points, one row each, a column for each of the
         distribution's parameters (in its ``parameter_names`` order).
+    extras : dict
+        Each point's offset (``gamma``), share that ever fails (``lfp_p``)
+        and share dead on arrival (``f0``), as arrays over the points, for
+        those the fit has (empty for a plain fit).
     weights : numpy.ndarray
         Their probabilities, summing to 1.
 
@@ -118,8 +139,7 @@ class PosteriorPredictive:
     TypeError
         If ``fit`` is not a surpyval Bayesian fit.
     ValueError
-        If it has an offset, a limited failure population or zero
-        inflation, or its distribution is discrete.
+        If its distribution is discrete.
 
     Examples
     --------
@@ -158,12 +178,6 @@ class PosteriorPredictive:
                 "count, not a life, so it is no lifetime: give a fit of a "
                 "distribution of time."
             )
-        if fit.offset or fit.lfp or fit.zi:
-            raise ValueError(
-                "A Bayesian fit with an offset, a limited failure "
-                "population or zero inflation is not taken as a life yet: "
-                "give a fit of the plain distribution."
-            )
         posterior = fit.posterior
         columns = [
             posterior.parameter_names.index(name)
@@ -171,6 +185,19 @@ class PosteriorPredictive:
         ]
         self.fit: Any = fit
         self.points = np.ascontiguousarray(posterior.points[:, columns])
+        # Each point's offset and shares, where the fit has them (a column
+        # of the posterior, or fixed at a value the fit was given).
+        names = list(posterior.parameter_names)
+        fixed = dict(getattr(fit, "fixed", None) or {})
+        self.extras: dict = {}
+        for name, none in _EXTRAS:
+            if name in names:
+                values = posterior.points[:, names.index(name)]
+            elif float(fixed.get(name, none)) != none:
+                values = np.full(len(self.points), float(fixed[name]))
+            else:
+                continue
+            self.extras[name] = np.ascontiguousarray(values, dtype=float)
         self.weights = np.asarray(posterior.weights, dtype=float)
         self._family = family
         self._columns = [
@@ -206,7 +233,7 @@ class PosteriorPredictive:
 
     def _mixed(self, name: str, x: np.ndarray) -> np.ndarray:
         """The points' function ``name`` averaged with their probabilities,
-        at the 1-d ``x``, as ``_sampling.mixed_quantile`` averages it."""
+        at the 1-d ``x``, in rows of ``_rows()`` values at a time."""
         step = self._rows()
         parts = [
             np.sum(self._values(name, x[i : i + step]) * self.weights, axis=1)
@@ -226,37 +253,39 @@ class PosteriorPredictive:
             h = np.where(x >= 0.0, a / (b + after), 0.0)
             return {
                 "sf": lambda: np.exp(-H),
-                "ff": lambda: -np.expm1(-H),
-                "Hf": lambda: H,
                 "df": lambda: h * np.exp(-H),
                 "hf": lambda: h,
             }[name]()
 
     def _function(self, name: str, x: ArrayLike) -> Any:
-        """The predictive's function ``name`` at ``x``, with its shape."""
+        """The predictive's function ``name`` (``sf``, ``df`` or ``hf``)
+        at ``x``, with its shape."""
         t = np.asarray(x, dtype=float)
         flat = t.ravel()
         if self._lomax is not None:
             out = self._lomax_values(name, flat)
         elif self._closed is not None:
             out = np.asarray(getattr(self._closed, name)(flat), dtype=float)
-        elif name in ("sf", "ff"):
+        elif self.extras:
+            # The points' offsets and shares: the fit's own predictive.
+            out = self._fits(name, flat)
+        elif name == "sf":
             # (a probability, which the weights' rounding can take a
             # last bit past 1)
             out = np.clip(self._mixed(name, flat), 0.0, 1.0)
         elif name == "df":
             out = self._mixed(name, flat)
         else:
-            survival = self._mixed("sf", flat)
             with np.errstate(all="ignore"):
-                if name == "hf":
-                    out = self._mixed("df", flat) / survival
-                else:
-                    failed = self._mixed("ff", flat)
-                    out = np.where(
-                        failed < 0.5, -np.log1p(-failed), -np.log(survival)
-                    )
+                out = self._mixed("df", flat) / self._mixed("sf", flat)
         return np.asarray(out, dtype=float).reshape(t.shape)[()]
+
+    def _fits(self, name: str, x: ArrayLike) -> Any:
+        """The fit's own function ``name`` at ``x`` (surpyval's
+        ``BayesianParametric``'s), as floats with the shape of ``x``."""
+        t = np.asarray(x, dtype=float)
+        out = np.asarray(getattr(self.fit, name)(t.ravel()), dtype=float)
+        return out.reshape(t.shape)[()]
 
     # -- The life ------------------------------------------------------------
 
@@ -277,16 +306,16 @@ class PosteriorPredictive:
         return self._function("sf", x)
 
     def ff(self, x: ArrayLike) -> Any:
-        """The probability that a new unit fails by ``x``: the points'
-        ``ff`` averaged (not ``1 - sf``, so it keeps its precision when
-        small).
+        """The probability that a new unit fails by ``x``: the fit's own
+        ``ff``, the points' ``ff`` averaged (not ``1 - sf``, so it keeps
+        its precision when small).
 
         Parameters
         ----------
         x : array_like
             The time(s).
         """
-        return self._function("ff", x)
+        return self._fits("ff", x)
 
     def df(self, x: ArrayLike) -> Any:
         """The density of a new unit's life: the points' densities
@@ -311,15 +340,15 @@ class PosteriorPredictive:
         return self._function("hf", x)
 
     def Hf(self, x: ArrayLike) -> Any:
-        """The cumulative hazard of the predictive, ``-log sf`` (from
-        ``ff`` while it is under a half, for its precision).
+        """The cumulative hazard of the predictive, ``-log sf``: the fit's
+        own, which keeps its precision in both tails.
 
         Parameters
         ----------
         x : array_like
             The time(s).
         """
-        return self._function("Hf", x)
+        return self._fits("Hf", x)
 
     def cs(self, x: ArrayLike, given: ArrayLike) -> Any:
         """The probability that a unit that has survived to ``given``
@@ -340,30 +369,53 @@ class PosteriorPredictive:
 
     def qf(self, p: ArrayLike) -> Any:
         """The age by which a fraction ``p`` of new units have failed: the
-        predictive's quantile, its ``ff`` inverted (its ``sf`` above a
-        half), to the last bit or two.
+        predictive's quantile, the fit's own (surpyval's, which converges
+        in the upper tail).
 
         Parameters
         ----------
         p : array_like
             The probabilities of failing.
         """
-        u = np.asarray(p, dtype=float)
-        flat = u.ravel()
-        if self._lomax is not None:
-            a, b = self._lomax
-            with np.errstate(all="ignore"):
-                out = b * np.expm1(-np.log1p(-flat) / a)
-        elif self._closed is not None:
-            out = np.asarray(self._closed.qf(flat), dtype=float)
-        else:
-            quantile = mixed_quantile(self._values, self.weights)
-            step = self._rows()
-            parts = [
-                quantile(flat[i : i + step]) for i in range(0, len(flat), step)
-            ]
-            out = np.concatenate(parts) if parts else np.empty(0)
-        return np.asarray(out, dtype=float).reshape(u.shape)[()]
+        if self.extras:
+            return self._extras_qf(p)
+        return self._fits("qf", p)
+
+    def _extras_qf(self, p: ArrayLike) -> Any:
+        """The quantile of a fit with an offset or shares, by inverting
+        its ``ff``: 0 up to the share dead on arrival (``ff(0)``), ``inf``
+        from the share that ever fails, and between them the root of
+        ``ff(x) = p`` (surpyval 0.27's own fails to bracket some of these
+        roots)."""
+        from scipy.optimize import brentq
+
+        q = np.asarray(p, dtype=float)
+        flat = q.ravel()
+        out = np.full(flat.shape, np.nan)
+        dead = float(self._fits("ff", np.array([0.0]))[0])
+        ever = 1.0 - self.never_fails
+        out[flat <= dead] = 0.0
+        out[flat >= ever] = np.inf
+        gamma = self.extras.get("gamma")
+        low = float(np.min(gamma)) if gamma is not None else 0.0
+        middle = np.flatnonzero((flat > dead) & (flat < ever))
+        if middle.size:
+
+            def ff(x: float) -> float:
+                return float(self._fits("ff", np.array([x]))[0])
+
+            high = max(low, 1.0) * 2.0
+            for i in middle[np.argsort(flat[middle])]:
+                while ff(high) < flat[i]:
+                    high *= 2.0
+                out[i] = brentq(
+                    lambda x: ff(x) - flat[i],
+                    low,
+                    high,
+                    xtol=1e-300,
+                    rtol=4 * np.finfo(float).eps,
+                )
+        return out.reshape(q.shape)[()]
 
     def mean(self) -> float:
         """The mean life of a new unit: the points' means averaged with
@@ -374,6 +426,9 @@ class PosteriorPredictive:
         float
             The mean life.
         """
+        if self.never_fails > 0.0:
+            # (some units never fail)
+            return float("inf")
         return float(self.fit.mean())
 
     def _draw(self, u: ArrayLike) -> np.ndarray:
@@ -393,8 +448,26 @@ class PosteriorPredictive:
             share = (flat - self._starts[point]) / weight
         share = np.clip(np.where(weight > 0.0, share, 0.5), 0.0, _BELOW_ONE)
         params = [self.points[point, j] for j in range(self.points.shape[1])]
+        if not self.extras:
+            with np.errstate(all="ignore"):
+                lives = self._family.qf(share, *params)
+            return np.asarray(lives, dtype=float).reshape(u.shape)
+        # The point's model, F = f0 + (p - f0) F0(x - gamma), inverted:
+        # dead on arrival below f0, never failing from p, and otherwise
+        # the base distribution's quantile past the offset.
+        gamma, p, f0 = (
+            self.extras.get(name, np.full(len(self.weights), none))[point]
+            for name, none in _EXTRAS
+        )
         with np.errstate(all="ignore"):
-            lives = self._family.qf(share, *params)
+            base = np.clip((share - f0) / (p - f0), 0.0, _BELOW_ONE)
+            lives = np.where(
+                share < f0,
+                0.0,
+                np.where(
+                    share >= p, np.inf, gamma + self._family.qf(base, *params)
+                ),
+            )
         return np.asarray(lives, dtype=float).reshape(u.shape)
 
     def random(self, size: int) -> np.ndarray:
@@ -438,10 +511,31 @@ class PosteriorPredictive:
             rows[:, column] = posterior.quantile(exact["name"], u)
         else:
             last = len(self.weights) - 1
-            rows = self.points[
-                np.minimum(np.searchsorted(self._ends, u, "right"), last)
-            ]
+            picked = np.minimum(np.searchsorted(self._ends, u, "right"), last)
+            rows = self.points[picked]
+            if self.extras:
+                # Each point with its own offset and shares.
+                return [
+                    self._family.from_params(
+                        list(row),
+                        **{
+                            name: float(values[i])
+                            for name, values in self.extras.items()
+                        },
+                    )
+                    for row, i in zip(rows, picked)
+                ]
         return [self._family.from_params(list(row)) for row in rows]
+
+    @property
+    def never_fails(self) -> float:
+        """The share of new units that never fail: the points' ``1 -
+        lfp_p`` averaged with their probabilities (0 for a fit without a
+        limited failure population)."""
+        p = self.extras.get("lfp_p")
+        if p is None:
+            return 0.0
+        return float(max(0.0, np.sum(self.weights * (1.0 - p))))
 
     # -- Saving --------------------------------------------------------------
 

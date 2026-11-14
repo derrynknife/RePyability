@@ -28,6 +28,7 @@ from repyability.rbd._common import (
     _constant_rate,
     _sf_values,
 )
+from repyability.rbd._covariate_schedule import ScheduledLife
 from repyability.rbd._hidden_life import (
     TestedLife,
 )
@@ -125,14 +126,15 @@ def _require_capacities_given(rbd) -> None:
 def _require_reliabilities(rbd, node) -> None:
     """Raise, as the model itself does, if a component's life or repair
     model has no exact or numerical reliability: a ``StandbyModel`` or
-    ``LoadSharingModel`` that only simulations take (#149)."""
+    ``LoadSharingModel`` that only simulations take (#149), or a life
+    under a covariate schedule."""
     component = rbd.components[node]
     for model in (
         getattr(component, "reliability", None),
         getattr(component, "time_to_replace", None),
     ):
         if (
-            isinstance(model, (StandbyModel, LoadSharingModel))
+            isinstance(model, (StandbyModel, LoadSharingModel, ScheduledLife))
             and model.is_simulated
         ):
             raise model._no_reliability()
@@ -181,8 +183,11 @@ def _require_unscheduled_stages(rbd, node) -> None:
 def _imperfect_phrase(rbd, node) -> str:
     """How a component is repaired imperfectly, in words."""
     imperfect = rbd._imperfect[node]
-    kind = "I" if imperfect.kijima == "kijima1" else "II"
-    phrase = f"Kijima {kind}, q = {imperfect.q:g}"
+    if imperfect.process is not None:
+        phrase = f"by its fitted {imperfect.process.kind} model's own rule"
+    else:
+        kind = "I" if imperfect.kijima == "kijima1" else "II"
+        phrase = f"Kijima {kind}, q = {imperfect.q:g}"
     if imperfect.replace_after is not None:
         phrase += (
             f", replaced at failure {imperfect.replace_after} since it "
@@ -271,6 +276,11 @@ def _minimal_repair_blocker(rbd, node) -> Optional[str]:
     operating age is followed on a grid (see ``MinimalRepairCurve``)."""
     imperfect = rbd._imperfect[node]
     component = rbd.components[node]
+    if imperfect.process is not None:
+        return (
+            "its fitted model's repairs are followed only by the "
+            "simulation, failure by failure"
+        )
     if imperfect.q < 1.0:
         return "its repairs take away some of its age (q below 1)"
     if imperfect.replace_after is not None:

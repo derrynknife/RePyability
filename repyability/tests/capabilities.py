@@ -165,6 +165,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                     "get_all_path_sets",
                 ),
             ),
+            (
+                "Prime implicants (NOT gates)",
+                ("prime_implicants",),
+            ),
             ("Each path set's probability", ("path_set_probabilities",)),
             ("Cut sets ranked by probability", ("ranked_cut_sets",)),
             ("Irrelevant components", ("find_irrelevant_components",)),
@@ -199,6 +203,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 "Save and load (dict, JSON)",
                 ("to_dict", "to_json", "from_dict", "from_json"),
             ),
+            ("Export to Open-PSA (MEF)", ("to_open_psa",)),
         ],
     ),
     (
@@ -214,6 +219,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Differential (DIM)", ("differential_importance",)),
             ("Joint (second order)", ("joint_importance",)),
             ("Barlow-Proschan", ("barlow_proschan_importance",)),
+            (
+                "Shares of a safety function's PFDavg, common cause apart",
+                ("pfd_breakdown",),
+            ),
             (
                 "Each block's part in each phase's failures",
                 ("failure_drivers",),
@@ -364,6 +373,7 @@ FAMILIES: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {
                 "joint_importance",
                 "barlow_proschan_importance",
                 "availability_rate",
+                "pfd_breakdown",
             ),
         ),
         ("Sensitivity", ("parameter_sensitivity",)),
@@ -418,6 +428,7 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("Any life and repair", "costed_pairs"),
         ("A fitted life", "fitted life"),
         ("A fitted Crow-AMSAA process", "fitted Crow-AMSAA process"),
+        ("A fitted G1, ARA or ARI process", "fitted ARA process"),
         ("A probability per demand", "fixed probability"),
         ("A mixture life", "mixture life"),
         ("A fitted degradation process life", "degradation process life"),

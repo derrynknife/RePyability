@@ -25,6 +25,94 @@ other release, fixes included, the minor.
   `to_dict()`), and the results its methods return carry it as
   `model_unit`, in their `to_dict()` too. Both are `None` when the models
   name no unit or name different ones.
+- **`repyability.schedule`: schedules on the calendar.** RePyability now
+  connects model time to dates, as plain calculations: it takes dates
+  and rules from the caller, never reads the clock and stores nothing.
+  The first part:
+  - `Recurrence`: which dates a rule gives. `Recurrence.every(n, unit,
+    anchor)` (days, weeks, months or years; months and years keep the
+    anchor's day, a shorter month's last day), `weekly` (named weekdays,
+    every n weeks), `monthly` (a day of the month, or its first to fifth
+    or last to fifth-from-last weekday, every n months), `yearly` (a date
+    or a weekday pattern in a named month: the first Tuesday of
+    November), and `on` (given dates). Every rule takes `season=` (a
+    `Season` of months or of days of the year), `excluding=` (dates or
+    ranges), `moved=` (an excluded date skipped, or moved to the nearest
+    day before or after) and `short_months=`. Its `dates(start, end)`
+    include both ends; `on_or_after`, `after`, `includes` and `number`
+    ask about one date; `notes` lists the months a fifth weekday or a
+    short month skipped and the dates excluded or moved; `describe()`
+    says the rule in plain words; `to_dict`/`from_dict` save it (and read
+    a work package's cadence or a task's interval as earlier tools
+    stored them); `to_rrule()` writes it as iCalendar text.
+  - `Task`: when a task falls due by a rule, with a second limit
+    (`also=`, whichever comes first), when it was last done, crew visits
+    it waits for (`visits=`) and a tolerance; an interval counts again
+    from when the task is done, a pattern keeps its own dates
+    (`resets=` overrides). `Task.due(start, end)` returns a `TaskDue`:
+    the dates, which limit set each, when each is done and how late, the
+    count, cost and hours, and notes in plain words.
+  - `work_by_period(tasks, period, start, end)`: the tasks, hours and
+    cost in each day, week, month, quarter or year (`WorkByPeriod`).
+
+  The use cases are in `repyability/schedule/README.md`, and the guide
+  has a page, "Schedules on the calendar".
+- Duty plans: `repyability.schedule.DutyPlan` says how equipment runs,
+  from concrete runs (`Runs`), a repeating week (`Shifts`), a roster
+  (`Roster`), a general rate or a range of rates (`Rate`: 3 h a day, 15 h
+  a month, 2 to 4 h a day) or all the time (`Continuous`), with seasons,
+  outages, a utilisation, other meters (starts, per hour, per run, or a
+  rate of their own) and a time zone (real hours across daylight saving).
+  A plan is a background with specific parts on top, used where they
+  cover; the background applies only to the time they leave
+  (`fill="pro_rata"`, or `"top_up"` for a budget), so no duty is made at
+  the handover. Overlapping parts are refused, naming both. Every part
+  and plan saves with `to_dict()`/`from_dict()`.
+- `DutyPlan.forecast` gives a `UsageForecast`, the map between moments
+  and meter readings both ways: `at`, `when` (with the stop before and
+  after a mid-run moment), `due`, `by_period`, `model_time` and
+  `moment`, `duty`, `rate` and `schedule`, and which layer each stretch
+  came from (`describe`, `stretches`). `UsageForecast.calendar` is the
+  identity map, for no plan.
+- Limits by use on tasks: `Task(every=Usage(2000, "hours"),
+  last_done_reading=...)`, alone or with a calendar limit (whichever
+  comes first), with `task.due(..., usage=forecast)` and
+  `work_by_period(..., usage=)`; `TaskDue` gives each due moment, reading
+  and the stop after it.
+- Failures, events and shuts on the calendar, through the map (the
+  existing model-time methods, asked from dates, their answers labelled
+  with dates; no new probability):
+  - `failures_by_period(part, usage, period, age=)`: a `NonRepairable`
+    part's expected failures, cost, chance of at least one failure and
+    the range (5th to 95th percentile, 90% two-sided) in each day, week,
+    month, quarter or year (`FailuresByPeriod`), from
+    `NonRepairable.cost_by_window` and `failures`, run to failure or
+    under a policy (`every=`, `resets=`, `calendar=`). The model's unit is
+    read from its label (`unit="h"`, `"days"`), or given as `unit=`.
+  - `events_by_period(rbd, usage, period, state=)`: a `RepairableRBD`'s
+    expected events in each calendar period (`EventsByPeriod`), from
+    `expected_events_by_window`; `cost=True` adds `cost_by_window`.
+  - `Opportunity.from_recurrence(name, cost, rule, start, end, unit=,
+    usage=)`: dated shuts as an opportunity on a part's model time
+    (operating time through `usage=`, or calendar time), for a
+    `Calendar`.
+  - `shutdown_spec(rule, start, end, duration=, ...)`: shuts on dates as
+    a `RepairableRBD` shutdown at given times (simulated; the exact
+    methods take shuts on a period).
+  - `UsageForecast.life_at_usage(model)`: a life on two clocks
+    (surpyval 0.28's `EquivalenceModel`) at the plan's starts per
+    operating hour.
+- `TaskDue.notes` says when one of a task's two limits set none of the
+  dates, and how far behind it was ("the hours limit would not have been
+  reached until 4 Apr 2028, about 4.7 months later").
+
+### Changed
+
+- **python-dateutil (2.8.2 or later) is a dependency of its own**, for
+  the schedule module's date arithmetic. Every install had it already,
+  through surpyval's pandas.
+- **tzdata is required on Windows**, for the duty plans' time zones
+  (the standard library's zoneinfo; macOS and Linux have a zone database).
 
 ## [0.17] - 2026-11-14
 
@@ -39,21 +127,168 @@ window. A `NonRepairable` gives the numbers behind each maintenance
 decision for a failure mode, from new or from its state. A phased mission
 can be drawn from one diagram with a model per phase, a Bayesian fit is a
 block with its credible band carried to the system, and stress-strength
-interference is new. RePyability is tested against surpyval 0.27 and
-needs it: 0.27 removes no name and deprecates nothing RePyability uses,
-and the fitted models RePyability takes give the same values. Nothing
-was deprecated in 0.16, so nothing is removed.
+interference is new, as is where a safety function's PFDavg comes from
+(`pfd_breakdown`, each component's and common-cause group's share). A
+part's cost over a window, and its spread, can follow a calendar policy
+of opportunistic replacement, and replacement on condition by a measured
+level starts from a state. RePyability is tested against surpyval 0.27
+and needs it: 0.27 removes no name and deprecates nothing RePyability uses,
+and the fitted models RePyability takes give the same values. Every
+repair model surpyval fits is a repairable block (G1, ARA and ARI
+simulated, Cox-Lewis exact), as is any surpyval model with a life's
+functions (a Royston-Parmar fit, a regression at a unit's covariates)
+and a Bayesian fit with an offset or shares; a repairable block's
+covariates can follow a schedule over the system's time; common-cause
+groups take tests and repairs of any length and start from the members'
+states; standby arrangements of Exponential units are exact by their
+Markov chain (warm standby, spares that fail to start, imperfect
+switching), and a phased mission takes warm standby and spares that fail
+to start, exactly where its blocks are Exponential; fault trees take NOT
+gates (prime implicants), the dynamic gates PAND, SPARE, SEQ and FDEP,
+and export to Open-PSA. `"fit"` uncertainty draws every fitted kind of
+block, a `JointNode` takes surpyval `Measurements`, and
+`RepairOrReplace` says whether to repair a unit again or replace it, from
+a joint frailty model. RePyability now imports only surpyval's public
+interface. The demonstration test functions are deprecated for
+`surpyval.test_planning`'s, and 0.18 removes them. Nothing was
+deprecated in 0.16, so nothing is removed.
 
-Behaviour changes: surpyval 0.27 is required. Numbers that change on
-purpose: with a component replaced on condition by its level,
-`availability()` and `cost()` give the exact expected values as their
-means by default (the liner example's quoted mean moves); a seeded run
-from the state of a unit repaired imperfectly now draws from the unit's
-own stream, so its numbers differ from 0.16 (and are now reproducible).
+Behaviour changes: surpyval 0.27 is required; `Repairable` refuses the
+surpyval models whose count of failures it misread (a joint frailty
+model, a regression, a cause-specific process); `"fit"` uncertainty now
+draws every fitted kind of block (a regression, degradation process,
+mixture, Royston-Parmar model or repairable-unit process was held at its
+fit), and an offset fit's draws include its offset; the nine
+demonstration functions warn (a `FutureWarning`). Numbers that change on
+purpose: the uncertainty bands of diagrams holding those fitted kinds
+widen to include their fits' uncertainty (the narrower bands understated
+it), and an offset fit's band carries its offset's; a seeded
+`RepairableRBD` run with a surpyval `MixtureModel` life draws it with
+the mixture's own quantile, so its numbers can move in the last digit or
+two (about 1e-16 relative: a mean availability of 0.9797765460669154
+becomes 0.9797765460669152); a Bayesian fit's predictive `ff`, `Hf` and
+`qf` are the fit's own, equal to 0.16's to about 1e-14 relative; the
+demonstration functions' probabilities, test times and bounds are
+surpyval's, equal to 0.16's to within 2e-15 relative (sample sizes,
+failures and plans exactly); a `StandbyModel` of Exponential units that
+was worked out numerically is now exact, its reliability and mean moving
+by up to about 1e-5 (1e-4 for two different units operating); with a component replaced on condition by
+its level, `availability()` and `cost()` give the exact expected values
+as their means by default (the liner example's quoted mean moves); a
+seeded run from the state of a unit repaired imperfectly now draws from
+the unit's own stream, so its numbers differ from 0.16 (and are now
+reproducible), as does a seeded run with a repair given a Royston-Parmar
+fit, a regression at its covariates or a destructive degradation model
+(now drawn from the component's stream).
 Every other seeded result is unchanged.
 
 ### Added
 
+- `NonRepairable.cost_distribution()` and `cost_by_window()` take a
+  calendar policy, `calendar=` (the `CalendarPolicy` of
+  `optimal_calendar_policy`: at each opportunity, replace the part if it
+  is at least that time's threshold age): a part's cost over a window
+  from its state, and in each of a run of windows, with its spread, under
+  the policy found to be cheapest over a calendar of shuts. Planned
+  replacements are priced by their opportunity, and the outcomes count
+  them by kind (`outcomes()` gives `"planned": {kind: count}`; the
+  results' new `kinds`, `kind_prices` and `kind_outcomes`). Numerical by
+  default, to the `precision` reported: on a grid of half the policy's
+  step, each count's renewals in the window passed on to the counts with
+  one more event (failures by a convolution cut at each renewal's planned
+  time), checked against the policy's own step; simulated with
+  `method="simulate"`. A policy worked out by integration has no grid
+  and is simulated only.
+- **Where a safety function's PFDavg comes from**:
+  `RepairableRBD.pfd_breakdown()` returns a `PFDBreakdown`, the long-run
+  unavailability (for a periodically tested protective function, its
+  PFDavg) split into each component's share and each common-cause
+  group's, adding up to it. The common-cause share is what the PFDavg
+  would fall by without the shared causes (split among several groups by
+  their Shapley value); the rest, the PFDavg without them, is shared
+  among the components by their Aumann-Shapley value at each time of the
+  tests' period (each term of the system's unavailability shared equally
+  among its components, so a redundant pair splits its coincident
+  downtime half and half). Exact or numerical as `mean_unavailability`
+  is, with up to eight groups; checked against the exact integrals of
+  1oo1, 1oo2 and 2oo3 voting with and without a beta factor, IEC
+  61508-6's simplified equations and the simulation. See the guide's
+  "Where the PFDavg comes from".
+- Common-cause groups in a `RepairableRBD` with tests and repairs of any
+  length, and from the members' current states. A tested member's test or
+  repair may now be any surpyval parametric model (a Weibull repair, a
+  lognormal test), not only none, a fixed time or an exponential one, and
+  an exponential test with a fixed repair is taken too: the group's chain
+  follows a length that is neither fixed nor exponential on pieces of the
+  time since the member's test, each at constant rates that keep the
+  member's chance of being in its test, or its repair, exact at the
+  pieces' ends (refined until a rate held constant follows it within the
+  piece to 1e-5). The fixed and exponential lengths stay exact. A test
+  and repair that can run into the member's next test (but for a chance
+  below 1e-12) is refused, saying to simulate. The values over time
+  (`point_availability`, `mission_availability`, `expected_events`, the
+  importance measures over time, ...) now start from the members' states
+  (`state=`): a member up since it was last tested or put into service
+  (it may have failed since, unseen, by its own cause or a shared one), a
+  member down in a repair under way, or every member in the group's long
+  run (`state="stationary"`, whose values over time repeat the long run's
+  every period). The simulations start from the same states: a member's
+  own cause's life from when it was last known up, and, for each shared
+  cause, when it last struck before 0, from a new stream (`CAUSE_START`).
+  Refused: some members of a group in their long run and others not, a
+  member with a life of its own (a `level` or `model`), and a member down
+  whose found failures are repaired at once. `analysis_routes()`, the
+  README's table and the guide say so. Seeded results are unchanged (the
+  new stream is drawn only by runs from such states, which were refused).
+- Covariate schedules on a `RepairableRBD`'s blocks. A component spec
+  takes `"covariates"`, a surpyval `StepSchedule` on the diagram's clock
+  (from 0, open-ended or cyclic), with a fitted regression model as its
+  `"reliability"`: a load that steps between levels over the system's
+  time. The schedule is the system's, not the unit's: each unit's life is
+  drawn from when it is put into service, at the covariates in force as
+  it ages, and its repairs and tasks reset its age as for any block while
+  the schedule runs on. Proportional and additive hazards take the hazard
+  at the unit's age and the covariates in force (`Hf(b, Z) - Hf(a, Z)`
+  over a step), with Kijima repair and partial restoration too;
+  accelerated failure time and accelerated life take the cumulative
+  exposure model (no virtual age, as their clock changes speed);
+  proportional odds is refused. Each life inverts the cumulative hazard
+  along the steps, to the last bits within its step, one uniform from
+  the block's own stream (seeded runs repeat). Only the simulations take
+  such a block (`availability`, `cost`, `simulate_timelines`, in
+  Python); the exact and numerical methods refuse it, saying so, as
+  `analysis_routes()` reports, and a duty, a standby or common-cause
+  group, replacement on condition by a threshold and a shutdown that
+  stands the block still are refused with it. Saved and loaded with the
+  diagram. A `NonRepairable` given a regression model says where
+  schedules go. See the guide's "Covariates that change over time".
+- Standby arrangements that had no exact answer. A `StandbyModel` of
+  Exponential units is exact whatever it holds: units of different
+  rates, any `k`, any `dormancy_factor` (warm standby with two or more
+  units operating, cold standby of three or more different units
+  operating) and spares that may fail on demand, by a Markov chain of
+  which units are left, followed by uniformization (each probability, of
+  working or of having failed, to full precision however small). Spares
+  may now fail on demand in warm and hot standby too, where
+  `switching_probability` raised `NotImplementedError`, and in two ways:
+  `switching_probability`, a switch that fails and ends the arrangement
+  then, and the new `start_probability`, a spare that fails to start, is
+  lost and passed for the next at once (one value, or one per spare). The
+  numerical methods take both: cold standby with one unit operating (a
+  spare that may fail to start is one of life 0 then), cold standby of
+  identical units (the renewal counts weighted by the chance that that
+  many spares switch in and start), cold standby of two different units
+  operating, and warm or hot standby with one unit operating (the
+  recursion over the switch-ins). What has neither, units not all
+  Exponential in warm standby with `k >= 2`, hot standby with `k >= 2`
+  and spares that may fail, or cold standby of three or more different
+  units operating, is simulated as before, and its refusal now says why
+  and what would make it exact or numerical; a chain of more than 200
+  states (many different units, warm) is simulated, saying so. Its draws
+  play the spares' switches and starts out with a uniform each, seeded
+  and replayed alike one draw at a time or in a diagram's blocks. A
+  `start_probability` saves with the diagram (and only when it is not 1,
+  so what earlier versions saved is unchanged).
 - Tasks counted in running hours (UC-26). A `"preventive"` or
   `"inspection"` spec takes `"basis"`: `"calendar"` (the default, as
   before) or `"operating"`, the block's operating time. On a block with a
@@ -184,15 +419,31 @@ Every other seeded result is unchanged.
 - `PhasedMission.from_diagram(rbd, phases)`: a mission drawn as one
   diagram, each phase (`MissionPhase(name, duration, blocks=..., k=...)`)
   setting how its blocks behave: `"working"` (the default), `"standby"`
-  (cold standby, idle until the phase's structure needs it, started in a
-  set order, switching perfect and instant), `"guaranteed"` (ages but
+  (idle until the phase's structure needs it, called on in the order the
+  phase names them; cold by default, warm with
+  `BlockSetting(state="standby", dormancy_factor=f)`, ageing at `f` of
+  the clock while idle and able to fail there, found failed when called
+  on; and starting with `start_probability`, by default 1, a failed start
+  a failure on demand, the next spare then called on, as a
+  `StandbyModel`'s `dormancy_factor` and `start_probability` behave),
+  `"guaranteed"` (ages but
   cannot fail in the phase) or `"not_needed"` (taken as working by the
   phase, while it ages and can fail), the covariates of a regression block
   in the phase (`BlockSetting(state=..., covariates=...)`, age carried
   over as along a step schedule), and the k of a vote. Missions with no
   block on standby are exact (the Esary-Ziehms segments, 1 in a
-  guaranteed phase); with standby, simulated (one simulation across the
-  phases), with `analysis_routes()` saying which.
+  guaranteed phase). With standby they are exact where every block's
+  life has a constant failure rate in every phase (exponential lives, an
+  exponential regression at each phase's covariates): a Markov chain over
+  the blocks' states (running, idle, failed), carried through the phases
+  with the take-overs, switching and dormancy as the simulation plays
+  them, up to `_mission_chain.MAX_STATES` (20,000) states a phase, which
+  gives the reliability, each phase's failure probability, the
+  reliability over time, the take-overs and the drivers. Otherwise
+  simulated (one simulation across the phases). `analysis_routes()` says
+  which. A simulated `summary()` carries a confidence band about its
+  reliability over time (`lower`, `upper`: Wilson's interval at each
+  time, at `confidence`).
 - `PhasedMission.reliability_over_time(t)`, `failure_drivers()` (the fall
   in each phase's failure probability if a block never failed, exact or
   with common random numbers) and `summary()`, the whole mission at once
@@ -220,11 +471,45 @@ Every other seeded result is unchanged.
   and its draws a posterior point and a life from one uniform, so seeded
   simulations stream it and both engines take it. It saves with the
   diagram (the fit's own `to_dict()`, its posterior whole) and pickles.
-  Its credible band is carried to system results (the next entry). A
-  fit with an offset, a limited failure population or zero inflation, or
-  of a discrete distribution, is refused for now. A surpyval Bayesian fit
+  Its credible band is carried to system results (see below). A fit of
+  a discrete distribution is refused. A surpyval Bayesian fit
   is no longer taken for its distribution at the posterior medians by the
   model probes (`distribution_name`).
+- Any surpyval model with a life's functions is a repairable block, taken
+  by what it can do rather than by its class. A `RepairableRBD`
+  component's life or repair, and a `NonRepairable`'s (with the
+  maintenance calculators on it), takes any surpyval model whose `sf`,
+  `ff`, `df`, `hf`, `Hf`, `qf` and `mean` work with times alone: newly a
+  Royston-Parmar fit, a regression at one unit's covariates
+  (`regression.at(Z)`, surpyval's `LifeAtCovariates`: a proportional
+  hazards, accelerated failure time, proportional odds, distributional,
+  zero-inflated or mixture-cure fit there) and a destructive degradation
+  model, where before a life had to be a distribution, a mixture, a
+  Bayesian fit or a degradation process. The exact methods integrate it
+  through its functions, and the simulations draw it through its quantile
+  function from the component's own stream, so a seed gives the same run
+  on either engine and it can start part way through a life. A share
+  that never fails (a cure model's) is up for good in the long run. It
+  saves with the diagram in surpyval's own format (a regression at its
+  covariates as the regression and the row), in a `NonRepairableRBD`
+  too. Still refused, now saying which function is missing and why: a
+  regression without its covariates (the message names `model.at(Z)`;
+  as a repair it was taken and failed with a `TypeError` in the
+  analysis), a Cox model at its covariates and non-parametric estimates
+  such as `CompetingRisks` (their curves end at the data, so they have
+  no mean), and a joint model's prediction. Seeded results of a repair
+  given one of these models (taken before, drawn with the model's own
+  `random` from numpy's global generator) now come from the component's
+  stream, so they differ from before (and are now reproducible); every
+  other seeded result is unchanged.
+- A Bayesian fit with an offset, a limited failure population or zero
+  inflation (`fit_bayes(offset=True)`, `lfp=True`, `zi=True`, or draws
+  with `gamma`, `lfp_p` or `f0` columns) is a life too, where it was
+  refused: each posterior point is its own model, its functions are the
+  fit's own, a draw inverts the point's model (0 dead on arrival, `inf`
+  never failing), its share that never fails is the points' `1 - lfp_p`
+  averaged, and its credible band draws each point with its offset and
+  shares. A fit of a discrete distribution is still refused.
 - A Bayesian block's credible band, carried to the system's result. The
   parameter-uncertainty methods (`NonRepairableRBD.sf_uncertainty`,
   `mean_uncertainty`, `time_to_reliability_uncertainty`,
@@ -333,9 +618,22 @@ Every other seeded result is unchanged.
   is a Markov process, so the unit is followed from one inspection to the
   next by the distribution of its level on a grid of levels, as
   replacement on condition by age follows its ages; the long run is the
-  interval this settles into. From a state it is still refused (a state
-  does not give the level), as is a Wiener process with no drift towards
-  its threshold. `analysis_routes()` says so.
+  interval this settles into. A Wiener process with no drift towards its
+  threshold is refused. `analysis_routes()` says so.
+- Replacement on condition by a measured degradation level (`"preventive":
+  {"policy": "condition", "level": ...}` on a Wiener or gamma process
+  life) starts from a state, where it was refused: a level measured now
+  (`NodeState(level=..., since_scheduled=...)`), a unit new on its
+  calendar's phase, one in a repair or a replacement, and (for the exact
+  values) the long-run state, `"stationary"`. The values over time
+  (`point_availability`, `expected_events`, `expected_cost`,
+  `expected_npv`, `mission_availability`, the conditional runs and
+  `plan_vs_actual` given the state) follow the level's distribution from
+  the state to the first inspection and on from there, numerically; the
+  simulations (`availability`, `cost`, `simulate_timelines`) start from
+  it too, the unit's first inspection reading its level from the one
+  measured. An age alone is refused there (it does not give the level),
+  as is a model of the unit's own.
 - `NonRepairable.cost_distribution()` (and the `CostDistribution`
   result): what a part's maintenance costs over a window from its state
   now, with its spread, under run to failure, age replacement or block
@@ -371,10 +669,105 @@ Every other seeded result is unchanged.
   saves and loads with it. `q = 0` under Kijima II (or Kijima I with
   repairs that renew) is taken as no restoration, so its answers are
   today's.
+- Every repair model surpyval fits is a repairable block. A fitted
+  `GeneralizedOneRenewal` (G1), `ARA` or `ARI` given as a component's
+  `"reliability"` is its life from new and a `"repair"` of `{"model":
+  "process", "process": model}`, and the Python simulation steps the
+  fitted model itself, failure by failure, with surpyval's public
+  `states`, `next_failure_qf` and `advance` (surpyval 0.27): each life
+  after a repair is the model's quantile at a uniform from the unit's
+  own stream, so a seed gives the same run and the other units' draws are
+  unchanged. Such a unit is taken only by the simulations
+  (`availability`, `cost`, `simulate_timelines`, in Python; the exact
+  methods refuse it, with the reason), may start from its age since new
+  without a failure (not a virtual age), and is saved as the fitted
+  model. Each of its failures costs about 0.1 to 1.5 ms more than a
+  plain unit's (ARI's, whose quantile is solved numerically, the most).
+  A fitted `CoxLewis` process is minimal repair of the life whose
+  cumulative hazard is its cumulative intensity, as `CrowAMSAA` and
+  `Duane` are, so its expected failures are exact (for a falling
+  intensity the life is defective: the unit may never fail again).
+  Before, these four were refused. A G1, ARA or ARI given as a
+  preventive `"restoration"` is still refused. Every existing seeded
+  result is unchanged.
+- **A `JointNode` takes its readings as surpyval `Measurements`.**
+  `JointNode(joint_model, markers=readings, i=unit_id, age=...)` reads the
+  unit's readings out of a `surpyval.Measurements` (`for_unit(i)`), naming
+  the measurement with `measurement=` where it holds several
+  (`with_measurement`). The node gives the same prediction as the unit's
+  `{age: value}` dict, and keeps the unit's id, the measurement's name and
+  its unit label as typed (`i`, `measurement`, `marker_unit`) in its
+  `repr`, `to_dict` and `from_dict` (so a saved diagram keeps them). An
+  unknown unit, an unknown measurement, or several measurements and none
+  named are refused, listing what there is. A plain dict works as before
+  and saves as before.
+- Repair again or replace, for a fleet whose units differ (UC-27).
+  `RepairOrReplace` takes a surpyval `JointFrailtyModel` (repeat failures
+  and write-offs fitted together, with each unit's frailty) and the costs
+  of a repair, a failure's downtime, a replacement and a write-off, with
+  an optional continuous discount rate. `fleet_policy()` gives, for a new
+  unit, the cost rate of keeping on repairing it until it is written off,
+  of replacing it at the best age, and of replacing it at the best count
+  of failures, with the cheapest (`RepairOrReplacePolicy`).
+  `unit_decision()` (and `unit_decisions()` for many) gives, for one unit
+  at its age (and `just_failed`), whether to replace it now or which rule
+  to keep it under, what each saves against replacing now, and the
+  frailty at which the answer turns (`UnitDecision`;
+  `break_even_frailty()`). Numerical, from the model's own functions at
+  each frailty, with no simulation; every cost rate has a 90% two-sided
+  band from draws of the fitted parameters (seeded), and every result
+  says what its bands are. Refused: a model on the gap time scale. A
+  model built from parameters has no bands. surpyval's joint frailty
+  model is experimental. `Repairable`'s refusal of a joint frailty model
+  now points here.
+- **NOT gates and dynamic gates in fault trees.** `FaultTree` takes
+  `("not", [input])`: a non-coherent tree, evaluated exactly through its
+  binary decision diagram, with `prime_implicants()` (every smallest
+  combination of events occurring and not occurring that makes the top
+  event occur, consensus terms included; `PrimeImplicant`) in place of the
+  minimal cut sets; `birnbaum_importance` (which can be negative) and
+  `conditional_probabilities` apply, and the cut sets, the other
+  importance measures, the lifetime analyses and the conversion to a
+  block diagram refuse, saying why. The dynamic gates `("pand", inputs)`
+  (priority AND, inclusive), `("spare", inputs)` and `("spare",
+  dormancy, inputs)` (cold, warm and hot spares, a spare ageing at the
+  dormancy factor in reserve), `("seq", inputs)` (sequence enforcing) and
+  `("fdep", trigger, dependents)` (functional dependency) give the top
+  event probability over time (`top_event_probability`, `ff`, `sf`): each
+  PAND, SPARE or SEQ that is an independent module integrated over its
+  inputs' distributions (Stieltjes sums for a PAND, the measure of each
+  unit's failure carried to the next for a SPARE or SEQ, Richardson
+  extrapolated on a grid halved until it agrees, to about 1e-9 for smooth
+  lives), the static part around them exact; one that shares events with
+  the rest refused exactly and simulated on request (`method="simulate"`,
+  `mc_samples`, `seed`), only the smallest independent part holding it.
+  `random()` simulates a dynamic tree's times to its top event, from a
+  seeded stream per event. An FDEP is written out as its static
+  equivalent, so a tree whose only dynamic gates are FDEPs has every
+  static analysis. `to_open_psa()` exports a tree as an Open-PSA Model
+  Exchange Format document (the static and NOT gates, an FDEP as its
+  static equivalent, probabilities, exponential and Weibull lives, and
+  beta-factor groups), refusing dynamic gates, which the format has none
+  of. Trees save and load with the new gates (`to_dict` adds a SPARE's
+  `"dormancy"`). Not yet: shared spares, importance measures and the mean
+  time to the top event for dynamic trees, and NOT and dynamic gates in
+  one tree.
 
 ### Changed
 
 - surpyval 0.27 is required, the release this one is tested against.
+- A `StandbyModel` of Exponential units that was worked out numerically
+  (different rates, imperfect switching, or a dormancy too small for the
+  hypoexponential form) is now exact, by its Markov chain: its
+  reliability and mean move by up to about 1e-5 (1e-4 for two different
+  units operating), to the exact values. Warm or hot standby with
+  `switching_probability` below 1 is worked out (exactly, numerically or
+  simulated, as above) where it raised `NotImplementedError`. A diagram
+  holding an arrangement of Exponential units that was simulated (warm
+  standby with two or more operating, cold standby of three or more
+  different units) is now worked out exactly, so its analyses that
+  refused give values, and a `RepairableRBD`'s means are the exact ones.
+  Seeded draws of every arrangement that ran before are unchanged.
 - With a component replaced on condition by its level, `availability()`
   and `cost()` now give the exact (numerical) expected values as their
   means by default, as for any component with a curve, where they gave
@@ -382,11 +775,73 @@ Every other seeded result is unchanged.
   run). The simulations themselves, their histories and the results with
   `control_variate=False` are unchanged. The guide's quoted mean for the
   liner example changes accordingly.
-
 - A phased mission's take-overs by blocks on standby are worked out for
   all the simulated missions at once with numpy, rather than one mission
   at a time: about 5 to 10 times faster where many missions need them.
   Results are unchanged, to the last bit for a given seed.
+- `"fit"` parameter uncertainty (`sf_uncertainty` and the other
+  `*_uncertainty` methods, `uncertainty_importance`, a network's and a
+  repairable diagram's) takes every fitted kind of block RePyability
+  accepts, through surpyval 0.27's `covariance_names` and `with_params`:
+  a regression node (at its own covariates), a Wiener or gamma
+  degradation process, a mixture, a Royston-Parmar model, and a fitted
+  Crow-AMSAA, Duane, HPP or generalised renewal process given as a
+  repairable component's life (its restoration factor drawn too). Regression
+  nodes of one regression fit share its draws, each at its own
+  covariates. Each parameter is drawn on its own scale (log for one
+  surpyval refuses below 0, logit for one it also refuses above 1 and
+  for a renewal process's restoration factor, as it is otherwise; a
+  mixture's weights as log-ratios), its covariance carried there by the
+  delta method, so no draw is cut off. A draw surpyval still refuses is
+  drawn again, with a warning counting them, and `"fit"` refuses (asking
+  for a list of models) past 2% of the draws. A joint
+  model's prediction is refused plainly: surpyval cannot rebuild it at
+  other parameters.
+- An offset fit's `"fit"` draws are surpyval's refits to resampled data
+  (`bootstrap()`, 200 refits seeded 0, picked with replacement), so the
+  offset is drawn too; before, it was held where it was fitted, with a
+  warning. Where surpyval cannot resample the data (left- or
+  interval-censored data, a model without its data), the offset is held,
+  with the warning, as before.
+- `NonRepairableRBD.uncertainty_importance`'s delta method varies these
+  fits' parameters; a `RepairableRBD`'s refuses them (their parameters
+  are not levers of `parameter_sensitivity`), naming `method="sobol"`.
+- RePyability uses surpyval's public interface only. The regression
+  families come from `surpyval.univariate.regression.kinds`, the
+  degradation processes from `surpyval.degradation`, the Cox model and
+  `JointModel` from `surpyval`, and a regression model's covariate count
+  from its public attributes. A new test fails on any import from outside
+  what surpyval's deprecation policy calls public, or any underscored
+  surpyval name. Two names surpyval has no public home for yet are listed
+  in it.
+- A mixture life's quantile is surpyval's `MixtureModel.qf` (precise in
+  both tails since surpyval 0.25, #821), in place of RePyability's own
+  (`_sampling.mixture_quantile`, removed). The two agree to within 2e-15
+  relative from `u = 1e-300` to 1, and a long simulation runs as fast or
+  faster.
+- A Bayesian fit's posterior predictive (`PosteriorPredictive`) takes its
+  `ff`, `Hf` and `qf` from the fit (`BayesianParametric`, which keeps its
+  digits in both tails in surpyval 0.27), in place of working them out
+  from the posterior's points itself. They agree to about 1e-14 relative
+  for probabilities from 1e-30 up.
+
+### Deprecated
+
+- **The demonstration test functions, for surpyval's.** Test planning is
+  surpyval's: `surpyval.test_planning` has `demonstration_sample_size`,
+  `demonstrated_reliability`, `demonstration_test_multiple`,
+  `demonstration_pass_probability`, `mtbf_test_time`, `demonstrated_mtbf`,
+  `mtbf_pass_probability`, `demonstration_plan` and
+  `mtbf_demonstration_plan` under the same names. RePyability's are now
+  calls to them and warn (a `FutureWarning`) naming surpyval's; 0.18
+  removes them (`deprecation.NEXT_REMOVAL`), with `DemonstrationPlan`.
+  surpyval's take `alpha_ci = 1 - confidence`, by keyword, where these
+  took `confidence`. Compared on a grid of every argument before the
+  change, the two give the same sample sizes, failures and plans exactly,
+  and the same probabilities, test times and bounds to within 2e-15
+  (relative: `1 - confidence` taken and given back); the messages for a
+  bad `n` or `alpha_ci` are surpyval's, but a bad `confidence` is still
+  refused as a confidence. The guide's examples use surpyval's.
 
 ### Removed
 
@@ -395,14 +850,44 @@ Every other seeded result is unchanged.
 
 ### Documentation
 
+- The surpyval workarounds still in RePyability were each checked
+  against surpyval 0.27 (a mixture's life left at an age, a degradation
+  level given survival, rescaling time for a duty cycle, parameter
+  ranges of fits other than distributions, a joint frailty model's
+  expected failures far past its write-off ages, and a Bayesian fit's
+  quantile with an offset or shares). 0.27 fixes none of them, so all
+  stay and no number changes; the joint frailty one can go once the
+  minimum surpyval is 0.28. The contributor notes record what was
+  measured, and no longer name a release as the latest; the maintenance
+  stories' statuses are as of 0.17.
 - The user stories' statuses are brought up to date with `dev`, each
   built part citing the test that is its oracle, and `stories/README.md`
   says how a story gets its oracle test and status. A new test checks
   `expected_npv` with limited repair crews against the Markov chain built
   by hand (story MX-13).
+- The README's list of what RePyability does and the user guide's
+  overview name 0.17's maintenance in model time (shutdowns, partial
+  restoration, tasks in running hours, planned against unplanned
+  downtime), `RepairOrReplace`, fitted repair models and joint models'
+  readings, and say the demonstration functions are deprecated.
 
 ### Fixed
 
+- `Repairable` took any model with a `cif` as the expected number of
+  failures by an age, so it took surpyval 0.27's `JointFrailtyModel`
+  (repairs and the unit being scrapped) and priced its `cif`, the repairs
+  counted as if the unit were never scrapped: on one model, 2.83 repairs
+  by age 200 where the model's own count (`mcf`) is 2.20, and the cost
+  rate too high, without a word. It now takes from surpyval only the
+  models whose count it reads right, a Poisson process (`HPP`,
+  `CrowAMSAA`, `Duane`, `CoxLewis`) or a renewal process
+  (`GeneralizedRenewal`, `GeneralizedOneRenewal`, `ARA`, `ARI`), and
+  refuses any other (a joint frailty model, a proportional-intensity
+  regression, a cause-specific process, a non-parametric estimate) with
+  a message naming what it takes. A model of your own with `cif` or
+  `mcf` is taken as before. A `RepairableRBD` no longer reads a
+  proportional-intensity regression as the bare Poisson process it is
+  built on (it raised an unclear error); it is refused by name.
 - A unit repaired imperfectly and started from a state (a `virtual_age`
   or an `age`) drew what is left of its life from numpy's global random
   numbers rather than its own stream, so a seeded run from that state
@@ -418,6 +903,19 @@ Every other seeded result is unchanged.
   `optimal_replacement_policy`) raised an `AttributeError`: its survival was
   taken for a non-parametric estimate's. It is a smooth curve, and is now
   integrated and searched as a distribution's is.
+- The expected events of a nested RBD whose components repeat with a
+  period (a block replacement, say), counted at a time a rounding past
+  one of its events at an exact time and before its curves have
+  settled, raised an `IndexError` (`index ... is out of bounds`): the
+  end was taken for the end of the period the counts are extended by,
+  moved down to the event, and extended a negative number of periods.
+  It reached `availability()` and `cost()` through their exact means of
+  a diagram with timed maintenance at several levels (both engines),
+  and `expected_events()` and the other window counts of a diagram with
+  such a nested RBD, at the end of a window. The bug was in 0.16 too.
+  Only the end of the period the counts are extended by is moved now:
+  an end a rounding past an event counts it, as any other end does.
+  Nothing that ran before gives a different number.
 
 ## [0.16] - 2026-10-31
 

@@ -177,6 +177,8 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
     if message:
         return r.REFUSED, message
     life, how = r.model_route(component.reliability)
+    if life == r.REFUSED:
+        return life, how
     if schedule.policy in ("block", "condition"):
         message = r.refusal(
             partial(_requirements._require_block_models, rbd, node)
@@ -252,7 +254,15 @@ def _long_run_route(rbd, groups: bool = True) -> "AnalysisRoute":
         "availabilities, exactly"
         + (
             ", and over each common-cause group's members' joint states "
-            "(a Markov chain)."
+            "(a Markov chain"
+            + (
+                "; its members' tests and repairs of a general length "
+                "followed on pieces of the time since each test, each at "
+                "constant rates"
+                if _ccf_groups._timings_vary(rbd)
+                else ""
+            )
+            + ")."
             if rbd.ccf_groups and groups
             else "."
         )

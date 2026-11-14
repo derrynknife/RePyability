@@ -1045,7 +1045,13 @@ def lifetime_tree(seed, probability=False):
 def lifetime_trees():
     from repyability.tests.catalogue import fault_tree_kinds
 
-    trees = {name: tree for name, tree in fault_tree_kinds().items()}
+    # The coherent, static trees, which have a block diagram to agree with
+    # (the routes tests check the others refuse what they do not give).
+    trees = {
+        name: tree
+        for name, tree in fault_tree_kinds().items()
+        if tree.is_coherent and not tree.is_dynamic
+    }
     trees.update({f"random {seed}": lifetime_tree(seed) for seed in range(8)})
     trees.update(
         {f"random {seed}, mixed": lifetime_tree(seed, True) for seed in (8, 9)}

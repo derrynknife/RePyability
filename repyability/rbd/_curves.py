@@ -12,6 +12,7 @@ import math
 from collections.abc import Mapping
 from functools import partial
 from typing import (
+    Any,
     Dict,
     Hashable,
     NoReturn,
@@ -25,6 +26,7 @@ from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _ccf_groups,
     _chain_transient,
+    _covariate_schedule,
     _crews,
     _long_run,
     _overrides,
@@ -49,13 +51,14 @@ from repyability.rbd._condition_replacement import (
     ConditionHead,
     condition_availability,
 )
+from repyability.rbd._covariate_schedule import scheduled
 from repyability.rbd._hidden_life import (
     TestedLife,
     TestedLifeCurve,
     TestedLifeSteady,
 )
 from repyability.rbd._hidden_tests import TestedUnit
-from repyability.rbd._level_replacement import level_model
+from repyability.rbd._level_replacement import LevelHead, level_model
 from repyability.rbd._long_run import (
     _TESTED_CYCLE,
 )
@@ -115,8 +118,10 @@ _MAX_CREW_NESTED = 10
 #: How a system's values over time take in its common-cause groups (#158).
 _GROUPS_OVER_TIME = (
     " Each common-cause group's members' joint states come from its Markov "
-    "chain followed from every member up at 0 (by uniformization, or through "
-    "its tests' first period, after which they repeat the long run's), and "
+    "chain followed from every member up at 0, or from their states (by "
+    "uniformization, or through its tests' first periods, after which they "
+    "repeat the long run's; tests and repairs of a general length on pieces "
+    "of the time since the test, each at constant rates), and "
     "the system is worked out over the combinations of its members up and "
     "down, the other nodes independent of them; the members' failures by "
     "each cause, at its rate where it takes the system down."
@@ -760,14 +765,25 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
     if (
         schedule is not None
         and schedule.level is not None
-        and not (state.new and state.since_scheduled is None)
+        and state.alive
+        and not state.stationary
     ):
-        raise NotImplementedError(
-            f"Component {node!r} is replaced on condition by its "
-            "measured degradation level, and starting that policy from a "
-            "state (a measured level among them) is not worked out yet: "
-            "leave it out (new)."
-        )
+        if state.model is not None:
+            raise NotImplementedError(
+                f"Component {node!r} is replaced on condition by its "
+                "measured degradation level, which its inspections read "
+                "from the process of the node: a model of its own is not "
+                "followed past them. Give its measured level (level=) "
+                "instead."
+            )
+        if state.level is None and (state.age or state.virtual_age):
+            raise ValueError(
+                f"Component {node!r} is replaced on condition by its "
+                "measured degradation level, which its age does not "
+                "give (nor whether its inspections so far kept it): give "
+                "the level measured now (level=), with the time since its "
+                "last inspection (since_scheduled=)."
+            )
     if (
         inspection is not None
         and inspection.partial
@@ -840,6 +856,16 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
                 "(availability, cost, simulate_timelines), not here: "
                 "leave it out (new)."
             )
+        if imperfect.process is not None and (
+            state.virtual_age is not None or state.own_life
+        ):
+            raise NotImplementedError(
+                f"Component {node!r} is repaired by its fitted "
+                f"{imperfect.process.kind} model's own rule, whose state "
+                "after a failure is not a Kijima virtual age: give its "
+                "age alone (the time it has run since new without a "
+                "failure), or leave it out (new)."
+            )
         if (
             imperfect.replace_after is not None
             or schedule is not None
@@ -853,6 +879,12 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
                 "leave it out (new)."
             )
     component = rbd.components[node]
+    if scheduled(component) is not None:
+        _covariate_schedule.check_state(
+            rbd, node, state, inspection is not None
+        )
+        if state.alive:
+            return
     life = component.reliability
     if state.own_life:
         life = _check_own_life(rbd, node, state, simulated)
@@ -937,7 +969,11 @@ def _check_own_life(rbd, node, state: NodeState, simulated: bool):
         what = "operates part of the time (a duty)"
     elif any(node in group.members for group in rbd.ccf_groups):
         what = "is in a common-cause group"
-    elif schedule is not None and schedule.policy == "condition":
+    elif (
+        schedule is not None
+        and schedule.policy == "condition"
+        and (schedule.level is None or state.model is not None)
+    ):
         what = "is replaced on condition"
     elif (
         not simulated
@@ -997,7 +1033,10 @@ def _check_simulated(rbd, states: dict) -> None:
             continue
         if (
             type(component) is not NonRepairable
-            or stream_sampler(component.reliability) is None
+            or (
+                stream_sampler(component.reliability) is None
+                and scheduled(component) is None
+            )
             or stream_sampler(component.time_to_replace) is None
         ):
             raise NotImplementedError(
@@ -1844,7 +1883,8 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     its phase on; from another state, its own curve up to its first
     block time or inspection, and the schedule's from there (see
     ``StartedBlockCurve``). Replaced on condition by its level (see
-    ``_level_replacement``), from new only (``_check_state``)."""
+    ``_level_replacement``), the unit up at the start is at its measured
+    level (``y0`` if new), which its first inspection reads."""
     component = rbd.components[node]
     schedule = rbd._preventive[node]
     duration = schedule.duration
@@ -1855,8 +1895,7 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
 
     def followed(horizon: float, head=None):
         if schedule.level is not None:
-            assert head is None  # from new (see _check_state)
-            return level_model(rbd, node).availability(horizon)
+            return level_model(rbd, node).availability(horizon, head)
         if schedule.policy == "condition":
             return condition_availability(
                 *models,
@@ -1896,6 +1935,8 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
             down_sf = _first_unit(
                 rbd, node, start, None, (), None, None
             ).down_sf
+        elif schedule.level is not None:
+            pass  # its level, not its age, decides (see LevelHead)
         else:
             # The unit in service now, if unfailed by the first
             # inspection, and its age there.
@@ -1907,11 +1948,16 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
             return head.events(np.asarray(u, dtype=float))["failures"]
 
         up = float(head.at(np.array([length]))[0])
-        reached = (
-            ConditionHead(length, up, failures, down_sf, first)
-            if schedule.policy == "condition"
-            else BlockHead(length, up, failures, down_sf)
-        )
+        reached: Any
+        if schedule.level is not None:
+            level = None
+            if start.alive:
+                level = float(life.y0 if start.level is None else start.level)
+            reached = LevelHead(length, up, failures, down_sf, level)
+        elif schedule.policy == "condition":
+            reached = ConditionHead(length, up, failures, down_sf, first)
+        else:
+            reached = BlockHead(length, up, failures, down_sf)
         result = followed(max(horizon - length, 0.0), reached)
         return StartedBlockCurve(head, BlockCurve(result, knots), length)
     result = followed(np.inf if stationary else max(horizon, 0.0))

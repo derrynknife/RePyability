@@ -197,10 +197,10 @@ def test_cold_standby_with_imperfect_switching(units, k, switching):
 def test_the_switching_probabilities_are_one_per_spare():
     with pytest.raises(ValueError, match="length 2"):
         StandbyModel([PUMP] * 4, k=2, switching_probability=[0.9, 0.9, 0.9])
-    with pytest.raises(NotImplementedError, match="cold standby"):
-        StandbyModel(
-            [PUMP] * 2, dormancy_factor=0.5, switching_probability=0.9
-        )
+    with pytest.raises(ValueError, match="length 2"):
+        StandbyModel([PUMP] * 4, k=2, start_probability=[0.9])
+    with pytest.raises(ValueError, match=r"start_probability values"):
+        StandbyModel([PUMP] * 2, dormancy_factor=0.5, start_probability=1.5)
 
 
 def test_the_two_samplers_draw_alike_under_imperfect_switching(monkeypatch):
