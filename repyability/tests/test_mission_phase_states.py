@@ -211,7 +211,7 @@ def test_cold_standby_pair_of_identical_exponentials():
     interval = mission.reliability_interval(40_000, seed=1)
     assert within(interval.estimate, interval.standard_error, closed)
     # b starts exactly when a fails within the phase: 1 - exp(-l t).
-    summary = mission.summary(mc_samples=40_000, seed=1)
+    summary = mission.summary(method="simulate", mc_samples=40_000, seed=1)
     assert summary.method == "simulated"
     started = 1 - math.exp(-lam * t)
     assert within(
@@ -247,7 +247,7 @@ def test_a_standby_never_needed_never_ages():
         ],
     )
     closed = float(life.sf(25.0))
-    summary = mission.summary(mc_samples=20_000, seed=1)
+    summary = mission.summary(method="simulate", mc_samples=20_000, seed=1)
     assert summary.phases[0].takeovers == {"b": 0.0}
     assert within(summary.reliability, summary.interval.standard_error, closed)
     assert abs(closed - float(life.sf(55.0) / life.sf(30.0))) > 0.1
@@ -287,7 +287,7 @@ def test_only_the_needed_spare_starts():
     mission = PhasedMission.from_diagram(
         rbd, [P("only", t, blocks={"b1": "standby", "b2": "standby"})]
     )
-    summary = mission.summary(mc_samples=40_000, seed=2)
+    summary = mission.summary(method="simulate", mc_samples=40_000, seed=2)
     closed = pair(l1, t) * pair(l2, t)
     assert within(summary.reliability, summary.interval.standard_error, closed)
     started = summary.phases[0].takeovers
@@ -310,7 +310,7 @@ def test_standby_blocks_start_in_the_order_given():
     mission = PhasedMission.from_diagram(
         rbd, [P("only", t, blocks={"b": "standby", "c": "standby"})]
     )
-    summary = mission.summary(mc_samples=20_000, seed=1)
+    summary = mission.summary(method="simulate", mc_samples=20_000, seed=1)
     started = summary.phases[0].takeovers
     # b: a failed by t; c: a then b failed by t (Erlang 2).
     b = 1 - math.exp(-lam * t)
@@ -400,7 +400,7 @@ def test_take_overs_of_all_missions_follow_the_rule(edges, spares):
     ready = {n: rng.integers(1, 6, size) * 5.0 for n in spares}
     for left in ready.values():
         left[rng.random(size) < 0.2] = np.nan
-    fail, when = _take_over(
+    fail, when, _ = _take_over(
         structure,
         {**running, **{n: np.full(size, -np.inf) for n in spares}},
         ready,
@@ -433,7 +433,7 @@ def test_seeded_take_overs_are_unchanged():
     mission = PhasedMission.from_diagram(
         rbd, [P("only", t, blocks={"b": "standby", "c": "standby"})]
     )
-    summary = mission.summary(mc_samples=20_000, seed=1)
+    summary = mission.summary(method="simulate", mc_samples=20_000, seed=1)
     assert summary.reliability == 0.91965
     assert summary.phases[0].takeovers == {"b": 0.63175, "c": 0.2629}
     models = {"a1": E([0.02]), "b1": E([0.02]), "a2": E([0.01])}
@@ -445,7 +445,7 @@ def test_seeded_take_overs_are_unchanged():
             P("two", 15.0, blocks={"b2": "standby"}),
         ],
     )
-    summary = mission.summary(mc_samples=20_000, seed=2)
+    summary = mission.summary(method="simulate", mc_samples=20_000, seed=2)
     assert summary.reliability == 0.7452
     assert [ph.takeovers for ph in summary.phases] == [
         {"b1": 0.38275, "b2": 0.2189},
@@ -454,7 +454,9 @@ def test_seeded_take_overs_are_unchanged():
 
 
 def test_standby_missions_refuse_the_exact_analyses():
-    rbd = NonRepairableRBD(PAIR, {"a": E([0.01]), "b": E([0.01])})
+    # A Weibull life: no constant rate, so no Markov chain (with constant
+    # rates the mission is exact, see test_mission_standby_chain.py).
+    rbd = NonRepairableRBD(PAIR, {"a": W([100.0, 2.0]), "b": E([0.01])})
     mission = PhasedMission.from_diagram(
         rbd, [P("only", 10.0, blocks={"b": "standby"})]
     )
@@ -773,7 +775,7 @@ def test_summary_is_one_result():
 
 
 def test_simulated_summary_through_json():
-    rbd = NonRepairableRBD(PAIR, {"a": E([0.01]), "b": E([0.01])})
+    rbd = NonRepairableRBD(PAIR, {"a": W([100.0, 2.0]), "b": E([0.01])})
     mission = PhasedMission.from_diagram(
         rbd, [P("one", 20.0, blocks={"b": "standby"}), P("two", 10.0)]
     )
@@ -787,6 +789,8 @@ def test_simulated_summary_through_json():
     assert "standby" in restored["reason"]
     assert set(restored["phases"][0]["takeovers"]) == {"b"}
     assert restored["phases"][1]["takeovers"] == {}
+    assert len(restored["lower"]) == len(restored["upper"])
+    assert len(restored["lower"]) == len(restored["times"])
 
 
 @pytest.mark.parametrize("scale", [1e-6, 1e6])

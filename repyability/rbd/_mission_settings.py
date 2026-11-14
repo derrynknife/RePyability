@@ -11,7 +11,10 @@ it needs. How a block behaves in a phase is read through one function,
 Every block has its own running clock (its age) and a budget of
 cumulative hazard, an ``Exp(1)`` draw. While it runs on the model ``M``
 from age ``a`` to ``a + d`` it spends ``H_M(a, a + d)``; on standby,
-idle, it neither ages nor spends; guaranteed, it ages but spends nothing.
+idle, it ages at its setting's ``dormancy`` (a fraction of the clock: 0,
+cold standby, by default, it neither ages nor spends; between 0 and 1,
+warm standby, it ages and spends as it would running for that fraction of
+the time); guaranteed, it ages but spends nothing.
 It fails when it has spent its budget. A block's life on its running clock
 (``Life``) is one model per phase (:func:`phase_model`): the phase's
 model, or for a regression block given covariates, its node's regression
@@ -50,9 +53,9 @@ from repyability.utils.checks import (
 
 #: Running, ageing and able to fail (the default).
 WORKING = "working"
-#: Cold standby: idle (not ageing, unable to fail) until the phase's
-#: structure needs it, then running, ageing and able to fail for the rest
-#: of the phase.
+#: Standby: idle until the phase's structure needs it, then running,
+#: ageing and able to fail for the rest of the phase. Idle, it ages at its
+#: setting's ``dormancy``: cold standby (0, the default) not at all.
 STANDBY = "standby"
 #: Running and ageing, but unable to fail in the phase.
 GUARANTEED = "guaranteed"
@@ -76,9 +79,11 @@ class BlockSetting:
     ----------
     state : str, optional
         ``"working"`` (the default): running, ageing, able to fail.
-        ``"standby"``: cold standby, idle (not ageing, unable to fail)
-        until the phase's structure needs it, then running for the rest of
-        the phase; the switch is perfect and instant. ``"guaranteed"``:
+        ``"standby"``: idle until the phase's structure needs it, then
+        running for the rest of the phase; idle, it ages at
+        ``dormancy`` (by default not at all, cold standby), and called
+        on, it starts with ``switching_probability`` (by default
+        surely), at once. ``"guaranteed"``:
         running and ageing, but unable to fail in the phase.
         ``"not_needed"``: the phase's structure takes it as working,
         whatever its condition, while it runs, ages and can fail.
@@ -94,14 +99,33 @@ class BlockSetting:
         is checked against the node when the mission is made, as a model
         the node could have been given. With ``covariates`` too, it must
         be a ``RegressionNode`` with fixed covariates, run at these.
+    switching_probability : float, optional
+        On standby only: the probability that the block starts when the
+        phase calls on it, by default 1 (perfect switching). A block that
+        fails to start has failed (a failure on demand), for the rest of
+        the mission, and the next block on standby is called on. One
+        outcome per block and phase: a block that started and was stood
+        down at once (see the guide's rule) starts again if called on
+        later in the phase.
+    dormancy : float, optional
+        On standby only: how fast the block ages while idle, as a
+        fraction of the clock, from 0 (cold standby, the default: it
+        neither ages nor can fail while idle) to 1 (hot standby: idle, it
+        ages and can fail as if running). In between it is warm standby:
+        idle for ``d`` it ages ``dormancy * d`` on its life (for an
+        exponential life of rate ``l``, it fails while idle at rate
+        ``dormancy * l``). A failure while idle is found when the block
+        is called on, which it then cannot answer.
 
     Raises
     ------
     ValueError
         If ``state`` is not one of the four, ``covariates`` is not a
         non-empty vector of finite numbers, ``model`` is a probability of
-        failing, or ``covariates`` come with a ``model`` that is not a
-        ``RegressionNode`` with fixed covariates of their length.
+        failing, ``covariates`` come with a ``model`` that is not a
+        ``RegressionNode`` with fixed covariates of their length,
+        ``switching_probability`` or ``dormancy`` is not a number from 0
+        to 1, or either is given for a block not on standby.
     TypeError
         If ``model`` is not a model with a survival function, or is a
         surpyval distribution itself.
@@ -110,8 +134,10 @@ class BlockSetting:
     --------
     >>> import surpyval as surv
     >>> from repyability import BlockSetting
-    >>> BlockSetting(state="standby")
-    BlockSetting(state='standby', covariates=None, model=None)
+    >>> cold = BlockSetting(state="standby")
+    >>> cold.switching_probability, cold.dormancy
+    (1.0, 0.0)
+    >>> warm = BlockSetting(state="standby", dormancy=0.1)
     >>> BlockSetting(covariates=[1.2, 40]).covariates
     (1.2, 40.0)
     >>> start_up = BlockSetting(model=surv.Weibull.from_params([40.0, 0.8]))
@@ -122,6 +148,8 @@ class BlockSetting:
     state: str = WORKING
     covariates: Optional[Tuple[float, ...]] = None
     model: Any = None
+    switching_probability: float = 1.0
+    dormancy: float = 0.0
 
     def __post_init__(self):
         for field, value in _checked(self).items():
@@ -151,7 +179,25 @@ def _checked(setting: BlockSetting) -> Dict[str, Any]:
     model = setting.model
     if model is not None:
         _check_phase_model(model, covariates)
-    return {"state": setting.state, "covariates": covariates, "model": model}
+    standby: Dict[str, float] = {}
+    for field, default in (("switching_probability", 1.0), ("dormancy", 0.0)):
+        value = getattr(setting, field)
+        if not (is_number(value) and 0.0 <= float(value) <= 1.0):
+            raise ValueError(
+                f"{field} must be a number from 0 to 1, got {value!r}."
+            )
+        if float(value) != default and setting.state != STANDBY:
+            raise ValueError(
+                f"{field} is for a block on standby; this block is "
+                f"{setting.state!r}: give state='standby' too."
+            )
+        standby[field] = float(value)
+    return {
+        "state": setting.state,
+        "covariates": covariates,
+        "model": model,
+        **standby,
+    }
 
 
 def _check_phase_model(model, covariates) -> None:
@@ -206,6 +252,9 @@ def setting_to_dict(setting: BlockSetting) -> Dict[str, Any]:
             None if setting.covariates is None else list(setting.covariates)
         ),
     }
+    if setting.state == STANDBY:
+        out["switching_probability"] = setting.switching_probability
+        out["dormancy"] = setting.dormancy
     if setting.model is not None:
         try:
             out["model"] = serialise_model(setting.model)
@@ -300,6 +349,16 @@ class MissionPhase:
         """
         return self.blocks.get(node, _DEFAULT)
 
+    def standby_order(self, nodes) -> List[Hashable]:
+        """Those of ``nodes`` on standby in this phase, in the order they
+        are called on: the order ``blocks`` names them."""
+        named = set(nodes)
+        return [
+            node
+            for node, setting in self.blocks.items()
+            if node in named and behaviour(setting).standby
+        ]
+
 
 _DEFAULT = BlockSetting()
 
@@ -317,6 +376,10 @@ class Behaviour(NamedTuple):
     covariates: Optional[Tuple[float, ...]]
     #: Its life model in the phase, or None for its node's.
     model: Any
+    #: On standby: the probability that it starts when called on.
+    switching: float
+    #: On standby: how fast it ages while idle (0: not at all).
+    dormancy: float
 
 
 def behaviour(setting: BlockSetting) -> Behaviour:
@@ -328,6 +391,8 @@ def behaviour(setting: BlockSetting) -> Behaviour:
         spends=setting.state != GUARANTEED,
         covariates=setting.covariates,
         model=setting.model,
+        switching=setting.switching_probability,
+        dormancy=setting.dormancy,
     )
 
 

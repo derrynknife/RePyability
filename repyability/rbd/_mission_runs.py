@@ -7,10 +7,14 @@ A block's state in a mission is the age (on its life's clock, see
 the mission's time less its age, ``offset``, so that, running, it fails at
 the mission's time ``end + offset``. A block that runs through a phase
 keeps both; a guaranteed one spends no hazard, so its ``end`` moves on by
-the hazard of the stretch; an idle one does not age, so its ``offset``
-grows by the time it is idle. A mission with no block on standby or
-guaranteed, every life drawn as before, so plays out as the plain
-simulation did, to the last bit.
+the hazard of the stretch; an idle one ages at its ``dormancy`` ``f`` (0,
+cold, by default), so its ``offset`` grows by ``1 - f`` of the time it is
+idle, and, warm, it fails idle once its age reaches ``end``. A block
+called on starts if it is alive and passes its switch, one draw per
+block on standby, phase and mission (``draw_switches``, made only where a
+switch can fail, after the lives); else it has failed. A mission with no
+block on standby or guaranteed, every life drawn as before, so plays out
+as the plain simulation did, to the last bit.
 """
 
 from typing import Dict, Hashable, List, NamedTuple, Optional, Tuple
@@ -79,14 +83,42 @@ def draw(mission, size: int, antithetic: bool) -> Dict[Hashable, np.ndarray]:
     return lives
 
 
+def draw_switches(
+    mission, size: int, antithetic: bool = False
+) -> Dict[Tuple[int, Hashable], np.ndarray]:
+    """For each phase and block on standby in it whose switch can fail,
+    by ``(phase number, block)``: whether it starts if called on in each
+    of ``size`` missions, from numpy's global RNG as it stands (drawn
+    after the lives, in phase order, then the phase's order of calling
+    on its blocks; none where every switch is perfect)."""
+    out: Dict[Tuple[int, Hashable], np.ndarray] = {}
+    for j, setting in enumerate(mission._settings):
+        for node in setting.standby_order(mission.components):
+            chance = behaviour(setting.setting(node)).switching
+            if chance == 1.0:
+                continue
+            if antithetic:
+                half = np.random.random_sample(size // 2)
+                u = np.empty(size)
+                u[0::2], u[1::2] = half, 1.0 - half
+            else:
+                u = np.random.random_sample(size)
+            out[(j, node)] = u < chance
+    return out
+
+
 def play(
     mission,
     lives: Dict[Hashable, np.ndarray],
     size: int,
     held: Optional[Hashable] = None,
+    switches: Optional[Dict[Tuple[int, Hashable], np.ndarray]] = None,
 ) -> Runs:
     """The ``size`` missions with the components' ``lives`` (see
-    ``draw``), the component ``held`` (if any) never failing."""
+    ``draw``) and whether their switches work (``switches``, see
+    ``draw_switches``; perfect where not given), the component ``held``
+    (if any) never failing (nor its switch)."""
+    switches = switches or {}
     count = len(mission.phases)
     end = {
         node: (
@@ -110,7 +142,6 @@ def play(
         # Each block's failure as the phase's structure reads it: when it
         # failed or will fail if it runs on (-inf while idle on standby).
         at: Dict[Hashable, np.ndarray] = {}
-        idle: List[Hashable] = []
         for node in lives:
             life = mission._lives[node]
             how = behaviour(setting.setting(node))
@@ -122,7 +153,6 @@ def play(
                 end[node][alive] = ends
                 offset[node][alive] = start - age
             if how.standby:
-                idle.append(node)
                 at[node] = np.where(alive, -np.inf, dead[node])
                 continue
             if not how.spends:
@@ -132,6 +162,26 @@ def play(
             failing = np.where(alive, end[node] + offset[node], dead[node])
             at[node] = failing
             dead[node] = np.where(failing <= stop, failing, np.inf)
+        idle = setting.standby_order(lives)
+        # Each idle block's running time left at the phase's start, its
+        # dormancy, and whether it starts if called on.
+        left = {
+            node: np.where(
+                dead[node] > start, end[node] - (start - offset[node]), np.nan
+            )
+            for node in idle
+        }
+        rates = {
+            node: behaviour(setting.setting(node)).dormancy for node in idle
+        }
+        passes = {
+            node: (
+                np.ones(size, dtype=bool)
+                if node == held or (j, node) not in switches
+                else switches[(j, node)]
+            )
+            for node in idle
+        }
         rbd = phase.rbd
         structure = rbd._set_structure()
         nodes = {
@@ -145,39 +195,70 @@ def play(
             for node in idle:
                 started[(j, node)] = np.zeros(size, dtype=bool)
             m = np.flatnonzero(failed)
-            ready = {
-                node: np.where(
-                    dead[node][m] > start,
-                    end[node][m] - (start - offset[node][m]),
-                    np.nan,
-                )
-                for node in idle
-            }
-            fail, when = _take_over(
+            fail, when, lost = _take_over(
                 structure,
                 {n: v[m] for n, v in nodes.items()},
-                ready,
+                {node: left[node][m] for node in idle},
                 start,
                 stop,
+                rates,
+                {node: passes[node][m] for node in idle},
             )
-            for node in idle:
-                begun = ~np.isnan(when[node])
-                ms = m[begun]
-                until = when[node][begun] + ready[node][begun]
-                started[(j, node)][ms] = True
-                offset[node][ms] += when[node][begun] - start
-                dead[node][ms] = np.where(until <= stop, until, dead[node][ms])
             failed[m] = fail <= stop
             fails_at[m] = fail
             for node in idle:
-                # The time idle: the whole phase, unless started.
-                offset[node] += np.where(
-                    started[(j, node)], 0.0, phase.duration
+                _after_standby(
+                    node,
+                    j,
+                    m,
+                    when[node],
+                    lost[node],
+                    left[node],
+                    rates[node],
+                    (start, stop, phase.duration),
+                    started,
+                    offset[node],
+                    dead[node],
                 )
         phase_of[failed] = j
         time_of[failed] = fails_at[failed]
         start = stop
     return Runs(phase_of, time_of, started)
+
+
+def _after_standby(
+    node, j, m, when, lost, left, rate, span, started, offset, dead
+) -> None:
+    """Bring up to date, in place, block ``node``'s state (its ``offset``
+    and when it failed, ``dead``) after phase ``j``, which spans ``span``,
+    on standby in it with dormancy ``rate``: in the missions ``m`` whose
+    take-overs were worked out, started at ``when`` (``nan`` if not), or
+    found failed when called on at ``lost`` (``nan`` if not), its running
+    time ``left`` at the phase's start; idle through the phase where
+    neither."""
+    start, stop, duration = span
+    begun = ~np.isnan(when)
+    ms = m[begun]
+    started[(j, node)][ms] = True
+    # Idle until started, ageing at the dormancy, then running.
+    idle_for = np.full(left.shape, duration)
+    idle_for[ms] = when[begun] - start
+    offset += (1.0 - rate) * idle_for
+    until = when[begun] + (left[ms] - rate * idle_for[ms])
+    dead[ms] = np.where(until <= stop, until, dead[ms])
+    found = ~np.isnan(lost)
+    dead[m[found]] = lost[found]
+    if rate > 0.0:
+        # Warm, and never started or found failed: failed idle if its age
+        # reached its end within the phase.
+        quiet = np.ones(left.shape, dtype=bool)
+        quiet[ms] = False
+        quiet[m[found]] = False
+        quiet &= ~np.isnan(left)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            idle_end = start + left / rate
+        gone = quiet & (idle_end <= stop)
+        dead[gone] = idle_end[gone]
 
 
 def _guaranteed(life, j, end, offset, alive, start, stop) -> None:
@@ -203,18 +284,26 @@ def _take_over(
     ready: Dict[Hashable, np.ndarray],
     start: float,
     stop: float,
-) -> Tuple[np.ndarray, Dict[Hashable, np.ndarray]]:
+    dormancy: Optional[Dict[Hashable, float]] = None,
+    passes: Optional[Dict[Hashable, np.ndarray]] = None,
+) -> Tuple[np.ndarray, Dict[Hashable, np.ndarray], Dict[Hashable, np.ndarray]]:
     """Missions through a phase with blocks on standby, all at once: when
-    each fails (``inf`` if it gets through) and when each block on standby
-    was started in it (``nan`` if not).
+    each fails (``inf`` if it gets through), when each block on standby
+    was started in it (``nan`` if not), and when each was found failed
+    when called on (``nan`` if not): failed idle, at the time it failed,
+    or failing to start, at the call.
 
     ``nodes`` holds when each block fails (or failed), ``ready`` each
-    standby block's running time left (``nan`` if it has failed), in the
-    order they are started. Whenever the structure does not work, at the
-    phase's start or at a failure, idle blocks are started in order until
-    it does; then each just started (latest first) whose removal still
-    leaves it working goes back to idle. If it cannot be made to work, the
-    mission fails then.
+    standby block's running time left at the phase's start (``nan`` if it
+    has failed), in the order they are called on, ``dormancy`` how fast
+    each ages idle (0 if not given: it does not) and ``passes`` whether
+    each starts if called on (surely if not given). Whenever the
+    structure does not work, at the phase's start or at a failure, idle
+    blocks are called on in order until it does: one alive (its time left
+    less its dormant ageing still positive) that passes its switch
+    starts, any other has failed; then each just started (latest first)
+    whose removal still leaves it working goes back to idle. If it cannot
+    be made to work, the mission fails then.
 
     The structure works at ``t`` when its lifetime, from each block's
     failure (a block on standby's when started and running, ``-inf``
@@ -222,10 +311,14 @@ def _take_over(
     each round jumps to then.
     """
     size = len(next(iter(nodes.values())))
+    dormancy = dormancy or {}
+    passes = passes or {}
+    ready = {node: np.array(v, dtype=float) for node, v in ready.items()}
     times = {n: np.array(v, dtype=float) for n, v in nodes.items()}
     for node in ready:
         times[node] = np.full(size, -np.inf)
     when = {node: np.full(size, np.nan) for node in ready}
+    lost = {node: np.full(size, np.nan) for node in ready}
     fail = np.full(size, np.inf)
     t = np.full(size, float(start))
 
@@ -249,9 +342,22 @@ def _take_over(
             idle = np.isnan(when[node][broken]) & ~np.isnan(
                 ready[node][broken]
             )
-            begin = broken[idle]
+            called = broken[idle]
+            rate = dormancy.get(node, 0.0)
+            left = ready[node][called] - rate * (t[called] - start)
+            ok = left > 0.0
+            if node in passes:
+                ok &= passes[node][called]
+            gone = called[~ok]
+            if gone.size:
+                # Failed idle (warm) by now, or failing to start.
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    idle_end = start + ready[node][gone] / rate
+                lost[node][gone] = np.where(left[~ok] > 0.0, t[gone], idle_end)
+                ready[node][gone] = np.nan
+            begin = called[ok]
             when[node][begin] = t[begin]
-            times[node][begin] = t[begin] + ready[node][begin]
+            times[node][begin] = t[begin] + left[ok]
             fresh[node] = begin
             broken = broken[~(lasts(broken) > t[broken])]
         # It cannot be made to work: none of them is started.
@@ -267,4 +373,4 @@ def _take_over(
             needed = ~(lasts(back) > t[back])
             when[node][back[needed]] = t[back[needed]]
             times[node][back[needed]] = kept[needed]
-    return fail, when
+    return fail, when, lost
