@@ -15,8 +15,6 @@ exactly or numerically where it can be, and simulated on request:
   ``CCFGroup`` the dependencies within one.
 - ``stress_strength`` and ``stress_strength_over_time``: the chance a
   strength exceeds a stress (interference), exact or numerical.
-- ``demonstration_plan`` and the other ``demonstration_*`` and ``mtbf_*``
-  functions: demonstration test planning.
 
 Every class and function here is imported from the top-level package::
 
@@ -31,17 +29,6 @@ https://derrynknife.github.io/RePyability/
 """
 
 from repyability._version import __version__
-from repyability.demonstration import (
-    demonstrated_mtbf,
-    demonstrated_reliability,
-    demonstration_pass_probability,
-    demonstration_plan,
-    demonstration_sample_size,
-    demonstration_test_multiple,
-    mtbf_demonstration_plan,
-    mtbf_pass_probability,
-    mtbf_test_time,
-)
 from repyability.fault_tree import FaultTree
 from repyability.maintenance import (
     AgeReplacementValue,
@@ -127,7 +114,6 @@ from repyability.rbd.results import (
     CrewJob,
     CrewStates,
     Criticalities,
-    DemonstrationPlan,
     EventsByWindow,
     ExpectedCost,
     ExpectedEvents,
@@ -207,16 +193,6 @@ __all__ = [
     "AlphaFactor",
     "CCFGroup",
     "minimal_repair_time_to_nth_failure",
-    # Demonstration test planning
-    "demonstration_sample_size",
-    "demonstrated_reliability",
-    "demonstration_test_multiple",
-    "demonstration_pass_probability",
-    "demonstration_plan",
-    "mtbf_test_time",
-    "demonstrated_mtbf",
-    "mtbf_pass_probability",
-    "mtbf_demonstration_plan",
     "ComponentOption",
     # Stress-strength interference
     "stress_strength",
@@ -260,7 +236,6 @@ __all__ = [
     "UncertaintyResult",
     "UncertaintyImportance",
     "Criticalities",
-    "DemonstrationPlan",
     "StressStrengthResult",
     "StressStrengthCurve",
     "UpDownImportance",

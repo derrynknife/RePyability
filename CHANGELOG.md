@@ -9,6 +9,28 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+## [0.18] - 2026-11-14
+
+Schedules on the calendar, and units. A new module,
+`repyability.schedule`, connects model time to dates as plain
+calculations (it takes dates and rules from the caller, never reads the
+clock and stores nothing): calendar rules (every so many days, weeks,
+months or years, weekday patterns, given dates, seasons and excluded
+dates); operating plans (runs, shifts, rosters, rates or all the time)
+layered specific over general, so a specific part is used where it
+covers and the general plan only fills the time it leaves; the map
+between dates and operating hours (or any other meter) both ways; tasks
+falling due on dates, by the calendar, by use or whichever comes first;
+and a part's failures and costs, and a repairable system's events, by
+calendar month (or day, week, quarter or year). Diagrams now read their
+models' unit labels: one whose models name different units warns, naming
+the blocks, and results carry the unit. RePyability still needs surpyval
+0.27; `UsageForecast.life_at_usage` takes a life on two clocks, which
+surpyval 0.28 will bring.
+
+No number RePyability gave before changes. Removed: the demonstration
+test functions deprecated in 0.17 (use `surpyval.test_planning`).
+
 ### Added
 
 - Diagrams read their models' unit labels (surpyval's `unit=`, kept as
@@ -113,6 +135,19 @@ other release, fixes included, the minor.
   through surpyval's pandas.
 - **tzdata is required on Windows**, for the duty plans' time zones
   (the standard library's zoneinfo; macOS and Linux have a zone database).
+
+### Removed
+
+- **The demonstration test functions and `DemonstrationPlan`**,
+  deprecated in 0.17: `demonstration_sample_size`,
+  `demonstrated_reliability`, `demonstration_test_multiple`,
+  `demonstration_pass_probability`, `demonstration_plan`,
+  `mtbf_test_time`, `demonstrated_mtbf`, `mtbf_pass_probability` and
+  `mtbf_demonstration_plan`, with the module `repyability.demonstration`
+  and the guide's "Demonstration testing" page. Test planning is
+  surpyval's: `surpyval.test_planning` has the same functions under the
+  same names (give `alpha_ci=1 - confidence`, by keyword, where these
+  took `confidence`). 0.18 deprecates nothing.
 
 ## [0.17] - 2026-11-14
 

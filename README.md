@@ -30,11 +30,6 @@ taking already-fitted lifetime models (from
 - **Phased missions**: missions through phases (take-off, cruise,
   landing), each with its own diagram over the same components: the exact
   mission reliability and the chance of failing in each phase.
-- **Testing**: demonstration test plans (the units, or the test time, that
-  demonstrate a reliability or an MTBF), plans that keep both the
-  producer's and the consumer's risk, what a test demonstrated, and the
-  chance a design passes. Deprecated in 0.17 for `surpyval.test_planning`,
-  which has the same functions; 0.18 removes them.
 - **Importance**: Birnbaum, improvement potential, RAW, RRW, criticality,
   Fussell–Vesely, structural importance and parameter sensitivity, on
   repairable systems in the long run or over time.

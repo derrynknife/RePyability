@@ -11,7 +11,7 @@ explanations and runnable examples, see the [user guide](../guide/index.md).
 - [Fault trees, phased missions and networks](other-systems.md)
 - [Node models](nodes.md)
 - [Components and maintenance](components.md)
-- [Demonstration test planning](demonstration.md)
 - [Stress-strength interference](stress-strength.md)
 - [Timelines](timelines.md)
+- [Schedules](schedule.md)
 - [Result types](results.md)
