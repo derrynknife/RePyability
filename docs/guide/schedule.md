@@ -6,7 +6,9 @@ calendar. This page covers the first part: **which dates a rule gives**
 (`Recurrence`) and **when tasks fall due on them** (`Task`,
 `work_by_period`); then **how equipment runs** (`DutyPlan`) and the
 map between dates and operating hours it gives (`UsageForecast`), which
-puts tasks counted in running hours on dates.
+puts tasks counted in running hours on dates; and, through that map,
+**failures, events and shuts on the calendar** (`failures_by_period`,
+`events_by_period`, `shutdown_spec`, `Opportunity.from_recurrence`).
 
 The module computes and stores nothing. You pass it dates, rules and what
 you know (when a task was last done); it never reads the clock. Dates are
@@ -414,3 +416,136 @@ is operating time, as for a life fitted in calendar days.
 Every part and plan has `to_dict()` and `from_dict()` (plain JSON, a
 `"kind"` on each part, moments as ISO text, the zone by name, and a
 `"version"`), and every answer is plain data with `to_dict()`.
+
+## Failures and costs on the calendar
+
+RePyability's models answer in model time. These functions ask them from
+dates and label the answers with dates. They add no new probability:
+each turns dates into model time, calls a method that already exists, and
+puts the dates back. Every range is the 5th to 95th percentile: 90% of
+outcomes, two-sided.
+
+### A part, by month
+
+The pump above has a wear ring with a fitted life in operating hours
+(Weibull, scale 9,000 h, shape 2.5). The ring is 5,200 h old. It is
+replaced when it fails, and a failure costs $4,800. The forecast runs to
+1 December 2027:
+
+```python
+import surpyval as surv
+from repyability import NonRepairable
+from repyability.schedule import failures_by_period
+
+ring = NonRepairable(surv.Weibull.from_params([9000.0, 2.5]), unplanned_cost=4800.0)
+months = failures_by_period(ring, usage, "month", age=5200.0)
+round(months.total["probability"], 3)  # -> 0.596
+round(months.total["expected_failures"], 3)  # -> 0.622
+round(months.total["expected_cost"])  # -> 2988
+months.total["cost_low"], months.total["cost_high"]  # (0.0, 4800.0)
+```
+
+In words: there is a 60% chance the ring fails at least once by 1
+December 2027. Expect 0.62 failures, which comes to about $2,990. The
+likely range is no failure to one failure, so $0 to $4,800 (90% of
+outcomes). Month by month the numbers are small, about 0.05 failures
+(roughly $250) in a full month:
+
+```python
+[round(float(c)) for c in months.expected_cost[:3]]  # [105, 227, 217]
+```
+
+One part rarely fails in a given month, so the monthly figures become
+useful once you add them up over many positions. The expected values
+add up; the ranges do not, so `total` gives the whole forecast's own
+range.
+
+How it is worked out: each period's end becomes operating time since the
+forecast starts (`usage.model_time`). The part is then asked about those
+windows: `NonRepairable.cost_by_window` gives the expected failures, cost
+and range for each period, and `NonRepairable.failures` gives the chance
+of at least one failure. A policy goes in as those methods take it:
+`every=6000.0, resets=True` for age replacement, or a `calendar=` built
+from dated shuts (below). The part's `age` is its age when the forecast
+starts. The model's unit comes from its label (`unit="h"` on the
+surpyval model), or from `unit=`. With neither, it is taken as hours and
+the notes say so.
+
+### A system, by month
+
+A `RepairableRBD` runs on calendar time: its blocks' `"duty"` puts
+running hours onto that clock. So `events_by_period` turns each period's
+end into the real time since the forecast starts. With a failure rate
+of one per 2,000 hours, January 2027 (744 h) expects 0.372 failures:
+
+```python
+from repyability import RepairableRBD
+from repyability.schedule import UsageForecast, events_by_period
+
+rbd = RepairableRBD(
+    [("s", "pump"), ("pump", "t")],
+    {"pump": {"reliability": surv.Exponential.from_params([1 / 2000.0]),
+              "repairability": "instant"}},
+)
+year = UsageForecast.calendar("2027-01-01", "2028-01-01")
+by_month = events_by_period(rbd, year, unit="hours")
+round(float(by_month.events.system_failures[0]), 3)  # -> 0.372
+```
+
+`events` holds `expected_events_by_window`'s answer, which is exact.
+`cost=True` adds `cost_by_window`: each period's mean cost is exact, and
+its range is simulated.
+
+### Shuts on dates
+
+The annual overhaul falls on the first Tuesday of November. The gap
+between one and the next is 364 or 371 days, so it is not a fixed
+period, and it goes in as given times. To use the dates as cheap
+replacement opportunities for a part, lay them on the part's model
+time. Pass `usage=` for a life in operating hours, or leave it out for a
+life in calendar time:
+
+```python
+from repyability import Opportunity
+from repyability.schedule import Recurrence
+
+overhaul = Recurrence.yearly(month=11, weekday="Tuesday", nth=1)
+shut = Opportunity.from_recurrence(
+    "overhaul", 500.0, overhaul, "2026-11-16", "2027-11-30", usage=usage
+)
+shut.dates  # (4016.0,)
+```
+
+To put the overhaul on a diagram as a shutdown, use `shutdown_spec`. Its
+times are on the diagram's clock, which is the real time since the
+start date's midnight:
+
+```python
+from repyability.schedule import shutdown_spec
+
+spec = shutdown_spec(overhaul, "2026-11-14", "2029-12-31", duration=48.0, at="06:00")
+spec["times"]  # [8478.0, 17382.0, 26118.0]
+```
+
+`RepairableRBD(..., shutdowns={"overhaul": spec})` takes it. Its
+simulations (`cost()`, `availability()`) handle shuts at given times.
+The exact methods, and so `events_by_period`, take shuts on a period
+only, and refuse such a diagram with a message that says so.
+
+### Two clocks
+
+Some lives are fitted on two clocks, such as running hours and starts
+(surpyval 0.28's `EquivalenceModel`). The plan supplies the rate between
+the two clocks: `usage.rate("starts", per="hours")` is 0.0625 for the
+weekday pump (one start for each 16-hour run). `usage.life_at_usage(model)`
+passes that rate to `model.at_usage` and returns a life in hours. With an
+earlier surpyval, it refuses and names the version it needs.
+
+### Two limits, and the one doing nothing
+
+When a task has two limits and one of them never sets a date in the
+period, `TaskDue.notes` says how far behind it was. For a generator
+running 15 hours a month with an oil change every 250 hours or 12
+months, the note reads: "The limit "every 250 hours" set none of the
+dates: when the task was first due (2027-11-14, by the other limit), it
+would not have been reached until 2028-04-04, about 4.7 months later."

@@ -159,6 +159,89 @@ class Opportunity:
                 self, "dates", tuple(float(d) for d in np.unique(dates))
             )
 
+    @classmethod
+    def from_recurrence(
+        cls,
+        name: str,
+        cost: float,
+        rule,
+        start,
+        end,
+        *,
+        unit: str = "hours",
+        usage=None,
+        at=None,
+        time_zone: Optional[str] = None,
+    ) -> "Opportunity":
+        """An opportunity at a rule's dates, laid on the part's model time.
+
+        The rule's dates from ``start`` to ``end`` (both included), each
+        at the clock time ``at`` (midnight by default), become the
+        opportunity's ``dates``: with ``usage`` (a
+        [`UsageForecast`][repyability.schedule.UsageForecast]), the
+        operating time since the forecast's start, for a life in operating
+        hours; without, the real time since ``start``'s midnight, for a
+        life in calendar time. Dates at one operating time (shuts while
+        the plant is idle) become one time.
+
+        Parameters
+        ----------
+        name : str
+            The opportunity's name.
+        cost : float
+            What replacing the part at it costs.
+        rule : Recurrence
+            When the shuts are
+            ([`repyability.schedule.Recurrence`][repyability.schedule.Recurrence]).
+        start, end : datetime.date or str
+            The first and last dates to take.
+        unit : str, optional
+            The life's unit, by default ``"hours"``.
+        usage : UsageForecast, optional
+            The map from dates to operating time; by default none
+            (calendar time).
+        at : str or datetime.time, optional
+            The clock time each shut starts, by default midnight.
+        time_zone : str, optional
+            The site's IANA zone with no ``usage`` (with one, its zone).
+
+        Returns
+        -------
+        Opportunity
+
+        Examples
+        --------
+        The first Tuesday of November, for a life in days, from 14
+        November 2026:
+
+        >>> from repyability import Opportunity
+        >>> from repyability.schedule import Recurrence
+        >>> overhaul = Opportunity.from_recurrence(
+        ...     "overhaul", 1.0,
+        ...     Recurrence.yearly(month=11, weekday="Tuesday", nth=1),
+        ...     "2026-11-14", "2029-12-31", unit="days",
+        ... )
+        >>> overhaul.dates
+        (353.0, 724.0, 1088.0)
+        """
+        from repyability.schedule._forecast import opportunity_times
+
+        times = opportunity_times(
+            rule,
+            start,
+            end,
+            unit=unit,
+            usage=usage,
+            at=at,
+            time_zone=time_zone,
+        )
+        if len(times) == 0:
+            raise ValueError(
+                f"Opportunity {name!r}: the rule ({rule.describe()}) gives "
+                f"no dates from {start} to {end}."
+            )
+        return cls(name, cost, dates=tuple(float(t) for t in times))
+
     @property
     def periodic(self) -> bool:
         """Whether its times are on a period (not given dates)."""

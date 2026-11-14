@@ -51,6 +51,34 @@ UNITS = {
     "years": 24.0 * 365.25,
 }
 
+# TODO(units): RePyability's model-unit work reads the models' unit labels
+# (surpyval's ``model.unit``) and compares them, but converts nothing, so
+# this module keeps the one table of time units above (and the spellings
+# below). Replace both with a shared table if the units work brings one.
+#: The spellings of a model's time unit label read as each of ``UNITS``.
+UNIT_LABELS = {
+    label: unit
+    for unit, labels in {
+        "seconds": ("s", "sec", "secs", "second", "seconds"),
+        "minutes": ("min", "mins", "minute", "minutes"),
+        "hours": ("h", "hr", "hrs", "hour", "hours"),
+        "days": ("d", "day", "days"),
+        "weeks": ("w", "wk", "wks", "week", "weeks"),
+        "years": ("y", "yr", "yrs", "year", "years"),
+    }.items()
+    for label in labels
+}
+
+
+def time_unit(label) -> Optional[str]:
+    """The unit of ``UNITS`` a model's unit label names (``"h"``,
+    ``"hrs"`` and ``"hours"`` are all ``"hours"``); None when it names no
+    time unit (``"km"``, ``"cycles"``) or is not text."""
+    if not isinstance(label, str):
+        return None
+    return UNIT_LABELS.get(" ".join(label.lower().split()))
+
+
 #: The days of the week, by their names and the first three letters.
 DAYS = {
     name: number
