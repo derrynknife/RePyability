@@ -7,7 +7,7 @@ and if no more fail, the design has demonstrated the target. Planning such
 a test is test planning, which surpyval owns: ``surpyval.test_planning``
 has these nine functions under the same names (with the sequential and
 group-sequential tests beside them), and each function here is now a call
-to surpyval's that warns with a ``FutureWarning``. They are removed in 0.19.
+to surpyval's that warns with a ``FutureWarning``. They are removed in 0.18.
 
 surpyval's take ``alpha_ci``, the consumer's risk, where these take
 ``confidence``: ``alpha_ci = 1 - confidence``, given by keyword, after the
@@ -121,7 +121,7 @@ def demonstration_sample_size(
     """The fewest units whose test demonstrates a reliability.
 
     Deprecated: use ``surpyval.test_planning.demonstration_sample_size``
-    (``alpha_ci=1 - confidence``); removed in 0.19.
+    (``alpha_ci=1 - confidence``); removed in 0.18.
 
     The smallest ``n`` for which ``n`` units tested, with at most
     ``failures`` of them failing, demonstrate ``reliability`` over a mission
@@ -187,7 +187,7 @@ def demonstrated_reliability(
     """The reliability a finished test demonstrated.
 
     Deprecated: use ``surpyval.test_planning.demonstrated_reliability``
-    (``alpha_ci=1 - confidence``); removed in 0.19.
+    (``alpha_ci=1 - confidence``); removed in 0.18.
 
     The Clopper-Pearson lower one-sided bound on the reliability over a
     mission, from ``n`` units tested with ``failures`` failing; with no
@@ -249,7 +249,7 @@ def demonstration_test_multiple(
     reliability with ``n`` units.
 
     Deprecated: use ``surpyval.test_planning.demonstration_test_multiple``
-    (``alpha_ci=1 - confidence``); removed in 0.19.
+    (``alpha_ci=1 - confidence``); removed in 0.18.
 
     Parameters
     ----------
@@ -306,7 +306,7 @@ def demonstration_pass_probability(
 
     Deprecated: use
     ``surpyval.test_planning.demonstration_pass_probability`` (the same
-    arguments); removed in 0.19.
+    arguments); removed in 0.18.
 
     Parameters
     ----------
@@ -358,7 +358,7 @@ def mtbf_test_time(
     failure rate.
 
     Deprecated: use ``surpyval.test_planning.mtbf_test_time``
-    (``alpha_ci=1 - confidence``); removed in 0.19.
+    (``alpha_ci=1 - confidence``); removed in 0.18.
 
     Parameters
     ----------
@@ -411,7 +411,7 @@ def demonstrated_mtbf(
     """The MTBF a finished test demonstrated, at a constant failure rate.
 
     Deprecated: use ``surpyval.test_planning.demonstrated_mtbf``
-    (``alpha_ci=1 - confidence``); removed in 0.19.
+    (``alpha_ci=1 - confidence``); removed in 0.18.
 
     Parameters
     ----------
@@ -466,7 +466,7 @@ def mtbf_pass_probability(
     constant failure rate.
 
     Deprecated: use ``surpyval.test_planning.mtbf_pass_probability`` (the
-    same arguments); removed in 0.19.
+    same arguments); removed in 0.18.
 
     Parameters
     ----------
@@ -522,7 +522,7 @@ def demonstration_plan(
 
     Deprecated: use ``surpyval.test_planning.demonstration_plan``
     (``alpha_ci=1 - confidence``, and the rest by keyword); removed in
-    0.19. surpyval's returns its own ``DemonstrationPlan``, with the same
+    0.18. surpyval's returns its own ``DemonstrationPlan``, with the same
     fields.
 
     Parameters
@@ -603,7 +603,7 @@ def mtbf_demonstration_plan(
 
     Deprecated: use ``surpyval.test_planning.mtbf_demonstration_plan``
     (``alpha_ci=1 - confidence``, and the rest by keyword); removed in
-    0.19. surpyval's returns its own ``DemonstrationPlan``, with the same
+    0.18. surpyval's returns its own ``DemonstrationPlan``, with the same
     fields.
 
     Parameters

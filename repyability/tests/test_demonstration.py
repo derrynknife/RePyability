@@ -19,7 +19,7 @@ from repyability import (
     mtbf_test_time,
 )
 
-# Deprecated for surpyval.test_planning's (removed in 0.19): each warns.
+# Deprecated for surpyval.test_planning's (removed in 0.18): each warns.
 pytestmark = pytest.mark.filterwarnings(
     "ignore:repyability.*is deprecated:FutureWarning"
 )

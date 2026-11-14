@@ -111,7 +111,7 @@ def test_a_network_takes_a_probability_of_failing():
 
 # -- demonstration tests ---------------------------------------------------
 
-# Deprecated for surpyval.test_planning's (removed in 0.19): each warns.
+# Deprecated for surpyval.test_planning's (removed in 0.18): each warns.
 DEPRECATED = pytest.mark.filterwarnings(
     "ignore:repyability.*is deprecated:FutureWarning"
 )
@@ -269,9 +269,9 @@ def test_the_spares_demand_values_are_properties():
     assert demand.std == pytest.approx(np.sqrt(10.0), rel=1e-4)
 
 
-def test_what_0_18_deprecates_goes_in_0_19():
+def test_what_0_17_deprecates_goes_in_0_18():
     # repyability.demonstration's nine functions, deprecated for
-    # surpyval.test_planning's: NEXT_REMOVAL (0.19) removes them.
+    # surpyval.test_planning's: NEXT_REMOVAL (0.18) removes them.
     version = tuple(map(int, __version__.split(".")))
     assert version < tuple(map(int, NEXT_REMOVAL.split(".")))
 

@@ -7,9 +7,9 @@ the uncertainty in the parameters averaged in, is the posterior predictive
 distribution, ``S(t) = sum_i w_i S(t | theta_i)``: a mixture of the
 distribution at the posterior's points, weighted by their probabilities
 (equal for draws). ``PosteriorPredictive`` is that mixture as a node model,
-each function to its own precision (``ff`` the points' ``ff`` averaged, not
-``1 - sf``), its quantile by inverting the mixture (``_sampling``'s), and its
-draws a point and a life from one uniform. Where the fit has the predictive
+each function to its own precision (its ``ff``, ``Hf`` and ``qf`` are the
+fit's own, which keep their digits in both tails from surpyval 0.27), and
+its draws a point and a life from one uniform. Where the fit has the predictive
 in closed form (an Exponential with a Gamma posterior on its rate: a Lomax;
 a Normal mean with the spread known), that is used, as surpyval does.
 
@@ -31,7 +31,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from ._model_utils import is_bayesian_fit
-from ._sampling import RowSampler, mixed_quantile
+from ._sampling import RowSampler
 
 #: The most values of the points' functions worked out at once (16 MB):
 #: a query is taken in rows of at most this many over the points.
@@ -77,10 +77,11 @@ class PosteriorPredictive:
     [`RepairableRBD`][repyability.RepairableRBD] take the fit itself and
     wrap it in this; it can be built by hand too.
 
-    Each function is the predictive's, to its own precision: ``sf``,
-    ``ff`` and ``df`` are the points' averaged, ``Hf`` and ``hf`` follow
-    from them, ``qf`` inverts the mixture, and ``mean`` is the points'
-    means averaged (``inf`` if any is). Where the fit has the predictive
+    Each function is the predictive's, to its own precision: ``sf`` and
+    ``df`` are the points' averaged, ``hf`` follows from them, ``ff``,
+    ``Hf`` and ``qf`` are the fit's own (surpyval's, which keep their
+    digits in both tails), and ``mean`` is the points' means averaged
+    (``inf`` if any is). Where the fit has the predictive
     in closed form (an Exponential with a Gamma posterior on its rate,
     whose predictive is a Lomax; a Normal mean with the spread known),
     that is used, as surpyval does. A life is drawn from one uniform: it
@@ -206,7 +207,7 @@ class PosteriorPredictive:
 
     def _mixed(self, name: str, x: np.ndarray) -> np.ndarray:
         """The points' function ``name`` averaged with their probabilities,
-        at the 1-d ``x``, as ``_sampling.mixed_quantile`` averages it."""
+        at the 1-d ``x``, in rows of ``_rows()`` values at a time."""
         step = self._rows()
         parts = [
             np.sum(self._values(name, x[i : i + step]) * self.weights, axis=1)
@@ -226,37 +227,36 @@ class PosteriorPredictive:
             h = np.where(x >= 0.0, a / (b + after), 0.0)
             return {
                 "sf": lambda: np.exp(-H),
-                "ff": lambda: -np.expm1(-H),
-                "Hf": lambda: H,
                 "df": lambda: h * np.exp(-H),
                 "hf": lambda: h,
             }[name]()
 
     def _function(self, name: str, x: ArrayLike) -> Any:
-        """The predictive's function ``name`` at ``x``, with its shape."""
+        """The predictive's function ``name`` (``sf``, ``df`` or ``hf``)
+        at ``x``, with its shape."""
         t = np.asarray(x, dtype=float)
         flat = t.ravel()
         if self._lomax is not None:
             out = self._lomax_values(name, flat)
         elif self._closed is not None:
             out = np.asarray(getattr(self._closed, name)(flat), dtype=float)
-        elif name in ("sf", "ff"):
+        elif name == "sf":
             # (a probability, which the weights' rounding can take a
             # last bit past 1)
             out = np.clip(self._mixed(name, flat), 0.0, 1.0)
         elif name == "df":
             out = self._mixed(name, flat)
         else:
-            survival = self._mixed("sf", flat)
             with np.errstate(all="ignore"):
-                if name == "hf":
-                    out = self._mixed("df", flat) / survival
-                else:
-                    failed = self._mixed("ff", flat)
-                    out = np.where(
-                        failed < 0.5, -np.log1p(-failed), -np.log(survival)
-                    )
+                out = self._mixed("df", flat) / self._mixed("sf", flat)
         return np.asarray(out, dtype=float).reshape(t.shape)[()]
+
+    def _fits(self, name: str, x: ArrayLike) -> Any:
+        """The fit's own function ``name`` at ``x`` (surpyval's
+        ``BayesianParametric``'s), as floats with the shape of ``x``."""
+        t = np.asarray(x, dtype=float)
+        out = np.asarray(getattr(self.fit, name)(t.ravel()), dtype=float)
+        return out.reshape(t.shape)[()]
 
     # -- The life ------------------------------------------------------------
 
@@ -277,16 +277,16 @@ class PosteriorPredictive:
         return self._function("sf", x)
 
     def ff(self, x: ArrayLike) -> Any:
-        """The probability that a new unit fails by ``x``: the points'
-        ``ff`` averaged (not ``1 - sf``, so it keeps its precision when
-        small).
+        """The probability that a new unit fails by ``x``: the fit's own
+        ``ff``, the points' ``ff`` averaged (not ``1 - sf``, so it keeps
+        its precision when small).
 
         Parameters
         ----------
         x : array_like
             The time(s).
         """
-        return self._function("ff", x)
+        return self._fits("ff", x)
 
     def df(self, x: ArrayLike) -> Any:
         """The density of a new unit's life: the points' densities
@@ -311,15 +311,15 @@ class PosteriorPredictive:
         return self._function("hf", x)
 
     def Hf(self, x: ArrayLike) -> Any:
-        """The cumulative hazard of the predictive, ``-log sf`` (from
-        ``ff`` while it is under a half, for its precision).
+        """The cumulative hazard of the predictive, ``-log sf``: the fit's
+        own, which keeps its precision in both tails.
 
         Parameters
         ----------
         x : array_like
             The time(s).
         """
-        return self._function("Hf", x)
+        return self._fits("Hf", x)
 
     def cs(self, x: ArrayLike, given: ArrayLike) -> Any:
         """The probability that a unit that has survived to ``given``
@@ -340,30 +340,15 @@ class PosteriorPredictive:
 
     def qf(self, p: ArrayLike) -> Any:
         """The age by which a fraction ``p`` of new units have failed: the
-        predictive's quantile, its ``ff`` inverted (its ``sf`` above a
-        half), to the last bit or two.
+        predictive's quantile, the fit's own (surpyval's, which converges
+        in the upper tail).
 
         Parameters
         ----------
         p : array_like
             The probabilities of failing.
         """
-        u = np.asarray(p, dtype=float)
-        flat = u.ravel()
-        if self._lomax is not None:
-            a, b = self._lomax
-            with np.errstate(all="ignore"):
-                out = b * np.expm1(-np.log1p(-flat) / a)
-        elif self._closed is not None:
-            out = np.asarray(self._closed.qf(flat), dtype=float)
-        else:
-            quantile = mixed_quantile(self._values, self.weights)
-            step = self._rows()
-            parts = [
-                quantile(flat[i : i + step]) for i in range(0, len(flat), step)
-            ]
-            out = np.concatenate(parts) if parts else np.empty(0)
-        return np.asarray(out, dtype=float).reshape(u.shape)[()]
+        return self._fits("qf", p)
 
     def mean(self) -> float:
         """The mean life of a new unit: the points' means averaged with

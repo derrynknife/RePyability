@@ -450,11 +450,11 @@ New work goes under the CHANGELOG's `[Unreleased]`. `dev` needs surpyval
   `FutureWarning` through `repyability/utils/deprecation.py`). Each
   release's removals stay gone through `test_removed_in_0_12.py`,
   `_0_13.py`, `_0_14.py` and `_0_15.py` (`NodeState`'s `phase`, #350):
-  a removed argument raises `TypeError`. 0.15, 0.16 and 0.17 deprecated
-  nothing, so 0.16, 0.17 and 0.18 remove nothing. 0.18 deprecates
+  a removed argument raises `TypeError`. 0.15 and 0.16 deprecated
+  nothing, so 0.16 and 0.17 remove nothing. 0.17 deprecates
   `repyability.demonstration`'s nine functions for
   `surpyval.test_planning`'s (`deprecation.moved`), so `NEXT_REMOVAL` is
-  0.19, which `test_what_0_18_deprecates_goes_in_0_19` reminds. A new
+  0.18, which `test_what_0_17_deprecates_goes_in_0_18` reminds. A new
   deprecation warns through `deprecation.renamed`, `renamed_attribute`,
   `called`, `ignored` or `moved`, with a test that fails once the version
   reaches its removal.
@@ -507,24 +507,31 @@ gives a mixture a precise tail (`sf`, #671) and
 has `conditional_gaps` read a limited failure population's `lfp_p`, not a
 mixture's `p` (#626); 0.23 pickles its fits (#573), names the
 limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
-`alpha_ci` (#580). RePyability uses these directly. What remains:
+`alpha_ci` (#580). RePyability uses these directly, as it does 0.27's
+`MixtureModel.qf` (a mixture's draws, #821) and `BayesianParametric`'s
+`ff`, `Hf` and `qf` (a Bayesian fit's predictive), which replaced
+RePyability's own in 0.18 with the same values.
 
-- **A mixture's quantile** (surpyval #821). surpyval 0.24's `MixtureModel`
-  has a `qf` (#651), but it inverts `F` in the upper tail, losing the long
-  lives' precision (about 1e-4), and takes some 200 times as long as
-  RePyability's (fixed on surpyval's `dev`, for its next release).
-  `_sampling.mixture_quantile` inverts the distribution (with its components' `sf` summed above the median), which
-  `stream_sampler` gives a `RepairableRBD`'s streams (a change to it
-  changes seeded results). Take the mixture's own `qf` once the minimum
-  surpyval's is as precise and fast.
-- **A mixture's life left at a virtual age** (surpyval #857, #295:
-  `conditional_gaps` inverts `H` past its quantile's limit in 12–15
-  evaluations where Newton's steps take 3–4, and `MixtureModel.Hf` costs
-  about 100 µs a call). `MixtureLife.aged`
-  draws it for `_aged_life` by Newton's steps on the mixture's `H`,
-  worked out from its components, from a table of `H` (a change to it
-  changes seeded results in the last bits). Take `conditional_gaps`
-  again, and drop `MixtureLife`, once the minimum surpyval has both.
+**surpyval's public interface only.** RePyability imports from the names
+surpyval's deprecation policy calls public (the top level, its listed
+subpackages' `__all__`, `surpyval.univariate.regression.kinds`) and reads
+no underscored attribute; `test_public_surpyval_api.py` fails on anything
+else. Two names have no public home yet and are listed there
+(`NO_PUBLIC_HOME`): `DynamicPrediction` (`rbd/joint_node.py`) and
+`conditional_gaps` (`rbd/_event_loop._aged_life`). Take each from its
+public home once surpyval gives it one; that test fails when it does.
+
+What remains:
+
+- **A mixture's life left at a virtual age** (surpyval #857, #295).
+  0.27's `conditional_gaps` inverts the quantile function wherever the
+  cumulative hazard to reach is under 20, which loses about `eps *
+  exp(H)` of the age found (some 1e-10 relative at `u = 1e-6`), and takes
+  3–15 times as long a draw. `MixtureLife.aged` draws it for `_aged_life`
+  by Newton's steps on the mixture's `H`, worked out from its
+  components, from a table of `H` (a change to it changes seeded results
+  in the last bits). Take `conditional_gaps` again, and drop
+  `MixtureLife`, once the minimum surpyval's draw is as precise.
 - **A degradation process's level given survival** (surpyval #836).
   Replacement on condition by level (#271) needs the level at the next
   inspection of a unit that has not failed by then, which surpyval's
@@ -540,20 +547,12 @@ limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
   life in operating time on the calendar, `R(d t)`, by `_duty._SCALED`, one rule per surpyval distribution (a new
   one needs its rule there, which `test_units` checks against `R(d t)`).
   Take surpyval's rescaling once the minimum surpyval has it.
-- **A fit's offset under parameter uncertainty** (surpyval #830).
-  surpyval's `covariance()` leaves an offset fit's `gamma` out, so
-  `rbd/uncertainty.py` holds it where it was fitted, with a warning. Draw it
-  once the minimum surpyval's covariance includes it.
-
-- **A Bayesian fit's predictive in the tails** (no surpyval issue yet).
-  surpyval 0.26's `BayesianParametric` gives `ff` as `1 - sf` and `Hf` as
-  `-log sf` (their precision lost below about 1e-8; its `dev` fixes this
-  for the conjugate Lomax only), and its `qf` (brentq on that `ff`)
-  raises `RuntimeError` near the upper tail of a grid posterior (`p` of
-  0.999 and above). `rbd/_bayesian_life.PosteriorPredictive` works out
-  `ff`, `Hf` and `qf` from the posterior's points itself (the quantile by
-  `_sampling.mixed_quantile`, a mixture's). Take the fit's own once the
-  minimum surpyval's are as precise and converge.
+- **Parameter ranges for drawing fits other than distributions** (no
+  surpyval issue yet). surpyval gives no range per parameter for a
+  regression, a degradation or repairable-unit process or a mixture, so
+  `uncertainty._Rebuilt._bounds` reads each from what `with_params`
+  refuses just below 0 and just above 1, to draw it on the log or logit
+  scale. Take surpyval's ranges once the minimum surpyval says them.
 
 Refused until surpyval has it: an ARA, ARI or G1 renewal model as a life,
 whose next failure surpyval cannot draw yet (surpyval #833,

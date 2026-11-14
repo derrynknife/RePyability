@@ -741,6 +741,18 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             for model in _repairable_uncertainty._models(rbd, node).values()
         )
     ]
+    from .uncertainty import rebuilt_by_surpyval
+
+    rebuilt = [
+        node
+        for node in rbd.components
+        if any(
+            model is not None and rebuilt_by_surpyval(model)
+            for model in _repairable_uncertainty._models(
+                rbd, node, fit=True
+            ).values()
+        )
+    ]
     posterior = (
         f" The Bayesian fits (of {', '.join(map(repr, bayesian))}) are "
         "drawn from their posteriors, a credible band, the nominal value "
@@ -786,6 +798,14 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                 "posterior, not one value of its parameters to move: "
                 "method='sobol' takes it."
                 if bayesian
+                else ""
+            )
+            + (
+                " The delta method refuses the fits drawn through "
+                f"surpyval's with_params (of {', '.join(map(repr, rebuilt))}"
+                "), whose parameters are not levers of "
+                "parameter_sensitivity: method='sobol' takes them."
+                if rebuilt
                 else ""
             ),
         )

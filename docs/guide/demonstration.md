@@ -6,11 +6,11 @@ fail; if no more fail, the design has demonstrated the target. These
 functions plan such a test from the target, and say what a finished test
 demonstrated. They fit nothing: surpyval fits the data a test produces.
 
-!!! warning "Deprecated in 0.18: use `surpyval.test_planning`"
+!!! warning "Deprecated in 0.17: use `surpyval.test_planning`"
     Test planning is surpyval's. `surpyval.test_planning` has these nine
     functions under the same names (with sequential and group-sequential
     tests beside them), and RePyability's are now calls to surpyval's that
-    warn with a `FutureWarning`; 0.19 removes them. surpyval's take the
+    warn with a `FutureWarning`; 0.18 removes them. surpyval's take the
     consumer's risk `alpha_ci = 1 − confidence`, by keyword, where
     RePyability's took `confidence`: `demonstration_sample_size(0.95,
     confidence=0.9, failures=1)` here is `demonstration_sample_size(0.95, 1,

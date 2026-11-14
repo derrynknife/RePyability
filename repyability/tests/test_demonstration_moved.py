@@ -1,7 +1,7 @@
 """The demonstration functions are surpyval's (``surpyval.test_planning``):
 each of RePyability's warns that it is deprecated, naming surpyval's, and
 gives surpyval's answer, ``confidence`` given as ``alpha_ci = 1 -
-confidence``. They are removed in 0.19."""
+confidence``. They are removed in 0.18."""
 
 import itertools
 import warnings
@@ -66,7 +66,7 @@ def test_each_warns_naming_surpyvals_function(name):
     function = getattr(repyability, name)
     match = (
         f"repyability.{name} is deprecated: use surpyval.test_planning."
-        f"{name},.*removed in 0.19"
+        f"{name},.*removed in 0.18"
     )
     with pytest.warns(FutureWarning, match=match) as caught:
         got = function(*ours, **(kwargs or {}))
