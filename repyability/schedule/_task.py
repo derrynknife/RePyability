@@ -71,11 +71,16 @@ class _BoundLimit(Protocol):
 
 
 class _Limit(Protocol):
-    """What ``Task(every=...)`` and ``also=`` take: a ``Recurrence``, or
-    anything with ``_task_limit(key, resets)`` returning one of these.
-    A limit by use (a later release) implements it, and reads what it
-    needs (the usage forecast, the reading when last done) from the
-    ``context`` that ``Task.due`` passes to ``bind``."""
+    """A task's limit. ``Task(every=...)`` and ``also=`` take a
+    ``Recurrence`` (made one by ``_as_limit``), or any object with
+    ``_task_limit(key, resets)`` returning one of these: ``key`` is
+    ``"every"`` or ``"also"``, ``resets`` the task's ``resets=`` (None
+    for the limit's default). A limit by use implements it, and reads
+    what it needs (the usage forecast, the reading when last done) from
+    the ``context`` that ``Task._due`` passes to ``bind``. Its
+    ``to_dict()`` is what ``Task.to_dict`` saves; ``LIMIT_KINDS`` maps its
+    ``"kind"`` to a class whose ``from_dict`` gives back the object the
+    task was made with."""
 
     def bind(
         self, task: "Task", start: date, end: date, context: Dict[str, Any]
@@ -93,8 +98,8 @@ class _Limit(Protocol):
         """Whether the limit counts again from when the task is done."""
 
 
-#: Saved limits other than a recurrence, by their ``"kind"``: a later
-#: release registers its limits here, so ``Task.from_dict`` reads them.
+#: Saved limits other than a recurrence, by their ``"kind"``: a limit
+#: by use registers its class here, so ``Task.from_dict`` reads it.
 LIMIT_KINDS: Dict[str, Any] = {}
 
 
@@ -307,8 +312,9 @@ class Task:
         when the task was last done; a pattern (``weekly``, ``monthly``,
         ``yearly``, ``on``) keeps its own dates (see ``resets``).
     also : Recurrence, optional
-        A second limit: the task falls due by whichever comes first, and
-        both count again from when it is done.
+        A second limit: the task falls due by whichever comes first; once
+        it is done, a resetting limit counts again from then (see
+        ``resets``).
     last_done : datetime.date or str, optional
         When it was last done. Without it, the first due date is the
         rule's first on or after the period's start. With it, a due date
@@ -559,10 +565,9 @@ class Task:
             "kind": "task",
             "version": VERSION,
             "name": self.name,
-            "every": self.every.to_dict(),
         }
-        if self.also is not None:
-            out["also"] = self.also.to_dict()
+        for key, limit in zip(("every", "also"), self._limits()):
+            out[key] = limit.to_dict()
         if self.last_done is not None:
             out["last_done"] = self.last_done.isoformat()
         if self.tolerance:

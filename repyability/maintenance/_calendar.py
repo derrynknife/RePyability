@@ -3,8 +3,8 @@ package's ``README.md``): shuts on a period (weekly, quarterly, annual,
 each with its own price and offset) or on given times, a planned
 replacement on any day at a dearer price, and a failure at the dearest.
 
-Times are numbers in the life model's unit, from 0; turning dates into
-them is Reliafy's (``CLAUDE.md``: RePyability is about timelines). A
+Times are numbers in the life model's unit, from 0; dates are turned
+into them at the edge (``repyability.schedule`` gives the dates). A
 calendar is laid on a grid of a step for the dynamic programme
 (``_Grid``): each date to its nearest grid time, so a date moves by half a
 step at most and the dates of a period keep no drift.
