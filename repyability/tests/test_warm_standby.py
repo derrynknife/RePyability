@@ -117,11 +117,20 @@ def test_dormancy_factor_out_of_range_rejected(bad):
         StandbyModel([EXP, EXP], dormancy_factor=bad)
 
 
-def test_warm_with_imperfect_switching_rejected():
-    with pytest.raises(NotImplementedError, match="switching"):
-        StandbyModel(
-            [EXP, EXP], dormancy_factor=0.5, switching_probability=0.9
-        )
+def test_warm_with_imperfect_switching_is_worked_out():
+    # Refused until 0.17, which works it out exactly by its Markov chain
+    # (test_standby_cases.py has the cases): one spare, alive when needed
+    # at u with exp(-d lam u), then switched in with s, gives
+    # R = e^-lam t (1 + s (1 - e^-d lam t) / d).
+    d, s = 0.5, 0.9
+    model = StandbyModel(
+        [EXP, EXP], dormancy_factor=d, switching_probability=s
+    )
+    t = np.array([50.0, 150.0, 400.0])
+    rt = LAM * t
+    expected = np.exp(-rt) * (1.0 + s * (1.0 - np.exp(-d * rt)) / d)
+    np.testing.assert_allclose(model.sf(t), expected, rtol=1e-11)
+    assert not model.is_simulated
 
 
 @pytest.mark.parametrize(

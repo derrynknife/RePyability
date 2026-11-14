@@ -9,22 +9,18 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
-### Added
+### Documentation
 
-- Replacement on condition by a measured degradation level (`"preventive":
-  {"policy": "condition", "level": ...}` on a Wiener or gamma process
-  life) starts from a state, where it was refused: a level measured now
-  (`NodeState(level=..., since_scheduled=...)`), a unit new on its
-  calendar's phase, one in a repair or a replacement, and (for the exact
-  values) the long-run state, `"stationary"`. The values over time
-  (`point_availability`, `expected_events`, `expected_cost`,
-  `expected_npv`, `mission_availability`, the conditional runs and
-  `plan_vs_actual` given the state) follow the level's distribution from
-  the state to the first inspection and on from there, numerically; the
-  simulations (`availability`, `cost`, `simulate_timelines`) start from
-  it too, the unit's first inspection reading its level from the one
-  measured. An age alone is refused there (it does not give the level),
-  as is a model of the unit's own.
+- The surpyval workarounds still in RePyability were each checked
+  against surpyval 0.27 (a mixture's life left at an age, a degradation
+  level given survival, rescaling time for a duty cycle, parameter
+  ranges of fits other than distributions, a joint frailty model's
+  expected failures far past its write-off ages, and a Bayesian fit's
+  quantile with an offset or shares). 0.27 fixes none of them, so all
+  stay and no number changes; the joint frailty one can go once the
+  minimum surpyval is 0.28. The contributor notes record what was
+  measured, and no longer name a release as the latest; the maintenance
+  stories' statuses are as of 0.17.
 
 ## [0.17] - 2026-11-14
 
@@ -497,9 +493,22 @@ Every other seeded result is unchanged.
   is a Markov process, so the unit is followed from one inspection to the
   next by the distribution of its level on a grid of levels, as
   replacement on condition by age follows its ages; the long run is the
-  interval this settles into. From a state it is still refused (a state
-  does not give the level), as is a Wiener process with no drift towards
-  its threshold. `analysis_routes()` says so.
+  interval this settles into. A Wiener process with no drift towards its
+  threshold is refused. `analysis_routes()` says so.
+- Replacement on condition by a measured degradation level (`"preventive":
+  {"policy": "condition", "level": ...}` on a Wiener or gamma process
+  life) starts from a state, where it was refused: a level measured now
+  (`NodeState(level=..., since_scheduled=...)`), a unit new on its
+  calendar's phase, one in a repair or a replacement, and (for the exact
+  values) the long-run state, `"stationary"`. The values over time
+  (`point_availability`, `expected_events`, `expected_cost`,
+  `expected_npv`, `mission_availability`, the conditional runs and
+  `plan_vs_actual` given the state) follow the level's distribution from
+  the state to the first inspection and on from there, numerically; the
+  simulations (`availability`, `cost`, `simulate_timelines`) start from
+  it too, the unit's first inspection reading its level from the one
+  measured. An age alone is refused there (it does not give the level),
+  as is a model of the unit's own.
 - `NonRepairable.cost_distribution()` (and the `CostDistribution`
   result): what a part's maintenance costs over a window from its state
   now, with its spread, under run to failure, age replacement or block
