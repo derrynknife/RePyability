@@ -23,22 +23,25 @@ minimum surpyval is in `pyproject.toml` (0.27 as of 0.17).
   handles plotting/dashboards/reporting. RePyability is the
   computational reliability engine; keep it free of plotting dependencies.
 
-- **RePyability is about timelines; Reliafy is about calendars.**
-  RePyability works in model time (the models' own unit, from 0 or from
-  a state: ages, phases and meter readings as numbers) and answers in
-  plain data. Dates, calendars, operating schedules, meters read by date,
-  financial years, and the CMMS (work orders, the asset register, the
-  history store, the forecast by date) and RCM's records and workflow
-  belong to Reliafy, which turns dates into model time, calls
-  RePyability, and turns the answers back into dates. A calendar of
-  opportunities in model time (shuts on periods or at given times, each
-  with a price: `maintenance.Calendar`) is RePyability's; laying it on
-  real dates is Reliafy's. RePyability keeps
-  the quantitative questions: RCM's per failure mode (run to failure,
-  scheduled replacement, failure finding, on-condition, the options at a
-  planned replacement), a failure's consequences at system level, and
-  the probabilities a forecast is made of (expected failures and costs
-  over a window from a state, and their distribution).
+- **RePyability computes; Reliafy records.** RePyability's models work
+  in model time (the models' own unit, from 0 or from a state: ages,
+  phases and meter readings as numbers), and `repyability.schedule`
+  connects model time to the calendar: recurrence rules (which dates),
+  duty plans (how many operating hours by when), and forecasts through
+  them (tasks on dates; failures and costs by calendar period). It takes
+  dates, rules, plans, readings and a time zone as plain data and returns
+  plain data; it never reads the clock, stores anything or knows a
+  workspace. Reliafy (or any caller) holds the records (tasks, plans,
+  readings as recorded, fitments, work orders, the asset hierarchy, RCM's
+  records and workflow), decides what "today" and the time zone are,
+  works out the state from the history (ages, last done, the recent
+  rate), and turns the answers into screens and work orders. When Reliafy
+  needs calendar or model-time maths, it calls RePyability. RePyability
+  keeps the quantitative questions: RCM's per failure mode (run to
+  failure, scheduled replacement, failure finding, on-condition, the
+  options at a planned replacement), a failure's consequences at system
+  level, and the probabilities a forecast is made of (expected failures
+  and costs over a window from a state, and their distribution).
 
 - **Model behaviour belongs in surpyval too.** When a surpyval model
   misbehaves (its draws, means, densities or save format), raise an issue in
@@ -90,16 +93,18 @@ minimum surpyval is in `pyproject.toml` (0.27 as of 0.17).
   inside the functions that use them, as they import the modules above
   them.
 
-- **Maintenance (#319) is built one use case at a time.** Its calendar
-  side (tasks on dates, operating schedules, meters read by date) moved
-  to Reliafy (Reliafy/reliafy#389), by the scope note above; what stays
-  works in model time (`NonRepairable.failures`, the choice at a planned
-  replacement). `repyability/maintenance/README.md` records each use case
-  (who asks, what they know and want back, how it is solved, the
-  hand-worked answer with today's methods, the checks, what was learned)
-  before it is built. Add a use case there before the code that answers
-  it, and add nothing no use case needs; the maintainer chooses which is
-  next.
+- **Maintenance (#319) and schedules are built one use case at a
+  time.** `repyability/maintenance/README.md` records the use cases in
+  model time (`NonRepairable.failures`, the choice at a planned
+  replacement, ...), and `repyability/schedule/README.md` those on the
+  calendar (tasks on dates, rules, duty plans), each with who asks, what
+  they know and want back, how it is solved, the hand-worked answer with
+  today's methods, the checks and what was learned, before it is built.
+  Add a use case there before the code that answers it, and add nothing
+  no use case needs; the maintainer chooses which is next. The schedule
+  module takes no clock reads (the caller passes dates), stores nothing,
+  works in whole local dates for rules (time zones only for duty plans),
+  and rests on python-dateutil's `rrule` behind its own types.
 
 ## Simulation engines and seeded results
 

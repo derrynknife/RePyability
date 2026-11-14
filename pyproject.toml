@@ -53,6 +53,10 @@ dependencies = [
     # relies on.
     "surpyval>=0.27",
     "tqdm>=4.64",
+    # The date arithmetic of repyability.schedule (rrule, the iCalendar
+    # standard's recurrence). Every install had it already, through
+    # surpyval's pandas; 2.8.2 is the floor pandas asks for.
+    "python-dateutil>=2.8.2",
 ]
 
 [project.optional-dependencies]
@@ -120,6 +124,7 @@ include = ["repyability*"]
 "repyability" = ["py.typed"]
 "repyability.tests" = ["*.json"]
 "repyability.maintenance" = ["README.md", "CALENDAR_DECISIONS.md"]
+"repyability.schedule" = ["README.md"]
 
 # For Black pre-commit hook
 [tool.black]
@@ -145,6 +150,8 @@ module = [
     'networkx',
     'surpyval.*',
     'tqdm',
+    'dateutil',
+    'dateutil.*',
     'numpy',
     'numpy.*',
     'numba',

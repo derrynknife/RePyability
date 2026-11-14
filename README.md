@@ -76,6 +76,12 @@ taking already-fitted lifetime models (from
   their measures (time up, failures and who caused them, first failure);
   merged as a diagram's structure, so a system's history follows from its
   components', with the component behind each of its outages.
+- **Schedules on the calendar** (`repyability.schedule`): which dates a
+  rule gives (every so many days, weeks, months or years; named weekdays;
+  the first Saturday or the last Friday of the month; the first Tuesday of
+  November every year; given dates; with seasons and excluded dates), and
+  when tasks fall due on them, with two limits, crew visits, and the work
+  by month. Plain data in and out, no clock read.
 - **Simulation**: seeded Monte-Carlo run to a tolerance, antithetic pairs,
   control variates from the system's exact twin, parallel runs, runs split
   across machines and merged, or sharded through any executor (Ray, Dask,

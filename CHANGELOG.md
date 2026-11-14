@@ -9,6 +9,47 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- **`repyability.schedule`: schedules on the calendar.** RePyability now
+  connects model time to dates, as plain calculations: it takes dates
+  and rules from the caller, never reads the clock and stores nothing.
+  The first part:
+  - `Recurrence`: which dates a rule gives. `Recurrence.every(n, unit,
+    anchor)` (days, weeks, months or years; months and years keep the
+    anchor's day, a shorter month's last day), `weekly` (named weekdays,
+    every n weeks), `monthly` (a day of the month, or its first to fifth
+    or last to fifth-from-last weekday, every n months), `yearly` (a date
+    or a weekday pattern in a named month: the first Tuesday of
+    November), and `on` (given dates). Every rule takes `season=` (a
+    `Season` of months or of days of the year), `excluding=` (dates or
+    ranges), `moved=` (an excluded date skipped, or moved to the nearest
+    day before or after) and `short_months=`. Its `dates(start, end)`
+    include both ends; `on_or_after`, `after`, `includes` and `number`
+    ask about one date; `notes` lists the months a fifth weekday or a
+    short month skipped and the dates excluded or moved; `describe()`
+    says the rule in plain words; `to_dict`/`from_dict` save it (and read
+    a work package's cadence or a task's interval as earlier tools
+    stored them); `to_rrule()` writes it as iCalendar text.
+  - `Task`: when a task falls due by a rule, with a second limit
+    (`also=`, whichever comes first), when it was last done, crew visits
+    it waits for (`visits=`) and a tolerance; an interval counts again
+    from when the task is done, a pattern keeps its own dates
+    (`resets=` overrides). `Task.due(start, end)` returns a `TaskDue`:
+    the dates, which limit set each, when each is done and how late, the
+    count, cost and hours, and notes in plain words.
+  - `work_by_period(tasks, period, start, end)`: the tasks, hours and
+    cost in each day, week, month, quarter or year (`WorkByPeriod`).
+
+  The use cases are in `repyability/schedule/README.md`, and the guide
+  has a page, "Schedules on the calendar".
+
+### Changed
+
+- **python-dateutil (2.8.2 or later) is a dependency of its own**, for
+  the schedule module's date arithmetic. Every install had it already,
+  through surpyval's pandas.
+
 ## [0.17] - 2026-11-14
 
 surpyval 0.27, and maintenance in model time. A `RepairableRBD` takes
