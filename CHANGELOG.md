@@ -26,7 +26,9 @@ interference is new. RePyability is tested against surpyval 0.27 and
 needs it: 0.27 removes no name and deprecates nothing RePyability uses,
 and the fitted models RePyability takes give the same values. Every
 repair model surpyval fits is a repairable block (G1, ARA and ARI
-simulated, Cox-Lewis exact), `"fit"` uncertainty draws every fitted kind
+simulated, Cox-Lewis exact), so is any surpyval model with a life's
+functions (a Royston-Parmar fit, a regression at a unit's covariates)
+and a Bayesian fit with an offset or shares, `"fit"` uncertainty draws every fitted kind
 of block, a `JointNode` takes surpyval `Measurements`, and
 `RepairOrReplace` says whether to repair a unit again or replace it, from
 a joint frailty model.
@@ -57,7 +59,9 @@ its level, `availability()` and `cost()` give the exact expected values
 as their means by default (the liner example's quoted mean moves); a
 seeded run from the state of a unit repaired imperfectly now draws from
 the unit's own stream, so its numbers differ from 0.16 (and are now
-reproducible).
+reproducible), as does a seeded run with a repair given a Royston-Parmar
+fit, a regression at its covariates or a destructive degradation model
+(now drawn from the component's stream).
 Every other seeded result is unchanged.
 
 ### Added
@@ -228,11 +232,45 @@ Every other seeded result is unchanged.
   and its draws a posterior point and a life from one uniform, so seeded
   simulations stream it and both engines take it. It saves with the
   diagram (the fit's own `to_dict()`, its posterior whole) and pickles.
-  Its credible band is carried to system results (the next entry). A
-  fit with an offset, a limited failure population or zero inflation, or
-  of a discrete distribution, is refused for now. A surpyval Bayesian fit
+  Its credible band is carried to system results (see below). A fit of
+  a discrete distribution is refused. A surpyval Bayesian fit
   is no longer taken for its distribution at the posterior medians by the
   model probes (`distribution_name`).
+- Any surpyval model with a life's functions is a repairable block, taken
+  by what it can do rather than by its class. A `RepairableRBD`
+  component's life or repair, and a `NonRepairable`'s (with the
+  maintenance calculators on it), takes any surpyval model whose `sf`,
+  `ff`, `df`, `hf`, `Hf`, `qf` and `mean` work with times alone: newly a
+  Royston-Parmar fit, a regression at one unit's covariates
+  (`regression.at(Z)`, surpyval's `LifeAtCovariates`: a proportional
+  hazards, accelerated failure time, proportional odds, distributional,
+  zero-inflated or mixture-cure fit there) and a destructive degradation
+  model, where before a life had to be a distribution, a mixture, a
+  Bayesian fit or a degradation process. The exact methods integrate it
+  through its functions, and the simulations draw it through its quantile
+  function from the component's own stream, so a seed gives the same run
+  on either engine and it can start part way through a life. A share
+  that never fails (a cure model's) is up for good in the long run. It
+  saves with the diagram in surpyval's own format (a regression at its
+  covariates as the regression and the row), in a `NonRepairableRBD`
+  too. Still refused, now saying which function is missing and why: a
+  regression without its covariates (the message names `model.at(Z)`;
+  as a repair it was taken and failed with a `TypeError` in the
+  analysis), a Cox model at its covariates and non-parametric estimates
+  such as `CompetingRisks` (their curves end at the data, so they have
+  no mean), and a joint model's prediction. Seeded results of a repair
+  given one of these models (taken before, drawn with the model's own
+  `random` from numpy's global generator) now come from the component's
+  stream, so they differ from before (and are now reproducible); every
+  other seeded result is unchanged.
+- A Bayesian fit with an offset, a limited failure population or zero
+  inflation (`fit_bayes(offset=True)`, `lfp=True`, `zi=True`, or draws
+  with `gamma`, `lfp_p` or `f0` columns) is a life too, where it was
+  refused: each posterior point is its own model, its functions are the
+  fit's own, a draw inverts the point's model (0 dead on arrival, `inf`
+  never failing), its share that never fails is the points' `1 - lfp_p`
+  averaged, and its credible band draws each point with its offset and
+  shares. A fit of a discrete distribution is still refused.
 - A Bayesian block's credible band, carried to the system's result. The
   parameter-uncertainty methods (`NonRepairableRBD.sf_uncertainty`,
   `mean_uncertainty`, `time_to_reliability_uncertainty`,
