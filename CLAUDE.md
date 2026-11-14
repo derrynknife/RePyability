@@ -563,9 +563,11 @@ What remains:
   `hf` and `Hf` itself instead. Take `mcf` once the minimum surpyval's
   holds at every age.
 
-Refused until surpyval has it: an ARA, ARI or G1 renewal model as a life,
-whose next failure surpyval cannot draw yet (surpyval #833,
-`rbd/_processes.py`).
+An ARA, ARI or G1 renewal model is no longer refused (surpyval #833 is
+in 0.27): the Python simulation steps the fitted model itself with its
+`states`, `next_failure_qf` and `advance` (`rbd/_processes.py`), and the
+exact methods refuse it as they refuse any imperfect repair but minimal
+repair.
 
 List each new workaround here with its surpyval issue and where it lives,
 so it can go once the minimum surpyval in `pyproject.toml` includes the
