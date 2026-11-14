@@ -96,7 +96,19 @@ class _ResultMapping(Mapping):
     Preserves the dict-style access the results used to have (``result[key]``,
     ``keys``/``items``/``values``, ``in``, ``dict(result)``, iteration) while
     the subclasses add typed, documented attributes.
+
+    A result of a diagram whose models carry a unit (surpyval's
+    ``unit=``) carries it as ``model_unit``, and in ``to_dict``.
     """
+
+    @property
+    def model_unit(self) -> Optional[str]:
+        """The unit of the models of the diagram that gave this result
+        (``"hours"``, ``"km"``, ``"cycles"``), as their labels name it:
+        the unit its times, rates and lives are in. None when the models
+        name no unit, or name different ones (the diagram warned of
+        that when it was built)."""
+        return self.__dict__.get("_model_unit")
 
     def to_dict(self) -> dict:
         """The result as plain data, ready for ``json.dumps`` (#235): each
@@ -109,9 +121,13 @@ class _ResultMapping(Mapping):
         dict
             The fields, as plain data. Infinite and undefined values stay
             floats (``inf``, ``nan``), which Python's ``json`` writes as
-            ``Infinity`` and ``NaN``.
+            ``Infinity`` and ``NaN``. A result whose diagram's models
+            carry a unit has it as ``"model_unit"`` too.
         """
-        return {name: plain(getattr(self, name)) for name in self}
+        out = {name: plain(getattr(self, name)) for name in self}
+        if self.model_unit is not None:
+            out["model_unit"] = self.model_unit
+        return out
 
     def __getitem__(self, key):
         if key in self._field_names():

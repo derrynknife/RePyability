@@ -45,6 +45,7 @@ from scipy.special import logit, logsumexp, softmax
 
 from repyability.rbd import bdd
 from repyability.rbd import capacity as _capacity
+from repyability.rbd._units import diagram_unit, stamp_unit
 from repyability.rbd.modular import (
     NODE,
     Decomposition,
@@ -595,6 +596,30 @@ def _take_node_names(cls) -> None:
             setattr(cls, name, wrapped)
 
 
+def _carry_unit(cls) -> None:
+    """Wrap ``cls``'s own public methods so that a result they return
+    (a ``_ResultMapping``) carries the diagram's ``unit`` as its
+    ``model_unit``: the diagram classes' as they are made
+    (``RBD.__init_subclass__``), and ``RBD``'s own."""
+    for name, value in list(vars(cls).items()):
+        if name.startswith("_") or not inspect.isfunction(value):
+            continue
+        setattr(cls, name, _with_unit(value))
+
+
+def _with_unit(method):
+    """``method``, its result stamped with the diagram's unit (see
+    ``_carry_unit``)."""
+
+    @functools.wraps(method)
+    def wrap(self, *args, **kwargs):
+        return stamp_unit(
+            method(self, *args, **kwargs), self.__dict__.get("unit")
+        )
+
+    return wrap
+
+
 class _Cache:
     """What a diagram has worked out and keeps between analyses, each made
     when it is first wanted (``kept``): its common-cause plans
@@ -834,6 +859,7 @@ class RBD:
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         _take_node_names(cls)
+        _carry_unit(cls)
         refuse_removed_names(cls)
 
     #: Methods 0.12 removed (#149), and those that took their place: asked
@@ -960,6 +986,14 @@ class RBD:
                 f"k is given for {node!r}, which is not a node of the diagram"
             )
 
+        # The unit the models' times are in (their labels, read with
+        # surpyval's same_unit), None when none names one; a warning names
+        # the blocks when they name different units (nothing is converted).
+        args = getattr(self, "_init_args", {})
+        self.unit: Optional[str] = diagram_unit(
+            args.get("reliabilities") or args.get("components") or {}
+        )
+
         models = self._models_given
         if models is not None:
             # A model for a name in no edge is reported as unused (not added
@@ -1065,6 +1099,9 @@ class RBD:
                     "k-out-of-n "
                     + ", ".join(f"{n!r}: {k}" for n, k in koon.items())
                 )
+        unit = getattr(self, "unit", None)
+        if unit is not None:
+            parts.append(f"unit {unit!r}")
         parts.extend(self._repr_details())
         if not getattr(self, "structure_check", {}).get("is_valid", True):
             parts.append("infeasible (see structure_check)")
@@ -3827,4 +3864,5 @@ class RBD:
 
 
 _take_node_names(RBD)
+_carry_unit(RBD)
 refuse_removed_names(RBD)
