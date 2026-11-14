@@ -68,6 +68,39 @@ A component can be given as:
   (`FixedEventProbability` at 0), is one too: a what-if of a part that
   never fails.
 
+A life (`"reliability"`) or repair (`"repairability"`) is any surpyval
+model with a life's functions of time alone (`sf`, `ff`, `df`, `hf`, `Hf`,
+`qf` and `mean`): a distribution (with an offset, a limited failure
+population or zero inflation too), a `MixtureModel`, a Bayesian fit (its
+posterior predictive; see [Building](building.md#a-bayesian-fit-as-a-life)),
+a degradation process, a Royston-Parmar fit, a destructive degradation
+model, a regression at one unit's covariates (`regression.at(Z)`, surpyval's
+`LifeAtCovariates`), or any other surpyval model with those functions. Such a
+model is taken by what it can do, not by its class: the exact methods
+integrate it through its functions and the simulations draw it through its
+quantile function, from the component's own random stream, so a seed gives
+the same run on either engine. It saves with the diagram in surpyval's own
+format (a regression at its covariates as the regression and the row).
+What lacks a function is refused, saying which and why: a regression
+without its covariates (give `model.at(Z)`), a Cox model at its covariates
+or a non-parametric estimate (their curves end at the data, so they have
+no mean), a joint model's prediction (see [Condition-based](condition-based.md)).
+
+```python
+import numpy as np
+import surpyval as surv
+from repyability import RepairableRBD
+
+lives = 500 * np.random.default_rng(7).weibull(1.5, 40)
+spline = surv.RoystonParmar.fit(lives)        # no single distribution
+rbd = RepairableRBD(
+    [("s", "pump"), ("pump", "t")],
+    {"pump": {"reliability": spline,
+              "repairability": surv.Exponential.from_params([0.05])}},
+)
+round(rbd.mean_availability(), 4)            # -> 0.9555   MTTF / (MTTF + 20)
+```
+
 The constructor also takes `k`, `input_node`, `output_node` and
 `on_infeasible_rbd` exactly as for a
 [`NonRepairableRBD`](building.md), `downtime_cost_rate` (see

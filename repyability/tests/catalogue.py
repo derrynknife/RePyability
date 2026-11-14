@@ -203,6 +203,40 @@ def bayes_life():
 
 
 @_fitted_once
+def bayes_shares_life():
+    """A Bayesian Weibull fit with an offset and a limited failure
+    population: 400 draws about an offset of 20, alpha 500, beta 1.5 and
+    a share that ever fails of 0.8, each draw its own model."""
+    g = np.random.default_rng(7)
+    draws = np.c_[
+        g.uniform(10.0, 30.0, 400),
+        500 * g.lognormal(0, 0.1, 400),
+        1.5 * g.lognormal(0, 0.1, 400),
+        g.uniform(0.7, 0.9, 400),
+    ]
+    return surv.bayes.BayesianParametric.from_draws(
+        surv.Weibull, draws, ["gamma", "alpha", "beta", "lfp_p"]
+    )
+
+
+@_fitted_once
+def royston_parmar_life():
+    """A Royston-Parmar fit (a spline on the log cumulative hazard) to 40
+    lives about a Weibull of alpha 500 and beta 1.5: a surpyval model
+    taken as a life by its functions (#93)."""
+    x = 500 * np.random.default_rng(7).weibull(1.5, 40)
+    return surv.RoystonParmar.fit(x)
+
+
+@_fitted_once
+def life_at_load():
+    """The pump of ``aft()`` at a load of 1.5: a regression at one unit's
+    covariates (``regression.at(Z)``), taken as a life by its functions
+    (#93)."""
+    return aft().at([[1.5]])
+
+
+@_fitted_once
 def mixture_life():
     """A two-mode population, infant mortality and wear-out (#227)."""
     g = np.random.default_rng(7)
@@ -334,6 +368,12 @@ def nonrepairable_kinds():
         "degradation process": NonRepairableRBD(EDGES, {"a": wear(), **rest}),
         "mixture": NonRepairableRBD(EDGES, {"a": mixture_life(), **rest}),
         "Bayesian fit": NonRepairableRBD(EDGES, {"a": bayes_life(), **rest}),
+        "Bayesian fit with shares": NonRepairableRBD(
+            EDGES, {"a": bayes_shares_life(), **rest}
+        ),
+        "Royston-Parmar fit": NonRepairableRBD(
+            EDGES, {"a": royston_parmar_life(), **rest}
+        ),
         "degrading": NonRepairableRBD(
             EDGES,
             {
@@ -792,6 +832,15 @@ def repairable_kinds():
             ),
             "Bayesian fit life": system(
                 unit(reliability=bayes_life(), replace_cost=10.0)
+            ),
+            "Bayesian fit with shares life": system(
+                unit(reliability=bayes_shares_life(), replace_cost=10.0)
+            ),
+            "Royston-Parmar life": system(
+                unit(reliability=royston_parmar_life(), replace_cost=10.0)
+            ),
+            "life at a regression's covariates": system(
+                unit(reliability=life_at_load(), replace_cost=10.0)
             ),
             "fitted Crow-AMSAA process": system(
                 unit(reliability=crow_amsaa(), repair_cost=1.0)

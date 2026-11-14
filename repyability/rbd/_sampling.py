@@ -33,6 +33,7 @@ from surpyval import Parametric
 from ._degradation import is_degradation
 from ._model_utils import (
     MODEL_ERRORS,
+    by_functions,
     is_fixed_probability,
     is_mixture,
     lfp_p,
@@ -290,8 +291,10 @@ def stream_sampler(model) -> Optional[Sampler]:
     draws with, one uniform a draw: :func:`inverse_sampler`'s, or a
     surpyval ``MixtureModel``'s quantile function (its own, precise in
     both tails from surpyval 0.25), or a Bayesian fit's posterior predictive's
-    draw (``PosteriorPredictive._draw``). None for a model that draws its
-    own way.
+    draw (``PosteriorPredictive._draw``), or the quantile function of a
+    degradation process or of any other surpyval model taken by its
+    functions (``by_functions``). None for a model that draws its own
+    way.
     (A ``NonRepairableRBD``'s draws replay surpyval's own, and a mixture
     draws there as surpyval does.)"""
     from ._bayesian_life import PosteriorPredictive
@@ -306,5 +309,9 @@ def stream_sampler(model) -> Optional[Sampler]:
     if sampler is None and is_degradation(model):
         # A degradation process's first-passage time from its starting
         # level (#271), by its own quantile function.
+        return lambda u: np.asarray(model.qf(u), dtype=float)
+    if sampler is None and by_functions(model):
+        # Any other surpyval model taken by its functions (#93): by its
+        # own quantile function.
         return lambda u: np.asarray(model.qf(u), dtype=float)
     return sampler
