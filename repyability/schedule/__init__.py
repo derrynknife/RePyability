@@ -18,6 +18,11 @@ ends.
   the site's time zone; its ``forecast`` is a ``UsageForecast``, the map
   between moments and meter readings both ways, which puts a ``Usage``
   limit ("every 2,000 operating hours") on dates.
+- ``failures_by_period`` and ``events_by_period``: a part's failures and
+  cost, or a ``RepairableRBD``'s events, by calendar period, through the
+  map (the existing model-time methods, labelled with dates);
+  ``shutdown_spec`` puts shuts on dates on a diagram, and
+  ``Opportunity.from_recurrence`` lays them on a part's model time.
 
 ``README.md`` in this package records the use cases, the question each
 answers and how it is solved.
@@ -30,6 +35,13 @@ from repyability.schedule._duty import (
     Roster,
     Runs,
     Shifts,
+)
+from repyability.schedule._forecast import (
+    EventsByPeriod,
+    FailuresByPeriod,
+    events_by_period,
+    failures_by_period,
+    shutdown_spec,
 )
 from repyability.schedule._recurrence import (
     Recurrence,
@@ -58,6 +70,8 @@ __all__ = [
     "Crossing",
     "DutyPlan",
     "DutySchedule",
+    "EventsByPeriod",
+    "FailuresByPeriod",
     "PeriodUsage",
     "Rate",
     "Readings",
@@ -75,4 +89,7 @@ __all__ = [
     "TaskDue",
     "WorkByPeriod",
     "work_by_period",
+    "events_by_period",
+    "failures_by_period",
+    "shutdown_spec",
 ]

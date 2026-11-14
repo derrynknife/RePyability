@@ -59,6 +59,11 @@ model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
 | UC-35 | 250 hours or 12 months at 15 h a month: which limit sets the date? | **Built**: `Task(every=Usage(...), also=Recurrence...)` |
 | UC-36 | Exact runs for now, a rate after, with no duty made at the handover | **Built**: `background`, `specific`, `fill` |
 | UC-37 | A night shift the nights the clocks change | **Built**: `time_zone=` |
+| UC-38 | The wear ring on the weekday pump: expected failures and cost by month, and the range | **Built**: `failures_by_period` |
+| UC-39 | A system's events by calendar month | **Built**: `events_by_period` |
+| UC-40 | Shuts on dates as opportunities on the part's clock | **Built**: `Opportunity.from_recurrence` |
+| UC-41 | The annual overhaul on the first Tuesday of November, as a diagram's shutdown | **Built**: `shutdown_spec` (simulated; the exact methods take shuts on a period) |
+| UC-42 | Starts per operating hour for a life on two clocks | **Built**: `UsageForecast.life_at_usage` (needs surpyval 0.28) |
 
 ## Use cases
 
@@ -316,14 +321,21 @@ on an operating schedule) is answered by the same code: its three dates
 ### UC-35: "Our standby generator runs about 15 hours a month on test runs. Its oil change is every 250 hours or 12 months, whichever comes first. Which limit actually sets the date?"
 
 - **Status:** built: a `Task` with `every=Usage(250)` and
-  `also=Recurrence.every(12, "months", ...)`.
+  `also=Recurrence.every(12, "months", ...)`; `TaskDue.notes` says when
+  a limit set none of the dates, and how far behind it was.
 - **The answer:** 250 h at 15 h a month takes 16⅔ months, so **the
   12-month limit sets every date** (14 November 2027, 14 November 2028;
   `limits` says `"also"` for each); the hours would not be reached until
   4 April 2028, about 4.7 months after the first calendar date. The
-  hours limit is doing nothing.
+  hours limit is doing nothing, and the result says so in `notes`: "The
+  limit "every 250 hours" set none of the dates: when the task was first
+  due (2027-11-14, by the other limit), it would not have been reached
+  until 2028-04-04, about 4.7 months later." (A month here is 30.44
+  days; a gap under 60 days is given in days; a forecast too short to
+  reach it says it would not be reached within the forecast.)
 - **Checks:** `test_two_limits_the_calendar_first`, and
-  `test_two_limits_the_hours_first` for the reverse on the pump.
+  `test_two_limits_the_hours_first` for the reverse on the pump (there
+  the 12-month limit sets nothing, 6.3 months behind).
 
 ### UC-36: "I know exactly when it runs today and tomorrow; after that, about 3 hours a day. Can the forecast use both, and not count the handover twice?"
 
@@ -372,6 +384,155 @@ on an operating schedule) is answered by the same code: its three dates
 - **Checks:** `test_a_night_shift_across_daylight_saving`,
   `test_times_that_do_not_exist_or_happen_twice`.
 
+## Failures, events and shuts on the calendar
+
+These use cases ask RePyability's model-time methods from dates and label
+their answers with dates (`_forecast.py`). **No probability is new
+here**: each turns dates into model time (operating time through the
+`UsageForecast`, or calendar time since a start), calls an existing
+method, and puts the dates back. Ranges are the 5th to 95th percentile:
+90% of outcomes, two-sided, stated on every result. Each answer is a test
+in `test_schedule_forecast.py`.
+
+### UC-38: "The pump's wear ring has a fitted life in operating hours. On the pump's weekday shifts, how many failures should I expect each month, what will they cost, and how far could that be out?"
+
+- **Status:** built: `failures_by_period(part, usage, period, age=)`
+  returning a `FailuresByPeriod`.
+- **Who asks:** a planner or reliability engineer budgeting one position
+  by month (and, summed over many positions, a site).
+- **What they know:** the pump of UC-32 (Mon–Fri 06:00–22:00, from Monday
+  16 November 2026, forecast to 1 December 2027); the ring's life
+  (Weibull, scale 9,000 h, shape 2.5) and its age now (5,200 h); it is
+  replaced when it fails, at $4,800.
+- **The answer, by hand:** the operating hours by month are UC-32's (176,
+  368, 336, 320, 368, 352, 336, 352, 352, 352, 352, 336, 352; 4,352 h in
+  all). The chance the ring fails by 1 December 2027 is
+  `1 - R(5,200 + 4,352) / R(5,200)`, with `R(t) = exp(-(t / 9,000)^2.5)`:
+  (5,200 / 9,000)^2.5 = 0.25375 and (9,552 / 9,000)^2.5 = 1.16046, so
+  `1 - exp(-0.90671)` = **59.6%**. Counting the replacement ring's own
+  failures too (a renewal count, `NonRepairable.failures`), **0.622
+  failures are expected, $2,988**. By month: 0.022, 0.047, 0.045, 0.045,
+  0.053, 0.051, 0.050, 0.053, 0.053, 0.053, 0.052, 0.049, 0.051 failures
+  ($105, $227, $217, $214, $252, $247, $239, $252, $253, $252, $250, $236,
+  $244). The chance of no failure is 40.4%, of one 57.0%, of two or more
+  2.6%, so the range over the whole span is **0 to 1 failure, $0 to
+  $4,800** (90% of outcomes). In a single month the 95th percentile is
+  $4,800 where that month's chance of a failure is 5% or more, else $0.
+- **How it is solved:** each period's end becomes operating time since
+  the forecast's start (`usage.model_time`); the chance of at least one
+  failure by each end is `NonRepairable.failures`' at those times (exact,
+  run to failure); each period's expected failures, cost and range, and
+  any policy (`every=` with `resets=`, or a `calendar=` from UC-40), come
+  from `NonRepairable.cost_by_window` (numerical, to about 1e-6), which
+  works each window out through the earlier ones (a failure in one renews
+  the ring for the next). Periods with no running (a weekend, by day)
+  have nothing in them. A part with no cost, or one that takes time to
+  replace (which `cost_by_window` refuses), gets `NonRepairable.failures`'
+  exact expected failures and no ranges, with the method's own reason in
+  the notes; for the second, the dates take the replacement as taking no
+  calendar time.
+- **Decisions (defaults):**
+  - The part's `age` is at the forecast's start.
+  - The model's unit is read from its label (surpyval's `unit`: `"h"`,
+    `"hrs"`, `"days"`, ...), else given as `unit=`, else hours, with a
+    note. A label that is not a unit of time (`"km"`) is refused, as is
+    a `unit=` that contradicts the label.
+  - The range is fixed at the 5th to 95th percentile (90%, two-sided),
+    in counts and in cost.
+- **Checks:** `test_uc38_wear_ring_by_month` (the numbers above, each
+  month against `NonRepairable.failures` at the operating-hour ends, the
+  months adding up to the whole), `test_uc38_against_a_plain_simulation`
+  (200,000 rings renewed plainly),
+  `test_periods_with_no_running_have_nothing`,
+  `test_the_unit_is_read_from_the_model_or_given` (the same answers with
+  the life in days), `test_a_policy_by_period` (age replacement against
+  `cost_distribution`), and
+  `test_a_part_with_no_cost_or_a_replacement_taking_time`.
+
+### UC-39: "What is coming on this system each calendar month?"
+
+- **Status:** built: `events_by_period(rbd, usage, period, state=)`
+  returning an `EventsByPeriod`.
+- **Who asks:** UC-1's planner, who asked month by month and was given
+  windows of 730 hours.
+- **What they know:** a `RepairableRBD` and its state now; the months.
+- **The answer, by hand:** a pump whose failures come at a constant rate
+  (one per 2,000 h), repaired at once: **0.372 failures in January 2027**
+  (744 h), 0.336 in February (672 h), 4.38 in the year (8,760 h). In
+  Sydney, October 2026 has **743 hours** (the clocks go forward on the
+  4th): 0.3715. UC-1's diagram (pump and valve) by the months of 2027
+  adds up to `expected_events(8760)`, and the valve's block replacement,
+  1,760 h on, falls in March (1,416 h to the end of February, 2,160 h to
+  the end of March).
+- **How it is solved:** a diagram's clock is calendar time (blocks'
+  `"duty"` and `"basis"` put running hours on it), so each period's end
+  is the real time from the forecast's start, in the diagram's unit;
+  `expected_events_by_window` answers (exact), and `cost=True` adds
+  `cost_by_window` (each period's mean exact, its range simulated, said
+  in the notes).
+- **Decisions (defaults):** the diagram's unit is read from its models'
+  label where the diagram carries one, else `unit=`, else hours with a
+  note; cost is off by default (its range is simulated).
+- **Checks:** `test_uc39_constant_rate_by_calendar_month`,
+  `test_calendar_months_in_a_zone_are_real_hours`,
+  `test_cost_by_month_is_exact_on_average`,
+  `test_uc1_diagram_by_calendar_month_sums_to_the_year`.
+
+### UC-40: "Replacing the part is cheap at the annual overhaul, the first Tuesday of November. Can the calendar policy use the real dates?"
+
+- **Status:** built: `Opportunity.from_recurrence(name, cost, rule,
+  start, end, unit=, usage=, at=, time_zone=)`.
+- **Who asks:** UC-13's engineer, whose shuts are on dates, not periods.
+- **The answer, by hand:** for a life in days, from 14 November 2026:
+  **353, 724 and 1,088 days** (2 November 2027, 7 November 2028, 6
+  November 2029: 353 days, then 371 across a leap year, then 364). For
+  the weekday pump's ring, in operating hours from 16 November 2026: the
+  overhaul at 00:00 on 2 November 2027 is at **4,016 h** (4,000 h to the
+  end of October and Monday 1 November's 16 h). Shuts on Saturday and
+  Sunday fall at one operating time (80 h, 160 h, ...) and are one
+  opportunity each weekend.
+- **How it is solved:** the rule's dates, at a clock time (midnight by
+  default), become `usage.model_time` (operating time) or the real time
+  since `start` (calendar time): the opportunity's `dates`. The policy
+  maths is untouched; "the first Tuesday of November" has no fixed
+  period, so it goes in as given times.
+- **Checks:** `test_uc40_opportunity_in_calendar_days`,
+  `test_uc40_opportunity_in_operating_hours`.
+
+### UC-41: "Put our annual overhaul (the first Tuesday of November, 48 hours from 06:00) on the system's diagram."
+
+- **Status:** built: `shutdown_spec(rule, start, end, duration=, unit=,
+  at=, time_zone=, cost=, scope=, idle_ageing=)`, the spec
+  `RepairableRBD(shutdowns={name: spec})` takes.
+- **The answer, by hand:** with time 0 at 14 November 2026: **8,478,
+  17,382 and 26,118 hours** (353, 724 and 1,088 days, each plus 6 h). In
+  Sydney the first is the same 8,478 h: both ends are in daylight saving.
+- **How it is solved:** as UC-40, on the diagram's clock (calendar
+  time), as the shutdown's `"times"`.
+- **Not built:** the exact methods (`expected_events`, `expected_cost`,
+  and so `events_by_period`) take shuts on a period only; a diagram with
+  shuts at given times is simulated (`cost()`, `availability()`), and
+  `events_by_period` refuses it with the diagram's own message.
+- **Checks:** `test_uc41_shutdown_spec_on_dates`,
+  `test_uc41_a_diagram_takes_the_dated_shuts` (two shuts in two years,
+  $40,000, simulated).
+
+### UC-42: "The pump's life was fitted on two clocks, running hours and starts. What rate do I give it?"
+
+- **Status:** built: `UsageForecast.life_at_usage(model, meter="starts",
+  per="hours")`, which hands `rate(meter, per=per)` to the model's
+  `at_usage` (surpyval 0.28's `EquivalenceModel`; with an earlier
+  surpyval it refuses, saying so). The block that takes the life is
+  separate work.
+- **The answer, by hand:** on the weekday pump, one start a run of 16 h:
+  **0.0625 starts an operating hour**. For a life of Weibull scale 2,000,
+  shape 2 on the combined clock `T = hours + 10 starts`, the life in
+  hours is that of `T / 1.625`: Weibull scale 1,230.8 h, shape 2, mean
+  1,090.7 h.
+- **Checks:** `test_uc42_rate_for_a_life_on_two_clocks` (a stand-in
+  model); `test_uc42_with_surpyval_equivalence`, skipped before surpyval
+  0.28 (run by hand against surpyval's `dev`: it passes).
+
 ### What is not built yet
 
 - **Utilisation as whole runs lost.** `utilisation=0.9` counts each
@@ -381,12 +542,13 @@ on an operating schedule) is answered by the same code: its three dates
 - **A duty that changes inside a `RepairableRBD`.** `schedule()` gives
   the duty as steps over calendar time, for that later work; today a
   block takes one average share, `duty()`.
+- **Shuts at given times in the exact methods.** `shutdown_spec` puts
+  dated shuts on a diagram, which the simulations take; the exact
+  `expected_events` and `expected_cost` (and so `events_by_period`) take
+  shuts on a period only.
 
 ## Candidates
 
 - The dates when only some runs go ahead (UC-10's 90% dates).
-- Failures and costs by calendar month through the map between dates and
-  operating hours.
-- Shuts on dates laid on model time (`Opportunity` from a `Recurrence`).
 - Financial years and quarters as periods.
 - A calendar feed (.ics) from `to_rrule()`.

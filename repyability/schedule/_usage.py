@@ -891,6 +891,49 @@ class UsageForecast:
             )
         return change(meter) / denominator
 
+    def life_at_usage(
+        self,
+        model,
+        meter: str = "starts",
+        per: str = "hours",
+        start=None,
+        end=None,
+    ):
+        """A life on two clocks taken at this plan's rate: ``model``'s
+        ``at_usage`` at ``rate(meter, per=per)`` over the span (the
+        forecast's by default), such as starts per operating hour.
+
+        ``model`` is a life fitted on two clocks (surpyval 0.28's
+        ``EquivalenceModel``, fitted to hours and starts); the life back
+        is on the first clock (``per``), ready to be a block's or a
+        ``NonRepairable``'s life.
+
+        Raises
+        ------
+        TypeError
+            If ``model`` has no ``at_usage`` (a life on two clocks needs
+            surpyval 0.28 or later).
+
+        Examples
+        --------
+        >>> from repyability.schedule import DutyPlan, Shifts
+        >>> class TwoClocks:  # stands in for surpyval's EquivalenceModel
+        ...     def at_usage(self, rate):
+        ...         return f"the life at {rate} starts an hour"
+        >>> plan = DutyPlan(Shifts("Mon-Fri", "06:00", "22:00"))
+        >>> usage = plan.forecast("2026-11-16", "2026-11-23")
+        >>> usage.life_at_usage(TwoClocks())
+        'the life at 0.0625 starts an hour'
+        """
+        at_usage = getattr(model, "at_usage", None)
+        if not callable(at_usage):
+            raise TypeError(
+                "life_at_usage takes a life fitted on two clocks (surpyval's "
+                "EquivalenceModel, surpyval 0.28 or later, with at_usage); "
+                f"got {model!r}."
+            )
+        return at_usage(self.rate(meter, per=per, start=start, end=end))
+
     def schedule(self, unit: str = "hours") -> DutySchedule:
         """The duty as steps over calendar time since the forecast's start,
         in ``unit``: the shape a duty that changes over time takes."""

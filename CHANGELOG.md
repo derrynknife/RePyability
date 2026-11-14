@@ -65,6 +65,32 @@ other release, fixes included, the minor.
   comes first), with `task.due(..., usage=forecast)` and
   `work_by_period(..., usage=)`; `TaskDue` gives each due moment, reading
   and the stop after it.
+- Failures, events and shuts on the calendar, through the map (the
+  existing model-time methods, asked from dates, their answers labelled
+  with dates; no new probability):
+  - `failures_by_period(part, usage, period, age=)`: a `NonRepairable`
+    part's expected failures, cost, chance of at least one failure and
+    the range (5th to 95th percentile, 90% two-sided) in each day, week,
+    month, quarter or year (`FailuresByPeriod`), from
+    `NonRepairable.cost_by_window` and `failures`, run to failure or
+    under a policy (`every=`, `resets=`, `calendar=`). The model's unit is
+    read from its label (`unit="h"`, `"days"`), or given as `unit=`.
+  - `events_by_period(rbd, usage, period, state=)`: a `RepairableRBD`'s
+    expected events in each calendar period (`EventsByPeriod`), from
+    `expected_events_by_window`; `cost=True` adds `cost_by_window`.
+  - `Opportunity.from_recurrence(name, cost, rule, start, end, unit=,
+    usage=)`: dated shuts as an opportunity on a part's model time
+    (operating time through `usage=`, or calendar time), for a
+    `Calendar`.
+  - `shutdown_spec(rule, start, end, duration=, ...)`: shuts on dates as
+    a `RepairableRBD` shutdown at given times (simulated; the exact
+    methods take shuts on a period).
+  - `UsageForecast.life_at_usage(model)`: a life on two clocks
+    (surpyval 0.28's `EquivalenceModel`) at the plan's starts per
+    operating hour.
+- `TaskDue.notes` says when one of a task's two limits set none of the
+  dates, and how far behind it was ("the hours limit would not have been
+  reached until 4 Apr 2028, about 4.7 months later").
 
 ### Changed
 

@@ -349,6 +349,21 @@ def test_two_limits_the_calendar_first():
     assert due.dates == (date(2027, 11, 14), date(2028, 11, 14))
     assert due.limits == ("also", "also")
     assert usage.when(hours=350).moment == datetime(2028, 4, 4)
+    # The result says the hours limit set nothing, and how far behind it
+    # was: 14 Nov 2027 to 4 Apr 2028 is 142 days, 4.7 months of 30.44 days
+    assert due.notes == (
+        'The limit "every 250 hours" set none of the dates: when the task '
+        "was first due (2027-11-14, by the other limit), it would not have "
+        "been reached until 2028-04-04, about 4.7 months later.",
+    )
+    # A forecast too short to reach it says so
+    short = DutyPlan(Rate(15, per="month")).forecast(
+        "2026-11-14", "2027-12-01", readings={"hours": 100}
+    )
+    assert (
+        "within the forecast"
+        in oil.due("2026-11-14", "2027-11-30", usage=short).notes[-1]
+    )
 
 
 def test_two_limits_the_hours_first(pump):
@@ -366,6 +381,14 @@ def test_two_limits_the_hours_first(pump):
     assert due.limits[0] == "every"
     assert due.readings[0] == 14_340.0
     assert due.moments[0] == datetime(2027, 5, 7, 22)
+    # The reverse of the generator: here the calendar limit sets nothing
+    # (16 Nov 2027 is 193 days, 6.3 months, after 7 May)
+    assert due.notes == (
+        'The limit "every 12 months from 16 Nov 2026" set none of the '
+        "dates: when the task was first due (2027-05-07, by the other "
+        "limit), it would not have been reached until 2027-11-16, about "
+        "6.3 months later.",
+    )
 
 
 def test_task_round_trips_with_usage():

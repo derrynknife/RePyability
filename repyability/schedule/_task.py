@@ -42,6 +42,28 @@ PERIODS = ("day", "week", "month", "quarter", "year")
 _MAX_DUES = 1_000_000
 
 
+def _unused_limit(kind: Any, due: "_Due", own: Optional["_Due"]) -> str:
+    """The note on a limit that set none of the dates: when it would have
+    been reached, measured from the first date the other limit set."""
+    first = due.moment.date()
+    words = f'The limit "{kind.describe()}" set none of the dates'
+    if own is None:
+        return (
+            f"{words}: when the task was first due ({first}, by the other "
+            "limit), it would not have been reached within the forecast."
+        )
+    days = (own.moment - due.moment).total_seconds() / 86400.0
+    if days >= 60.0:
+        gap = f"about {days / (365.25 / 12):.1f} months"
+    else:
+        gap = f"{days:.0f} days"
+    return (
+        f"{words}: when the task was first due ({first}, by the other "
+        f"limit), it would not have been reached until {own.moment.date()}, "
+        f"{gap} later."
+    )
+
+
 # ------------------------------------------------------------ the hook
 
 
@@ -481,11 +503,19 @@ class Task:
         dates, which, done_on, late, on_time = [], [], [], [], []
         moments, readings, stops = [], [], []
         overdue = False
+        # For each limit, the first time another set the date while it was
+        # pending: (the date set, its own due point, or None past the
+        # forecast), for the note on a limit that sets none.
+        beaten: Dict[str, Tuple[_Due, Optional[_Due]]] = {}
         for _ in range(_MAX_DUES):
             pending = [n for n in nexts if n is not None]
             if not pending:
                 break
             due = min(pending, key=lambda n: (n.moment, n.limit != "every"))
+            if len(kinds) > 1 and due.moment.date() <= end:
+                for key, n in zip(("every", "also"), nexts):
+                    if key != due.limit and key not in beaten:
+                        beaten[key] = (due, n)
             day = due.moment.date()
             if day > end:
                 break
@@ -517,6 +547,9 @@ class Task:
             )
         count = len(dates)
         notes = list(self._notes(start, end))
+        for key, kind in zip(("every", "also"), kinds):
+            if key in beaten and key not in which:
+                notes.append(_unused_limit(kind, *beaten[key]))
         if overdue:
             notes.insert(
                 0,
