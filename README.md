@@ -223,6 +223,7 @@ Which analyses each model type has (the method; — where it has none):
 | Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | — |
 | Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | — |
 | Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | — |
+| Shares of a safety function's PFDavg, common cause apart | — | `pfd_breakdown` | — | — | — |
 | Each block's part in each phase's failures | — | — | — | — | `failure_drivers` |
 | Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — |
 | Uncertainty importance | `uncertainty_importance` | `uncertainty_importance` | — | — | — |
@@ -279,7 +280,7 @@ How each family of analyses is worked out on a diagram with each kind of node or
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | Any life and repair | E | E | N | E N | E N | N | S | E | – | N | – | S |
 | A fitted life | E | E | N | N | E N | N | S | E | – | N | – | S |
-| A fitted Crow-AMSAA process | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 9 of 10 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| A fitted Crow-AMSAA process | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A fitted G1, ARA or ARI process | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A probability per demand | ✗ | ✗ | ✗ | ✗ `expected_npv` | ✗ | ✗ | ✗ `mean_availability_uncertainty` | ✗ | – | N | ✗ `capacity_distribution` | S |
 | A mixture life | E | E | N | E N | E N | N | S | E | – | N | – | S |
@@ -300,8 +301,8 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | Tests that take time | N | N | N | N | N | N | S | N | – | N | – | S |
 | Tests that can miss a failure | N | N | N | N | N | N | S | N | – | N | – | S |
 | Imperfect repair (Kijima) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
-| Minimal repair | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 9 of 10 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
-| Minimal repair, repairs that take time | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 9 of 10 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| Minimal repair | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| Minimal repair, repairs that take time | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Limited repair crews | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A standby group | E | E | N | E N | E N | N | S | E | – | ✗ | – | S |
 | A beta-factor group, revealed failures | E | E | N | N | E N | N | S | E | – | N | – | S |

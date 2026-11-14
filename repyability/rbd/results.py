@@ -2498,6 +2498,53 @@ class MaintenancePlan(_ResultMapping):
     offsets: Optional[Dict[Hashable, float]] = None
 
 
+@dataclass
+class PFDBreakdown(_ResultMapping):
+    """Where a safety function's average probability of failure on demand
+    comes from: returned by
+    [`RepairableRBD.pfd_breakdown`][repyability.RepairableRBD.pfd_breakdown].
+
+    The PFDavg is split into a part for each component's own failures and
+    a part for each common-cause group's shared causes, and the parts add
+    up to it: ``sum(components.values()) + sum(groups.values()) ==
+    pfd_avg``, to rounding. How they are split is in the guide's
+    [where the PFDavg comes
+    from](../guide/system-maintenance.md#where-the-pfdavg-comes-from).
+    Like the other result types it is also a read-only mapping of its
+    fields.
+
+    Attributes
+    ----------
+    pfd_avg : float
+        The long-run unavailability, ``mean_unavailability()``: for a
+        safety function tested periodically, its PFDavg.
+    independent : float
+        The part of it from the components' own failures, the sum of
+        ``components``: the PFDavg the diagram would have if no shared
+        cause ever struck.
+    common_cause : float
+        The part from the common-cause groups' shared causes, the sum of
+        ``groups``: ``pfd_avg - independent``, what the PFDavg would fall
+        by if no shared cause struck (0 without groups).
+    components : dict
+        Each component's share of ``independent``, by node, in the
+        PFDavg's own units (a probability).
+    groups : dict
+        Each common-cause group's share of ``common_cause``, under the
+        tuple of its members (empty without groups).
+    fractions : dict
+        Every entry of ``components`` and ``groups`` as a fraction of
+        ``pfd_avg`` (adding up to 1); NaN where the PFDavg is 0.
+    """
+
+    pfd_avg: float
+    independent: float
+    common_cause: float
+    components: Dict[Hashable, float]
+    groups: Dict[Tuple[Hashable, ...], float]
+    fractions: Dict[Hashable, float]
+
+
 @dataclass(frozen=True)
 class Lever(_ResultMapping):
     """One lever of a diagram: a value that its ``parameter_sensitivity``
