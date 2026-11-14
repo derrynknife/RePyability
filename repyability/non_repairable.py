@@ -17,6 +17,7 @@ from repyability.rbd._model_utils import (
     model_mean,
     never_fails,
 )
+from repyability.rbd._usage import first_clock_life
 from repyability.rbd.helper_classes import PerfectReliability, perfect_class
 from repyability.rbd.joint_node import NOT_REPAIRABLE, is_joint
 from repyability.rbd.results import FailureForecast
@@ -199,7 +200,10 @@ class NonRepairable:
         unplanned_cost=None,
     ):
         # A Bayesian fit is its posterior predictive.
-        reliability = perfect_class(as_life(reliability))
+        # A life at a usage rate is the distribution it is in hours.
+        reliability = first_clock_life(
+            "a NonRepairable", perfect_class(as_life(reliability))
+        )
         time_to_replace = as_life(time_to_replace)
         no_distribution(reliability, "A NonRepairable's life")
         no_distribution(time_to_replace, "A NonRepairable's time_to_replace")
