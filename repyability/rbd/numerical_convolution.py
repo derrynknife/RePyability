@@ -56,7 +56,9 @@ def _cdf(model, x: np.ndarray) -> np.ndarray:
     return np.nan_to_num(np.ravel(values), nan=0.0)
 
 
-def switch_success_probs(switching_probability, n) -> list:
+def switch_success_probs(
+    switching_probability, n, name: str = "switching_probability"
+) -> list:
     """Normalise a switching probability into per-switch probabilities.
 
     Returns the ``n - 1`` success probabilities of the switches into
@@ -70,6 +72,9 @@ def switch_success_probs(switching_probability, n) -> list:
         ``[0, 1]``.
     n : int
         The number of components in the chain.
+    name : str, optional
+        The argument's name, for the messages, by default
+        ``"switching_probability"``.
 
     Returns
     -------
@@ -99,12 +104,12 @@ def switch_success_probs(switching_probability, n) -> list:
         probs = [float(p) for p in switching_probability]
         if len(probs) != n - 1:
             raise ValueError(
-                "switching_probability sequence must have length "
-                f"{n - 1} (one per switch), got {len(probs)}"
+                f"{name} sequence must have length "
+                f"{n - 1} (one per spare), got {len(probs)}"
             )
     for p in probs:
         if not (0.0 <= p <= 1.0):
-            raise ValueError("switching probabilities must be in [0, 1]")
+            raise ValueError(f"{name} values must be in [0, 1], got {p}")
     return probs
 
 

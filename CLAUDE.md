@@ -220,6 +220,18 @@ New work goes under the CHANGELOG's `[Unreleased]`. `dev` needs surpyval
   simulation. Likewise a standby group's chain (`_standby_chain.py`) copies
   `_events._StandbyGroup`'s rules (switching, spares, repairs), checked by
   `test_repairable_standby.py`.
+- **A `StandbyModel`'s rules are stated in its draws (`_played`, and
+  `_random_warm` and the cold samplers where no spare may fail on
+  demand)**: the first `k` units left operate, a waiting spare ages at
+  `dormancy_factor` and is passed over once dead, and a spare reached
+  alive is switched in (a failed switch ends the arrangement) and then
+  starts (or is lost, and the next is tried). The exact and numerical
+  methods copy them: the Markov chain of exponential units
+  (`_markov_standby.py`), the warm recursion, the convolution (a spare
+  that may not start as one of life 0, `MayNotStart`) and the renewal
+  counts (`served_probabilities`). A change to one goes into the others:
+  `test_standby_cases.py` checks the chain against closed forms, the
+  numerical methods against the chain, and each against the draws (#339).
 - **A common-cause group's chains (`repyability/rbd/_ccf_chain.py`) copy
   the simulation's causes** (`_events._Cause`, `_event_loop._strike`, #158): each cause, a
   member's own or a shared one, strikes at its share of the failure rate
