@@ -4,8 +4,7 @@ rate move with each lever.
 
 The levers are each component's life and repair models' parameters, its
 scheduled replacement and its tests (their intervals, durations, coverage,
-...), its standby group's, its imperfect repair's, a life at a usage
-rate's rate (``"rate"``: starts per hour, say), a common-cause group's
+...), its standby group's, its imperfect repair's, a common-cause group's
 model (its members' together, under the tuple of their names, and its
 beta, ...), and the repair crews. A continuous lever's derivative is a
 central difference of the system's own value with the lever moved either
@@ -54,7 +53,7 @@ from repyability.rbd import _curves, _long_run
 from repyability.utils.checks import is_number, is_whole, number_or_nan
 
 from . import _importance_time
-from ._model_utils import CovariateSpec, UsageSpec, lever_spec
+from ._model_utils import CovariateSpec, lever_spec
 
 #: What the sensitivities can be of.
 QUANTITIES = ("availability", "cost_rate")
@@ -149,9 +148,6 @@ def _proportional_scale(spec, name: str, value: float) -> Optional[float]:
 
     if isinstance(spec, CovariateSpec):
         return None
-    if isinstance(spec, UsageSpec):
-        # A usage rate has a true zero (no starts), unlike a covariate.
-        return float(value)
     if name in _LOG_SCALE.get(getattr(spec.cls, "name", ""), ()):
         return 1.0
     return float(value)
