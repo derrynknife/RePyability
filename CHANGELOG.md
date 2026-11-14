@@ -9,6 +9,24 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- **Where a safety function's PFDavg comes from**:
+  `RepairableRBD.pfd_breakdown()` returns a `PFDBreakdown`, the long-run
+  unavailability (for a periodically tested protective function, its
+  PFDavg) split into each component's share and each common-cause
+  group's, adding up to it. The common-cause share is what the PFDavg
+  would fall by without the shared causes (split among several groups by
+  their Shapley value); the rest, the PFDavg without them, is shared
+  among the components by their Aumann-Shapley value at each time of the
+  tests' period (each term of the system's unavailability shared equally
+  among its components, so a redundant pair splits its coincident
+  downtime half and half). Exact or numerical as `mean_unavailability`
+  is, with up to eight groups; checked against the exact integrals of
+  1oo1, 1oo2 and 2oo3 voting with and without a beta factor, IEC
+  61508-6's simplified equations and the simulation. See the guide's
+  "Where the PFDavg comes from".
+
 ## [0.17] - 2026-11-14
 
 surpyval 0.27, and maintenance in model time. A `RepairableRBD` takes

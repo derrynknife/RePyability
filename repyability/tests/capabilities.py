@@ -220,6 +220,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Joint (second order)", ("joint_importance",)),
             ("Barlow-Proschan", ("barlow_proschan_importance",)),
             (
+                "Shares of a safety function's PFDavg, common cause apart",
+                ("pfd_breakdown",),
+            ),
+            (
                 "Each block's part in each phase's failures",
                 ("failure_drivers",),
             ),
@@ -369,6 +373,7 @@ FAMILIES: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {
                 "joint_importance",
                 "barlow_proschan_importance",
                 "availability_rate",
+                "pfd_breakdown",
             ),
         ),
         ("Sensitivity", ("parameter_sensitivity",)),

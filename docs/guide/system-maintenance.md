@@ -886,6 +886,90 @@ new (the chain followed through the tests from every member up) and the
 simulations, which draw the shared causes; see [repairable
 systems](common-cause.md#repairable-systems) and `analysis_routes()`.
 
+### Where the PFDavg comes from
+
+To bring a safety function's PFDavg down, start with what makes it up.
+[`pfd_breakdown`][repyability.RepairableRBD.pfd_breakdown] splits it into a
+share for each component and a share for each common-cause group, and the
+shares add up to the PFDavg. Take two pressure transmitters voted 1oo2, a
+logic solver and a trip valve, all proof-tested yearly, with a 5% common
+cause between the transmitters:
+
+```python
+from repyability import PerfectReliability
+
+def channel(rate):
+    return {
+        "reliability": surv.Exponential.from_params([rate]),
+        "repairability": "instant",
+        "inspection": {"interval": 8760.0},
+    }
+
+sif = RepairableRBD(
+    [("s", "pt1"), ("s", "pt2"), ("pt1", "ls"), ("pt2", "ls"),
+     ("ls", "valve"), ("valve", "t")],
+    {"pt1": channel(1e-6), "pt2": channel(1e-6),
+     "ls": channel(5e-8), "valve": channel(2e-7)},
+    ccf_groups=[CCFGroup(["pt1", "pt2"], BetaFactor(0.05))],
+)
+shares = sif.pfd_breakdown()
+shares.pfd_avg                          # -> 1.3357e-3
+shares.common_cause                     # -> 2.186e-4   the shared cause
+shares.fractions["valve"]               # -> 0.6553     the valve, two thirds
+shares.fractions["ls"]                  # -> 0.1638
+shares.fractions[("pt1", "pt2")]        # -> 0.1637     the transmitters' common cause
+shares.fractions["pt1"]                 # -> 0.0086     each transmitter's own failures
+```
+
+The valve is two thirds of the PFDavg, and the transmitters' common cause
+is ten times their independent failures together: a second valve, or less
+common cause between the transmitters, are where to look.
+
+**How the PFDavg is shared out, in plain words.** The function is down
+whenever every component of some minimal cut set is down.
+
+- *The common cause.* Its share is what the PFDavg would fall by if the
+  groups' shared causes never struck, each member keeping its own failures
+  (the PFDavg less that of the same diagram without them). With several
+  groups, each takes its [Shapley value](https://en.wikipedia.org/wiki/Shapley_value)
+  of that fall: its added PFDavg, averaged over the orders in which the
+  groups could be added. This is the split IEC 61508-6's simplified
+  equations make, the independent term with each member's own rate
+  `(1 − β)λ` and the shared term `βλτ/2` beside it.
+- *The components.* The rest is the PFDavg of the diagram without shared
+  causes. Each moment the function is down because a set of components is
+  down together is shared equally among them: a single element in series
+  takes all of its own downtime, and a redundant pair splits its
+  coincident downtime half and half, whatever their rates (both must be
+  down). Where two cut sets are down at once, the inclusion-exclusion
+  corrections are shared out the same way, so nothing is counted twice.
+  For a function whose failures are rare, a component's share is the sum,
+  over its minimal cut sets, of each set's own PFDavg divided by its size.
+
+**As a formula.** At each time `t` of the tests' period, the components of
+the diagram without shared causes are independent, and the function is down
+with probability `Q(q(t))`, multilinear in their probabilities `q` of being
+down. Component `i` takes its Aumann-Shapley value,
+
+`φ_i(t) = q_i(t) ∫₀¹ ∂Q/∂q_i(s q(t)) ds`,
+
+averaged over the period. The shares add up to `Q(q(t)) − Q(0) = Q(q(t))`
+at every time, so to the PFDavg, and a term `c q_A q_B ⋯` of `Q` with `k`
+components gives `1/k` of itself to each. `∂Q/∂q_i` is Birnbaum's measure,
+a polynomial in `s`, which Gauss-Legendre's rule integrates exactly, so the
+shares are exact where `mean_unavailability` is (numerical where it is).
+
+**Against the importance measures.** Fussell-Vesely's measure is each
+component's cut sets' share of the PFDavg, so it agrees with these shares
+for a component in series (0.1639 for the logic solver above), but puts
+the whole of a redundant pair's coincident downtime, its common cause
+included, in each member's (0.1811 for each transmitter), and its values
+add up to more than 1. Barlow-Proschan's measure adds up to 1, but shares
+out the function's *failures*, not its time down: a failure found at a
+test a month after it happened counts as much as one found eleven months
+on. Use `pfd_breakdown` for where the PFDavg comes from, and the measures
+for what each is for.
+
 ### Choosing the interval
 
 Each inspection costs `c_i`, and each unit of time the component lies failed
