@@ -66,6 +66,28 @@ Every other seeded result is unchanged.
 
 ### Added
 
+- Covariate schedules on a `RepairableRBD`'s blocks. A component spec
+  takes `"covariates"`, a surpyval `StepSchedule` on the diagram's clock
+  (from 0, open-ended or cyclic), with a fitted regression model as its
+  `"reliability"`: a load that steps between levels over the system's
+  time. The schedule is the system's, not the unit's: each unit's life is
+  drawn from when it is put into service, at the covariates in force as
+  it ages, and its repairs and tasks reset its age as for any block while
+  the schedule runs on. Proportional and additive hazards take the hazard
+  at the unit's age and the covariates in force (`Hf(b, Z) - Hf(a, Z)`
+  over a step), with Kijima repair and partial restoration too;
+  accelerated failure time and accelerated life take the cumulative
+  exposure model (no virtual age, as their clock changes speed);
+  proportional odds is refused. Each life inverts the cumulative hazard
+  along the steps, to the last bits within its step, one uniform from
+  the block's own stream (seeded runs repeat). Only the simulations take
+  such a block (`availability`, `cost`, `simulate_timelines`, in
+  Python); the exact and numerical methods refuse it, saying so, as
+  `analysis_routes()` reports, and a duty, a standby or common-cause
+  group, replacement on condition by a threshold and a shutdown that
+  stands the block still are refused with it. Saved and loaded with the
+  diagram. A `NonRepairable` given a regression model says where
+  schedules go. See the guide's "Covariates that change over time".
 - Standby arrangements that had no exact answer. A `StandbyModel` of
   Exponential units is exact whatever it holds: units of different
   rates, any `k`, any `dormancy_factor` (warm standby with two or more

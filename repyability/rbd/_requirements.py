@@ -28,6 +28,7 @@ from repyability.rbd._common import (
     _constant_rate,
     _sf_values,
 )
+from repyability.rbd._covariate_schedule import ScheduledLife
 from repyability.rbd._hidden_life import (
     TestedLife,
 )
@@ -125,14 +126,15 @@ def _require_capacities_given(rbd) -> None:
 def _require_reliabilities(rbd, node) -> None:
     """Raise, as the model itself does, if a component's life or repair
     model has no exact or numerical reliability: a ``StandbyModel`` or
-    ``LoadSharingModel`` that only simulations take (#149)."""
+    ``LoadSharingModel`` that only simulations take (#149), or a life
+    under a covariate schedule."""
     component = rbd.components[node]
     for model in (
         getattr(component, "reliability", None),
         getattr(component, "time_to_replace", None),
     ):
         if (
-            isinstance(model, (StandbyModel, LoadSharingModel))
+            isinstance(model, (StandbyModel, LoadSharingModel, ScheduledLife))
             and model.is_simulated
         ):
             raise model._no_reliability()

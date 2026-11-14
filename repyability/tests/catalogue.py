@@ -105,6 +105,21 @@ def aft():
 
 
 @_fitted_once
+def ph():
+    """A pump's life at its load (surpyval's ExponentialPH): 500 at load
+    1, 125 at load 2."""
+    x = np.array([250.0, 500.0, 750.0, 62.5, 125.0, 187.5])
+    load = np.array([[1.0], [1.0], [1.0], [2.0], [2.0], [2.0]])
+    return surv.ExponentialPH.fit(x, Z=load)
+
+
+def load_steps():
+    """Load 1 for the first 200, and 2 after (a covariate schedule on the
+    diagram's clock)."""
+    return surv.StepSchedule.from_changepoints([0.0, 200.0], [[1.0], [2.0]])
+
+
+@_fitted_once
 def joint_model():
     """A Weibull joint model (surpyval's WeibullJointPH) of a fleet of 60
     pumps, each with a marker read every 10 hours and a load: a pump's
@@ -899,6 +914,22 @@ def repairable_kinds():
                 unit(reliability=ara_process(), repair_cost=1.0)
             ),
             "degradation process life": system(unit(reliability=wear())),
+            "covariate schedule, proportional hazards, maintained": system(
+                unit(
+                    reliability=ph(),
+                    covariates=load_steps(),
+                    preventive={"interval": 300.0},
+                    replace_cost=10.0,
+                )
+            ),
+            "covariate schedule, accelerated failure time": system(
+                unit(
+                    reliability=aft(),
+                    covariates=surv.StepSchedule.cyclic(
+                        [0.0, 60.0], [[1.0], [2.0]], 100.0
+                    ),
+                )
+            ),
             "operated part of the time": system(
                 unit(duty=0.25, preventive={"interval": 300.0})
             ),

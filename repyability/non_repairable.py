@@ -9,6 +9,7 @@ from repyability.maintenance import (
     SkipValue,
 )
 from repyability.rbd._bayesian_life import PosteriorPredictive, as_life
+from repyability.rbd._covariate_schedule import is_scheduled
 from repyability.rbd._degradation import check_life, is_degradation
 from repyability.rbd._model_utils import (
     by_functions,
@@ -48,7 +49,9 @@ def _why_not(model) -> str:
         hint = (
             " It is a regression, whose functions need covariates: give "
             "the life of a unit at its covariates, model.at(Z) (or a "
-            "RegressionNode in a NonRepairableRBD)."
+            "RegressionNode in a NonRepairableRBD); for covariates that "
+            "change over time in a RepairableRBD, give the model with the "
+            "spec's 'covariates' (a StepSchedule)."
         )
     reasons = "; ".join(f"{name}: {why}" for name, why in missing.items())
     return f", which cannot work out {', '.join(missing)} ({reasons}).{hint}"
@@ -297,6 +300,12 @@ class NonRepairable:
             # is only simulated, and its sf refuses.
             self.model_parameterization = "standby"
             self.reliability_function = _scalar_sf(reliability)
+        elif is_scheduled(reliability):
+            # A life under a covariate schedule on a RepairableRBD's clock
+            # (a spec's "covariates"): only its simulations take it, and
+            # its survival function refuses, saying so.
+            self.model_parameterization = "covariate schedule"
+            self.reliability_function = reliability.sf
         elif is_joint(reliability):
             raise ValueError(NOT_REPAIRABLE)
         elif reliability is PerfectReliability:
@@ -541,6 +550,8 @@ class NonRepairable:
             ages = np.linspace(0.0, float(t), 4001)
             R = np.ravel(np.asarray(self.reliability.sf(ages), dtype=float))
             out = float(trapezoid(np.clip(R, 0.0, 1.0), ages))
+        elif self.model_parameterization == "covariate schedule":
+            raise self.reliability._no_reliability()
         else:
             # The survival function is linear between its knots, so the
             # trapezoidal rule over the knots below t, and t, is exact.
