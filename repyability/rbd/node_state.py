@@ -111,7 +111,10 @@ class NodeState:
         below the threshold (a unit at or past it has failed: give
         ``alive=False``), and for a gamma process, whose level only rises,
         at least the process's starting level ``y0``; a Wiener level may
-        be below its start.
+        be below its start. Replaced on condition by its level, the unit
+        goes on from it to its next inspection (``since_scheduled`` says
+        when the last was), which needs the level: an age alone is
+        refused there.
     model : object, optional
         The life model of this unit, used instead of the node's for the
         unit in service now, by default None (the node's). It may be

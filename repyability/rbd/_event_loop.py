@@ -1797,7 +1797,14 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
         if schedule is None:
             return True, Event(life, node, False)
         return True, _renewal(
-            rbd, node, 0.0, source, schedule, life=life, start=-start.age
+            rbd,
+            node,
+            0.0,
+            source,
+            schedule,
+            life=life,
+            start=-start.age,
+            level=start.level,
         )
     if not start.age and not virtual:
         # New at 0, on a calendar at its phase.
@@ -2049,13 +2056,16 @@ def _renewal(
     schedule: _Preventive,
     life: Optional[float] = None,
     start: Optional[float] = None,
+    level: Optional[float] = None,
 ) -> Event:
     """The first event of a unit put into service as new at ``t``: its
     failure, or its preventive replacement if that is due first (a
     failure at the same time comes first); replaced on condition, its
     failure or its first inspection (see ``_condition_next``). Started
     from a state (see ``_started``), the unit was put into service at
-    ``start``, before ``t``, and has ``life`` left."""
+    ``start``, before ``t``, and has ``life`` left; replaced on
+    condition by its level, it is at ``level`` at ``t`` (measured), from
+    which ``life`` was drawn."""
     if life is None:
         _clock(source, t)
         life, _ = source.next_event()
@@ -2068,8 +2078,10 @@ def _renewal(
         failure = t + life
         if schedule.level is not None:
             # As new: at the process's starting level, its failure
-            # drawn from there; each inspection decides (#271).
-            level = float(rbd.components[node].reliability.y0)
+            # drawn from there (or at its measured level, from a
+            # state); each inspection decides (#271).
+            if level is None:
+                level = float(rbd.components[node].reliability.y0)
             rbd._run_state._levels[node] = (t, level)
             rbd._run_state._in_service[node] = (failure, math.inf)
             return _condition_next(rbd, node, t, schedule, source)

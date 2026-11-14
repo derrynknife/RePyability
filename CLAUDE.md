@@ -293,6 +293,9 @@ minimum surpyval is in `pyproject.toml` (0.27 as of 0.17).
   measured at every multiple of the interval, a unit at or past the level
   is replaced (taking the replacement's time), an inspection in a repair
   or replacement is not done, and a unit put into service starts at `y0`.
+  Started from a state, the unit up at 0 is at its measured level (`y0`
+  if new; `_renewal`'s `level`, `LevelHead.level`), which the first
+  inspection reads from.
   The level's law between inspections is stated once,
   `_degradation.level_below`, which the simulation's draw inverts and the
   grid of levels takes differences of. A change to one goes into the

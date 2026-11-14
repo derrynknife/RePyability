@@ -12,6 +12,7 @@ import math
 from collections.abc import Mapping
 from functools import partial
 from typing import (
+    Any,
     Dict,
     Hashable,
     NoReturn,
@@ -57,7 +58,7 @@ from repyability.rbd._hidden_life import (
     TestedLifeSteady,
 )
 from repyability.rbd._hidden_tests import TestedUnit
-from repyability.rbd._level_replacement import level_model
+from repyability.rbd._level_replacement import LevelHead, level_model
 from repyability.rbd._long_run import (
     _TESTED_CYCLE,
 )
@@ -764,14 +765,25 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
     if (
         schedule is not None
         and schedule.level is not None
-        and not (state.new and state.since_scheduled is None)
+        and state.alive
+        and not state.stationary
     ):
-        raise NotImplementedError(
-            f"Component {node!r} is replaced on condition by its "
-            "measured degradation level, and starting that policy from a "
-            "state (a measured level among them) is not worked out yet: "
-            "leave it out (new)."
-        )
+        if state.model is not None:
+            raise NotImplementedError(
+                f"Component {node!r} is replaced on condition by its "
+                "measured degradation level, which its inspections read "
+                "from the process of the node: a model of its own is not "
+                "followed past them. Give its measured level (level=) "
+                "instead."
+            )
+        if state.level is None and (state.age or state.virtual_age):
+            raise ValueError(
+                f"Component {node!r} is replaced on condition by its "
+                "measured degradation level, which its age does not "
+                "give (nor whether its inspections so far kept it): give "
+                "the level measured now (level=), with the time since its "
+                "last inspection (since_scheduled=)."
+            )
     if (
         inspection is not None
         and inspection.partial
@@ -957,7 +969,11 @@ def _check_own_life(rbd, node, state: NodeState, simulated: bool):
         what = "operates part of the time (a duty)"
     elif any(node in group.members for group in rbd.ccf_groups):
         what = "is in a common-cause group"
-    elif schedule is not None and schedule.policy == "condition":
+    elif (
+        schedule is not None
+        and schedule.policy == "condition"
+        and (schedule.level is None or state.model is not None)
+    ):
         what = "is replaced on condition"
     elif (
         not simulated
@@ -1867,7 +1883,8 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     its phase on; from another state, its own curve up to its first
     block time or inspection, and the schedule's from there (see
     ``StartedBlockCurve``). Replaced on condition by its level (see
-    ``_level_replacement``), from new only (``_check_state``)."""
+    ``_level_replacement``), the unit up at the start is at its measured
+    level (``y0`` if new), which its first inspection reads."""
     component = rbd.components[node]
     schedule = rbd._preventive[node]
     duration = schedule.duration
@@ -1878,8 +1895,7 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
 
     def followed(horizon: float, head=None):
         if schedule.level is not None:
-            assert head is None  # from new (see _check_state)
-            return level_model(rbd, node).availability(horizon)
+            return level_model(rbd, node).availability(horizon, head)
         if schedule.policy == "condition":
             return condition_availability(
                 *models,
@@ -1919,6 +1935,8 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
             down_sf = _first_unit(
                 rbd, node, start, None, (), None, None
             ).down_sf
+        elif schedule.level is not None:
+            pass  # its level, not its age, decides (see LevelHead)
         else:
             # The unit in service now, if unfailed by the first
             # inspection, and its age there.
@@ -1930,11 +1948,16 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
             return head.events(np.asarray(u, dtype=float))["failures"]
 
         up = float(head.at(np.array([length]))[0])
-        reached = (
-            ConditionHead(length, up, failures, down_sf, first)
-            if schedule.policy == "condition"
-            else BlockHead(length, up, failures, down_sf)
-        )
+        reached: Any
+        if schedule.level is not None:
+            level = None
+            if start.alive:
+                level = float(life.y0 if start.level is None else start.level)
+            reached = LevelHead(length, up, failures, down_sf, level)
+        elif schedule.policy == "condition":
+            reached = ConditionHead(length, up, failures, down_sf, first)
+        else:
+            reached = BlockHead(length, up, failures, down_sf)
         result = followed(max(horizon - length, 0.0), reached)
         return StartedBlockCurve(head, BlockCurve(result, knots), length)
     result = followed(np.inf if stationary else max(horizon, 0.0))

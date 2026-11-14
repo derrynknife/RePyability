@@ -259,20 +259,23 @@ def test_a_level_is_kept_by_saving():
     ).samples.tolist() == (first.samples.tolist())
 
 
-def test_level_replacement_is_refused_from_a_state():
-    # Numerical from new (see test_level_replacement.py), but a state
-    # does not give the level.
+def test_level_replacement_from_a_state_needs_the_level():
+    # From a state (see test_level_replacement.py): an age alone does not
+    # give the level, in the exact values or the simulations; a measured
+    # level and the long-run state are taken.
     rbd = levelled(wear(), 6.0, repair_cost=1.0, cost=1.0)
-    for state in (NodeState(age=50.0), NodeState(stationary=True)):
-        with pytest.raises(NotImplementedError, match="leave it out"):
-            rbd.point_availability([100.0], state={"a": state})
-    with pytest.raises(NotImplementedError, match="leave it out"):
+    with pytest.raises(ValueError, match="give the level measured now"):
+        rbd.point_availability([100.0], state={"a": NodeState(age=50.0)})
+    with pytest.raises(ValueError, match="give the level measured now"):
         rbd.availability(
             t_simulation=100.0,
             mc_samples=2,
             seed=0,
             state={"a": NodeState(age=50.0)},
         )
+    for state in (NodeState(level=4.0), NodeState(stationary=True)):
+        value = rbd.point_availability([100.0], state={"a": state})
+        assert 0.0 < float(value[0]) <= 1.0
 
 
 @pytest.mark.parametrize(
