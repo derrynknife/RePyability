@@ -510,7 +510,7 @@ limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
 `alpha_ci` (#580). RePyability uses these directly, as it does 0.27's
 `MixtureModel.qf` (a mixture's draws, #821) and `BayesianParametric`'s
 `ff`, `Hf` and `qf` (a Bayesian fit's predictive), which replaced
-RePyability's own in 0.18 with the same values.
+RePyability's own in 0.17 with the same values.
 
 **surpyval's public interface only.** RePyability imports from the names
 surpyval's deprecation policy calls public (the top level, its listed
