@@ -80,7 +80,7 @@ def test_fit_draws_keep_an_offset():
     # with an offset of its own (the covariance leaves the offset out):
     # before its offset nothing can fail, so the share of draws certain to
     # work at a time is the share of refits whose offset is past it, and
-    # no warning is needed (one was, before 0.18, when the offset was
+    # no warning is needed (one was, before 0.17, when the offset was
     # held where it was fitted).
     refits = model.bootstrap(200, random_state=0)
     at = 0.5 * model.gamma
