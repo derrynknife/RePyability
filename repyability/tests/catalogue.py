@@ -273,6 +273,20 @@ def nonrepairable_kinds():
                 **rest,
             },
         ),
+        "exact warm standby": NonRepairableRBD(
+            EDGES,
+            {
+                # Warm, two operating, a spare that may fail to start:
+                # exact for exponential units (#339).
+                "a": StandbyModel(
+                    [E([0.01])] * 3,
+                    k=2,
+                    dormancy_factor=0.5,
+                    start_probability=0.9,
+                ),
+                **rest,
+            },
+        ),
         "repeated standby": NonRepairableRBD(
             EDGES, {"a": RepeatedStandbyNode(unit, 2), **rest}
         ),

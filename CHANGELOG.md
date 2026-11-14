@@ -66,6 +66,34 @@ Every other seeded result is unchanged.
 
 ### Added
 
+- Standby arrangements that had no exact answer. A `StandbyModel` of
+  Exponential units is exact whatever it holds: units of different
+  rates, any `k`, any `dormancy_factor` (warm standby with two or more
+  units operating, cold standby of three or more different units
+  operating) and spares that may fail on demand, by a Markov chain of
+  which units are left, followed by uniformization (each probability, of
+  working or of having failed, to full precision however small). Spares
+  may now fail on demand in warm and hot standby too, where
+  `switching_probability` raised `NotImplementedError`, and in two ways:
+  `switching_probability`, a switch that fails and ends the arrangement
+  then, and the new `start_probability`, a spare that fails to start, is
+  lost and passed for the next at once (one value, or one per spare). The
+  numerical methods take both: cold standby with one unit operating (a
+  spare that may fail to start is one of life 0 then), cold standby of
+  identical units (the renewal counts weighted by the chance that that
+  many spares switch in and start), cold standby of two different units
+  operating, and warm or hot standby with one unit operating (the
+  recursion over the switch-ins). What has neither, units not all
+  Exponential in warm standby with `k >= 2`, hot standby with `k >= 2`
+  and spares that may fail, or cold standby of three or more different
+  units operating, is simulated as before, and its refusal now says why
+  and what would make it exact or numerical; a chain of more than 200
+  states (many different units, warm) is simulated, saying so. Its draws
+  play the spares' switches and starts out with a uniform each, seeded
+  and replayed alike one draw at a time or in a diagram's blocks. A
+  `start_probability` saves with the diagram (and only when it is not 1,
+  so what earlier versions saved is unchanged).
+
 - Tasks counted in running hours (UC-26). A `"preventive"` or
   `"inspection"` spec takes `"basis"`: `"calendar"` (the default, as
   before) or `"operating"`, the block's operating time. On a block with a
@@ -472,6 +500,14 @@ Every other seeded result is unchanged.
 ### Changed
 
 - surpyval 0.27 is required, the release this one is tested against.
+- A `StandbyModel` of Exponential units that was worked out numerically
+  (different rates, imperfect switching, or a dormancy too small for the
+  hypoexponential form) is now exact, by its Markov chain: its
+  reliability and mean move by up to about 1e-5 (1e-4 for two different
+  units operating), to the exact values. Warm or hot standby with
+  `switching_probability` below 1 is worked out (exactly, numerically or
+  simulated, as above) where it raised `NotImplementedError`. Seeded
+  draws of every arrangement that ran before are unchanged.
 - With a component replaced on condition by its level, `availability()`
   and `cost()` now give the exact (numerical) expected values as their
   means by default, as for any component with a curve, where they gave
