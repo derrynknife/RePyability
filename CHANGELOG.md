@@ -109,6 +109,24 @@ about 1e-14 relative. Every other seeded result is unchanged.
   from the posterior's points itself. They agree to about 1e-14 relative
   for probabilities from 1e-30 up.
 
+### Deprecated
+
+- **The demonstration test functions, for surpyval's.** Test planning is
+  surpyval's: `surpyval.test_planning` has `demonstration_sample_size`,
+  `demonstrated_reliability`, `demonstration_test_multiple`,
+  `demonstration_pass_probability`, `mtbf_test_time`, `demonstrated_mtbf`,
+  `mtbf_pass_probability`, `demonstration_plan` and
+  `mtbf_demonstration_plan` under the same names. RePyability's are now
+  calls to them and warn (a `FutureWarning`) naming surpyval's; 0.18
+  removes them (`deprecation.NEXT_REMOVAL`), with `DemonstrationPlan`.
+  surpyval's take `alpha_ci = 1 - confidence`, by keyword, where these
+  took `confidence`. Compared on a grid of every argument before the
+  change, the two give the same sample sizes, failures and plans exactly,
+  and the same probabilities, test times and bounds to within 2e-15
+  (relative: `1 - confidence` taken and given back); the messages for a
+  bad `n` or `alpha_ci` are surpyval's, but a bad `confidence` is still
+  refused as a confidence. The guide's examples use surpyval's.
+
 ## [0.17] - 2026-11-14
 
 surpyval 0.27, and maintenance in model time. A `RepairableRBD` takes

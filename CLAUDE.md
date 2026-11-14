@@ -450,13 +450,14 @@ New work goes under the CHANGELOG's `[Unreleased]`. `dev` needs surpyval
   `FutureWarning` through `repyability/utils/deprecation.py`). Each
   release's removals stay gone through `test_removed_in_0_12.py`,
   `_0_13.py`, `_0_14.py` and `_0_15.py` (`NodeState`'s `phase`, #350):
-  a removed argument raises `TypeError`. 0.15, 0.16 and 0.17 deprecated
-  nothing, so 0.16 and 0.17 removed nothing. `NEXT_REMOVAL` (0.18) names
-  the release that removes what 0.17 deprecates: the first deprecation
-  made for 0.18 raises it to 0.19. A new deprecation warns
-  through `deprecation.renamed`, `renamed_attribute`, `called` or
-  `ignored`, with a test that fails once the version reaches its removal
-  (as `test_what_0_14_deprecates_goes_in_0_15` did).
+  a removed argument raises `TypeError`. 0.15 and 0.16 deprecated
+  nothing, so 0.16 and 0.17 remove nothing. 0.17 deprecates
+  `repyability.demonstration`'s nine functions for
+  `surpyval.test_planning`'s (`deprecation.moved`), so `NEXT_REMOVAL` is
+  0.18, which `test_what_0_17_deprecates_goes_in_0_18` reminds. A new
+  deprecation warns through `deprecation.renamed`, `renamed_attribute`,
+  `called`, `ignored` or `moved`, with a test that fails once the version
+  reaches its removal.
 - **No result depends on the unit of time (or of a covariate).** A step,
   grid or probe is sized from the models (a typical life,
   `failure_time_scale`), never in absolute time, and a proportional
