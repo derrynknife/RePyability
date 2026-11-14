@@ -66,6 +66,7 @@ from numpy.typing import ArrayLike
 
 from repyability.rbd import _measures
 from repyability.rbd._ordered_bdd import OrderedBDD
+from repyability.rbd._units import diagram_unit
 from repyability.rbd.modular import (
     KOON,
     NODE,
@@ -409,6 +410,9 @@ class FaultTree:
         self.events = {
             name: _parse_event(name, m) for name, m in events.items()
         }
+        # The unit the events' models are in (None if they name none); a
+        # warning names the events when they name different units.
+        self.unit: Optional[str] = diagram_unit(self.events, "fault tree")
         both = set(self._given) & set(self.events)
         if both:
             raise ValueError(
@@ -840,9 +844,10 @@ class FaultTree:
         return {name: g.written() for name, g in self._given.items()}
 
     def __repr__(self) -> str:
+        unit = "" if self.unit is None else f", unit {self.unit!r}"
         return (
             f"FaultTree(top={self.top!r}, {len(self._given)} gates, "
-            f"{len(self.events)} events)"
+            f"{len(self.events)} events{unit})"
         )
 
     # -- structure ---------------------------------------------------------

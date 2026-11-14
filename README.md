@@ -30,11 +30,6 @@ taking already-fitted lifetime models (from
 - **Phased missions**: missions through phases (take-off, cruise,
   landing), each with its own diagram over the same components: the exact
   mission reliability and the chance of failing in each phase.
-- **Testing**: demonstration test plans (the units, or the test time, that
-  demonstrate a reliability or an MTBF), plans that keep both the
-  producer's and the consumer's risk, what a test demonstrated, and the
-  chance a design passes. Deprecated in 0.17 for `surpyval.test_planning`,
-  which has the same functions; 0.18 removes them.
 - **Importance**: Birnbaum, improvement potential, RAW, RRW, criticality,
   Fussell–Vesely, structural importance and parameter sensitivity, on
   repairable systems in the long run or over time.
@@ -76,6 +71,12 @@ taking already-fitted lifetime models (from
   their measures (time up, failures and who caused them, first failure);
   merged as a diagram's structure, so a system's history follows from its
   components', with the component behind each of its outages.
+- **Schedules on the calendar** (`repyability.schedule`): which dates a
+  rule gives (every so many days, weeks, months or years; named weekdays;
+  the first Saturday or the last Friday of the month; the first Tuesday of
+  November every year; given dates; with seasons and excluded dates), and
+  when tasks fall due on them, with two limits, crew visits, and the work
+  by month. Plain data in and out, no clock read.
 - **Simulation**: seeded Monte-Carlo run to a tolerance, antithetic pairs,
   control variates from the system's exact twin, parallel runs, runs split
   across machines and merged, or sharded through any executor (Ray, Dask,

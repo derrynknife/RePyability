@@ -44,7 +44,7 @@ dependencies = [
     # to_dict/from_dict). A surpyval release reaches every fresh install at
     # once, so run the tests against surpyval's development branch before it
     # is released, to show a break first. CI also tests this minimum. 0.27
-    # is the release RePyability 0.17 is tested against; 0.25
+    # is the release RePyability 0.18 is tested against; 0.25
     # has the joint models (surpyval.univariate.joint) a JointNode takes;
     # 0.24 gives a mixture a precise tail (sf) and has conditional_gaps read
     # a limited failure population's lfp_p, not a mixture's p; 0.23 named
@@ -53,6 +53,14 @@ dependencies = [
     # relies on.
     "surpyval>=0.27",
     "tqdm>=4.64",
+    # The date arithmetic of repyability.schedule (rrule, the iCalendar
+    # standard's recurrence). Every install had it already, through
+    # surpyval's pandas; 2.8.2 is the floor pandas asks for.
+    "python-dateutil>=2.8.2",
+    # The time zones of repyability.schedule's duty plans come from the
+    # standard library's zoneinfo, which reads the system's zone database;
+    # Windows has none, so it needs tzdata's (macOS and Linux have one).
+    "tzdata; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -120,6 +128,7 @@ include = ["repyability*"]
 "repyability" = ["py.typed"]
 "repyability.tests" = ["*.json"]
 "repyability.maintenance" = ["README.md", "CALENDAR_DECISIONS.md"]
+"repyability.schedule" = ["README.md"]
 
 # For Black pre-commit hook
 [tool.black]
@@ -145,6 +154,8 @@ module = [
     'networkx',
     'surpyval.*',
     'tqdm',
+    'dateutil',
+    'dateutil.*',
     'numpy',
     'numpy.*',
     'numba',
