@@ -554,16 +554,6 @@ def test_a_regression_node_is_an_own_model_of_a_nonrepairable_node():
                 "preventive": {
                     "policy": "condition",
                     "interval": 5.0,
-                    "level": 7.0,
-                }
-            },
-            "measured degradation level",
-        ),
-        (
-            {
-                "preventive": {
-                    "policy": "condition",
-                    "interval": 5.0,
                     "threshold": 0.1,
                 }
             },

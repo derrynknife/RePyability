@@ -388,10 +388,28 @@ level means fewer failures but more replacements.
   rates of failure and replacement. `availability()` and `cost()` take
   these values as their means by default, and their simulations (in
   Python) give the spread.
-- **Not from a state.** A state cannot give the level a unit is at, so a
-  run or a value from a state refuses such a component (leave it out:
-  new). A Wiener process that does not drift towards its threshold
-  (`mu <= 0`) has units that never fail, and is refused too.
+- **From a state.** Give the level measured now (`NodeState(level=...)`)
+  and the time since the last inspection (`since_scheduled`): the unit goes
+  on from that level, and its next inspection, the rest of an interval
+  later, reads its level from there and replaces it at or past `"level"`.
+  A unit new on its calendar's phase starts at `y0`; one in a repair or a
+  replacement starts a new unit at `y0` once it is over; in its long-run
+  state (`"stationary"`) the unit is in the interval the long run repeats.
+  The exact values follow the level's distribution from the state to the
+  first inspection and on from there, and the simulations start from it
+  too. An age alone is refused (it does not give the level, nor whether
+  the inspections so far kept the unit), as is a model of its own (the
+  inspections read the node's process). A Wiener process that does not
+  drift towards its threshold (`mu <= 0`) has units that never fail, and
+  is refused.
+
+```python
+now = {"a": NodeState(level=7.0, since_scheduled=40.0)}   # read 40 h ago
+liner(6.0).expected_cost(500.0).mean                 # -> 7.91    new
+liner(6.0).expected_cost(500.0, state=now).mean      # -> 12.07   at 7.0 now
+liner(6.0).cost(500.0, mc_samples=400, seed=1, state=now).sample_mean  # -> 12.10
+```
+
 - **How a level is drawn.** Between inspections a unit's failure is drawn
   from the level last measured (surpyval's first-passage quantile from it).
   If that failure falls before the next inspection, the unit fails then.

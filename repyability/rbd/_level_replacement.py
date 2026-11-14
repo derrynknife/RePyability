@@ -62,14 +62,20 @@ to the failure threshold (the units kept just short of it fail at once,
 within the cell). The grid over an interval adds its own error, as for
 replacement on condition by age (``_block_replacement._grid``).
 
-From new only: the first interval starts with the unit put into service
-at ``y0``. Started from a measured level, the first interval would start
-instead with that level's mass in ``kept`` (and the time to the first
-inspection as a shorter first interval), the rest as it is.
+From new, the first interval starts with the unit put into service at
+``y0``. Started from a state (``LevelHead``), the unit's own curve takes it
+to its first inspection (the time left to it on its calendar), as for
+replacement on condition by age: the unit in service then, if up, is at a
+level measured now (or at ``y0``, new) and its level at the inspection
+has the law from there; the units put into service since (after its
+repair or replacement going on at the start, or after a failure) are at
+levels from ``y0`` over the time since; the repairs going on carry on
+into the first interval. From the inspection on, the map is followed as
+from new. In the long-run state, the settled interval from its phase on.
 """
 
 import math
-from typing import NamedTuple, Optional, Tuple
+from typing import Callable, NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -78,10 +84,12 @@ from ._block_replacement import (
     _SETTLED,
     _UNSUPPORTED,
     BlockAvailability,
+    BlockHead,
     _carry,
     _Duration,
     _grid,
     _Grid,
+    _head_start,
     _masses,
     _steps,
 )
@@ -194,6 +202,17 @@ class _Levels(NamedTuple):
     fresh: np.ndarray
 
 
+def _landed(life, edges: np.ndarray, start, t) -> np.ndarray:
+    """The probability that a unit at the levels ``start`` (any shape) is
+    unfailed a time ``t`` later and in each cell of ``edges`` (the
+    lowest keeping all below it), or at or past the replacement level
+    (the last): differences of ``level_below`` at the cells' edges past
+    the lowest, and at the threshold."""
+    tops = np.concatenate([edges[1:], [float(life.threshold)]])
+    below = level_below(life, np.asarray(start)[..., None], t, tops)
+    return np.maximum(np.diff(below, axis=-1, prepend=0.0), 0.0)
+
+
 def _levels(life, level: float, g: _Grid, node) -> _Levels:
     """The level grid of a unit replaced at ``level``, and its transfers
     (see ``_Levels``), from ``level_below``."""
@@ -206,16 +225,9 @@ def _levels(life, level: float, g: _Grid, node) -> _Levels:
     middle, half = 0.5 * (edges[1:] + edges[:-1]), 0.5 * np.diff(edges)
     points = middle[:, None] + half[:, None] * nodes[None, :]
     weights = 0.5 * weights
-    # The levels the transfers are counted below: the cells' edges past
-    # the lowest (below which the lowest cell keeps the rest), and the
-    # threshold (the survival).
-    tops = np.concatenate([edges[1:], [threshold]])
 
     def counted(start, t) -> np.ndarray:
-        """The probability of being unfailed at ``t`` and in each cell
-        (and past the level), from the levels ``start`` (any shape)."""
-        below = level_below(life, start[..., None], t, tops)
-        return np.maximum(np.diff(below, axis=-1, prepend=0.0), 0.0)
+        return _landed(life, edges, start, t)
 
     kernel = np.einsum("ijk,j->ik", counted(points, T), weights)
     # The survival from each cell over the grid, Gauss point by point
@@ -238,6 +250,23 @@ def _levels(life, level: float, g: _Grid, node) -> _Levels:
     return _Levels(edges, kernel, survival, fresh)
 
 
+class LevelHead(NamedTuple):
+    """How a unit replaced on condition by its level and started from a
+    state reaches its first inspection, ``length`` after the start (see
+    ``_block_replacement.BlockHead``): up there with probability ``up``;
+    ``failures(u)``, its expected failures before each ``u`` up to it;
+    ``down_sf``, the survival function of what is left of the repair or
+    replacement it was in at the start (None if it was up); and
+    ``level``, if it was up, the level of the unit in service at the
+    start (measured now, or ``y0`` if new)."""
+
+    length: float
+    up: float
+    failures: Callable[[np.ndarray], np.ndarray]
+    down_sf: Optional[Callable[[np.ndarray], np.ndarray]] = None
+    level: Optional[float] = None
+
+
 class LevelModel:
     """A component replaced on condition by its level, ready to follow:
     the interval's grid (``_block_replacement._grid``) and the level
@@ -246,6 +275,7 @@ class LevelModel:
 
     def __init__(self, life, repair, duration, interval, level, node=None):
         self.node = node
+        self.life = life
         check_models(life, repair, duration, level, interval, node)
         self.g = _grid(
             life,
@@ -259,13 +289,58 @@ class LevelModel:
         self.levels = _levels(life, float(level), self.g, node)
         self._cycle: Optional[ConditionCycle] = None
 
-    def availability(self, horizon: float) -> BlockAvailability:
-        """The unit's point availability from new over ``[0, horizon]``,
-        or until it repeats from one inspection interval to the next
-        (``inf``: until it does), interval by interval (see the module
-        docstring): a ``BlockAvailability`` with ``inspected``, the
-        probability that the unit is up at the inspection that starts
-        each interval, and ``replaced``, that it is replaced there.
+    def _head_levels(self, head: LevelHead) -> np.ndarray:
+        """The units up at the first inspection after ``head``, by level
+        on the grid (the last at or past the replacement level): the one
+        in service at the start, from its level over ``head.length``;
+        and those put into service since, one after each repair (of the
+        failures before the inspection, in cells of the grid's step back
+        from it, each repair integrated exactly over its cell) and after
+        the repair or replacement going on at the start, from ``y0`` over
+        the time since (half of each cell's starts at each of its ends),
+        scaled to the probability that such a unit is up there."""
+        from scipy.signal import fftconvolve
+
+        g, lv = self.g, self.levels
+        assert g.done is not None  # starts=True
+        h = g.h
+        first = np.zeros(len(lv.edges))
+        if head.level is not None:
+            first = _landed(self.life, lv.edges, head.level, head.length)
+        cells = max(1, int(np.ceil(head.length / h - 1e-9)))
+        cells = min(cells, g.steps)
+        edges = np.maximum(head.length - h * np.arange(cells + 1), 0.0)
+        counts = np.asarray(head.failures(edges), dtype=float)
+        late = np.maximum(counts[:-1] - counts[1:], 0.0) / h
+        ending = np.diff(g.done)[:cells]
+        started = np.zeros(cells + 1)
+        started[:cells] = fftconvolve(late, ending[::-1])[
+            cells - 1 : 2 * cells - 1  # noqa: E203
+        ]
+        if head.down_sf is not None:
+            started += 1.0 - np.asarray(head.down_sf(edges), dtype=float)
+        within = np.maximum(started[:-1] - started[1:], 0.0)
+        masses = np.zeros(cells + 1)
+        masses[:-1] += 0.5 * within
+        masses[1:] += 0.5 * within
+        since = masses @ lv.fresh[: cells + 1]
+        wanted = float(head.up) - float(first.sum())
+        total = float(since.sum())
+        if wanted <= 0.0 or total <= 0.0:
+            return first
+        return first + since * (wanted / total)
+
+    def availability(
+        self, horizon: float, head: Optional[LevelHead] = None
+    ) -> BlockAvailability:
+        """The unit's point availability from new (or after ``head``,
+        from a state) over ``[0, horizon]`` (from the first inspection,
+        after a ``head``), or until it repeats from one inspection
+        interval to the next (``inf``: until it does), interval by
+        interval (see the module docstring): a ``BlockAvailability`` with
+        ``inspected``, the probability that the unit is up at the
+        inspection that starts each interval, and ``replaced``, that it
+        is replaced there.
 
         Raises
         ------
@@ -296,12 +371,27 @@ class LevelModel:
         start_C = g.rho - g.replace.in_progress(g.rho)
         down = 1.0 - g.A
 
-        # The first interval: put into service new at 0, no inspection.
-        P = np.ones(g.length + 1)
-        C = g.rho.copy()
-        other = np.zeros(g.length + 1)
-        replaced, inspected = 1.0, 0.0
-        kept = np.zeros(len(lv.edges) - 1)
+        if head is None:
+            # The first interval: put into service new at 0, no
+            # inspection.
+            P = np.ones(g.length + 1)
+            C = g.rho.copy()
+            other = np.zeros(g.length + 1)
+            replaced, inspected = 1.0, 0.0
+            kept = np.zeros(len(lv.edges) - 1)
+        else:
+            # The first inspection after the head: the repairs going on
+            # carry on; those up at or past the level are replaced.
+            other, C, _ = _head_start(
+                BlockHead(head.length, head.up, head.failures, head.down_sf),
+                g,
+            )
+            by_level = self._head_levels(head)
+            inspected = float(by_level.sum())
+            replaced = float(by_level[-1])
+            kept = by_level[:-1]
+            P = other + replaced * start_P
+            C = C + replaced * start_C
         rows: list = []
         probabilities: list = []
         failing: list = []
@@ -377,7 +467,7 @@ class LevelModel:
             g.replace,
             settled,
             np.array(failing),
-            True,
+            head is None,
             np.array(looked),
         )
 

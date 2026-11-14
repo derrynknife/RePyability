@@ -9,6 +9,23 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- Replacement on condition by a measured degradation level (`"preventive":
+  {"policy": "condition", "level": ...}` on a Wiener or gamma process
+  life) starts from a state, where it was refused: a level measured now
+  (`NodeState(level=..., since_scheduled=...)`), a unit new on its
+  calendar's phase, one in a repair or a replacement, and (for the exact
+  values) the long-run state, `"stationary"`. The values over time
+  (`point_availability`, `expected_events`, `expected_cost`,
+  `expected_npv`, `mission_availability`, the conditional runs and
+  `plan_vs_actual` given the state) follow the level's distribution from
+  the state to the first inspection and on from there, numerically; the
+  simulations (`availability`, `cost`, `simulate_timelines`) start from
+  it too, the unit's first inspection reading its level from the one
+  measured. An age alone is refused there (it does not give the level),
+  as is a model of the unit's own.
+
 ## [0.17] - 2026-11-14
 
 surpyval 0.27, and maintenance in model time. A `RepairableRBD` takes
