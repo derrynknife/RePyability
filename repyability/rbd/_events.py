@@ -616,11 +616,15 @@ class _Imperfect(NamedTuple):
     """A component's imperfect repair (#109): ``kijima`` (``"kijima1"`` or
     ``"kijima2"``) and its restoration factor ``q`` (0 renews, 1 is minimal
     repair), and the failure at which it is replaced instead, counting
-    from its last renewal (None for never)."""
+    from its last renewal (None for never). A unit repaired by a fitted
+    surpyval renewal process's own rule (G1, ARA, ARI; see
+    ``_processes``) has ``kijima`` ``"process"``, ``q`` 1 (it is not
+    renewed), and the fitted model as ``process``."""
 
     kijima: str
     q: float
     replace_after: Optional[int]
+    process: Any = None
 
 
 class _Restoration(NamedTuple):

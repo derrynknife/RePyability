@@ -840,6 +840,16 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
                 "(availability, cost, simulate_timelines), not here: "
                 "leave it out (new)."
             )
+        if imperfect.process is not None and (
+            state.virtual_age is not None or state.own_life
+        ):
+            raise NotImplementedError(
+                f"Component {node!r} is repaired by its fitted "
+                f"{imperfect.process.kind} model's own rule, whose state "
+                "after a failure is not a Kijima virtual age: give its "
+                "age alone (the time it has run since new without a "
+                "failure), or leave it out (new)."
+            )
         if (
             imperfect.replace_after is not None
             or schedule is not None
