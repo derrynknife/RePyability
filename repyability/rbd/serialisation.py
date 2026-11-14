@@ -391,6 +391,10 @@ def _serialise_component(value) -> dict:
             out["replace_after"] = int(value["replace_after"])
         if value.get("duty") is not None:
             out["duty"] = float(value["duty"])
+        if value.get("covariates") is not None:
+            from repyability.rbd._covariate_schedule import schedule_to_dict
+
+            out["covariates"] = schedule_to_dict(value["covariates"])
         for key in ("preventive", "inspection"):
             if value.get(key) is not None:
                 out[key] = _serialise_schedule(value[key])
@@ -515,6 +519,12 @@ def _deserialise_component(d: dict) -> Any:
             out["replace_after"] = d["replace_after"]
         if "duty" in d:
             out["duty"] = d["duty"]
+        if "covariates" in d:
+            from repyability.rbd._covariate_schedule import (
+                schedule_from_dict,
+            )
+
+            out["covariates"] = schedule_from_dict(d["covariates"])
         for key in ("preventive", "inspection"):
             if key in d:
                 out[key] = _deserialise_schedule(d[key])

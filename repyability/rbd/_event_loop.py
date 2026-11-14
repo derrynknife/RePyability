@@ -44,6 +44,7 @@ from repyability.rbd._common import (
     _keeps_virtual_age,
     _safe_mean,
 )
+from repyability.rbd._covariate_schedule import scheduled
 from repyability.rbd._curves import (
     _draws_start,
 )
@@ -499,22 +500,26 @@ class _ImperfectComponent(_StreamedComponent):
         self.operated = 0.0
         self.tasks += 1
 
+    def _life(self) -> float:
+        """The unit's next life: by its fitted process's rule, given its
+        virtual age, or as new."""
+        if self._state is not None:
+            return self._process_life()
+        if self.age > 0.0:
+            u = (
+                self._aged.draw()
+                if self._aged is not None
+                else float(np.random.random())
+            )
+            return _aged_life(self._unit.reliability, self.age, u)
+        if self._failure is not None:
+            return self._failure.draw()
+        return self._unit.reliability.random(1).item()
+
     def next_event(self):
         if self._fails_next:
             self._fails_next = False
-            if self._state is not None:
-                x = self._process_life()
-            elif self.age > 0.0:
-                u = (
-                    self._aged.draw()
-                    if self._aged is not None
-                    else float(np.random.random())
-                )
-                x = _aged_life(self._unit.reliability, self.age, u)
-            elif self._failure is not None:
-                x = self._failure.draw()
-            else:
-                x = self._unit.reliability.random(1).item()
+            x = self._life()
             self._x = x
             return x, False
         self._fails_next = True
@@ -536,6 +541,37 @@ class _ImperfectComponent(_StreamedComponent):
         if self._repair is not None:
             return self._repair.draw(), True
         return self._unit.time_to_replace.random(1).item(), True
+
+
+class _ScheduledComponent(_ImperfectComponent):
+    """Stands in during a simulation for a component on a covariate
+    schedule (a spec's ``"covariates"``, see ``_covariate_schedule``):
+    as ``_ImperfectComponent`` (renewed by its repairs and tasks, or
+    keeping a virtual age), but each life is drawn from the time ``now``
+    it starts on the diagram's clock, which the loop sets before each
+    draw (``_clock``), and its age then: one uniform each, from its
+    ``FAILURE`` stream (numpy's global RNG without streams)."""
+
+    __slots__ = ("now",)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.now = 0.0
+
+    def _life(self) -> float:
+        u = (
+            self._failure.draw()
+            if self._failure is not None
+            else float(np.random.random())
+        )
+        return self._unit.reliability.life_left(self.now, self.age, u)
+
+
+def _clock(source, t: float) -> None:
+    """Tell a component on a covariate schedule that its next draw is
+    made at ``t`` (a life starting then); nothing for any other."""
+    if source.__class__ is _ScheduledComponent:
+        source.now = t
 
 
 def _stand_in(
@@ -567,6 +603,24 @@ def _stand_in(
         return component
     failure = run.stream(path, _streams.FAILURE)
     repair = run.stream(path, _streams.REPAIR)
+    if scheduled(component) is not None:
+        # Its lives from the uniforms of its FAILURE stream.
+        if failure is None or repair is None:
+            return _ScheduledComponent(
+                component, imperfect, model=duration, restoration=restoration
+            )
+        return _ScheduledComponent(
+            component,
+            imperfect,
+            failure,
+            repair,
+            None,
+            run.stream(path, _streams.DURATION),
+            duration,
+            run.stream(path, _streams.TEST),
+            restoration,
+            run.stream(path, _streams.START),
+        )
     if imperfect is not None or restoration is not None:
         if failure is None or repair is None:
             return _ImperfectComponent(
@@ -1046,6 +1100,9 @@ def _stream_specs(
                 if own is None
                 else _exponential_sampler(own)
             )
+            if scheduled(component) is not None:
+                # Uniforms, which its stand-in inverts along the schedule.
+                failure = _uniforms
             repair = stream_sampler(component.time_to_replace)
         if failure is None or repair is None:
             complete = False
@@ -1065,7 +1122,9 @@ def _stream_specs(
         add(path, _streams.REPAIR, repair, expected["repair"])
         if _draws_start(states.get(name)):
             add(path, _streams.START, _uniforms, 1.0)
-        if name in rbd._restoring:
+        if scheduled(component) is not None:
+            pass  # every life from its FAILURE stream
+        elif name in rbd._restoring:
             # A life after each repair or task, given its virtual age.
             add(path, _streams.AGED, _uniforms, expected["failure"])
         elif name in rbd._imperfect:
@@ -1429,6 +1488,7 @@ def _context(
             and node not in rbd._inspection
             and node not in rbd._standby
             and not isinstance(component, RepairableRBD)
+            and scheduled(component) is None
         },
         works=rbd._decomposition().structure_function(method),
         states=states,
@@ -1605,6 +1665,7 @@ def _start_queue(
             )
         else:
             source.reset()
+            _clock(source, 0.0)
             t_event, event = source.next_event()
             first = Event(t_event, component_id, event)
 
@@ -1744,6 +1805,7 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
             return True, _renewal(rbd, node, 0.0, source, schedule)
         if inspection is not None:
             return True, _inspected_renewal(rbd, node, 0.0, source, inspection)
+        _clock(source, 0.0)
         delay, status = source.next_event()
         return True, Event(delay, node, status)
     since = 0.0
@@ -1751,16 +1813,8 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
         # Last known up at its last test, or when put into service.
         since = min(start.age, start.since_scheduled or 0.0)
     own = _ccf_groups._own_rate(rbd, node)
-    if own is None:
-        life = (
-            _aged_life(
-                component.reliability,
-                virtual + start.age - since,
-                source.start_uniform(),
-            )
-            - since
-        )
-    else:
+    timed = scheduled(component)
+    if own is not None:
         # A common-cause group's member (#106): its own cause's life from
         # when it was last known up, and a shared cause that has struck
         # it since (see _past_strikes).
@@ -1770,6 +1824,21 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
         struck = rbd._run_state._ccf_struck.get(node)
         if struck is not None:
             life = min(life, struck)
+    elif timed is not None:
+        # On a covariate schedule, from 0 (_check_state has refused one
+        # whose life would start before it).
+        life = timed.life_left(
+            0.0, virtual + start.age, source.start_uniform()
+        )
+    else:
+        life = (
+            _aged_life(
+                component.reliability,
+                virtual + start.age - since,
+                source.start_uniform(),
+            )
+            - since
+        )
     source.life_drawn(start.age + life)
     if inspection is not None:
         if life < 0.0:
@@ -1861,6 +1930,7 @@ def _follow_up(rbd, event: Event, source) -> Event:
     inspection = rbd._inspection.get(node)
     if inspection is not None:
         return _inspected_follow_up(rbd, event, source, inspection)
+    _clock(source, event.time)
     t, status = source.next_event()
     if isinstance(rbd.components[node], RepairableRBD):
         return Event(t, node, status, _planned(source, status))
@@ -1987,6 +2057,7 @@ def _renewal(
     from a state (see ``_started``), the unit was put into service at
     ``start``, before ``t``, and has ``life`` left."""
     if life is None:
+        _clock(source, t)
         life, _ = source.next_event()
     restoring = node in rbd._restoring
     if restoring:
@@ -2055,11 +2126,17 @@ def _own_sources(rbd, states: Optional[dict] = None) -> dict:
         for node, start in (states or {}).items()
         if _draws_start(start) and not _keeps_virtual_age(rbd, node)
     ]
+    timed = [
+        node
+        for node, component in rbd.components.items()
+        if scheduled(component) is not None
+    ]
     if (
         not rbd._imperfect
         and not rbd._restoring
         and not starting
         and not rbd.ccf_groups
+        and not timed
     ):
         return rbd.components
     sources = dict(rbd.components)
@@ -2078,9 +2155,16 @@ def _own_sources(rbd, states: Optional[dict] = None) -> dict:
             model=_duration_model(rbd, node),
             restoration=rbd._restoring.get(node),
         )
+    for node in timed:
+        sources[node] = _ScheduledComponent(
+            rbd.components[node],
+            rbd._imperfect.get(node),
+            model=_duration_model(rbd, node),
+            restoration=rbd._restoring.get(node),
+        )
     for node in starting:
-        if _ccf_groups._own_rate(rbd, node) is not None:
-            continue  # its own cause's draws, as above
+        if node in timed or _ccf_groups._own_rate(rbd, node) is not None:
+            continue  # its schedule's, or its own cause's, draws above
         component = rbd.components[node]
         sources[node] = _StreamedComponent(
             _ModelDraws(component.reliability),
@@ -2263,6 +2347,7 @@ def _inspected_renewal(
 ) -> Event:
     """The first event of a unit with hidden failures put into service
     as new at ``t``."""
+    _clock(source, t)
     life, _ = source.next_event()
     rbd._run_state._pending_failure[node] = t + life
     return _inspected_next(rbd, node, t, inspection)

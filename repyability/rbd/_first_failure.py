@@ -34,7 +34,7 @@ from typing import Any, Dict, NoReturn, Optional, Tuple
 import numpy as np
 
 from repyability.rbd import _crew_chain as crew_chain
-from repyability.rbd import _curves, _overrides
+from repyability.rbd import _curves, _overrides, _requirements
 from repyability.rbd._common import _constant_rate, _repair_rate
 from repyability.rbd._mean_lifetime import mean_lifetime, model_knots
 from repyability.rbd.modular import NODE, SERIES, GraphStructure
@@ -95,6 +95,7 @@ def _components_are_plain(rbd) -> None:
                     f"The exact values do not cover {what}, which "
                     f"component {node!r} has"
                 )
+        _requirements._require_reliabilities(rbd, node)
 
 
 def _in_series(structure, term: int) -> bool:

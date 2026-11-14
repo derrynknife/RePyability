@@ -92,6 +92,28 @@ Every other seeded result is unchanged.
   whose found failures are repaired at once. `analysis_routes()`, the
   README's table and the guide say so. Seeded results are unchanged (the
   new stream is drawn only by runs from such states, which were refused).
+- Covariate schedules on a `RepairableRBD`'s blocks. A component spec
+  takes `"covariates"`, a surpyval `StepSchedule` on the diagram's clock
+  (from 0, open-ended or cyclic), with a fitted regression model as its
+  `"reliability"`: a load that steps between levels over the system's
+  time. The schedule is the system's, not the unit's: each unit's life is
+  drawn from when it is put into service, at the covariates in force as
+  it ages, and its repairs and tasks reset its age as for any block while
+  the schedule runs on. Proportional and additive hazards take the hazard
+  at the unit's age and the covariates in force (`Hf(b, Z) - Hf(a, Z)`
+  over a step), with Kijima repair and partial restoration too;
+  accelerated failure time and accelerated life take the cumulative
+  exposure model (no virtual age, as their clock changes speed);
+  proportional odds is refused. Each life inverts the cumulative hazard
+  along the steps, to the last bits within its step, one uniform from
+  the block's own stream (seeded runs repeat). Only the simulations take
+  such a block (`availability`, `cost`, `simulate_timelines`, in
+  Python); the exact and numerical methods refuse it, saying so, as
+  `analysis_routes()` reports, and a duty, a standby or common-cause
+  group, replacement on condition by a threshold and a shutdown that
+  stands the block still are refused with it. Saved and loaded with the
+  diagram. A `NonRepairable` given a regression model says where
+  schedules go. See the guide's "Covariates that change over time".
 - Standby arrangements that had no exact answer. A `StandbyModel` of
   Exponential units is exact whatever it holds: units of different
   rates, any `k`, any `dormancy_factor` (warm standby with two or more
@@ -538,6 +560,38 @@ Every other seeded result is unchanged.
   model built from parameters has no bands. surpyval's joint frailty
   model is experimental. `Repairable`'s refusal of a joint frailty model
   now points here.
+- **NOT gates and dynamic gates in fault trees.** `FaultTree` takes
+  `("not", [input])`: a non-coherent tree, evaluated exactly through its
+  binary decision diagram, with `prime_implicants()` (every smallest
+  combination of events occurring and not occurring that makes the top
+  event occur, consensus terms included; `PrimeImplicant`) in place of the
+  minimal cut sets; `birnbaum_importance` (which can be negative) and
+  `conditional_probabilities` apply, and the cut sets, the other
+  importance measures, the lifetime analyses and the conversion to a
+  block diagram refuse, saying why. The dynamic gates `("pand", inputs)`
+  (priority AND, inclusive), `("spare", inputs)` and `("spare",
+  dormancy, inputs)` (cold, warm and hot spares, a spare ageing at the
+  dormancy factor in reserve), `("seq", inputs)` (sequence enforcing) and
+  `("fdep", trigger, dependents)` (functional dependency) give the top
+  event probability over time (`top_event_probability`, `ff`, `sf`): each
+  PAND, SPARE or SEQ that is an independent module integrated over its
+  inputs' distributions (Stieltjes sums for a PAND, the measure of each
+  unit's failure carried to the next for a SPARE or SEQ, Richardson
+  extrapolated on a grid halved until it agrees, to about 1e-9 for smooth
+  lives), the static part around them exact; one that shares events with
+  the rest refused exactly and simulated on request (`method="simulate"`,
+  `mc_samples`, `seed`), only the smallest independent part holding it.
+  `random()` simulates a dynamic tree's times to its top event, from a
+  seeded stream per event. An FDEP is written out as its static
+  equivalent, so a tree whose only dynamic gates are FDEPs has every
+  static analysis. `to_open_psa()` exports a tree as an Open-PSA Model
+  Exchange Format document (the static and NOT gates, an FDEP as its
+  static equivalent, probabilities, exponential and Weibull lives, and
+  beta-factor groups), refusing dynamic gates, which the format has none
+  of. Trees save and load with the new gates (`to_dict` adds a SPARE's
+  `"dormancy"`). Not yet: shared spares, importance measures and the mean
+  time to the top event for dynamic trees, and NOT and dynamic gates in
+  one tree.
 
 ### Changed
 

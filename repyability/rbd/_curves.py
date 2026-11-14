@@ -25,6 +25,7 @@ from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _ccf_groups,
     _chain_transient,
+    _covariate_schedule,
     _crews,
     _long_run,
     _overrides,
@@ -49,6 +50,7 @@ from repyability.rbd._condition_replacement import (
     ConditionHead,
     condition_availability,
 )
+from repyability.rbd._covariate_schedule import scheduled
 from repyability.rbd._hidden_life import (
     TestedLife,
     TestedLifeCurve,
@@ -865,6 +867,12 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
                 "leave it out (new)."
             )
     component = rbd.components[node]
+    if scheduled(component) is not None:
+        _covariate_schedule.check_state(
+            rbd, node, state, inspection is not None
+        )
+        if state.alive:
+            return
     life = component.reliability
     if state.own_life:
         life = _check_own_life(rbd, node, state, simulated)
@@ -1009,7 +1017,10 @@ def _check_simulated(rbd, states: dict) -> None:
             continue
         if (
             type(component) is not NonRepairable
-            or stream_sampler(component.reliability) is None
+            or (
+                stream_sampler(component.reliability) is None
+                and scheduled(component) is None
+            )
             or stream_sampler(component.time_to_replace) is None
         ):
             raise NotImplementedError(

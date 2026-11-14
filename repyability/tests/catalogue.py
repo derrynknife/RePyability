@@ -105,6 +105,21 @@ def aft():
 
 
 @_fitted_once
+def ph():
+    """A pump's life at its load (surpyval's ExponentialPH): 500 at load
+    1, 125 at load 2."""
+    x = np.array([250.0, 500.0, 750.0, 62.5, 125.0, 187.5])
+    load = np.array([[1.0], [1.0], [1.0], [2.0], [2.0], [2.0]])
+    return surv.ExponentialPH.fit(x, Z=load)
+
+
+def load_steps():
+    """Load 1 for the first 200, and 2 after (a covariate schedule on the
+    diagram's clock)."""
+    return surv.StepSchedule.from_changepoints([0.0, 200.0], [[1.0], [2.0]])
+
+
+@_fitted_once
 def joint_model():
     """A Weibull joint model (surpyval's WeibullJointPH) of a fleet of 60
     pumps, each with a marker read every 10 hours and a load: a pump's
@@ -504,7 +519,8 @@ def fault_tree_kinds():
     """The fault trees of every kind the tree's analyses are checked on
     (#314): events given as probabilities, as lifetime models (surpyval
     distributions, a fit with its covariance) and as both, a repeated
-    event, and common-cause groups of each model and basis."""
+    event, common-cause groups of each model and basis, a NOT gate, a
+    functional dependency, and dynamic gates integrated or shared."""
     unit = W([100, 2])
     gates = {"top": ("or", ["pair", "c"]), "pair": ("and", ["a", "b"])}
     rest = {"b": W([80, 1.5]), "c": E([0.002])}
@@ -544,6 +560,41 @@ def fault_tree_kinds():
             gates,
             {"a": 0.05, "b": 0.05, "c": 0.01},
             ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+        ),
+        # A NOT gate (non-coherent): exact, its prime implicants for cut
+        # sets, Birnbaum's the one importance measure.
+        "not gate": FaultTree(
+            {
+                "top": ("or", ["pair", "c and not a"]),
+                "pair": ("and", ["a", "b"]),
+                "c and not a": ("and", ["c", "not a"]),
+                "not a": ("not", ["a"]),
+            },
+            {"a": unit, **rest},
+        ),
+        # A functional dependency: the static tree it is written out as.
+        "functional dependency": FaultTree(
+            {**gates, "power": ("fdep", "p", ["a", "b"])},
+            {"a": unit, **rest, "p": E([0.0005])},
+        ),
+        # Dynamic gates, each an independent module: integrated.
+        "dynamic": FaultTree(
+            {
+                "top": ("or", ["order", "spare"]),
+                "order": ("pand", ["a", "b"]),
+                "spare": ("spare", 0.2, ["c", "d"]),
+            },
+            {"a": unit, **rest, "d": W([150, 1.2])},
+        ),
+        # A dynamic gate sharing an event with the rest: simulated on
+        # request (method="simulate"), refused exactly.
+        "dynamic, shared": FaultTree(
+            {
+                "top": ("or", ["order", "pair"]),
+                "order": ("seq", ["a", "b"]),
+                "pair": ("and", ["b", "c"]),
+            },
+            {"a": unit, **rest},
         ),
     }
 
@@ -863,6 +914,22 @@ def repairable_kinds():
                 unit(reliability=ara_process(), repair_cost=1.0)
             ),
             "degradation process life": system(unit(reliability=wear())),
+            "covariate schedule, proportional hazards, maintained": system(
+                unit(
+                    reliability=ph(),
+                    covariates=load_steps(),
+                    preventive={"interval": 300.0},
+                    replace_cost=10.0,
+                )
+            ),
+            "covariate schedule, accelerated failure time": system(
+                unit(
+                    reliability=aft(),
+                    covariates=surv.StepSchedule.cyclic(
+                        [0.0, 60.0], [[1.0], [2.0]], 100.0
+                    ),
+                )
+            ),
             "operated part of the time": system(
                 unit(duty=0.25, preventive={"interval": 300.0})
             ),

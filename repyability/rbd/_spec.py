@@ -19,6 +19,7 @@ from typing import (
 import numpy as np
 
 from repyability.rbd import _requirements
+from repyability.rbd._covariate_schedule import is_scheduled
 from repyability.rbd._degradation import (
     is_degradation,
 )
@@ -64,6 +65,7 @@ COMPONENT_SPEC_KEYS = (
         "repair",
         "replace_after",
         "duty",
+        "covariates",
     )
 )
 
@@ -289,7 +291,11 @@ def _validate_imperfect(rbd, node, spec: dict) -> Optional[_Imperfect]:
                 "replaces it)."
             )
         return _Imperfect(model, q, limit, process)
-    if not (is_mixture(life) or (hasattr(life, "Hf") and hasattr(life, "qf"))):
+    if not (
+        is_mixture(life)
+        or is_scheduled(life)
+        or (hasattr(life, "Hf") and hasattr(life, "qf"))
+    ):
         raise ValueError(
             f"Component {node!r}: an imperfectly repaired unit's lives "
             "are drawn given its virtual age, which needs a lifetime "
@@ -463,7 +469,11 @@ def _validate_restoration(
         # No task, or one that renews the unit.
         return None, None
     life = spec["reliability"]
-    if not (is_mixture(life) or (hasattr(life, "Hf") and hasattr(life, "qf"))):
+    if not (
+        is_mixture(life)
+        or is_scheduled(life)
+        or (hasattr(life, "Hf") and hasattr(life, "qf"))
+    ):
         raise ValueError(
             f"Component {node!r}: a unit restored partly draws its lives "
             "given its virtual age, which needs a lifetime model with a "

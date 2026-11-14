@@ -178,6 +178,10 @@ def _spec_levers(spec: dict) -> List[tuple]:
         model = spec.get(key)
         if model is None or isinstance(model, str):
             continue
+        if key == "reliability" and spec.get("covariates") is not None:
+            # A regression run on a covariate schedule: its parameters
+            # are no distribution's, and only simulations take it.
+            continue
         for name, value, moved, bounds, scale in _model_levers(
             key, model, lambda m, key=key: {**spec, key: m}
         ):

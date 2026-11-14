@@ -165,6 +165,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                     "get_all_path_sets",
                 ),
             ),
+            (
+                "Prime implicants (NOT gates)",
+                ("prime_implicants",),
+            ),
             ("Each path set's probability", ("path_set_probabilities",)),
             ("Cut sets ranked by probability", ("ranked_cut_sets",)),
             ("Irrelevant components", ("find_irrelevant_components",)),
@@ -199,6 +203,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 "Save and load (dict, JSON)",
                 ("to_dict", "to_json", "from_dict", "from_json"),
             ),
+            ("Export to Open-PSA (MEF)", ("to_open_psa",)),
         ],
     ),
     (
