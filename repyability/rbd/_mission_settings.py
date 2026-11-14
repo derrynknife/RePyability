@@ -358,7 +358,13 @@ class MissionPhase:
 
     def standby_order(self, nodes) -> List[Hashable]:
         """Those of ``nodes`` on standby in this phase, in the order they
-        are called on: the order ``blocks`` names them."""
+        are called on: the order ``blocks`` names them.
+
+        Parameters
+        ----------
+        nodes : iterable of Hashable
+            The blocks to choose from.
+        """
         named = set(nodes)
         return [
             node
