@@ -22,7 +22,9 @@ window. A `NonRepairable` gives the numbers behind each maintenance
 decision for a failure mode, from new or from its state. A phased mission
 can be drawn from one diagram with a model per phase, a Bayesian fit is a
 block with its credible band carried to the system, and stress-strength
-interference is new. RePyability is tested against surpyval 0.27 and
+interference is new, as is where a safety function's PFDavg comes from
+(`pfd_breakdown`, each component's and common-cause group's share).
+RePyability is tested against surpyval 0.27 and
 needs it: 0.27 removes no name and deprecates nothing RePyability uses,
 and the fitted models RePyability takes give the same values. Every
 repair model surpyval fits is a repairable block (G1, ARA and ARI
@@ -74,6 +76,22 @@ fit, a regression at its covariates or a destructive degradation model
 Every other seeded result is unchanged.
 
 ### Added
+
+- **Where a safety function's PFDavg comes from**:
+  `RepairableRBD.pfd_breakdown()` returns a `PFDBreakdown`, the long-run
+  unavailability (for a periodically tested protective function, its
+  PFDavg) split into each component's share and each common-cause
+  group's, adding up to it. The common-cause share is what the PFDavg
+  would fall by without the shared causes (split among several groups by
+  their Shapley value); the rest, the PFDavg without them, is shared
+  among the components by their Aumann-Shapley value at each time of the
+  tests' period (each term of the system's unavailability shared equally
+  among its components, so a redundant pair splits its coincident
+  downtime half and half). Exact or numerical as `mean_unavailability`
+  is, with up to eight groups; checked against the exact integrals of
+  1oo1, 1oo2 and 2oo3 voting with and without a beta factor, IEC
+  61508-6's simplified equations and the simulation. See the guide's
+  "Where the PFDavg comes from".
 
 - Common-cause groups in a `RepairableRBD` with tests and repairs of any
   length, and from the members' current states. A tested member's test or
@@ -699,6 +717,17 @@ Every other seeded result is unchanged.
   reports stay in the issue tracker. The user stories (`stories/`) stay.
 
 ### Documentation
+
+- The surpyval workarounds still in RePyability were each checked
+  against surpyval 0.27 (a mixture's life left at an age, a degradation
+  level given survival, rescaling time for a duty cycle, parameter
+  ranges of fits other than distributions, a joint frailty model's
+  expected failures far past its write-off ages, and a Bayesian fit's
+  quantile with an offset or shares). 0.27 fixes none of them, so all
+  stay and no number changes; the joint frailty one can go once the
+  minimum surpyval is 0.28. The contributor notes record what was
+  measured, and no longer name a release as the latest; the maintenance
+  stories' statuses are as of 0.17.
 
 - The user stories' statuses are brought up to date with `dev`, each
   built part citing the test that is its oracle, and `stories/README.md`

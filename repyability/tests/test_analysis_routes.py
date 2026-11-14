@@ -247,6 +247,7 @@ REPAIRABLE_CALLS = {
             "differential_importance",
             "joint_importance",
             "barlow_proschan_importance",
+            "pfd_breakdown",
             "parameter_sensitivity",
             "expected_cost_rate",
             "capacity_distribution",

@@ -36,6 +36,8 @@
 
 ::: repyability.RateBreakdown
 
+::: repyability.PFDBreakdown
+
 ::: repyability.ExpectedCost
 
 ::: repyability.ExpectedNPV
