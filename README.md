@@ -29,7 +29,8 @@ taking already-fitted lifetime models (from
 - **Testing**: demonstration test plans (the units, or the test time, that
   demonstrate a reliability or an MTBF), plans that keep both the
   producer's and the consumer's risk, what a test demonstrated, and the
-  chance a design passes.
+  chance a design passes. Deprecated in 0.17 for `surpyval.test_planning`,
+  which has the same functions; 0.18 removes them.
 - **Importance**: Birnbaum, improvement potential, RAW, RRW, criticality,
   Fussell–Vesely, structural importance and parameter sensitivity, on
   repairable systems in the long run or over time.
@@ -80,8 +81,11 @@ taking already-fitted lifetime models (from
   sampling); repairable systems simulated compiled, with numba installed.
 - **Cost, design and maintenance**: exact and simulated running costs,
   including scheduled (age or block) preventive replacement at system level,
-  replacement on condition at periodic inspections and opportunistic
-  maintenance of grouped components at each other's stops,
+  replacement on condition at periodic inspections (by age or by a measured
+  level), opportunistic maintenance of grouped components at each other's
+  stops, shutdowns, preventive maintenance that restores a unit only
+  partly, and tasks counted in running hours, with the downtime split into
+  planned and unplanned,
   with its intervals chosen for a cost or availability target, hidden
   failures found by periodic inspection, with the test intervals chosen for a
   PFDavg target, the total cost of ownership, discounted to a present

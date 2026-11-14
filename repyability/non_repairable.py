@@ -12,9 +12,11 @@ from repyability.rbd._bayesian_life import PosteriorPredictive, as_life
 from repyability.rbd._covariate_schedule import is_scheduled
 from repyability.rbd._degradation import check_life, is_degradation
 from repyability.rbd._model_utils import (
+    by_functions,
     distribution_name,
     is_exponential,
     is_mixture,
+    life_functions,
     model_mean,
     never_fails,
 )
@@ -32,6 +34,43 @@ REPLACE = 0
 #: searched by a gradient method: a distribution, and a degradation process
 #: (its first-passage time).
 _SMOOTH = ("parametric", "degradation")
+
+
+def _why_not(model) -> str:
+    """What a surpyval model given as a life or a repair lacks of a life's
+    functions, for a refusal's message ("." for another object)."""
+    if not type(model).__module__.startswith("surpyval."):
+        return "."
+    missing = life_functions(model)
+    if not missing:
+        return "."
+    hint = ""
+    if callable(getattr(model, "at", None)):
+        hint = (
+            " It is a regression, whose functions need covariates: give "
+            "the life of a unit at its covariates, model.at(Z) (or a "
+            "RegressionNode in a NonRepairableRBD); for covariates that "
+            "change over time in a RepairableRBD, give the model with the "
+            "spec's 'covariates' (a StepSchedule)."
+        )
+    reasons = "; ".join(f"{name}: {why}" for name, why in missing.items())
+    return f", which cannot work out {', '.join(missing)} ({reasons}).{hint}"
+
+
+def _check_functions(model, what: str) -> None:
+    """Refuse a surpyval model, given as a time to replace, that lacks a
+    life's functions (a regression without its covariates, a curve that
+    ends at its data), saying what it lacks: the repairs are drawn, and
+    the exact methods integrate them, through those functions."""
+    if not type(model).__module__.startswith("surpyval.") or isinstance(
+        model, (Parametric, NonParametric)
+    ):
+        return
+    if is_mixture(model) or isinstance(model, PosteriorPredictive):
+        return
+    if is_degradation(model) or by_functions(model):
+        return
+    raise ValueError(f"{what} is a {type(model).__name__}" + _why_not(model))
 
 
 def _scalar_sf(model):
@@ -222,6 +261,10 @@ class NonRepairable:
                 "surv.Exponential.from_params([rate])), or None or 'instant' "
                 f"for replacement in no time, got {time_to_replace!r}."
             )
+        else:
+            _check_functions(
+                time_to_replace, "A NonRepairable's time_to_replace"
+            )
         if (
             isinstance(reliability, Parametric)
             or is_mixture(reliability)
@@ -238,6 +281,13 @@ class NonRepairable:
             self.reliability_function, self._knots = _piecewise_linear_sf(
                 reliability
             )
+        elif by_functions(reliability):
+            # Any other surpyval model with a life's functions (#93): a
+            # Royston-Parmar fit, a regression at a unit's covariates
+            # (regression.at(Z)), a destructive degradation model. Its
+            # survival is a smooth curve, as a distribution's.
+            self.model_parameterization = "parametric"
+            self.reliability_function = reliability.sf
         elif is_degradation(reliability):
             # A fitted Wiener or gamma degradation process (#271): its life
             # is the time its level first reaches its threshold.
@@ -267,20 +317,13 @@ class NonRepairable:
             )
         else:
             raise ValueError(
-                "A NonRepairable's life must be a surpyval parametric "
-                "distribution or MixtureModel (fitted, or built with "
-                "from_params), a surpyval Wiener or gamma degradation "
-                "process, a surpyval non-parametric estimate or a "
-                f"StandbyModel; got a {type(reliability).__name__}."
-                + (
-                    " For a surpyval regression model: in a RepairableRBD, "
-                    "give the block's covariates over time with the spec's "
-                    "'covariates' (a StepSchedule); for one unit run on a "
-                    "schedule, see operating_schedule_value."
-                    if getattr(reliability, "kind", None) is not None
-                    and callable(getattr(reliability, "sf_tvc", None))
-                    else ""
-                )
+                "A NonRepairable's life must be a surpyval model with a "
+                "life's functions of time (sf, ff, df, hf, Hf, qf and "
+                "mean: a distribution, a MixtureModel, a Bayesian fit, a "
+                "Royston-Parmar fit, a regression at one unit's covariates "
+                "with regression.at(Z), a degradation process), a surpyval "
+                "non-parametric estimate or a StandbyModel; got a "
+                f"{type(reliability).__name__}" + _why_not(reliability)
             )
 
         self.reliability = reliability

@@ -308,13 +308,177 @@ def test_parameter_uncertainty_draws_its_posterior(weibull_fit):
     assert result is not None
 
 
-def test_what_it_does_not_take_yet():
+def test_what_it_does_not_take():
     with pytest.raises(TypeError, match="Bayesian fit"):
         PosteriorPredictive(surv.Weibull.from_params([1.0, 2.0]))
-    offset = BayesianParametric.from_draws(
-        surv.Weibull,
-        np.c_[np.full(5, 1.0), np.linspace(90, 110, 5), np.full(5, 2.0)],
-        ["gamma", "alpha", "beta"],
+    counts = BayesianParametric.from_draws(
+        surv.Poisson, np.linspace(1.0, 2.0, 5)[:, None]
     )
-    with pytest.raises(ValueError, match="offset"):
-        NonRepairableRBD(SERIES, {"a": offset, "b": REPAIR})
+    with pytest.raises(ValueError, match="count, not a life"):
+        NonRepairableRBD(SERIES, {"a": counts, "b": REPAIR})
+
+
+# -- an offset, a limited failure population, zero inflation ---------------
+
+EXTRAS = {"gamma": 20.0, "lfp_p": 0.8, "f0": 0.05}
+
+
+def one_point(**extras):
+    """A posterior that is one point (five equal draws), with ``extras``:
+    its predictive is the plain model at that point."""
+    names = ["alpha", "beta", *extras]
+    row = [200.0, 1.8, *extras.values()]
+    fit = BayesianParametric.from_draws(
+        surv.Weibull, np.tile(row, (5, 1)), names
+    )
+    return fit, surv.Weibull.from_params([200.0, 1.8], **extras)
+
+
+@pytest.fixture(scope="module")
+def shares_fit():
+    """400 draws, each with its own offset, share that ever fails and
+    share dead on arrival."""
+    g = np.random.default_rng(5)
+    draws = np.c_[
+        200 * g.lognormal(0, 0.15, 400),
+        1.8 * g.lognormal(0, 0.15, 400),
+        g.uniform(10.0, 30.0, 400),
+        g.uniform(0.7, 0.9, 400),
+        g.uniform(0.01, 0.05, 400),
+    ]
+    return BayesianParametric.from_draws(
+        surv.Weibull, draws, ["alpha", "beta", "gamma", "lfp_p", "f0"]
+    )
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [{"gamma": 20.0}, {"lfp_p": 0.8}, {"f0": 0.05}, EXTRAS],
+    ids=["offset", "lfp", "zi", "all three"],
+)
+def test_one_point_with_extras_is_the_plain_model(extras):
+    fit, plain = one_point(**extras)
+    life = PosteriorPredictive(fit)
+    t = np.array([5.0, 25.0, 100.0, 300.0, 3000.0])
+    for name in ("sf", "ff", "Hf"):
+        assert getattr(life, name)(t) == pytest.approx(
+            getattr(plain, name)(t), rel=1e-12
+        )
+    p = np.array([0.001, 0.1, 0.5, 0.75])
+    assert life.qf(p) == pytest.approx(plain.qf(p), rel=1e-10)
+    assert life.never_fails == pytest.approx(1 - extras.get("lfp_p", 1.0))
+    # In each kind of diagram it is the plain model.
+    ours = NonRepairableRBD(SERIES, {"a": fit, "b": REPAIR})
+    theirs = NonRepairableRBD(SERIES, {"a": plain, "b": REPAIR})
+    assert ours.sf(t) == pytest.approx(theirs.sf(t), rel=1e-12)
+    part = NonRepairable(fit, planned_cost=1.0, unplanned_cost=5.0)
+    same = NonRepairable(plain, planned_cost=1.0, unplanned_cost=5.0)
+    assert part.find_optimal_replacement() == pytest.approx(
+        same.find_optimal_replacement(), rel=1e-6
+    )
+    assert part.failures(300.0, age=50.0).expected_failures == pytest.approx(
+        same.failures(300.0, age=50.0).expected_failures, rel=1e-9
+    )
+    for life_model, other in ((fit, plain),):
+        a = RepairableRBD(
+            [("s", "a"), ("a", "t")],
+            {"a": {"reliability": life_model, "repairability": REPAIR}},
+        )
+        b = RepairableRBD(
+            [("s", "a"), ("a", "t")],
+            {"a": {"reliability": other, "repairability": REPAIR}},
+        )
+        assert a.mission_availability(500.0) == pytest.approx(
+            b.mission_availability(500.0), rel=1e-9
+        )
+
+
+def test_with_extras_its_functions_are_the_fits(shares_fit):
+    life = PosteriorPredictive(shares_fit)
+    t = np.array([0.0, 5.0, 25.0, 100.0, 300.0, 1e5])
+    for name in ("sf", "ff", "df", "hf", "Hf"):
+        assert np.array_equal(
+            getattr(life, name)(t), getattr(shares_fit, name)(t)
+        )
+    p = life.extras["lfp_p"]
+    assert life.never_fails == pytest.approx(1 - np.mean(p), rel=1e-12)
+    assert life.sf(1e9) == pytest.approx(life.never_fails, rel=1e-9)
+    assert life.mean() == np.inf
+
+
+def test_with_extras_its_draws_have_its_distribution(shares_fit):
+    """Uniforms on a fine grid drawn into lives: the share at or below t
+    is the predictive's F(t), to the grid's step (each point's share of
+    [0, 1) is cut into equal steps)."""
+    life = PosteriorPredictive(shares_fit)
+    n = 400 * 2000
+    lives = life._draw((np.arange(n) + 0.5) / n)
+    for t in (0.0, 15.0, 40.0, 150.0, 400.0, 1e6):
+        assert np.mean(lives <= t) == pytest.approx(
+            float(life.ff(t)), abs=2e-3
+        )
+    # Units dead on arrival live 0; those that never fail, forever.
+    assert np.mean(lives == 0.0) == pytest.approx(
+        np.mean(life.extras["f0"]), abs=1e-3
+    )
+    assert np.mean(np.isinf(lives)) == pytest.approx(
+        life.never_fails, abs=1e-3
+    )
+
+
+def test_with_extras_its_band_is_the_posterior_quantiles(shares_fit):
+    """The credible band of R(t): the quantiles of each draw's R(t) at the
+    posterior's points, picked by their probabilities."""
+    t = 150.0
+    rbd = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": shares_fit})
+    result = rbd.sf_uncertainty(t, n_draws=4000, seed=3)
+    assert result.band == "credible"
+    names = shares_fit.posterior.parameter_names
+    values = np.array(
+        [
+            surv.Weibull.from_params(
+                [row[names.index("alpha")], row[names.index("beta")]],
+                **{k: row[names.index(k)] for k in ("gamma", "lfp_p", "f0")},
+            ).sf(t)
+            for row in shares_fit.posterior.points
+        ]
+    )
+    lower, upper = result.interval(0.9)
+    assert lower == pytest.approx(np.quantile(values, 0.05), rel=0.02)
+    assert upper == pytest.approx(np.quantile(values, 0.95), rel=0.02)
+    assert result.nominal == pytest.approx(float(shares_fit.sf(t)), 1e-12)
+
+
+def test_with_extras_a_repairable_availability_against_simulation(
+    shares_fit,
+):
+    rbd = RepairableRBD(
+        PARALLEL,
+        {
+            "a": {"reliability": shares_fit, "repairability": REPAIR},
+            "b": {
+                "reliability": surv.Weibull.from_params([150.0, 2.0]),
+                "repairability": REPAIR,
+            },
+        },
+    )
+    options = dict(t_simulation=1500.0, mc_samples=400, control_variate=False)
+    simulated = rbd.availability(seed=11, conditional=False, **options)
+    exact = rbd.mission_availability(1500.0)
+    error = simulated.mean_availability_interval().standard_error
+    assert abs(simulated.mean_availability - exact) < 4 * error
+    again = rbd.availability(seed=11, conditional=False, **options)
+    assert again.mean_availability == simulated.mean_availability
+    # Some units never fail: in the long run the system is up for good.
+    assert rbd.mean_availability() == 1.0
+
+
+def test_with_extras_saved_whole(shares_fit):
+    rbd = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {"a": {"reliability": shares_fit, "repairability": REPAIR}},
+    )
+    loaded = RepairableRBD.from_dict(json.loads(json.dumps(rbd.to_dict())))
+    assert loaded.mission_availability(400.0) == rbd.mission_availability(
+        400.0
+    )
