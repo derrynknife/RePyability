@@ -33,10 +33,12 @@ import numpy as np
 
 from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
+from repyability.rbd import _usage
 from repyability.rbd._bayesian_life import PosteriorPredictive, as_life
 from repyability.rbd._degradation import is_degradation
 from repyability.rbd._model_utils import distribution_name, is_mixture
 from repyability.rbd._processes import COX_LEWIS_LIFE, cox_lewis_life
+from repyability.rbd._usage import is_life_at_usage
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
     PerfectReliability,
@@ -173,6 +175,10 @@ def _serialise_model(model: Any) -> dict:
         # A Bayesian fit (or its posterior predictive, which it loads as):
         # the fit in surpyval's format, its posterior whole.
         return {"kind": "posterior_predictive", **as_life(model).to_dict()}
+    if is_life_at_usage(model):
+        # surpyval's life at a usage rate: its model in surpyval's format
+        # and the rate.
+        return {"kind": "life_at_usage", **_usage.to_dict(model)}
     if isinstance(model, LoadSharingModel):
         return {
             "kind": "load_sharing",
@@ -194,7 +200,7 @@ def _serialise_model(model: Any) -> dict:
         "Only surpyval's parametric models, the "
         "RePyability node wrappers (standby, degrading, repeated, "
         "NonRepairable, load-sharing, regression, joint, posterior "
-        "predictive), perfect "
+        "predictive), surpyval's life at a usage rate, perfect "
         "reliability/unreliability and nested RBDs are supported."
     )
 
@@ -262,6 +268,8 @@ def deserialise_model(d: dict) -> Any:
         return JointNode.from_dict(d)
     if kind == "posterior_predictive":
         return PosteriorPredictive.from_dict(d)
+    if kind == "life_at_usage":
+        return _usage.from_dict(d)
     if kind == "load_sharing":
         return LoadSharingModel(
             [surpyval.from_dict(md) for md in d["models"]],
