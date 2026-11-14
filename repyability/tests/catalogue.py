@@ -1093,6 +1093,21 @@ def repairable_kinds():
                 ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
                 downtime_cost_rate=5.0,
             ),
+            # A repair of any length (#106; a test of any length is in
+            # test_ccf_general.py).
+            "common cause, tests and repairs of any length": RepairableRBD(
+                EDGES,
+                {
+                    node: {
+                        "reliability": E([0.002]),
+                        "repairability": W([8.0, 2.0]),
+                        "inspection": {"interval": 100.0, "offset": offset},
+                    }
+                    for node, offset in (("a", 0.0), ("b", 50.0))
+                }
+                | {"c": unit(repair_cost=2.0)},
+                ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+            ),
             "common cause, one repair crew": RepairableRBD(
                 EDGES,
                 {

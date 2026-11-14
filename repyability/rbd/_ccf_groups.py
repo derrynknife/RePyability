@@ -34,6 +34,7 @@ from repyability.rbd._common import (
 from repyability.rbd._events import (
     _Cause,
 )
+from repyability.rbd._model_utils import distribution_name, never_fails
 from repyability.rbd.modular import GraphStructure
 from repyability.utils.checks import (
     structure_method,
@@ -122,12 +123,12 @@ def _ccf_rates(rbd, group) -> Tuple[float, Optional[float]]:
 def _ccf_timings(rbd, group) -> Optional[List["_ccf_chain.Timing"]]:
     """How long the tests and repairs of a common-cause group's members
     (whose failures are hidden) take, for its chain (#220): each a
-    ``_ccf_chain.Duration`` of no time, a fixed time or an exponential
-    one; None where none takes time. Raise for what the chain does not
-    take, saying what to do: another distribution, a test of an
-    exponential length followed by a repair of a fixed one (whose end
-    is then no fixed time after the test), and fixed lengths that run
-    into the member's next test."""
+    ``_ccf_chain.Duration`` of no time, a fixed time, an exponential one,
+    or (#106) one of any other length, a surpyval parametric model; None
+    where none takes time. Raise for what the chain does not take, saying
+    what to do: a model that is not a surpyval parametric one or whose
+    lengths do not all end, and a test and repair that can run into the
+    member's next test (but for a chance below ``_ccf_chain.TAIL``)."""
     if not all(member in rbd._inspection for member in group.members):
         return None  # revealed failures (see _ccf_rates)
     where = f"Common-cause group {list(group.members)}"
@@ -147,53 +148,70 @@ def _ccf_timings(rbd, group) -> Optional[List["_ccf_chain.Timing"]]:
                 parts.append(_ccf_chain.Duration(fixed=fixed))
                 continue
             rate = _constant_rate(model)
-            if rate is None:
+            if rate is not None:
+                parts.append(_ccf_chain.Duration(rate=rate))
+                continue
+            if distribution_name(model) is None or never_fails(model) > 0.0:
                 raise NotImplementedError(
-                    f"{where}: its chain takes tests and repairs that "
-                    "take no time, a fixed time or an exponential one, "
-                    f"and the {what} of member {member!r} take none of "
-                    f"those. Estimate the values by simulation, with "
-                    "availability() or cost(), which take any; or, where "
-                    f"the {what} are short next to the test interval, "
-                    "give them a fixed length."
+                    f"{where}: its chain takes tests and repairs of a "
+                    "fixed length or of a surpyval parametric model's, "
+                    f"every one ending, and the {what} of member "
+                    f"{member!r} are neither. Estimate the values by "
+                    "simulation, with availability() or cost()."
                 )
-            parts.append(_ccf_chain.Duration(rate=rate))
-        test, repair = parts
-        if test.rate is not None and repair.fixed > 0.0:
-            raise NotImplementedError(
-                f"{where}: the tests of member {member!r} take an "
-                "exponential time, and its repairs a fixed one, which "
-                "its chain does not take (the repair would end no fixed "
-                "time after the test). Give both a fixed length, or both "
-                "an exponential one; or estimate the values by "
-                "simulation, with availability() or cost()."
-            )
-        length = test.fixed + repair.fixed
+            parts.append(_ccf_chain.Duration(model=model))
+        timing = _ccf_chain.Timing(*parts)
+        # Fixed lengths end at fixed times, and exponential ones at their
+        # rates, whenever they end; one that varies is followed from the
+        # test that started it, which must be over by the next.
+        varies = any(timing.varies)
+        length = (
+            timing.test.tail() + timing.repair.tail()
+            if varies
+            else timing.test.fixed + timing.repair.fixed
+        )
         if length >= inspection.interval:
+            chance = (
+                f" (but for a chance below {_ccf_chain.TAIL:g})"
+                if varies
+                else ""
+            )
             raise NotImplementedError(
                 f"{where}: the test and repair of member {member!r} take "
-                f"{length:g} together, as long as its test interval "
-                f"({inspection.interval:g}) or longer, which its chain "
-                "does not take. Estimate the values by simulation, with "
-                "availability() or cost()."
+                f"{length:g} together{chance}, as long as its test "
+                f"interval ({inspection.interval:g}) or longer, which its "
+                "chain does not take. Estimate the values by simulation, "
+                "with availability() or cost()."
             )
-        out.append(_ccf_chain.Timing(test, repair))
+        out.append(timing)
     if not any(timing.takes_time for timing in out):
         return None
     return out
 
 
+def _timings_vary(rbd) -> bool:
+    """Whether a common-cause group's member has a test or repair that
+    ends at a rate varying with the time since its test (#106, see
+    ``_ccf_chain.Timing.varies``)."""
+    return any(
+        any(timing.varies)
+        for group in rbd.ccf_groups
+        for timing in _ccf_timings(rbd, group) or ()
+    )
+
+
 def _timing_rates(rbd) -> List[float]:
     """The rates at which the common-cause groups' members' tests and
-    repairs of an exponential length end (#220), the time scales of
+    repairs of an exponential length end (#220), and one over the median
+    of those of a general length (#106), the time scales of
     their chains' transients after a test, for the integrals that
     refine to them (see ``_windows._mission``)."""
     out = []
     for group in rbd.ccf_groups:
         for timing in _ccf_timings(rbd, group) or ():
             for duration in (timing.test, timing.repair):
-                if duration.rate is not None:
-                    out.append(float(duration.rate))
+                if duration.random:
+                    out.append(1.0 / _ccf_chain._scale(duration))
     return out
 
 
@@ -248,7 +266,9 @@ def _require_groups_simulated(rbd, states: Optional[dict] = None):
     """Raise unless the simulation takes the common-cause groups in
     (#158): each member's life exponential, as its rate is split between
     the causes; no member maintained on a schedule, repaired
-    imperfectly, in a maintenance group, or started from a state."""
+    imperfectly, in a maintenance group, or started with a life of its
+    own. A member started from a state starts from it (#106): see
+    ``_past_strikes``."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     for group in rbd.ccf_groups:
@@ -273,11 +293,12 @@ def _require_groups_simulated(rbd, states: Optional[dict] = None):
                         "as yet."
                     )
             start = (states or {}).get(member)
-            if start is not None and not start.new:
+            if start is not None and start.own_life:
                 raise NotImplementedError(
-                    f"{where}: member {member!r} starts from a state, "
-                    "which the simulation of its group does not take in, "
-                    "as yet: its members start new."
+                    f"{where}: member {member!r} has a life of its own "
+                    "(a measured level or its own model), and a member's "
+                    "life is its group's exponential one, split between "
+                    "its causes: leave it out."
                 )
     for component in rbd.components.values():
         if isinstance(component, RepairableRBD):
@@ -357,15 +378,36 @@ def _group_states(rbd, group, times: np.ndarray, counts=None):
     )
 
 
-def _group_tests(rbd, group) -> Tuple[list, float]:
+def _shifted_calendar(rbd, node, start) -> Optional[float]:
+    """The time since the last test of a member started from ``start``
+    where its state places its calendar (its ``since_scheduled``, as the
+    simulation's ``_phases`` take it: tests then at ``k T - phase``, no
+    offset); None where its calendar is its own (from its offset)."""
+    if start is None or start.since_scheduled is None:
+        return None
+    if start.since_scheduled or rbd._inspection[node].offset:
+        return float(start.since_scheduled)
+    return None
+
+
+def _group_tests(rbd, group, states: Optional[dict] = None):
     """A common-cause group's members' tests in one period of the
     calendar (``(0, period]``, see ``_calendar_period``), and the
-    period."""
+    period: each member's on its own calendar, or on the one its state
+    in ``states`` places (see ``_shifted_calendar``)."""
     period = _calendar_period(rbd)
     tests = []
     for position, member in enumerate(group.members):
         schedule = rbd._inspection[member]
         count = int(round(period / schedule.interval))
+        phase = _shifted_calendar(rbd, member, (states or {}).get(member))
+        if phase is not None:
+            # The state's calendar: its tests' coverage is 1 (a state of
+            # a member whose tests can miss is refused, see _check_state).
+            for k in range(1, count + 1):
+                time = min(k * schedule.interval - phase, period)
+                tests.append(_ccf_chain.ProofTest(time, position, True))
+            continue
         first = 0 if schedule.offset else 1
         for k in range(first, first + count):
             # The last, at the period's end, rounded no further.
@@ -376,12 +418,109 @@ def _group_tests(rbd, group) -> Tuple[list, float]:
     return tests, period
 
 
-def _groups_over_time(rbd) -> list:
+def _known_up(rbd, node, start) -> float:
+    """How long before 0 a common-cause group's member started from
+    ``start`` was last known to be up (#106): for one whose failures are
+    hidden and that is up, when it was last tested and found working, or
+    put into service since (``min(age, since_scheduled)``), as the
+    simulation draws its life from then; 0 for any other (up now, as its
+    failures are revealed, or down)."""
+    if (
+        start is None
+        or start.new
+        or start.stationary
+        or not start.alive
+        or node not in rbd._inspection
+    ):
+        return 0.0
+    return float(min(start.age, start.since_scheduled or 0.0))
+
+
+def _group_start(rbd, group, states: Optional[dict]):
+    """Where a common-cause group's members start, for its chain over
+    time (a ``_ccf_chain.Start``, see ``_require_group_states``): None
+    for every member up at 0."""
+    states = states or {}
+    starts = [states.get(member) for member in group.members]
+    if any(start is not None and start.stationary for start in starts):
+        return _ccf_chain.Start(stationary=True)
+    known = tuple(
+        _known_up(rbd, member, start)
+        for member, start in zip(group.members, starts)
+    )
+    down: dict = {}
+    timings = _ccf_timings(rbd, group)
+    for position, (member, start) in enumerate(zip(group.members, starts)):
+        if start is None or start.alive:
+            continue
+        if member not in rbd._inspection:
+            down[position] = True  # in a repair at a rate (revealed)
+            continue
+        assert timings is not None  # see _require_group_states
+        down[position] = _ccf_chain.Left(
+            timings[position].repair, float(start.down_for)
+        )
+    if not down and not any(known):
+        return None
+    return _ccf_chain.Start(known, down)
+
+
+def _require_group_states(rbd, states: dict) -> None:
+    """Raise unless the common-cause groups' chains can start from the
+    members' states (#106): every member of a group in its long-run
+    state or none (its members' joint long run has no part of its own);
+    no member with a life of its own (its group's rate is its life); and
+    a member down only in a repair that takes time (where its failures
+    are hidden: one found is repaired at once otherwise)."""
+    for group in rbd.ccf_groups:
+        where = f"Common-cause group {list(group.members)}"
+        starts = {m: states.get(m) for m in group.members}
+        stationary = [
+            m for m, start in starts.items() if start and start.stationary
+        ]
+        if stationary and len(stationary) < len(group.members):
+            raise NotImplementedError(
+                f"{where}: members {stationary} start in their long-run "
+                "state and the others do not; the group's members' long "
+                "run is a joint one: give every member a stationary "
+                "state (state='stationary'), or none."
+            )
+        timings = None
+        for member, start in starts.items():
+            if start is None:
+                continue
+            if start.own_life:
+                raise NotImplementedError(
+                    f"{where}: member {member!r} has a life of its own "
+                    "(a measured level or its own model), and a member's "
+                    "life is its group's exponential one, split between "
+                    "its causes: leave it out."
+                )
+            if start.alive or member not in rbd._inspection:
+                continue
+            if timings is None:
+                timings = _ccf_timings(rbd, group) or [
+                    _ccf_chain.Timing() for _ in group.members
+                ]
+            timing = timings[group.members.index(member)]
+            if not timing.repair.takes_time:
+                raise NotImplementedError(
+                    f"{where}: member {member!r} is down, and its "
+                    "failures are hidden and repaired at once when a test "
+                    "finds them, so it cannot be: give the time since its "
+                    "last test as its since_scheduled (it was found "
+                    "working), and its age."
+                )
+
+
+def _groups_over_time(rbd, states: Optional[dict] = None) -> list:
     """Each common-cause group's members' joint states over time from
-    every member up at 0 (see ``_ccf_chain.OverTime``)."""
+    every member up at 0, or from their states in ``states`` (#106, see
+    ``_ccf_chain.OverTime``)."""
     out = []
     for group in rbd.ccf_groups:
         life, repair = _ccf_rates(rbd, group)
+        start = _group_start(rbd, group, states)
         if repair is not None:
             where = f"Common-cause group {list(group.members)}'s"
             out.append(
@@ -391,10 +530,11 @@ def _groups_over_time(rbd) -> list:
                     life,
                     repair,
                     partial(_curves._uniformized, where),
+                    start,
                 )
             )
             continue
-        tests, period = _group_tests(rbd, group)
+        tests, period = _group_tests(rbd, group, states)
         out.append(
             _ccf_chain.OverTime.hidden(
                 group.model,
@@ -404,6 +544,7 @@ def _groups_over_time(rbd) -> list:
                 tests,
                 period,
                 _ccf_timings(rbd, group),
+                start,
             )
         )
     return out
@@ -411,24 +552,16 @@ def _groups_over_time(rbd) -> list:
 
 def _require_groups_over_time(rbd, states: dict) -> None:
     """Raise unless the common-cause groups can be followed over time
-    from new (see ``_groups_curve``): their chains cover them, and no
-    member starts from a state."""
+    (see ``_groups_curve``): their chains cover them, from new or from
+    the members' states (see ``_require_group_states``)."""
     _require_ccf_long_run(rbd)
-    started = sorted(
-        (m for g in rbd.ccf_groups for m in g.members if m in states),
-        key=str,
-    )
-    if started:
-        raise NotImplementedError(
-            f"Node(s) {started} are in a common-cause group: its "
-            "values over time are worked out from every member new at "
-            "0, and a member's current state is not taken in, as yet."
-        )
+    _require_group_states(rbd, states)
 
 
-def _groups_system(rbd, working, broken, method: str):
+def _groups_system(rbd, working, broken, method: str, states=None):
     """The system with its common-cause groups at given times (see
-    ``_ccf_chain.GroupsSystem``)."""
+    ``_ccf_chain.GroupsSystem``), the groups from their members' states
+    in ``states`` (#106)."""
     causes = [
         _ccf_chain.causes(
             group.model, group.members, _ccf_rates(rbd, group)[0]
@@ -437,7 +570,7 @@ def _groups_system(rbd, working, broken, method: str):
     ]
     return _ccf_chain.GroupsSystem(
         rbd,
-        _groups_over_time(rbd),
+        _groups_over_time(rbd, states),
         causes,
         working,
         broken,
@@ -460,7 +593,7 @@ def _groups_curve(
     own curves (each from its state in ``states``) to ``horizon``,
     counting their events with ``counts`` and following their stages
     with ``stages``, and the groups' members' joint states from their
-    chains, from every member up at 0."""
+    chains, from every member up at 0 or from their states (#106)."""
     states = states or {}
     working, broken = set(working_nodes), set(broken_nodes)
     _require_free_members(rbd, working, broken)
@@ -475,7 +608,7 @@ def _groups_curve(
         state=states,
         groups=True,
     )
-    system = _groups_system(rbd, working, broken, method)
+    system = _groups_system(rbd, working, broken, method, states)
     return _ccf_chain.GroupsCurve(rbd, curves, system)
 
 

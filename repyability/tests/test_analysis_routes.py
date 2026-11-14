@@ -839,6 +839,7 @@ def test_the_readme_says_what_is_simulated():
     tested_group = repairable["common cause, tested"]
     revealed_group = repairable["common cause, revealed"]
     timed_group = repairable["common cause, timed tests and repairs"]
+    general_group = repairable["common cause, tests and repairs of any length"]
     # A unit dead on arrival, repaired and block replaced in no time (#322).
     dead_on_arrival = RepairableRBD(
         [("s", "a"), ("a", "t")],
@@ -978,6 +979,9 @@ def test_the_readme_says_what_is_simulated():
             (timed_group, "point_availability", "numerical"),
             (timed_group, "system_failure_frequency", "numerical"),
             (timed_group, "availability", "simulated"),
+            (general_group, "mean_availability", "numerical"),
+            (general_group, "point_availability", "numerical"),
+            (general_group, "availability", "simulated"),
             (tested_group, "mean_availability", "exact"),
             (tested_group, "system_failure_frequency", "exact"),
             (tested_group, "birnbaum_importance", "exact"),
