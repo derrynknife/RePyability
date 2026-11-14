@@ -177,7 +177,7 @@ def test_two_mixtures_are_the_same_by_their_weights_too(mix):
 def test_its_parameters_are_drawn_from_its_fit(mix, cls):
     # From surpyval 0.27 a fitted mixture is rebuilt at drawn parameters
     # (with_params): "fit" draws its components and weights together from
-    # its covariance (before 0.18 it was refused).
+    # its covariance (before 0.17 it was refused).
     if cls is NonRepairableRBD:
         rbd = cls(EDGES, {"a": mix})
         method, spec = rbd.sf_uncertainty, {"a": "fit"}
