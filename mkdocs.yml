@@ -114,6 +114,7 @@ nav:
       - Demonstration testing: guide/demonstration.md
       - Stress-strength interference: guide/stress-strength.md
       - Timelines: guide/timelines.md
+      - Schedules on the calendar: guide/schedule.md
       - Simulation precision and speed: guide/simulation.md
       - Saving, reproducibility and performance: guide/saving.md
   - Concepts: concepts.md
