@@ -550,6 +550,8 @@ class NonRepairable:
             ages = np.linspace(0.0, float(t), 4001)
             R = np.ravel(np.asarray(self.reliability.sf(ages), dtype=float))
             out = float(trapezoid(np.clip(R, 0.0, 1.0), ages))
+        elif self.model_parameterization == "covariate schedule":
+            raise self.reliability._no_reliability()
         else:
             # The survival function is linear between its knots, so the
             # trapezoidal rule over the knots below t, and t, is exact.

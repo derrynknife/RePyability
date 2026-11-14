@@ -197,11 +197,12 @@ class ScheduledLife:
 
     def _no_reliability(self, what: str = "reliability") -> Exception:
         """The refusal of the exact and numerical methods (see
-        ``is_simulated``)."""
+        ``is_simulated``), one message whatever ``what`` they need."""
         return NotImplementedError(
             f"Component {self.node!r} runs on a covariate schedule on the "
-            f"diagram's clock, so it has no {what} of its own: each unit's "
-            "life depends on when it is put into service. Only the "
+            "diagram's clock, so it has no reliability or mean life of its "
+            "own: each unit's life depends on when it is put into service. "
+            "Only the "
             "simulations take it: availability, cost and "
             "simulate_timelines (the Python engine)."
         )
