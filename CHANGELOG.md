@@ -77,6 +77,22 @@ Every other seeded result is unchanged.
 
 ### Added
 
+- `NonRepairable.cost_distribution()` and `cost_by_window()` take a
+  calendar policy, `calendar=` (the `CalendarPolicy` of
+  `optimal_calendar_policy`: at each opportunity, replace the part if it
+  is at least that time's threshold age): a part's cost over a window
+  from its state, and in each of a run of windows, with its spread, under
+  the policy found to be cheapest over a calendar of shuts. Planned
+  replacements are priced by their opportunity, and the outcomes count
+  them by kind (`outcomes()` gives `"planned": {kind: count}`; the
+  results' new `kinds`, `kind_prices` and `kind_outcomes`). Numerical by
+  default, to the `precision` reported: on a grid of half the policy's
+  step, each count's renewals in the window passed on to the counts with
+  one more event (failures by a convolution cut at each renewal's planned
+  time), checked against the policy's own step; simulated with
+  `method="simulate"`. A policy worked out by integration has no grid
+  and is simulated only.
+
 - **Where a safety function's PFDavg comes from**:
   `RepairableRBD.pfd_breakdown()` returns a `PFDBreakdown`, the long-run
   unavailability (for a periodically tested protective function, its
@@ -739,16 +755,6 @@ Every other seeded result is unchanged.
   restoration, tasks in running hours, planned against unplanned
   downtime), `RepairOrReplace`, fitted repair models and joint models'
   readings, and say the demonstration functions are deprecated.
-- The surpyval workarounds still in RePyability were each checked
-  against surpyval 0.27 (a mixture's life left at an age, a degradation
-  level given survival, rescaling time for a duty cycle, parameter
-  ranges of fits other than distributions, a joint frailty model's
-  expected failures far past its write-off ages, and a Bayesian fit's
-  quantile with an offset or shares). 0.27 fixes none of them, so all
-  stay and no number changes; the joint frailty one can go once the
-  minimum surpyval is 0.28. The contributor notes record what was
-  measured, and no longer name a release as the latest; the maintenance
-  stories' statuses are as of 0.17.
 
 ### Fixed
 

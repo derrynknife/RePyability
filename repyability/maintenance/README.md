@@ -23,8 +23,8 @@ use cases, under the same numbers.
 | UC-5 | A part's chance of failing, expected failures and their cost over a window, from its age | **Built**: `NonRepairable.failures` |
 | UC-6 | Right after a failure, the value of skipping the next planned replacement; and, from any state, replace, defer, move to a shut or skip compared | **Built**: `NonRepairable.skip_next_replacement`, and `NonRepairable.compare_replacement_options` |
 | UC-7 | The cheapest replacement policy when replacing at a shut is cheaper than between shuts | Built as `replacement_policies`, then removed: UC-13 answers it |
-| UC-8 | Each policy's cost over a window from a state, and its spread | **Built** for a part: `NonRepairable.cost_distribution` (run to failure, age and block replacement); a calendar policy simulated by `RepairableRBD.cost_by_window` |
-| UC-9 | The cost in each of a run of windows from a state, and how often each outcome happens | **Built** for a part: `NonRepairable.cost_by_window` (run to failure, age and block replacement); a system's simulated by `RepairableRBD.cost_by_window` (#375) |
+| UC-8 | Each policy's cost over a window from a state, and its spread | **Built** for a part: `NonRepairable.cost_distribution` (run to failure, age and block replacement, and a calendar policy, `calendar=`); a system's simulated by `RepairableRBD.cost_by_window` |
+| UC-9 | The cost in each of a run of windows from a state, and how often each outcome happens | **Built** for a part: `NonRepairable.cost_by_window` (the same policies); a system's simulated by `RepairableRBD.cost_by_window` (#375) |
 | UC-10 | Tasks by use on an operating schedule: calendar only | Reliafy's |
 | UC-11 | A part renewed at every service and at failure: its risk before each service, from its state, in running hours | **Built**: `NonRepairable.renewal_forecast` |
 | UC-14 | The best visit interval and depth ratio for a layered package of visits | **Built**: `optimal_layered_visits` |
@@ -497,10 +497,11 @@ from now to the end of each quarter, as Reliafy would turn them.)
 - **Status:** built for one part under run to failure, age replacement
   and block replacement: `NonRepairable.cost_distribution(window, every,
   *, resets, age=, since_renewal=)` and `CostDistribution` (numerical by
-  default, `method="simulate"` as the check). UC-7's best policy (at a
-  shut if at least 138 days old) is a calendar policy, still simulated
-  (`RepairableRBD.cost_by_window` with the policy as the part's
-  preventive maintenance). The answer by hand below is the check.
+  default, `method="simulate"` as the check); and under a calendar policy
+  such as UC-7's best (at a shut if at least 138 days old), the
+  `CalendarPolicy` of `optimal_calendar_policy`: `cost_distribution(window,
+  calendar=policy, age=)`, numerical too. The answer by hand below is the
+  check.
 - **Who asks, and why:** the planner of UC-7: a long-run cost a day says
   which policy is cheapest, but a budget starts from the bearing as it
   is, and needs to know how far the spend can stray from the mean.
@@ -620,6 +621,73 @@ from now to the end of each quarter, as Reliafy would turn them.)
     rise; the seeded streams gave that for free. As built, each window is
     worked out exactly on its own, so the percentiles rise with the
     window by construction.
+- **The best policy, as built** (UC-7's: a calendar policy). The asker
+  has the policy from `optimal_calendar_policy` and wants the range its
+  budget should carry, as for the simpler policies.
+  - **Why the other policies' method does not carry over.** Under age
+    replacement every cycle of a new part has one distribution, so the
+    counts are convolutions of it. Under a calendar policy a part put in
+    at time `s` is next replaced as planned at a time `pi(s)` the policy
+    fixes (the first opportunity at which it is at least the threshold),
+    so cycles differ by when they start.
+  - **How it is solved:** on a grid of half the policy's own step, the
+    expected renewals at each grid time are kept by the counts so far:
+    failures, and planned replacements by kind of opportunity (their
+    prices differ). The renewals of a count pass a planned replacement to
+    the count with one more of its kind, and their failures to the count
+    with one more failure, so the counts are taken in order, none needing
+    a sweep in time: a count's failures by cell are one convolution (FFT)
+    of its renewals for each value `pi(s)` takes, cut there. Before the
+    window nothing is counted, and the renewals are followed forward in
+    time (the renewal measure). A failure in a cell renews half at each
+    end of it (the trapezoidal rule), and a renewal at a grid time takes
+    half of each neighbouring cell's `pi`, so a threshold on a grid time
+    splits it; the error falls as the step squared. Worked out again on
+    the policy's step, the largest change of a probability (plus any
+    mass left out) is `precision`. Numerical; simulated with
+    `method="simulate"` (each cycle's planned time asked of the policy,
+    as a `RepairableRBD` asks it).
+  - **The answer** (the policy worked out by `optimal_calendar_policy` for
+    a shut every 180 days, the next in 21, at $100, a failure at $400):
+
+    ```python
+    plant = Calendar([Opportunity("shut", 100.0, period=180.0, offset=21.0)],
+                     anytime=None)
+    best = bearing.optimal_calendar_policy(plant)     # at a shut if >= 138 days
+    spend = bearing.cost_distribution(1086.0, calendar=best, age=224.0,
+                                      budget=1500.0)
+    spend.mean, spend.percentiles, spend.probability_above_budget
+    # 1090.0, [600, 1000, 1600], 0.150
+    ```
+
+    | Window (days) | Mean | 10% | 50% | 90% | By hand: mean |
+    |---|---|---|---|---|---|
+    | 82 | 132.7 | 100 | 100 | 100 | 133 |
+    | 447 | 486.5 | 300 | 300 | 900 | 487 |
+    | 813 | 845.8 | 500 | 800 | 1,400 | 846 |
+    | 1,086 | 1,090.0 | 600 | 1,000 | 1,600 | 1,090 |
+
+    Every percentile is the one by hand. Over 1,086 days the most likely
+    outcomes are one failure and five shut replacements ($900, 26%) and
+    six shut replacements alone ($600, 22%); `outcomes()` lists them by
+    kind of opportunity, `{"failures": 1, "planned": {"shut": 5}, ...}`.
+    About half a second a window.
+  - **Checks** (`test_maintenance_calendar_spread.py`): the figures by
+    hand; an exponential life (no planned replacement pays, so the policy
+    never replaces: Poisson failures in every window, within the
+    precision); a part due at the next shut (`S(21)` of no event, then a
+    replacement there); the method's own simulation, and a one-component
+    `RepairableRBD` on the same policy simulated by its event loop (every
+    probability within four standard errors; seeds repeat); a calendar
+    of two kinds (each outcome priced by kind, the counts by kind adding
+    up to the counts); the same probabilities in hours; JSON; refusals (a
+    policy with `every`, one for another life; a policy worked out by
+    integration has no grid, so only `method="simulate"`).
+  - **Learned:** the calendar policy's spread is about as wide as every
+    shut's (10% to 90%, $600 to $1,600 against $600 to $1,800) for a mean
+    $65 lower; and, as with every shut, the steps decide it: a 90th
+    percentile of $900 over 447 days is one failure on top of the planned
+    shuts.
 
 ### UC-9: "What will the bearing cost in each of a run of consecutive windows from now, and how often does each outcome happen in each?"
 
@@ -628,15 +696,15 @@ windows here, 0 to 263, 263 to 629, 629 to 994 and 994 to 1,359 days
 from now, are those years as Reliafy would turn them. Summing by
 financial year is Reliafy's.)
 
-- **Status:** built for one part under run to failure, age replacement
-  and block replacement: `NonRepairable.cost_by_window(ends, every, *,
-  resets, age=, since_renewal=)` and `WindowCosts`, numerical by default
-  (`method="simulate"` as the check). A system's windows, and a calendar
-  policy such as UC-7's best, are simulated: `RepairableRBD.cost_by_window`
-  and `CostByWindow` (#375) give each window's exact mean and its
-  simulated spread, outcomes and chance of exceeding a budget from one
-  run. The answer by hand below (the best policy, simulated) is kept as
-  the record.
+- **Status:** built for one part under run to failure, age replacement,
+  block replacement and a calendar policy such as UC-7's best:
+  `NonRepairable.cost_by_window(ends, every, *, resets, age=,
+  since_renewal=, calendar=)` and `WindowCosts`, numerical by default
+  (`method="simulate"` as the check). A system's windows are simulated:
+  `RepairableRBD.cost_by_window` and `CostByWindow` (#375) give each
+  window's exact mean and its simulated spread, outcomes and chance of
+  exceeding a budget from one run. The answer by hand below (the best
+  policy, simulated) is the check of the calendar policy's.
 - **Who asks, and why:** the planner of UC-8, passing a budget on: each
   window's own spend, not the running total, and what could happen in
   it.
@@ -743,6 +811,36 @@ financial year is Reliafy's.)
   dependence); the first window from an aged start, `R(a + e_1) / R(a)`;
   the simulation, window by window and in total, within four standard
   errors; units from 1e-6 to 1e6; JSON; the windows' input checks.
+- **The best policy, as built** (`calendar=`, UC-8's method window by
+  window: each window's counts start from the renewals the process
+  brings to its start, uncounted before it):
+
+  ```python
+  years = bearing.cost_by_window([263.0, 629.0, 994.0, 1359.0],
+                                 calendar=best, age=224.0, budget=600.0)
+  ```
+
+  | What happens in the window | Cost | 0–263 | 263–629 | 629–994 | 994–1,359 |
+  |---|---|---|---|---|---|
+  | No failure, one shut replacement | $100 | – | 0.9% | 1.2% | 1.5% |
+  | No failure, two shut replacements | $200 | 70.8% | 59.0% | 58.6% | 58.2% |
+  | One failure, no shut replacement | $400 | – | 0.5% | 0.7% | 0.8% |
+  | One failure, one shut replacement | $500 | 22.1% | 27.2% | 26.9% | 26.4% |
+  | One failure, two shut replacements | $600 | 3.1% | 2.9% | 3.2% | 3.5% |
+  | Two failures, no shut replacement | $800 | 1.4% | 4.8% | 4.6% | 4.5% |
+  | Two failures, one shut replacement | $900 | 2.4% | 3.5% | 3.6% | 3.7% |
+  | Mean | | $306.9 | $358.7 | $358.9 | $359.0 |
+
+  Every share is within 0.1 points of the million simulations by hand,
+  and every mean within $0.3 of the exact means by hand. The chance of
+  more than $600 is 4.1% in the first window and 9.5% in each full one;
+  over the whole span the mean is $1,383.5 and its 90th percentile
+  $2,000, where the windows' 90th percentiles sum to $2,300, as by hand.
+  Checks (`test_maintenance_calendar_spread.py`): the means by hand; the
+  windows' means adding up to the span's; the first window being
+  `cost_distribution`'s; the outcome classes adding up to 1; the
+  simulation, window by window and in total; the exponential's
+  independent Poisson windows.
 
 ### UC-11: "My pump's seal is replaced at every 500-hour service and whenever it fails. It has run 340 hours, and the next service is in 160. What's the chance it fails before each service, what will failures and replacements cost over the next 944 running hours, and is replacing it at every service worth it?"
 

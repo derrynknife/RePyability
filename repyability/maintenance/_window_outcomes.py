@@ -82,8 +82,8 @@ class WindowCosts(_ResultMapping):
     ends : numpy.ndarray
         Each window's end.
     policy : str
-        ``"run to failure"``, ``"age replacement"`` or ``"block
-        replacement"``.
+        ``"run to failure"``, ``"age replacement"``, ``"block
+        replacement"`` or ``"calendar"``.
     method : str
         ``"numerical"`` or ``"simulated"``.
     windows : list of CostDistribution
@@ -181,6 +181,7 @@ def cost_by_window(
     resets=None,
     age=0.0,
     since_renewal=None,
+    calendar=None,
     budget=None,
     levels=LEVELS,
     method: str = "exact",
@@ -205,6 +206,7 @@ def cost_by_window(
         mc_samples,
         seed,
         whole=True,
+        calendar=calendar,
     )
     windows, total = found[:-1], found[-1]
     precisions = [w.precision for w in found if w.precision is not None]
