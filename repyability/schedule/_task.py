@@ -54,6 +54,7 @@ class _Due:
     moment: datetime
     limit: str
     reading: Optional[float] = None
+    stop_after: Optional[datetime] = None
 
 
 class _BoundLimit(Protocol):
@@ -207,6 +208,15 @@ class TaskDue(_ScheduleResult):
     resets : bool
         Whether the interval counts again from when the task is done
         (else the limits keep their own dates).
+    moments : tuple of datetime.datetime
+        When each falls due, to the minute: a calendar limit's at
+        midnight, a limit by use's when the meter reaches its reading.
+    readings : tuple of float or None
+        The meter reading each limit by use falls due at (None for a
+        calendar limit's).
+    stops_after : tuple of datetime.datetime or None
+        For a limit by use due mid-run, when the equipment next stops
+        (the task is done then); None otherwise.
     notes : tuple of str
         Plain words on what the rules left out or moved in the period
         (months with no fifth Saturday, excluded dates), and on the
@@ -227,6 +237,9 @@ class TaskDue(_ScheduleResult):
     hours: Optional[float]
     resets: bool
     notes: Tuple[str, ...]
+    moments: Tuple[datetime, ...] = ()
+    readings: Tuple[Optional[float], ...] = ()
+    stops_after: Tuple[Optional[datetime], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -319,7 +332,12 @@ class Task:
         The hours of work each time, at least 0; None when not given.
     resets : bool, optional
         Whether a limit counts again from when the task is done. By
-        default an interval does and a pattern does not.
+        default an interval does and a pattern does not (and a limit by
+        use, ``Usage``, does).
+    last_done_reading : float, optional
+        The meter reading when the task was last done, for a limit by use
+        (``every=Usage(2000, "hours")``). Without it, the reading at
+        ``last_done`` from the usage forecast.
 
     Examples
     --------
@@ -347,6 +365,7 @@ class Task:
     cost: Optional[float]
     duration: Optional[float]
     resets: Optional[bool]
+    last_done_reading: Optional[float]
 
     def __init__(
         self,
@@ -360,6 +379,7 @@ class Task:
         cost=None,
         duration=None,
         resets=None,
+        last_done_reading=None,
     ) -> None:
         if not isinstance(name, str) or not name.strip():
             raise TypeError(f"name must be text, not empty; got {name!r}.")
@@ -392,6 +412,9 @@ class Task:
             cost=_amount(cost, "cost", "in your currency"),
             duration=_amount(duration, "duration", "hours of work"),
             resets=resets,
+            last_done_reading=_amount(
+                last_done_reading, "last_done_reading", "a meter reading"
+            ),
         )
         for key, value in values.items():
             object.__setattr__(self, key, value)
@@ -417,7 +440,7 @@ class Task:
             text += f"; done at the visits ({self.visits.describe()})"
         return text
 
-    def due(self, start, end) -> TaskDue:
+    def due(self, start, end, usage=None) -> TaskDue:
         """When the task falls due from ``start`` to ``end``, **both
         included**, assuming each time is done on its due date (or at its
         visit).
@@ -426,12 +449,17 @@ class Task:
         ----------
         start, end : datetime.date or str
             The first and last dates of the period.
+        usage : UsageForecast, optional
+            The map from dates to meter readings
+            ([`DutyPlan.forecast`][repyability.schedule.DutyPlan.forecast]),
+            which a limit by use (``Usage``) needs; it should cover the
+            period.
 
         Returns
         -------
         TaskDue
         """
-        return self._due(start, end, {})
+        return self._due(start, end, {"usage": usage})
 
     def _due(self, start, end, context: Dict[str, Any]) -> TaskDue:
         """``due`` with what the limits need (a later release's usage
@@ -451,6 +479,7 @@ class Task:
             )
         nexts = [limit.first(last) for limit in limits]
         dates, which, done_on, late, on_time = [], [], [], [], []
+        moments, readings, stops = [], [], []
         overdue = False
         for _ in range(_MAX_DUES):
             pending = [n for n in nexts if n is not None]
@@ -473,6 +502,9 @@ class Task:
                 break  # done after the period: not this period's work
             days_late = (done.date() - day).days
             dates.append(day)
+            moments.append(due.moment)
+            readings.append(due.reading)
+            stops.append(due.stop_after)
             which.append(due.limit)
             done_on.append(done.date())
             late.append(days_late)
@@ -506,6 +538,9 @@ class Task:
             hours=None if self.duration is None else count * self.duration,
             resets=any(getattr(kind, "resets", False) for kind in kinds),
             notes=tuple(notes),
+            moments=tuple(moments),
+            readings=tuple(readings),
+            stops_after=tuple(stops),
         )
 
     def _notes(self, start: date, end: date) -> List[str]:
@@ -539,7 +574,7 @@ class Task:
             out["tolerance"] = self.tolerance
         if self.visits is not None:
             out["visits"] = self.visits.to_dict()
-        for key in ("cost", "duration", "resets"):
+        for key in ("cost", "duration", "resets", "last_done_reading"):
             if getattr(self, key) is not None:
                 out[key] = getattr(self, key)
         return out
@@ -583,6 +618,7 @@ class Task:
             cost=data.get("cost"),
             duration=data.get("duration"),
             resets=data.get("resets"),
+            last_done_reading=data.get("last_done_reading"),
         )
 
 
@@ -634,7 +670,9 @@ def _periods(start: date, end: date, period: str):
     return out
 
 
-def work_by_period(tasks: Sequence[Task], period, start, end) -> WorkByPeriod:
+def work_by_period(
+    tasks: Sequence[Task], period, start, end, usage=None
+) -> WorkByPeriod:
     """The work tasks need in each calendar period from ``start`` to
     ``end`` (both included): how many are done, their hours and cost,
     each counted in the period it is done in.
@@ -648,6 +686,9 @@ def work_by_period(tasks: Sequence[Task], period, start, end) -> WorkByPeriod:
         are cut to ``start`` and ``end``.
     start, end : datetime.date or str
         The first and last dates.
+    usage : UsageForecast, optional
+        The map from dates to meter readings, for tasks with a limit by
+        use (see ``Task.due``).
 
     Returns
     -------
@@ -682,7 +723,7 @@ def work_by_period(tasks: Sequence[Task], period, start, end) -> WorkByPeriod:
     listed: List[List[Tuple[str, date]]] = [[] for _ in range(n)]
     by_task: Dict[str, Tuple[int, ...]] = {}
     for task in tasks:
-        due = task.due(start, end)
+        due = task.due(start, end, usage=usage)
         mine = [0] * n
         for day in due.done:
             index = max(i for i, first in enumerate(firsts) if first <= day)

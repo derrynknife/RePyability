@@ -57,6 +57,10 @@ dependencies = [
     # standard's recurrence). Every install had it already, through
     # surpyval's pandas; 2.8.2 is the floor pandas asks for.
     "python-dateutil>=2.8.2",
+    # The time zones of repyability.schedule's duty plans come from the
+    # standard library's zoneinfo, which reads the system's zone database;
+    # Windows has none, so it needs tzdata's (macOS and Linux have one).
+    "tzdata; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
