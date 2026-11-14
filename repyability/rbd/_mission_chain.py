@@ -153,7 +153,9 @@ class _Phase:
         self.running = [
             0.0 if node == held else rate[node][j] for node in self.blocks
         ]
-        self.dormant = [r * h.dormancy for r, h in zip(self.running, how)]
+        self.dormant = [
+            r * h.dormancy_factor for r, h in zip(self.running, how)
+        ]
         self._works = _structure(mission, phase, self.blocks)
         self.duration = phase.duration
 

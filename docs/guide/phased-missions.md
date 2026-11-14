@@ -214,19 +214,24 @@ whether its clock runs and whether it uses hazard:
   phase's setting: on standby again, it goes idle unless needed at once.
   By default it is cold standby (idle, it neither ages nor can fail) and
   its switch is perfect and instant; `BlockSetting` sets both:
-  - `dormancy=f`, from 0 to 1: warm standby. Idle for a time `d` it ages
+  - `dormancy_factor=f`, from 0 to 1: warm standby. Idle for a time `d` it ages
     `f * d` on its life, so it can fail while idle (an exponential life of
     rate `l` at rate `f * l`); a failure while idle is found when the block
     is called on, and the next spare is called instead. `f = 1` is hot
     standby, ageing as if running.
-  - `switching_probability=p`: called on, the block starts with
+  - `start_probability=p`: called on, the block starts with
     probability `p`; otherwise it has failed (a failure on demand) for the
     rest of the mission, and the next spare is called. One outcome per
     block and phase.
 
+  Both mean what a `StandbyModel`'s settings of those names mean. A
+  `StandbyModel`'s `switching_probability` (a failed switch that ends
+  the arrangement) has no setting here: draw a switch that can fail as a
+  block of its own, in series with the spares it serves.
+
   A switch that takes time is not modelled: the mission's blocks are not
   repaired, so any time with the structure down fails the mission, and a
-  delay is a failure to switch (`switching_probability`).
+  delay is a failure to start (`start_probability`).
 - **covariates**: a block whose model is a `RegressionNode` with fixed
   covariates can be given its covariates in a phase,
   `BlockSetting(covariates=[...])` (with a state too, if wanted:
@@ -246,7 +251,7 @@ work (at the phase's start, or when a running block fails), taking the
 blocks that are running and not failed as working (and those not needed,
 and guaranteed ones not failed), the idle standby blocks that have not
 failed are called on in the order the phase's `blocks` lists them until it
-works: each starts if it has not failed idle and its switch works, and
+works: each starts if it has not failed idle and it starts on demand, and
 has failed otherwise. Then each block just started, latest first, goes back to idle if
 the structure works without it, so only the blocks needed start. If no
 choice makes the structure work, the mission fails then.
@@ -271,7 +276,7 @@ no longer independent, and the mission is not a product over phases:
   reliability, each phase's failure probability, the reliability over
   time, the take-overs and the drivers, up to 20,000 states a phase.
 - **Simulated otherwise**: each block's life drawn once per mission (and
-  one switch outcome per spare and phase), and the missions played
+  one start outcome per spare and phase), and the missions played
   through the phases together, the take-overs worked out mission by
   mission, on the same rule as the chain (the tests hold them to each
   other). `reliability()` then refuses (pointing to `method="simulate"`
@@ -423,7 +428,7 @@ plant = NonRepairableRBD(
      "p2": surv.Exponential.from_params([0.006]),
      "valve": surv.Exponential.from_params([0.001])},
 )
-spare = BlockSetting(state="standby", dormancy=0.2, switching_probability=0.9)
+spare = BlockSetting(state="standby", dormancy_factor=0.2, start_probability=0.9)
 pumping = PhasedMission.from_diagram(plant, [
     MissionPhase("start-up", 2.0, blocks={"p1": "guaranteed", "p2": spare}),
     MissionPhase("duty", 100.0, blocks={"p2": spare}),

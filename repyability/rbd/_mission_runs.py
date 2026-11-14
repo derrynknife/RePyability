@@ -7,10 +7,10 @@ A block's state in a mission is the age (on its life's clock, see
 the mission's time less its age, ``offset``, so that, running, it fails at
 the mission's time ``end + offset``. A block that runs through a phase
 keeps both; a guaranteed one spends no hazard, so its ``end`` moves on by
-the hazard of the stretch; an idle one ages at its ``dormancy`` ``f`` (0,
-cold, by default), so its ``offset`` grows by ``1 - f`` of the time it is
-idle, and, warm, it fails idle once its age reaches ``end``. A block
-called on starts if it is alive and passes its switch, one draw per
+the hazard of the stretch; an idle one ages at its ``dormancy_factor``
+``f`` (0, cold, by default), so its ``offset`` grows by ``1 - f`` of the
+time it is idle, and, warm, it fails idle once its age reaches ``end``. A
+block called on starts if it is alive and starts on demand, one draw per
 block on standby, phase and mission (``draw_switches``, made only where a
 switch can fail, after the lives); else it has failed. A mission with no
 block on standby or guaranteed, every life drawn as before, so plays out
@@ -172,7 +172,8 @@ def play(
             for node in idle
         }
         rates = {
-            node: behaviour(setting.setting(node)).dormancy for node in idle
+            node: behaviour(setting.setting(node)).dormancy_factor
+            for node in idle
         }
         passes = {
             node: (
@@ -295,7 +296,7 @@ def _take_over(
 
     ``nodes`` holds when each block fails (or failed), ``ready`` each
     standby block's running time left at the phase's start (``nan`` if it
-    has failed), in the order they are called on, ``dormancy`` how fast
+    has failed), in the order they are called on, ``dormancy_factor`` how fast
     each ages idle (0 if not given: it does not) and ``passes`` whether
     each starts if called on (surely if not given). Whenever the
     structure does not work, at the phase's start or at a failure, idle

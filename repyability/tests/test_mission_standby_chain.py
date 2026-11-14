@@ -84,7 +84,7 @@ def test_cold_standby_pair_with_different_rates_is_exact():
 def test_imperfect_switching(p):
     # The spare starts with probability p: R = e^-lt (1 + p l t).
     lam, t = 0.01, 50.0
-    mission = pair_mission(lam, lam, t, switching_probability=p)
+    mission = pair_mission(lam, lam, t, start_probability=p)
     closed = math.exp(-lam * t) * (1 + p * lam * t)
     assert mission.reliability() == pytest.approx(closed, rel=1e-12)
     interval = mission.reliability_interval(40_000, seed=3)
@@ -96,7 +96,7 @@ def test_warm_standby(f):
     # Idle, the spare fails at f l: R = e^-lt + (e^-lt - e^-(1+f)lt) / f;
     # hot (f = 1) is the parallel pair, 1 - (1 - e^-lt)^2.
     lam, t = 0.01, 50.0
-    mission = pair_mission(lam, lam, t, dormancy=f)
+    mission = pair_mission(lam, lam, t, dormancy_factor=f)
     if f == 0.0:
         closed = math.exp(-lam * t) * (1 + lam * t)
     else:
@@ -116,7 +116,7 @@ def test_warm_standby_with_imperfect_switching():
     # R = e^-lt + p int_0^t l e^-ls e^-fls e^-l(t-s) ds
     #   = e^-lt (1 + p (1 - e^-flt) / f).
     lam, t, f, p = 0.02, 40.0, 0.5, 0.9
-    mission = pair_mission(lam, lam, t, dormancy=f, switching_probability=p)
+    mission = pair_mission(lam, lam, t, dormancy_factor=f, start_probability=p)
     closed = math.exp(-lam * t) * (1 + p * (1 - math.exp(-f * lam * t)) / f)
     assert mission.reliability() == pytest.approx(closed, rel=1e-12)
     interval = mission.reliability_interval(40_000, seed=5)
@@ -216,7 +216,7 @@ def plant():
         ],
         {"p1": E([0.004]), "p2": E([0.006]), "valve": E([0.001])},
     )
-    spare = B(state="standby", dormancy=0.2, switching_probability=0.95)
+    spare = B(state="standby", dormancy_factor=0.2, start_probability=0.95)
     return PhasedMission.from_diagram(
         rbd,
         [
@@ -290,8 +290,8 @@ def test_seeded_runs_repeat():
     assert payload["phases"][0]["settings"]["p2"] == {
         "state": "standby",
         "covariates": None,
-        "switching_probability": 0.95,
-        "dormancy": 0.2,
+        "start_probability": 0.95,
+        "dormancy_factor": 0.2,
     }
 
 
@@ -355,7 +355,7 @@ def test_warm_weibull_spare_ages_while_idle():
                 d1,
                 blocks={
                     "a": "guaranteed",
-                    "b": B(state="standby", dormancy=f),
+                    "b": B(state="standby", dormancy_factor=f),
                 },
             ),
             P("two", d2),
@@ -380,7 +380,8 @@ def test_warm_spare_found_failed_when_called():
     lam, f, t = 0.01, 0.5, 50.0
     rbd = NonRepairableRBD(PAIR, {"a": a_life, "b": E([lam])})
     mission = PhasedMission.from_diagram(
-        rbd, [P("only", t, blocks={"b": B(state="standby", dormancy=f)})]
+        rbd,
+        [P("only", t, blocks={"b": B(state="standby", dormancy_factor=f)})],
     )
     closed = (
         float(a_life.sf(t))
@@ -424,15 +425,15 @@ def test_spares_are_called_in_the_order_the_phase_names_them(method):
 
 def test_settings_are_checked():
     with pytest.raises(ValueError, match="for a block on standby"):
-        B(switching_probability=0.9)
+        B(start_probability=0.9)
     with pytest.raises(ValueError, match="for a block on standby"):
-        B(state="guaranteed", dormancy=0.1)
+        B(state="guaranteed", dormancy_factor=0.1)
     for bad in (-0.1, 1.5, "0.5", True):
         with pytest.raises(ValueError, match="from 0 to 1"):
-            B(state="standby", dormancy=bad)
+            B(state="standby", dormancy_factor=bad)
         with pytest.raises(ValueError, match="from 0 to 1"):
-            B(state="standby", switching_probability=bad)
-    assert B(state="standby", switching_probability=1, dormancy=0) == B(
+            B(state="standby", start_probability=bad)
+    assert B(state="standby", start_probability=1, dormancy_factor=0) == B(
         state="standby"
     )
 
