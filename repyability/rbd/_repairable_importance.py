@@ -1023,7 +1023,12 @@ def pfd_breakdown(
                         value[subset | (1 << j)] - value[subset]
                     )
             groups[tuple(group.members)] = share
-    common = total - independent
+    if count:
+        common = total - independent
+    else:
+        # No shared causes: the PFDavg without them is the PFDavg itself,
+        # exactly, whatever the last bits of the components' sum.
+        independent, common = total, 0.0
     parts: Dict[Hashable, float] = dict(components)
     parts.update(groups)
     fractions = {
