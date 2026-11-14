@@ -15,7 +15,11 @@ taking already-fitted lifetime models (from
   events) evaluated exactly, with common-cause groups, cut sets, importance
   measures, the mean time to the top event, B-lives and hazard, parameter
   sensitivities, uncertainty from fitted event models, and conversion to
-  and from block diagrams.
+  and from block diagrams; NOT gates (exact, with prime implicants),
+  dynamic gates (priority AND, cold, warm and hot spares, sequences and
+  functional dependencies: the top event probability over time, integrated
+  where each is an independent module, simulated otherwise), and export to
+  Open-PSA.
 - **Reliability**: exact system reliability, hazard and conditional survival;
   the exact MTTF (or simulated, with confidence intervals); B*X* life;
   uncertainty intervals on the reliability, MTTF, B*X* life and time to a
@@ -195,6 +199,7 @@ Which analyses each model type has (the method; — where it has none):
 | Spares demand and stock | — | `spares_demand` | — | — | — |
 | **Structure** | | | | | |
 | Minimal path and cut sets | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` |
+| Prime implicants (NOT gates) | — | — | `prime_implicants` | — | — |
 | Each path set's probability | `path_set_probabilities` | `path_set_probabilities` | — | — | — |
 | Cut sets ranked by probability | — | — | `ranked_cut_sets` | — | — |
 | Irrelevant components | `find_irrelevant_components` | `find_irrelevant_components` | — | — | — |
@@ -206,6 +211,7 @@ Which analyses each model type has (the method; — where it has none):
 | Capacity over time | — | `point_capacity` | — | — | — |
 | How each analysis is computed | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` |
 | Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | — |
+| Export to Open-PSA (MEF) | — | — | `to_open_psa` | — | — |
 | **Importance measures** | | | | | |
 | Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` |
 | Structural | `structural_importance` | `structural_importance` | `structural_importance` | `structural_importance` | — |

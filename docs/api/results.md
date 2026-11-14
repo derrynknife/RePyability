@@ -62,6 +62,8 @@
 
 ::: repyability.ConditionalProbabilities
 
+::: repyability.PrimeImplicant
+
 ::: repyability.ModelParameters
 
 ::: repyability.UncertaintyResult
