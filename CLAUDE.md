@@ -8,7 +8,7 @@ first. This file adds the internals and conventions it does not cover.
 release; the latest published release is on PyPI
 (`https://pypi.org/pypi/repyability/json`) and the CHANGELOG's newest
 dated section. New work goes under the CHANGELOG's `[Unreleased]`. The
-minimum surpyval is in `pyproject.toml` (0.27 as of 0.17).
+minimum surpyval is in `pyproject.toml` (0.27 as of 0.18).
 
 ## Architecture & scope
 
@@ -494,10 +494,12 @@ minimum surpyval is in `pyproject.toml` (0.27 as of 0.17).
   release's removals stay gone through `test_removed_in_0_12.py`,
   `_0_13.py`, `_0_14.py` and `_0_15.py` (`NodeState`'s `phase`, #350):
   a removed argument raises `TypeError`. 0.15 and 0.16 deprecated
-  nothing, so 0.16 and 0.17 remove nothing. 0.17 deprecates
+  nothing, so 0.16 and 0.17 remove nothing. 0.17 deprecated
   `repyability.demonstration`'s nine functions for
-  `surpyval.test_planning`'s (`deprecation.moved`), so `NEXT_REMOVAL` is
-  0.18, which `test_what_0_17_deprecates_goes_in_0_18` reminds. A new
+  `surpyval.test_planning`'s, and 0.18 removed them with
+  `DemonstrationPlan` (`test_removed_in_0_18.py`). 0.18 deprecates
+  nothing; `NEXT_REMOVAL` is 0.19, which
+  `test_what_0_18_deprecates_goes_in_0_19` reminds. A new
   deprecation warns through `deprecation.renamed`, `renamed_attribute`,
   `called`, `ignored` or `moved`, with a test that fails once the version
   reaches its removal.

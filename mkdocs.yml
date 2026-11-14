@@ -111,7 +111,6 @@ nav:
       - Spares: guide/spares.md
       - Design and allocation: guide/design.md
       - Maintenance policies: guide/maintenance.md
-      - Demonstration testing: guide/demonstration.md
       - Stress-strength interference: guide/stress-strength.md
       - Timelines: guide/timelines.md
       - Schedules on the calendar: guide/schedule.md
@@ -126,7 +125,7 @@ nav:
       - Fault trees, missions, networks: api/other-systems.md
       - Node models: api/nodes.md
       - Components and maintenance: api/components.md
-      - Demonstration testing: api/demonstration.md
       - Stress-strength interference: api/stress-strength.md
       - Timelines: api/timelines.md
+      - Schedules: api/schedule.md
       - Result types: api/results.md

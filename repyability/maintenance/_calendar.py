@@ -193,8 +193,10 @@ class Opportunity:
         rule : Recurrence
             When the shuts are
             ([`repyability.schedule.Recurrence`][repyability.schedule.Recurrence]).
-        start, end : datetime.date or str
-            The first and last dates to take.
+        start : datetime.date or str
+            The first date to take.
+        end : datetime.date or str
+            The last date to take (included).
         unit : str, optional
             The life's unit, by default ``"hours"``.
         usage : UsageForecast, optional
