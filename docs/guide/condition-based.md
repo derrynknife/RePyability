@@ -472,6 +472,31 @@ as a node becomes a [`JointNode`][repyability.JointNode];
 `JointNode(joint, Z=..., markers=..., age=...)` makes the same node from the
 fitted model and the unit's covariates, readings and age.
 
+The readings can also come as surpyval's `Measurements`, the fleet's
+readings in one object, each unit's by its id, with the measurement's name
+and unit. Give the unit's id as `i=`; where the `Measurements` hold
+several measurements, name the one the joint model was fitted to with
+`measurement=`:
+
+```python
+from surpyval import Measurements
+
+readings = Measurements(
+    {"P-101": {0: 2.1, 20: 2.5, 40: 3.0}, "P-102": {0: 1.9, 10: 2.0}},
+    name="vibration", units="mm/s",
+)
+p101 = JointNode(joint, markers=readings, i="P-101", age=40)
+p101.sf(20) == JointNode(pump).sf(20)   # -> True   the same readings
+p101.marker_unit                        # -> 'mm/s'
+```
+
+The node keeps the unit's id, the measurement's name and its unit as
+typed (`i`, `measurement`, `marker_unit`), in its `repr` and when it is
+saved; the unit is a label, and nothing is converted. A unit with no
+readings in them, or several measurements and none named, is refused,
+saying which units or measurements there are. A plain `{age: value}` dict
+works as before.
+
 It takes part in everything an ordinary node does: the system's
 reliability, MTTF and B-lives, the importance measures and the
 simulations.
@@ -508,4 +533,5 @@ line.sf_given_state(20, {"valve": NodeState(age=30)})   # -> 0.6048
   mission from now.
 - The node saves with the RBD: the joint model in surpyval's format
   (`JointModel.to_dict()`, a built-in path model) and the unit's
-  covariates, readings and age.
+  covariates, readings and age (and, for readings from `Measurements`,
+  the unit's id, the measurement's name and its unit).

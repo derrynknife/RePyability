@@ -74,6 +74,7 @@ from repyability.rbd._model_utils import (
     is_mixture,
     lfp_p,
 )
+from repyability.rbd._processes import COX_LEWIS_LIFE
 from repyability.rbd._runs import (  # noqa: E402,F401
     _UNSTREAMED,
     failure_criticality_index_per_component_failures,
@@ -335,6 +336,18 @@ def _aged_life(model, age: float, u: float) -> float:
         # alpha * (H(age) + exposure) ** (1 / beta) - age, without the
         # cancellation.
         return age * math.expm1(math.log1p(exposure / hazard) / beta)
+    if name == COX_LEWIS_LIFE:
+        # A Cox-Lewis process's life (see _processes): H(t) = exp(alpha)
+        # * expm1(beta * t) / beta, inverted in closed form; a falling
+        # intensity (beta < 0) may never bring another failure.
+        alpha, beta = (float(p) for p in model.params)
+        exposure = 0.0 - math.log(u) if u > 0.0 else math.inf
+        if abs(beta) < 1e-12:
+            return exposure * math.exp(-alpha)
+        grown = beta * exposure * math.exp(-alpha - beta * age)
+        if grown <= -1.0:
+            return math.inf
+        return math.log1p(grown) / beta
     from surpyval.recurrent.renewal.renewal_model import conditional_gaps
 
     return float(conditional_gaps(model, np.array([age]), np.array([u]))[0])
@@ -375,6 +388,9 @@ class _ImperfectComponent(_StreamedComponent):
         "count",
         "tasks",
         "since",
+        "_process",
+        "_state",
+        "_new",
     )
 
     def __init__(
@@ -402,11 +418,40 @@ class _ImperfectComponent(_StreamedComponent):
         self._x = 0.0
         self.age = self.operated = self.since = 0.0
         self.count = self.tasks = 0
+        # A fitted renewal process repairing the unit by its own rule
+        # (G1, ARA, ARI; see _processes): its state since the unit was
+        # renewed, None while it has had no failure since.
+        self._process = None if imperfect is None else imperfect.process
+        self._state: Any = None
+        self._new: Any = None
 
     def reset(self):
         self._fails_next = True
         self.age = self.operated = 0.0
         self.count = self.tasks = 0
+        self._state = None
+
+    def _process_life(self) -> float:
+        """The life after a repair of a unit repaired by its fitted
+        process's own rule: the quantile of its next failure, given its
+        state, at a uniform from its own stream (numpy's global RNG
+        without streams)."""
+        u = self._aged.draw() if self._aged is not None else np.random.random()
+        process: Any = self._process
+        return float(
+            np.ravel(process.next_failure_qf(u, states=self._state))[0]
+        )
+
+    def _process_failed(self, x: float) -> None:
+        """A unit repaired by its fitted process's own rule failed
+        ``x`` (operating time) after its last repair, or since new: its
+        state after the repair."""
+        process: Any = self._process
+        if self._state is None:
+            if self._new is None:
+                self._new = process.states(age=[0.0])
+            self._state = self._new
+        self._state = process.advance(self._state, x)
 
     def life_drawn(self, x: float = 0.0) -> None:
         # Its repair after the failure drawn takes its virtual age on by
@@ -457,7 +502,9 @@ class _ImperfectComponent(_StreamedComponent):
     def next_event(self):
         if self._fails_next:
             self._fails_next = False
-            if self.age > 0.0:
+            if self._state is not None:
+                x = self._process_life()
+            elif self.age > 0.0:
                 u = (
                     self._aged.draw()
                     if self._aged is not None
@@ -478,11 +525,14 @@ class _ImperfectComponent(_StreamedComponent):
             x = self._x
             self.count += 1
             self.operated += x
-            self.age = (
-                self._q * (self.age + x)
-                if self._second
-                else self.age + self._q * x
-            )
+            if self._process is not None:
+                self._process_failed(x)
+            else:
+                self.age = (
+                    self._q * (self.age + x)
+                    if self._second
+                    else self.age + self._q * x
+                )
         if self._repair is not None:
             return self._repair.draw(), True
         return self._unit.time_to_replace.random(1).item(), True
