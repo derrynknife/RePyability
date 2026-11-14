@@ -169,59 +169,6 @@ their covariance, which a posterior has not, and refuses it. A
 A fit with an offset, a limited failure population or zero inflation is
 not taken yet.
 
-## A life on two clocks: hours and starts
-
-Some parts wear by running hours *and* by starts: a gas turbine's hot
-parts, a pump that cycles. surpyval's `Equivalence` (from surpyval 0.28)
-fits the combined clock `hours + k starts`, where `k` is what one start is
-worth in hours, and `model.at_usage(rate)` gives the life of a unit making
-`rate` starts per running hour, in hours. That life is a block as it is:
-give it to a diagram, a [`NonRepairable`][repyability.NonRepairable] or a
-`RepairableRBD`'s component, and the diagram answers in hours.
-
-In plain words: a unit making `rate` starts an hour ages `1 + k rate`
-equivalent hours for every hour it runs, so it lasts that many times less
-in hours. One start worth 20 hours makes a base-load unit (0.01 starts an
-hour) age 1.2 times as fast as running alone would, and a peaking unit
-(0.3 starts an hour) 7 times as fast.
-
-```python
-# Needs surpyval's LifeAtUsage (0.28)
-# Fitted in surpyval to the fleet's hours and starts:
-# surv.WeibullEquivalence.fit(hours, starts, c=c, clocks=("hours", "starts"))
-model = surv.WeibullEquivalence.from_params(
-    [20000, 2.5, 20], clocks=("hours", "starts")
-)
-peaking = model.at_usage(0.3)                # 0.3 starts per running hour
-peaking.acceleration                         # -> 7.0
-plant = NonRepairableRBD([("s", "turbine"), ("turbine", "t")], {"turbine": peaking})
-plant.sf(2000)                               # -> 0.6637
-plant.mean()                                 # -> 2535.0   hours
-```
-
-The rate is a lever: `parameter_sensitivity` reports how the system moves
-with it (`"rate"`, or `"reliability.rate"` for a repairable component),
-`levers()` lists it, from 0 up, and `with_levers` builds the diagram at
-another rate. Here each extra start per ten running hours takes about
-0.19 off the plant's reliability at 2,000 hours (to first order):
-
-```python
-# Needs surpyval's LifeAtUsage (0.28)
-plant.parameter_sensitivity(2000)["turbine"]["rate"]       # -> -1.943
-plant.with_levers({("turbine", "rate"): 0.1}).sf(2000)     # -> 0.9519
-```
-
-Where a diagram needs a surpyval distribution (a `RepairableRBD`'s exact
-methods and simulation engines), the block's life is the one the rate
-gives: every distribution `Equivalence` takes keeps its family when its
-time is divided by `1 + k rate`, so a Weibull on the combined clock is a
-Weibull in hours with its scale divided by it. The spec keeps the life at
-the rate, for its lever and for saving. A `"duty"` (the share of the
-calendar it runs) applies on top, the rate being per running hour. A
-diagram saves the model and the rate, and needs surpyval 0.28 or later to
-load them. The model on two clocks itself is refused as a block, saying to
-give `model.at_usage(rate)`.
-
 ## k-out-of-n nodes
 
 A node with `k` greater than 1 works only while at least `k` of its incoming
@@ -333,9 +280,6 @@ you type in it too:
 - **Lives in operating time** on a diagram that runs on the calendar: a
   `RepairableRBD` component that operates a fraction of the time takes a
   `"duty"` (see [Repairable systems](repairable.md#operating-part-of-the-time)).
-- **A rate of use** of a [life on two clocks](#a-life-on-two-clocks-hours-and-starts)
-  is in its model's units: starts per hour for a model of hours and
-  starts, so per running hour, and the life it gives is in hours.
 
 ## Validation and the structure check
 

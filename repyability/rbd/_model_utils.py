@@ -325,39 +325,11 @@ def covariate_spec(model) -> Optional[CovariateSpec]:
     return CovariateSpec(model, params, names, [(None, None)] * len(params))
 
 
-class UsageSpec(NamedTuple):
-    """A life at a usage rate's rate as a lever (surpyval's
-    ``EquivalenceModel.at_usage(rate)``), with the interface of a
-    ``ParametricSpec``: ``params`` the rate, ``names`` ``"rate"``,
-    ``bounds`` 0 and up, and ``build(values)`` the model's life at that
-    rate."""
-
-    life: Any
-    params: List[float]
-    names: List[str]
-    bounds: List[tuple]
-
-    def build(self, values) -> Any:
-        """The model's life at the rate ``values[0]``."""
-        return self.life.model.at_usage(float(values[0]))
-
-
-def usage_spec(model) -> Optional[UsageSpec]:
-    """The rate of a life at a usage rate, as a lever, or None for any
-    other model."""
-    from ._usage import is_life_at_usage
-
-    if not is_life_at_usage(model):
-        return None
-    return UsageSpec(model, [float(model.rate)], ["rate"], [(0, None)])
-
-
 def lever_spec(model):
     """What parameter sensitivity moves in a node's model: its
-    parameters (``parametric_spec``), a regression node's covariates
-    (``covariate_spec``), or a life at a usage rate's rate
-    (``usage_spec``); None for a model with none."""
-    return parametric_spec(model) or covariate_spec(model) or usage_spec(model)
+    parameters (``parametric_spec``), or a regression node's covariates
+    (``covariate_spec``); None for a model with neither."""
+    return parametric_spec(model) or covariate_spec(model)
 
 
 def nonparametric(model) -> bool:
