@@ -38,10 +38,7 @@ _STEPS = 200
 
 
 def _kinds():
-    from surpyval.degradation.process_models import (
-        GammaProcessModel,
-        WienerProcessModel,
-    )
+    from surpyval.degradation import GammaProcessModel, WienerProcessModel
 
     return WienerProcessModel, GammaProcessModel
 
