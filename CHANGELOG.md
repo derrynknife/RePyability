@@ -506,8 +506,12 @@ Every other seeded result is unchanged.
   reliability and mean move by up to about 1e-5 (1e-4 for two different
   units operating), to the exact values. Warm or hot standby with
   `switching_probability` below 1 is worked out (exactly, numerically or
-  simulated, as above) where it raised `NotImplementedError`. Seeded
-  draws of every arrangement that ran before are unchanged.
+  simulated, as above) where it raised `NotImplementedError`. A diagram
+  holding an arrangement of Exponential units that was simulated (warm
+  standby with two or more operating, cold standby of three or more
+  different units) is now worked out exactly, so its analyses that
+  refused give values, and a `RepairableRBD`'s means are the exact ones.
+  Seeded draws of every arrangement that ran before are unchanged.
 - With a component replaced on condition by its level, `availability()`
   and `cost()` now give the exact (numerical) expected values as their
   means by default, as for any component with a curve, where they gave
