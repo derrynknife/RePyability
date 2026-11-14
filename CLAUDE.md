@@ -244,7 +244,19 @@ New work goes under the CHANGELOG's `[Unreleased]`. `dev` needs surpyval
   and the chain's bends (`OverTime._bends`: the tests, the fixed ends,
   geometric offsets at an exponential length's scale) are the integrals'
   pieces' edges, with the integral of the unavailability refined to those
-  scales (`_ccf_groups._timing_rates`).
+  scales (`_ccf_groups._timing_rates`). A test or repair of any other
+  length (#106) ends at a rate that varies with the time since the
+  member's test (`_ccf_chain._Episode`): the chain is followed on pieces
+  of that time (`_Timed._advance`), each at constant rates that keep the
+  member's own chance of being in its test or repair exact at the knots,
+  the knots halved until a constant rate follows it within each piece
+  (`_refined`); it needs each test and repair over by the next test (but
+  for `TAIL`). A group started from its members' states (`_Hidden.started`,
+  `_ccf_groups._group_start`) follows the causes from when each member was
+  last known up (`_ccf_groups._known_up`), as the simulation draws its own
+  cause's life from then and each shared cause's last strike before 0
+  (`_event_loop._past_strikes`, the `CAUSE_START` stream): a change to one
+  goes into the other; `test_ccf_general.py` checks them.
 - **A tested unit's numerical model (`repyability/rbd/_hidden_tests.py`,
   #159) copies the simulation's inspections** (`_event_loop._inspected_follow_up`,
   `_event_loop._inspected_next`): a test takes a working unit off line without ageing

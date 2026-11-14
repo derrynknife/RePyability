@@ -62,6 +62,33 @@ Every other seeded result is unchanged.
 
 ### Added
 
+- Common-cause groups in a `RepairableRBD` with tests and repairs of any
+  length, and from the members' current states. A tested member's test or
+  repair may now be any surpyval parametric model (a Weibull repair, a
+  lognormal test), not only none, a fixed time or an exponential one, and
+  an exponential test with a fixed repair is taken too: the group's chain
+  follows a length that is neither fixed nor exponential on pieces of the
+  time since the member's test, each at constant rates that keep the
+  member's chance of being in its test, or its repair, exact at the
+  pieces' ends (refined until a rate held constant follows it within the
+  piece to 1e-5). The fixed and exponential lengths stay exact. A test
+  and repair that can run into the member's next test (but for a chance
+  below 1e-12) is refused, saying to simulate. The values over time
+  (`point_availability`, `mission_availability`, `expected_events`, the
+  importance measures over time, ...) now start from the members' states
+  (`state=`): a member up since it was last tested or put into service
+  (it may have failed since, unseen, by its own cause or a shared one), a
+  member down in a repair under way, or every member in the group's long
+  run (`state="stationary"`, whose values over time repeat the long run's
+  every period). The simulations start from the same states: a member's
+  own cause's life from when it was last known up, and, for each shared
+  cause, when it last struck before 0, from a new stream (`CAUSE_START`).
+  Refused: some members of a group in their long run and others not, a
+  member with a life of its own (a `level` or `model`), and a member down
+  whose found failures are repaired at once. `analysis_routes()`, the
+  README's table and the guide say so. Seeded results are unchanged (the
+  new stream is drawn only by runs from such states, which were refused).
+
 - Tasks counted in running hours (UC-26). A `"preventive"` or
   `"inspection"` spec takes `"basis"`: `"calendar"` (the default, as
   before) or `"operating"`, the block's operating time. On a block with a

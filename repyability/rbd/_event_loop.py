@@ -1104,6 +1104,12 @@ def _stream_specs(
                 _uniforms,
                 strikes,
             )
+        if any(
+            _ccf_groups._known_up(rbd, member, states.get(member))
+            for member in cause.struck
+        ):
+            # When it last struck before 0 (#106).
+            add(prefix + cause.struck, _streams.CAUSE_START, _uniforms, 1.0)
     if not prefix:
         for node, node_costs in rbd.costs.items():
             expected = _expected_draws(rbd, node, t_simulation)
@@ -1246,6 +1252,7 @@ def _streamed_components(
             cause.rate,
             run.stream(path, _streams.CAUSE),
             run.stream(path, _streams.CAUSE_TEST),
+            run.stream(path, _streams.CAUSE_START),
         )
     return streamed
 
@@ -1543,6 +1550,7 @@ def _start_queue(
     )
     rbd._run_state._ccf_pending = {}
     rbd._run_state._ccf_coins = {}
+    rbd._run_state._ccf_struck = _past_strikes(rbd, states, sources)
     # The components down at the start in a repair or maintenance going
     # on, which holds a repair crew.
     in_hand: list = []
@@ -1742,14 +1750,26 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
     if inspection is not None:
         # Last known up at its last test, or when put into service.
         since = min(start.age, start.since_scheduled or 0.0)
-    life = (
-        _aged_life(
-            component.reliability,
-            virtual + start.age - since,
-            source.start_uniform(),
+    own = _ccf_groups._own_rate(rbd, node)
+    if own is None:
+        life = (
+            _aged_life(
+                component.reliability,
+                virtual + start.age - since,
+                source.start_uniform(),
+            )
+            - since
         )
-        - since
-    )
+    else:
+        # A common-cause group's member (#106): its own cause's life from
+        # when it was last known up, and a shared cause that has struck
+        # it since (see _past_strikes).
+        u = source.start_uniform()
+        exposure = 0.0 - math.log(u) if u > 0.0 else math.inf
+        life = (exposure / own if own > 0.0 else math.inf) - since
+        struck = rbd._run_state._ccf_struck.get(node)
+        if struck is not None:
+            life = min(life, struck)
     source.life_drawn(start.age + life)
     if inspection is not None:
         if life < 0.0:
@@ -1764,6 +1784,33 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
     return True, _renewal(
         rbd, node, 0.0, source, schedule, life=life, start=-start.age
     )
+
+
+def _past_strikes(rbd, states: dict, sources: dict) -> dict:
+    """Each common-cause group's member started from a state that a
+    shared cause has struck since it was last known up (#106, see
+    ``_ccf_groups._known_up``), and when (a time before 0). A cause
+    strikes as a Poisson process, so the time back to its last strike
+    before 0 is exponential at its rate: one uniform (its
+    ``CAUSE_START`` stream's) draws it, and the cause has struck each
+    member it names last known up longer ago than that. Which of its
+    strikes it was does not matter: the member's next test finds it."""
+    out: dict = {}
+    if not rbd.ccf_groups or not states:
+        return out
+    for cause in _ccf_groups._shared_causes(rbd):
+        known = {
+            member: _ccf_groups._known_up(rbd, member, states.get(member))
+            for member in cause.struck
+        }
+        if not any(known.values()):
+            continue
+        u = sources[cause].start_uniform()
+        back = (0.0 - math.log(u) if u > 0.0 else math.inf) / cause.rate
+        for member, since in known.items():
+            if since > back:
+                out[member] = min(out.get(member, 0.0), -back)
+    return out
 
 
 def _due(rbd, node, schedule, t: float) -> float:
@@ -2032,6 +2079,8 @@ def _own_sources(rbd, states: Optional[dict] = None) -> dict:
             restoration=rbd._restoring.get(node),
         )
     for node in starting:
+        if _ccf_groups._own_rate(rbd, node) is not None:
+            continue  # its own cause's draws, as above
         component = rbd.components[node]
         sources[node] = _StreamedComponent(
             _ModelDraws(component.reliability),

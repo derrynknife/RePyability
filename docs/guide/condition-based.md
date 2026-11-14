@@ -216,8 +216,10 @@ pumps.sf_given_state(2000, mine)   # -> 0.9785   pump 1 refitted to itself
 `expected_npv`, ...) and its simulations from a state (`availability`,
 `cost`, `simulate_timelines`, ..., in the Python engine, as every start
 from a state is), for a unit on its own or on age or block replacement.
-A unit tested for hidden failures, repaired imperfectly, run part of the
-time (a `"duty"`), in a common-cause or standby group or replaced on
+A common-cause group's members start from their states too (see
+[Common cause](common-cause.md#from-the-members-current-states)). A unit
+tested for hidden failures, repaired imperfectly, run part of the
+time (a `"duty"`), in a standby group or replaced on
 condition starts its units its own way, and refuses them as not worked out
 yet; so does the Markov chain of limited repair crews (simulate them) and
 of the first system failure of a structure that is not a series.

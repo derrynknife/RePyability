@@ -252,7 +252,15 @@ def _long_run_route(rbd, groups: bool = True) -> "AnalysisRoute":
         "availabilities, exactly"
         + (
             ", and over each common-cause group's members' joint states "
-            "(a Markov chain)."
+            "(a Markov chain"
+            + (
+                "; its members' tests and repairs of a general length "
+                "followed on pieces of the time since each test, each at "
+                "constant rates"
+                if _ccf_groups._timings_vary(rbd)
+                else ""
+            )
+            + ")."
             if rbd.ccf_groups and groups
             else "."
         )

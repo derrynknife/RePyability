@@ -52,6 +52,10 @@ TEST = 10
 #: uniforms that decide whether the tests that can miss its failures find
 #: them (one per strike: they are found, or missed, alike).
 CAUSE, CAUSE_TEST = 11, 12
+#: The uniform that draws how long before 0 a shared common cause last
+#: struck, where members it strikes start from states (#106): one per
+#: simulation.
+CAUSE_START = 14
 #: The uniforms a unit replaced on condition by its measured degradation
 #: level (#271) draws its level at each inspection from, and its failure
 #: from that level: two an inspection.

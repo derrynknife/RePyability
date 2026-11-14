@@ -91,15 +91,17 @@ class _CauseDraws:
     """What a shared common cause draws in a simulation (#158): the times
     between its strikes, exponential at its rate, and at each strike the
     uniform that decides whether the tests that can miss its failures find
-    them (found, or missed, alike); from its own streams, or numpy's global
+    them (found, or missed, alike), and for members started from states,
+    when it last struck before 0; from its own streams, or numpy's global
     RNG."""
 
-    __slots__ = ("_rate", "_gaps", "_coins")
+    __slots__ = ("_rate", "_gaps", "_coins", "_start")
 
-    def __init__(self, rate: float, gaps=None, coins=None):
+    def __init__(self, rate: float, gaps=None, coins=None, start=None):
         self._rate = rate
         self._gaps = gaps
         self._coins = coins
+        self._start = start
 
     def gap(self) -> float:
         if self._gaps is not None:
@@ -109,6 +111,13 @@ class _CauseDraws:
     def coin(self) -> float:
         if self._coins is not None:
             return self._coins.draw()
+        return float(np.random.random())
+
+    def start_uniform(self) -> float:
+        """The uniform that draws how long before 0 it last struck, for
+        members started from states (#106)."""
+        if self._start is not None:
+            return self._start.draw()
         return float(np.random.random())
 
 
@@ -427,6 +436,7 @@ class _Run:
         "_ccf_members",
         "_ccf_pending",
         "_ccf_coins",
+        "_ccf_struck",
         "_calendar_price",
         "_held",
         "_paused_pending",
@@ -477,6 +487,9 @@ class _Run:
     _ccf_members: frozenset
     _ccf_pending: dict
     _ccf_coins: dict
+    #: Common-cause groups started from states (#106): each member a
+    #: shared cause struck since it was last known up, and when (< 0).
+    _ccf_struck: dict
     #: Each component on a calendar policy: the price of its next planned
     #: replacement (the opportunity's), charged when it falls; of its
     #: early renewal at a stop of its maintenance group, once queued

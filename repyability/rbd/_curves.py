@@ -115,8 +115,10 @@ _MAX_CREW_NESTED = 10
 #: How a system's values over time take in its common-cause groups (#158).
 _GROUPS_OVER_TIME = (
     " Each common-cause group's members' joint states come from its Markov "
-    "chain followed from every member up at 0 (by uniformization, or through "
-    "its tests' first period, after which they repeat the long run's), and "
+    "chain followed from every member up at 0, or from their states (by "
+    "uniformization, or through its tests' first periods, after which they "
+    "repeat the long run's; tests and repairs of a general length on pieces "
+    "of the time since the test, each at constant rates), and "
     "the system is worked out over the combinations of its members up and "
     "down, the other nodes independent of them; the members' failures by "
     "each cause, at its rate where it takes the system down."
