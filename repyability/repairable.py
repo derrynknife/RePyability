@@ -180,7 +180,8 @@ def _check_surpyval_model(model) -> None:
             f"model is a surpyval {name}, which also models the unit being "
             "scrapped; its cif counts the repairs as if it never were, and "
             "Repairable does not price scrapping, so it would overstate "
-            f"the repairs. {_TAKES}."
+            "the repairs. RepairOrReplace prices a joint frailty model: "
+            f"repairs, write-offs and each unit's frailty. {_TAKES}."
         )
     raise ValueError(
         f"model is a surpyval {name}, whose cif or mcf is not the "

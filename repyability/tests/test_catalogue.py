@@ -63,6 +63,8 @@ NOT_NODES = {
     "FaultTree",
     "MGL",
     "MaintenancePolicy",
+    "RepairOrReplacePolicy",
+    "UnitDecision",
     "Network",
     "NodeState",
     "Opportunity",
@@ -75,6 +77,8 @@ NOT_NODES = {
     "RBD",
     # A component analysed alone: a diagram takes a NonRepairable.
     "Repairable",
+    # A fleet's repair-or-replace economics, from a joint frailty model.
+    "RepairOrReplace",
     # A part's maintenance plan, valued alone (#319).
     "ReplacementPlan",
     "SimulationChunk",

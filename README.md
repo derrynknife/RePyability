@@ -53,7 +53,10 @@ taking already-fitted lifetime models (from
   exponential components in the long run and numerical over time, with
   their importance; repairable standby groups (a duty unit and its spares,
   repaired one at a time); imperfect repair (Kijima's virtual age), with
-  replacement at the N-th failure; and uncertainty intervals on the
+  replacement at the N-th failure; repair again or replace for a fleet
+  whose units differ (a joint frailty model of repairs and write-offs:
+  the best rule for a new unit, and each unit's decision from its
+  frailty); and uncertainty intervals on the
   availability and the cost rate from uncertain (fitted) models of the
   lives, repairs and maintenance.
 - **Capacity**: how much a system delivers, from its components'

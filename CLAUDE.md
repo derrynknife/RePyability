@@ -554,6 +554,15 @@ What remains:
   refuses just below 0 and just above 1, to draw it on the log or logit
   scale. Take surpyval's ranges once the minimum surpyval says them.
 
+- **A joint frailty model's expected failures far past its write-off
+  life** (no surpyval issue yet). surpyval 0.27's
+  `JointFrailtyModel.mcf` integrates on a fixed Gauss-Legendre grid in
+  the cumulative intensity, so far past the units' write-off ages it
+  falls (and tends to 0) where it should level off. `RepairOrReplace`
+  (`maintenance/_repair_or_replace.py`) integrates each frailty's `iif`,
+  `hf` and `Hf` itself instead. Take `mcf` once the minimum surpyval's
+  holds at every age.
+
 Refused until surpyval has it: an ARA, ARI or G1 renewal model as a life,
 whose next failure surpyval cannot draw yet (surpyval #833,
 `rbd/_processes.py`).

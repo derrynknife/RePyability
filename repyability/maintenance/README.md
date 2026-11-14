@@ -42,6 +42,7 @@ use cases, under the same numbers.
 | UC-24 | Outages on a timeline: shuts at given times with a duration and a scope (renew some blocks, restore others), the plan's cost by window and its NPV | **Built in part**: the same `shutdowns` at `"times"`, simulated (`availability`, `cost`); the exact cost by window and NPV take shuts on a period only |
 | UC-25 | How much of the downtime and lost production is planned and how much is from failures, and how many failures the plan avoids against running to failure | **Built**: `RepairableRBD.maintenance_effect`, and the split in `ExpectedEvents`, `EventsByWindow`, `AvailabilityResult` and `CostResult`; exact where the blocks fail independently, simulated otherwise |
 | UC-26 | A pump run part of the time with its overhaul counted in running hours: availability and cost, and at another duty | **Built**: a `"preventive"` or `"inspection"` spec's `"basis": "operating"`, put on the calendar through the block's `"duty"` |
+| UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
 
@@ -1986,3 +1987,72 @@ answers back into dates is Reliafy's too.)
   - A starting state (`NodeState`) stays on the diagram's clock: an age
     and a time since the last task in calendar hours.
 
+### UC-27: "Our pumps that fail often also seem to get scrapped sooner. This one has just failed again: do we repair it, or replace it? And for a new pump, when should we stop repairing?"
+
+- **Status:** built: `RepairOrReplace(model, repair_cost=,
+  replacement_cost=, failure_cost=, write_off_cost=, discount_rate=)`,
+  with `fleet_policy`, `unit_decision`, `unit_decisions` and
+  `break_even_frailty`.
+- **Who asks, and why:** a reliability or fleet engineer whose repair
+  records show that some units are lemons: they fail more often and are
+  written off (beyond economic repair) sooner. Each failure is a choice:
+  pay for another repair, or buy a new unit.
+- **What they know:** a joint frailty model fitted in surpyval
+  (`surpyval.JointFrailty.fit`) to the fleet's failures and write-offs,
+  with each unit's frailty (`model.frailties`); the unit's age now and
+  whether it has just failed; a repair's cost, a failure's downtime cost,
+  a new unit's cost and a write-off's cost; optionally a discount rate.
+  Model time only (ages in the model's unit).
+- **What they want back:** for a new unit, the cost rate of keeping on
+  repairing it until it is written off, of replacing it at the best age,
+  and of replacing it at the best count of failures, with the cheapest;
+  for one unit, which of these to follow from now (or to replace it now),
+  what that saves, and the frailty at which the answer turns. Each cost
+  rate with its 90% two-sided band.
+- **How it is solved (numerical):** given its frailty `u` a unit's
+  failures are minimal repairs at the rate `u r(t)` and its write-off has
+  the hazard `u**alpha h(t)`, independent of each other. A rule's cost
+  rate is the expected cost of a cycle (new until replaced or written
+  off) over its expected length (each discounted at a continuous rate,
+  the equivalent cost rate, as in UC-19). The cycle's integrals are over
+  age (Gauss-Legendre on pieces even in the logarithm of age) and, for a
+  new unit, over the frailty (Gauss-Hermite on its normal score), of the
+  model's `iif`, `cif`, `hf` and `Hf` at each frailty; a count of failures
+  through the Poisson probabilities of the expected failures. For one
+  unit, the frailty is taken as known (its estimate), and each rule is
+  valued against replacing now with what follows a replacement priced at
+  the fleet's cost rate (the relative value: the rule's cost less the
+  fleet's cost rate times its time, less the replacement's cost); a
+  failure just had adds its repair to every rule that keeps the unit.
+  The bands draw the fitted parameters from their covariance (on the log
+  scale for the positive ones) and recompute each rule's cost rate at its
+  fitted best age or count.
+- **Today:** `Repairable` refuses the model (#404), as its `cif` counts
+  repairs as if no unit were ever written off, which overstates them.
+- **Checks:** `test_repair_or_replace.py`: with no frailty variance, every
+  rule against direct quadrature of minimal repair and an independent
+  write-off (to 1e-8), keep repairing against its closed form for
+  shapes alike, constant rates against `(cr + cf) / a + cw / b` and no age
+  rule paying; a small variance tends to none, a small discount rate to
+  none; the frailty nodes against the model's population `sf`; an age rule
+  against the model's `mcf`, `ff` and `sf`, and against its `random`; a
+  count rule against a simulation written from the model's definition; a
+  new unit like the fleet saving exactly the replacement; a unit's
+  numbers against quadrature from its age; break-even frailty: units
+  above it replaced now, below it kept, and it falls with age; every cost
+  rate rising with each cost; the answers scaling with the unit of time;
+  covariates as rescaled baselines; seeded bands; the refusals.
+- **Learned / open questions:**
+  - Counting failures pays for two reasons: a unit with many failures is
+    likely a lemon, and replacing at a failure saves that failure's
+    repair. The second holds with no frailty variance at all.
+  - A unit's frailty is a plug-in (surpyval gives each unit's posterior
+    mean, not its distribution); its failures from now would change the
+    estimate, which the decision does not foresee. Decide again with a
+    refitted model.
+  - The gap time scale (each failure renews the rate) is refused:
+    surpyval 0.27 has no expected count of failures for it and cannot
+    simulate a unit of a given frailty.
+  - surpyval's joint frailty model is experimental (its design decisions
+    are proposed), with Weibull baselines and no bootstrap: the bands are
+    Wald draws.
