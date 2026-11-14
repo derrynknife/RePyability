@@ -4,10 +4,11 @@ Setup, branches, the checks a change needs, where tests go, pull requests,
 deprecations and releases are in [CONTRIBUTING.md](CONTRIBUTING.md); read it
 first. This file adds the internals and conventions it does not cover.
 
-**Versions (14 Nov 2026):** 0.17 is being released (`_version.py` reads
-0.17; 0.16, of 31 Oct 2026, is the latest on PyPI until it publishes).
-New work goes under the CHANGELOG's `[Unreleased]`. `dev` needs surpyval
-0.27 or later.
+**Versions:** `repyability/_version.py` holds the version `dev` will
+release; the latest published release is on PyPI
+(`https://pypi.org/pypi/repyability/json`) and the CHANGELOG's newest
+dated section. New work goes under the CHANGELOG's `[Unreleased]`. The
+minimum surpyval is in `pyproject.toml` (0.27 as of 0.17).
 
 ## Architecture & scope
 
@@ -555,7 +556,9 @@ else. Two names have no public home yet and are listed there
 `conditional_gaps` (`rbd/_event_loop._aged_life`). Take each from its
 public home once surpyval gives it one; that test fails when it does.
 
-What remains:
+What remains (each checked against surpyval 0.27, and against its `dev`
+for 0.28, on 14 Nov 2026: none is fixed in 0.27, so none could go; only
+the joint frailty `mcf` is fixed on `dev`, for 0.28):
 
 - **A mixture's life left at a virtual age** (surpyval #857, #295).
   0.27's `conditional_gaps` inverts the quantile function wherever the
@@ -565,7 +568,10 @@ What remains:
   by Newton's steps on the mixture's `H`, worked out from its
   components, from a table of `H` (a change to it changes seeded results
   in the last bits). Take `conditional_gaps` again, and drop
-  `MixtureLife`, once the minimum surpyval's draw is as precise.
+  `MixtureLife`, once the minimum surpyval's draw is as precise. (On
+  the issue's mixture against a 50-digit reference, 0.27's draw was off
+  by up to 4e-11 of `age + x` and `aged` by 7e-16, in a seventh of the
+  time; unchanged on surpyval's `dev`.)
 - **A degradation process's level given survival** (surpyval #836).
   Replacement on condition by level (#271) needs the level at the next
   inspection of a unit that has not failed by then, which surpyval's
@@ -574,19 +580,24 @@ What remains:
   method of images for a Wiener path; a gamma increment truncated at the
   threshold), and `_condition_next` draws it from the `LEVEL` stream (a
   change to it changes seeded results). Take surpyval's once the minimum
-  surpyval has it.
+  surpyval has it. (0.27's `level_at(t, y0=, t0=)` is the level with no
+  condition on survival, which for a Wiener path keeps the units that
+  crossed and came back, so it is not this.)
 
 - **Rescaling a model's time for a duty cycle.** surpyval has no
   rescaling (#845 gave models only a unit label). A spec's `"duty"` puts a
   life in operating time on the calendar, `R(d t)`, by `_duty._SCALED`, one rule per surpyval distribution (a new
   one needs its rule there, which `test_units` checks against `R(d t)`).
-  Take surpyval's rescaling once the minimum surpyval has it.
+  Take surpyval's rescaling once the minimum surpyval has it. (0.28's
+  `EquivalenceModel.at_usage` turns a two-clock life into one clock at a
+  usage rate; it does not rescale a model's time.)
 - **Parameter ranges for drawing fits other than distributions** (no
   surpyval issue yet). surpyval gives no range per parameter for a
   regression, a degradation or repairable-unit process or a mixture, so
   `uncertainty._Rebuilt._bounds` reads each from what `with_params`
   refuses just below 0 and just above 1, to draw it on the log or logit
   scale. Take surpyval's ranges once the minimum surpyval says them.
+  (0.27 keeps them private, such as a regression's `_parameter_bounds`.)
 
 - **A joint frailty model's expected failures far past its write-off
   life** (no surpyval issue yet). surpyval 0.27's
@@ -595,7 +606,11 @@ What remains:
   falls (and tends to 0) where it should level off. `RepairOrReplace`
   (`maintenance/_repair_or_replace.py`) integrates each frailty's `iif`,
   `hf` and `Hf` itself instead. Take `mcf` once the minimum surpyval's
-  holds at every age.
+  holds at every age: **surpyval 0.28 fixes it** (on its `dev`,
+  unreleased on 14 Nov 2026: integrated over log age, rising to its limit
+  and staying there), so this can go when the minimum is 0.28. On 0.27,
+  `JointFrailty.from_params((100, 2), (400, 1.5), 0.5, 1.0).mcf` is 21.7
+  at 4e4, 13.2 at 4e6 and 3e-4 at 4e8.
 
 - **A Bayesian fit's quantile with an offset or shares** (no surpyval
   issue yet). surpyval 0.27's `BayesianParametric.qf` fails to bracket
@@ -604,7 +619,8 @@ What remains:
   0.04 with an offset of 20 and `lfp_p` 0.8), and of arrays with zero
   inflation. `PosteriorPredictive._extras_qf` inverts the fit's own `ff`
   (0 up to `ff(0)`, `inf` from the share that ever fails). Take the fit's
-  `qf` again once the minimum surpyval's brackets these.
+  `qf` again once the minimum surpyval's brackets these. (Still raised
+  by 0.27 for that example; `surpyval.bayes` is unchanged on its `dev`.)
 
 An ARA, ARI or G1 renewal model is no longer refused (surpyval #833 is
 in 0.27): the Python simulation steps the fitted model itself with its

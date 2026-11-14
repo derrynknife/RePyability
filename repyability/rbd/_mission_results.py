@@ -152,10 +152,13 @@ class MissionSummary(_ResultMapping):
         fail).
     n_samples : int or None
         Simulated: the number of missions.
-    lower, upper : numpy.ndarray or None
-        Simulated: a confidence band about the reliability over time, at
-        the summary's ``confidence`` (two-sided at each time, Wilson's
-        interval for a fraction of the missions); ``None`` when exact.
+    lower : numpy.ndarray or None
+        Simulated: the lower edge of a confidence band about the
+        reliability over time, at the summary's ``confidence`` (two-sided
+        at each time, Wilson's interval for a fraction of the missions);
+        ``None`` when exact.
+    upper : numpy.ndarray or None
+        Simulated: the band's upper edge; ``None`` when exact.
     """
 
     method: str

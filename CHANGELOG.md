@@ -9,23 +9,18 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
-### Added
+### Documentation
 
-- `NonRepairable.cost_distribution()` and `cost_by_window()` take a
-  calendar policy, `calendar=` (the `CalendarPolicy` of
-  `optimal_calendar_policy`: at each opportunity, replace the part if it
-  is at least that time's threshold age): a part's cost over a window
-  from its state, and in each of a run of windows, with its spread, under
-  the policy found to be cheapest over a calendar of shuts. Planned
-  replacements are priced by their opportunity, and the outcomes count
-  them by kind (`outcomes()` gives `"planned": {kind: count}`; the
-  results' new `kinds`, `kind_prices` and `kind_outcomes`). Numerical by
-  default, to the `precision` reported: on a grid of half the policy's
-  step, each count's renewals in the window passed on to the counts with
-  one more event (failures by a convolution cut at each renewal's planned
-  time), checked against the policy's own step; simulated with
-  `method="simulate"`. A policy worked out by integration has no grid
-  and is simulated only.
+- The surpyval workarounds still in RePyability were each checked
+  against surpyval 0.27 (a mixture's life left at an age, a degradation
+  level given survival, rescaling time for a duty cycle, parameter
+  ranges of fits other than distributions, a joint frailty model's
+  expected failures far past its write-off ages, and a Bayesian fit's
+  quantile with an offset or shares). 0.27 fixes none of them, so all
+  stay and no number changes; the joint frailty one can go once the
+  minimum surpyval is 0.28. The contributor notes record what was
+  measured, and no longer name a release as the latest; the maintenance
+  stories' statuses are as of 0.17.
 
 ## [0.17] - 2026-11-14
 
@@ -93,6 +88,21 @@ Every other seeded result is unchanged.
 
 ### Added
 
+- `NonRepairable.cost_distribution()` and `cost_by_window()` take a
+  calendar policy, `calendar=` (the `CalendarPolicy` of
+  `optimal_calendar_policy`: at each opportunity, replace the part if it
+  is at least that time's threshold age): a part's cost over a window
+  from its state, and in each of a run of windows, with its spread, under
+  the policy found to be cheapest over a calendar of shuts. Planned
+  replacements are priced by their opportunity, and the outcomes count
+  them by kind (`outcomes()` gives `"planned": {kind: count}`; the
+  results' new `kinds`, `kind_prices` and `kind_outcomes`). Numerical by
+  default, to the `precision` reported: on a grid of half the policy's
+  step, each count's renewals in the window passed on to the counts with
+  one more event (failures by a convolution cut at each renewal's planned
+  time), checked against the policy's own step; simulated with
+  `method="simulate"`. A policy worked out by integration has no grid
+  and is simulated only.
 - Common-cause groups in a `RepairableRBD` with tests and repairs of any
   length, and from the members' current states. A tested member's test or
   repair may now be any surpyval parametric model (a Weibull repair, a

@@ -1,8 +1,8 @@
 # Maintenance economics: the net present value of a plan
 
 Stories MX-01 to MX-25: valuing a plan (MX-01 to MX-17) and keeping its
-value current as the plant changes (MX-18 to MX-25). Statuses as of 0.16
-and what is merged on `dev` for 0.17 (11 November 2026).
+value current as the plant changes (MX-18 to MX-25). Statuses as of 0.17
+(14 November 2026).
 
 Every story is answered in model time: the models' own unit, from 0 or
 from a state. A question asked in dates (a month, a financial year, a
