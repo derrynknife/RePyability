@@ -9,6 +9,146 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+## [0.18] - 2026-11-14
+
+Schedules on the calendar, and units. A new module,
+`repyability.schedule`, connects model time to dates as plain
+calculations (it takes dates and rules from the caller, never reads the
+clock and stores nothing): calendar rules (every so many days, weeks,
+months or years, weekday patterns, given dates, seasons and excluded
+dates); operating plans (runs, shifts, rosters, rates or all the time)
+layered specific over general, so a specific part is used where it
+covers and the general plan only fills the time it leaves; the map
+between dates and operating hours (or any other meter) both ways; tasks
+falling due on dates, by the calendar, by use or whichever comes first;
+and a part's failures and costs, and a repairable system's events, by
+calendar month (or day, week, quarter or year). Diagrams now read their
+models' unit labels: one whose models name different units warns, naming
+the blocks, and results carry the unit. RePyability still needs surpyval
+0.27; `UsageForecast.life_at_usage` takes a life on two clocks, which
+surpyval 0.28 will bring.
+
+No number RePyability gave before changes. Removed: the demonstration
+test functions deprecated in 0.17 (use `surpyval.test_planning`).
+
+### Added
+
+- Diagrams read their models' unit labels (surpyval's `unit=`, kept as
+  `model.unit`). A `NonRepairableRBD`, `RepairableRBD` (lives and repairs
+  alike), `FaultTree`, `Network` or `PhasedMission` whose models name
+  different units, such as one block in hours and another in days, is built
+  with a `UserWarning` naming the blocks and their units: RePyability
+  converts nothing, so its answers would mix the two. Models with no unit
+  say nothing, so diagrams of unlabelled models are as before. Labels are
+  compared as units with surpyval's `same_unit` (`"h"`, `"hrs"` and
+  `"hours"` agree), public from surpyval 0.28; with surpyval 0.27 they are
+  compared as text.
+- The diagram keeps its models' unit as `unit` (in its printout and its
+  `to_dict()`), and the results its methods return carry it as
+  `model_unit`, in their `to_dict()` too. Both are `None` when the models
+  name no unit or name different ones.
+- **`repyability.schedule`: schedules on the calendar.** RePyability now
+  connects model time to dates, as plain calculations: it takes dates
+  and rules from the caller, never reads the clock and stores nothing.
+  The first part:
+  - `Recurrence`: which dates a rule gives. `Recurrence.every(n, unit,
+    anchor)` (days, weeks, months or years; months and years keep the
+    anchor's day, a shorter month's last day), `weekly` (named weekdays,
+    every n weeks), `monthly` (a day of the month, or its first to fifth
+    or last to fifth-from-last weekday, every n months), `yearly` (a date
+    or a weekday pattern in a named month: the first Tuesday of
+    November), and `on` (given dates). Every rule takes `season=` (a
+    `Season` of months or of days of the year), `excluding=` (dates or
+    ranges), `moved=` (an excluded date skipped, or moved to the nearest
+    day before or after) and `short_months=`. Its `dates(start, end)`
+    include both ends; `on_or_after`, `after`, `includes` and `number`
+    ask about one date; `notes` lists the months a fifth weekday or a
+    short month skipped and the dates excluded or moved; `describe()`
+    says the rule in plain words; `to_dict`/`from_dict` save it (and read
+    a work package's cadence or a task's interval as earlier tools
+    stored them); `to_rrule()` writes it as iCalendar text.
+  - `Task`: when a task falls due by a rule, with a second limit
+    (`also=`, whichever comes first), when it was last done, crew visits
+    it waits for (`visits=`) and a tolerance; an interval counts again
+    from when the task is done, a pattern keeps its own dates
+    (`resets=` overrides). `Task.due(start, end)` returns a `TaskDue`:
+    the dates, which limit set each, when each is done and how late, the
+    count, cost and hours, and notes in plain words.
+  - `work_by_period(tasks, period, start, end)`: the tasks, hours and
+    cost in each day, week, month, quarter or year (`WorkByPeriod`).
+
+  The use cases are in `repyability/schedule/README.md`, and the guide
+  has a page, "Schedules on the calendar".
+- Duty plans: `repyability.schedule.DutyPlan` says how equipment runs,
+  from concrete runs (`Runs`), a repeating week (`Shifts`), a roster
+  (`Roster`), a general rate or a range of rates (`Rate`: 3 h a day, 15 h
+  a month, 2 to 4 h a day) or all the time (`Continuous`), with seasons,
+  outages, a utilisation, other meters (starts, per hour, per run, or a
+  rate of their own) and a time zone (real hours across daylight saving).
+  A plan is a background with specific parts on top, used where they
+  cover; the background applies only to the time they leave
+  (`fill="pro_rata"`, or `"top_up"` for a budget), so no duty is made at
+  the handover. Overlapping parts are refused, naming both. Every part
+  and plan saves with `to_dict()`/`from_dict()`.
+- `DutyPlan.forecast` gives a `UsageForecast`, the map between moments
+  and meter readings both ways: `at`, `when` (with the stop before and
+  after a mid-run moment), `due`, `by_period`, `model_time` and
+  `moment`, `duty`, `rate` and `schedule`, and which layer each stretch
+  came from (`describe`, `stretches`). `UsageForecast.calendar` is the
+  identity map, for no plan.
+- Limits by use on tasks: `Task(every=Usage(2000, "hours"),
+  last_done_reading=...)`, alone or with a calendar limit (whichever
+  comes first), with `task.due(..., usage=forecast)` and
+  `work_by_period(..., usage=)`; `TaskDue` gives each due moment, reading
+  and the stop after it.
+- Failures, events and shuts on the calendar, through the map (the
+  existing model-time methods, asked from dates, their answers labelled
+  with dates; no new probability):
+  - `failures_by_period(part, usage, period, age=)`: a `NonRepairable`
+    part's expected failures, cost, chance of at least one failure and
+    the range (5th to 95th percentile, 90% two-sided) in each day, week,
+    month, quarter or year (`FailuresByPeriod`), from
+    `NonRepairable.cost_by_window` and `failures`, run to failure or
+    under a policy (`every=`, `resets=`, `calendar=`). The model's unit is
+    read from its label (`unit="h"`, `"days"`), or given as `unit=`.
+  - `events_by_period(rbd, usage, period, state=)`: a `RepairableRBD`'s
+    expected events in each calendar period (`EventsByPeriod`), from
+    `expected_events_by_window`; `cost=True` adds `cost_by_window`.
+  - `Opportunity.from_recurrence(name, cost, rule, start, end, unit=,
+    usage=)`: dated shuts as an opportunity on a part's model time
+    (operating time through `usage=`, or calendar time), for a
+    `Calendar`.
+  - `shutdown_spec(rule, start, end, duration=, ...)`: shuts on dates as
+    a `RepairableRBD` shutdown at given times (simulated; the exact
+    methods take shuts on a period).
+  - `UsageForecast.life_at_usage(model)`: a life on two clocks
+    (surpyval 0.28's `EquivalenceModel`) at the plan's starts per
+    operating hour.
+- `TaskDue.notes` says when one of a task's two limits set none of the
+  dates, and how far behind it was ("the hours limit would not have been
+  reached until 4 Apr 2028, about 4.7 months later").
+
+### Changed
+
+- **python-dateutil (2.8.2 or later) is a dependency of its own**, for
+  the schedule module's date arithmetic. Every install had it already,
+  through surpyval's pandas.
+- **tzdata is required on Windows**, for the duty plans' time zones
+  (the standard library's zoneinfo; macOS and Linux have a zone database).
+
+### Removed
+
+- **The demonstration test functions and `DemonstrationPlan`**,
+  deprecated in 0.17: `demonstration_sample_size`,
+  `demonstrated_reliability`, `demonstration_test_multiple`,
+  `demonstration_pass_probability`, `demonstration_plan`,
+  `mtbf_test_time`, `demonstrated_mtbf`, `mtbf_pass_probability` and
+  `mtbf_demonstration_plan`, with the module `repyability.demonstration`
+  and the guide's "Demonstration testing" page. Test planning is
+  surpyval's: `surpyval.test_planning` has the same functions under the
+  same names (give `alpha_ci=1 - confidence`, by keyword, where these
+  took `confidence`). 0.18 deprecates nothing.
+
 ## [0.17] - 2026-11-14
 
 surpyval 0.27, and maintenance in model time. A `RepairableRBD` takes

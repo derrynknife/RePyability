@@ -121,4 +121,5 @@ def test_the_api_pages_document_every_public_name():
     }
     public = set(repyability.__all__) - {"__version__"}
     assert public - documented == set()
-    assert documented - public <= {"timelines"}  # the merge functions
+    # The timelines' merge functions, and repyability.schedule's names.
+    assert documented - public <= {"timelines", "schedule"}

@@ -82,8 +82,6 @@
 
 ::: repyability.Lever
 
-::: repyability.DemonstrationPlan
-
 ::: repyability.StressStrengthResult
 
 ::: repyability.StressStrengthCurve

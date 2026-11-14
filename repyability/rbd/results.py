@@ -96,7 +96,19 @@ class _ResultMapping(Mapping):
     Preserves the dict-style access the results used to have (``result[key]``,
     ``keys``/``items``/``values``, ``in``, ``dict(result)``, iteration) while
     the subclasses add typed, documented attributes.
+
+    A result of a diagram whose models carry a unit (surpyval's
+    ``unit=``) carries it as ``model_unit``, and in ``to_dict``.
     """
+
+    @property
+    def model_unit(self) -> Optional[str]:
+        """The unit of the models of the diagram that gave this result
+        (``"hours"``, ``"km"``, ``"cycles"``), as their labels name it:
+        the unit its times, rates and lives are in. None when the models
+        name no unit, or name different ones (the diagram warned of
+        that when it was built)."""
+        return self.__dict__.get("_model_unit")
 
     def to_dict(self) -> dict:
         """The result as plain data, ready for ``json.dumps`` (#235): each
@@ -109,9 +121,13 @@ class _ResultMapping(Mapping):
         dict
             The fields, as plain data. Infinite and undefined values stay
             floats (``inf``, ``nan``), which Python's ``json`` writes as
-            ``Infinity`` and ``NaN``.
+            ``Infinity`` and ``NaN``. A result whose diagram's models
+            carry a unit has it as ``"model_unit"`` too.
         """
-        return {name: plain(getattr(self, name)) for name in self}
+        out = {name: plain(getattr(self, name)) for name in self}
+        if self.model_unit is not None:
+            out["model_unit"] = self.model_unit
+        return out
 
     def __getitem__(self, key):
         if key in self._field_names():
@@ -2395,43 +2411,6 @@ class TotalCostAllocation(_ResultMapping):
     method: str
     trains: Optional[Dict[Hashable, list]] = None
     discount_rate: float = 0.0
-
-
-@dataclass
-class DemonstrationPlan(_ResultMapping):
-    """The result of ``demonstration_plan`` and ``mtbf_demonstration_plan``.
-
-    A demonstration test that keeps both of its risks: a design no better
-    than the target passes it with a chance of at most the consumer's
-    risk, and a good design fails it with a chance of at most the
-    producer's. Like the other result types it is also a read-only mapping
-    of its fields.
-
-    Attributes
-    ----------
-    n : int or None
-        The number of units to test (an attribute test); None for a test
-        of a constant failure rate.
-    test_multiple : float or None
-        How many missions long each unit's test is (an attribute test);
-        None for a test of a constant failure rate.
-    test_time : float or None
-        The total unit time to test (a test of a constant failure rate);
-        None for an attribute test.
-    failures : int
-        The failures the test allows: it passes with at most so many.
-    consumer_risk : float
-        The chance that a design at the target passes.
-    producer_risk : float
-        The chance that a design at the good level fails.
-    """
-
-    n: Optional[int]
-    test_multiple: Optional[float]
-    test_time: Optional[float]
-    failures: int
-    consumer_risk: float
-    producer_risk: float
 
 
 @dataclass

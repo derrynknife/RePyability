@@ -5,27 +5,27 @@ built **one use case at a time**: each use case is a question someone
 actually asks, written down before any code, with how it is answered and
 what was learned.
 
-**RePyability is about timelines; Reliafy is about calendars** (the scope
-note in `CLAUDE.md`). Every use case here is asked in model time, from a
-state: ages, how far into an interval, windows of time from now. Dates,
-calendars, operating schedules, meters read by date and financial years
-are Reliafy's, which turns them into model time, calls RePyability, and
-turns the answers back into dates. Reliafy's record
-(`docs/maintenance-scheduling.md`) holds the calendar side of the same
-use cases, under the same numbers.
+**RePyability computes; Reliafy records** (the scope note in
+`CLAUDE.md`). Every use case here is asked in model time, from a state:
+ages, how far into an interval, windows of time from now. The use cases
+on the calendar (tasks on dates, monthly and yearly rules, operating
+schedules and meters read by date) are recorded in
+`repyability/schedule/README.md`, under the same numbers (UC-2, UC-3,
+UC-4 and UC-10 there). The caller (the Reliafy app, or anyone) holds the
+records and decides what "today" is.
 
 ## The use cases, by number
 
 | # | The question here, in model time | State |
 |---|---|---|
 | UC-1 | A system's expected maintenance work in each of a run of windows from its state | **Built**: `RepairableRBD.expected_events_by_window` (#375) |
-| UC-2, UC-3, UC-4 | Tasks on dates and monthly rules: calendar only | Reliafy's |
+| UC-2, UC-3, UC-4 | Tasks on dates and monthly rules | **Built** in `repyability.schedule` (its README) |
 | UC-5 | A part's chance of failing, expected failures and their cost over a window, from its age | **Built**: `NonRepairable.failures` |
 | UC-6 | Right after a failure, the value of skipping the next planned replacement; and, from any state, replace, defer, move to a shut or skip compared | **Built**: `NonRepairable.skip_next_replacement`, and `NonRepairable.compare_replacement_options` |
 | UC-7 | The cheapest replacement policy when replacing at a shut is cheaper than between shuts | Built as `replacement_policies`, then removed: UC-13 answers it |
 | UC-8 | Each policy's cost over a window from a state, and its spread | **Built** for a part: `NonRepairable.cost_distribution` (run to failure, age and block replacement, and a calendar policy, `calendar=`); a system's simulated by `RepairableRBD.cost_by_window` |
 | UC-9 | The cost in each of a run of windows from a state, and how often each outcome happens | **Built** for a part: `NonRepairable.cost_by_window` (the same policies); a system's simulated by `RepairableRBD.cost_by_window` (#375) |
-| UC-10 | Tasks by use on an operating schedule: calendar only | Reliafy's |
+| UC-10 | Tasks by use on an operating schedule | In `repyability.schedule` (its README) |
 | UC-11 | A part renewed at every service and at failure: its risk before each service, from its state, in running hours | **Built**: `NonRepairable.renewal_forecast` |
 | UC-14 | The best visit interval and depth ratio for a layered package of visits | **Built**: `optimal_layered_visits` |
 | UC-15 | The cost and risk of letting a task slip by a tolerance | **Built**: `NonRepairable.slack_effect` |
@@ -65,7 +65,8 @@ Keep to the project's rules (`CLAUDE.md`):
 - Models come in already fitted; fitting stays in surpyval.
 - Results are plain data (`results._ResultMapping`, with `to_dict()`),
   never plots: the Reliafy app draws them.
-- Model time, not dates: Reliafy turns dates into ages and windows.
+- Model time, not dates: dates go through `repyability.schedule`, whose
+  use cases are in its own README.
 - Inputs are checked where they are given (`utils.checks`).
 
 ## Template
@@ -204,7 +205,7 @@ question here is the model-time one it becomes.)
   $400.
 - **The answer:** over the next 82 days, **a 27.8% chance it fails, 0.283
   replacements expected (a new bearing can fail too), $113.20.**
-- **How it is solved:** in model time (RePyability is about timelines):
+- **How it is solved:** in model time:
   - the chance it fails: the life conditioned on the age reached,
     `1 - R(age + t) / R(age)`, exact;
   - the expected replacements: the renewal count from that age, as

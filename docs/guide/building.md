@@ -265,11 +265,41 @@ A diagram works in one unit throughout: its nodes' lives, the times you
 ask about, intervals, repair times, rates and costs per unit of time are
 all in the unit the models were fitted in, whatever it is (hours, cycles,
 kilometres, demands). Which unit makes no difference to the answers;
-mixing two does, and nothing in a fitted model says which it is in yet: a
-Weibull fitted to lives in cycles and one fitted to lives in hours are the
-same kind of object (a unit carried by the model is asked of surpyval,
-SurPyval#845). So give every node's model in one unit, and every number
-you type in it too:
+mixing two does. RePyability converts nothing, so give every node's model
+in one unit, and every number you type in it too.
+
+A surpyval model can say which unit it is in: fit it (or build it) with
+`unit=`, and it keeps the label as `model.unit`. A diagram reads those
+labels. When its models name different units, it is built with a warning
+that names the blocks and their units, because its answers would mix the
+two; models with no unit say nothing, so a diagram of unlabelled models is
+as before. Labels are compared as units, so `"h"`, `"hrs"` and `"hours"`
+agree (this needs surpyval 0.28; before it, labels are compared as text).
+The diagram keeps its unit as `rbd.unit` (shown in its printout), and the
+results it returns carry it as `model_unit` (and in `to_dict()`), so a
+report can say what its times are in. A fault tree, a network and a phased
+mission read their models' units the same way.
+
+```python
+motor = surv.Weibull.from_params([2000, 1.5], unit="hours")
+seal = surv.Weibull.from_params([400, 2], unit="days")
+drive = [("s", "motor"), ("motor", "seal"), ("seal", "t")]
+mixed = NonRepairableRBD(drive, {"motor": motor, "seal": seal})
+# UserWarning: The diagram's models are in different units:
+# 'hours' for 'motor'; 'days' for 'seal'. ... (mixed.unit is None)
+```
+
+Nothing is converted: rebuild (or refit) the seal in hours, and the
+warning goes. The diagram and its results then say which unit they are in:
+
+```python
+seal = surv.Weibull.from_params([400 * 24, 2], unit="hours")
+in_hours = NonRepairableRBD(drive, {"motor": motor, "seal": seal})
+in_hours.unit                                  # 'hours'
+in_hours.structure_summary().model_unit        # 'hours'
+```
+
+The rest of the numbers you give are in that unit too:
 
 - **Intervals, repair times and costs per time** are in the models' unit:
   a proof-test interval of 1 means one hour if the lives are in hours, not

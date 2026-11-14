@@ -661,6 +661,10 @@ def rbd_to_dict(rbd: RBD) -> dict:
         "output_node": args["output_node"],
         "on_infeasible_rbd": args["on_infeasible_rbd"],
     }
+    if getattr(rbd, "unit", None) is not None:
+        # The models' unit, for a reader (the models keep their own
+        # labels; loading works it out from them again).
+        out["unit"] = rbd.unit
     if out["type"] == "RepairableRBD":
         out["components"] = [
             {"node": n, "component": _serialise_component(v)}

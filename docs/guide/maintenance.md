@@ -127,8 +127,8 @@ finds the long-run optimal policy over such a calendar
 date and the part's age, and the policy is a **threshold for each date**:
 replace the part if it is at least `a*(t)` old.
 
-Times are numbers in the life model's unit (days here), from 0: turning dates
-into them is Reliafy's.
+Times are numbers in the life model's unit (days here), from 0. Which dates a
+rule gives is [`repyability.schedule`](schedule.md)'s.
 
 ```python
 import surpyval as surv

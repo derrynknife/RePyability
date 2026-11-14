@@ -22,13 +22,6 @@ from repyability import (
     RepairableRBD,
     StandbyModel,
     Timeline,
-    demonstrated_mtbf,
-    demonstrated_reliability,
-    demonstration_pass_probability,
-    demonstration_sample_size,
-    demonstration_test_multiple,
-    mtbf_pass_probability,
-    mtbf_test_time,
 )
 from repyability._version import __version__
 from repyability.rbd.ccf import with_parameters
@@ -107,76 +100,6 @@ def test_a_network_takes_a_probability_of_failing():
         Network({"a": ("s", "t", 1.5)}, "s", "t")
     with pytest.raises(ValueError, match="sf and ff"):
         Network({"a": ("s", "t", True)}, "s", "t")
-
-
-# -- demonstration tests ---------------------------------------------------
-
-# Deprecated for surpyval.test_planning's (removed in 0.18): each warns.
-DEPRECATED = pytest.mark.filterwarnings(
-    "ignore:repyability.*is deprecated:FutureWarning"
-)
-
-
-@DEPRECATED
-@pytest.mark.parametrize(
-    "function, arrays, fixed",
-    [
-        (demonstration_sample_size, {"reliability": [0.9, 0.95]}, {}),
-        (demonstrated_reliability, {"n": [59, 93], "failures": [0, 1]}, {}),
-        (
-            demonstration_test_multiple,
-            {"reliability": [0.9, 0.95]},
-            {"n": 20, "shape": 2.0},
-        ),
-        (
-            demonstration_pass_probability,
-            {"reliability": [0.95, 0.99]},
-            {"n": 59},
-        ),
-        (mtbf_test_time, {"mtbf": [1000.0, 2000.0], "failures": [0, 2]}, {}),
-        (demonstrated_mtbf, {"test_time": [2995.7, 6295.8]}, {}),
-        (
-            mtbf_pass_probability,
-            {"mtbf": [1000.0, 3000.0]},
-            {"test_time": 2995.7},
-        ),
-    ],
-)
-def test_the_demonstration_functions_take_arrays(function, arrays, fixed):
-    together = function(**{k: np.array(v) for k, v in arrays.items()}, **fixed)
-    one_by_one = [
-        function(**dict(zip(arrays, values)), **fixed)
-        for values in zip(*arrays.values())
-    ]
-    assert together.shape == (2,)
-    assert together.tolist() == one_by_one
-
-
-@DEPRECATED
-def test_a_count_is_not_a_bool():
-    with pytest.raises(ValueError, match="failures"):
-        demonstration_sample_size(0.9, 0.9, failures=True)
-    with pytest.raises(ValueError, match="n must"):
-        demonstrated_reliability(True)
-    with pytest.raises(ValueError, match="failure_terminated"):
-        demonstrated_mtbf(1000.0, failures=1, failure_terminated="yes")
-
-
-@DEPRECATED
-def test_a_failure_terminated_test():
-    # 2r degrees of freedom: the plan is a time-terminated test allowing
-    # one failure fewer, and the bound the time at the r-th failure.
-    for r in (1, 2, 5):
-        time = mtbf_test_time(1000.0, 0.9, r, failure_terminated=True)
-        assert time == mtbf_test_time(1000.0, 0.9, r - 1)
-        assert demonstrated_mtbf(
-            time, 0.9, r, failure_terminated=True
-        ) == pytest.approx(1000.0, rel=1e-12)
-        assert mtbf_pass_probability(
-            1000.0, time, r, failure_terminated=True
-        ) == pytest.approx(0.1, rel=1e-9)
-    with pytest.raises(ValueError, match="at least 1"):
-        mtbf_test_time(1000.0, failures=0, failure_terminated=True)
 
 
 # -- arrays of targets -----------------------------------------------------
@@ -269,9 +192,10 @@ def test_the_spares_demand_values_are_properties():
     assert demand.std == pytest.approx(np.sqrt(10.0), rel=1e-4)
 
 
-def test_what_0_17_deprecates_goes_in_0_18():
-    # repyability.demonstration's nine functions, deprecated for
-    # surpyval.test_planning's: NEXT_REMOVAL (0.18) removes them.
+def test_what_0_18_deprecates_goes_in_0_19():
+    # 0.18 deprecates nothing; a deprecation in 0.19's development goes
+    # in NEXT_REMOVAL (0.19), and this fails as a reminder once the
+    # version reaches it.
     version = tuple(map(int, __version__.split(".")))
     assert version < tuple(map(int, NEXT_REMOVAL.split(".")))
 

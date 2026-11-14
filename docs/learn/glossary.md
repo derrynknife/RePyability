@@ -82,7 +82,7 @@ between their results comes from the designs rather than from chance.
 
 **Consumer's risk.** In a demonstration test, the chance of passing a design
 that is as bad as the level the test must reject ($\beta$). Compare
-producer's risk. [Demonstration testing](../guide/demonstration.md#what-a-plan-risks)
+producer's risk. Test planning is surpyval's (`surpyval.test_planning`).
 
 **Cost rate.** The long-run cost per unit time of running a system or a
 maintenance policy. [Lessons 7](costs.md) and [8](maintenance.md)
@@ -240,7 +240,7 @@ more. It only pays for parts that wear out. [Lesson 8](maintenance.md)
 
 **Producer's risk.** In a demonstration test, the chance of failing a design
 that meets the level it was built to ($\alpha$). Compare consumer's risk.
-[Demonstration testing](../guide/demonstration.md#plans-that-keep-both-risks)
+Test planning is surpyval's (`surpyval.test_planning`).
 
 **Proof test.** A periodic inspection that finds a part's hidden failures;
 the part is repaired if it is found failed. [Lesson 8](maintenance.md)
