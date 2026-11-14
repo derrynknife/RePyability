@@ -11,6 +11,7 @@ the engines against each other in ``test_catalogue``.
 """
 
 import json
+import warnings
 
 import numpy as np
 import pytest
@@ -173,7 +174,10 @@ def test_two_mixtures_are_the_same_by_their_weights_too(mix):
 
 
 @pytest.mark.parametrize("cls", [NonRepairableRBD, RepairableRBD])
-def test_its_parameters_cannot_be_drawn(mix, cls):
+def test_its_parameters_are_drawn_from_its_fit(mix, cls):
+    # From surpyval 0.27 a fitted mixture is rebuilt at drawn parameters
+    # (with_params): "fit" draws its components and weights together from
+    # its covariance (before 0.18 it was refused).
     if cls is NonRepairableRBD:
         rbd = cls(EDGES, {"a": mix})
         method, spec = rbd.sf_uncertainty, {"a": "fit"}
@@ -182,10 +186,16 @@ def test_its_parameters_cannot_be_drawn(mix, cls):
         rbd = cls(EDGES, {"a": {"reliability": mix, "repairability": REPAIR}})
         method = rbd.mean_availability_uncertainty
         spec, args = {"a": {"reliability": "fit"}}, ()
-    with pytest.raises(
-        ValueError, match="MixtureModel.*no parameter covariance"
-    ):
-        method(*args, spec)
+    # Each scale and shape is drawn on the log scale and the weights as
+    # log-ratios, so surpyval refuses no draw (on the parameters' own
+    # scale, about three in ten of this loosely known infant mortality's).
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = method(*args, spec, n_draws=20, seed=0)
+        again = method(*args, spec, n_draws=20, seed=0)
+    assert result.band == "confidence"
+    assert result.std > 0
+    np.testing.assert_array_equal(result.samples, again.samples)
 
 
 def test_other_lives_are_refused_naming_the_component():

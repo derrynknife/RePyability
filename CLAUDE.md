@@ -546,10 +546,12 @@ What remains:
   life in operating time on the calendar, `R(d t)`, by `_duty._SCALED`, one rule per surpyval distribution (a new
   one needs its rule there, which `test_units` checks against `R(d t)`).
   Take surpyval's rescaling once the minimum surpyval has it.
-- **A fit's offset under parameter uncertainty** (surpyval #830).
-  surpyval's `covariance()` leaves an offset fit's `gamma` out, so
-  `rbd/uncertainty.py` holds it where it was fitted, with a warning. Draw it
-  once the minimum surpyval's covariance includes it.
+- **Parameter ranges for drawing fits other than distributions** (no
+  surpyval issue yet). surpyval gives no range per parameter for a
+  regression, a degradation or repairable-unit process or a mixture, so
+  `uncertainty._Rebuilt._bounds` reads each from what `with_params`
+  refuses just below 0 and just above 1, to draw it on the log or logit
+  scale. Take surpyval's ranges once the minimum surpyval says them.
 
 Refused until surpyval has it: an ARA, ARI or G1 renewal model as a life,
 whose next failure surpyval cannot draw yet (surpyval #833,

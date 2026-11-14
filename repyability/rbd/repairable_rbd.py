@@ -713,6 +713,14 @@ class RepairableRBD(RBD):
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)
+        # The lives as given: a fitted process is held below as the life
+        # and repair it is, and drawn from its own fit by the uncertainty
+        # methods (_repairable_uncertainty).
+        self._given_lives = {
+            name: component.get("reliability")
+            for name, component in components.items()
+            if isinstance(component, dict)
+        }
         from repyability.rbd._bayesian_life import as_life
         from repyability.rbd._processes import as_spec
         from repyability.rbd.ccf import as_groups
