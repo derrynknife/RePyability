@@ -9,8 +9,69 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+Behaviour changes: `"fit"` uncertainty now draws every fitted kind of
+block, so diagrams holding a fitted regression, degradation process,
+mixture or repairable-unit process are drawn by default where they were
+held at their fit, and an offset fit's draws now include its offset.
+Numbers that change on purpose: the bands of such diagrams widen to
+include those fits' uncertainty (the narrower bands understated it).
+Seeded draws of a plain distribution without an offset are unchanged.
+
+Numbers that change on purpose: a seeded `RepairableRBD` run with a
+surpyval `MixtureModel` life now draws that life with the mixture's own
+quantile function, so its numbers can differ from 0.17's in the last
+digit or two (about 1e-16 relative: a run whose mean availability was
+0.9797765460669154 gives 0.9797765460669152). A Bayesian fit's
+predictive `ff`, `Hf` and `qf` are the fit's own, equal to 0.17's to
+about 1e-14 relative. Every other seeded result is unchanged.
+
 ### Added
 
+- Every repair model surpyval fits is a repairable block. A fitted
+  `GeneralizedOneRenewal` (G1), `ARA` or `ARI` given as a component's
+  `"reliability"` is its life from new and a `"repair"` of `{"model":
+  "process", "process": model}`, and the Python simulation steps the
+  fitted model itself, failure by failure, with surpyval's public
+  `states`, `next_failure_qf` and `advance` (surpyval 0.27): each life
+  after a repair is the model's quantile at a uniform from the unit's
+  own stream, so a seed gives the same run and the other units' draws are
+  unchanged. Such a unit is taken only by the simulations
+  (`availability`, `cost`, `simulate_timelines`, in Python; the exact
+  methods refuse it, with the reason), may start from its age since new
+  without a failure (not a virtual age), and is saved as the fitted
+  model. Each of its failures costs about 0.1 to 1.5 ms more than a
+  plain unit's (ARI's, whose quantile is solved numerically, the most).
+  A fitted `CoxLewis` process is minimal repair of the life whose
+  cumulative hazard is its cumulative intensity, as `CrowAMSAA` and
+  `Duane` are, so its expected failures are exact (for a falling
+  intensity the life is defective: the unit may never fail again).
+  Before, these four were refused. A G1, ARA or ARI given as a
+  preventive `"restoration"` is still refused. Every existing seeded
+  result is unchanged.
+- **A `JointNode` takes its readings as surpyval `Measurements`.**
+  `JointNode(joint_model, markers=readings, i=unit_id, age=...)` reads the
+  unit's readings out of a `surpyval.Measurements` (`for_unit(i)`), naming
+  the measurement with `measurement=` where it holds several
+  (`with_measurement`). The node gives the same prediction as the unit's
+  `{age: value}` dict, and keeps the unit's id, the measurement's name and
+  its unit label as typed (`i`, `measurement`, `marker_unit`) in its
+  `repr`, `to_dict` and `from_dict` (so a saved diagram keeps them). An
+  unknown unit, an unknown measurement, or several measurements and none
+  named are refused, listing what there is. A plain dict works as before
+  and saves as before.
+- A life on two clocks as a block: surpyval's life at a usage rate
+  (`EquivalenceModel.at_usage(rate)`, surpyval 0.28 and later; for parts
+  that wear by running hours and by starts) is a block's life in a
+  `NonRepairableRBD`, a `NonRepairable` and a `RepairableRBD` component,
+  in the first clock's unit (hours). Where a diagram needs a surpyval
+  distribution, the life at the rate is the distribution it is (the
+  combined clock's, its time divided by `1 + k rate`); a `"duty"` applies
+  on top. Its rate is a lever (`"rate"`, or `"reliability.rate"` in a
+  repairable component) of `parameter_sensitivity`, `levers()` and
+  `with_levers`, and a diagram saves it (the model and the rate). The
+  `EquivalenceModel` itself is refused as a block, saying to give
+  `model.at_usage(rate)`; with a surpyval before 0.28, saying it needs
+  0.28. See [Building an RBD](docs/guide/building.md#a-life-on-two-clocks-hours-and-starts).
 - Repair again or replace, for a fleet whose units differ (UC-27).
   `RepairOrReplace` takes a surpyval `JointFrailtyModel` (repeat failures
   and write-offs fitted together, with each unit's frailty) and the costs
@@ -30,6 +91,73 @@ other release, fixes included, the minor.
   model built from parameters has no bands. surpyval's joint frailty
   model is experimental. `Repairable`'s refusal of a joint frailty model
   now points here.
+
+### Changed
+
+- `"fit"` parameter uncertainty (`sf_uncertainty` and the other
+  `*_uncertainty` methods, `uncertainty_importance`, a network's and a
+  repairable diagram's) takes every fitted kind of block RePyability
+  accepts, through surpyval 0.27's `covariance_names` and `with_params`:
+  a regression node (at its own covariates), a Wiener or gamma
+  degradation process, a mixture, a Royston-Parmar model, and a fitted
+  Crow-AMSAA, Duane, HPP or generalised renewal process given as a
+  repairable component's life (its restoration factor drawn too). Regression
+  nodes of one regression fit share its draws, each at its own
+  covariates. Each parameter is drawn on its own scale (log for one
+  surpyval refuses below 0, logit for one it also refuses above 1 and
+  for a renewal process's restoration factor, as it is otherwise; a
+  mixture's weights as log-ratios), its covariance carried there by the
+  delta method, so no draw is cut off. A draw surpyval still refuses is
+  drawn again, with a warning counting them, and `"fit"` refuses (asking
+  for a list of models) past 2% of the draws. A joint
+  model's prediction is refused plainly: surpyval cannot rebuild it at
+  other parameters.
+- An offset fit's `"fit"` draws are surpyval's refits to resampled data
+  (`bootstrap()`, 200 refits seeded 0, picked with replacement), so the
+  offset is drawn too; before, it was held where it was fitted, with a
+  warning. Where surpyval cannot resample the data (left- or
+  interval-censored data, a model without its data), the offset is held,
+  with the warning, as before.
+- `NonRepairableRBD.uncertainty_importance`'s delta method varies these
+  fits' parameters; a `RepairableRBD`'s refuses them (their parameters
+  are not levers of `parameter_sensitivity`), naming `method="sobol"`.
+
+- RePyability uses surpyval's public interface only. The regression
+  families come from `surpyval.univariate.regression.kinds`, the
+  degradation processes from `surpyval.degradation`, the Cox model and
+  `JointModel` from `surpyval`, and a regression model's covariate count
+  from its public attributes. A new test fails on any import from outside
+  what surpyval's deprecation policy calls public, or any underscored
+  surpyval name. Two names surpyval has no public home for yet are listed
+  in it.
+- A mixture life's quantile is surpyval's `MixtureModel.qf` (precise in
+  both tails since surpyval 0.25, #821), in place of RePyability's own
+  (`_sampling.mixture_quantile`, removed). The two agree to within 2e-15
+  relative from `u = 1e-300` to 1, and a long simulation runs as fast or
+  faster.
+- A Bayesian fit's posterior predictive (`PosteriorPredictive`) takes its
+  `ff`, `Hf` and `qf` from the fit (`BayesianParametric`, which keeps its
+  digits in both tails in surpyval 0.27), in place of working them out
+  from the posterior's points itself. They agree to about 1e-14 relative
+  for probabilities from 1e-30 up.
+
+### Deprecated
+
+- **The demonstration test functions, for surpyval's.** Test planning is
+  surpyval's: `surpyval.test_planning` has `demonstration_sample_size`,
+  `demonstrated_reliability`, `demonstration_test_multiple`,
+  `demonstration_pass_probability`, `mtbf_test_time`, `demonstrated_mtbf`,
+  `mtbf_pass_probability`, `demonstration_plan` and
+  `mtbf_demonstration_plan` under the same names. RePyability's are now
+  calls to them and warn (a `FutureWarning`) naming surpyval's; 0.18
+  removes them (`deprecation.NEXT_REMOVAL`), with `DemonstrationPlan`.
+  surpyval's take `alpha_ci = 1 - confidence`, by keyword, where these
+  took `confidence`. Compared on a grid of every argument before the
+  change, the two give the same sample sizes, failures and plans exactly,
+  and the same probabilities, test times and bounds to within 2e-15
+  (relative: `1 - confidence` taken and given back); the messages for a
+  bad `n` or `alpha_ci` are surpyval's, but a bad `confidence` is still
+  refused as a confidence. The guide's examples use surpyval's.
 
 ## [0.17] - 2026-11-14
 

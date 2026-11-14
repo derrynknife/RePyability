@@ -36,6 +36,7 @@ from repyability import (
     StandbyModel,
 )
 from repyability.rbd import bdd, modular
+from repyability.rbd._usage import has_at_usage
 from repyability.tests.test_performance_equivalence import (
     binomial_first,
     instrument_air,
@@ -182,6 +183,14 @@ def crow_amsaa():
     return surv.CrowAMSAA.fit(np.cumsum(gaps))
 
 
+def ara_process():
+    """An ARA process (arithmetic reduction of age, memory 1) with a
+    Weibull life and half its age taken away at each repair, which the
+    simulation steps with surpyval (a repair surpyval fits that is not
+    Kijima's)."""
+    return surv.ARA.fit_from_parameters([300.0, 1.5], 0.5)
+
+
 @_fitted_once
 def bayes_life():
     """A Bayesian Weibull fit, its posterior 400 draws about alpha 500
@@ -192,6 +201,24 @@ def bayes_life():
         500 * g.lognormal(0, 0.1, 400), 1.5 * g.lognormal(0, 0.1, 400)
     ]
     return surv.bayes.BayesianParametric.from_draws(surv.Weibull, draws)
+
+
+def usage_life():
+    """A part that wears by hours and by starts (one start worth 10
+    hours), at 0.1 starts per hour: surpyval's life at a usage rate
+    (surpyval 0.28 and later; None before)."""
+    if not has_at_usage():
+        return None
+    model = surv.WeibullEquivalence.from_params(
+        [2000.0, 2.0, 10.0], clocks=("hours", "starts")
+    )
+    return model.at_usage(0.1)
+
+
+def _if_usage(name: str, build) -> dict:
+    """``{name: build()}``, or nothing with a surpyval that has no life at
+    a usage rate."""
+    return {name: build()} if has_at_usage() else {}
 
 
 @_fitted_once
@@ -326,6 +353,10 @@ def nonrepairable_kinds():
         "degradation process": NonRepairableRBD(EDGES, {"a": wear(), **rest}),
         "mixture": NonRepairableRBD(EDGES, {"a": mixture_life(), **rest}),
         "Bayesian fit": NonRepairableRBD(EDGES, {"a": bayes_life(), **rest}),
+        **_if_usage(
+            "life at a usage rate",
+            lambda: NonRepairableRBD(EDGES, {"a": usage_life(), **rest}),
+        ),
         "degrading": NonRepairableRBD(
             EDGES,
             {
@@ -754,8 +785,17 @@ def repairable_kinds():
             "Bayesian fit life": system(
                 unit(reliability=bayes_life(), replace_cost=10.0)
             ),
+            **_if_usage(
+                "life at a usage rate",
+                lambda: system(
+                    unit(reliability=usage_life(), replace_cost=10.0)
+                ),
+            ),
             "fitted Crow-AMSAA process": system(
                 unit(reliability=crow_amsaa(), repair_cost=1.0)
+            ),
+            "fitted ARA process": system(
+                unit(reliability=ara_process(), repair_cost=1.0)
             ),
             "degradation process life": system(unit(reliability=wear())),
             "operated part of the time": system(

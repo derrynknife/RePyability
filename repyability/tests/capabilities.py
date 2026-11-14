@@ -418,6 +418,7 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("Any life and repair", "costed_pairs"),
         ("A fitted life", "fitted life"),
         ("A fitted Crow-AMSAA process", "fitted Crow-AMSAA process"),
+        ("A fitted G1, ARA or ARI process", "fitted ARA process"),
         ("A probability per demand", "fixed probability"),
         ("A mixture life", "mixture life"),
         ("A fitted degradation process life", "degradation process life"),

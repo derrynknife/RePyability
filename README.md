@@ -270,6 +270,7 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | Any life and repair | E | E | N | E N | E N | N | S | E | – | N | – | S |
 | A fitted life | E | E | N | N | E N | N | S | E | – | N | – | S |
 | A fitted Crow-AMSAA process | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 9 of 10 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| A fitted G1, ARA or ARI process | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A probability per demand | ✗ | ✗ | ✗ | ✗ `expected_npv` | ✗ | ✗ | ✗ `mean_availability_uncertainty` | ✗ | – | N | ✗ `capacity_distribution` | S |
 | A mixture life | E | E | N | E N | E N | N | S | E | – | N | – | S |
 | A fitted degradation process life | E | E | N | N | E N | N | S | E | – | N | – | S |

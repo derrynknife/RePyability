@@ -213,3 +213,95 @@ def test_the_routes_say_it_is_numerical(pred):
     ).analysis_routes()
     assert report["sf"].route == routes.NUMERICAL
     assert "pump" in report["sf"].reason
+
+
+# -- readings as surpyval Measurements ---------------------------------------
+
+FLEET = {"P-101": PUMP["markers"], "P-102": {0: 1.9, 10: 2.0}}
+
+
+def _fleet(**kwargs):
+    return surv.Measurements(FLEET, **kwargs)
+
+
+def test_measurements_give_the_dicts_prediction():
+    model = joint_model()
+    plain = JointNode(model, **PUMP)
+    for readings in (
+        _fleet(),
+        _fleet(name="vibration", units="mm/s"),
+        # Several measurements, the model's named.
+        surv.Measurements(
+            {"vibration": FLEET, "temperature": {"P-101": {5: 61.0}}},
+            units={"vibration": "mm/s"},
+        ),
+    ):
+        named = None if readings.names == [None] else "vibration"
+        node = JointNode(
+            model,
+            Z=PUMP["Z"],
+            markers=readings,
+            i="P-101",
+            age=PUMP["age"],
+            measurement=named if len(readings.names) > 1 else None,
+        )
+        np.testing.assert_array_equal(node.sf(T), plain.sf(T))
+        assert node.prediction.markers == plain.prediction.markers
+        assert node.i == "P-101"
+    assert plain.i is None and plain.marker_unit is None
+    assert node.measurement == "vibration" and node.marker_unit == "mm/s"
+    assert "temperature" not in repr(node)
+
+
+def test_the_unit_label_round_trips_as_typed():
+    model = joint_model()
+    for i, label in (("P-101", "mm/s"), (7, "µm"), (("line 2", 3), "In/S")):
+        fleet = surv.Measurements(
+            {i: PUMP["markers"]}, name="vibration", units=label
+        )
+        node = JointNode(
+            model, Z=PUMP["Z"], markers=fleet, i=i, age=PUMP["age"]
+        )
+        text = repr(node)
+        assert f"i={i!r}" in text and f"marker_unit={label!r}" in text
+        saved = json.loads(json.dumps(node.to_dict()))
+        assert saved["marker_unit"] == label
+        back = JointNode.from_dict(saved)
+        assert (back.i, back.measurement, back.marker_unit) == (
+            i,
+            "vibration",
+            label,
+        )
+        np.testing.assert_array_equal(back.sf(T), node.sf(T))
+        rbd = NonRepairableRBD(SERIES, {"pump": node, "valve": VALVE})
+        again = NonRepairableRBD.from_json(rbd.to_json())
+        assert again.reliabilities["pump"].marker_unit == label
+    # A node of plain readings saves as it did, with none of the labels.
+    assert set(JointNode(model, **PUMP).to_dict()) == {
+        "model",
+        "covariates",
+        "markers",
+        "age",
+    }
+
+
+def test_measurements_are_refused_clearly(pred):
+    model = joint_model()
+    given = {"Z": PUMP["Z"], "age": PUMP["age"]}
+    with pytest.raises(ValueError, match=r"no readings of unit 'P-9'.*P-101"):
+        JointNode(model, markers=_fleet(), i="P-9", **given)
+    with pytest.raises(ValueError, match="unit's id, i="):
+        JointNode(model, markers=_fleet(), **given)
+    several = surv.Measurements(
+        {"vibration": FLEET, "temperature": {"P-101": {5: 61.0}}}
+    )
+    with pytest.raises(ValueError, match="several measurements.*measurem"):
+        JointNode(model, markers=several, i="P-101", **given)
+    with pytest.raises(ValueError, match="no measurement 'oil'"):
+        JointNode(
+            model, markers=several, i="P-101", measurement="oil", **given
+        )
+    with pytest.raises(TypeError, match="pick a unit's readings"):
+        JointNode(model, markers=PUMP["markers"], i="P-101", **given)
+    with pytest.raises(TypeError, match="leave out markers"):
+        JointNode(pred, markers=_fleet(), i="P-101")

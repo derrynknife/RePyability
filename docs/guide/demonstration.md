@@ -6,6 +6,18 @@ fail; if no more fail, the design has demonstrated the target. These
 functions plan such a test from the target, and say what a finished test
 demonstrated. They fit nothing: surpyval fits the data a test produces.
 
+!!! warning "Deprecated in 0.17: use `surpyval.test_planning`"
+    Test planning is surpyval's. `surpyval.test_planning` has these nine
+    functions under the same names (with sequential and group-sequential
+    tests beside them), and RePyability's are now calls to surpyval's that
+    warn with a `FutureWarning`; 0.18 removes them. surpyval's take the
+    consumer's risk `alpha_ci = 1 − confidence`, by keyword, where
+    RePyability's took `confidence`: `demonstration_sample_size(0.95,
+    confidence=0.9, failures=1)` here is `demonstration_sample_size(0.95, 1,
+    alpha_ci=0.1)` there. The numbers are the same (to the last bit or
+    two), and a plan is the same plan, as surpyval's own
+    `DemonstrationPlan`. The examples below use surpyval's.
+
 ## How many units?
 
 A unit passes if it survives the mission time. With no failures allowed,
@@ -14,11 +26,14 @@ A unit passes if it survives the mission time. With no failures allowed,
 would be that unlikely. This is the success run:
 
 ```python
-from repyability import demonstrated_reliability, demonstration_sample_size
+from surpyval.test_planning import (
+    demonstrated_reliability,
+    demonstration_sample_size,
+)
 
-demonstration_sample_size(0.95, confidence=0.95)              # -> 59
-demonstration_sample_size(0.95, confidence=0.95, failures=1)  # -> 93
-demonstrated_reliability(59, confidence=0.95)                 # -> 0.9505
+demonstration_sample_size(0.95, alpha_ci=0.05)               # -> 59
+demonstration_sample_size(0.95, failures=1, alpha_ci=0.05)   # -> 93
+demonstrated_reliability(59, alpha_ci=0.05)                  # -> 0.9505
 ```
 
 Allowing failures keeps one unlucky unit from failing a good design, at the
@@ -36,10 +51,10 @@ survives `k` missions survives one with reliability `R` when its reliability
 over the test is `R ** (k ** β)`, so fewer units are needed:
 
 ```python
-from repyability import demonstration_test_multiple
+from surpyval.test_planning import demonstration_test_multiple
 
-demonstration_sample_size(0.95, 0.95, test_multiple=2.0, shape=2.0)   # -> 15
-demonstration_test_multiple(0.95, 20, 0.95, shape=2.0)                # -> 1.709
+demonstration_sample_size(0.95, alpha_ci=0.05, test_multiple=2.0, shape=2.0)  # -> 15
+demonstration_test_multiple(0.95, 20, alpha_ci=0.05, shape=2.0)               # -> 1.709
 ```
 
 `demonstration_test_multiple` answers the other way round: how many missions
@@ -56,11 +71,11 @@ ends with at most `r` failures demonstrates an MTBF `θ` at confidence `C`
 when `T ≥ θ χ²(C; 2r + 2) / 2`:
 
 ```python
-from repyability import demonstrated_mtbf, mtbf_test_time
+from surpyval.test_planning import demonstrated_mtbf, mtbf_test_time
 
-mtbf_test_time(1000.0, confidence=0.9)               # -> 2302.6
-mtbf_test_time(1000.0, confidence=0.9, failures=2)   # -> 5322.3
-demonstrated_mtbf(2302.6, confidence=0.9)            # -> 1000.0
+mtbf_test_time(1000.0, alpha_ci=0.1)                 # -> 2302.6
+mtbf_test_time(1000.0, failures=2, alpha_ci=0.1)     # -> 5322.3
+demonstrated_mtbf(2302.6, alpha_ci=0.1)              # -> 1000.0
 ```
 
 ## What a plan risks
@@ -71,7 +86,10 @@ the consumer's risk of accepting a design no better than the target. For a
 good design, one minus it is the producer's risk of rejecting it:
 
 ```python
-from repyability import demonstration_pass_probability, mtbf_pass_probability
+from surpyval.test_planning import (
+    demonstration_pass_probability,
+    mtbf_pass_probability,
+)
 
 demonstration_pass_probability(0.95, 59)               # -> 0.0485   at the target
 demonstration_pass_probability(0.99, 59)               # -> 0.5527   a much better design
@@ -91,14 +109,14 @@ with a chance of at most `1 − confidence`, and that a good design, which
 should pass, fails with a chance of at most `producer_risk`:
 
 ```python
-from repyability import demonstration_plan, mtbf_demonstration_plan
+from surpyval.test_planning import demonstration_plan, mtbf_demonstration_plan
 
-plan = demonstration_plan(0.9, 0.95, confidence=0.9, producer_risk=0.2)
+plan = demonstration_plan(0.9, 0.95, alpha_ci=0.1, producer_risk=0.2)
 plan.n, plan.failures            # (128, 8)   128 units, at most 8 failing
 plan.consumer_risk               # -> 0.097   a design at 90% passes
 plan.producer_risk               # -> 0.192   one at 95% fails
 demonstration_pass_probability(0.95, 22)   # -> 0.324   the success run of 22 units passes it a third of the time
-mtbf = mtbf_demonstration_plan(1000.0, 2000.0, confidence=0.9, producer_risk=0.2)
+mtbf = mtbf_demonstration_plan(1000.0, 2000.0, alpha_ci=0.1, producer_risk=0.2)
 mtbf.test_time, mtbf.failures    # about 14,206 unit hours, at most 9 failures
 mtbf.test_time                   # -> 14206
 ```
@@ -113,4 +131,5 @@ many units: the closer, the more. Given `n=` and the lifetime's `shape`,
 length. The MTBF plans are MIL-HDBK-781's fixed-length plans, for a
 discrimination ratio `good_mtbf / mtbf`; the handbook lets some of its plans
 exceed a risk a little for a shorter test, where these keep both. The
-result is a [`DemonstrationPlan`][repyability.DemonstrationPlan].
+result is surpyval's `DemonstrationPlan` (RePyability's deprecated functions
+give the same plan as a [`DemonstrationPlan`][repyability.DemonstrationPlan]).
