@@ -26,7 +26,9 @@ interference is new. RePyability is tested against surpyval 0.27 and
 needs it: 0.27 removes no name and deprecates nothing RePyability uses,
 and the fitted models RePyability takes give the same values. Every
 repair model surpyval fits is a repairable block (G1, ARA and ARI
-simulated, Cox-Lewis exact), `"fit"` uncertainty draws every fitted kind
+simulated, Cox-Lewis exact), so is any surpyval model with a life's
+functions (a Royston-Parmar fit, a regression at a unit's covariates)
+and a Bayesian fit with an offset or shares, `"fit"` uncertainty draws every fitted kind
 of block, a `JointNode` takes surpyval `Measurements`, and
 `RepairOrReplace` says whether to repair a unit again or replace it, from
 a joint frailty model.
@@ -57,10 +59,40 @@ its level, `availability()` and `cost()` give the exact expected values
 as their means by default (the liner example's quoted mean moves); a
 seeded run from the state of a unit repaired imperfectly now draws from
 the unit's own stream, so its numbers differ from 0.16 (and are now
-reproducible).
+reproducible), as does a seeded run with a repair given a Royston-Parmar
+fit, a regression at its covariates or a destructive degradation model
+(now drawn from the component's stream).
 Every other seeded result is unchanged.
 
 ### Added
+
+- Standby arrangements that had no exact answer. A `StandbyModel` of
+  Exponential units is exact whatever it holds: units of different
+  rates, any `k`, any `dormancy_factor` (warm standby with two or more
+  units operating, cold standby of three or more different units
+  operating) and spares that may fail on demand, by a Markov chain of
+  which units are left, followed by uniformization (each probability, of
+  working or of having failed, to full precision however small). Spares
+  may now fail on demand in warm and hot standby too, where
+  `switching_probability` raised `NotImplementedError`, and in two ways:
+  `switching_probability`, a switch that fails and ends the arrangement
+  then, and the new `start_probability`, a spare that fails to start, is
+  lost and passed for the next at once (one value, or one per spare). The
+  numerical methods take both: cold standby with one unit operating (a
+  spare that may fail to start is one of life 0 then), cold standby of
+  identical units (the renewal counts weighted by the chance that that
+  many spares switch in and start), cold standby of two different units
+  operating, and warm or hot standby with one unit operating (the
+  recursion over the switch-ins). What has neither, units not all
+  Exponential in warm standby with `k >= 2`, hot standby with `k >= 2`
+  and spares that may fail, or cold standby of three or more different
+  units operating, is simulated as before, and its refusal now says why
+  and what would make it exact or numerical; a chain of more than 200
+  states (many different units, warm) is simulated, saying so. Its draws
+  play the spares' switches and starts out with a uniform each, seeded
+  and replayed alike one draw at a time or in a diagram's blocks. A
+  `start_probability` saves with the diagram (and only when it is not 1,
+  so what earlier versions saved is unchanged).
 
 - Tasks counted in running hours (UC-26). A `"preventive"` or
   `"inspection"` spec takes `"basis"`: `"calendar"` (the default, as
@@ -192,15 +224,31 @@ Every other seeded result is unchanged.
 - `PhasedMission.from_diagram(rbd, phases)`: a mission drawn as one
   diagram, each phase (`MissionPhase(name, duration, blocks=..., k=...)`)
   setting how its blocks behave: `"working"` (the default), `"standby"`
-  (cold standby, idle until the phase's structure needs it, started in a
-  set order, switching perfect and instant), `"guaranteed"` (ages but
+  (idle until the phase's structure needs it, called on in the order the
+  phase names them; cold by default, warm with
+  `BlockSetting(state="standby", dormancy_factor=f)`, ageing at `f` of
+  the clock while idle and able to fail there, found failed when called
+  on; and starting with `start_probability`, by default 1, a failed start
+  a failure on demand, the next spare then called on, as a
+  `StandbyModel`'s `dormancy_factor` and `start_probability` behave),
+  `"guaranteed"` (ages but
   cannot fail in the phase) or `"not_needed"` (taken as working by the
   phase, while it ages and can fail), the covariates of a regression block
   in the phase (`BlockSetting(state=..., covariates=...)`, age carried
   over as along a step schedule), and the k of a vote. Missions with no
   block on standby are exact (the Esary-Ziehms segments, 1 in a
-  guaranteed phase); with standby, simulated (one simulation across the
-  phases), with `analysis_routes()` saying which.
+  guaranteed phase). With standby they are exact where every block's
+  life has a constant failure rate in every phase (exponential lives, an
+  exponential regression at each phase's covariates): a Markov chain over
+  the blocks' states (running, idle, failed), carried through the phases
+  with the take-overs, switching and dormancy as the simulation plays
+  them, up to `_mission_chain.MAX_STATES` (20,000) states a phase, which
+  gives the reliability, each phase's failure probability, the
+  reliability over time, the take-overs and the drivers. Otherwise
+  simulated (one simulation across the phases). `analysis_routes()` says
+  which. A simulated `summary()` carries a confidence band about its
+  reliability over time (`lower`, `upper`: Wilson's interval at each
+  time, at `confidence`).
 - `PhasedMission.reliability_over_time(t)`, `failure_drivers()` (the fall
   in each phase's failure probability if a block never failed, exact or
   with common random numbers) and `summary()`, the whole mission at once
@@ -228,11 +276,45 @@ Every other seeded result is unchanged.
   and its draws a posterior point and a life from one uniform, so seeded
   simulations stream it and both engines take it. It saves with the
   diagram (the fit's own `to_dict()`, its posterior whole) and pickles.
-  Its credible band is carried to system results (the next entry). A
-  fit with an offset, a limited failure population or zero inflation, or
-  of a discrete distribution, is refused for now. A surpyval Bayesian fit
+  Its credible band is carried to system results (see below). A fit of
+  a discrete distribution is refused. A surpyval Bayesian fit
   is no longer taken for its distribution at the posterior medians by the
   model probes (`distribution_name`).
+- Any surpyval model with a life's functions is a repairable block, taken
+  by what it can do rather than by its class. A `RepairableRBD`
+  component's life or repair, and a `NonRepairable`'s (with the
+  maintenance calculators on it), takes any surpyval model whose `sf`,
+  `ff`, `df`, `hf`, `Hf`, `qf` and `mean` work with times alone: newly a
+  Royston-Parmar fit, a regression at one unit's covariates
+  (`regression.at(Z)`, surpyval's `LifeAtCovariates`: a proportional
+  hazards, accelerated failure time, proportional odds, distributional,
+  zero-inflated or mixture-cure fit there) and a destructive degradation
+  model, where before a life had to be a distribution, a mixture, a
+  Bayesian fit or a degradation process. The exact methods integrate it
+  through its functions, and the simulations draw it through its quantile
+  function from the component's own stream, so a seed gives the same run
+  on either engine and it can start part way through a life. A share
+  that never fails (a cure model's) is up for good in the long run. It
+  saves with the diagram in surpyval's own format (a regression at its
+  covariates as the regression and the row), in a `NonRepairableRBD`
+  too. Still refused, now saying which function is missing and why: a
+  regression without its covariates (the message names `model.at(Z)`;
+  as a repair it was taken and failed with a `TypeError` in the
+  analysis), a Cox model at its covariates and non-parametric estimates
+  such as `CompetingRisks` (their curves end at the data, so they have
+  no mean), and a joint model's prediction. Seeded results of a repair
+  given one of these models (taken before, drawn with the model's own
+  `random` from numpy's global generator) now come from the component's
+  stream, so they differ from before (and are now reproducible); every
+  other seeded result is unchanged.
+- A Bayesian fit with an offset, a limited failure population or zero
+  inflation (`fit_bayes(offset=True)`, `lfp=True`, `zi=True`, or draws
+  with `gamma`, `lfp_p` or `f0` columns) is a life too, where it was
+  refused: each posterior point is its own model, its functions are the
+  fit's own, a draw inverts the point's model (0 dead on arrival, `inf`
+  never failing), its share that never fails is the points' `1 - lfp_p`
+  averaged, and its credible band draws each point with its offset and
+  shares. A fit of a discrete distribution is still refused.
 - A Bayesian block's credible band, carried to the system's result. The
   parameter-uncertainty methods (`NonRepairableRBD.sf_uncertainty`,
   `mean_uncertainty`, `time_to_reliability_uncertainty`,
@@ -466,6 +548,18 @@ Every other seeded result is unchanged.
 ### Changed
 
 - surpyval 0.27 is required, the release this one is tested against.
+- A `StandbyModel` of Exponential units that was worked out numerically
+  (different rates, imperfect switching, or a dormancy too small for the
+  hypoexponential form) is now exact, by its Markov chain: its
+  reliability and mean move by up to about 1e-5 (1e-4 for two different
+  units operating), to the exact values. Warm or hot standby with
+  `switching_probability` below 1 is worked out (exactly, numerically or
+  simulated, as above) where it raised `NotImplementedError`. A diagram
+  holding an arrangement of Exponential units that was simulated (warm
+  standby with two or more operating, cold standby of three or more
+  different units) is now worked out exactly, so its analyses that
+  refused give values, and a `RepairableRBD`'s means are the exact ones.
+  Seeded draws of every arrangement that ran before are unchanged.
 - With a component replaced on condition by its level, `availability()`
   and `cost()` now give the exact (numerical) expected values as their
   means by default, as for any component with a curve, where they gave

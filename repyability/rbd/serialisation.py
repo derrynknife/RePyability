@@ -35,7 +35,11 @@ from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
 from repyability.rbd._bayesian_life import PosteriorPredictive, as_life
 from repyability.rbd._degradation import is_degradation
-from repyability.rbd._model_utils import distribution_name, is_mixture
+from repyability.rbd._model_utils import (
+    by_functions,
+    distribution_name,
+    is_mixture,
+)
 from repyability.rbd._processes import COX_LEWIS_LIFE, cox_lewis_life
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
@@ -140,6 +144,13 @@ def _serialise_model(model: Any) -> dict:
             "k": model.k,
             "switching_probability": model.switching_probability,
             "dormancy_factor": model.dormancy_factor,
+            # Saved only when a spare may fail to start (#339), so that
+            # what earlier versions saved is unchanged.
+            **(
+                {"start_probability": model.start_probability}
+                if not np.all(np.asarray(model.start_probability) == 1.0)
+                else {}
+            ),
         }
     if isinstance(model, RepeatedStandbyNode):
         return {
@@ -180,10 +191,20 @@ def _serialise_model(model: Any) -> dict:
             "load": model.load,
             "k": model.k,
         }
+    if type(model).__name__ == "LifeAtCovariates" and by_functions(model):
+        # A regression at one unit's covariates (#93), a view with no
+        # to_dict of its own: the regression in surpyval's format and the
+        # row, which surpyval's at() binds again.
+        return {
+            "kind": "life_at_covariates",
+            "regression": model.regression.to_dict(),
+            **_saved_row(model.Z),
+        }
     if (
         distribution_name(model) is not None
         or is_mixture(model)
         or is_degradation(model)
+        or (by_functions(model) and callable(getattr(model, "to_dict", None)))
     ):
         # surpyval's own format: everything surpyval keeps (an offset, p,
         # f0, a fit's covariance, a mixture's components) round-trips,
@@ -191,12 +212,32 @@ def _serialise_model(model: Any) -> dict:
         return {"kind": "surpyval", "model": model.to_dict()}
     raise NotImplementedError(
         f"Cannot serialise a node model of type {type(model).__name__}. "
-        "Only surpyval's parametric models, the "
+        "Only surpyval's models with a to_dict (or a regression's "
+        "at(Z)), the "
         "RePyability node wrappers (standby, degrading, repeated, "
         "NonRepairable, load-sharing, regression, joint, posterior "
         "predictive), perfect "
         "reliability/unreliability and nested RBDs are supported."
     )
+
+
+def _saved_row(Z: Any) -> dict:
+    """A regression's covariate row as JSON: a DataFrame's columns (a
+    model fitted with ``fit_from_df``), or the row's numbers."""
+    columns = getattr(Z, "columns", None)
+    if columns is not None:
+        return {"Z": Z.to_dict(orient="list")}
+    return {"Z": np.asarray(Z, dtype=float).tolist()}
+
+
+def _loaded_row(d: dict) -> Any:
+    """The covariate row ``_saved_row`` saved."""
+    Z = d["Z"]
+    if isinstance(Z, dict):
+        import pandas as pd  # type: ignore[import-untyped]
+
+        return pd.DataFrame(Z)
+    return np.asarray(Z, dtype=float)
 
 
 def deserialise_model(d: dict) -> Any:
@@ -238,6 +279,7 @@ def deserialise_model(d: dict) -> Any:
             k=d["k"],
             switching_probability=d.get("switching_probability", 1.0),
             dormancy_factor=d.get("dormancy_factor", 0.0),
+            start_probability=d.get("start_probability", 1.0),
         )
     if kind == "repeated_standby":
         return RepeatedStandbyNode(
@@ -262,6 +304,8 @@ def deserialise_model(d: dict) -> Any:
         return JointNode.from_dict(d)
     if kind == "posterior_predictive":
         return PosteriorPredictive.from_dict(d)
+    if kind == "life_at_covariates":
+        return surpyval.from_dict(d["regression"]).at(_loaded_row(d))
     if kind == "load_sharing":
         return LoadSharingModel(
             [surpyval.from_dict(md) for md in d["models"]],

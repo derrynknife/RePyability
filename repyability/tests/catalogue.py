@@ -203,6 +203,40 @@ def bayes_life():
 
 
 @_fitted_once
+def bayes_shares_life():
+    """A Bayesian Weibull fit with an offset and a limited failure
+    population: 400 draws about an offset of 20, alpha 500, beta 1.5 and
+    a share that ever fails of 0.8, each draw its own model."""
+    g = np.random.default_rng(7)
+    draws = np.c_[
+        g.uniform(10.0, 30.0, 400),
+        500 * g.lognormal(0, 0.1, 400),
+        1.5 * g.lognormal(0, 0.1, 400),
+        g.uniform(0.7, 0.9, 400),
+    ]
+    return surv.bayes.BayesianParametric.from_draws(
+        surv.Weibull, draws, ["gamma", "alpha", "beta", "lfp_p"]
+    )
+
+
+@_fitted_once
+def royston_parmar_life():
+    """A Royston-Parmar fit (a spline on the log cumulative hazard) to 40
+    lives about a Weibull of alpha 500 and beta 1.5: a surpyval model
+    taken as a life by its functions (#93)."""
+    x = 500 * np.random.default_rng(7).weibull(1.5, 40)
+    return surv.RoystonParmar.fit(x)
+
+
+@_fitted_once
+def life_at_load():
+    """The pump of ``aft()`` at a load of 1.5: a regression at one unit's
+    covariates (``regression.at(Z)``), taken as a life by its functions
+    (#93)."""
+    return aft().at([[1.5]])
+
+
+@_fitted_once
 def mixture_life():
     """A two-mode population, infant mortality and wear-out (#227)."""
     g = np.random.default_rng(7)
@@ -236,6 +270,20 @@ def nonrepairable_kinds():
             EDGES,
             {
                 "a": StandbyModel([unit] * 3, k=2, dormancy_factor=0.5),
+                **rest,
+            },
+        ),
+        "exact warm standby": NonRepairableRBD(
+            EDGES,
+            {
+                # Warm, two operating, a spare that may fail to start:
+                # exact for exponential units (#339).
+                "a": StandbyModel(
+                    [E([0.01])] * 3,
+                    k=2,
+                    dormancy_factor=0.5,
+                    start_probability=0.9,
+                ),
                 **rest,
             },
         ),
@@ -334,6 +382,12 @@ def nonrepairable_kinds():
         "degradation process": NonRepairableRBD(EDGES, {"a": wear(), **rest}),
         "mixture": NonRepairableRBD(EDGES, {"a": mixture_life(), **rest}),
         "Bayesian fit": NonRepairableRBD(EDGES, {"a": bayes_life(), **rest}),
+        "Bayesian fit with shares": NonRepairableRBD(
+            EDGES, {"a": bayes_shares_life(), **rest}
+        ),
+        "Royston-Parmar fit": NonRepairableRBD(
+            EDGES, {"a": royston_parmar_life(), **rest}
+        ),
         "degrading": NonRepairableRBD(
             EDGES,
             {
@@ -362,7 +416,9 @@ def mission_kinds():
     """The phased missions drawn as one diagram whose analyses are checked
     on: with blocks guaranteed, not needed, at a phase's covariates and a
     phase's vote count (exact), on a phase's own model (exact, and with a
-    block on standby), and with a block on standby (simulated)."""
+    block on standby), with a block on standby (simulated), and with
+    blocks on standby, warm and switching imperfectly, every life of a
+    constant rate (exact, by the Markov chain)."""
     from repyability import BlockSetting, MissionPhase, PhasedMission
 
     unit = W([100, 2])
@@ -407,7 +463,36 @@ def mission_kinds():
         MissionPhase("up", 20.0, blocks={"c": "standby", "b": start_up}),
         MissionPhase("on", 30.0, k={"v": 1}),
     ]
+    constant = NonRepairableRBD(
+        edges,
+        {
+            "a": E([0.01]),
+            "b": E([0.02]),
+            "c": E([0.01]),
+            "v": PerfectReliability,
+            "d": RegressionNode(aft(), covariates=[1.0]),
+        },
+        k={"v": 2},
+    )
+    warm = BlockSetting(
+        state="standby", dormancy_factor=0.2, start_probability=0.9
+    )
+    chain = [
+        MissionPhase(
+            "up",
+            20.0,
+            blocks={"c": warm, "a": "guaranteed"},
+            k={"v": 2},
+        ),
+        MissionPhase(
+            "on",
+            30.0,
+            blocks={"b": "standby", "d": BlockSetting(covariates=[2.0])},
+            k={"v": 1},
+        ),
+    ]
     return {
+        "standby_exact": PhasedMission.from_diagram(constant, chain),
         "settings": PhasedMission.from_diagram(vote, settings),
         "standby": PhasedMission.from_diagram(vote, standby),
         "models": PhasedMission.from_diagram(vote, models),
@@ -797,6 +882,15 @@ def repairable_kinds():
             ),
             "Bayesian fit life": system(
                 unit(reliability=bayes_life(), replace_cost=10.0)
+            ),
+            "Bayesian fit with shares life": system(
+                unit(reliability=bayes_shares_life(), replace_cost=10.0)
+            ),
+            "Royston-Parmar life": system(
+                unit(reliability=royston_parmar_life(), replace_cost=10.0)
+            ),
+            "life at a regression's covariates": system(
+                unit(reliability=life_at_load(), replace_cost=10.0)
             ),
             "fitted Crow-AMSAA process": system(
                 unit(reliability=crow_amsaa(), repair_cost=1.0)
