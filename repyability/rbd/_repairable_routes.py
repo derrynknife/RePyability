@@ -24,6 +24,7 @@ from repyability.rbd import (
     _plan_actual,
     _repairable_allocation,
     _repairable_capacity,
+    _repairable_importance,
     _repairable_uncertainty,
     _requirements,
     _runs,
@@ -98,6 +99,29 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                     reason="Each component's share of the system's "
                     "long-run failure frequency (the Birnbaum/Vesely "
                     "formula's terms). " + long_run.reason,
+                )
+            )
+        ),
+    )
+    pfd_groups = r.refusal(
+        partial(_repairable_importance._require_pfd_groups, rbd)
+    )
+    give(
+        ("pfd_breakdown",),
+        (
+            r.refused(pfd_groups)
+            if pfd_groups
+            else (
+                long_run
+                if long_run.route == r.REFUSED
+                else dataclasses.replace(
+                    long_run,
+                    reason="Each component's Aumann-Shapley share of the "
+                    "long-run unavailability without the shared causes "
+                    "(each cut-set term shared equally among its "
+                    "components), and the common-cause groups' Shapley "
+                    "shares of the rest, from the long-run values. "
+                    + long_run.reason,
                 )
             )
         ),

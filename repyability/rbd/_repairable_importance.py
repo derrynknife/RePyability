@@ -20,6 +20,7 @@ from typing import (
 )
 
 import numpy as np
+from surpyval import Exponential
 
 from repyability.rbd import (
     _ccf_chain,
@@ -38,6 +39,7 @@ from repyability.rbd._common import (
 )
 from repyability.rbd.rbd import Pairs
 from repyability.rbd.results import (
+    PFDBreakdown,
     RateBreakdown,
 )
 from repyability.utils.checks import (
@@ -894,3 +896,145 @@ def joint_importance(
             working_nodes,
             broken_nodes,
         )
+
+
+#: The most common-cause groups whose shares of the PFDavg ``pfd_breakdown``
+#: splits: each group's share is its Shapley value, over every subset of
+#: the groups (a diagram rebuilt for each).
+MAX_PFD_GROUPS = 8
+
+
+def _require_pfd_groups(rbd) -> None:
+    """Raise if ``pfd_breakdown`` cannot split the common cause among
+    this diagram's groups (more than ``MAX_PFD_GROUPS``)."""
+    if len(rbd.ccf_groups) > MAX_PFD_GROUPS:
+        raise NotImplementedError(
+            f"The diagram has {len(rbd.ccf_groups)} common-cause groups, "
+            "and pfd_breakdown splits the common-cause share among at "
+            f"most {MAX_PFD_GROUPS}, as yet (each subset of them is worked "
+            "out). Their total is mean_unavailability() less that of the "
+            "diagram without them."
+        )
+
+
+def _with_shared_causes(rbd, kept: Collection[int]):
+    """``rbd`` rebuilt with only the common-cause groups at the places
+    ``kept`` in ``rbd.ccf_groups``: the other groups' members keep their
+    own causes (an exponential life at their own cause's rate, see
+    ``_ccf_groups._own_rate``), and their shared causes never strike."""
+    from repyability.rbd.helper_classes import PerfectReliability
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    from ._sensitivity import _as_spec
+
+    components = dict(rbd._init_args["components"])
+    groups = []
+    for place, group in enumerate(rbd.ccf_groups):
+        if place in kept:
+            groups.append(group)
+            continue
+        for member in group.members:
+            own = _ccf_groups._own_rate(rbd, member)
+            assert own is not None  # refused (see _ccf_rates)
+            spec = _as_spec(components[member])
+            assert spec is not None
+            components[member] = {
+                **spec,
+                "reliability": (
+                    Exponential.from_params([own])
+                    if own > 0.0
+                    else PerfectReliability
+                ),
+            }
+    return RepairableRBD(
+        **{**rbd._init_args, "components": components, "ccf_groups": groups}
+    )
+
+
+def _aumann_shapley(rbd, working, broken) -> Dict[Hashable, float]:
+    """Each component's share of the long-run unavailability of ``rbd``,
+    a diagram without common-cause groups (see ``pfd_breakdown``).
+
+    At each point the long-run values average over (a time of
+    ``_long_run_grid``, or a state of the repair crews' chain) the
+    components are independent, and the system's unavailability ``Q`` is
+    multilinear in theirs, ``q``. Each component's share there is its
+    Aumann-Shapley value, ``q_i`` times the integral over ``s`` from 0 to
+    1 of ``dQ/dq_i`` at ``s q``: the shares add up to ``Q(q) - Q(0) =
+    Q(q)``, and each term of ``Q``'s expansion in products of the ``q``
+    is shared equally among the components in it. ``dQ/dq_i`` is
+    Birnbaum's measure, a polynomial in ``s`` of degree below the number
+    of components, so Gauss-Legendre's rule integrates it exactly."""
+    probabilities, failures, weights = _long_run._long_run_unavailabilities(
+        rbd, working, broken
+    )
+    _, q, _ = rbd._node_pairs(probabilities, failures)
+    nodes, scales = np.polynomial.legendre.leggauss(len(q) // 2 + 1)
+    out = {node: 0.0 for node in rbd.components}
+    for s, scale in zip(0.5 * (nodes + 1.0), 0.5 * scales):
+        down = {node: s * value for node, value in q.items()}
+        up = {node: 1.0 - value for node, value in down.items()}
+        importance = rbd._importances(up, down)[0]
+        for node in out:
+            if node in q and node in importance:
+                out[node] += float(
+                    scale * (weights @ (q[node] * importance[node]))
+                )
+    return out
+
+
+def pfd_breakdown(
+    rbd,
+    working_nodes: Optional[Collection[Hashable]],
+    broken_nodes: Optional[Collection[Hashable]],
+) -> PFDBreakdown:
+    """See ``RepairableRBD.pfd_breakdown``."""
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
+    _require_pfd_groups(rbd)
+    total = float(rbd.mean_unavailability(working, broken))
+    count = len(rbd.ccf_groups)
+    plain = _with_shared_causes(rbd, ()) if count else rbd
+    components = _aumann_shapley(plain, working, broken)
+    independent = float(sum(components.values()))
+    groups: Dict[Any, float] = {}
+    if count:
+        # Each group's Shapley value in the fall of the PFDavg from the
+        # diagram without shared causes to the diagram with them all.
+        value = {0: independent, 2**count - 1: total}
+        for subset in range(1, 2**count - 1):
+            kept = [j for j in range(count) if (subset >> j) & 1]
+            value[subset] = float(
+                _with_shared_causes(rbd, kept).mean_unavailability(
+                    working, broken
+                )
+            )
+        weight = [
+            math.factorial(k)
+            * math.factorial(count - k - 1)
+            / math.factorial(count)
+            for k in range(count)
+        ]
+        for j, group in enumerate(rbd.ccf_groups):
+            share = 0.0
+            for subset in range(2**count):
+                if not (subset >> j) & 1:
+                    size = bin(subset).count("1")
+                    share += weight[size] * (
+                        value[subset | (1 << j)] - value[subset]
+                    )
+            groups[tuple(group.members)] = share
+    common = total - independent
+    parts: Dict[Hashable, float] = dict(components)
+    parts.update(groups)
+    fractions = {
+        key: (part / total if total > 0.0 else math.nan)
+        for key, part in parts.items()
+    }
+    return PFDBreakdown(
+        pfd_avg=total,
+        independent=independent,
+        common_cause=common,
+        components=components,
+        groups=groups,
+        fractions=fractions,
+    )
