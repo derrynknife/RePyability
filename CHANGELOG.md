@@ -59,6 +59,19 @@ about 1e-14 relative. Every other seeded result is unchanged.
   unknown unit, an unknown measurement, or several measurements and none
   named are refused, listing what there is. A plain dict works as before
   and saves as before.
+- A life on two clocks as a block: surpyval's life at a usage rate
+  (`EquivalenceModel.at_usage(rate)`, surpyval 0.28 and later; for parts
+  that wear by running hours and by starts) is a block's life in a
+  `NonRepairableRBD`, a `NonRepairable` and a `RepairableRBD` component,
+  in the first clock's unit (hours). Where a diagram needs a surpyval
+  distribution, the life at the rate is the distribution it is (the
+  combined clock's, its time divided by `1 + k rate`); a `"duty"` applies
+  on top. Its rate is a lever (`"rate"`, or `"reliability.rate"` in a
+  repairable component) of `parameter_sensitivity`, `levers()` and
+  `with_levers`, and a diagram saves it (the model and the rate). The
+  `EquivalenceModel` itself is refused as a block, saying to give
+  `model.at_usage(rate)`; with a surpyval before 0.28, saying it needs
+  0.28. See [Building an RBD](docs/guide/building.md#a-life-on-two-clocks-hours-and-starts).
 
 ### Changed
 
