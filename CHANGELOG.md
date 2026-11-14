@@ -17,6 +17,30 @@ digit or two (about 1e-16 relative: a run whose mean availability was
 predictive `ff`, `Hf` and `qf` are the fit's own, equal to 0.17's to
 about 1e-14 relative. Every other seeded result is unchanged.
 
+### Added
+
+- Every repair model surpyval fits is a repairable block. A fitted
+  `GeneralizedOneRenewal` (G1), `ARA` or `ARI` given as a component's
+  `"reliability"` is its life from new and a `"repair"` of `{"model":
+  "process", "process": model}`, and the Python simulation steps the
+  fitted model itself, failure by failure, with surpyval's public
+  `states`, `next_failure_qf` and `advance` (surpyval 0.27): each life
+  after a repair is the model's quantile at a uniform from the unit's
+  own stream, so a seed gives the same run and the other units' draws are
+  unchanged. Such a unit is taken only by the simulations
+  (`availability`, `cost`, `simulate_timelines`, in Python; the exact
+  methods refuse it, with the reason), may start from its age since new
+  without a failure (not a virtual age), and is saved as the fitted
+  model. Each of its failures costs about 0.1 to 1.5 ms more than a
+  plain unit's (ARI's, whose quantile is solved numerically, the most).
+  A fitted `CoxLewis` process is minimal repair of the life whose
+  cumulative hazard is its cumulative intensity, as `CrowAMSAA` and
+  `Duane` are, so its expected failures are exact (for a falling
+  intensity the life is defective: the unit may never fail again).
+  Before, these four were refused. A G1, ARA or ARI given as a
+  preventive `"restoration"` is still refused. Every existing seeded
+  result is unchanged.
+
 ### Changed
 
 - RePyability uses surpyval's public interface only. The regression
