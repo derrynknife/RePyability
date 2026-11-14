@@ -25,9 +25,6 @@ other release, fixes included, the minor.
   `model.at_usage(rate)`; with a surpyval before 0.28, saying it needs
   0.28. See [Building an RBD](docs/guide/building.md#a-life-on-two-clocks-hours-and-starts).
 
-### Changed
-
-
 ## [0.17] - 2026-11-14
 
 surpyval 0.27, and maintenance in model time. A `RepairableRBD` takes
