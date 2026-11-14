@@ -491,8 +491,7 @@ class _DeadOnArrival:
     """A stand-in model half of whose units are dead on arrival: a
     cumulative hazard of ln 2 from age 0."""
 
-    def _n_covariates(self):
-        return 1
+    phi_param_map = {"beta_0": 0}  # one covariate
 
     def Hf_tvc(self, x, schedule):
         return np.full(np.shape(x), math.log(2.0))
@@ -509,8 +508,7 @@ class _Stub:
     def __init__(self, hazard):
         self.hazard = hazard
 
-    def _n_covariates(self):
-        return 1
+    phi_param_map = {"beta_0": 0}  # one covariate
 
     def Hf_tvc(self, x, schedule):
         return self.hazard(np.asarray(x, dtype=float))

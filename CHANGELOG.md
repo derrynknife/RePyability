@@ -9,6 +9,14 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+Numbers that change on purpose: a seeded `RepairableRBD` run with a
+surpyval `MixtureModel` life now draws that life with the mixture's own
+quantile function, so its numbers can differ from 0.17's in the last
+digit or two (about 1e-16 relative: a run whose mean availability was
+0.9797765460669154 gives 0.9797765460669152). A Bayesian fit's
+predictive `ff`, `Hf` and `qf` are the fit's own, equal to 0.17's to
+about 1e-14 relative. Every other seeded result is unchanged.
+
 ### Added
 
 - Every repair model surpyval fits is a repairable block. A fitted
@@ -32,6 +40,27 @@ other release, fixes included, the minor.
   Before, these four were refused. A G1, ARA or ARI given as a
   preventive `"restoration"` is still refused. Every existing seeded
   result is unchanged.
+
+### Changed
+
+- RePyability uses surpyval's public interface only. The regression
+  families come from `surpyval.univariate.regression.kinds`, the
+  degradation processes from `surpyval.degradation`, the Cox model and
+  `JointModel` from `surpyval`, and a regression model's covariate count
+  from its public attributes. A new test fails on any import from outside
+  what surpyval's deprecation policy calls public, or any underscored
+  surpyval name. Two names surpyval has no public home for yet are listed
+  in it.
+- A mixture life's quantile is surpyval's `MixtureModel.qf` (precise in
+  both tails since surpyval 0.25, #821), in place of RePyability's own
+  (`_sampling.mixture_quantile`, removed). The two agree to within 2e-15
+  relative from `u = 1e-300` to 1, and a long simulation runs as fast or
+  faster.
+- A Bayesian fit's posterior predictive (`PosteriorPredictive`) takes its
+  `ff`, `Hf` and `qf` from the fit (`BayesianParametric`, which keeps its
+  digits in both tails in surpyval 0.27), in place of working them out
+  from the posterior's points itself. They agree to about 1e-14 relative
+  for probabilities from 1e-30 up.
 
 ## [0.17] - 2026-11-14
 
@@ -442,6 +471,19 @@ Every other seeded result is unchanged.
   `optimal_replacement_policy`) raised an `AttributeError`: its survival was
   taken for a non-parametric estimate's. It is a smooth curve, and is now
   integrated and searched as a distribution's is.
+- The expected events of a nested RBD whose components repeat with a
+  period (a block replacement, say), counted at a time a rounding past
+  one of its events at an exact time and before its curves have
+  settled, raised an `IndexError` (`index ... is out of bounds`): the
+  end was taken for the end of the period the counts are extended by,
+  moved down to the event, and extended a negative number of periods.
+  It reached `availability()` and `cost()` through their exact means of
+  a diagram with timed maintenance at several levels (both engines),
+  and `expected_events()` and the other window counts of a diagram with
+  such a nested RBD, at the end of a window. The bug was in 0.16 too.
+  Only the end of the period the counts are extended by is moved now:
+  an end a rounding past an event counts it, as any other end does.
+  Nothing that ran before gives a different number.
 
 ## [0.16] - 2026-10-31
 
