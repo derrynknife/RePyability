@@ -258,3 +258,18 @@ def test_a_simulation_stepped_by_hand_starts_from_a_virtual_age():
     )
     t, up = rbd.next_event()
     assert 0.0 < t < 200.0 and not up
+
+
+def test_a_regression_on_a_poisson_process_is_not_read_as_one():
+    # A proportional-intensity model carries a Poisson process as its
+    # baseline (its dist) but its intensity needs covariates: it is not
+    # translated as the bare process.
+    rng = np.random.default_rng(1)
+    x = np.concatenate(
+        [np.cumsum(rng.weibull(1.5, 5) * 10) for _ in range(20)]
+    )
+    i = np.repeat(np.arange(20), 5)
+    Z = (i % 2).astype(float)[:, None]
+    model = surv.ProportionalIntensityNHPP.fit(x, Z=Z, i=i)
+    with pytest.raises(ValueError, match="ProportionalIntensityModel"):
+        one(model)

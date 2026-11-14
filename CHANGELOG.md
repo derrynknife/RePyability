@@ -56,7 +56,9 @@ needs it: 0.27 removes no name and deprecates nothing RePyability uses,
 and the fitted models RePyability takes give the same values. Nothing
 was deprecated in 0.16, so nothing is removed.
 
-Behaviour changes: surpyval 0.27 is required. Numbers that change on
+Behaviour changes: surpyval 0.27 is required; `Repairable` refuses the
+surpyval models whose count of failures it misread (a joint frailty
+model, a regression, a cause-specific process). Numbers that change on
 purpose: with a component replaced on condition by its level,
 `availability()` and `cost()` give the exact expected values as their
 means by default (the liner example's quoted mean moves); a seeded run
@@ -415,6 +417,21 @@ Every other seeded result is unchanged.
 
 ### Fixed
 
+- `Repairable` took any model with a `cif` as the expected number of
+  failures by an age, so it took surpyval 0.27's `JointFrailtyModel`
+  (repairs and the unit being scrapped) and priced its `cif`, the repairs
+  counted as if the unit were never scrapped: on one model, 2.83 repairs
+  by age 200 where the model's own count (`mcf`) is 2.20, and the cost
+  rate too high, without a word. It now takes from surpyval only the
+  models whose count it reads right, a Poisson process (`HPP`,
+  `CrowAMSAA`, `Duane`, `CoxLewis`) or a renewal process
+  (`GeneralizedRenewal`, `GeneralizedOneRenewal`, `ARA`, `ARI`), and
+  refuses any other (a joint frailty model, a proportional-intensity
+  regression, a cause-specific process, a non-parametric estimate) with
+  a message naming what it takes. A model of your own with `cif` or
+  `mcf` is taken as before. A `RepairableRBD` no longer reads a
+  proportional-intensity regression as the bare Poisson process it is
+  built on (it raised an unclear error); it is refused by name.
 - A unit repaired imperfectly and started from a state (a `virtual_age`
   or an `age`) drew what is left of its life from numpy's global random
   numbers rather than its own stream, so a seeded run from that state
@@ -430,6 +447,19 @@ Every other seeded result is unchanged.
   `optimal_replacement_policy`) raised an `AttributeError`: its survival was
   taken for a non-parametric estimate's. It is a smooth curve, and is now
   integrated and searched as a distribution's is.
+- The expected events of a nested RBD whose components repeat with a
+  period (a block replacement, say), counted at a time a rounding past
+  one of its events at an exact time and before its curves have
+  settled, raised an `IndexError` (`index ... is out of bounds`): the
+  end was taken for the end of the period the counts are extended by,
+  moved down to the event, and extended a negative number of periods.
+  It reached `availability()` and `cost()` through their exact means of
+  a diagram with timed maintenance at several levels (both engines),
+  and `expected_events()` and the other window counts of a diagram with
+  such a nested RBD, at the end of a window. The bug was in 0.16 too.
+  Only the end of the period the counts are extended by is moved now:
+  an end a rounding past an event counts it, as any other end does.
+  Nothing that ran before gives a different number.
 
 ## [0.16] - 2026-10-31
 

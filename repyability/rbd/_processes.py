@@ -24,10 +24,49 @@ The other renewal models (ARA, ARI, G1) are refused: their repairs are not
 Kijima's, and drawing their next failure needs surpyval (SurPyval#833).
 """
 
+from functools import lru_cache
 from typing import Any, Optional, Tuple
 
 #: Kijima's model, by surpyval's ``kijima_type``.
 _KIJIMA = {"i": "kijima1", "ii": "kijima2"}
+
+
+@lru_cache(maxsize=None)
+def _poisson_process_type() -> type:
+    """The class of surpyval's fitted Poisson process models (HPP,
+    CrowAMSAA, Duane, CoxLewis), read off a model built with the public
+    ``from_params`` since the class itself is not exported."""
+    import surpyval as surv
+
+    return type(surv.CrowAMSAA.from_params([1.0, 1.0]))
+
+
+def is_poisson_process(model) -> bool:
+    """Whether ``model`` is a surpyval Poisson process (``HPP``,
+    ``CrowAMSAA``, ``Duane``, ``CoxLewis``, fitted or from parameters),
+    whose cumulative intensity ``cif(t)`` is the expected number of
+    failures by ``t``. Regressions on a Poisson process (proportional
+    intensity), cause-specific processes and joint frailty models are not:
+    their ``cif`` needs covariates or a cause, or leaves out an event."""
+    from surpyval.recurrent import CountingProcess
+
+    return type(model) is _poisson_process_type() and isinstance(
+        getattr(model, "dist", None), CountingProcess
+    )
+
+
+def is_renewal_process(model) -> bool:
+    """Whether ``model`` is a surpyval renewal process model
+    (``GeneralizedRenewal``, ``GeneralizedOneRenewal``, ``ARA``,
+    ``ARI``), whose ``mcf`` simulates the expected number of failures."""
+    from surpyval.recurrent import RenewalModel
+
+    return isinstance(model, RenewalModel)
+
+
+def is_surpyval_model(model) -> bool:
+    """Whether ``model`` is one of surpyval's own objects."""
+    return type(model).__module__.partition(".")[0] == "surpyval"
 
 
 def _translated(model) -> Optional[Tuple[Any, Optional[dict], str]]:
@@ -35,7 +74,9 @@ def _translated(model) -> Optional[Tuple[Any, Optional[dict], str]]:
     model."""
     import surpyval as surv
 
-    fitter = getattr(model, "dist", None)
+    fitter = (
+        getattr(model, "dist", None) if is_poisson_process(model) else None
+    )
     if fitter is surv.HPP:
         (rate,) = (float(p) for p in model.params)
         return surv.Exponential.from_params([rate]), None, "HPP"
