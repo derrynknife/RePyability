@@ -144,6 +144,13 @@ def _serialise_model(model: Any) -> dict:
             "k": model.k,
             "switching_probability": model.switching_probability,
             "dormancy_factor": model.dormancy_factor,
+            # Saved only when a spare may fail to start (#339), so that
+            # what earlier versions saved is unchanged.
+            **(
+                {"start_probability": model.start_probability}
+                if not np.all(np.asarray(model.start_probability) == 1.0)
+                else {}
+            ),
         }
     if isinstance(model, RepeatedStandbyNode):
         return {
@@ -272,6 +279,7 @@ def deserialise_model(d: dict) -> Any:
             k=d["k"],
             switching_probability=d.get("switching_probability", 1.0),
             dormancy_factor=d.get("dormancy_factor", 0.0),
+            start_probability=d.get("start_probability", 1.0),
         )
     if kind == "repeated_standby":
         return RepeatedStandbyNode(

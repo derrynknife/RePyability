@@ -2,7 +2,7 @@
 ``PhasedMission.summary`` and ``PhasedMission.failure_drivers``)."""
 
 from dataclasses import dataclass
-from typing import Any, Dict, Hashable, List, Optional
+from typing import Any, Dict, Hashable, List, Optional, Tuple
 
 import numpy as np
 
@@ -152,6 +152,10 @@ class MissionSummary(_ResultMapping):
         fail).
     n_samples : int or None
         Simulated: the number of missions.
+    lower, upper : numpy.ndarray or None
+        Simulated: a confidence band about the reliability over time, at
+        the summary's ``confidence`` (two-sided at each time, Wilson's
+        interval for a fraction of the missions); ``None`` when exact.
     """
 
     method: str
@@ -166,6 +170,8 @@ class MissionSummary(_ResultMapping):
     drivers: MissionDrivers
     riskiest_phase: Optional[Hashable]
     n_samples: Optional[int] = None
+    lower: Optional[np.ndarray] = None
+    upper: Optional[np.ndarray] = None
 
     def __repr__(self) -> str:
         return (
@@ -173,3 +179,16 @@ class MissionSummary(_ResultMapping):
             f"{self.reliability:.6g}, {len(self.phases)} phase(s), "
             f"riskiest {self.riskiest_phase!r}, {len(self.times)} times)"
         )
+
+
+def wilson_band(
+    fraction: np.ndarray, n: int, z: float
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Wilson's two-sided interval, at the normal quantile ``z``, about
+    each ``fraction`` of ``n`` missions: unlike the normal interval it
+    keeps a width where the fraction is 0 or 1."""
+    p = np.asarray(fraction, dtype=float)
+    shrink = 1.0 + z * z / n
+    centre = (p + z * z / (2 * n)) / shrink
+    half = z / shrink * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return np.clip(centre - half, 0.0, 1.0), np.clip(centre + half, 0.0, 1.0)

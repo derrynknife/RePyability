@@ -288,6 +288,20 @@ def nonrepairable_kinds():
                 **rest,
             },
         ),
+        "exact warm standby": NonRepairableRBD(
+            EDGES,
+            {
+                # Warm, two operating, a spare that may fail to start:
+                # exact for exponential units (#339).
+                "a": StandbyModel(
+                    [E([0.01])] * 3,
+                    k=2,
+                    dormancy_factor=0.5,
+                    start_probability=0.9,
+                ),
+                **rest,
+            },
+        ),
         "repeated standby": NonRepairableRBD(
             EDGES, {"a": RepeatedStandbyNode(unit, 2), **rest}
         ),
@@ -417,7 +431,9 @@ def mission_kinds():
     """The phased missions drawn as one diagram whose analyses are checked
     on: with blocks guaranteed, not needed, at a phase's covariates and a
     phase's vote count (exact), on a phase's own model (exact, and with a
-    block on standby), and with a block on standby (simulated)."""
+    block on standby), with a block on standby (simulated), and with
+    blocks on standby, warm and switching imperfectly, every life of a
+    constant rate (exact, by the Markov chain)."""
     from repyability import BlockSetting, MissionPhase, PhasedMission
 
     unit = W([100, 2])
@@ -462,7 +478,36 @@ def mission_kinds():
         MissionPhase("up", 20.0, blocks={"c": "standby", "b": start_up}),
         MissionPhase("on", 30.0, k={"v": 1}),
     ]
+    constant = NonRepairableRBD(
+        edges,
+        {
+            "a": E([0.01]),
+            "b": E([0.02]),
+            "c": E([0.01]),
+            "v": PerfectReliability,
+            "d": RegressionNode(aft(), covariates=[1.0]),
+        },
+        k={"v": 2},
+    )
+    warm = BlockSetting(
+        state="standby", dormancy_factor=0.2, start_probability=0.9
+    )
+    chain = [
+        MissionPhase(
+            "up",
+            20.0,
+            blocks={"c": warm, "a": "guaranteed"},
+            k={"v": 2},
+        ),
+        MissionPhase(
+            "on",
+            30.0,
+            blocks={"b": "standby", "d": BlockSetting(covariates=[2.0])},
+            k={"v": 1},
+        ),
+    ]
     return {
+        "standby_exact": PhasedMission.from_diagram(constant, chain),
         "settings": PhasedMission.from_diagram(vote, settings),
         "standby": PhasedMission.from_diagram(vote, standby),
         "models": PhasedMission.from_diagram(vote, models),
@@ -474,7 +519,8 @@ def fault_tree_kinds():
     """The fault trees of every kind the tree's analyses are checked on
     (#314): events given as probabilities, as lifetime models (surpyval
     distributions, a fit with its covariance) and as both, a repeated
-    event, and common-cause groups of each model and basis."""
+    event, common-cause groups of each model and basis, a NOT gate, a
+    functional dependency, and dynamic gates integrated or shared."""
     unit = W([100, 2])
     gates = {"top": ("or", ["pair", "c"]), "pair": ("and", ["a", "b"])}
     rest = {"b": W([80, 1.5]), "c": E([0.002])}
@@ -514,6 +560,41 @@ def fault_tree_kinds():
             gates,
             {"a": 0.05, "b": 0.05, "c": 0.01},
             ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+        ),
+        # A NOT gate (non-coherent): exact, its prime implicants for cut
+        # sets, Birnbaum's the one importance measure.
+        "not gate": FaultTree(
+            {
+                "top": ("or", ["pair", "c and not a"]),
+                "pair": ("and", ["a", "b"]),
+                "c and not a": ("and", ["c", "not a"]),
+                "not a": ("not", ["a"]),
+            },
+            {"a": unit, **rest},
+        ),
+        # A functional dependency: the static tree it is written out as.
+        "functional dependency": FaultTree(
+            {**gates, "power": ("fdep", "p", ["a", "b"])},
+            {"a": unit, **rest, "p": E([0.0005])},
+        ),
+        # Dynamic gates, each an independent module: integrated.
+        "dynamic": FaultTree(
+            {
+                "top": ("or", ["order", "spare"]),
+                "order": ("pand", ["a", "b"]),
+                "spare": ("spare", 0.2, ["c", "d"]),
+            },
+            {"a": unit, **rest, "d": W([150, 1.2])},
+        ),
+        # A dynamic gate sharing an event with the rest: simulated on
+        # request (method="simulate"), refused exactly.
+        "dynamic, shared": FaultTree(
+            {
+                "top": ("or", ["order", "pair"]),
+                "order": ("seq", ["a", "b"]),
+                "pair": ("and", ["b", "c"]),
+            },
+            {"a": unit, **rest},
         ),
     }
 

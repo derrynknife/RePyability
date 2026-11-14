@@ -49,13 +49,14 @@ from typing import (
 
 import numpy as np
 
-from repyability.rbd import _mission_runs
+from repyability.rbd import _mission_chain, _mission_runs
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import bdd, modular, routes
 from repyability.rbd._mission_results import (
     MissionDrivers,
     MissionPhaseSummary,
     MissionSummary,
+    wilson_band,
 )
 from repyability.rbd._mission_settings import (
     Life,
@@ -413,6 +414,9 @@ class PhasedMission:
         # component (see ``_cut_set_plan``), once worked out.
         self._cut_sets: Optional[List[frozenset]] = None
         self._cut_plan: Optional[Tuple[tuple, Dict[Hashable, int]]] = None
+        # The values from the Markov chain of a mission with blocks on
+        # standby, once worked out.
+        self._chain_kept: Optional[_mission_chain.ChainValues] = None
 
     @classmethod
     def from_diagram(
@@ -443,8 +447,11 @@ class PhasedMission:
 
         A mission with no block on standby is exact, as one built from a
         diagram per phase is (each block's segments survived with its
-        life's probabilities, 1 in a phase it is guaranteed); one with a
-        block on standby is simulated. ``analysis_routes()`` says which.
+        life's probabilities, 1 in a phase it is guaranteed). One with a
+        block on standby is exact too where every block's life has a
+        constant failure rate in every phase (a Markov chain over the
+        blocks' states), and simulated otherwise. ``analysis_routes()``
+        says which.
 
         Parameters
         ----------
@@ -610,25 +617,38 @@ class PhasedMission:
         ]
 
     def _require_exact(self, what: Optional[str] = None) -> None:
-        """Refuse an exact analysis of a mission with blocks on standby,
-        whose take-over is simulated (``what``: an analysis that has no
-        simulated version, which then names the one to use instead)."""
+        """Refuse an exact analysis of a mission with blocks on standby
+        that its Markov chain cannot work out (``_mission_chain``: a life
+        with no constant rate, too many states), whose take-overs are
+        then simulated; and, whatever the lives, an analysis of such a
+        mission that the chain does not give (``what``: the importance
+        measures and cut sets, which then name the one to use instead)."""
         standby = self._standby()
         if not standby:
             return
-        names = ", ".join(repr(node) for node in standby)
         if what is None:
-            raise NotImplementedError(
-                f"Blocks on standby ({names}) start when the phase needs "
-                "them, which depends on the other blocks' failures, so the "
-                "mission is simulated: method='simulate', or "
-                "reliability_interval."
-            )
+            self._chain_values()
+            return
+        names = ", ".join(repr(node) for node in standby)
         raise NotImplementedError(
             f"The {what} of a mission with blocks on standby ({names}) is "
             "not worked out: failure_drivers gives each block's part in "
-            "the mission's failures, simulated."
+            "the mission's failures (exact where the mission is, else "
+            "simulated)."
         )
+
+    def _chain_values(
+        self,
+        held: Optional[Hashable] = None,
+        times: Optional[np.ndarray] = None,
+    ) -> "_mission_chain.ChainValues":
+        """The values of a mission with blocks on standby from its Markov
+        chain (see ``_mission_chain.run``), the plain ones kept."""
+        if held is None and times is None:
+            if self._chain_kept is None:
+                self._chain_kept = _mission_chain.run(self)
+            return self._chain_kept
+        return _mission_chain.run(self, held, times)
 
     def _raw_ends(
         self, ends: Optional[np.ndarray] = None
@@ -841,6 +861,11 @@ class PhasedMission:
         ``phases`` phases, and that it fails in them, each to its own
         relative precision."""
         self._require_exact()
+        if self._standby():
+            chain = self._chain_values()
+            return chain.through[phases - 1], float(
+                sum(chain.failing[:phases])
+            )
         return _outcomes(self._plan(phases), *self._segments())
 
     # ------------------------------------------------------------------
@@ -998,7 +1023,8 @@ class PhasedMission:
     ) -> "_mission_runs.Runs":
         """``size`` simulated missions (see ``_mission_runs``)."""
         lives = _mission_runs.draw(self, size, antithetic)
-        return _mission_runs.play(self, lives, size)
+        switches = _mission_runs.draw_switches(self, size, antithetic)
+        return _mission_runs.play(self, lives, size, switches=switches)
 
     def _simulated(
         self,
@@ -1788,16 +1814,11 @@ class PhasedMission:
 
     def _choose(self, method: Optional[str], mc_samples, seed, name: str):
         """``"exact"`` or ``"simulate"``, and why it is simulated: by
-        default (``method=None``), exact unless a block is on standby."""
+        default (``method=None``), exact unless a block is on standby and
+        the mission's Markov chain cannot be worked out."""
         if method is None:
-            standby = self._standby()
-            if not standby:
-                return "exact", None
-            names = ", ".join(repr(node) for node in standby)
-            return "simulate", (
-                f"Blocks on standby ({names}) start when the phase needs "
-                "them, which depends on the other blocks' failures."
-            )
+            reason = routes.refusal(self._require_exact)
+            return ("simulate", reason) if reason else ("exact", None)
         method = self._method(method, mc_samples, seed, name)
         return method, (
             "Asked for (method='simulate')." if method == "simulate" else None
@@ -1817,6 +1838,10 @@ class PhasedMission:
         """The mission's exact reliability at each of ``times``: the
         phases before the one under way (the latest to start by then)
         whole, and that one cut short."""
+        if self._standby():
+            self._require_exact()
+            curve = self._chain_values(times=times).curve
+            return np.asarray(curve, dtype=float)
         starts, ends = self._starts(), [phase.end for phase in self.phases]
         out = np.empty(times.shape)
         for i, t in np.ndenumerate(times):
@@ -1852,7 +1877,8 @@ class PhasedMission:
             ``"exact"``: each time's phase cut short there, the earlier
             ones whole, through the mission's decision diagram.
             ``"simulate"``: the fraction of simulated missions not failed
-            by then. By default exact, unless a block is on standby.
+            by then. By default exact, unless a block is on standby and
+            the mission's Markov chain cannot be worked out.
         mc_samples : int, optional
             The number of simulated missions, by default 10_000 (used only
             when simulated).
@@ -1871,7 +1897,8 @@ class PhasedMission:
             unknown, or ``mc_samples`` or ``seed`` is given with
             ``method="exact"``.
         NotImplementedError
-            With ``method="exact"``, if a block is on standby, or the
+            With ``method="exact"``, if a block is on standby and a life
+            has no constant rate (or the chain too many states), or the
             mission's decision diagram is too large.
 
         Examples
@@ -1905,6 +1932,8 @@ class PhasedMission:
     def _phase_failures(self, held: Optional[Hashable] = None) -> List[float]:
         """The exact probability of failing in each phase, with the
         component ``held`` (if any) working throughout."""
+        if self._standby():
+            return list(self._chain_values(held=held).failing)
         segments = self._segments(held=None if held is None else {held: 1.0})
         out: List[float] = []
         before = 0.0
@@ -1959,9 +1988,12 @@ class PhasedMission:
         montecarlo.check_count(mc_samples, False, "mc_samples", 2)
         with numpy_seed(seed):
             lives = _mission_runs.draw(self, mc_samples, False)
-        plain = _mission_runs.play(self, lives, mc_samples)
+            switches = _mission_runs.draw_switches(self, mc_samples)
+        plain = _mission_runs.play(self, lives, mc_samples, switches=switches)
         held = {
-            node: _mission_runs.play(self, lives, mc_samples, held=node)
+            node: _mission_runs.play(
+                self, lives, mc_samples, held=node, switches=switches
+            )
             for node in self.components
         }
         return plain, held
@@ -1991,7 +2023,8 @@ class PhasedMission:
             block's segments held. ``"simulate"``: ``mc_samples`` missions
             played again with each block held, on the same draws (common
             random numbers), with each total's standard error. By default
-            exact, unless a block is on standby.
+            exact, unless a block is on standby and the mission's Markov
+            chain cannot be worked out.
         mc_samples : int, optional
             The number of simulated missions, by default 10_000 (used only
             when simulated).
@@ -2009,7 +2042,8 @@ class PhasedMission:
             If ``method`` is unknown, or ``mc_samples`` or ``seed`` is
             given with ``method="exact"``.
         NotImplementedError
-            With ``method="exact"``, if a block is on standby, or the
+            With ``method="exact"``, if a block is on standby and a life
+            has no constant rate (or the chain too many states), or the
             mission's decision diagram is too large.
 
         Examples
@@ -2055,7 +2089,8 @@ class PhasedMission:
         reliability over time, each phase's part in its failures, and the
         blocks that drove them.
 
-        Exact where the mission is (no block on standby), else from one
+        Exact where the mission is (no block on standby, or every life
+        with a constant rate), else from one
         simulation of ``mc_samples`` missions, which every value is read
         from (the drivers from the same missions played again with each
         block held, see
@@ -2069,14 +2104,15 @@ class PhasedMission:
             boundary included.
         method : str, optional
             ``"exact"`` or ``"simulate"``; by default exact unless a
-            block is on standby.
+            block is on standby and a life has no constant rate.
         mc_samples : int, optional
             The number of simulated missions, by default 10_000 (used only
             when simulated).
         seed : int, optional
             Seeds the simulation, by default None.
         confidence : float, optional
-            The confidence level of the simulated reliability's interval,
+            The confidence level of the simulated reliability's interval
+            and of the band about its reliability over time (two-sided),
             by default 0.95.
 
         Returns
@@ -2093,7 +2129,8 @@ class PhasedMission:
             unknown, ``mc_samples`` or ``seed`` is given with
             ``method="exact"``, or ``mc_samples`` is less than 2.
         NotImplementedError
-            With ``method="exact"``, if a block is on standby, or the
+            With ``method="exact"``, if a block is on standby and a life
+            has no constant rate (or the chain too many states), or the
             mission's decision diagram is too large.
 
         Examples
@@ -2124,6 +2161,7 @@ class PhasedMission:
         takeovers: List[Dict[Hashable, float]] = [{} for _ in names]
         interval = None
         n_samples = None
+        band: Tuple[Optional[np.ndarray], Optional[np.ndarray]] = (None, None)
         if method == "simulate":
             montecarlo.check_confidence(confidence)
             n_samples = 10_000 if mc_samples is None else mc_samples
@@ -2146,6 +2184,9 @@ class PhasedMission:
             failing = [float(np.mean(plain.phase == j)) for j in range(count)]
             through = [float(np.mean(plain.phase > j)) for j in range(count)]
             curve = np.mean(plain.time[:, None] > grid_times[None, :], axis=0)
+            band = wilson_band(
+                curve, n_samples, montecarlo.z_value(confidence)
+            )
             for (j, node), started in plain.started.items():
                 takeovers[j][node] = float(started.mean())
             drivers = self._drivers(runs)
@@ -2155,6 +2196,8 @@ class PhasedMission:
             through = [self._exact(j + 1)[0] for j in range(count)]
             curve = self._exact_over_time(grid_times)
             drivers = self._drivers(None)
+            if self._standby():
+                takeovers = list(self._chain_values().takeovers)
         phases = []
         reached = 1.0
         for j, (phase, setting) in enumerate(zip(self.phases, self._settings)):
@@ -2192,6 +2235,8 @@ class PhasedMission:
             drivers=drivers,
             riskiest_phase=riskiest,
             n_samples=n_samples,
+            lower=band[0],
+            upper=band[1],
         )
 
     def analysis_routes(self) -> Dict[str, routes.AnalysisRoute]:
@@ -2240,19 +2285,22 @@ class PhasedMission:
             for n, life in self._lives.items()
         }
         count = len(self.phases)
-        refused = r.refusal(self._require_exact) or r.refusal(
-            lambda: self._plan(count)
+        standby = bool(self._standby())
+        refused = r.refusal(self._require_exact) or (
+            None if standby else r.refusal(lambda: self._plan(count))
+        )
+        how = (
+            "A Markov chain over the blocks' states (running, idle, "
+            "failed), carried through the phases, the take-overs of the "
+            "blocks on standby in it."
+            if standby
+            else "The phases' decision diagram over the components' "
+            "segments (Esary and Ziehms), replayed."
         )
         diagram = (
             r.refused(refused)
             if refused
-            else r.with_nodes(
-                r.EXACT,
-                "The phases' decision diagram over the components' "
-                "segments (Esary and Ziehms), replayed.",
-                nodes,
-                "reliabilities",
-            )
+            else r.with_nodes(r.EXACT, how, nodes, "reliabilities")
         )
         out = {
             name: diagram

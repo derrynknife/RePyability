@@ -15,7 +15,11 @@ taking already-fitted lifetime models (from
   events) evaluated exactly, with common-cause groups, cut sets, importance
   measures, the mean time to the top event, B-lives and hazard, parameter
   sensitivities, uncertainty from fitted event models, and conversion to
-  and from block diagrams.
+  and from block diagrams; NOT gates (exact, with prime implicants),
+  dynamic gates (priority AND, cold, warm and hot spares, sequences and
+  functional dependencies: the top event probability over time, integrated
+  where each is an independent module, simulated otherwise), and export to
+  Open-PSA.
 - **Reliability**: exact system reliability, hazard and conditional survival;
   the exact MTTF (or simulated, with confidence intervals); B*X* life;
   uncertainty intervals on the reliability, MTTF, B*X* life and time to a
@@ -195,6 +199,7 @@ Which analyses each model type has (the method; — where it has none):
 | Spares demand and stock | — | `spares_demand` | — | — | — |
 | **Structure** | | | | | |
 | Minimal path and cut sets | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` |
+| Prime implicants (NOT gates) | — | — | `prime_implicants` | — | — |
 | Each path set's probability | `path_set_probabilities` | `path_set_probabilities` | — | — | — |
 | Cut sets ranked by probability | — | — | `ranked_cut_sets` | — | — |
 | Irrelevant components | `find_irrelevant_components` | `find_irrelevant_components` | — | — | — |
@@ -206,6 +211,7 @@ Which analyses each model type has (the method; — where it has none):
 | Capacity over time | — | `point_capacity` | — | — | — |
 | How each analysis is computed | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` |
 | Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | — |
+| Export to Open-PSA (MEF) | — | — | `to_open_psa` | — | — |
 | **Importance measures** | | | | | |
 | Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` |
 | Structural | `structural_importance` | `structural_importance` | `structural_importance` | `structural_importance` | — |
@@ -331,9 +337,11 @@ places, nested diagrams):
   probabilities (a diagram refuses a non-parametric fit, such as
   Kaplan–Meier: fit a parametric distribution in surpyval); a unit of a
   surpyval joint model of readings and failures, given its readings
-  (`JointNode`, from now); repeated nodes; cold standby with one or
-  two units operating (any units) or more (identical units); warm standby
-  with one unit operating, and hot standby (any units); load sharing of
+  (`JointNode`, from now); repeated nodes; standby of Exponential units
+  (any number operating, any dormancy); cold standby with one or two
+  units operating (any units) or more (identical units); warm standby
+  with one unit operating, and hot standby (any units); spares that may
+  fail to switch in or to start, in each of these; load sharing of
   identical units; common-cause groups, for the system's reliability,
   importance, sensitivity and redundancy allocation (and, splitting the
   failure rate, its MTTF);
@@ -367,8 +375,8 @@ places, nested diagrams):
 | The uncertainty from fitted component parameters (`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, `time_to_reliability_uncertainty`; for a repairable system `mean_availability_uncertainty`, `point_availability_uncertainty`, `mission_availability_uncertainty`, `expected_cost_rate_uncertainty`) | Sampled over the parameters, randomly or quasi-randomly (`sampling="sobol"`), each draw exact or numerical as the diagram's own value is | Sampling is the method. |
 | Small failure probabilities, with a node only simulations take | Rare-event simulation (`unreliability_interval`); `ff` refused | Only while the node has no reliability of its own: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |
 | **Components** | | |
-| Warm standby with two or more units operating, of non-exponential units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare is switched in where, and how much each has aged, branch with the order of the failures. With one unit operating it is numerical, and hot standby (k-out-of-*n*) exact. |
-| Cold standby with three or more different units operating, and load sharing of different units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare goes where, and how old the others are, branch with the order of the failures. Identical units are numerical in both, and so are two different units operating. |
+| Warm standby with two or more units operating, of non-exponential units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare is switched in where, and how much each has aged, branch with the order of the failures. With one unit operating it is numerical, hot standby (k-out-of-*n*) exact, and Exponential units exact (a Markov chain), spares that may fail to switch in or start included. |
+| Cold standby with three or more different units operating, and load sharing of different units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare goes where, and how old the others are, branch with the order of the failures. Identical units are numerical in both, and so are two different units operating; Exponential units in standby are exact. |
 | Anything such a node is part of | Simulated in the system's simulations; the analyses that need the node's reliability refused | Only while the node has no reliability of its own. |
 | Common-cause groups: analyses given ages, and the MTTF of a group splitting a failure probability | Refused (a simulated MTTF leaves a probability split out) | No: the analyses given ages need a model of members of different ages. A group splitting the failure rate (`basis="rate"`) has an exact MTTF, and the simulations draw its shared shocks. Importance, parameter sensitivity and redundancy allocation are exact with groups (a beta-factor member's copies join its group), and parameter uncertainty is sampled with them. |
 | **Architecture and maintenance** | | |

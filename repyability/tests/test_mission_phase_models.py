@@ -224,8 +224,10 @@ def test_cold_standby_runs_on_the_phase_s_model():
     )
     interval = mission.reliability_interval(100_000, seed=1)
     assert within(interval.estimate, interval.standard_error, closed)
-    summary = mission.summary(mc_samples=20_000, seed=1)
+    summary = mission.summary(method="simulate", mc_samples=20_000, seed=1)
     assert summary.method == "simulated"
+    # Every life exponential: the Markov chain gives it exactly.
+    assert mission.reliability() == pytest.approx(closed, rel=1e-10)
 
 
 def test_standby_against_a_hand_written_simulation():

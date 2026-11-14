@@ -93,11 +93,18 @@ def test_standby_k2_switching():
     t = np.array([0.5, 2.0, 5.0])
     expected = np.exp(-2 * rate * t) * (1 + 0.5 * 2 * rate * t)
     np.testing.assert_allclose(model.sf(t), expected, atol=1e-6)
-    # Warm or hot standby takes no imperfect switching.
-    with pytest.raises(NotImplementedError):
-        StandbyModel(
-            [EXP, EXP], dormancy_factor=0.5, switching_probability=0.5
-        )
+    # Warm standby takes imperfect switching too (#339): with two
+    # exponential units the spare is alive at the switch with
+    # exp(-kappa rate u), so sf = e^-rt + s r e^-rt (1 - e^-kappa r t) /
+    # kappa r.
+    warm = StandbyModel(
+        [EXP, EXP], dormancy_factor=0.5, switching_probability=0.5
+    )
+    kr = 0.5 * rate
+    expected = np.exp(-rate * t) * (
+        1 + 0.5 * rate * (1 - np.exp(-kr * t)) / kr
+    )
+    np.testing.assert_allclose(warm.sf(t), expected, rtol=1e-12)
 
 
 def test_invalid_switching_probability():
