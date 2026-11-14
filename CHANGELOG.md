@@ -9,6 +9,24 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- `NonRepairable.cost_distribution()` and `cost_by_window()` take a
+  calendar policy, `calendar=` (the `CalendarPolicy` of
+  `optimal_calendar_policy`: at each opportunity, replace the part if it
+  is at least that time's threshold age): a part's cost over a window
+  from its state, and in each of a run of windows, with its spread, under
+  the policy found to be cheapest over a calendar of shuts. Planned
+  replacements are priced by their opportunity, and the outcomes count
+  them by kind (`outcomes()` gives `"planned": {kind: count}`; the
+  results' new `kinds`, `kind_prices` and `kind_outcomes`). Numerical by
+  default, to the `precision` reported: on a grid of half the policy's
+  step, each count's renewals in the window passed on to the counts with
+  one more event (failures by a convolution cut at each renewal's planned
+  time), checked against the policy's own step; simulated with
+  `method="simulate"`. A policy worked out by integration has no grid
+  and is simulated only.
+
 ## [0.17] - 2026-11-14
 
 surpyval 0.27, and maintenance in model time. A `RepairableRBD` takes

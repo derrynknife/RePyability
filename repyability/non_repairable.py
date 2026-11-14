@@ -1639,6 +1639,7 @@ class NonRepairable:
         resets=None,
         age=0.0,
         since_renewal=None,
+        calendar=None,
         budget=None,
         levels=(10.0, 50.0, 90.0),
         method="exact",
@@ -1657,10 +1658,13 @@ class NonRepairable:
         ``every``), age replacement (``every`` with ``resets=True``) or
         block replacement (``resets=False``), as
         [`renewal_forecast`][repyability.NonRepairable.renewal_forecast]
-        takes it; replacements take no time. Numerical by default (to the
-        ``precision`` reported, about 1e-6), simulated with
-        ``method="simulate"``. How it is worked out: the [maintenance
-        guide](../guide/maintenance.md).
+        takes it, or a calendar policy (``calendar``, from
+        [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]:
+        at each opportunity, replace the part if it is at least that
+        time's threshold age, at that opportunity's price); replacements
+        take no time. Numerical by default (to the ``precision``
+        reported, about 1e-6), simulated with ``method="simulate"``. How
+        it is worked out: the [maintenance guide](../guide/maintenance.md).
 
         Parameters
         ----------
@@ -1679,6 +1683,12 @@ class NonRepairable:
         since_renewal : float, optional
             For block replacement: how far into the interval it is, less
             than ``every``, by default the age.
+        calendar : CalendarPolicy, optional
+            Instead of ``every``: a calendar policy worked out for this
+            part, its calendar's times counted from now. Failures cost the
+            part's ``unplanned_cost``; each planned replacement, the price
+            of its opportunity (``kinds`` and ``kind_prices`` in the
+            result, and the outcomes by kind).
         budget : float, optional
             A budget, for the chance the cost exceeds it.
         levels : array_like, optional
@@ -1703,7 +1713,9 @@ class NonRepairable:
             If an argument is out of range, a cost the policy needs is not
             given, or the part takes time to replace.
         NotImplementedError
-            If the life has no survival function in closed form.
+            If the life has no survival function in closed form, or, by
+            default, for a calendar policy worked out by integration
+            (simulate it).
 
         Examples
         --------
@@ -1735,6 +1747,7 @@ class NonRepairable:
             resets=resets,
             age=age,
             since_renewal=since_renewal,
+            calendar=calendar,
             budget=budget,
             levels=levels,
             method=method,
@@ -1752,6 +1765,7 @@ class NonRepairable:
         resets=None,
         age=0.0,
         since_renewal=None,
+        calendar=None,
         budget=None,
         levels=(10.0, 50.0, 90.0),
         method="exact",
@@ -1790,6 +1804,8 @@ class NonRepairable:
         age : float, optional
             The part's age now, by default 0.
         since_renewal : float, optional
+            As for `cost_distribution`.
+        calendar : CalendarPolicy, optional
             As for `cost_distribution`.
         budget : float, optional
             A budget for each window, for the chance it is exceeded.
@@ -1846,6 +1862,7 @@ class NonRepairable:
             resets=resets,
             age=age,
             since_renewal=since_renewal,
+            calendar=calendar,
             budget=budget,
             levels=levels,
             method=method,

@@ -629,6 +629,46 @@ or a renewal after a failure, by the renewal measure), and from there the
 counts are worked out as for one window from now. Under block replacement
 each window's planned replacements are known.
 
+**Under a calendar policy.** Both take `calendar=`, the `CalendarPolicy`
+of [`optimal_calendar_policy`](#replacement-over-a-calendar-of-shuts-nonrepairable)
+worked out for the part, in place of `every` and `resets`: at each
+opportunity the part is replaced if it is at least that time's threshold
+age, at that opportunity's price, and a failure costs the part's
+`unplanned_cost`. The calendar's times are counted from now. Here, UC-7's
+best policy for the bearing, with a shut every 180 days, the next in 21:
+
+```python
+from repyability import Calendar, Opportunity
+
+plant = Calendar([Opportunity("shut", 100.0, period=180.0, offset=21.0)], anytime=None)
+best = bearing.optimal_calendar_policy(plant)
+best.schedule()[0][1:3]                        # -> ('shut', 138.0)
+spend = bearing.cost_distribution(1086.0, calendar=best, age=224.0, budget=1500.0)
+round(spend.mean, 1), [float(c) for c in spend.percentiles]   # -> (1090.0, [600.0, 1000.0, 1600.0])
+round(spend.probability_above_budget, 3)      # -> 0.15
+spend.outcomes()[0]["planned"], spend.outcomes()[0]["failures"]   # -> ({'shut': 5}, 1)
+years = bearing.cost_by_window(
+    [263.0, 629.0, 994.0, 1359.0], calendar=best, age=224.0, budget=600.0
+)
+[round(float(m), 1) for m in years.mean]     # -> [306.9, 358.7, 358.9, 359.0]
+[round(float(p), 3) for p in years.outcome_probabilities[1]]   # -> [0.0, 0.599, 0.306, 0.095]
+```
+
+The prices of planned replacements can differ by opportunity (an annual
+shut cheaper than a weekly stop), so a calendar policy's outcomes count the
+planned replacements by kind (`outcomes()` gives `"planned": {kind:
+count}`; `kinds` and `kind_prices` name them). A part put in at time `s`
+is next replaced at a time the policy fixes, so the cycles differ by when
+they start and are not convolutions of one cycle's. Instead, on a grid of
+half the policy's step, the expected renewals at each time are kept by the
+counts so far (failures, and planned replacements by kind); each count's
+failures are a convolution of its renewals, cut at their planned times, so
+the counts are taken in order without a sweep in time, and before the
+window the renewals are followed forward uncounted. `precision` compares
+it with the policy's own step, as above (about 3e-7 for the bearing,
+half a second a window). A policy worked out by `method="integration"` has
+no grid, so it is simulated (`method="simulate"`).
+
 **A layered package of visits.** A cheap task at every visit and a deeper
 one at every `k`-th: `optimal_layered_visits(light, deep, visit_cost=...)`
 finds the visit interval and the ratio `k` that cost least in the long run.
