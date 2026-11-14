@@ -31,6 +31,7 @@ from surpyval import ExactEventTime
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _ccf_modules,
+    _covariate_schedule,
     _importance_time,
     _sensitivity,
     _spares,
@@ -46,12 +47,23 @@ from repyability.rbd.results import (
     AvailabilityResult,
     CapacityDistribution,
     ConfidenceInterval,
+    CostByWindow,
     CostResult,
+    CrewJob,
+    CrewStates,
+    EventsByWindow,
     ExpectedCost,
     ExpectedEvents,
+    ExpectedNPV,
     Lever,
+    MaintenanceEffect,
     MaintenancePlan,
+    NodeActionRates,
+    PFDBreakdown,
+    PlanVsActual,
     RateBreakdown,
+    ReplacementCycle,
+    SimulationSamples,
     SparesDemand,
     SparesStock,
     TimelineSimulation,
@@ -69,15 +81,21 @@ from repyability.rbd import (
     _crews,
     _curves,
     _event_loop,
+    _first_failure,
     _intervals,
     _long_run,
+    _npv,
+    _plan_actual,
     _repairable_allocation,
     _repairable_capacity,
     _repairable_importance,
     _repairable_routes,
     _repairable_uncertainty,
     _runs,
+    _shutdowns,
     _spec,
+    _unplanned,
+    _window_report,
     _windows,
 )
 from repyability.rbd._common import (
@@ -94,6 +112,7 @@ from repyability.rbd._events import (
     _Imperfect,
     _Inspection,
     _Preventive,
+    _Restoration,
     _Standby,
     _Unit,
 )
@@ -203,6 +222,38 @@ class RepairableRBD(RBD):
           ``"opportunity"`` (an age from 0 to ``interval``) renews the
           unit early, from that age, at a stop of its maintenance group
           (see ``"group"``), as its scheduled replacement would.
+          A ``"restoration"`` makes each task restore the unit only
+          partly, by Kijima's virtual-age models, under the ``"age"``,
+          ``"block"`` and ``"condition"`` policies: a dict of a
+          ``"model"``, ``"kijima1"`` or ``"kijima2"``, and a restoration
+          factor ``"q"`` in [0, 1] (as ``"repair"`` takes them), or a
+          fitted surpyval ``GeneralizedRenewal``, whose Kijima model and
+          restoration factor are taken. A task after the unit has
+          operated ``x`` since its last action (a repair, a task, or put
+          in service) takes its virtual age from ``v`` to ``v + q * x``
+          (Kijima I: the task takes away the share ``1 - q`` of the age
+          added since) or ``q * (v + x)`` (Kijima II: it scales the whole
+          virtual age); the failure the unit had yet to reach never
+          happens, and its next life is drawn given its new virtual age,
+          from the end of the task (it does not age while down). ``q = 0``
+          is as new under Kijima II, and under Kijima I when its repairs
+          renew it (taken as no restoration); ``q = 1`` leaves it as old
+          as it was. A repair renews the unit unless it has a ``"repair"``
+          of its own. Under ``"age"`` the task falls due when the
+          operating time since the last task or renewal reaches the
+          interval; under ``"condition"`` an inspection judges the unit by
+          its virtual age. ``"replace_every"``, a whole number ``N`` of at
+          least 2 (with a ``q`` above 0), replaces the unit as new at
+          every ``N``-th task since it was last put in as new (by a
+          replacement, a repair that renews it, or the last such task),
+          charged ``"replacement_cost"`` (a number or a distribution, by
+          default the task's ``"cost"``); only that task uses a spare.
+          Not taken with a ``"calendar"`` policy, a ``"level"`` or an
+          ``"opportunity"``. The exact methods refuse such a component,
+          and the simulations follow it, in Python; started from a
+          state, it takes its ``virtual_age`` at its last action and its
+          ``age`` since (and its ``since_scheduled``), but not with
+          ``"replace_every"``.
           ``"inspection"`` makes the component's failures *hidden*: a
           failure takes it down, but nobody knows until an inspection (a
           proof test) finds it, and only then does its repair start. It
@@ -265,9 +316,28 @@ class RepairableRBD(RBD):
           the component operates, for a ``"reliability"`` fitted in
           operating time: it ages only while it operates, so its life on
           the diagram's clock is its operating life over ``d``
-          (``R(d t)``), which every method then takes; its repairs,
-          maintenance and tests stay on the clock. The life must be a
-          surpyval parametric distribution of a time.
+          (``R(d t)``), which every method then takes; its repairs stay
+          on the clock, and so do its maintenance and tests unless
+          counted in operating time: a ``"preventive"`` or
+          ``"inspection"`` spec's ``"basis"``, ``"calendar"`` (the
+          default) or ``"operating"``, says what its times are counted
+          in, and those in operating time (a task's ``"interval"`` and
+          ``"opportunity"``, a test's ``"interval"``, ``"offset"`` and
+          ``"full_test"``) go onto the clock divided by ``d``. The spec
+          keeps them as given, for saving, the levers,
+          ``with_intervals`` and the interval choices, which take and
+          give them in operating time. The life must be a surpyval
+          parametric distribution of a time.
+          ``"covariates"``, a surpyval ``StepSchedule``, runs a block
+          whose ``"reliability"`` is a fitted surpyval regression model
+          (proportional or additive hazards, accelerated failure time or
+          accelerated life) under covariates that change over the
+          diagram's time, from 0: each unit's life is drawn from when it
+          is put into service, at the covariates in force as it ages,
+          its age reset by its repairs and tasks as for any block while
+          the schedule runs on. Only the simulations take it
+          (``availability``, ``cost``, ``simulate_timelines``, in
+          Python); see the guide's "Covariates that change over time".
           ``"standby"`` makes the node a standby group of identical units,
           each failing and repaired as ``"reliability"`` and
           ``"repairability"`` say: a dict of ``"units"`` (by default 2),
@@ -402,6 +472,26 @@ class RepairableRBD(RBD):
         group's chain followed from every member up. The simulations draw
         each cause as a Poisson process, failing the members it names that
         are up; they need exponential lives alone.
+    shutdowns : dict, optional
+        Outages planned on a period or at given times that hold the whole
+        system, or a named set of its nodes, off line for a fixed time
+        (see [Shutdowns](../guide/system-maintenance.md#shutdowns)), by
+        default none: a name and a spec for each, of ``"period"`` and
+        ``"offset"`` (the first shut's start, in ``[0, period)``; 0 puts
+        the first at ``period``) or ``"times"`` (the shuts' starts,
+        increasing), ``"duration"`` (0 or more, shorter than the period or
+        the gaps between the times), ``"scope"`` (a list of the diagram's
+        nodes; None, the default, for the whole system), ``"cost"``
+        (charged at each shut) and ``"idle_ageing"`` (True, the default:
+        a block in scope not worked on keeps ageing; False: it stands
+        still until the shut ends). The work done at a shut is given on
+        the block: ``"preventive": {"shutdown": name}`` renews it at every
+        shut (with ``"older_than"``, only once that old; with ``"policy":
+        "condition"``, on its condition; with a ``"restoration"``,
+        partly), and ``"inspection": {"shutdown": name}`` tests it there;
+        either takes the shut's calendar and duration, and the block must
+        be in its scope. Shuts on a period are exact where the blocks fail
+        independently; the rest is simulated, in Python.
 
 
     Attributes
@@ -446,8 +536,12 @@ class RepairableRBD(RBD):
     PREVENTIVE_KEYS : tuple[str, ...]
         The keys of a ``"preventive"`` spec: ``"interval"``, ``"policy"``,
         ``"duration"`` and ``"cost"``, a ``"condition"`` policy's
-        ``"threshold"`` and ``"inspection_cost"``, and an ``"age"``
-        policy's ``"opportunity"``.
+        ``"threshold"`` and ``"inspection_cost"``, an ``"age"``
+        policy's ``"opportunity"``, a ``"condition"`` policy's
+        ``"level"``, a ``"calendar"`` policy's ``"calendar"``, and a
+        task's ``"restoration"``, ``"replace_every"`` and
+        ``"replacement_cost"``, a task's ``"shutdown"`` and
+        ``"older_than"``, and its times' ``"basis"``.
     GROUP_KEYS : tuple[str, ...]
         The keys of a maintenance group's options: ``"setup_cost"`` and
         ``"system_down"``.
@@ -456,10 +550,15 @@ class RepairableRBD(RBD):
         ``"kijima1"`` and ``"kijima2"``.
     INSPECTION_KEYS : tuple[str, ...]
         The keys of an ``"inspection"`` spec: ``"interval"``, ``"duration"``,
-        ``"cost"``, ``"offset"``, ``"coverage"`` and ``"full_test"``.
+        ``"cost"``, ``"offset"``, ``"coverage"``, ``"full_test"``,
+        ``"shutdown"`` and ``"basis"``.
     STANDBY_KEYS : tuple[str, ...]
         The keys of a ``"standby"`` spec: ``"units"``, ``"k"``,
         ``"dormancy_factor"`` and ``"switching_probability"``.
+    SHUTDOWN_KEYS : tuple[str, ...]
+        The keys of a shutdown's spec: ``"period"``, ``"offset"``,
+        ``"times"``, ``"duration"``, ``"scope"``, ``"cost"`` and
+        ``"idle_ageing"``.
 
     Raises
     ------
@@ -501,11 +600,29 @@ class RepairableRBD(RBD):
         [0, 1], a ``"replace_after"`` is not a whole number of at least 1
         given with a ``q`` above 0, or an imperfectly repaired component
         is a standby group, is replaced on condition, or has a lifetime
-        model with no ``Hf`` and ``qf``; or if ``ccf_groups`` holds
+        model with no ``Hf`` and ``qf``; or if a ``"restoration"`` is
+        not a dict of a known ``"model"`` and a ``"q"`` in [0, 1] (or a
+        fitted ``GeneralizedRenewal`` of Kijima's), is given with a
+        ``"calendar"`` policy, a ``"level"``, an ``"opportunity"`` or to
+        a standby group, a ``"replace_every"`` is not a whole number of
+        at least 2 given with a restoration of ``q`` above 0, or a
+        ``"replacement_cost"`` is given without one; or if ``ccf_groups`` holds
         anything but ``CCFGroup`` instances, a member that is not a
         component (or is a nested RBD or a standby group), a component in
         two groups, or a group of components with different life or
-        repair models.
+        repair models; or if a shutdown's spec has an unknown key, neither
+        or both of a period and times, a duration as long as its period
+        or a gap, an offset outside its period, or a negative cost; two
+        shutdowns overlap; a scope names what is not a component; a
+        task names a shutdown the diagram has not, gives what the shut
+        gives (an interval, a duration, an offset, ...), or is on a block
+        outside its scope; ``"older_than"`` is given without a shutdown,
+        with a condition policy or a restoration; a shut stands still a
+        block it cannot (one with a calendar of its own, nested, or tied
+        to others); or a nested RBD has shutdowns of its own; or a task's
+        ``"basis"`` is not ``"calendar"`` or ``"operating"``, or is
+        ``"operating"`` on a component with no ``"duty"``, at a
+        shutdown or under a ``"calendar"`` policy.
     TypeError
         If a component is not a spec dict, a ``NonRepairable`` or a
         ``RepairableRBD`` (a ``Repairable``, which models imperfect repair,
@@ -586,6 +703,7 @@ class RepairableRBD(RBD):
     GROUP_KEYS = _spec.GROUP_KEYS
     INSPECTION_KEYS = _spec.INSPECTION_KEYS
     STANDBY_KEYS = _spec.STANDBY_KEYS
+    SHUTDOWN_KEYS = _shutdowns.SHUTDOWN_KEYS
     _PER_ACTION_COST_KEYS = _spec._PER_ACTION_COST_KEYS
 
     def __init__(
@@ -601,11 +719,21 @@ class RepairableRBD(RBD):
         repair_crews: Optional[int] = None,
         maintenance_groups: Optional[dict[Any, dict]] = None,
         ccf_groups: Optional[Sequence[Any]] = None,
+        shutdowns: Optional[dict[Any, dict]] = None,
     ):
         _check_on_infeasible_rbd(on_infeasible_rbd)
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)
+        # The lives as given: a fitted process is held below as the life
+        # and repair it is, and drawn from its own fit by the uncertainty
+        # methods (_repairable_uncertainty).
+        self._given_lives = {
+            name: component.get("reliability")
+            for name, component in components.items()
+            if isinstance(component, dict)
+        }
+        from repyability.rbd._bayesian_life import as_life
         from repyability.rbd._processes import as_spec
         from repyability.rbd.ccf import as_groups
 
@@ -618,11 +746,22 @@ class RepairableRBD(RBD):
                     name,
                     {
                         **component,
-                        "reliability": perfect_class(component["reliability"]),
+                        "reliability": perfect_class(
+                            as_life(component["reliability"])
+                        ),
+                        **(
+                            {
+                                "repairability": as_life(
+                                    component["repairability"]
+                                )
+                            }
+                            if "repairability" in component
+                            else {}
+                        ),
                     },
                 )
                 if isinstance(component, dict) and "reliability" in component
-                else perfect_class(component)
+                else perfect_class(as_life(component))
             )
             for name, component in components.items()
         }
@@ -641,11 +780,27 @@ class RepairableRBD(RBD):
                 dict(maintenance_groups) if maintenance_groups else None
             ),
             "ccf_groups": list(ccf_groups) if ccf_groups else None,
+            "shutdowns": (
+                {name: dict(spec) for name, spec in shutdowns.items()}
+                if isinstance(shutdowns, dict) and shutdowns
+                else shutdowns or None
+            ),
         }
+        # Outages planned at given times, holding blocks off line (see
+        # _shutdowns); their scopes are checked once the diagram is built.
+        self._shutdowns = _shutdowns.validate(shutdowns)
         # A component that operates part of the time takes its life on
         # the calendar from here on; the spec as given keeps its life in
-        # operating time, for its levers, draws and saving.
-        components = _on_duty(components)
+        # operating time, for its levers, draws and saving; and a task
+        # counted in operating time is put on the calendar through the
+        # duty, its spec as given keeping its times in operating time.
+        # The duty of each such component, by node, converts the
+        # intervals the interval choices give and take (see _intervals).
+        # A block on a covariate schedule takes its life under it (see
+        # _covariate_schedule); the spec as given keeps the regression
+        # model and the schedule, for saving and drawing.
+        components = _covariate_schedule.on_schedules(components)
+        components, self._operating_tasks = _on_duty(components)
         self.repair_crews = _validate_crews(repair_crews)
         # Each component's place in the queue for a crew (higher first).
         self._priority: dict[Any, float] = {}
@@ -669,6 +824,9 @@ class RepairableRBD(RBD):
         self._member_group: dict[Any, Hashable] = {}
         # Components repaired imperfectly, by node (see _ImperfectComponent).
         self._imperfect: dict[Any, _Imperfect] = {}
+        # Components their preventive maintenance restores only partly, by
+        # node (see _ImperfectComponent).
+        self._restoring: dict[Any, _Restoration] = {}
         # The base class checks the names given components against the
         # edges; a component for a name in no edge is not part of the
         # diagram (the structure check reports it).
@@ -710,7 +868,10 @@ class RepairableRBD(RBD):
                         node_costs[key] = cost
                 if component.get("preventive") is not None:
                     schedule, cost, inspecting = _spec._validate_preventive(
-                        name, component["preventive"], component["reliability"]
+                        name,
+                        component["preventive"],
+                        component["reliability"],
+                        self._shutdowns,
                     )
                     if cost is not None:
                         node_costs["preventive_cost"] = cost
@@ -729,7 +890,7 @@ class RepairableRBD(RBD):
                             "other."
                         )
                     inspection, cost = _spec._validate_inspection(
-                        name, component["inspection"]
+                        name, component["inspection"], self._shutdowns
                     )
                     if cost is not None:
                         node_costs["inspection_cost"] = cost
@@ -747,6 +908,20 @@ class RepairableRBD(RBD):
                 imperfect = _spec._validate_imperfect(self, name, component)
                 if imperfect is not None:
                     self._imperfect[name] = imperfect
+                restoration, replacing = _spec._validate_restoration(
+                    name, component, self._preventive.get(name), imperfect
+                )
+                if restoration is not None:
+                    self._restoring[name] = restoration
+                    if replacing is not None and (
+                        "preventive_cost" in node_costs
+                        or not (
+                            isinstance(replacing, float) and replacing == 0.0
+                        )
+                    ):
+                        # A replacement in place of a task with a cost is
+                        # priced, even at 0.
+                        node_costs["replacement_cost"] = replacing
                 if component.get("acquisition_cost") is not None:
                     acquisition = _spec._validate_cost(
                         name, "acquisition_cost", component["acquisition_cost"]
@@ -843,6 +1018,8 @@ class RepairableRBD(RBD):
         self.repairability = copy(repairability)
         self._maintenance = _spec._validate_groups(self, maintenance_groups)
         self.ccf_groups = _spec._validate_ccf_groups(self, ccf_groups)
+        _shutdowns.check(self)
+        _covariate_schedule.check(self)
         _spec._warn_nested_costs(components)
 
     #: Whether a diagram this one is nested in has warned that it carries
@@ -867,6 +1044,10 @@ class RepairableRBD(RBD):
             (len(getattr(self, "_inspection", {})), "tested"),
             (len(getattr(self, "_standby", {})), "standby group(s)"),
             (len(getattr(self, "_imperfect", {})), "repaired imperfectly"),
+            (
+                len(getattr(self, "_restoring", {})),
+                "restored partly by maintenance",
+            ),
             (
                 sum(
                     isinstance(c, RepairableRBD)
@@ -998,9 +1179,11 @@ class RepairableRBD(RBD):
 
         True if some component declares a non-zero ``"repair_cost"``,
         ``"replace_cost"``, ``"downtime_cost"``, or preventive-maintenance
-        or inspection ``"cost"`` (a cost distribution always counts), is
+        or inspection ``"cost"`` or ``"replacement_cost"`` (a cost
+        distribution always counts), is
         on a ``"calendar"`` policy (charged its calendar's prices), a
-        maintenance group has a set-up cost, or ``downtime_cost_rate`` is
+        maintenance group has a set-up cost, a shutdown has a cost, or
+        ``downtime_cost_rate`` is
         non-zero: whether running the system costs anything. Costs of 0
         price nothing, costs declared inside a nested ``RepairableRBD`` do
         not count (a nested diagram that carries any is warned of when
@@ -1025,6 +1208,9 @@ class RepairableRBD(RBD):
             or any(
                 group.setup_cost
                 for group in getattr(self, "_maintenance", {}).values()
+            )
+            or any(
+                shut.cost for shut in getattr(self, "_shutdowns", {}).values()
             )
         )
 
@@ -1385,6 +1571,7 @@ class RepairableRBD(RBD):
         >>> demand.stock(0.95)
         62
         """
+        _shutdowns.refuse(self, "spares_demand")
         return _spares.spares_demand(
             self,
             horizon=horizon,
@@ -1529,6 +1716,7 @@ class RepairableRBD(RBD):
         >>> round(stock.fill_rate, 4)
         0.9665
         """
+        _shutdowns.refuse(self, "spares_stock")
         return _spares.spares_stock(
             self,
             lead_time=lead_time,
@@ -1734,6 +1922,7 @@ class RepairableRBD(RBD):
         >>> best.units, round(best.total_cost)
         ({'train 1': 2}, 295306)
         """
+        _shutdowns.refuse(self, "allocate_redundancy")
         return _repairable_allocation.allocate_redundancy(
             self,
             horizon=horizon,
@@ -1868,6 +2057,7 @@ class RepairableRBD(RBD):
         >>> round(need.mttf["v"]), round(need.mttr["v"], 2)
         (128, 0.78)
         """
+        _shutdowns.refuse(self, "availability_allocation")
         return _repairable_allocation.availability_allocation(
             self,
             target=target,
@@ -2016,6 +2206,7 @@ class RepairableRBD(RBD):
         >>> {node: round(t, 2) for node, t in repairs.mttr.items()}
         {'p1': 0.74, 'p2': 0.74, 'v': 0.78}
         """
+        _shutdowns.refuse(self, "mttf_mttr_allocation")
         return _repairable_allocation.mttf_mttr_allocation(
             self,
             target=target,
@@ -2197,6 +2388,7 @@ class RepairableRBD(RBD):
         The pump alone in the line is replaced later than those with a
         standby: its replacements stop the plant too.
         """
+        _shutdowns.refuse(self, "optimal_replacement_intervals")
         return _intervals.optimal_replacement_intervals(
             self,
             nodes=nodes,
@@ -2376,6 +2568,7 @@ class RepairableRBD(RBD):
         >>> round(staggered.cost_rate, 4), round(1 - staggered.availability, 7)
         (0.1142, 0.0004925)
         """
+        _shutdowns.refuse(self, "optimal_inspection_intervals")
         return _intervals.optimal_inspection_intervals(
             self,
             nodes=nodes,
@@ -2759,6 +2952,188 @@ class RepairableRBD(RBD):
             working_nodes=working_nodes,
             broken_nodes=broken_nodes,
             method=method,
+        )
+
+    def first_failure_sf(
+        self,
+        x,
+        state=None,
+        method: str = "exact",
+        t_simulation: Optional[float] = None,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        engine: str = "auto",
+    ):
+        """The probability that the system runs to each time ``x`` without
+        a failure: the reliability of the first system failure.
+
+        This is not the non-repairable diagram's reliability. A component
+        of a redundant system can fail and be repaired while its partner
+        keeps the system up, so a repaired pair lasts longer than the same
+        pair without repairs. In a series structure no repair can come
+        before the first failure, and the two agree. (The availability,
+        [`point_availability`][repyability.RepairableRBD.point_availability],
+        is the probability the system is up *at* ``t``, whether or not it
+        failed and was repaired before.)
+
+        It is exact where the model allows:
+
+        - **a series structure** (every component alone can fail the
+          system): the product of the components' survival from their
+          states, for any life distributions (repair times do not matter);
+        - **exponential lives and repairs** (or instant repairs), with any
+          number of ``repair_crews``: the Markov chain of the components'
+          states, with the states the system is down in made absorbing,
+          followed by uniformization (to about 1e-13).
+
+        Everything else (other lives or repairs in a redundant structure,
+        scheduled maintenance, tests of hidden failures, standby groups,
+        common-cause groups, nested diagrams) refuses and points to
+        ``method="simulate"``, which reads the first failures off
+        [`simulate_timelines`][repyability.RepairableRBD.simulate_timelines]:
+        the share of simulations with no failure by each time.
+
+        Parameters
+        ----------
+        x : float or array-like
+            Times from 0 (or from ``state``).
+        state : dict or str, optional
+            Start from the components' current states rather than new, as
+            for
+            [`point_availability`][repyability.RepairableRBD.point_availability]:
+            ``{node: NodeState}``, or ``"stationary"``. A component that
+            is down (``alive=False``) is in a repair. If the system is
+            down at the start, the reliability is 0. By default every
+            component is new.
+        method : {"exact", "simulate"}, optional
+            Exact by default; ``"simulate"`` estimates it.
+        t_simulation : float, optional
+            With ``method="simulate"``: how long each simulation runs, by
+            default the largest time in ``x``.
+        mc_samples : int, optional
+            With ``method="simulate"`` only: the number of simulations, as
+            for
+            [`simulate_timelines`][repyability.RepairableRBD.simulate_timelines].
+        seed : int, optional
+            With ``method="simulate"`` only: the seed, as for
+            ``simulate_timelines``.
+        engine : {"auto", "python", "numba"}, optional
+            With ``method="simulate"`` only: the engine, as for
+            ``simulate_timelines``.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The probability of no system failure by each time, in ``x``'s
+            shape.
+
+        Raises
+        ------
+        NotImplementedError
+            If the exact values do not cover the diagram (the message says
+            why), or the chain's rates are too far apart to follow.
+        ValueError
+            If a time is negative or not finite, or an option is passed
+            that ``method`` does not use.
+
+        Examples
+        --------
+        A pair of exponential units (failure rate 0.01 per hour, repair
+        rate 0.1 per hour), either keeping the system up:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> unit = {
+        ...     "reliability": surv.Exponential.from_params([0.01]),
+        ...     "repairability": surv.Exponential.from_params([0.1]),
+        ... }
+        >>> pair = RepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {"a": unit, "b": unit},
+        ... )
+        >>> round(pair.first_failure_sf(100.0), 4)
+        0.8663
+        >>> round(pair.mean_time_to_first_failure(), 1)
+        650.0
+        """
+        _shutdowns.refuse(self, "first_failure_sf")
+        return _first_failure.first_failure_sf(
+            self, x, state, method, t_simulation, mc_samples, seed, engine
+        )
+
+    def mean_time_to_first_failure(
+        self,
+        state=None,
+        method: str = "exact",
+        t_simulation: Optional[float] = None,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        engine: str = "auto",
+        confidence: float = 0.95,
+    ):
+        """The mean time until the first system failure.
+
+        In plain terms: start the system and wait for it to fail for the
+        first time. How long, on average? Repairs of the components
+        count: a repair that finishes before the partner fails keeps the
+        system going. It is the area under
+        [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf],
+        which has the routes: exact for a series structure and for
+        exponential lives and repairs (one linear solve over the Markov
+        chain's up states), and ``method="simulate"`` for the rest.
+
+        For a pair of exponential units in parallel with one repair crew,
+        the mean time to the first failure is ``(3 lam + mu) / (2 lam^2)``,
+        with ``lam`` the failure rate and ``mu`` the repair rate.
+
+        Parameters
+        ----------
+        state : dict or str, optional
+            As for
+            [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf].
+        method : {"exact", "simulate"}, optional
+            Exact by default.
+        t_simulation : float, optional
+            With ``method="simulate"``, required: how long each simulation
+            runs. A simulation with no failure by then counts as
+            ``t_simulation``, so the estimate is a lower bound (and a
+            warning says how many), unless nearly all of them fail.
+        mc_samples : int, optional
+            With ``method="simulate"`` only: the number of simulations.
+        seed : int, optional
+            With ``method="simulate"`` only: the seed.
+        engine : {"auto", "python", "numba"}, optional
+            With ``method="simulate"`` only: the engine.
+        confidence : float, optional
+            The confidence level of the simulated estimate's interval.
+
+        Returns
+        -------
+        float or ConfidenceInterval
+            The mean time (in the models' unit); with
+            ``method="simulate"`` its
+            [`ConfidenceInterval`][repyability.ConfidenceInterval].
+
+        Raises
+        ------
+        NotImplementedError, ValueError
+            As for
+            [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf].
+
+        Examples
+        --------
+        See [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf].
+        """
+        _shutdowns.refuse(self, "mean_time_to_first_failure")
+        return _first_failure.mean_time_to_first_failure(
+            self,
+            state,
+            method,
+            t_simulation,
+            mc_samples,
+            seed,
+            engine,
+            confidence,
         )
 
     def point_availability(
@@ -3342,6 +3717,251 @@ class RepairableRBD(RBD):
             state=state,
         )
 
+    def expected_events_by_window(
+        self,
+        ends=None,
+        *,
+        width: Optional[float] = None,
+        count: Optional[int] = None,
+        state=None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+    ) -> EventsByWindow:
+        """The work expected in each of a run of consecutive windows from
+        the system's state now: how many replacements, repairs and tests
+        each component has in each window, and how many failures and
+        planned outages the system has.
+
+        A planner building next year's work and budget asks exactly this:
+        "in each of the next twelve windows of 730 hours, what is due?"
+        Each window's number is its own (not a running total), exact, with
+        no simulation: the difference of
+        [`expected_events`][repyability.RepairableRBD.expected_events] at
+        the window's two ends, which add up over windows. Give the
+        windows' ``ends`` (uneven windows are fine), or a ``width`` and a
+        ``count``. The first window starts now.
+
+        A component's task and the system's outage are different counts:
+        a task done while the system is already down (a hidden failure
+        found earlier, say) causes no new outage.
+
+        Parameters
+        ----------
+        ends : array-like, optional
+            The windows' end times from now, increasing.
+        width : float, optional
+            Instead of ``ends``: the length of each window.
+        count : int, optional
+            Instead of ``ends``: how many windows of ``width``.
+        state : dict or str, optional
+            Where the components are now, as for
+            [`expected_events`][repyability.RepairableRBD.expected_events].
+        working_nodes : list, optional
+            As for `expected_events`.
+        broken_nodes : list, optional
+            As for `expected_events`.
+        method : str, optional
+            As for `expected_events`.
+
+        Returns
+        -------
+        EventsByWindow
+            The windows and each count in each (arrays); a hair below 0
+            from numerics, in a window with nothing in it, is shown as 0.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for `expected_events`, or if the windows are not given
+            properly.
+
+        Examples
+        --------
+        See [`EventsByWindow`][repyability.EventsByWindow].
+        """
+        return _window_report.expected_events_by_window(
+            self,
+            ends,
+            width,
+            count,
+            state,
+            working_nodes,
+            broken_nodes,
+            method,
+        )
+
+    def cost_by_window(
+        self,
+        ends=None,
+        *,
+        width: Optional[float] = None,
+        count: Optional[int] = None,
+        state=None,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        engine: str = "auto",
+        levels=(10.0, 50.0, 90.0),
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+    ) -> CostByWindow:
+        """What the system costs in each of a run of consecutive windows
+        from its state now, and how much that can vary.
+
+        A budget starts from the plant as it is, and needs each window's
+        own spend, not the running total, and what could happen in it. The
+        mean of each window is exact (the difference of
+        [`expected_cost`][repyability.RepairableRBD.expected_cost] at its
+        ends). The spread is simulated, as a spread must be, from one
+        seeded set of histories cut at every window's end, so the windows
+        are of the same histories: a simulation's cost in a window is its
+        cost to the window's end less its cost to the window's start. Give
+        a ``seed`` for a repeatable answer.
+
+        Costs usually come in steps (a replacement at a fixed price), so
+        percentiles can hide that most windows cost exactly one amount:
+        read the outcomes (``outcomes(window)``) and the chance of
+        exceeding a budget (``probability_above(budget)``) too.
+
+        Parameters
+        ----------
+        ends : array-like, optional
+            The windows' end times from now, increasing.
+        width : float, optional
+            Instead of ``ends``: the length of each window.
+        count : int, optional
+            Instead of ``ends``: how many windows of ``width``.
+        state : dict or str, optional
+            Where the components are now, as for
+            [`expected_cost`][repyability.RepairableRBD.expected_cost].
+        mc_samples : int, optional
+            The number of simulations, as for
+            [`cost`][repyability.RepairableRBD.cost].
+        seed : int, optional
+            The random seed, as for `cost`.
+        engine : str, optional
+            The simulation engine, as for `cost`.
+        levels : array-like, optional
+            The percentiles to report, by default 10, 50 and 90.
+        working_nodes : list, optional
+            As for `expected_cost`.
+        broken_nodes : list, optional
+            As for `expected_cost`.
+        method : str, optional
+            As for `expected_cost`.
+
+        Returns
+        -------
+        CostByWindow
+            The exact mean, the simulations' own mean and standard error,
+            every simulation's cost in each window, and the percentiles.
+
+        Examples
+        --------
+        See [`CostByWindow`][repyability.CostByWindow].
+        """
+        return _window_report.cost_by_window(
+            self,
+            ends,
+            width,
+            count,
+            state,
+            mc_samples,
+            seed,
+            engine,
+            levels,
+            working_nodes,
+            broken_nodes,
+            method,
+        )
+
+    def maintenance_effect(
+        self,
+        t: Optional[float] = None,
+        *,
+        state=None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: Optional[str] = None,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        engine: str = "auto",
+    ) -> MaintenanceEffect:
+        """What the plan does: how much of the downtime and lost production
+        is planned and how much is from failures, and the failures,
+        downtime and cost the plan saves against running to failure.
+
+        The system is down *unplanned* when it would still be down with
+        every planned task, test and shut in progress finished: its
+        structure, with every block in planned work counted as up, is down.
+        Its *planned* downtime is the rest, down only because blocks are in
+        planned work (preventive maintenance or a test of a working unit
+        that takes time, or a shut). A block that has failed (in a repair,
+        waiting for a crew, or failed unseen until a test finds it) is down
+        unplanned. Lost production splits the same way, and a block's own
+        downtime cost by its own state. Running to failure is the same
+        diagram with no planned work: no ``"preventive"`` task, no
+        shutdowns, no maintenance groups; its tests of hidden failures
+        kept, as a test does not avoid failures. See the guide's
+        [planned and unplanned
+        downtime](../guide/system-maintenance.md#planned-and-unplanned-downtime).
+
+        Parameters
+        ----------
+        t : float, optional
+            The window, ``[0, t)`` from the components' ``state``. By
+            default None: the long run, each value per unit time.
+        state : dict, optional
+            ``{node: NodeState}``, the components' states at 0 (see
+            [`point_availability`][repyability.RepairableRBD.point_availability]),
+            for a window. Without planned work a component in its
+            maintenance now is taken as up, as new.
+        working_nodes : list, optional
+            Nodes held working throughout.
+        broken_nodes : list, optional
+            Nodes held failed throughout.
+        method : {None, "exact", "simulate"}, optional
+            By default exact (numerical) where both diagrams' values and
+            the split are, and otherwise simulated over a window;
+            ``"exact"`` refuses rather than simulate, and ``"simulate"``
+            simulates. The long run is exact or refused.
+        mc_samples : int, optional
+            Simulated: the simulations of each diagram, by default 10,000.
+        seed : int, optional
+            Simulated: seeds both diagrams' simulations alike.
+        engine : str, optional
+            Simulated: the engine, as for
+            [`availability`][repyability.RepairableRBD.availability].
+
+        Returns
+        -------
+        MaintenanceEffect
+            The split, the values with the plan and without it, and their
+            differences.
+
+        Raises
+        ------
+        NotImplementedError
+            In the long run, or with ``method="exact"``, if the exact
+            methods cannot work it out (see ``analysis_routes()``).
+
+        Examples
+        --------
+        See [`MaintenanceEffect`][repyability.MaintenanceEffect].
+        """
+        return _unplanned.maintenance_effect(
+            self,
+            t,
+            state=state,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            method=method,
+            mc_samples=mc_samples,
+            seed=seed,
+            engine=engine,
+        )
+
     def expected_cost(
         self,
         t,
@@ -3474,6 +4094,274 @@ class RepairableRBD(RBD):
             discount_rate=discount_rate,
         )
 
+    def expected_npv(
+        self,
+        horizon,
+        *,
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        periods=None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+        state=None,
+    ) -> ExpectedNPV:
+        """The expected net present value of running the system for
+        ``horizon``, from new or from a state: what it earns while it
+        works, less what it costs, each counted at what it is worth now.
+        Exact, with no simulation.
+
+        In plain terms: a cost or an earning ``t`` from now counts for
+        ``exp(-discount_rate * t)`` of itself. By the linearity of
+        averages, the expected present value of a cost charged at events
+        is its price times the discounted expected number of events, and of
+        a value earned per unit time the discounted expected time up. So
+        the answer needs only what ``expected_cost`` and
+        ``point_availability`` already give exactly: costs are those of
+        ``expected_cost(discount_rate=...)``, each event discounted at its
+        own time (a block replacement or a test at its exact time, not in
+        the middle of a period), and the value is ``value_rate`` times the
+        integral of ``exp(-discount_rate * t)`` times the system's point
+        availability. The acquisition cost is paid at the start. It is the
+        average over the ways the failures could fall: its spread needs a
+        simulation.
+
+        The equivalent annual cost (``eac``) is the steady cost per unit
+        of time over the horizon worth the same as all the costs, so plans
+        of different horizons compare. With no discounting it is the total
+        cost over the horizon divided by it, which, over a horizon long
+        compared with the components' cycles, approaches
+        ``expected_cost_rate`` (plus the acquisition cost spread over the
+        horizon).
+
+        The result has a cash-flow table by period, category and
+        component, each amount with its present value and undiscounted, to
+        apply your own tax or financial-year conventions: the periods are
+        stretches of the model's time (dates are for the caller).
+
+        Parameters
+        ----------
+        horizon : float
+            The length of time to value, more than 0, in the component
+            models' unit.
+        discount_rate : float, optional
+            The continuous discount rate per unit time of the component
+            models, as for ``total_cost``, by default 0 (undiscounted):
+            for an annual rate ``i`` with models in hours,
+            ``math.log(1 + i) / 8760``.
+        value_rate : float, optional
+            What the system earns per unit time while it works, at least
+            0, by default 0 (costs alone). Constant in this version.
+        periods : int or array-like, optional
+            The periods of the cash-flow table: a number of equal periods
+            across the horizon, or the increasing ends of the periods, the
+            last the horizon. By default one period.
+        working_nodes : Collection[Hashable], optional
+            Nodes that always work, as for ``expected_cost``, by default
+            None.
+        broken_nodes : Collection[Hashable], optional
+            Nodes that are always failed, as for ``expected_cost``, by
+            default None.
+        method : str, optional
+            Evaluate the structure function from the minimal path sets
+            (``"p"`` or ``"paths"``, the default) or the cut sets (``"c"``
+            or ``"cuts"``); both give the same result.
+        state : dict or str, optional
+            Start from the components' current states rather than new, as
+            for ``expected_cost``. By default None: every component new at
+            0.
+
+        Returns
+        -------
+        ExpectedNPV
+            The net present value, its value and cost, the equivalent
+            annual cost, the undiscounted totals, the cost by category and
+            component, and the cash-flow table.
+
+        Raises
+        ------
+        ValueError
+            If ``horizon``, ``discount_rate``, ``value_rate`` or
+            ``periods`` is invalid; if nothing is priced and there is no
+            ``value_rate`` (as ``routes.Refused``); or as for
+            ``expected_cost``.
+        NotImplementedError
+            As for ``point_availability`` and ``expected_cost``.
+
+        Examples
+        --------
+        A pump earning 10 per hour while it works, failing on average
+        every 1000 hours, repaired in 10 at 500 per repair, bought for
+        20,000, valued over 5 years of 8,760 hours at 8% a year:
+
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "p"), ("p", "t")],
+        ...     {
+        ...         "p": {
+        ...             "reliability": surv.Exponential.from_params([1e-3]),
+        ...             "repairability": surv.Exponential.from_params([0.1]),
+        ...             "repair_cost": 500.0,
+        ...             "acquisition_cost": 20000.0,
+        ...         }
+        ...     },
+        ... )
+        >>> r = math.log(1.08) / 8760  # per hour
+        >>> result = rbd.expected_npv(
+        ...     5 * 8760.0, discount_rate=r, value_rate=10.0, periods=5
+        ... )
+        >>> round(result.npv), round(result.value), round(result.cost)
+        (321975, 359974, 37999)
+        >>> round(result.eac * 8760)  # per year
+        9155
+        >>> len(result.cash_flows)
+        11
+        """
+        return _npv.expected_npv(
+            self,
+            horizon,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            periods=periods,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            method=method,
+            state=state,
+        )
+
+    def plan_vs_actual(
+        self,
+        timelines,
+        now,
+        horizon,
+        *,
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        periods=None,
+        method: str = "p",
+        state=None,
+        start_state=None,
+    ) -> PlanVsActual:
+        """A plan against what happened: the plan's expected cash flows so
+        far beside those the outage log implies, where the two differ, and
+        the plan valued again from the components' states now. Exact, with
+        no simulation.
+
+        In plain terms: "we have had ``now`` on this plan; how does what
+        actually happened compare with what we expected, and what is the
+        plan worth now?" The expected side is
+        [`expected_npv`][repyability.RepairableRBD.expected_npv]'s
+        cash-flow table to ``now``. The actual side prices the log with the
+        diagram's own costs: each failure its repair and replace costs, each
+        planned outage its preventive cost, each component's and the
+        system's time down their downtime costs, and the system's time up
+        its value, each discounted at the time it fell (a rate over a span
+        exactly). The variance is the actual less the expected; a positive
+        one is in your favour. What the log does not determine is compared
+        on neither side and listed, with the reason, in ``not_compared``.
+
+        The rest of the horizon is valued from the components' states now:
+        those given in ``state``, and the others read off their logs where
+        the diagram's rules let it (a unit renewed at each repair, or
+        replaced at an age or on a block or inspection calendar by
+        maintenance that takes time); otherwise refused, naming the
+        component. See the guide's [plan against what
+        happened](../guide/costs.md#a-plan-against-what-happened).
+
+        Parameters
+        ----------
+        timelines : Mapping
+            ``{component: Timeline}``: every component's outage log, from 0
+            (the start of the plan) to ``now``, its planned outages flagged
+            (see [`Timeline`][repyability.Timeline] and
+            ``Timeline.from_outages``). A nested RBD's log is its system's.
+        now : float
+            The end of the logs, more than 0 and at most ``horizon``.
+        horizon : float
+            The plan's horizon, as for ``expected_npv``.
+        discount_rate : float, optional
+            The continuous discount rate per unit time, as for
+            ``expected_npv``, by default 0.
+        value_rate : float, optional
+            What the system earns per unit time while it works, by
+            default 0.
+        periods : int or array-like, optional
+            The periods of the tables over the whole horizon, as for
+            ``expected_npv``; a period that ``now`` falls in is split in
+            two there (and the periods numbered again). By default one
+            period to ``now`` and one after it.
+        method : str, optional
+            ``"p"`` (the default) or ``"c"``, as for ``expected_npv``.
+        state : dict, optional
+            ``{component: NodeState}`` for the components whose state now
+            is known otherwise, or not given by their logs (a nested RBD
+            takes its components' states). By default every component's
+            state is read off its log.
+        start_state : dict, optional
+            The components' states at the start of the plan, as for
+            ``expected_npv``'s ``state``. By default every component new.
+
+        Returns
+        -------
+        PlanVsActual
+            The expected, actual and variance tables to ``now``, what is
+            not compared and why, the states used, the plan and the rest
+            from now, and the plan's value then and now.
+
+        Raises
+        ------
+        ValueError
+            If ``now`` or ``horizon`` is invalid or ``now`` is past the
+            horizon; if a log is missing, is not for a component, does not
+            end at ``now``, starts unlike ``start_state`` or has a planned
+            outage of a component with nothing planned that takes it off
+            line; or as for ``expected_npv``.
+        TypeError
+            If ``timelines`` is not a mapping of Timeline objects, or
+            ``state`` or ``start_state`` is not a dict.
+        NotImplementedError
+            If a component's state now is not given by its log and not in
+            ``state``; or as for ``expected_npv``.
+
+        Examples
+        --------
+        A pump that failed twice in its first year, valued over five:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD, Timeline
+        >>> rbd = RepairableRBD(
+        ...     [("s", "p"), ("p", "t")],
+        ...     {
+        ...         "p": {
+        ...             "reliability": surv.Exponential.from_params([1e-3]),
+        ...             "repairability": surv.Exponential.from_params([0.1]),
+        ...             "repair_cost": 500.0,
+        ...         }
+        ...     },
+        ... )
+        >>> log = Timeline.from_outages([(3000, 3010), (7000, 7030)], 8760)
+        >>> result = rbd.plan_vs_actual({"p": log}, 8760.0, 5 * 8760.0)
+        >>> round(result.expected_so_far), round(result.actual_so_far)
+        (-4337, -1000)
+        >>> result.states["p"]
+        NodeState(age=1730.0, alive=True)
+        """
+        _shutdowns.refuse(self, "plan_vs_actual")
+        return _plan_actual.plan_vs_actual(
+            self,
+            timelines,
+            now,
+            horizon,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            periods=periods,
+            method=method,
+            state=state,
+            start_state=start_state,
+        )
+
     @contextmanager
     def _sharing_curves(self):
         """Within it, the curves ``_availability_curves`` builds are kept
@@ -3573,6 +4461,7 @@ class RepairableRBD(RBD):
         >>> round(capacity.mean, 2)  # 150 * 10 / 11
         136.36
         """
+        _shutdowns.refuse(self, "capacity_distribution")
         return _repairable_capacity.capacity_distribution(
             self, working_nodes=working_nodes, broken_nodes=broken_nodes
         )
@@ -3669,6 +4558,7 @@ class RepairableRBD(RBD):
         >>> round(plant.capacity_distribution().meets(100), 4)  # long run
         0.9767
         """
+        _shutdowns.refuse(self, "point_capacity")
         return _repairable_capacity.point_capacity(
             self,
             x=x,
@@ -3752,6 +4642,7 @@ class RepairableRBD(RBD):
         >>> round(plant.capacity_distribution().delivered_fraction(100), 4)
         0.988
         """
+        _shutdowns.refuse(self, "mission_capacity")
         return _repairable_capacity.mission_capacity(
             self,
             t=t,
@@ -3862,6 +4753,7 @@ class RepairableRBD(RBD):
         >>> changes[4]
         (30.0, True)
         """
+        _shutdowns.require_none(self, _shutdowns.STEPPING)
         return _event_loop.next_event(self, method=method, sources=sources)
 
     def availability(
@@ -4848,6 +5740,8 @@ class RepairableRBD(RBD):
         them."""
         from repyability.rbd import routes as r
 
+        # A shut holds the modules and the other nodes off line together.
+        _shutdowns.require_none(self, "a conditional run")
         held = working | broken
         chosen = {
             node
@@ -5213,6 +6107,322 @@ class RepairableRBD(RBD):
         {'a': 0.8333, 'b': 1.0}
         """
         return _long_run.node_availability(self)
+
+    def node_action_rates(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> Dict[Hashable, NodeActionRates]:
+        """Each component's corrective and preventive actions per unit
+        time, in the long run.
+
+        Its failures per unit time (each a repair or replacement) and its
+        preventive replacements per unit time: the long-run frequencies
+        [`expected_cost_rate`][repyability.RepairableRBD.expected_cost_rate]
+        prices, for pricing your own way or planning the work. They need
+        each component's long-run availability, which is worked out here:
+        from its own models, or with limited ``repair_crews`` from their
+        Markov chain (waiting for a crew, a component cannot fail). A
+        standby group's actions are its units' failures. A component held
+        working or broken never changes state, so it takes none.
+
+        Parameters
+        ----------
+        working_nodes : collection, optional
+            Nodes held working, by default none.
+        broken_nodes : collection, optional
+            Nodes held broken, by default none.
+
+        Returns
+        -------
+        dict
+            ``{node: NodeActionRates}`` for each component: its
+            ``corrective`` and ``preventive`` actions per unit time (see
+            [`NodeActionRates`][repyability.NodeActionRates]).
+
+        Raises
+        ------
+        ValueError
+            If a held node is unknown, or in both sets.
+        NotImplementedError
+            Where the long-run values are not worked out exactly or
+            numerically (see
+            [`node_availability`][repyability.RepairableRBD.node_availability]),
+            or a common-cause group's are not.
+
+        Examples
+        --------
+        A pump replaced at age 400 or at failure, whichever comes first:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> pump = {
+        ...     "reliability": surv.Weibull.from_params([1000.0, 3.0]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ...     "preventive": {"interval": 400.0},
+        ... }
+        >>> rbd = RepairableRBD([("s", "p"), ("p", "t")], {"p": pump})
+        >>> actions = rbd.node_action_rates()["p"]
+        >>> round(actions.corrective, 6), round(actions.preventive, 6)
+        (0.000157, 0.002382)
+
+        Most of its renewals are planned: about one in 16 is a failure.
+        """
+        return _costs.node_action_rates(self, working_nodes, broken_nodes)
+
+    def crew_jobs(self) -> List[CrewJob]:
+        """The jobs the repair crews work on.
+
+        Each component of this diagram is a job; a standby group's units
+        are a job each; a nested RBD is none, as it has crews of its own.
+        With ``repair_crews`` fewer than these jobs, a job can wait for a
+        crew.
+
+        Returns
+        -------
+        list of CrewJob
+            The jobs, in the order of the components: ``CrewJob(node,
+            None)`` for a plain component, ``CrewJob(node, unit)`` for
+            each unit of a standby group (see
+            [`CrewJob`][repyability.CrewJob]).
+
+        Examples
+        --------
+        A motor, and a standby group of two pumps:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> unit = {
+        ...     "reliability": surv.Exponential.from_params([0.01]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ... }
+        >>> rbd = RepairableRBD(
+        ...     [("s", "motor"), ("motor", "pumps"), ("pumps", "t")],
+        ...     {"motor": unit, "pumps": {**unit, "standby": {"units": 2}}},
+        ...     repair_crews=1,
+        ... )
+        >>> [(job.node, job.unit) for job in rbd.crew_jobs()]
+        [('motor', None), ('pumps', 0), ('pumps', 1)]
+        """
+        return _crews.crew_jobs(self)
+
+    def crew_states(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> CrewStates:
+        """With limited repair crews, the states of their Markov chain in
+        the long run: each node's availability in each state, and each
+        state's probability.
+
+        With fewer ``repair_crews`` than jobs (see
+        [`crew_jobs`][repyability.RepairableRBD.crew_jobs]), a failed
+        component may wait for a crew, so components no longer fail and
+        recover independently. The exact long-run values then come from a
+        Markov chain of which components are up and which jobs wait, and
+        each is an average over its states. These are the states, to work
+        out a long-run value of your own: a node's availability is
+        ``probabilities @ node_availability[node]``.
+
+        Parameters
+        ----------
+        working_nodes : collection, optional
+            Nodes held working, by default none: never failing, they need
+            no crew.
+        broken_nodes : collection, optional
+            Nodes held broken, by default none: never repaired, they need
+            no crew either.
+
+        Returns
+        -------
+        CrewStates
+            ``node_availability`` (each node's, 1 or 0, in each state) and
+            the states' ``probabilities`` (see
+            [`CrewStates`][repyability.CrewStates]).
+
+        Raises
+        ------
+        ValueError
+            If a held node is unknown, or in both sets; or (as
+            ``routes.Refused``) if no job can wait for a crew behind
+            another component's, so there is no chain.
+        NotImplementedError
+            If the chain does not cover the diagram: lives or repairs
+            that are not exponential, maintenance or inspections, standby
+            groups, common-cause groups, or too many states.
+
+        Examples
+        --------
+        Two pumps in parallel, one crew to repair them:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> pump = {
+        ...     "reliability": surv.Exponential.from_params([0.1]),
+        ...     "repairability": surv.Exponential.from_params([1.0]),
+        ... }
+        >>> rbd = RepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {"a": pump, "b": pump},
+        ...     repair_crews=1,
+        ... )
+        >>> states = rbd.crew_states()
+        >>> a = states.node_availability["a"]
+        >>> round(float(states.probabilities @ a), 4)
+        0.9016
+
+        The chain's five states are both pumps up, either one being
+        repaired, and either one repaired while the other waits, with
+        long-run probabilities in the ratio ``1 : lambda / mu`` (each)
+        ``: lambda^2 / mu^2`` (each); pump ``a`` is up in the first and
+        while ``b`` alone is repaired, ``1.1 / 1.22`` of the time.
+        """
+        _shutdowns.refuse(self, "crew_states")
+        return _crews.crew_states(self, working_nodes, broken_nodes)
+
+    def replacement_cycle(self, node: Hashable) -> ReplacementCycle:
+        """The renewal cycle of a component under block replacement or
+        replaced on condition, in the long run.
+
+        Under block replacement every ``T`` a unit is replaced at each
+        multiple of ``T`` at which it is up; replaced on condition, it is
+        inspected every ``T`` and replaced when found worn. Either way its
+        long-run behaviour repeats over each interval: how long it is up
+        and how often it fails in a cycle, its availability and failure
+        intensity across the interval, and whether it is up just before
+        and just after a block time or inspection. These are what
+        [`node_availability`][repyability.RepairableRBD.node_availability]
+        and the costs are made of.
+
+        Parameters
+        ----------
+        node : Hashable
+            The component, under block replacement or replaced on
+            condition (``"policy": "block"`` or ``"condition"``).
+
+        Returns
+        -------
+        ReplacementCycle
+            The cycle (see [`ReplacementCycle`][repyability.ReplacementCycle]).
+
+        Raises
+        ------
+        ValueError
+            If ``node`` is not a component, or (as ``routes.Refused``) is
+            not under block replacement or replaced on condition.
+        NotImplementedError
+            If its models are not covered (as for ``node_availability``).
+
+        Examples
+        --------
+        A pump replaced every 400 hours, and at failures in between:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> pump = {
+        ...     "reliability": surv.Weibull.from_params([1000.0, 3.0]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ...     "preventive": {"interval": 400.0, "policy": "block"},
+        ... }
+        >>> rbd = RepairableRBD([("s", "p"), ("p", "t")], {"p": pump})
+        >>> cycle = rbd.replacement_cycle("p")
+        >>> round(cycle.failures, 4), round(cycle.before, 4)
+        (0.0622, 0.9991)
+        """
+        return _long_run.replacement_cycle(self, node)
+
+    def simulation_samples(
+        self,
+        t_simulation: float,
+        mc_samples: Optional[int] = None,
+        *,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        seed: Optional[int] = None,
+        entropy: Optional[int] = None,
+    ) -> SimulationSamples:
+        """Each simulation's availability and cost over a window, drawn
+        from common random numbers.
+
+        The simulations
+        [`availability`][repyability.RepairableRBD.availability] and
+        [`cost`][repyability.RepairableRBD.cost] run, each value kept,
+        with every draw from a stream named by the component it is for:
+        a component in the same place in two diagrams draws the same
+        numbers in both when they are run with the same ``seed`` (or
+        ``entropy``), as [`compare`][repyability.RepairableRBD.compare]
+        runs them. Use it to compare designs your own way (held nodes,
+        several measures, batches): the differences between two diagrams'
+        samples, simulation by simulation, come from how they differ
+        rather than from chance. Simulation ``r`` of a run is the same
+        whatever the run's size, so a run can be made in batches, each
+        from its own entropy.
+
+        Parameters
+        ----------
+        t_simulation : float
+            The window each simulation covers, from 0, every component
+            new.
+        mc_samples : int, optional
+            The number of simulations, by default 10_000.
+        working_nodes : collection, optional
+            Nodes held working, by default none.
+        broken_nodes : collection, optional
+            Nodes held broken, by default none.
+        seed : int, optional
+            Seeds the run, by default None: a number drawn from numpy's
+            global random number generator.
+        entropy : int, optional
+            The streams' entropy itself, in place of a seed (see
+            [`seed_entropy`][repyability.seed_entropy], which gives the
+            one a seed makes).
+
+        Returns
+        -------
+        SimulationSamples
+            Each simulation's fraction of the window up
+            (``availability``) and running cost (``cost``, ``None`` with
+            nothing priced): see
+            [`SimulationSamples`][repyability.SimulationSamples].
+
+        Raises
+        ------
+        ValueError
+            If ``t_simulation``, ``mc_samples``, ``seed`` or ``entropy`` is
+            invalid, both ``seed`` and ``entropy`` are given, or a held
+            node is unknown; or if a common-cause group's member is held
+            or the groups cannot be simulated.
+        NotImplementedError
+            If a component's draws cannot come from a stream of its own (a
+            model sampled its own way).
+
+        Examples
+        --------
+        A pump whose repairs take 1 hour on average against one whose
+        take 2, on the same failures:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> def pump(mttr):
+        ...     spec = {
+        ...         "reliability": surv.Exponential.from_params([0.1]),
+        ...         "repairability": surv.Exponential.from_params([1 / mttr]),
+        ...     }
+        ...     return RepairableRBD([("s", "p"), ("p", "t")], {"p": spec})
+        >>> fast = pump(1.0).simulation_samples(100.0, 1000, seed=1)
+        >>> slow = pump(2.0).simulation_samples(100.0, 1000, seed=1)
+        >>> bool((fast.availability >= slow.availability).all())
+        True
+        """
+        return _runs.simulation_samples(
+            self,
+            t_simulation,
+            mc_samples,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            seed=seed,
+            entropy=entropy,
+        )
 
     def system_failure_frequency(
         self,
@@ -5593,6 +6803,7 @@ class RepairableRBD(RBD):
         >>> round(rbd.birnbaum_importance(working_nodes=["a"])["b"], 4)
         1.0
         """
+        _shutdowns.refuse(self, "birnbaum_importance")
         return _repairable_importance.birnbaum_importance(
             self,
             working_nodes=working_nodes,
@@ -5684,6 +6895,7 @@ class RepairableRBD(RBD):
         >>> {node: round(p, 4) for node, p in potential.items()}
         {'a': 0.1111, 'b': 0.2778}
         """
+        _shutdowns.refuse(self, "improvement_potential")
         return _repairable_importance.improvement_potential(
             self,
             working_nodes=working_nodes,
@@ -5781,6 +6993,7 @@ class RepairableRBD(RBD):
         >>> {node: round(r, 4) for node, r in raw.items()}
         {'a': 2.25, 'b': 2.25}
         """
+        _shutdowns.refuse(self, "risk_achievement_worth")
         return _repairable_importance.risk_achievement_worth(
             self,
             working_nodes=working_nodes,
@@ -5876,6 +7089,7 @@ class RepairableRBD(RBD):
         >>> {node: round(r, 4) for node, r in rrw.items()}
         {'a': 1.3333, 'b': 2.6667}
         """
+        _shutdowns.refuse(self, "risk_reduction_worth")
         return _repairable_importance.risk_reduction_worth(
             self,
             working_nodes=working_nodes,
@@ -6000,6 +7214,7 @@ class RepairableRBD(RBD):
         >>> {node: round(c, 4) for node, c in criticality.items()}
         {'a': 1.0, 'b': 1.0}
         """
+        _shutdowns.refuse(self, "criticality_importance")
         return _repairable_importance.criticality_importance(
             self,
             working_nodes=working_nodes,
@@ -6122,6 +7337,7 @@ class RepairableRBD(RBD):
         >>> {node: round(v, 4) for node, v in fv.items()}
         {'a': 0.375, 'b': 0.75}
         """
+        _shutdowns.refuse(self, "fussell_vesely")
         return _repairable_importance.fussell_vesely(
             self,
             fv_type=fv_type,
@@ -6427,7 +7643,10 @@ class RepairableRBD(RBD):
         - ``"fit"``: every one of its models that is a surpyval fit with a
           parameter covariance (``covariance()``), drawn from its normal
           approximation (on the log scale for a positive parameter, the
-          logit scale for one in (0, 1));
+          logit scale for one in (0, 1)), and every one that is a Bayesian
+          fit, drawn from its posterior (a point picked by its
+          probability, the model in that draw the plain distribution at
+          it; the nominal value stays the posterior predictive's);
         - ``{role: uncertainty}``: each model named drawn as its
           uncertainty says (``"fit"``, ``{parameter: distribution}`` or a
           list of models), the others kept;
@@ -6438,7 +7657,8 @@ class RepairableRBD(RBD):
         uncertainty : dict, optional
             ``{node, tuple of nodes or CCFGroup: uncertainty}`` (see above).
             By default, every model that is a fit with a parameter
-            covariance, drawn once for all the nodes holding that fitted
+            covariance or a Bayesian fit, drawn once for all the nodes
+            holding that fitted
             object in that role, and for one common-cause group's members
             together. The models inside a nested ``RepairableRBD`` are
             not drawn, by default or given: the nested diagram's own
@@ -6457,8 +7677,10 @@ class RepairableRBD(RBD):
         -------
         UncertaintyResult
             The availability of every draw (``samples``), the ``nominal``
-            value with the components' own models, and summaries (``mean``,
-            ``median``, ``std``, ``percentile``, ``interval``).
+            value with the components' own models, summaries (``mean``,
+            ``median``, ``std``, ``percentile``, ``interval``), and what
+            the band is (``band``: credible, from Bayesian fits;
+            confidence, from fits' covariances; or mixed).
 
         Raises
         ------
@@ -6503,6 +7725,7 @@ class RepairableRBD(RBD):
         >>> round(lower, 4), round(upper, 4)
         (0.9392, 0.9577)
         """
+        _shutdowns.refuse(self, "mean_availability_uncertainty")
         return _repairable_uncertainty.mean_availability_uncertainty(
             self,
             uncertainty=uncertainty,
@@ -6556,6 +7779,7 @@ class RepairableRBD(RBD):
             As for ``mean_availability_uncertainty`` and
             ``point_availability``.
         """
+        _shutdowns.refuse(self, "point_availability_uncertainty")
         return _repairable_uncertainty.point_availability_uncertainty(
             self,
             x=x,
@@ -6609,6 +7833,7 @@ class RepairableRBD(RBD):
             As for ``mean_availability_uncertainty`` and
             ``mission_availability``.
         """
+        _shutdowns.refuse(self, "mission_availability_uncertainty")
         return _repairable_uncertainty.mission_availability_uncertainty(
             self,
             t=t,
@@ -6655,6 +7880,7 @@ class RepairableRBD(RBD):
             As for ``mean_availability_uncertainty`` and
             ``expected_cost_rate``.
         """
+        _shutdowns.refuse(self, "expected_cost_rate_uncertainty")
         return _repairable_uncertainty.expected_cost_rate_uncertainty(
             self,
             uncertainty=uncertainty,
@@ -6698,8 +7924,9 @@ class RepairableRBD(RBD):
         ``Sigma_k`` their covariance (a fit's ``covariance()``, or the
         variances of the distributions given). The inputs are independent,
         so each one's part is its own term, and the shares add up to 1. A
-        list of models has no parameters to move: it needs
-        ``method="sobol"``.
+        list of models has no parameters to move, nor a Bayesian fit one
+        value of them (its posterior need not be near a normal): they
+        need ``method="sobol"``.
 
         ``method="sobol"`` draws the inputs as
         ``mean_availability_uncertainty`` does and estimates the first-order
@@ -6777,6 +8004,7 @@ class RepairableRBD(RBD):
         >>> {n: round(s, 2) for n, s in parts.first_order.items()}
         {'pump': 0.74, 'valve': 0.26}
         """
+        _shutdowns.refuse(self, "uncertainty_importance")
         return _repairable_uncertainty.uncertainty_importance(
             self,
             x=x,
@@ -6927,6 +8155,7 @@ class RepairableRBD(RBD):
         >>> round(shares["b"], 4)
         0.7143
         """
+        _shutdowns.refuse(self, "differential_importance")
         return _repairable_importance.differential_importance(
             self,
             working_nodes=working_nodes,
@@ -7062,6 +8291,7 @@ class RepairableRBD(RBD):
         >>> rate.node_rate["p1"].round(5).tolist()
         [-3e-05, -0.00156]
         """
+        _shutdowns.refuse(self, "availability_rate")
         return _repairable_importance.availability_rate(
             self,
             x=x,
@@ -7157,12 +8387,103 @@ class RepairableRBD(RBD):
         >>> {node: round(share, 4) for node, share in shares.items()}
         {'a': 0.2857, 'b': 0.7143}
         """
+        _shutdowns.refuse(self, "barlow_proschan_importance")
         return _repairable_importance.barlow_proschan_importance(
             self,
             working_nodes=working_nodes,
             broken_nodes=broken_nodes,
             window=window,
             state=state,
+        )
+
+    def pfd_breakdown(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> PFDBreakdown:
+        """Where a safety function's average probability of failure on
+        demand (PFDavg) comes from: each component's share, and each
+        common-cause group's, adding up to the PFDavg.
+
+        For a protective function tested periodically, the long-run
+        unavailability (``mean_unavailability``) is its PFDavg; for any
+        other diagram this splits its long-run unavailability the same way.
+
+        In plain words: the function is down whenever every component of
+        some minimal cut set is down. The **common-cause share** is what
+        the PFDavg would fall by if the groups' shared causes never struck
+        (each member keeping its own failures), split among the groups by
+        their Shapley value where there are several. The rest, the
+        **independent part**, is the PFDavg of the diagram without shared
+        causes, and is shared among the components: each moment the
+        function is down because a set of components is down together is
+        shared equally among them, so a single element in series takes
+        all of its own downtime and a redundant pair splits its
+        coincident downtime half and half (overlaps of cut sets are
+        corrected by inclusion-exclusion, and the corrections shared out
+        the same way, so nothing is counted twice).
+
+        As a formula: at each time ``t`` of the test schedules' period the
+        components of the diagram without shared causes are independent,
+        the system down with probability ``Q(q(t))``, multilinear in the
+        components' ``q``; component ``i`` takes its Aumann-Shapley value
+        ``q_i(t) integral_0^1 dQ/dq_i(s q(t)) ds``, averaged over the
+        period. The shares add up to ``Q`` at every time, so to the
+        PFDavg; each term ``c q_A q_B ...`` of ``Q`` gives ``1/k`` of
+        itself to each of its ``k`` components; and to first order (rare
+        failures) a component's share is the sum, over its minimal cut
+        sets, of each set's own PFDavg over its size. See [where the
+        PFDavg comes
+        from](../guide/system-maintenance.md#where-the-pfdavg-comes-from).
+
+        Exact (or numerical) as ``mean_unavailability`` is, and refused
+        where it is; see ``analysis_routes()``.
+
+        Parameters
+        ----------
+        working_nodes : Collection[Hashable], optional
+            Nodes held working (they take no share).
+        broken_nodes : Collection[Hashable], optional
+            Nodes held failed (they take their share of the downtime they
+            are part of).
+
+        Returns
+        -------
+        PFDBreakdown
+            The PFDavg, its independent and common-cause parts, each
+            component's and group's share, and each as a fraction.
+
+        Raises
+        ------
+        NotImplementedError
+            As ``mean_unavailability`` does, or with more than eight
+            common-cause groups.
+
+        Examples
+        --------
+        Two shutdown valves in parallel (1oo2), proof-tested yearly, with a
+        5% common cause: the shared failures are most of the PFDavg.
+
+        >>> import surpyval as surv
+        >>> from repyability import BetaFactor, CCFGroup, RepairableRBD
+        >>> valve = {
+        ...     "reliability": surv.Exponential.from_params([2e-6]),
+        ...     "repairability": "instant",
+        ...     "inspection": {"interval": 8760.0},
+        ... }
+        >>> rbd = RepairableRBD(
+        ...     [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+        ...     {"v1": valve, "v2": valve},
+        ...     ccf_groups=[CCFGroup(["v1", "v2"], BetaFactor(0.05))],
+        ... )
+        >>> result = rbd.pfd_breakdown()
+        >>> f"{result.pfd_avg:.4e}"
+        '5.2901e-04'
+        >>> {key: round(share, 3) for key, share in result.fractions.items()}
+        {'v1': 0.086, 'v2': 0.086, ('v1', 'v2'): 0.828}
+        """
+        return _repairable_importance.pfd_breakdown(
+            self, working_nodes=working_nodes, broken_nodes=broken_nodes
         )
 
     @_times_first()
@@ -7244,6 +8565,7 @@ class RepairableRBD(RBD):
         >>> {pair: round(v, 4) for pair, v in rbd.joint_importance().items()}
         {('a', 'b'): -0.9091, ('a', 'c'): 0.0909, ('b', 'c'): 0.0909}
         """
+        _shutdowns.refuse(self, "joint_importance")
         return _repairable_importance.joint_importance(
             self,
             working_nodes=working_nodes,

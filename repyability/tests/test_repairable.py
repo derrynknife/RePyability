@@ -143,3 +143,82 @@ def test_costs_must_be_finite(cr, co):
     rep = Repairable(CrowAMSAA.from_params([100.0, 1.5]))
     with pytest.raises(ValueError, match="finite"):
         rep.set_repair_and_overhaul_costs(cr, co)
+
+
+# -- models whose counting Repairable would misread ---------------------------
+
+
+def _units(seed=0, units=20, events=5):
+    """Repair histories of ``units`` units, ``events`` failures each, with
+    one 0/1 covariate and one of two causes per failure."""
+    rng = np.random.default_rng(seed)
+    x = np.concatenate(
+        [np.cumsum(rng.weibull(1.5, events) * 10.0) for _ in range(units)]
+    )
+    i = np.repeat(np.arange(units), events)
+    Z = (i % 2).astype(float)[:, None]
+    e = np.where(rng.random(x.size) < 0.5, "wear", "leak")
+    return x, i, Z, e
+
+
+def test_a_joint_frailty_model_is_refused():
+    # A joint frailty model counts repairs and models scrapping too. Its
+    # cif is the count if the unit were never scrapped: 2.83 repairs by
+    # age 200 here, where its own count with scrapping (mcf) is 2.20.
+    # Repairable used the cif and priced the 2.83 without a word; it now
+    # refuses the model, naming what it takes.
+    from surpyval.recurrent import JointFrailty
+
+    model = JointFrailty.from_params(
+        recurrent=[100.0, 1.5], terminal=[300.0, 2.0], theta=0.5, alpha=1.0
+    )
+    assert float(model.cif(200.0)) == pytest.approx(2.83, abs=0.005)
+    assert float(model.mcf(200.0)) == pytest.approx(2.20, abs=0.005)
+    with pytest.raises(ValueError, match="JointFrailtyModel.*scrapped"):
+        Repairable(model)
+    with pytest.raises(ValueError, match="takes a surpyval Poisson process"):
+        Repairable(model)
+
+
+def test_recurrence_models_whose_cif_is_not_the_count_are_refused():
+    from surpyval.recurrent import (
+        CauseSpecificNHPP,
+        NonParametricCounting,
+        ProportionalIntensityNHPP,
+    )
+
+    x, i, Z, e = _units()
+    models = [
+        # cif needs covariates
+        ProportionalIntensityNHPP.fit(x, Z=Z, i=i),
+        # cif needs a cause
+        CauseSpecificNHPP.fit(x, i=i, e=e),
+        # an estimate from data, with no simulated mcf
+        NonParametricCounting.fit(x, i=i),
+    ]
+    for model in models:
+        name = type(model).__name__
+        with pytest.raises(ValueError, match=f"{name}.*Repairable takes"):
+            Repairable(model)
+
+
+def test_the_recurrence_models_it_takes():
+    import surpyval as surv
+    from surpyval.recurrent import HPP, CoxLewis
+
+    x, i, _, _ = _units()
+    for model in (
+        CrowAMSAA.from_params([100.0, 1.5]),
+        Duane.from_params([1.5, 0.01]),
+        HPP.from_params([0.1]),
+        CoxLewis.from_params([-3.0, 0.01]),
+    ):
+        assert Repairable(model).is_simulated is False
+    for fitter in (
+        surv.GeneralizedRenewal,
+        surv.GeneralizedOneRenewal,
+        surv.ARA,
+        surv.ARI,
+    ):
+        model = fitter.fit(x, i=i)
+        assert Repairable(model).is_simulated is True

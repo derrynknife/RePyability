@@ -28,6 +28,7 @@ from repyability.rbd import (
     _ccf_groups,
     _crews,
     _requirements,
+    _shutdowns,
     _standby_chain,
 )
 from repyability.rbd._block_replacement import (
@@ -44,9 +45,11 @@ from repyability.rbd._events import (
     _Inspection,
     _Preventive,
 )
+from repyability.rbd._level_replacement import level_model
 from repyability.rbd._model_utils import (
     model_mean,
 )
+from repyability.rbd.results import ReplacementCycle
 from repyability.rbd.routes import AnalysisRoute
 from repyability.utils.checks import (
     structure_method,
@@ -96,6 +99,7 @@ def mean_unavailability(
     method: str,
 ) -> float:
     """See ``RepairableRBD.mean_unavailability``."""
+    _shutdowns.require_exact(rbd)
     method = structure_method(method)
     working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
     if rbd.ccf_groups:
@@ -173,12 +177,28 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
     if message:
         return r.REFUSED, message
     life, how = r.model_route(component.reliability)
+    if life == r.REFUSED:
+        return life, how
     if schedule.policy in ("block", "condition"):
         message = r.refusal(
             partial(_requirements._require_block_models, rbd, node)
         )
         if message:
             return r.REFUSED, message
+        if schedule.level is not None:
+            return (
+                r.NUMERICAL,
+                "replacement on condition by level: its levels at the "
+                "inspections, followed from new on a grid of levels until "
+                "they repeat",
+            )
+        if schedule.older_than is not None:
+            return (
+                r.NUMERICAL,
+                "replacement at a shutdown once older than older_than: its "
+                "renewal cycle, followed from one shut to the next on a "
+                "grid, the units kept by age",
+            )
         if schedule.policy == "condition":
             return (
                 r.NUMERICAL,
@@ -206,6 +226,9 @@ def _long_run_route(rbd, groups: bool = True) -> "AnalysisRoute":
     only which are down together)."""
     from repyability.rbd import routes as r
 
+    shut = r.refusal(partial(_shutdowns.require_exact, rbd))
+    if shut:
+        return r.refused(shut)
     chains = (
         r.refusal(partial(_ccf_groups._require_ccf_long_run, rbd))
         if groups
@@ -231,10 +254,19 @@ def _long_run_route(rbd, groups: bool = True) -> "AnalysisRoute":
         "availabilities, exactly"
         + (
             ", and over each common-cause group's members' joint states "
-            "(a Markov chain)."
+            "(a Markov chain"
+            + (
+                "; its members' tests and repairs of a general length "
+                "followed on pieces of the time since each test, each at "
+                "constant rates"
+                if _ccf_groups._timings_vary(rbd)
+                else ""
+            )
+            + ")."
             if rbd.ccf_groups and groups
             else "."
-        ),
+        )
+        + (_shutdowns.HELD if _shutdowns.timed(rbd) else ""),
         nodes,
         "long-run values",
     )
@@ -276,6 +308,7 @@ def mean_availability(
     method: str,
 ) -> float:
     """See ``RepairableRBD.mean_availability``."""
+    _shutdowns.require_exact(rbd)
     # Good reference on the Availability of a system
     # https://www.diva-portal.org/smash/get/diva2:986067/FULLTEXT01.pdf
     working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
@@ -300,8 +333,18 @@ def mean_availability(
 
 
 def node_availability(rbd) -> dict[Hashable, float]:
-    """See ``RepairableRBD.node_availability``."""
-    return {node: _node_availability(rbd, node) for node in rbd.components}
+    """See ``RepairableRBD.node_availability``. A node a shutdown holds
+    off line is down inside its windows: averaged over the long run's
+    grid, which has their edges."""
+    _shutdowns.require_exact(rbd)
+    out = {node: _node_availability(rbd, node) for node in rbd.components}
+    held = _shutdowns.held_nodes(rbd)
+    if held:
+        times, weights = _long_run_grid(rbd)
+        values = _availabilities_at(rbd, times)
+        for node in held:
+            out[node] = float(weights @ values[node])
+    return out
 
 
 def _node_availability(rbd, node) -> float:
@@ -374,6 +417,82 @@ def _node_unavailability(rbd, node) -> float:
     return min(1.0, down / cycle)
 
 
+def _node_failed(rbd, node) -> float:
+    """A component's long-run probability of having failed (in a repair,
+    or failed unseen: down unplanned, see ``_unplanned``), for one whose
+    value is constant over the long-run grid: all its unavailability,
+    but under age replacement the share of its cycle in a repair after a
+    failure (its maintenance, the rest, is planned); a nested RBD's own
+    unplanned unavailability."""
+    from repyability.rbd import _unplanned
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    component = rbd.components[node]
+    if isinstance(component, RepairableRBD):
+        return _unplanned.long_run_split(component, set(), set())[1]
+    schedule = rbd._preventive.get(node)
+    if schedule is None or schedule.duration is None:
+        return _node_unavailability(rbd, node)
+    assert schedule.policy == "age", "a calendar's profile, not a constant"
+    _, cycle, fails, _ = _maintenance_cycle(rbd, node, schedule)
+    return min(1.0, fails * model_mean(component.time_to_replace) / cycle)
+
+
+def _failed_at(rbd, times: np.ndarray) -> dict:
+    """Every node's long-run probability of having failed (see
+    ``_node_failed``) at each of ``times`` (see ``_long_run_grid``), as
+    ``_unavailabilities_at`` gives its unavailability, but not held off
+    line by a shut (held, it is down for planned work): less, for a
+    component with hidden failures, its tests of a working unit that
+    take time, and for one replaced on a calendar, its replacements that
+    take time (planned)."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    out = _unavailabilities_at(rbd, times, masked=False)
+    blocks = set(_block_nodes(rbd))
+    for node, component in rbd.components.items():
+        if node in rbd.in_or_out:
+            continue
+        if node in rbd._inspection:
+            unit = _requirements._tested_unit(rbd, node)
+            if unit is not None:
+                planned = unit.long_run.planned_profile(
+                    _requirements._unit_phase(rbd, node, times)
+                )
+                out[node] = np.clip(out[node] - planned, 0.0, 1.0)
+        elif node in blocks:
+            out[node] = _block_failed(rbd, node, times)
+        elif isinstance(component, RepairableRBD) or node in rbd._preventive:
+            out[node] = np.full(len(times), _node_failed(rbd, node))
+    return out
+
+
+def _block_failed(rbd, node, times: np.ndarray) -> np.ndarray:
+    """A component replaced on a calendar: its long-run probability of
+    being in a repair at each of ``times``, its profile's unavailability
+    less its replacement in progress (the chance that the action at the
+    calendar's time before replaced it, times the chance that the
+    replacement is not over), at the middle of the profile's cell."""
+    schedule = rbd._preventive[node]
+    down = 1.0 - _block_profile(rbd, node, times)
+    if schedule.duration is None:
+        return down
+    cycle = _block_cycle(rbd, node)
+    _, length, _, replaced = _maintenance_cycle(rbd, node, schedule)
+    interval = float(cycle.phase[-1])
+    share = replaced * interval / length
+    shifted = times - schedule.offset
+    phase = shifted - interval * np.floor(shifted / interval)
+    cell = np.clip(
+        np.searchsorted(cycle.phase, phase, side="right") - 1,
+        0,
+        len(cycle.phase) - 2,
+    )
+    middle = 0.5 * (cycle.phase[cell] + cycle.phase[cell + 1])
+    left = np.asarray(schedule.duration.sf(middle), dtype=float)
+    return np.clip(down - share * left, 0.0, 1.0)
+
+
 def _block_nodes(rbd) -> list:
     """The components renewed on a calendar, whose long-run values vary
     with it: under block replacement, or replaced on condition at
@@ -388,10 +507,14 @@ def _block_nodes(rbd) -> list:
 def _block_cycle(rbd, node):
     """The renewal cycle of a component under block replacement (see
     ``_block_replacement``) or replaced on condition (see
-    ``_condition_replacement``), computed once and kept."""
-    _requirements._refuse_level(rbd, node)
+    ``_condition_replacement``, or by its level: ``_level_replacement``,
+    whose cycle is one inspection interval of the long run), computed
+    once and kept. A unit its tasks restore only partly has none."""
+    _requirements._require_full_restoration(rbd, node)
     component = rbd.components[node]
     schedule = rbd._preventive[node]
+    if schedule.level is not None:
+        return level_model(rbd, node).cycle()
     cache = rbd._cache.kept("block_cycles")
     key = (
         node,
@@ -401,6 +524,7 @@ def _block_cycle(rbd, node):
         id(schedule.duration),
         schedule.policy,
         schedule.threshold,
+        schedule.older_than,
     )
     if key not in cache:
         if schedule.policy == "condition":
@@ -411,6 +535,7 @@ def _block_cycle(rbd, node):
                 schedule.interval,
                 float(schedule.threshold),
                 node,
+                older_than=schedule.older_than,
             )
         else:
             cache[key] = block_cycle(
@@ -421,6 +546,73 @@ def _block_cycle(rbd, node):
                 node,
             )
     return cache[key]
+
+
+def _replaced_nodes_refusal(rbd, node) -> None:
+    """Raise (``routes.Refused``) unless ``node`` is under block
+    replacement or replaced on condition (see ``_block_nodes``): only
+    such a component has a renewal cycle of fixed length."""
+    from repyability.rbd.routes import Refused
+
+    replaced = _block_nodes(rbd)
+    if node in replaced:
+        return
+    if not replaced:
+        raise Refused(
+            "No component here is under block replacement or replaced on "
+            "condition, so none has a replacement cycle: give a "
+            "component a preventive schedule with policy 'block' or "
+            "'condition'."
+        )
+    raise Refused(
+        f"Component {node!r} is not under block replacement or replaced "
+        "on condition, so it has no replacement cycle; the components "
+        f"that are: {replaced}."
+    )
+
+
+def replacement_cycle(rbd, node) -> ReplacementCycle:
+    """See ``RepairableRBD.replacement_cycle``."""
+    _requirements._require_component(rbd, node, "replacement_cycle")
+    _replaced_nodes_refusal(rbd, node)
+    # The checks _node_long_run makes, in its order.
+    _requirements._require_perfect_repair(rbd, node)
+    _requirements._require_times(rbd, node)
+    _requirements._require_no_opportunities(rbd, node)
+    _requirements._require_block_models(rbd, node)
+    cycle = _block_cycle(rbd, node)
+    return ReplacementCycle(
+        up=float(cycle.up),
+        length=float(cycle.length),
+        failures=float(cycle.failures),
+        phase=np.asarray(cycle.phase, dtype=float),
+        availability=np.asarray(cycle.availability, dtype=float),
+        failure_rate=np.asarray(cycle.failure_rate, dtype=float),
+        before=float(cycle.before),
+        after=float(cycle.after),
+    )
+
+
+def _replacement_cycle_route(rbd) -> AnalysisRoute:
+    """How ``replacement_cycle`` is found for the first component under
+    block replacement or replaced on condition (see ``analysis_routes``):
+    as its long-run values are; refused when there is none."""
+    from repyability.rbd import routes as r
+
+    replaced = _block_nodes(rbd)
+    if not replaced:
+        return r.refused(
+            r.refusal(partial(_replaced_nodes_refusal, rbd, None)) or ""
+        )
+    node = replaced[0]
+    route, how = _node_long_run(rbd, node)
+    if route == r.REFUSED:
+        return r.refused(how, (node,))
+    return AnalysisRoute(
+        route,
+        f"The renewal cycle of each component under block replacement or "
+        f"replaced on condition ({node!r}: {how}).",
+    )
 
 
 def _has_calendar(rbd) -> bool:
@@ -465,6 +657,8 @@ def _calendar_grid(
     the profiles."""
     intervals = {rbd._preventive[node].interval for node in blocks}
     intervals |= {rbd._inspection[node].interval for node in rbd._inspection}
+    # The shutdowns' windows, on their periods (see _shutdowns).
+    intervals |= {shut.period for shut in _shutdowns.timed(rbd)}
     schedules = list(rbd._inspection.values())
     period = _common_period(intervals | {s.period for s in schedules})
 
@@ -502,11 +696,13 @@ def _calendar_grid(
     for node in blocks:
         phase = _block_cycle(rbd, node).phase
         repeats = int(round(period / phase[-1]))
-        pieces.append(
-            (
-                phase[-1] * np.arange(repeats)[:, None] + phase[None, :-1]
-            ).ravel()
-        )
+        edges = (
+            rbd._preventive[node].offset
+            + phase[-1] * np.arange(repeats)[:, None]
+            + phase[None, :-1]
+        ).ravel()
+        pieces.append(edges - period * np.floor(edges / period))
+    pieces += _shutdowns.long_run_edges(rbd, period)
     for node in units or ():
         tested = _requirements._tested_unit(rbd, node)
         long_run = tested.long_run  # type: ignore
@@ -552,6 +748,8 @@ def _block_profile(rbd, node, times: np.ndarray, rates: bool = False):
     cycle = _block_cycle(rbd, node)
     interval = float(cycle.phase[-1])
     values = cycle.failure_rate if rates else cycle.availability
+    # On a shutdown's calendar, its interval starts at the shut's offset.
+    times = times - rbd._preventive[node].offset
     phase = times - interval * np.floor(times / interval)
     cell = np.searchsorted(cycle.phase, phase, side="right") - 1
     return values[np.clip(cell, 0, len(values) - 1)]
@@ -585,7 +783,10 @@ def _calendar_changes(rbd, working_nodes, broken_nodes):
     held at 1 or 0). The nodes due at an instant take their values then
     from their own models; the others are at the instant, before its
     outages start. Units due at the same time go down together; an
-    instant inspection due then comes first."""
+    instant inspection due then comes first. A shutdown's start takes
+    the nodes in its scope down (see ``_shutdowns``); a node held
+    through an instant by a shut that started before is down on both
+    sides of it."""
     blocks = [
         node
         for node in _block_nodes(rbd)
@@ -596,10 +797,12 @@ def _calendar_changes(rbd, working_nodes, broken_nodes):
         for node in _unit_nodes(rbd)
         if _requirements._tested_unit(rbd, node).setup.timed  # type: ignore
     ]
-    if not blocks and not units:
+    shuts = _shutdowns.timed(rbd)
+    if not blocks and not units and not shuts:
         return None
     intervals = {rbd._preventive[node].interval for node in blocks}
     intervals |= {rbd._inspection[node].period for node in rbd._inspection}
+    intervals |= {shut.period for shut in shuts}
     period = _common_period(intervals)
     # At each instant (as a share of the period), the nodes due then,
     # with their values up and down just before and just after.
@@ -610,10 +813,12 @@ def _calendar_changes(rbd, working_nodes, broken_nodes):
             (cycle.before, 1.0 - cycle.before),
             (cycle.after, 1.0 - cycle.after),
         )
-        interval = rbd._preventive[node].interval
+        schedule = rbd._preventive[node]
+        interval = schedule.interval
         for k in range(int(round(period / interval))):
-            instant = round(k * interval / period, 12)
-            due.setdefault(instant, []).append((node, values))
+            time = schedule.offset + k * interval
+            time -= period * math.floor(time / period)
+            due.setdefault(round(time / period, 12), []).append((node, values))
     for node in units:
         inspection = rbd._inspection[node]
         tested = _requirements._tested_unit(rbd, node)
@@ -624,13 +829,14 @@ def _calendar_changes(rbd, working_nodes, broken_nodes):
             due.setdefault(round(time / period, 12), []).append(
                 (node, long_run.around(k % long_run.per))
             )
+    for time in _shutdowns.long_run_starts(rbd, period):
+        due.setdefault(round(float(time) / period, 12), [])
     instants = np.array(sorted(due)) * period
     # Just after each instant, before its outages start (an
     # inspection due then is done).
     just_after = instants + 1e-9 * period
-    up, down = _availabilities_at(rbd, just_after), (
-        _unavailabilities_at(rbd, just_after)
-    )
+    up = _availabilities_at(rbd, just_after, masked=False)
+    down = _unavailabilities_at(rbd, just_after, masked=False)
     before, after = dict(up), dict(up)
     before_down, after_down = dict(down), dict(down)
     for column, key in enumerate(sorted(due)):
@@ -642,6 +848,20 @@ def _calendar_changes(rbd, working_nodes, broken_nodes):
                 fails[node] = np.array(fails[node], dtype=float)
                 works[node][column] = value
                 fails[node][column] = failed
+    for node in _shutdowns.held_nodes(rbd):
+        if node not in before:
+            continue
+        # Held at the instant: down after it; and before it too, unless
+        # its shut starts there.
+        held = _shutdowns.held_long_run(rbd, node, instants)
+        starting = held & _shutdowns.starting_long_run(
+            rbd, node, instants, period
+        )
+        through = held & ~starting
+        before[node] = np.where(through, 0.0, before[node])
+        before_down[node] = np.where(through, 1.0, before_down[node])
+        after[node] = np.where(held, 0.0, after[node])
+        after_down[node] = np.where(held, 1.0, after_down[node])
     return (
         period,
         instants,
@@ -682,11 +902,13 @@ def _long_run_grid(rbd) -> Tuple[np.ndarray, np.ndarray]:
     with tests or repairs that take time: see ``_calendar_grid``), the
     middles of the grids' cells.
     """
+    _shutdowns.require_exact(rbd)
     _crews._require_unlimited_crews(rbd)
     _requirements._require_calendars(rbd)
     blocks = _block_nodes(rbd)
     units = _unit_nodes(rbd)
-    if blocks or units:
+    shut = bool(_shutdowns.timed(rbd))
+    if blocks or units or (shut and not rbd._inspection):
         return _calendar_grid(rbd, blocks, units)
     if not rbd._inspection:
         return np.zeros(1), np.ones(1)
@@ -699,13 +921,18 @@ def _long_run_grid(rbd) -> Tuple[np.ndarray, np.ndarray]:
     }
     intervals = {interval for _, interval in rates.values()}
     schedules = list(rbd._inspection.values())
-    period = _common_period(intervals | {s.period for s in schedules})
+    shut_periods = {shut.period for shut in _shutdowns.timed(rbd)}
+    period = _common_period(
+        intervals | {s.period for s in schedules} | shut_periods
+    )
     breaks = {0.0, period}
     for interval in intervals:
         count = int(round(period / interval))
         breaks.update(k * interval for k in range(1, count))
     for schedule in schedules:
         breaks.update(_tests_in(schedule, period))
+    for edges in _shutdowns.long_run_edges(rbd, period):
+        breaks.update(float(e) for e in edges)
     fastest = max(rate for rate, _ in rates.values())
     # The tests of components whose lives are not exponential: a unit
     # renewed there may not age smoothly from it (a Weibull life's
@@ -785,11 +1012,12 @@ def _tested_profile(
     return np.exp(exponent), -np.expm1(exponent)
 
 
-def _availabilities_at(rbd, times: np.ndarray) -> dict:
+def _availabilities_at(rbd, times: np.ndarray, masked: bool = True) -> dict:
     """Every node's availability at each of ``times`` (see
     ``_long_run_grid``): ``exp(-lambda * u)``, ``u`` the time since the
     last inspection, for a component with hidden failures; its constant
-    long-run availability for any other."""
+    long-run availability for any other. A node a shutdown holds off line
+    is 0 inside its windows, unless not ``masked``."""
     out: dict = {}
     blocks = set(_block_nodes(rbd))
     for node in rbd.components:
@@ -801,10 +1029,10 @@ def _availabilities_at(rbd, times: np.ndarray) -> dict:
             out[node] = np.full(len(times), _node_availability(rbd, node))
     for node in rbd.in_or_out:
         out[node] = np.ones(len(times))
-    return out
+    return _shutdowns.mask(rbd, out, times) if masked else out
 
 
-def _unavailabilities_at(rbd, times: np.ndarray) -> dict:
+def _unavailabilities_at(rbd, times: np.ndarray, masked: bool = True) -> dict:
     """Every node's unavailability at each of ``times``, as
     ``_availabilities_at`` gives their availabilities, each worked out
     in its own right so that a small one keeps its precision:
@@ -824,7 +1052,7 @@ def _unavailabilities_at(rbd, times: np.ndarray) -> dict:
             out[node] = np.full(len(times), _node_unavailability(rbd, node))
     for node in rbd.in_or_out:
         out[node] = np.zeros(len(times))
-    return out
+    return _shutdowns.mask(rbd, out, times, down=True) if masked else out
 
 
 def _long_run_unavailabilities(
@@ -1069,6 +1297,7 @@ def _outage_terms(
     ``_outage_frequencies``). With limited repair crews, see
     ``_chain_outage_terms``; with common-cause groups,
     ``_ccf_outage_terms``."""
+    _shutdowns.require_exact(rbd)
     if rbd.ccf_groups:
         return _ccf_groups._ccf_outage_terms(rbd, working_nodes, broken_nodes)
     if rbd._crews_couple():
@@ -1089,6 +1318,14 @@ def _outage_terms(
     birnbaum = rbd._birnbaum_importance(
         availability, node_failures=unavailability
     )
+    # A node a shut holds off line changes nothing then.
+    for node in _shutdowns.held_nodes(rbd):
+        if node in birnbaum:
+            birnbaum[node] = np.where(
+                _shutdowns.held_long_run(rbd, node, times),
+                0.0,
+                np.asarray(birnbaum[node], dtype=float),
+            )
     terms: List[Tuple[Any, float]] = []
     planned = 0.0
     blocks = set(_block_nodes(rbd))

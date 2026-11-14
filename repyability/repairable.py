@@ -52,8 +52,18 @@ import numpy as np
 from scipy.optimize import minimize_scalar
 from scipy.special import gammaln
 
-from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
+from repyability.maintenance import (
+    FailureLimitPolicy,
+    MaintenancePolicy,
+    OverhaulReplacePolicy,
+    _cycles,
+)
 from repyability.rbd._model_utils import MODEL_ERRORS, failure_time_scale
+from repyability.rbd._processes import (
+    is_poisson_process,
+    is_renewal_process,
+    is_surpyval_model,
+)
 from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.wrappers import numpy_seed, outside_level
 
@@ -147,6 +157,40 @@ def _cut_short(caught: warnings.WarningMessage) -> bool:
     )
 
 
+_TAKES = (
+    "Repairable takes a surpyval Poisson process (HPP, CrowAMSAA, Duane "
+    "or CoxLewis), whose cif(t) is the expected number of failures by "
+    "age t, or a surpyval renewal process (GeneralizedRenewal, "
+    "GeneralizedOneRenewal, ARA or ARI), whose mcf is simulated; or a "
+    "model of your own with cif(t) or mcf(t, items=..., random_state=...)"
+)
+
+
+def _check_surpyval_model(model) -> None:
+    """Refuse a surpyval model whose ``cif`` or ``mcf`` is not the
+    expected number of failures by an age of one unit repaired and never
+    scrapped, which is what ``Repairable`` prices."""
+    from surpyval.recurrent import JointFrailtyModel
+
+    if is_poisson_process(model) or is_renewal_process(model):
+        return
+    name = type(model).__name__
+    if isinstance(model, JointFrailtyModel):
+        raise ValueError(
+            f"model is a surpyval {name}, which also models the unit being "
+            "scrapped; its cif counts the repairs as if it never were, and "
+            "Repairable does not price scrapping, so it would overstate "
+            "the repairs. RepairOrReplace prices a joint frailty model: "
+            f"repairs, write-offs and each unit's frailty. {_TAKES}."
+        )
+    raise ValueError(
+        f"model is a surpyval {name}, whose cif or mcf is not the "
+        "expected number of failures by an age of one unit (it needs "
+        "covariates or a cause, leaves out an event, or is an estimate "
+        f"from data). {_TAKES}."
+    )
+
+
 @refuse_removed_names
 class Repairable:
     """Repairable component with optimal overhaul and failure-limit policies.
@@ -201,7 +245,13 @@ class Repairable:
     Raises
     ------
     ValueError
-        If ``model`` exposes neither ``cif`` nor ``mcf``.
+        If ``model`` exposes neither ``cif`` nor ``mcf``, or is a surpyval
+        model other than a Poisson process (``HPP``, ``CrowAMSAA``,
+        ``Duane``, ``CoxLewis``) or a renewal process
+        (``GeneralizedRenewal``, ``GeneralizedOneRenewal``, ``ARA``,
+        ``ARI``): one whose ``cif`` needs covariates or a cause, or, as a
+        ``JointFrailtyModel``'s does, leaves out the unit being scrapped,
+        is not the expected number of failures it prices.
 
     Examples
     --------
@@ -238,6 +288,8 @@ class Repairable:
     """
 
     def __init__(self, model):
+        if is_surpyval_model(model):
+            _check_surpyval_model(model)
         self._analytic = hasattr(model, "cif")
         if not (self._analytic or hasattr(model, "mcf")):
             raise ValueError(
@@ -1091,3 +1143,140 @@ class Repairable:
             seed, n_simulations, max_failures
         )
         return FailureLimitPolicy(failure_count=count, cost_rate=rate)
+
+    # -- Repair, overhaul and replace in cycles ----------------------------
+
+    def overhaul_replace_cost_rate(
+        self, interval, cycles, overhaul_factor, replacement_cost
+    ) -> Union[float, np.ndarray]:
+        """The long-run cost rate of repairing failures, overhauling every
+        ``interval`` and replacing after ``cycles`` periods.
+
+        In plain words: the unit is repaired at each failure (cost ``cr``,
+        and it goes on as bad as it was). Every ``interval`` it is
+        overhauled (cost ``co``), which takes off part of its age but does
+        not make it new. After ``cycles`` periods it is replaced by a new
+        unit (``replacement_cost``) and the cycle starts again. Overhauls
+        keep the repairs in check, and the replacement clears the age that
+        overhauls leave behind.
+
+        Formally, failures are a non-homogeneous Poisson process with
+        cumulative intensity ``L(a)`` in age. An overhaul keeps the share
+        ``f = overhaul_factor`` of the age, so period ``j`` starts at age
+        ``v_(j-1)`` with ``v_0 = 0`` and ``v_j = f (v_(j-1) + T)``, and
+        expects ``L(v_(j-1) + T) - L(v_(j-1))`` failures. A replacement
+        cycle lasts ``K T`` and the long-run cost rate is::
+
+            g = (cr * sum_j [L(v_(j-1) + T) - L(v_(j-1))]
+                 + (K - 1) * co + replacement_cost) / (K * T)
+
+        It is exact, with no simulation. Repairs, overhauls and
+        replacements take no time. With ``cycles=1`` there is no overhaul
+        and this is periodic replacement (see
+        ``optimal_overhaul_policy``) at ``replacement_cost``.
+
+        Parameters
+        ----------
+        interval : float or array_like
+            The time between overhauls, more than 0.
+        cycles : int
+            Periods per replacement cycle, ``K >= 1``.
+        overhaul_factor : float
+            The share of its age the unit keeps through an overhaul, from
+            0 (as good as new) up to, not including, 1 (no effect).
+        replacement_cost : float
+            The cost of replacing the unit, at least 0.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The cost per unit time, in the shape of ``interval``.
+
+        Raises
+        ------
+        ValueError
+            If the costs are not set or an argument is out of range.
+        NotImplementedError
+            For a simulation-backed (imperfect-repair) model: the policy
+            needs the failures of a unit repaired minimally from any age.
+
+        Examples
+        --------
+        With a constant failure rate (alpha = 100) the overhaul does
+        nothing, so the rate is ``cr / alpha + ((K-1) co + cp) / (K T)``:
+
+        >>> from surpyval.recurrent import CrowAMSAA
+        >>> from repyability import Repairable
+        >>> unit = Repairable(CrowAMSAA.from_params([100.0, 1.0]))
+        >>> unit.set_repair_and_overhaul_costs(cr=1.0, co=10.0)
+        >>> round(unit.overhaul_replace_cost_rate(50.0, 2, 0.5, 40.0), 4)
+        0.51
+        """
+        return _cycles.cost_rate(
+            self, interval, cycles, overhaul_factor, replacement_cost
+        )
+
+    def optimal_overhaul_replace_policy(
+        self,
+        overhaul_factor: float,
+        replacement_cost: float,
+        max_cycles: int = _cycles.DEFAULT_MAX_CYCLES,
+    ) -> OverhaulReplacePolicy:
+        """The best overhaul interval and number of periods between
+        replacements.
+
+        For each number of periods ``K`` from 1 to ``max_cycles`` the
+        interval that minimises the long-run cost rate of
+        [`overhaul_replace_cost_rate`][repyability.Repairable.overhaul_replace_cost_rate]
+        is found (a grid search, then a bounded refinement), and the best
+        ``K`` is kept (the fewer on a tie). The cost rate need not fall
+        steadily with ``K``: it can have a local minimum at a few periods
+        and a slightly lower value much further out, so read the result
+        with ``max_cycles`` in mind (compare a few limits). A result with
+        ``cycles`` equal
+        to ``max_cycles`` may mean more periods would pay: raise the
+        limit. ``interval`` is ``inf`` when the unit does not wear out, so
+        that neither overhauls nor replacements pay.
+
+        Parameters
+        ----------
+        overhaul_factor : float
+            The share of its age the unit keeps through an overhaul, from
+            0 (as good as new) up to, not including, 1.
+        replacement_cost : float
+            The cost of replacing the unit.
+        max_cycles : int, optional
+            The most periods per replacement cycle searched (default 20).
+
+        Returns
+        -------
+        OverhaulReplacePolicy
+            The ``interval``, ``cycles`` and ``cost_rate``.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for
+            [`overhaul_replace_cost_rate`][repyability.Repairable.overhaul_replace_cost_rate].
+
+        Examples
+        --------
+        A wearing-out unit (failures grow with the 2.5th power of its age),
+        repaired for 1, overhauled for 5, and replaced for 20; an overhaul
+        takes off 40% of its age:
+
+        >>> from surpyval.recurrent import CrowAMSAA
+        >>> from repyability import Repairable
+        >>> unit = Repairable(CrowAMSAA.from_params([100.0, 2.5]))
+        >>> unit.set_repair_and_overhaul_costs(cr=1.0, co=5.0)
+        >>> policy = unit.optimal_overhaul_replace_policy(
+        ...     0.6, 20.0, max_cycles=5
+        ... )
+        >>> policy.cycles, round(policy.interval, 1)
+        (2, 177.7)
+        >>> round(policy.cost_rate, 4)
+        0.1172
+        """
+        return _cycles.optimal_policy(
+            self, overhaul_factor, replacement_cost, max_cycles
+        )

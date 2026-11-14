@@ -216,6 +216,206 @@ def test_a_duty_is_the_life_on_the_calendar():
     assert again._init_args["components"]["a"]["duty"] == 0.25
 
 
+def restored(life, c=1.0, **more):
+    """A unit whose task every ``300 c`` restores it partly, every third
+    replacing it, its repairs and tasks taking time."""
+    spec = {
+        "reliability": life,
+        "repairability": E([0.5 / c]),
+        "preventive": {
+            "interval": 300.0 * c,
+            "policy": "block",
+            "duration": E([1.0 / c]),
+            "restoration": {"model": "kijima2", "q": 0.4},
+            "replace_every": 3,
+        },
+        **more,
+    }
+    return RepairableRBD(ONE, {"a": spec})
+
+
+@pytest.mark.parametrize("c", [1e-6, 1e3, 1e6])
+def test_a_partial_restoration_does_not_depend_on_the_unit(c):
+    # The same draws, every time scaled: the same failures and outages,
+    # and the availability to rounding.
+    runs = [
+        restored(W([100 * scale, 2]), scale).availability(
+            t_simulation=2000.0 * scale,
+            mc_samples=200,
+            seed=4,
+            control_variate=False,
+        )
+        for scale in (1.0, c)
+    ]
+    assert runs[0].system_failures == runs[1].system_failures
+    assert runs[0].system_planned_outages == runs[1].system_planned_outages
+    assert runs[1].mean_availability == pytest.approx(
+        runs[0].mean_availability, rel=1e-9
+    )
+
+
+def test_a_partial_restoration_on_a_duty_is_on_the_calendar():
+    # The virtual age is on the calendar, the life having been put there;
+    # q is a fraction, with no unit.
+    first = restored(W([100, 2]), duty=0.25).availability(
+        t_simulation=4000.0, mc_samples=100, seed=3
+    )
+    second = restored(W([400, 2])).availability(
+        t_simulation=4000.0, mc_samples=100, seed=3
+    )
+    assert first.system_failures == second.system_failures
+    assert first.sample_mean_availability == pytest.approx(
+        second.sample_mean_availability, rel=1e-12
+    )
+
+
+def shut_line(c=1.0, idle_ageing=True):
+    """Two units in series shut every ``300 c`` for ``5 c`` from ``40 c``,
+    one renewed there and the other replaced there once older than
+    ``500 c``."""
+    unit = {"reliability": W([200 * c, 2]), "repairability": E([0.5 / c])}
+    return RepairableRBD(
+        [("s", "a"), ("a", "b"), ("b", "t")],
+        {
+            "a": {**unit, "preventive": {"shutdown": "line"}},
+            "b": (
+                {
+                    **unit,
+                    "preventive": {
+                        "shutdown": "line",
+                        "older_than": 500.0 * c,
+                    },
+                }
+                if idle_ageing
+                else unit
+            ),
+        },
+        shutdowns={
+            "line": {
+                "period": 300.0 * c,
+                "offset": 40.0 * c,
+                "duration": 5.0 * c,
+                "cost": 7.0,
+                "idle_ageing": idle_ageing,
+            }
+        },
+    )
+
+
+@pytest.mark.parametrize("idle_ageing", [True, False])
+@pytest.mark.parametrize("c", [1e-6, 1e3, 1e6])
+def test_a_shutdown_scales_with_the_unit(c, idle_ageing):
+    base, scaled = shut_line(1.0, idle_ageing), shut_line(c, idle_ageing)
+    assert scaled.mean_availability() == pytest.approx(
+        base.mean_availability(), rel=1e-9
+    )
+    assert scaled.expected_cost_rate() * c == pytest.approx(
+        base.expected_cost_rate(), rel=1e-9
+    )
+    x = np.array([30.0, 42.0, 900.0])
+    np.testing.assert_allclose(
+        scaled.point_availability(x * c), base.point_availability(x), atol=1e-9
+    )
+    left, right = base.expected_events(2000.0), scaled.expected_events(
+        2000 * c
+    )
+    assert right.system_failures == pytest.approx(left.system_failures, 1e-7)
+    assert right.system_planned_outages == pytest.approx(
+        left.system_planned_outages, 1e-7
+    )
+    assert right.shutdowns == left.shutdowns == 7.0
+    runs = [
+        rbd.availability(
+            t_simulation=2000.0 * scale,
+            mc_samples=100,
+            seed=4,
+            control_variate=False,
+        )
+        for rbd, scale in ((base, 1.0), (scaled, c))
+    ]
+    assert runs[0].system_failures == runs[1].system_failures
+    assert runs[0].system_planned_outages == runs[1].system_planned_outages
+
+
+@pytest.mark.parametrize("c", [1e-6, 1e3, 1e6])
+def test_planned_against_unplanned_scales_with_the_unit(c):
+    # UC-25: the shares of the time down planned and unplanned, and the
+    # failures avoided per unit time, do not depend on the unit.
+    base, scaled = shut_line(1.0), shut_line(c)
+    left, right = base.maintenance_effect(), scaled.maintenance_effect()
+    for name in ("system_planned_downtime", "system_unplanned_downtime"):
+        assert getattr(right, name) == pytest.approx(
+            getattr(left, name), rel=1e-7
+        )
+    assert right.system_failures_avoided * c == pytest.approx(
+        left.system_failures_avoided, rel=1e-7
+    )
+    window = [
+        rbd.maintenance_effect(2000.0 * scale)
+        for rbd, scale in ((base, 1.0), (scaled, c))
+    ]
+    assert window[1].system_unplanned_downtime / c == pytest.approx(
+        window[0].system_unplanned_downtime, rel=1e-6
+    )
+    assert window[1].system_failures_avoided == pytest.approx(
+        window[0].system_failures_avoided, rel=1e-6
+    )
+
+
+def running_hours(c):
+    """A pump run 60% of the time, overhauled every ``4000 c`` running
+    hours and tested every ``500 c`` from ``100 c``, in parallel."""
+    unit = {
+        "reliability": W([5000.0 * c, 2.5]),
+        "repairability": E([0.02 / c]),
+        "duty": 0.6,
+        "replace_cost": 10.0,
+    }
+    return RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {
+            "a": {
+                **unit,
+                "preventive": {
+                    "interval": 4000.0 * c,
+                    "basis": "operating",
+                    "cost": 2.0,
+                },
+            },
+            "b": {
+                **unit,
+                "inspection": {
+                    "interval": 500.0 * c,
+                    "offset": 100.0 * c,
+                    "basis": "operating",
+                },
+            },
+        },
+    )
+
+
+@pytest.mark.parametrize("c", [1e-6, 1e3, 1e6])
+def test_tasks_in_running_hours_scale_with_the_unit(c):
+    base, scaled = running_hours(1.0), running_hours(c)
+    assert scaled.mean_availability() == pytest.approx(
+        base.mean_availability(), rel=1e-9
+    )
+    assert scaled.expected_cost_rate() * c == pytest.approx(
+        base.expected_cost_rate(), rel=1e-9
+    )
+    runs = [
+        rbd.availability(
+            t_simulation=20000.0 * scale,
+            mc_samples=100,
+            seed=4,
+            control_variate=False,
+        )
+        for rbd, scale in ((base, 1.0), (scaled, c))
+    ]
+    assert runs[0].system_failures == runs[1].system_failures
+    assert runs[0].system_planned_outages == runs[1].system_planned_outages
+
+
 def test_a_duty_of_one_changes_nothing():
     assert duty_rbd(W([100, 2]), 1.0).mean_availability() == (
         duty_rbd(W([100, 2]), None).mean_availability()

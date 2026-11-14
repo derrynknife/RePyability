@@ -69,11 +69,17 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 "Each phase's failure probability",
                 ("phase_failure_probabilities",),
             ),
+            ("Reliability over a mission's time", ("reliability_over_time",)),
+            ("A mission's results from one run", ("summary",)),
         ],
     ),
     (
         "Availability and outages",
         [
+            (
+                "Reliability and mean time to the first failure",
+                ("first_failure_sf", "mean_time_to_first_failure"),
+            ),
             ("Long-run availability", ("mean_availability",)),
             ("Each node's availability", ("node_availability",)),
             (
@@ -92,7 +98,11 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Mean up and down times", ("mean_up_time", "mean_down_time")),
             (
                 "Expected failures and events in a window",
-                ("expected_events", "expected_failures"),
+                (
+                    "expected_events",
+                    "expected_failures",
+                    "expected_events_by_window",
+                ),
             ),
             (
                 "Simulated availability (distribution)",
@@ -104,6 +114,14 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ),
             ),
             ("Simulated histories", ("simulate_timelines",)),
+            (
+                "Each simulation's values, common random numbers",
+                ("simulation_samples",),
+            ),
+            (
+                "Repair crews' jobs and chain",
+                ("crew_jobs", "crew_states"),
+            ),
             ("Compare two designs", ("compare",)),
         ],
     ),
@@ -112,8 +130,23 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
         [
             ("Long-run cost rate", ("expected_cost_rate",)),
             ("Expected cost in a window", ("expected_cost",)),
+            ("Expected net present value", ("expected_npv",)),
+            ("A plan against what happened", ("plan_vs_actual",)),
+            ("Cost in each of a run of windows", ("cost_by_window",)),
             ("Simulated cost (distribution)", ("cost",)),
             ("Total cost of ownership", ("total_cost",)),
+            (
+                "Each component's actions per unit time",
+                ("node_action_rates",),
+            ),
+            (
+                "A replaced component's renewal cycle",
+                ("replacement_cycle",),
+            ),
+            (
+                "Planned and unplanned downtime, failures the plan avoids",
+                ("maintenance_effect",),
+            ),
             ("Spares demand and stock", ("spares_demand", "spares_stock")),
         ],
     ),
@@ -132,10 +165,27 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                     "get_all_path_sets",
                 ),
             ),
+            (
+                "Prime implicants (NOT gates)",
+                ("prime_implicants",),
+            ),
             ("Each path set's probability", ("path_set_probabilities",)),
             ("Cut sets ranked by probability", ("ranked_cut_sets",)),
             ("Irrelevant components", ("find_irrelevant_components",)),
-            ("Convert to and from an RBD", ("to_rbd", "from_rbd")),
+            (
+                "Structure sizes (counts, depth, core)",
+                (
+                    "structure_summary",
+                    "count_minimal_path_sets",
+                    "count_minimal_cut_sets",
+                ),
+            ),
+            ("The core that does not reduce", ("core_structure",)),
+            ("Junctions (drawing nodes)", ("junctions",)),
+            (
+                "Convert to and from an RBD",
+                ("to_rbd", "from_rbd", "from_diagram"),
+            ),
             (
                 "Capacity distribution",
                 ("capacity_distribution", "system_capacity"),
@@ -153,6 +203,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 "Save and load (dict, JSON)",
                 ("to_dict", "to_json", "from_dict", "from_json"),
             ),
+            ("Export to Open-PSA (MEF)", ("to_open_psa",)),
         ],
     ),
     (
@@ -169,11 +220,23 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Joint (second order)", ("joint_importance",)),
             ("Barlow-Proschan", ("barlow_proschan_importance",)),
             (
+                "Shares of a safety function's PFDavg, common cause apart",
+                ("pfd_breakdown",),
+            ),
+            (
+                "Each block's part in each phase's failures",
+                ("failure_drivers",),
+            ),
+            (
                 "Rate of change over time",
                 ("reliability_rate", "availability_rate"),
             ),
             ("Uncertainty importance", ("uncertainty_importance",)),
             ("All measures given a state", ("importances_given_state",)),
+            (
+                "Top event given each event",
+                ("conditional_probabilities",),
+            ),
             (
                 "Parameter sensitivity, levers",
                 ("parameter_sensitivity", "levers", "with_levers"),
@@ -296,7 +359,7 @@ FAMILIES: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {
             "Over time",
             ("point_availability", "mission_availability", "expected_events"),
         ),
-        ("Costs", ("expected_cost_rate", "expected_cost")),
+        ("Costs", ("expected_cost_rate", "expected_cost", "expected_npv")),
         (
             "Importance",
             (
@@ -310,6 +373,7 @@ FAMILIES: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {
                 "joint_importance",
                 "barlow_proschan_importance",
                 "availability_rate",
+                "pfd_breakdown",
             ),
         ),
         ("Sensitivity", ("parameter_sensitivity",)),
@@ -364,10 +428,15 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("Any life and repair", "costed_pairs"),
         ("A fitted life", "fitted life"),
         ("A fitted Crow-AMSAA process", "fitted Crow-AMSAA process"),
+        ("A fitted G1, ARA or ARI process", "fitted ARA process"),
         ("A probability per demand", "fixed probability"),
         ("A mixture life", "mixture life"),
         ("A fitted degradation process life", "degradation process life"),
         ("Operated part of the time (duty)", "operated part of the time"),
+        (
+            "Tasks counted in running hours (duty)",
+            "operated part of the time, maintained by running hours",
+        ),
         (
             "A standby or load-sharing life, simulated",
             "simulated standby life",

@@ -6,7 +6,17 @@
 
 ::: repyability.AvailabilityResult
 
+::: repyability.MissionSummary
+
+::: repyability.MissionPhaseSummary
+
+::: repyability.MissionDrivers
+
 ::: repyability.CapacityDistribution
+
+::: repyability.StructureSummary
+
+::: repyability.CoreStructure
 
 ::: repyability.Criticalities
 
@@ -20,15 +30,43 @@
 
 ::: repyability.ExpectedEvents
 
+::: repyability.EventsByWindow
+
+::: repyability.CostByWindow
+
 ::: repyability.RateBreakdown
 
+::: repyability.PFDBreakdown
+
 ::: repyability.ExpectedCost
+
+::: repyability.ExpectedNPV
+
+::: repyability.MaintenanceEffect
+
+::: repyability.PlanVsActual
 
 ::: repyability.ConfidenceInterval
 
 ::: repyability.ControlVariate
 
 ::: repyability.ConditionalRun
+
+::: repyability.SimulationSamples
+
+::: repyability.NodeActionRates
+
+::: repyability.CrewJob
+
+::: repyability.CrewStates
+
+::: repyability.ReplacementCycle
+
+::: repyability.ConditionalProbabilities
+
+::: repyability.PrimeImplicant
+
+::: repyability.ModelParameters
 
 ::: repyability.UncertaintyResult
 
@@ -46,6 +84,10 @@
 
 ::: repyability.DemonstrationPlan
 
+::: repyability.StressStrengthResult
+
+::: repyability.StressStrengthCurve
+
 ::: repyability.AvailabilityAllocation
 
 ::: repyability.SparesDemand
@@ -62,9 +104,43 @@
 
 ::: repyability.FailureLimitPolicy
 
+::: repyability.RepairOrReplacePolicy
+
+::: repyability.UnitDecision
+
+::: repyability.OverhaulReplacePolicy
+
 ::: repyability.FailureForecast
 
 ::: repyability.SkipValue
+
+::: repyability.ReplacementComparison
+
+::: repyability.OptionValue
+
+::: repyability.DelayEffect
+
+::: repyability.AgeReplacementValue
+
+::: repyability.SlackEffect
+
+::: repyability.RenewalForecast
+
+::: repyability.CostDistribution
+
+::: repyability.WindowCosts
+
+::: repyability.LayeredVisits
+
+::: repyability.RatioChoice
+
+::: repyability.RunToFailure
+
+::: repyability.ScheduledReplacement
+
+::: repyability.FailureFinding
+
+::: repyability.OnCondition
 
 ::: repyability.NextReplacement
 
@@ -73,3 +149,7 @@
 ::: repyability.CalendarPolicy
 
 ::: repyability.PlannedReplacement
+
+::: repyability.ScheduleValue
+
+::: repyability.SwitchTime

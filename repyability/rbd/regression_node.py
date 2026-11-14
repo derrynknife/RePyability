@@ -37,11 +37,9 @@ def _is_semiparametric(model) -> bool:
     Cox model): its baseline is an estimate on the observed range only,
     with no tail beyond it. (Recognised by its type, not by its survival
     curve.)"""
-    from surpyval.univariate.regression import (
-        semi_parametric_regression_model as semiparametric,
-    )
+    from surpyval import SemiParametricRegressionModel
 
-    return isinstance(model, semiparametric.SemiParametricRegressionModel)
+    return isinstance(model, SemiParametricRegressionModel)
 
 
 def _inverse_hazard(hazard, target: np.ndarray) -> np.ndarray:
@@ -85,14 +83,23 @@ def _inverse_hazard(hazard, target: np.ndarray) -> np.ndarray:
 
 def _fitted_width(model) -> Optional[int]:
     """How many covariates (stresses) a surpyval regression model was
-    fitted with, or None if it does not say. Its ``_n_covariates()``
-    counts them for every kind; ``phi_param_map`` names a proportional-
-    hazards or accelerated-failure-time model's coefficients, one each, but
-    an accelerated-life model's life-stress parameters (an Arrhenius
-    model's ``a`` and ``b`` for one stress)."""
-    count = getattr(model, "_n_covariates", None)
-    if callable(count):
-        return int(count())
+    fitted with, or None if it does not say, from its public attributes
+    only: the columns of its fitted data's ``Z`` where it has its data; an
+    accelerated-life model's life model's stresses; else
+    ``phi_param_map``, which names a proportional-hazards or
+    accelerated-failure-time model's coefficients, one each (but an
+    accelerated-life model's life-stress parameters, an Arrhenius model's
+    ``a`` and ``b`` for one stress, hence the step before)."""
+    from surpyval.univariate.regression.kinds import ACCELERATED_LIFE
+
+    Z = getattr(getattr(model, "data", None), "Z", None)
+    if Z is not None and np.ndim(Z) == 2:
+        return int(np.shape(Z)[1])
+    stresses = getattr(getattr(model, "reg_model", None), "n_stresses", None)
+    if getattr(model, "kind", None) == ACCELERATED_LIFE and isinstance(
+        stresses, int
+    ):
+        return stresses
     fitted = getattr(model, "phi_param_map", None)
     return len(fitted) if isinstance(fitted, dict) else None
 

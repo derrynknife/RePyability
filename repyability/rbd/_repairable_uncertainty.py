@@ -9,7 +9,8 @@ its preventive maintenance and of its tests (``"preventive.duration"``,
 ``"inspection.duration"``), named as ``parameter_sensitivity``'s levers are.
 Each may be uncertain, and is drawn as ``NonRepairableRBD.sf_uncertainty``
 draws a node's model (see ``uncertainty``): from a fit's parameter
-covariance, distributions over its parameters, or a list of models. A
+covariance or a Bayesian fit's posterior, distributions over its
+parameters, or a list of models. A
 common-cause group's model may be uncertain too. An input is a node, a
 population of nodes sharing a model (a tuple), or a common-cause group;
 a node may come under several inputs, a role under one (#214): a fleet's
@@ -54,11 +55,17 @@ from repyability.utils.wrappers import outside_level
 
 from .uncertainty import (
     FIT,
+    GIVEN,
+    band,
+    carried,
     check_draws,
     draw_ccf_models,
     draw_models,
     draw_with,
+    fitted_object,
     is_fit,
+    require_levers,
+    shares_fit,
     split_group_levers,
     varied_ccf_parameters,
     varied_parameters,
@@ -119,9 +126,41 @@ def _spec(rbd, node) -> Optional[dict]:
     return _as_spec(rbd._init_args["components"][node])
 
 
-def _models(rbd, node) -> Dict[str, Any]:
+def _given_process(rbd, node):
+    """The fitted repairable-unit process (Crow-AMSAA, Duane, HPP or a
+    generalised renewal process) a component was given as its life, which
+    it holds as the life and repair it is (``_processes.as_spec``); None
+    for any other life."""
+    from ._processes import _translated
+
+    given = getattr(rbd, "_given_lives", {}).get(node)
+    if given is None or not hasattr(given, "with_params"):
+        return None
+    try:
+        return given if _translated(given) is not None else None
+    except ValueError:
+        return None
+
+
+def _models(rbd, node, fit: bool = False) -> Dict[str, Any]:
+    """A component's models by role. With ``fit``, the models ``"fit"``
+    draws: a fitted process given as its life (held as the life and repair
+    it is) is its life model there, drawn from the process's own fit."""
     spec = _spec(rbd, node)
-    return {} if spec is None else {r: model_of(spec, r) for r in ROLES}
+    if spec is None:
+        return {}
+    models = {r: model_of(spec, r) for r in ROLES}
+    process = _given_process(rbd, node) if fit else None
+    if process is not None:
+        models["reliability"] = process
+    return models
+
+
+def _drawn_model(rbd, node, role: str, spec):
+    """The model of a component's ``role`` its uncertainty ``spec`` draws:
+    for ``"fit"``, a fitted process given as its life (see ``_models``)."""
+    fit = isinstance(spec, str) and spec == FIT
+    return _models(rbd, node, fit)[role]
 
 
 def _label(members: tuple) -> str:
@@ -147,7 +186,8 @@ def _roles(spec: Any, models: dict, label: str) -> Dict[str, Any]:
             raise ValueError(
                 f"{label}: none of its models (its life, repair, or "
                 "maintenance or test duration) is a surpyval fit with a "
-                "parameter covariance, which 'fit' draws from. Give "
+                "parameter covariance or a Bayesian fit, which 'fit' draws "
+                "from. Give "
                 "distributions over a model's parameters, or a list of "
                 "models, by role: {'reliability': ..., 'repairability': "
                 "...}."
@@ -220,10 +260,11 @@ def fitted(rbd) -> Dict[Hashable, Dict[str, str]]:
 
         first: Dict[int, Hashable] = {}
         for node in rbd.components:
-            model = _models(rbd, node).get(role)
+            model = _models(rbd, node, fit=True).get(role)
             if model is not None and is_fit(model):
                 parent[node] = node
-                parent[root(node)] = root(first.setdefault(id(model), node))
+                key = id(fitted_object(model))
+                parent[root(node)] = root(first.setdefault(key, node))
         for group in rbd.ccf_groups:
             inside = [m for m in group.members if m in parent]
             for member in inside[1:]:
@@ -279,7 +320,8 @@ def require_fitted(rbd) -> None:
     )
     raise Refused(
         "No component's model is a surpyval fit with a parameter "
-        f"covariance, which the uncertainty is drawn from by default{nested}: "
+        "covariance, or a Bayesian fit, which the uncertainty is drawn "
+        f"from by default{nested}: "
         "give the uncertain nodes, uncertainty={node: 'fit'} or {node: "
         "{'repairability': {parameter: distribution}}}, for example."
     )
@@ -368,7 +410,10 @@ def sources(
                 )
         label = _label(members)
         models = _models(rbd, members[0])
-        roles = _roles(spec, models, label)
+        fit = isinstance(spec, str) and spec == FIT
+        roles = _roles(
+            spec, _models(rbd, members[0], fit) if fit else models, label
+        )
         for node in members:
             for role in roles:
                 if (node, role) in seen:
@@ -380,8 +425,11 @@ def sources(
         for node in members[1:]:
             theirs = _models(rbd, node)
             for role in roles:
-                if not NonRepairableRBD._same_model(
-                    theirs.get(role), models[role]
+                if not (
+                    NonRepairableRBD._same_model(
+                        theirs.get(role), models[role]
+                    )
+                    or shares_fit(theirs.get(role), models[role])
                 ):
                     raise ValueError(
                         f"Nodes {list(members)!r} share their uncertainty, "
@@ -406,7 +454,7 @@ def sources(
                 )
     if given:
         for item in out:
-            models = _models(rbd, item.members[0])
+            models = _models(rbd, item.members[0], fit=True)
             for role in item.specs:
                 others = [
                     node
@@ -414,7 +462,9 @@ def sources(
                     if node not in item.members
                     and (node, role) not in seen
                     and models[role] is not None
-                    and _models(rbd, node).get(role) is models[role]
+                    and shares_fit(
+                        _models(rbd, node, fit=True).get(role), models[role]
+                    )
                 ]
                 if others:
                     who = (
@@ -451,12 +501,12 @@ def draws(
     def draw(count: int, source) -> Tuple[List[Dict[str, list]], list]:
         drawn = []
         for item in inputs:
-            models = _models(rbd, item.members[0])
+            node = item.members[0]
             label = _label(item.members)
             drawn.append(
                 {
                     role: draw_models(
-                        models[role],
+                        _drawn_model(rbd, node, role, spec),
                         spec,
                         count,
                         source,
@@ -492,8 +542,23 @@ def draws(
     return draw_with(draw, n, seed, sampling, paired, join)
 
 
+def band_of(rbd, inputs: List[Source], groups: Dict[int, Any]) -> str:
+    """What the band over draws of ``inputs`` and the common-cause
+    ``groups`` is (``uncertainty.band``): credible, confidence, given or
+    mixed."""
+    from .uncertainty import input_band
+
+    kinds = [
+        input_band(_models(rbd, item.members[0])[role], spec)
+        for item in inputs
+        for role, spec in item.specs.items()
+    ]
+    return band(kinds + [GIVEN] * len(groups))
+
+
 def build(rbd, inputs, drawn, drawn_groups, i: int):
     """The diagram with the ``i``-th draw's models."""
+    from ._processes import _translated
     from .ccf import CCFGroup
 
     args = rbd._init_args
@@ -501,13 +566,21 @@ def build(rbd, inputs, drawn, drawn_groups, i: int):
     # A node under several inputs takes each one's roles (#214).
     respecified: Dict[Hashable, Any] = {}
     for item, by_role in zip(inputs, drawn):
+        first = _models(rbd, item.members[0])
         for node in item.members:
             # A node with no models of its own is refused by ``sources``.
             spec: Any = respecified.get(node)
             if spec is None:
                 spec = _spec(rbd, node)
+            own = _models(rbd, node)
             for role, models in by_role.items():
-                spec = with_model(spec, role, models[i])
+                (model,) = carried([models[i]], first[role], own[role])
+                if role == "reliability" and model is not own[role]:
+                    if _translated(model) is not None:
+                        # A drawn process: the constructor makes it the
+                        # life and repair it is again.
+                        spec = {k: v for k, v in spec.items() if k != "repair"}
+                spec = with_model(spec, role, model)
             respecified[node] = spec
     components.update(respecified)
     changed: Dict[str, Any] = {"components": components}
@@ -637,11 +710,10 @@ def delta(rbd, of: str, x, state, inputs, groups, rel_step) -> list:
         else:
             keys = list(item.members)
         for role, spec in item.specs.items():
-            positions, _, covariance, _ = varied_parameters(
-                models[role],
-                spec,
-                f"The {role} of {label[0].lower()}{label[1:]}",
-            )
+            what = f"The {role} of {label[0].lower()}{label[1:]}"
+            drawn = _drawn_model(rbd, item.members[0], role, spec)
+            require_levers(drawn, spec, what)
+            positions, _, covariance, _ = varied_parameters(drawn, spec, what)
             spec_of = parametric_spec(models[role])
             assert spec_of is not None  # a varied model is parametric
             names = spec_of.names
@@ -726,13 +798,17 @@ def _uncertainty(
     samples = drawn.samples(
         rbd, of, x, state, inputs, models, group_models, n_draws
     )
+    kind = drawn.band_of(rbd, inputs, groups)
     if x is None or np.ndim(x) == 0:
         return UncertaintyResult(
             samples=samples[:, 0],
             nominal=float(nominal[0]),
             n_draws=n_draws,
+            band=kind,
         )
-    return UncertaintyResult(samples=samples, nominal=nominal, n_draws=n_draws)
+    return UncertaintyResult(
+        samples=samples, nominal=nominal, n_draws=n_draws, band=kind
+    )
 
 
 def mean_availability_uncertainty(

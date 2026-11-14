@@ -25,6 +25,11 @@ between preventive and corrective maintenance:
 | `calendar` | Under `"calendar"`: the [`CalendarPolicy`][repyability.CalendarPolicy] of [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]. |
 | `duration` | `"instant"` (the default): renewed in place, never down. Or a time-to-maintain model: the unit is down meanwhile, a *planned outage*. |
 | `cost` | Charged at each preventive replacement: a number or a distribution (under `"calendar"`, none: the calendar's price is charged). |
+| `restoration` | The task restores the unit only partly: Kijima's model and restoration factor `q` (see [below](#planned-maintenance-that-restores-partly)). Left out, each task renews the unit. |
+| `replace_every`, `replacement_cost` | With a `restoration`: every `N`-th task replaces the unit as new instead, at this cost (by default the task's `cost`). |
+| `shutdown` | The task is done at every shut of the diagram's shutdown of this name, whose calendar and duration it takes (no `interval` or `duration`; see [Shutdowns](#shutdowns)). |
+| `older_than` | With a `shutdown`: replaced at a shut only if its age then is at least this. |
+| `basis` | What the task's times are counted in: `"calendar"` (the default) or `"operating"`, the block's running hours, put on the calendar through its `"duty"` (see [Operating part of the time](repairable.md#operating-part-of-the-time)). |
 
 A replacement renews the unit, so the failure it was heading for never
 happens. A failure due at the same time as a replacement comes first.
@@ -350,19 +355,61 @@ def liner(level):
             "repairability": surv.Exponential.from_params([1 / 20])}
     return RepairableRBD([("s", "a"), ("a", "t")], {"a": spec})
 
-liner(6.0).cost(5000.0, mc_samples=400, seed=1).mean   # -> 95.06
+liner(6.0).expected_cost(5000.0).mean                # -> 95.36
+run = liner(6.0).cost(5000.0, mc_samples=400, seed=1)
+run.mean                                             # -> 95.36   the same
+run.sample_mean                                      # -> 95.06   the 400 simulations'
 ```
 
 Run to failure, the liner costs about 402 over the 5000 hours. Replaced at
-a level of 7.5, 7, 6 or 5 it costs about 250, 133, 95 and 103: a lower
+a level of 7.5, 7, 6 or 5 it costs about 249, 134, 95 and 104: a lower
 level means fewer failures but more replacements.
 
-- **By simulation only.** The level a unit is found at depends on the
-  levels before it, which only the simulation follows: the exact and
-  numerical methods (the long run, over time, the importance measures)
-  refuse such a component, and `availability()` and `cost()` simulate it,
-  on the Python engine. A start state cannot give the level either, so a
-  run from one refuses it.
+- **Numerical, from new and in the long run.** All a working unit's past
+  says about its future is its level now: between inspections the level
+  is a Markov process. So the unit is followed from one inspection to the
+  next by the *distribution* of its level, on a grid of levels below the
+  replacement level, as replacement on condition by age follows its ages.
+  Over an interval, a unit kept at level `y` fails with the process's
+  first-passage probability from `y` (and is repaired, and a new unit
+  starts at `y0`); units put into service in the interval run as an
+  alternating renewal process of lives and repairs, as under block
+  replacement; and at the inspection each unit still up is at a level
+  given that it has not failed, the law the simulation draws from. Those
+  at or past the level are replaced; the rest carry on. From new, this
+  gives the availability, failures, replacements and inspections over
+  time (`point_availability`, `expected_events`, `expected_cost`, the
+  NPV); once it repeats from one interval to the next, that interval is
+  the long run (`mean_availability`, `expected_cost_rate`, the importance
+  measures and sensitivities). The grid is sized from the process: 32
+  cells per standard deviation of the level's change over an interval
+  (at most 2,048 cells), the error falling as the square of the cells'
+  width: about 1e-8 in the availability and 1e-5 (relative) in the
+  rates of failure and replacement. `availability()` and `cost()` take
+  these values as their means by default, and their simulations (in
+  Python) give the spread.
+- **From a state.** Give the level measured now (`NodeState(level=...)`)
+  and the time since the last inspection (`since_scheduled`): the unit goes
+  on from that level, and its next inspection, the rest of an interval
+  later, reads its level from there and replaces it at or past `"level"`.
+  A unit new on its calendar's phase starts at `y0`; one in a repair or a
+  replacement starts a new unit at `y0` once it is over; in its long-run
+  state (`"stationary"`) the unit is in the interval the long run repeats.
+  The exact values follow the level's distribution from the state to the
+  first inspection and on from there, and the simulations start from it
+  too. An age alone is refused (it does not give the level, nor whether
+  the inspections so far kept the unit), as is a model of its own (the
+  inspections read the node's process). A Wiener process that does not
+  drift towards its threshold (`mu <= 0`) has units that never fail, and
+  is refused.
+
+```python
+now = {"a": NodeState(level=7.0, since_scheduled=40.0)}   # read 40 h ago
+liner(6.0).expected_cost(500.0).mean                 # -> 7.91    new
+liner(6.0).expected_cost(500.0, state=now).mean      # -> 12.07   at 7.0 now
+liner(6.0).cost(500.0, mc_samples=400, seed=1, state=now).sample_mean  # -> 12.10
+```
+
 - **How a level is drawn.** Between inspections a unit's failure is drawn
   from the level last measured (surpyval's first-passage quantile from it).
   If that failure falls before the next inspection, the unit fails then.
@@ -468,6 +515,110 @@ down less (12.0 an hour of lost production against 16.7).
   stops.
 - Members cannot have hidden failures or be standby groups.
 
+### Planned maintenance that restores partly
+
+An overhaul seldom leaves a unit as good as new. Say how much of its age
+it takes away with a restoration factor `q`: `q = 0` is as new, `q = 1`
+leaves the unit as old as it was (a service that changes nothing), and
+`q = 0.3` takes away 70% of the age the unit gained since its last
+overhaul or repair. The unit then has a *virtual age*, the age its next
+life is drawn from (`H(v + X) = H(v) + E`, `H` the life's cumulative
+hazard, `E` exponential), as for [imperfect repair](repairable.md#imperfect-repair).
+
+Kijima's two models say which age it is a share of. With `x` the
+operating time since the last action (a repair, a task, or put in
+service) and `v` the virtual age then:
+
+- **Kijima I** (`"kijima1"`): `v <- v + q x`. The task takes away the
+  share `1 - q` of the age added since the last action; age left by
+  earlier ones stays.
+- **Kijima II** (`"kijima2"`): `v <- q (v + x)`. The task scales the
+  whole virtual age, so old age is worked off too.
+
+Give it as the `"restoration"` of the `"preventive"` spec, a dict of a
+`"model"` and `"q"` as a `"repair"` takes them, or a fitted surpyval
+`GeneralizedRenewal`, whose Kijima model and `q` are taken. With
+`"replace_every": N`, every `N`-th task since the unit was last put in
+as new replaces it instead, charged `"replacement_cost"`.
+
+A pump wears out (Weibull, 9,000 h, shape 2.5); a failure is repaired
+by replacing it (about 24 h, 20,000 with the lost production), and it is
+overhauled every 6 months (4,380 h, 24 h, 2,500), every third overhaul
+replacing it (9,000). The overhaul history fits Kijima I with `q = 0.3`:
+
+```python
+def overhauled(interval, restoration=None, every=None):
+    preventive = {
+        "interval": interval,                                  # hours
+        "policy": "block",
+        "duration": surv.ExactEventTime.from_params([24.0]),
+        "cost": 2500.0,
+    }
+    if restoration is not None:
+        preventive["restoration"] = restoration
+    if every is not None:
+        preventive["replace_every"] = every
+        preventive["replacement_cost"] = 9000.0
+    return RepairableRBD(
+        [("s", "pump"), ("pump", "t")],
+        {"pump": {
+            "reliability": surv.Weibull.from_params([9000.0, 2.5]),
+            "repairability": surv.Exponential.from_params([1 / 24.0]),
+            "repair_cost": 20000.0,
+            "preventive": preventive,
+        }},
+    )
+
+years = 10 * 8760.0
+overhauled(4380.0).expected_cost(years).mean / 10   # -> 10851.0   as new: exact, a year
+
+kijima = {"model": "kijima1", "q": 0.3}
+partly = overhauled(4380.0, kijima).cost(years, mc_samples=2000, seed=1)
+partly.mean / 10                                    # -> 18370.5   never replaced (± 70)
+replaced = overhauled(4380.0, kijima, every=3).cost(years, mc_samples=2000, seed=1)
+replaced.mean / 10                                  # -> 17291.6   every third replaces
+replaced.by_category["repair"] / 20000 / 10         # -> 0.4987    failures a year
+```
+
+Priced as if each overhaul renewed the pump, the plan costs about 10,900
+a year; with the fitted restoration about 17,300, and the failures (0.50
+a year) are half as many again as the renewals would allow (0.31).
+Replacing at every third overhaul pays against never replacing. The
+interval is chosen by simulating each, with one seed:
+
+| Overhaul every (months) | 3 | 4 | 6 | 9 | 12 |
+|---|---|---|---|---|---|
+| Cost a year (± about 70) | 21,550 | 18,574 | **17,292** | 18,176 | 18,961 |
+| Cost a year, if each renewed (exact) | 11,991 | **10,685** | 10,851 | 13,166 | 15,565 |
+
+- **When the task falls.** Under `"block"` on the calendar, as before.
+  Under `"age"`, when the operating time since the last task or renewal
+  reaches the interval (an imperfect repair does not restart it).
+  Under `"condition"`, an inspection judges the unit by its virtual age:
+  restored when it is more likely than the threshold to fail before the
+  next inspection, given that age.
+- **What a task does.** The failure the unit was heading for never
+  happens; its next life is drawn given its new virtual age, from the end
+  of the task (it does not age while down). A repair renews the unit
+  unless it has a `"repair"` of its own, which keeps its virtual age too.
+  `q = 0` under Kijima II is as new (as is Kijima I when the repairs
+  renew the unit), and is taken as no restoration, with today's exact
+  answers.
+- **Costs and spares.** Each task is charged its `cost`; the `N`-th its
+  `replacement_cost`, and only that one uses a spare.
+- **Exact or simulated.** A task that restores partly does not renew the
+  unit, so its failures are not a renewal process's: the exact long-run
+  values, the values over time and the exact spares counts refuse it, and
+  `availability`, `cost`, `simulate_timelines`, `cost_by_window` and
+  `spares_demand(method="simulate")` simulate it, in Python. From a
+  state, the simulations take its `virtual_age` at its last action and
+  its `age` since (and `since_scheduled` on a calendar), but not with
+  `replace_every`, whose count a state does not give. `q` is a lever
+  (`preventive.restoration.q`, from 0 to 1).
+- Not taken with a `"calendar"` policy (worked out for a unit renewed at
+  each replacement), a `"level"` (a degradation level is not a virtual
+  age), or an `"opportunity"`.
+
 ## Hidden failures and inspection
 
 Some failures announce themselves: a running pump stops, and the operators
@@ -486,6 +637,7 @@ component's dict makes its failures hidden:
 | `offset` | The time of the first test, from 0 to less than `τ`: tests at `offset, offset + τ, …`, so that redundant components can be tested apart (staggered). By default 0, no offset: the first test at `τ`, none at the start. A positive offset puts one there, so an offset just above 0 adds a test (and its outage and cost) at the start; one within a billionth of `τ` of 0 is taken as 0. |
 | `coverage` | The chance that a test finds a failure, from 0 to 1 (by default 1): its *proof-test coverage*. A failure a test misses stays hidden until a full test. |
 | `full_test` | With a coverage below 1, required: the time between full tests, which find every failure, a whole multiple of `τ` (the tests at `offset` and every `full_test` after it). Often the mission time, after which the component is renewed. |
+| `basis` | What the test's times (`interval`, `offset`, `full_test`) are counted in: `"calendar"` (the default) or `"operating"`, the block's running hours (see [Operating part of the time](repairable.md#operating-part-of-the-time)). |
 
 A failure found by an inspection is repaired once the test is done (taking a
 time drawn from the component's `"repairability"`), and its repair and
@@ -752,6 +904,90 @@ new (the chain followed through the tests from every member up) and the
 simulations, which draw the shared causes; see [repairable
 systems](common-cause.md#repairable-systems) and `analysis_routes()`.
 
+### Where the PFDavg comes from
+
+To bring a safety function's PFDavg down, start with what makes it up.
+[`pfd_breakdown`][repyability.RepairableRBD.pfd_breakdown] splits it into a
+share for each component and a share for each common-cause group, and the
+shares add up to the PFDavg. Take two pressure transmitters voted 1oo2, a
+logic solver and a trip valve, all proof-tested yearly, with a 5% common
+cause between the transmitters:
+
+```python
+from repyability import PerfectReliability
+
+def channel(rate):
+    return {
+        "reliability": surv.Exponential.from_params([rate]),
+        "repairability": "instant",
+        "inspection": {"interval": 8760.0},
+    }
+
+sif = RepairableRBD(
+    [("s", "pt1"), ("s", "pt2"), ("pt1", "ls"), ("pt2", "ls"),
+     ("ls", "valve"), ("valve", "t")],
+    {"pt1": channel(1e-6), "pt2": channel(1e-6),
+     "ls": channel(5e-8), "valve": channel(2e-7)},
+    ccf_groups=[CCFGroup(["pt1", "pt2"], BetaFactor(0.05))],
+)
+shares = sif.pfd_breakdown()
+shares.pfd_avg                          # -> 1.3357e-3
+shares.common_cause                     # -> 2.186e-4   the shared cause
+shares.fractions["valve"]               # -> 0.6553     the valve, two thirds
+shares.fractions["ls"]                  # -> 0.1638
+shares.fractions[("pt1", "pt2")]        # -> 0.1637     the transmitters' common cause
+shares.fractions["pt1"]                 # -> 0.0086     each transmitter's own failures
+```
+
+The valve is two thirds of the PFDavg, and the transmitters' common cause
+is ten times their independent failures together: a second valve, or less
+common cause between the transmitters, are where to look.
+
+**How the PFDavg is shared out, in plain words.** The function is down
+whenever every component of some minimal cut set is down.
+
+- *The common cause.* Its share is what the PFDavg would fall by if the
+  groups' shared causes never struck, each member keeping its own failures
+  (the PFDavg less that of the same diagram without them). With several
+  groups, each takes its [Shapley value](https://en.wikipedia.org/wiki/Shapley_value)
+  of that fall: its added PFDavg, averaged over the orders in which the
+  groups could be added. This is the split IEC 61508-6's simplified
+  equations make, the independent term with each member's own rate
+  `(1 − β)λ` and the shared term `βλτ/2` beside it.
+- *The components.* The rest is the PFDavg of the diagram without shared
+  causes. Each moment the function is down because a set of components is
+  down together is shared equally among them: a single element in series
+  takes all of its own downtime, and a redundant pair splits its
+  coincident downtime half and half, whatever their rates (both must be
+  down). Where two cut sets are down at once, the inclusion-exclusion
+  corrections are shared out the same way, so nothing is counted twice.
+  For a function whose failures are rare, a component's share is the sum,
+  over its minimal cut sets, of each set's own PFDavg divided by its size.
+
+**As a formula.** At each time `t` of the tests' period, the components of
+the diagram without shared causes are independent, and the function is down
+with probability `Q(q(t))`, multilinear in their probabilities `q` of being
+down. Component `i` takes its Aumann-Shapley value,
+
+`φ_i(t) = q_i(t) ∫₀¹ ∂Q/∂q_i(s q(t)) ds`,
+
+averaged over the period. The shares add up to `Q(q(t)) − Q(0) = Q(q(t))`
+at every time, so to the PFDavg, and a term `c q_A q_B ⋯` of `Q` with `k`
+components gives `1/k` of itself to each. `∂Q/∂q_i` is Birnbaum's measure,
+a polynomial in `s`, which Gauss-Legendre's rule integrates exactly, so the
+shares are exact where `mean_unavailability` is (numerical where it is).
+
+**Against the importance measures.** Fussell-Vesely's measure is each
+component's cut sets' share of the PFDavg, so it agrees with these shares
+for a component in series (0.1639 for the logic solver above), but puts
+the whole of a redundant pair's coincident downtime, its common cause
+included, in each member's (0.1811 for each transmitter), and its values
+add up to more than 1. Barlow-Proschan's measure adds up to 1, but shares
+out the function's *failures*, not its time down: a failure found at a
+test a month after it happened counts as much as one found eleven months
+on. Use `pfd_breakdown` for where the PFDavg comes from, and the measures
+for what each is for.
+
 ### Choosing the interval
 
 Each inspection costs `c_i`, and each unit of time the component lies failed
@@ -853,3 +1089,198 @@ of plans that cost the same the most available is chosen. The
 `offset_shares` searched are shares of the interval; the result's
 `offsets` are the times of the first tests, as `with_intervals(offsets=)`
 takes them, and a plan has them whether they were searched or not.
+
+## Shutdowns
+
+A plant often does its maintenance in shutdowns: the line stops for a
+few days every year, every block gets its work then, and some parts are
+changed only if they have run long enough. Give the diagram its
+`shutdowns`, each with a name, and say on each block what is done at
+which shut.
+
+**What a shut does.** It starts every `period` from its `offset` (or at
+given `times`) and lasts `duration`. While it lasts, the blocks in its
+`scope` are off line, a planned outage, whatever their own states; with
+no scope, the whole system is down. Its `cost` is charged at each start,
+and its downtime is the system's, priced by `downtime_cost_rate` as lost
+production.
+
+**What is done in it.** A block whose `"preventive"` names the shut
+(`{"shutdown": "line"}`) is renewed at every shut; with `"older_than"`,
+only if its age then is at least that; with `"policy": "condition"` and a
+`"threshold"`, if it is more likely than that to fail before the next
+shut; with a `"restoration"`, restored partly. An `"inspection"` naming
+the shut tests a block with hidden failures at every shut. The work
+takes the shut's time, and a block worked on must be in its scope. A
+block down when a shut starts (in a repair) is not worked on in it: its
+repair carries on.
+
+**Idle blocks.** A block in scope that is not worked on keeps ageing by
+default (`idle_ageing=True`): it is off line because the plant is, and
+can fail (the repair is then charged as usual). With
+`idle_ageing=False` it stands still: its own clock stops for the shut
+and carries on from where it was.
+
+| Key | Meaning |
+|---|---|
+| `period`, `offset` | Every `period`, the first at `offset` (0, the default, puts the first at `period`). |
+| `times` | Or the shuts' start times, increasing (simulated). |
+| `duration` | How long each shut lasts (0 for one that takes no time); shorter than the period or the gaps. |
+| `scope` | The nodes it holds off line (None, the default: the whole system). |
+| `cost` | Charged at each shut. |
+| `idle_ageing` | True (the default): idle blocks keep ageing; False: they stand still. |
+
+A line of a pump, a motor and a bearing in series, shut 72 h a year at
+10,000 a shut and 500 an hour of lost production; each block has its PM
+at the shut, and the bearing is changed only once older than 18 months:
+
+```python
+def shut_line(months, older_than=13140.0):
+    W, E = surv.Weibull.from_params, surv.Exponential.from_params
+    lives = {"pump": W([30000.0, 2.0]), "motor": W([60000.0, 1.5]),
+             "bearing": W([20000.0, 3.0])}
+    pm = {"pump": 3000.0, "motor": 2000.0, "bearing": 1500.0}
+    blocks = {}
+    for name, life in lives.items():
+        preventive = {"shutdown": "line", "cost": pm[name]}
+        if name == "bearing":
+            preventive["older_than"] = older_than
+        blocks[name] = {
+            "reliability": life,
+            "repairability": E([1 / 24.0]),
+            "repair_cost": 20000.0,
+            "preventive": preventive,
+        }
+    return RepairableRBD(
+        [("s", "pump"), ("pump", "motor"), ("motor", "bearing"),
+         ("bearing", "t")],
+        blocks,
+        shutdowns={"line": {"period": months * 730.0, "duration": 72.0,
+                            "cost": 10000.0}},
+        downtime_cost_rate=500.0,
+    )
+
+annual = shut_line(12)
+annual.mean_availability()                        # -> 0.99042
+annual.mean_unavailability()                      # -> 0.009580   72 h a year is 0.00822 of it
+annual.expected_cost_rate() * 8760                # -> 65899   a year
+annual.system_failure_frequency() * 8760          # -> 0.4237   failures a year, between shuts
+ten = annual.expected_cost(87600.0)
+ten.by_category["shutdown"]                       # -> 90000.0   9 shuts
+annual.expected_events(87600.0).shutdowns         # -> 9.0
+shut_line(18).expected_cost_rate() * 8760         # -> 51866   every 18 months
+```
+
+The shut is 86% of the downtime and, with its lost production, 70% of
+the cost; shutting every 18 months is cheaper (51,866 a year against
+65,899, and 81,448 every 9 months), though the failures between shuts
+rise by a third.
+
+- **Exact or simulated.** Shuts on a period are exact (and numerical
+  where the blocks' own values are): the long run averages over the
+  shuts' period with the blocks in scope held at 0 inside them, the
+  values over time hold their curves at 0 there (a block that stands
+  still is its own curve at its own time), and each start is a planned
+  outage at an exact time. "Older than" is numerical, from shut to shut
+  on a grid of ages. Shuts at given `times`, a restoration at a shut,
+  and anything that ties the blocks together (repair crews, common
+  causes, maintenance groups) are simulated, in Python; numba's loop
+  runs only shuts that take no time and cost nothing (their tasks
+  alone).
+- **The age at a shut.** A block renewed at a shut is `period -
+  duration` old at the next, so "older than 12 months" at 12-month shuts
+  changes it every other shut.
+- **From a state.** The shuts' calendar is from now (its `offset` the
+  time to the next shut), and a block worked on at a shut takes its
+  calendar from it: leave its `since_scheduled` out.
+- **What is counted.** `expected_events`, `expected_events_by_window`
+  and a simulation's result give the number of `shutdowns` started in
+  the window; a shut that takes the system down from up is one of its
+  planned outages. Costs gain the category `"shutdown"`.
+- **Levers.** Each shut's `period`, `offset`, `duration` and `cost`
+  (`shutdown.<name>.period`, ...) and a task's `preventive.older_than`.
+- **Not taken yet** (refused, in plain words): shuts that overlap, a
+  block standing still that has a calendar of its own or is tied to
+  others, a diagram with shutdowns nested in another, and with
+  shutdowns the importance measures, capacities, the first failure,
+  spares, allocations, parameter uncertainty, the interval searches,
+  `plan_vs_actual` and the crews' chain.
+
+## Planned and unplanned downtime
+
+How much of the downtime is the plan's own, and how much is from
+failures? And how many failures does the plan avoid against running to
+failure? [`RepairableRBD.maintenance_effect`][repyability.RepairableRBD.maintenance_effect]
+answers both, in the long run or over a window from a state.
+
+**The definition, in plain words.** The system is down *unplanned* when
+it would still be down if every planned task, test and shut in progress
+were finished: down because of failures. Its *planned* downtime is the
+rest: down only because blocks are in planned work (preventive
+maintenance or a test of a working unit that takes time, or held off line
+by a shut). A block that has failed (in a repair, waiting for a crew, or
+failed unseen until a test finds it) is down unplanned, also while a shut
+holds it. So a parallel pair with one unit in its maintenance and the
+other failed is down *planned*: with the maintenance over it would be up
+(though the change that took it down was a failure, which
+`system_planned_outages` and `system_failures` count by). Lost production
+(`downtime_cost_rate`) splits the same way, and a block's own downtime
+cost by its own state.
+
+**In symbols.** With independent blocks, the system is down unplanned at
+`t` with probability `1 - phi(P(block i has not failed at t))`: the
+structure function over each block's probability of not having failed.
+Every exact route that tells a block's failed state from its planned work
+gives the split exactly, and the simulation follows the same thing path by
+path, so the two check each other.
+
+**Against running to failure.** The same diagram with no planned work: no
+`"preventive"` task, no shutdowns and no maintenance groups; its tests of
+hidden failures are kept, as a test does not avoid failures. The result
+gives each value with the plan, without it (`*_without`) and the
+difference (`*_avoided`, `*_saved`).
+
+For the line above, shut every 12 months:
+
+```python
+effect = annual.maintenance_effect()              # the long run, per hour
+effect.system_planned_downtime * 8760             # -> 70.55   hours a year down for the shut
+effect.system_unplanned_downtime * 8760           # -> 13.37   from failures
+effect.lost_production_planned * 8760             # -> 35274
+effect.lost_production_unplanned * 8760           # -> 6687
+effect.system_failures * 8760                     # -> 0.4237   failures a year
+effect.system_failures_without * 8760             # -> 0.9791   running to failure
+effect.system_failures_avoided * 8760             # -> 0.5554
+effect.cost_saved * 8760                          # -> -34526   the plan costs more than it saves
+```
+
+The shut is 72 hours a year; 70.55 of them are planned downtime, and the
+rest is failures that start or carry on in the shut (the blocks keep
+ageing through it). The plan avoids more than half the failures, but
+here its shut and the production it loses cost more than the failures
+it saves.
+
+- **Over a window.** `maintenance_effect(t, state=...)` gives the
+  expected totals over `[0, t)` from the components' states.
+  `expected_events` and `expected_events_by_window` give the same split
+  natively (`system_planned_downtime`, `system_unplanned_downtime`, and
+  each block's `node_planned_downtime` and `node_unplanned_downtime`), and
+  a simulation's result its own (`AvailabilityResult`'s, and
+  `CostResult.lost_production_planned` and `lost_production_unplanned`).
+- **Exact or simulated.** Exact (numerical) wherever the exact methods
+  work out each block's probability of having failed beside its
+  downtime: plain units, age and block replacement and replacement on
+  condition with a time to maintain, tests that take time, shuts on a
+  period, nested RBDs. With planned outages and limited repair crews or
+  common-cause groups (whose chains do not tell a block in planned work
+  from one in a repair), shuts at given times, or a partial restoration,
+  a window is simulated: the plan and running to failure from one seed,
+  on the same streams, so each simulation of the plan is paired with one
+  without it, and `standard_errors` gives the paired errors of
+  `downtime_saved` and `cost_saved`. The long run is exact or refused.
+- **Not the same as a twin with zero-length work.** Setting every task
+  and the shut to take no time, and reading that diagram's downtime as
+  "unplanned", gives 10.29 hours a year here, not 13.37: without the
+  shut's 72 hours the blocks age on a different timeline, and the
+  failures that start or are still being repaired in a shut are lost.
+  The split here is of the plan as it runs.

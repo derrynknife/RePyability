@@ -12,6 +12,8 @@ the model fitted in calendar time.
 import math
 from typing import Callable, Dict, List
 
+from repyability.utils.checks import is_number
+
 from ._model_utils import distribution_name, is_fixed_probability
 
 
@@ -85,3 +87,66 @@ def on_calendar(node, model, d: float):
         extras["gamma"] = float(extras["gamma"]) / d
     assert name is not None  # a distribution of time (see _SCALED)
     return getattr(surpyval, name).from_params(move(params, d), **extras)
+
+
+#: What a task's times (``"basis"``) are counted in: the diagram's clock,
+#: the calendar (the default), or the block's operating time.
+BASES = ("calendar", "operating")
+
+#: The times of a task counted in operating time, which go onto the
+#: calendar through the block's duty.
+_TASK_TIMES = {
+    "preventive": ("interval", "opportunity", "older_than"),
+    "inspection": ("interval", "offset", "full_test"),
+}
+
+
+def tasks_on_calendar(node, spec: dict, d):
+    """``spec`` with each task (a ``"preventive"`` or ``"inspection"``)
+    on the calendar: one counted in operating time (``"basis":
+    "operating"``) has its times divided by ``d``, the block's duty (None
+    for none), and the basis is taken off either way. Return the spec
+    and whether a task was counted in operating time; refuse a basis
+    other than ``BASES``, and one in operating time with no duty, at a
+    shutdown or under a ``"calendar"`` policy."""
+    from repyability.utils.checks import one_of
+
+    out = spec
+    operating = False
+    for key, times in _TASK_TIMES.items():
+        task = spec.get(key)
+        if not isinstance(task, dict) or "basis" not in task:
+            continue
+        basis = task["basis"]
+        task = {name: value for name, value in task.items() if name != "basis"}
+        if basis is not None:
+            one_of(f"Component {node!r}: the {key} basis", basis, BASES)
+        if basis == "operating":
+            if task.get("shutdown") is not None:
+                raise ValueError(
+                    f"Component {node!r}: a {key} task at a shutdown is "
+                    "on the calendar, as the shut is, so it cannot be "
+                    "counted in operating time: drop its basis."
+                )
+            if key == "preventive" and task.get("policy") == "calendar":
+                raise ValueError(
+                    f"Component {node!r}: a 'calendar' policy's "
+                    "thresholds are its own times, so it cannot be "
+                    "counted in operating time: drop its basis."
+                )
+            if d is None:
+                raise ValueError(
+                    f"Component {node!r}: its {key} is counted in "
+                    "operating time, which needs the block's duty: give "
+                    "the block's duty, the share of the time it operates, "
+                    "or give the interval in calendar time."
+                )
+            operating = True
+            for name in times:
+                value = task.get(name)
+                if value is not None and is_number(value):
+                    # Not refused here if not a number: the task's own
+                    # checks say what it must be.
+                    task[name] = float(value) / d
+        out = {**out, key: task}
+    return out, operating

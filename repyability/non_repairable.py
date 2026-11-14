@@ -8,11 +8,15 @@ from repyability.maintenance import (
     NextReplacement,
     SkipValue,
 )
+from repyability.rbd._bayesian_life import PosteriorPredictive, as_life
+from repyability.rbd._covariate_schedule import is_scheduled
 from repyability.rbd._degradation import check_life, is_degradation
 from repyability.rbd._model_utils import (
+    by_functions,
     distribution_name,
     is_exponential,
     is_mixture,
+    life_functions,
     model_mean,
     never_fails,
 )
@@ -24,6 +28,49 @@ from repyability.utils.checks import is_number, no_distribution, real_array
 
 FAILURE = 1
 REPLACE = 0
+
+
+#: The lives whose survival is a smooth curve, integrated by quadrature and
+#: searched by a gradient method: a distribution, and a degradation process
+#: (its first-passage time).
+_SMOOTH = ("parametric", "degradation")
+
+
+def _why_not(model) -> str:
+    """What a surpyval model given as a life or a repair lacks of a life's
+    functions, for a refusal's message ("." for another object)."""
+    if not type(model).__module__.startswith("surpyval."):
+        return "."
+    missing = life_functions(model)
+    if not missing:
+        return "."
+    hint = ""
+    if callable(getattr(model, "at", None)):
+        hint = (
+            " It is a regression, whose functions need covariates: give "
+            "the life of a unit at its covariates, model.at(Z) (or a "
+            "RegressionNode in a NonRepairableRBD); for covariates that "
+            "change over time in a RepairableRBD, give the model with the "
+            "spec's 'covariates' (a StepSchedule)."
+        )
+    reasons = "; ".join(f"{name}: {why}" for name, why in missing.items())
+    return f", which cannot work out {', '.join(missing)} ({reasons}).{hint}"
+
+
+def _check_functions(model, what: str) -> None:
+    """Refuse a surpyval model, given as a time to replace, that lacks a
+    life's functions (a regression without its covariates, a curve that
+    ends at its data), saying what it lacks: the repairs are drawn, and
+    the exact methods integrate them, through those functions."""
+    if not type(model).__module__.startswith("surpyval.") or isinstance(
+        model, (Parametric, NonParametric)
+    ):
+        return
+    if is_mixture(model) or isinstance(model, PosteriorPredictive):
+        return
+    if is_degradation(model) or by_functions(model):
+        return
+    raise ValueError(f"{what} is a {type(model).__name__}" + _why_not(model))
 
 
 def _scalar_sf(model):
@@ -191,7 +238,9 @@ class NonRepairable:
         planned_cost=None,
         unplanned_cost=None,
     ):
-        reliability = perfect_class(reliability)
+        # A Bayesian fit is its posterior predictive.
+        reliability = perfect_class(as_life(reliability))
+        time_to_replace = as_life(time_to_replace)
         no_distribution(reliability, "A NonRepairable's life")
         no_distribution(time_to_replace, "A NonRepairable's time_to_replace")
         if isinstance(time_to_replace, str):
@@ -212,7 +261,15 @@ class NonRepairable:
                 "surv.Exponential.from_params([rate])), or None or 'instant' "
                 f"for replacement in no time, got {time_to_replace!r}."
             )
-        if isinstance(reliability, Parametric) or is_mixture(reliability):
+        else:
+            _check_functions(
+                time_to_replace, "A NonRepairable's time_to_replace"
+            )
+        if (
+            isinstance(reliability, Parametric)
+            or is_mixture(reliability)
+            or isinstance(reliability, PosteriorPredictive)
+        ):
             # A surpyval MixtureModel (#227) is no Parametric, but has the
             # survival function, distribution, density and mean the
             # analyses take; the simulations invert its distribution
@@ -224,6 +281,13 @@ class NonRepairable:
             self.reliability_function, self._knots = _piecewise_linear_sf(
                 reliability
             )
+        elif by_functions(reliability):
+            # Any other surpyval model with a life's functions (#93): a
+            # Royston-Parmar fit, a regression at a unit's covariates
+            # (regression.at(Z)), a destructive degradation model. Its
+            # survival is a smooth curve, as a distribution's.
+            self.model_parameterization = "parametric"
+            self.reliability_function = reliability.sf
         elif is_degradation(reliability):
             # A fitted Wiener or gamma degradation process (#271): its life
             # is the time its level first reaches its threshold.
@@ -236,6 +300,12 @@ class NonRepairable:
             # is only simulated, and its sf refuses.
             self.model_parameterization = "standby"
             self.reliability_function = _scalar_sf(reliability)
+        elif is_scheduled(reliability):
+            # A life under a covariate schedule on a RepairableRBD's clock
+            # (a spec's "covariates"): only its simulations take it, and
+            # its survival function refuses, saying so.
+            self.model_parameterization = "covariate schedule"
+            self.reliability_function = reliability.sf
         elif is_joint(reliability):
             raise ValueError(NOT_REPAIRABLE)
         elif reliability is PerfectReliability:
@@ -247,11 +317,13 @@ class NonRepairable:
             )
         else:
             raise ValueError(
-                "A NonRepairable's life must be a surpyval parametric "
-                "distribution or MixtureModel (fitted, or built with "
-                "from_params), a surpyval Wiener or gamma degradation "
-                "process, a surpyval non-parametric estimate or a "
-                f"StandbyModel; got a {type(reliability).__name__}."
+                "A NonRepairable's life must be a surpyval model with a "
+                "life's functions of time (sf, ff, df, hf, Hf, qf and "
+                "mean: a distribution, a MixtureModel, a Bayesian fit, a "
+                "Royston-Parmar fit, a regression at one unit's covariates "
+                "with regression.at(Z), a degradation process), a surpyval "
+                "non-parametric estimate or a StandbyModel; got a "
+                f"{type(reliability).__name__}" + _why_not(reliability)
             )
 
         self.reliability = reliability
@@ -463,7 +535,7 @@ class NonRepairable:
         """
         from scipy.integrate import quad, trapezoid
 
-        if self.model_parameterization == "parametric":
+        if self.model_parameterization in _SMOOTH:
             # surpyval evaluates an offset model below its offset through a
             # fractional power of a negative number before masking it, which
             # warns although the survival (1) is right.
@@ -478,6 +550,8 @@ class NonRepairable:
             ages = np.linspace(0.0, float(t), 4001)
             R = np.ravel(np.asarray(self.reliability.sf(ages), dtype=float))
             out = float(trapezoid(np.clip(R, 0.0, 1.0), ages))
+        elif self.model_parameterization == "covariate schedule":
+            raise self.reliability._no_reliability()
         else:
             # The survival function is linear between its knots, so the
             # trapezoidal rule over the knots below t, and t, is exact.
@@ -692,6 +766,8 @@ class NonRepairable:
           ``cp / t`` up to it and replacing at ``gamma`` itself is also
           considered. If the best age found is no cheaper than running to
           failure (see below), ``inf`` is returned.
+        - A degradation process: searched as a parametric model is, from
+          the mean of its first-passage time.
         - Non-parametric model: the cost rate is evaluated exactly at
           10,001 evenly spaced ages from 0 to the estimate's last time
           point, and at its time points, and the cheapest age is
@@ -767,7 +843,7 @@ class NonRepairable:
                     return np.inf
         # The cases above need no costs; every search below does.
         self._require_costs()
-        if self.model_parameterization == "parametric":
+        if self.model_parameterization in _SMOOTH:
             # When using a parametric distribution the optimisation is
             # straight forward. Simply find the point in the support where
             # the cost rate is minimised. Uses quadrature to integrate!
@@ -1111,6 +1187,687 @@ class NonRepairable:
             resets=resets,
             time_to_next=time_to_next,
             discount_rate=discount_rate,
+        )
+
+    def compare_replacement_options(
+        self,
+        age,
+        due_in,
+        every,
+        *,
+        defer_by=(),
+        shuts=None,
+        discount_rate=0.0,
+    ):
+        """Compare the options for the part's next planned replacement as
+        present-value costs, from its age now: replace as planned, replace
+        now, defer it, move it to a shut, or skip it.
+
+        In plain terms: the plan replaces the part on fixed times, the next
+        ``due_in`` from now and the following one ``every`` later; a
+        failure is replaced at once. Each option is costed to the
+        following planned replacement, where every option has a new part
+        in, so they are compared like for like: the failures each lets
+        happen, and the price each replacement is done at. It extends
+        [`skip_next_replacement`][repyability.NonRepairable.skip_next_replacement]
+        (which it agrees with for a new part) to a part of any age and to
+        deferring and moving the work. Exact, with no simulation.
+
+        Parameters
+        ----------
+        age : float
+            The part's age now, at least 0.
+        due_in : float
+            The time from now to the next planned replacement, more than 0
+            and at most ``every``.
+        every : float
+            The plan's interval.
+        defer_by : float or array_like, optional
+            Delays to try: replace that long after it is due.
+        shuts : mapping or list, optional
+            Other times to do the work, from now, each with its own price:
+            ``{name: (time, price)}`` or a list of ``(time, price)``.
+        discount_rate : float, optional
+            The continuous discount rate per unit of time, by default 0.
+
+        Returns
+        -------
+        ReplacementComparison
+            Every option's cost and what it saves against the plan, and
+            the cheapest.
+
+        Raises
+        ------
+        ValueError
+            If an argument is out of range or the costs are not set.
+
+        Examples
+        --------
+        A bearing (Weibull, scale 365 days, shape 2), 200 days old, its
+        planned replacement ($150) due in 30 days and the next 180 days
+        later; a failure costs $400, and a shut in 90 days replaces it for
+        $100:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]),
+        ...     planned_cost=150.0,
+        ...     unplanned_cost=400.0,
+        ... )
+        >>> result = bearing.compare_replacement_options(
+        ...     200.0, 30.0, 180.0, defer_by=[30.0],
+        ...     shuts={"shut": (90.0, 100.0)},
+        ... )
+        >>> [round(o.cost) for o in result.options]
+        [277, 269, 289, 257, 274]
+        >>> [o.name for o in result.options]
+        ['replace', 'now', 'defer by 30', 'shut', 'skip']
+        >>> result.best.name
+        'shut'
+        """
+        from repyability.maintenance._options import (
+            compare_replacement_options,
+        )
+
+        return compare_replacement_options(
+            self,
+            age,
+            due_in,
+            every,
+            defer_by=defer_by,
+            shuts=shuts,
+            discount_rate=discount_rate,
+        )
+
+    def delay_effect(
+        self, age, planned_in, done_in, *, weight=1.0, discount_rate=0.0
+    ):
+        """What delaying a planned replacement adds: the extra chance the
+        part fails first, and the extra expected cost, from its age now.
+
+        The replacement planned ``planned_in`` from now is done ``done_in``
+        from now instead (a missed visit, a postponed shut). The part is
+        replaced at its planned cost if it lasts, at its unplanned cost if
+        it fails first; the delay adds the difference of the two cycles.
+        Exact. ``weight`` is the chance the delay happens (a visit is only
+        sometimes missed), for the expected added risk and cost.
+
+        Parameters
+        ----------
+        age : float
+            The part's age now.
+        planned_in : float
+            When the replacement was planned and when it is done, from
+            now; ``done_in`` at least ``planned_in``.
+        done_in : float
+            The companion of ``planned_in`` above.
+        weight : float, optional
+            The chance the delay happens, by default 1.
+        discount_rate : float, optional
+            The continuous discount rate, by default 0.
+
+        Returns
+        -------
+        DelayEffect
+            The risk and cost planned and delayed, and what the delay
+            adds.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]),
+        ...     planned_cost=150.0,
+        ...     unplanned_cost=400.0,
+        ... )
+        >>> late = bearing.delay_effect(200.0, 10.0, 40.0)
+        >>> round(late.added_failure_probability, 4)
+        0.0934
+        >>> round(late.added_cost, 2)
+        23.36
+        """
+        from repyability.maintenance._options import delay_effect
+
+        return delay_effect(
+            self,
+            age,
+            planned_in,
+            done_in,
+            weight=weight,
+            discount_rate=discount_rate,
+        )
+
+    def cost_of_waiting_for_visit(
+        self, age, due_in, visits, *, discount_rate=0.0
+    ):
+        """What it costs to round a due replacement up to the next visit:
+        the work comes due ``due_in`` from now, but can only be done at the
+        next of ``visits``.
+
+        ``visits`` is an [`Opportunity`][repyability.Opportunity] (visits
+        every so often, or on given times) or a list of times from now. The
+        replacement is done at the first visit at or after the due time;
+        the result is that of
+        [`delay_effect`][repyability.NonRepairable.delay_effect] from the
+        due time to that visit.
+
+        Parameters
+        ----------
+        age : float
+            The part's age now.
+        due_in : float
+            The time from now at which the replacement comes due.
+        visits : Opportunity or array_like
+            The visits, in the part's time unit.
+        discount_rate : float, optional
+            The continuous discount rate, by default 0.
+
+        Returns
+        -------
+        DelayEffect
+            With ``done_in`` the visit's time.
+
+        Raises
+        ------
+        ValueError
+            If no visit comes at or after the due time.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable, Opportunity
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]),
+        ...     planned_cost=150.0,
+        ...     unplanned_cost=400.0,
+        ... )
+        >>> weekly = Opportunity("weekly", 0.0, period=7.0)
+        >>> result = bearing.cost_of_waiting_for_visit(200.0, 10.0, weekly)
+        >>> result.done_in, round(result.added_failure_probability, 4)
+        (14.0, 0.0123)
+        """
+        from repyability.maintenance._options import (
+            delay_effect,
+            next_visit,
+        )
+
+        due = float(due_in)
+        return delay_effect(
+            self,
+            age,
+            due,
+            next_visit(visits, due),
+            discount_rate=discount_rate,
+        )
+
+    def cost_of_missed_visit(
+        self,
+        age,
+        visit_in,
+        next_visit_in,
+        *,
+        miss_probability=1.0,
+        discount_rate=0.0,
+    ):
+        """The risk and cost added when a visit is missed and its work
+        waits for the next one.
+
+        The work planned for the visit ``visit_in`` from now is done at the
+        next, ``next_visit_in``. With ``miss_probability`` below 1 the
+        added risk and cost are also given as expected values over the
+        chance of a miss (``expected_added_*``). It is
+        [`delay_effect`][repyability.NonRepairable.delay_effect] with the
+        chance a visit is missed as its weight.
+
+        Parameters
+        ----------
+        age : float
+            The part's age now.
+        visit_in : float
+            The times from now of the visit and of the next one.
+        next_visit_in : float
+            The companion of ``visit_in`` above.
+        miss_probability : float, optional
+            The chance the visit is missed, by default 1.
+        discount_rate : float, optional
+            The continuous discount rate, by default 0.
+
+        Returns
+        -------
+        DelayEffect
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]),
+        ...     planned_cost=150.0,
+        ...     unplanned_cost=400.0,
+        ... )
+        >>> r = bearing.cost_of_missed_visit(
+        ...     200.0, 10.0, 40.0, miss_probability=0.1
+        ... )
+        >>> round(r.expected_added_cost, 2)
+        2.34
+        """
+        from repyability.maintenance._options import delay_effect
+
+        return delay_effect(
+            self,
+            age,
+            visit_in,
+            next_visit_in,
+            weight=miss_probability,
+            discount_rate=discount_rate,
+        )
+
+    def slack_effect(self, interval, slack):
+        """The cost and risk of allowing a replacement to slip: it is due
+        at age ``interval`` and may be done up to ``slack`` late.
+
+        In plain terms: how much more often does the part fail first, and
+        how much more does it cost in the long run, if the work is done
+        at the latest age allowed, ``interval + slack``, instead of on
+        time? Age replacement with the part's planned and unplanned costs,
+        exact (the long-run cost rate is
+        [`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy]'s).
+        The mean over a uniform lateness is given as well.
+
+        Parameters
+        ----------
+        interval : float
+            The age at which the replacement is due, more than 0.
+        slack : float
+            How late it may be done, at least 0.
+
+        Returns
+        -------
+        SlackEffect
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]),
+        ...     planned_cost=150.0,
+        ...     unplanned_cost=400.0,
+        ... )
+        >>> effect = bearing.slack_effect(300.0, 60.0)
+        >>> round(effect.added_risk, 4), round(effect.added_cost_rate, 5)
+        (0.1309, 0.01136)
+        """
+        from repyability.maintenance._options import slack_effect
+
+        return slack_effect(self, interval, slack)
+
+    def age_replacement_value(self, age, *, discount_rate=0.0):
+        """What replacing the part at ``age``, or when it fails, costs for
+        good: its net present value (Fox, 1966) and equivalent annual
+        cost. Exact, with no simulation.
+
+        In plain terms: the part is replaced by a new one at ``age`` (cost
+        ``cp``) or at a failure (cost ``cu``), again and again. Counting
+        each replacement at what it is worth now, the sum of them all is
+        finite when discounted. The equivalent annual cost is the steady
+        cost per unit time worth the same: the discounted counterpart of
+        ``cost_rate(age)``, to which it comes as the discount rate goes to
+        0. For a whole plant, with value earned and a cash-flow table, see
+        [`RepairableRBD.expected_npv`][repyability.RepairableRBD.expected_npv].
+
+        With ``R`` the part's reliability, ``f`` its density and ``r`` the
+        discount rate, the present value is::
+
+            [cu * integral_0^T exp(-r t) f(t) dt + cp * exp(-r T) R(T)]
+              / [1 - integral_0^T exp(-r t) f(t) dt - exp(-r T) R(T)]
+
+        Parameters
+        ----------
+        age : float
+            The replacement age, more than 0 and finite.
+        discount_rate : float, optional
+            The continuous discount rate per unit of time, by default 0
+            (undiscounted: ``npv`` is then ``inf`` and ``eac`` the
+            long-run cost rate).
+
+        Returns
+        -------
+        AgeReplacementValue
+            The net present value, equivalent annual cost and first
+            cycle's cost.
+
+        Raises
+        ------
+        ValueError
+            If an argument is out of range or the costs are not set.
+
+        Examples
+        --------
+        A bearing (Weibull, scale 1000 hours, shape 2.5), replaced at 500
+        hours for 1, or at a failure for 5, at 8% a year (in hours):
+
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([1000.0, 2.5]),
+        ...     planned_cost=1.0,
+        ...     unplanned_cost=5.0,
+        ... )
+        >>> a_year = math.log(1.08) / 8760
+        >>> value = bearing.age_replacement_value(500.0, discount_rate=a_year)
+        >>> round(value.npv, 1), round(value.eac * 8760, 2)
+        (393.5, 30.28)
+        """
+        from repyability.maintenance._options import age_replacement_value
+
+        return age_replacement_value(self, age, discount_rate=discount_rate)
+
+    def renewal_forecast(
+        self, window, every, *, resets, age=0.0, since_renewal=None
+    ):
+        """A part renewed at every service and when it fails: the chance
+        it fails before each service, the expected failures, renewals and
+        cost over a window, and whether the plan is worth it.
+
+        Exact, from the part's age and how far it is into its service
+        interval. A plan that does not reset (``resets=False``, block
+        replacement) services on fixed times, the first ``every -
+        since_renewal`` from now whatever happens; one that resets starts
+        each interval at the last renewal, planned or not. It is
+        compared with running to failure and with the part's best age
+        replacement.
+
+        Parameters
+        ----------
+        window : float
+            The time ahead to forecast, more than 0.
+        every : float
+            The service interval.
+        resets : bool
+            Whether each interval starts at the last renewal.
+        age : float, optional
+            The part's age now, by default 0.
+        since_renewal : float, optional
+            For a plan that does not reset: how far into the interval it
+            is, less than ``every``, by default the age.
+
+        Returns
+        -------
+        RenewalForecast
+
+        Examples
+        --------
+        A seal (Weibull, scale 6000 h, shape 2.2) renewed every 500 running
+        hours for $200 and at a failure for $900; 340 h old, 340 h into the
+        interval, over the next 944 h:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> seal = NonRepairable(
+        ...     surv.Weibull.from_params([6000.0, 2.2]),
+        ...     planned_cost=200.0,
+        ...     unplanned_cost=900.0,
+        ... )
+        >>> plan = seal.renewal_forecast(
+        ...     944.0, 500.0, resets=False, age=340.0
+        ... )
+        >>> [round(r, 4) for r in plan.risk_before_service]
+        [0.0024, 0.0042]
+        >>> round(plan.expected_cost, 2), plan.worth_it
+        (407.06, False)
+        """
+        from repyability.maintenance._options import renewal_forecast
+
+        return renewal_forecast(
+            self,
+            window,
+            every,
+            resets=resets,
+            age=age,
+            since_renewal=since_renewal,
+        )
+
+    def cost_distribution(
+        self,
+        window,
+        every=None,
+        *,
+        resets=None,
+        age=0.0,
+        since_renewal=None,
+        calendar=None,
+        budget=None,
+        levels=(10.0, 50.0, 90.0),
+        method="exact",
+        mc_samples=None,
+        seed=None,
+    ):
+        """What the part's maintenance costs over a window from its state
+        now, and how widely that can vary.
+
+        A budget starts from the part as it is, and carries a range, not
+        only a figure: this gives the chance of every number of failures
+        and of planned replacements in the window, and so of every cost
+        (failures at the unplanned cost, planned replacements at the
+        planned cost), its mean, standard deviation, percentiles and the
+        chance of exceeding a budget. The policy is run to failure (no
+        ``every``), age replacement (``every`` with ``resets=True``) or
+        block replacement (``resets=False``), as
+        [`renewal_forecast`][repyability.NonRepairable.renewal_forecast]
+        takes it, or a calendar policy (``calendar``, from
+        [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]:
+        at each opportunity, replace the part if it is at least that
+        time's threshold age, at that opportunity's price); replacements
+        take no time. Numerical by default (to the ``precision``
+        reported, about 1e-6), simulated with ``method="simulate"``. How
+        it is worked out: the [maintenance guide](../guide/maintenance.md).
+
+        Parameters
+        ----------
+        window : float
+            The window's length from now, more than 0. An event at its
+            end falls outside it.
+        every : float, optional
+            The policy's interval; by default None, run to failure.
+        resets : bool, optional
+            With ``every``: True for age replacement (each interval starts
+            at the last replacement, planned or not), False for block
+            replacement (fixed times).
+        age : float, optional
+            The part's age now, by default 0. Under age replacement a part
+            at or past ``every`` is replaced at once.
+        since_renewal : float, optional
+            For block replacement: how far into the interval it is, less
+            than ``every``, by default the age.
+        calendar : CalendarPolicy, optional
+            Instead of ``every``: a calendar policy worked out for this
+            part, its calendar's times counted from now. Failures cost the
+            part's ``unplanned_cost``; each planned replacement, the price
+            of its opportunity (``kinds`` and ``kind_prices`` in the
+            result, and the outcomes by kind).
+        budget : float, optional
+            A budget, for the chance the cost exceeds it.
+        levels : array_like, optional
+            The percentiles to report, from 0 to 100, by default 10, 50
+            and 90.
+        method : str, optional
+            ``"exact"`` (the default: numerical, to the precision
+            reported) or ``"simulate"``.
+        mc_samples : int, optional
+            With ``method="simulate"``, the number of simulations, by
+            default 10,000.
+        seed : int, optional
+            With ``method="simulate"``, the random seed.
+
+        Returns
+        -------
+        CostDistribution
+
+        Raises
+        ------
+        ValueError
+            If an argument is out of range, a cost the policy needs is not
+            given, or the part takes time to replace.
+        NotImplementedError
+            If the life has no survival function in closed form, or, by
+            default, for a calendar policy worked out by integration
+            (simulate it).
+
+        Examples
+        --------
+        A bearing (Weibull, scale 365 days, shape 2), 224 days old,
+        replaced at every shut (every 180 days, the next in 21) for $100
+        and at a failure for $400, over the next 1,086 days:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]),
+        ...     planned_cost=100.0,
+        ...     unplanned_cost=400.0,
+        ... )
+        >>> spend = bearing.cost_distribution(
+        ...     1086.0, 180.0, resets=False, age=224.0, since_renewal=159.0
+        ... )
+        >>> round(spend.mean, 2), [float(c) for c in spend.percentiles]
+        (1155.04, [600.0, 1000.0, 1800.0])
+        >>> round(spend.probability_above(1500.0), 3)
+        0.151
+        """
+        from repyability.maintenance._window_cost import cost_distribution
+
+        return cost_distribution(
+            self,
+            window,
+            every,
+            resets=resets,
+            age=age,
+            since_renewal=since_renewal,
+            calendar=calendar,
+            budget=budget,
+            levels=levels,
+            method=method,
+            mc_samples=mc_samples,
+            seed=seed,
+        )
+
+    def cost_by_window(
+        self,
+        ends=None,
+        every=None,
+        *,
+        width=None,
+        count=None,
+        resets=None,
+        age=0.0,
+        since_renewal=None,
+        calendar=None,
+        budget=None,
+        levels=(10.0, 50.0, 90.0),
+        method="exact",
+        mc_samples=None,
+        seed=None,
+    ):
+        """What the part's maintenance costs in each of a run of
+        consecutive windows from its state now, and how often each outcome
+        happens in each.
+
+        A budget passed on by period needs each window's own spend, not
+        the running total, and what could happen in it. Each window is
+        worked out through every earlier one (a failure in one renews the
+        part for the next), as
+        [`cost_distribution`][repyability.NonRepairable.cost_distribution]
+        works out one window from now, with the same policies and
+        arguments: each window's chance of every count and cost, its mean,
+        spread and percentiles, the chance of each outcome (nothing,
+        planned work only, one failure, several failures) and of exceeding
+        a budget, and the whole span's own distribution (ranges do not add
+        over windows). Give the windows' ``ends`` (uneven windows are
+        fine), or a ``width`` and a ``count``; the first starts now.
+
+        Parameters
+        ----------
+        ends : array_like, optional
+            The windows' end times from now, increasing.
+        every : float, optional
+            The policy's interval; by default None, run to failure.
+        width : float, optional
+            Instead of ``ends``: the length of each window.
+        count : int, optional
+            Instead of ``ends``: how many windows of ``width``.
+        resets : bool, optional
+            As for `cost_distribution`.
+        age : float, optional
+            The part's age now, by default 0.
+        since_renewal : float, optional
+            As for `cost_distribution`.
+        calendar : CalendarPolicy, optional
+            As for `cost_distribution`.
+        budget : float, optional
+            A budget for each window, for the chance it is exceeded.
+        levels : array_like, optional
+            The percentiles to report, by default 10, 50 and 90.
+        method : str, optional
+            ``"exact"`` (the default: numerical) or ``"simulate"``.
+        mc_samples : int, optional
+            With ``method="simulate"``, the number of simulations.
+        seed : int, optional
+            With ``method="simulate"``, the random seed.
+
+        Returns
+        -------
+        WindowCosts
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for `cost_distribution`, or if the windows are not given
+            properly.
+
+        Examples
+        --------
+        The bearing of `cost_distribution`, replaced at every shut, over
+        four windows of a year:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable
+        >>> bearing = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]),
+        ...     planned_cost=100.0,
+        ...     unplanned_cost=400.0,
+        ... )
+        >>> years = bearing.cost_by_window(
+        ...     [263.0, 629.0, 994.0, 1359.0], 180.0, resets=False,
+        ...     age=224.0, since_renewal=159.0,
+        ... )
+        >>> [round(float(m), 1) for m in years.mean]
+        [330.0, 382.3, 382.1, 382.2]
+        >>> years.outcome_classes
+        ('nothing', 'planned only', 'one failure', 'several failures')
+        >>> [round(float(p), 3) for p in years.outcome_probabilities[1]]
+        [0.0, 0.613, 0.324, 0.063]
+        """
+        from repyability.maintenance._window_outcomes import cost_by_window
+
+        return cost_by_window(
+            self,
+            ends,
+            every,
+            width=width,
+            count=count,
+            resets=resets,
+            age=age,
+            since_renewal=since_renewal,
+            calendar=calendar,
+            budget=budget,
+            levels=levels,
+            method=method,
+            mc_samples=mc_samples,
+            seed=seed,
         )
 
     def optimal_calendar_policy(

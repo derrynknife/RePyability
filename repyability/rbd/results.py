@@ -27,7 +27,7 @@ import math
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Dict, Hashable, Optional, Tuple, cast
+from typing import Any, Dict, Hashable, List, Optional, Tuple, cast
 
 import numpy as np
 from scipy.special import ndtri
@@ -127,6 +127,289 @@ class _ResultMapping(Mapping):
     def _field_names(self):
         # Every result class is a dataclass (the base is not).
         return tuple(f.name for f in dataclasses.fields(cast(Any, self)))
+
+
+@dataclass(frozen=True)
+class StructureSummary(_ResultMapping):
+    """How big a diagram's structure is, found without listing its path or
+    cut sets.
+
+    Returned by [`RBD.structure_summary`][repyability.RBD.structure_summary].
+    A diagram is first reduced to *modules*: series chains, parallel
+    groups and k-out-of-n groups, each independent of the rest. A
+    series-parallel diagram reduces to one module. Otherwise something is
+    left over, a *core* (a bridge is the smallest), over the modules and
+    single nodes around it, and only the core needs the heavier methods.
+    The summary says how much of the diagram is each, and how many path
+    and cut sets there are, which can be far too many to list. It is an
+    immutable dataclass, read as a mapping too, with ``to_dict()`` for
+    JSON.
+
+    Attributes
+    ----------
+    n_components : int
+        The components that can decide whether the system works (the
+        relevant nodes), leaving out the input and output nodes, any
+        junction (a node that never fails) and the irrelevant nodes.
+    n_irrelevant : int
+        The components in no minimal path set, whose state never changes
+        whether the system works (see
+        [`find_irrelevant_components`][repyability.RBD.find_irrelevant_components]).
+    always_works : bool
+        True when the input is joined to the output by an edge that never
+        fails, so there is nothing to fail.
+    series_parallel : bool
+        True when the whole diagram reduces to modules, with no core left.
+    n_modules : int
+        The series, parallel and k-out-of-n groups the reduction found
+        (nested ones counted each), not counting single nodes.
+    module_depth : int
+        How deeply the modules nest: 0 for a single component, 1 for one
+        group of components, and one more for each group held in another.
+        A core counts as one more level over the terms it joins.
+    core_size : int
+        The modules and single nodes the core joins, 0 for a
+        series-parallel diagram.
+    core_path_sets : int
+        The core's minimal path sets (over those modules and nodes), 0 for
+        a series-parallel diagram.
+    n_path_sets : int or None
+        The minimal path sets of the whole diagram. ``None`` when the
+        diagram is too meshed to work out exactly.
+    n_cut_sets : int or None
+        The minimal cut sets of the whole diagram. ``None`` when the
+        diagram is too meshed to work out exactly.
+    counts_exact : bool
+        True when ``n_path_sets`` and ``n_cut_sets`` are exact. A
+        component drawn in more than one place (a repeated node) can make
+        two counted sets the same set, or one hold another, so then they
+        are upper bounds. False also when they are ``None``.
+    too_meshed : str or None
+        Why the diagram could not be worked out exactly, if it could not;
+        ``None`` otherwise.
+
+    Examples
+    --------
+    A diagram with a cross-link that is not series-parallel: the core joins
+    three paths, and there are three minimal path sets.
+
+    >>> from repyability import RBD
+    >>> rbd = RBD(
+    ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "d"),
+    ...      ("a", "e"), ("e", "d"), ("c", "t"), ("d", "t")]
+    ... )
+    >>> info = rbd.structure_summary()
+    >>> info.n_components, info.series_parallel, info.n_path_sets
+    (5, False, 3)
+    """
+
+    n_components: int
+    n_irrelevant: int
+    always_works: bool
+    series_parallel: bool
+    n_modules: int
+    module_depth: int
+    core_size: int
+    core_path_sets: int
+    n_path_sets: Optional[int]
+    n_cut_sets: Optional[int]
+    counts_exact: bool
+    too_meshed: Optional[str]
+
+
+@dataclass
+class EventsByWindow(_ResultMapping):
+    """What a system is expected to do in each of a run of consecutive
+    windows from now: returned by
+    [`RepairableRBD.expected_events_by_window`][repyability.RepairableRBD.expected_events_by_window].
+
+    The windows are ``[starts[i], ends[i])``, the first starting at 0
+    (now, or the state given). Every count is exact (see
+    [`ExpectedEvents`][repyability.ExpectedEvents]) and is the window's
+    own, not a running total: the difference of the expected counts at its
+    two ends, which add up over windows. A value that numerics leave a
+    hair below 0 for a window with no events is shown as 0.
+
+    Attributes
+    ----------
+    starts : numpy.ndarray
+        Each window's start, in the models' time unit.
+    ends : numpy.ndarray
+        Each window's end.
+    system_failures : numpy.ndarray
+        The expected system failures in each window.
+    system_planned_outages : numpy.ndarray
+        The expected planned outages of the system in each window.
+    system_downtime : numpy.ndarray
+        The expected time the system is down in each window.
+    node_failures : dict
+        Each component's expected failures in each window (an array per
+        component).
+    node_corrective : dict
+        Each component's expected corrective actions in each window.
+    node_preventive : dict
+        Each component's expected preventive replacements in each window.
+    node_inspections : dict
+        Each component's expected tests in each window.
+    node_downtime : dict
+        Each component's expected down time in each window.
+    shutdowns : numpy.ndarray
+        The shuts of the diagram's ``shutdowns`` that start in each
+        window (planned, so exact counts; zeros without shutdowns).
+    system_planned_downtime : numpy.ndarray, optional
+        The part of ``system_downtime`` in each window that is planned,
+        and ``system_unplanned_downtime`` the rest (see
+        [`ExpectedEvents`][repyability.ExpectedEvents]); None where the
+        exact methods cannot tell them apart.
+    system_unplanned_downtime : numpy.ndarray, optional
+        The system's unplanned downtime in each window.
+    node_planned_downtime : dict, optional
+        Each component's planned downtime in each window.
+    node_unplanned_downtime : dict, optional
+        Each component's time failed in each window.
+
+    Examples
+    --------
+    One component with a block replacement every 100 hours, over three
+    windows of 100 hours from 40 hours into its interval: its replacement
+    is due in 60 hours, and then every 100:
+
+    >>> import surpyval as surv
+    >>> from repyability import NodeState, RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "c"), ("c", "t")],
+    ...     {"c": {
+    ...         "reliability": surv.Exponential.from_params([1e-9]),
+    ...         "repairability": "instant",
+    ...         "preventive": {"interval": 100.0, "policy": "block"},
+    ...     }},
+    ... )
+    >>> state = {"c": NodeState(since_scheduled=40.0)}
+    >>> windows = rbd.expected_events_by_window(
+    ...     width=100.0, count=3, state=state
+    ... )
+    >>> windows.node_preventive["c"].round(3).tolist()
+    [1.0, 1.0, 1.0]
+    """
+
+    starts: np.ndarray
+    ends: np.ndarray
+    system_failures: np.ndarray
+    system_planned_outages: np.ndarray
+    system_downtime: np.ndarray
+    node_failures: Dict[Hashable, np.ndarray]
+    node_corrective: Dict[Hashable, np.ndarray]
+    node_preventive: Dict[Hashable, np.ndarray]
+    node_inspections: Dict[Hashable, np.ndarray]
+    node_downtime: Dict[Hashable, np.ndarray]
+    shutdowns: Any = None
+    system_planned_downtime: Optional[np.ndarray] = None
+    system_unplanned_downtime: Optional[np.ndarray] = None
+    node_planned_downtime: Optional[Dict[Hashable, np.ndarray]] = None
+    node_unplanned_downtime: Optional[Dict[Hashable, np.ndarray]] = None
+
+
+@dataclass
+class CostByWindow(_ResultMapping):
+    """What a system costs in each of a run of consecutive windows from
+    now, and how much that can vary: returned by
+    [`RepairableRBD.cost_by_window`][repyability.RepairableRBD.cost_by_window].
+
+    The windows are ``[starts[i], ends[i])``. ``mean`` is exact. The spread
+    comes from one set of simulated histories cut at each window's end, so
+    every window's costs are of the same histories (a window's cost is
+    the cost to its end less the cost to its start). A cost that comes
+    in steps (a replacement at a fixed price, say) has few distinct
+    values, and percentiles hide that: ``outcomes`` gives each cost and
+    its share, and ``probability_above`` the chance of overspending a
+    budget. Ranges do not add over windows: use the ``total`` row for a
+    run's total.
+
+    Attributes
+    ----------
+    starts : numpy.ndarray
+        Each window's start.
+    ends : numpy.ndarray
+        Each window's end.
+    mean : numpy.ndarray
+        The exact expected cost of each window.
+    simulated_mean : numpy.ndarray
+        The simulations' own mean of each window's cost (it agrees with
+        ``mean`` to within ``standard_error``).
+    standard_error : numpy.ndarray
+        The standard error of ``simulated_mean``.
+    samples : numpy.ndarray
+        Each simulation's cost in each window, shape ``(windows,
+        simulations)``; none is below 0.
+    n_simulations : int
+        The number of simulations.
+    levels : tuple of float
+        The percentiles of ``percentiles``.
+    percentiles : numpy.ndarray
+        Each window's cost percentiles at ``levels``, shape ``(windows,
+        len(levels))``.
+    """
+
+    starts: np.ndarray
+    ends: np.ndarray
+    mean: np.ndarray
+    simulated_mean: np.ndarray
+    standard_error: np.ndarray
+    samples: np.ndarray
+    n_simulations: int
+    levels: Tuple[float, ...]
+    percentiles: np.ndarray
+
+    def percentile(self, q: float) -> np.ndarray:
+        """Each window's ``q``-th percentile of cost.
+
+        Parameters
+        ----------
+        q : float
+            The percentile, from 0 to 100.
+        """
+        return np.percentile(self.samples, q, axis=1)
+
+    def total_percentile(self, q: float) -> float:
+        """The ``q``-th percentile of the cost of all the windows
+        together: not the sum of the windows' (ranges do not add).
+
+        Parameters
+        ----------
+        q : float
+            The percentile, from 0 to 100.
+        """
+        return float(np.percentile(self.samples.sum(axis=0), q))
+
+    def probability_above(self, budget: float) -> np.ndarray:
+        """Each window's chance of costing more than ``budget``.
+
+        Parameters
+        ----------
+        budget : float
+            The cost to exceed.
+        """
+        return np.mean(self.samples > budget, axis=1)
+
+    def outcomes(self, window: int, decimals: int = 6) -> list:
+        """The distinct costs of a window (counted from 0) and how often
+        each happened, cheapest first: ``[{"cost": ..., "share": ...}]``
+        (costs rounded to ``decimals`` places).
+
+        Parameters
+        ----------
+        window : int
+            The window, counted from 0.
+        decimals : int, optional
+            The places costs are rounded to, by default 6.
+        """
+        costs, counts = np.unique(
+            np.round(self.samples[window], decimals), return_counts=True
+        )
+        return [
+            {"cost": float(c), "share": float(n) / self.n_simulations}
+            for c, n in zip(costs, counts)
+        ]
 
 
 @dataclass
@@ -400,8 +683,19 @@ class UncertaintyResult(_ResultMapping):
     quantity is computed exactly for that draw. The samples therefore
     describe *epistemic* uncertainty, about what the models are, and not
     the aleatory variability that the models themselves describe. Their
-    percentiles give uncertainty (credible) intervals; they do not narrow
-    as ``n_draws`` grows, which only makes them more precise.
+    percentiles give uncertainty intervals; they do not narrow as
+    ``n_draws`` grows, which only makes them more precise.
+
+    What the interval is depends on where the draws came from, which
+    ``band`` says: a *confidence* band where every uncertain input is a
+    maximum-likelihood fit drawn from its parameter covariance (the
+    sampling uncertainty of the estimates); a *credible* band where every
+    one is a Bayesian fit drawn from its posterior (how sure the fit is,
+    given its prior and data); ``"given"`` where the inputs were drawn from
+    distributions or lists of models given; and ``"mixed"`` where the
+    inputs are of more than one of these kinds, a band over all of them at
+    once (each draw takes every input's), neither a confidence nor a
+    credible band alone.
 
     Its repr summarises the draws: the nominal value, the median and the
     90% interval.
@@ -415,6 +709,10 @@ class UncertaintyResult(_ResultMapping):
         The value with every node's own model: the point estimate.
     n_draws : int
         The number of draws.
+    band : str or None
+        What the band over the draws is (see above): ``"confidence"``,
+        ``"credible"``, ``"given"`` or ``"mixed"``; None for a result made
+        by hand.
 
     Examples
     --------
@@ -437,11 +735,14 @@ class UncertaintyResult(_ResultMapping):
     >>> lower, upper = result.interval(0.9)
     >>> round(lower, 3), round(upper, 3)
     (0.777, 0.906)
+    >>> result.band  # from the fit's parameter covariance
+    'confidence'
     """
 
     samples: np.ndarray
     nominal: Any
     n_draws: int
+    band: Optional[str] = None
 
     @property
     def mean(self) -> Any:
@@ -554,7 +855,9 @@ class UncertaintyResult(_ResultMapping):
             f"{type(self).__name__}(nominal={shown(self.nominal)}, "
             f"median={shown(self.median)}, "
             f"interval_90=({shown(lower)}, {shown(upper)}), "
-            f"n_draws={self.n_draws})"
+            f"n_draws={self.n_draws}"
+            + ("" if self.band is None else f", band={self.band!r}")
+            + ")"
         )
 
 
@@ -977,6 +1280,20 @@ class CostResult(_ResultMapping):
         ``conditional=True``, ``samples`` are those expected costs, so
         ``mean`` is ``sample_mean``, and ``std`` and ``percentile`` refuse.
         None otherwise.
+    lost_production_planned : float, optional
+        The lost production (``downtime_cost_rate`` times the system's
+        downtime) of the system's *planned* downtime, the simulations' own
+        mean per window: while it is down only because blocks are in
+        planned work (preventive maintenance or a test of a working unit
+        that takes time, or a shut). See
+        [`RepairableRBD.maintenance_effect`][repyability.RepairableRBD.maintenance_effect]
+        for the definition, and its exact value. None for a result built
+        without it (a run with ``conditional=True``).
+    lost_production_unplanned : float, optional
+        The same for the system's *unplanned* downtime: while it would
+        still be down with every planned task, test and shut in progress
+        finished. The two add up to the simulations' own mean of the
+        ``"system_downtime"`` cost.
 
     Examples
     --------
@@ -1035,6 +1352,8 @@ class CostResult(_ResultMapping):
     antithetic: bool = False
     control_variate: Optional[ControlVariate] = None
     conditional: Optional[ConditionalRun] = None
+    lost_production_planned: Optional[float] = None
+    lost_production_unplanned: Optional[float] = None
 
     def _estimate(self) -> Tuple[float, float, str]:
         """The run's estimate of the expected cost of a window, its
@@ -1308,7 +1627,35 @@ class ExpectedEvents(_ResultMapping):
     node_inspections : dict
         Each component's expected number of tests (of hidden failures).
     node_downtime : dict
-        Each component's expected time down in the window.
+        Each component's expected time down in the window (with a
+        shutdown, the time it holds the component off line included).
+    shutdowns : float or numpy.ndarray
+        The number of shuts of the diagram's ``shutdowns`` that start in
+        the window (0 without shutdowns). A shut is down time of the
+        system (``system_downtime``) and, where it takes the system down
+        from up, one of its planned outages.
+    system_planned_downtime : float or numpy.ndarray, optional
+        The part of ``system_downtime`` that is *planned*: the system down
+        only because blocks are in planned work (preventive maintenance
+        or a test of a working unit that takes time, or a shut). See
+        [`RepairableRBD.maintenance_effect`][repyability.RepairableRBD.maintenance_effect]
+        for the definition. None where the exact methods cannot tell the
+        two apart (planned outages with limited repair crews or
+        common-cause groups): ``availability`` simulates them.
+    system_unplanned_downtime : float or numpy.ndarray, optional
+        The rest of ``system_downtime``, *unplanned*: the system down
+        because of failures, so that it would still be down with every
+        planned task, test and shut in progress finished. The two add up
+        to ``system_downtime``.
+    node_planned_downtime : dict, optional
+        Each component's part of its ``node_downtime`` in planned work
+        (maintenance or a test that takes time, or held off line by a
+        shut while it has not failed; a nested RBD's, its own planned
+        downtime).
+    node_unplanned_downtime : dict, optional
+        Each component's time failed: in a repair, waiting for one, or
+        failed unseen until a test finds it. The two add up to its
+        ``node_downtime``.
 
     Examples
     --------
@@ -1343,6 +1690,11 @@ class ExpectedEvents(_ResultMapping):
     node_preventive: Dict[Hashable, Any]
     node_inspections: Dict[Hashable, Any]
     node_downtime: Dict[Hashable, Any]
+    shutdowns: Any = 0.0
+    system_planned_downtime: Any = None
+    system_unplanned_downtime: Any = None
+    node_planned_downtime: Optional[Dict[Hashable, Any]] = None
+    node_unplanned_downtime: Optional[Dict[Hashable, Any]] = None
 
 
 @dataclass
@@ -1564,6 +1916,291 @@ class ExpectedCost(_ResultMapping):
         with np.errstate(invalid="ignore", divide="ignore"):
             rate = np.divide(self.mean, self.window)
         return float(rate) if np.ndim(rate) == 0 else rate
+
+
+@dataclass
+class MaintenanceEffect(_ResultMapping):
+    """What a diagram's planned work does: how much of its downtime and
+    lost production is planned and how much is from failures, and the
+    failures, downtime and cost it saves against running to failure.
+    Returned by
+    [`RepairableRBD.maintenance_effect`][repyability.RepairableRBD.maintenance_effect].
+
+    **Planned and unplanned.** The system is down *unplanned* at an
+    instant if it would still be down with every planned task, test and
+    shut in progress finished: if its structure, with every block in
+    planned work counted as up, is down. Its *planned* downtime is the
+    rest: down only because blocks are in planned work (preventive
+    maintenance or a test of a working unit that takes time, or held off
+    line by a shut). A block that has failed (in a repair, waiting for a
+    crew, or failed unseen until a test finds it) is down unplanned, also
+    while a shut holds it. Lost production (the system's
+    ``downtime_cost_rate``) splits the same way, and a block's own
+    downtime cost by its own state.
+
+    **Against running to failure.** The same diagram with no planned work
+    (no ``"preventive"`` task, no shutdowns, no maintenance groups; its
+    tests of hidden failures kept, as a test does not avoid failures):
+    ``*_without`` its values, and ``*_avoided`` or ``*_saved`` the plan's
+    less them.
+
+    Over a ``window`` each value is the expected total in it (from the
+    state given); in the long run (``window`` None) each is per unit
+    time: a downtime is a share of the time (an unavailability), failures
+    and costs are rates.
+
+    Attributes
+    ----------
+    window : float or None
+        The window's length, or None for the long run.
+    method : str
+        ``"exact"`` (numerical, no simulation) or ``"simulated"``.
+    system_downtime : float
+        The system's expected downtime with the plan.
+    system_planned_downtime : float
+        Its planned part.
+    system_unplanned_downtime : float
+        Its unplanned part; the two add up to ``system_downtime``.
+    lost_production : float
+        ``downtime_cost_rate`` times ``system_downtime``.
+    lost_production_planned : float
+        Of the planned downtime.
+    lost_production_unplanned : float
+        Of the unplanned downtime.
+    component_downtime_cost_planned : float
+        The blocks' own downtime costs (their ``downtime_cost``) while in
+        planned work; None when simulated.
+    component_downtime_cost_unplanned : float
+        While failed; None when simulated.
+    node_planned_downtime : dict
+        Each component's downtime in planned work; None when simulated.
+    node_unplanned_downtime : dict
+        Each component's time failed; None when simulated.
+    system_failures : float
+        The system's expected failures with the plan.
+    system_failures_without : float
+        Running to failure.
+    system_failures_avoided : float
+        ``system_failures_without - system_failures``.
+    node_failures : dict
+        Each component's expected failures with the plan (its corrective
+        actions in the long run).
+    node_failures_without : dict
+        Running to failure.
+    node_failures_avoided : dict
+        Without less with.
+    system_downtime_without : float
+        The system's downtime running to failure.
+    downtime_saved : float
+        ``system_downtime_without - system_downtime`` (negative when the
+        plan's own downtime is more than the failures' it saves).
+    cost : float
+        The expected running cost with the plan (a rate in the long run;
+        0 with nothing priced).
+    cost_without : float
+        Running to failure.
+    cost_saved : float
+        ``cost_without - cost`` (negative when the plan costs more than it
+        saves).
+    mc_samples : int or None
+        Simulated: the simulations of each diagram; None when exact.
+    standard_errors : dict or None
+        Simulated: the standard errors of ``downtime_saved`` and
+        ``cost_saved``, from the differences of paired simulations (the
+        two diagrams run with the same seed, so each simulation of the
+        plan draws the lives the one without it draws, as far as their
+        events agree); ``system_failures_avoided`` is the difference of
+        the two runs' means. None when exact.
+
+    Examples
+    --------
+    A pump under age replacement every 600 hours, each taking 8 hours,
+    repaired in about 20 hours when it fails, at 100 an hour of lost
+    production:
+
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> pump = {
+    ...     "reliability": surv.Weibull.from_params([1000.0, 3.0]),
+    ...     "repairability": surv.Exponential.from_params([1 / 20.0]),
+    ...     "preventive": {
+    ...         "interval": 600.0,
+    ...         "duration": surv.ExactEventTime.from_params([8.0]),
+    ...     },
+    ... }
+    >>> rbd = RepairableRBD(
+    ...     [("s", "p"), ("p", "t")], {"p": pump}, downtime_cost_rate=100.0
+    ... )
+    >>> effect = rbd.maintenance_effect()  # the long run
+    >>> round(effect.system_planned_downtime, 5)  # share of the time
+    0.01112
+    >>> round(effect.system_unplanned_downtime, 5)
+    0.0067
+    >>> year = 8760.0
+    >>> round(effect.system_failures * year, 2)  # failures a year
+    2.93
+    >>> round(effect.system_failures_avoided * year, 2)  # the plan avoids
+    6.66
+    >>> round(effect.lost_production_unplanned * year)  # a year
+    5870
+    """
+
+    window: Optional[float]
+    method: str
+    system_downtime: float
+    system_planned_downtime: float
+    system_unplanned_downtime: float
+    lost_production: float
+    lost_production_planned: float
+    lost_production_unplanned: float
+    component_downtime_cost_planned: Optional[float]
+    component_downtime_cost_unplanned: Optional[float]
+    node_planned_downtime: Optional[Dict[Hashable, float]]
+    node_unplanned_downtime: Optional[Dict[Hashable, float]]
+    system_failures: float
+    system_failures_without: float
+    system_failures_avoided: float
+    node_failures: Dict[Hashable, float]
+    node_failures_without: Dict[Hashable, float]
+    node_failures_avoided: Dict[Hashable, float]
+    system_downtime_without: float
+    downtime_saved: float
+    cost: float
+    cost_without: float
+    cost_saved: float
+    mc_samples: Optional[int] = None
+    standard_errors: Optional[Dict[str, float]] = None
+
+
+@dataclass
+class ExpectedNPV(_ResultMapping):
+    """What running a system is worth, over a horizon from new or from a
+    state: returned by ``RepairableRBD.expected_npv``.
+
+    In plain terms: the net present value (NPV) is what the system earns
+    while it works, less what it costs to own and run, each amount counted
+    at what it is worth now (an amount ``t`` from now is worth
+    ``exp(-r t)`` of itself). It is the average over every way the
+    failures could fall, worked out exactly (no simulation) from the
+    expected number of events and the expected time up: the average of
+    the present values is the present value of the averages. It says
+    nothing of the spread; a bad run can lose what the average gains.
+
+    The equivalent annual cost (``eac``) is the steady cost per unit time
+    over the horizon that is worth the same as all the costs: the figure to
+    compare plans of different lengths or lives. With no discounting it
+    is the total cost over the horizon divided by its length.
+
+    Attributes
+    ----------
+    horizon : float
+        The length of time valued, in the models' unit.
+    discount_rate : float
+        The continuous rate per unit time the amounts were discounted at
+        (0: not discounted).
+    value_rate : float
+        The value earned per unit time while the system works.
+    npv : float
+        The expected net present value: ``value - cost``.
+    value : float
+        The present value of what the system earns while it works.
+    cost : float
+        The present value of every cost: the running costs and the
+        acquisition cost (paid at the start).
+    eac : float
+        The equivalent annual cost: ``cost`` divided by the
+        ``annuity_factor``, per unit of the models' time.
+    undiscounted_npv : float
+        The same sum with no discounting.
+    undiscounted_value : float
+        The expected time up times ``value_rate``, undiscounted.
+    undiscounted_cost : float
+        The expected cost over the horizon with no discounting, with the
+        acquisition cost.
+    cost_by_category : dict
+        The present value of the cost in each category (``"repair"``,
+        ``"replace"``, ``"preventive"``, ``"inspection"``,
+        ``"component_downtime"``, ``"system_downtime"``, ``"setup"``, and
+        ``"acquisition"``), as positive amounts.
+    cost_by_component : dict
+        The present value of the cost attributable to each costed
+        component, with its acquisition cost.
+    period_ends : list
+        Where each period of the cash-flow table ends, in the models'
+        time: the last is the horizon.
+    cash_flows : list
+        The cash-flow table: one dict per period, category and component
+        with something in it, with ``period`` (from 1), ``start``, ``end``,
+        ``category`` (a cost category, or ``"value"``), ``component`` (None
+        for value, the system's downtime and a group's set-up),
+        ``present_value`` and ``undiscounted``, both signed: costs
+        negative, value positive. The ``present_value`` of all rows add up
+        to ``npv``. Costs given by period and category are the exact
+        increments of the expected cost; the table is for applying your
+        own tax, depreciation and financial-year conventions outside the
+        package.
+
+    Examples
+    --------
+    A pump earning 10 per hour while it works, failing on average every
+    1000 hours, repaired in 10 at 500 per repair, bought for 20,000,
+    valued over 5 years of 8,760 hours at 8% a year:
+
+    >>> import math
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "p"), ("p", "t")],
+    ...     {
+    ...         "p": {
+    ...             "reliability": surv.Exponential.from_params([1e-3]),
+    ...             "repairability": surv.Exponential.from_params([0.1]),
+    ...             "repair_cost": 500.0,
+    ...             "acquisition_cost": 20000.0,
+    ...         }
+    ...     },
+    ... )
+    >>> r = math.log(1.08) / 8760  # per hour
+    >>> result = rbd.expected_npv(
+    ...     5 * 8760.0, discount_rate=r, value_rate=10.0, periods=5
+    ... )
+    >>> round(result.npv), round(result.value), round(result.cost)
+    (321975, 359974, 37999)
+    >>> round(result.eac * 8760)  # per year
+    9155
+    """
+
+    horizon: float
+    discount_rate: float
+    value_rate: float
+    npv: float
+    value: float
+    cost: float
+    eac: float
+    undiscounted_npv: float
+    undiscounted_value: float
+    undiscounted_cost: float
+    cost_by_category: Dict[str, float]
+    cost_by_component: Dict[Hashable, float]
+    period_ends: List[float]
+    cash_flows: List[Dict[str, Any]]
+
+    @property
+    def annuity_factor(self) -> float:
+        """What one unit of cost per unit time, steady over the horizon,
+        is worth now: ``(1 - exp(-r H)) / r`` for the ``discount_rate``
+        ``r`` and the ``horizon`` ``H``, and ``H`` with none.
+
+        Returns
+        -------
+        float
+            The factor ``eac`` divides the cost by.
+        """
+        if not self.discount_rate:
+            return self.horizon
+        return float(
+            -np.expm1(-self.discount_rate * self.horizon) / self.discount_rate
+        )
 
 
 @dataclass
@@ -1859,6 +2496,53 @@ class MaintenancePlan(_ResultMapping):
     cost_rate: float
     availability: float
     offsets: Optional[Dict[Hashable, float]] = None
+
+
+@dataclass
+class PFDBreakdown(_ResultMapping):
+    """Where a safety function's average probability of failure on demand
+    comes from: returned by
+    [`RepairableRBD.pfd_breakdown`][repyability.RepairableRBD.pfd_breakdown].
+
+    The PFDavg is split into a part for each component's own failures and
+    a part for each common-cause group's shared causes, and the parts add
+    up to it: ``sum(components.values()) + sum(groups.values()) ==
+    pfd_avg``, to rounding. How they are split is in the guide's
+    [where the PFDavg comes
+    from](../guide/system-maintenance.md#where-the-pfdavg-comes-from).
+    Like the other result types it is also a read-only mapping of its
+    fields.
+
+    Attributes
+    ----------
+    pfd_avg : float
+        The long-run unavailability, ``mean_unavailability()``: for a
+        safety function tested periodically, its PFDavg.
+    independent : float
+        The part of it from the components' own failures, the sum of
+        ``components``: the PFDavg the diagram would have if no shared
+        cause ever struck.
+    common_cause : float
+        The part from the common-cause groups' shared causes, the sum of
+        ``groups``: ``pfd_avg - independent``, what the PFDavg would fall
+        by if no shared cause struck (0 without groups).
+    components : dict
+        Each component's share of ``independent``, by node, in the
+        PFDavg's own units (a probability).
+    groups : dict
+        Each common-cause group's share of ``common_cause``, under the
+        tuple of its members (empty without groups).
+    fractions : dict
+        Every entry of ``components`` and ``groups`` as a fraction of
+        ``pfd_avg`` (adding up to 1); NaN where the PFDavg is 0.
+    """
+
+    pfd_avg: float
+    independent: float
+    common_cause: float
+    components: Dict[Hashable, float]
+    groups: Dict[Tuple[Hashable, ...], float]
+    fractions: Dict[Hashable, float]
 
 
 @dataclass(frozen=True)
@@ -2261,6 +2945,24 @@ class AvailabilityResult(_ResultMapping):
         counts (floats), the curve (on a grid, its chance of being up at
         each time) and the cost's ``samples``; ``criticalities`` is then
         None. None otherwise.
+    shutdowns : int
+        The number of shuts of the diagram's ``shutdowns`` that start in
+        the window, the same in every simulation (they are planned); 0
+        without shutdowns. A shut that takes the system down from up is
+        one of its ``system_planned_outages``.
+    system_planned_downtime : float, optional
+        The part of ``system_downtime`` (summed over all simulations, as
+        it is) that is *planned*: the system down only because blocks are
+        in planned work (preventive maintenance or a test of a working
+        unit that takes time, or a shut). See
+        [`RepairableRBD.maintenance_effect`][repyability.RepairableRBD.maintenance_effect]
+        for the definition. None for a result built without it (a run
+        with ``conditional=True``).
+    system_unplanned_downtime : float, optional
+        The rest of ``system_downtime``, *unplanned*: the system down
+        because of failures, so that it would still be down if every
+        planned task, test and shut in progress were finished. The two
+        add up to ``system_downtime``.
 
     Examples
     --------
@@ -2316,6 +3018,9 @@ class AvailabilityResult(_ResultMapping):
     control_variate: Optional[ControlVariate] = None
     conditional: Optional[ConditionalRun] = None
     delivered_control: Optional[ControlVariate] = None
+    shutdowns: int = 0
+    system_planned_downtime: Optional[float] = None
+    system_unplanned_downtime: Optional[float] = None
 
     @property
     def mean_capacity(self) -> Optional[float]:
@@ -3149,3 +3854,666 @@ class TimelineSimulation(_ResultMapping):
             method=names("method"),
             start=first.start,
         )
+
+
+@dataclass
+class StressStrengthResult(_ResultMapping):
+    """The result of [`stress_strength`][repyability.stress_strength]: the
+    chance that a strength exceeds the stress (or the largest of ``n_loads``
+    stresses), ``R = P(strength > stress)``. Like the other result types it
+    is also a read-only mapping of its fields.
+
+    Attributes
+    ----------
+    reliability : float
+        ``R``, from the models as given.
+    failure_probability : float
+        ``1 - R``, the chance the stress reaches the strength. Worked out
+        from the strength's ``ff`` (or a closed form) rather than as
+        ``1 - R``, so that it is not lost to rounding when ``R`` is near
+        1; quadrature is accurate to about 1e-13 absolute.
+    reliability_index : float
+        The normal quantile of ``R`` (the "safety index"): the number of
+        standard deviations of a normal margin that would give ``R``. It
+        is infinite when ``R`` is 1 and ``-inf`` when it is 0.
+    n_loads : int
+        The number of independent stress applications the strength must
+        survive (1 for a single stress).
+    method : str
+        How ``R`` was found: ``"exact"`` (a closed form), ``"numerical"``
+        (quadrature) or ``"simulated"``.
+    standard_error : float or None
+        The Monte-Carlo standard error of ``R``; None unless simulated.
+    n_samples : int or None
+        The number of simulated strength and stress draws; None unless
+        simulated.
+    lower : float or None
+        The lower bound of ``R`` from the models' parameter uncertainty;
+        None unless ``uncertainty`` was asked for.
+    upper : float or None
+        The upper bound of ``R`` from the models' parameter uncertainty;
+        None unless ``uncertainty`` was asked for.
+    confidence : float or None
+        The confidence level of ``lower`` and ``upper``.
+    n_draws : int or None
+        The number of draws of the models' parameters behind the bounds.
+    """
+
+    reliability: float
+    failure_probability: float
+    reliability_index: float
+    n_loads: int
+    method: str
+    standard_error: Optional[float] = None
+    n_samples: Optional[int] = None
+    lower: Optional[float] = None
+    upper: Optional[float] = None
+    confidence: Optional[float] = None
+    n_draws: Optional[int] = None
+
+
+@dataclass
+class StressStrengthCurve(_ResultMapping):
+    """The result of
+    [`stress_strength_over_time`][repyability.stress_strength_over_time]:
+    the interference reliability of a strength that changes with age.
+
+    Attributes
+    ----------
+    times : numpy.ndarray
+        The ages, in the unit the models share.
+    reliability : numpy.ndarray
+        ``R(t) = P(strength at age t > stress)`` at each age.
+    failure_probability : numpy.ndarray
+        ``1 - R(t)``, worked out directly.
+    n_loads : int
+        The number of independent stress applications at each age.
+    method : str
+        ``"exact"`` if every age used a closed form, else ``"numerical"``.
+    """
+
+    times: Any
+    reliability: Any
+    failure_probability: Any
+    n_loads: int
+    method: str
+
+
+@dataclass
+class PlanVsActual(_ResultMapping):
+    """A plan against what happened, and what it is worth now: returned by
+    ``RepairableRBD.plan_vs_actual``.
+
+    In plain terms: the plan's expected cash flows over the time so far
+    (from ``expected_npv``) stand beside the cash flows the outage log
+    implies, priced with the diagram's own costs; the variance is the
+    actual less the expected. Amounts are signed as in ``ExpectedNPV``
+    (costs negative, value positive), so a **positive variance is in your
+    favour**: less spent, or more earned, than the plan expected. The plan
+    is then valued again from the components' states now for the rest of
+    the horizon, and "what happened so far plus what is expected from
+    here" stands beside the original plan's value.
+
+    Costs the log does not determine (inspections that found nothing, a
+    group's set-up costs, purchases, ...) are compared on neither side:
+    they are listed in ``not_compared`` with the reason, and carried at
+    the plan's expectation (``as_planned_so_far``) in the re-valued plan.
+
+    Attributes
+    ----------
+    now : float
+        The end of the log, in the models' time from the start of the
+        plan.
+    horizon : float
+        The plan's horizon.
+    discount_rate : float
+        The continuous discount rate per unit time (0: undiscounted).
+    value_rate : float
+        The value earned per unit time while the system works.
+    plan_npv : float
+        The original plan's expected net present value over the horizon.
+    revalued_npv : float
+        ``actual_so_far + as_planned_so_far + rest_npv``: the plan's value
+        knowing what happened so far, as of the start.
+    change : float
+        ``revalued_npv - plan_npv``: ``variance_so_far`` plus the change in
+        the expected value of the rest (``rest_npv - plan_rest_npv``).
+    expected_so_far : float
+        The present value of the plan's expected cash flows to ``now``, in
+        the categories compared.
+    actual_so_far : float
+        The present value of the cash flows the log implies, in the same
+        categories.
+    variance_so_far : float
+        ``actual_so_far - expected_so_far``.
+    undiscounted_expected_so_far : float
+        ``expected_so_far`` with no discounting.
+    undiscounted_actual_so_far : float
+        ``actual_so_far`` with no discounting.
+    as_planned_so_far : float
+        The present value of the plan's expected cash flows to ``now`` in
+        the cells not compared, carried as planned.
+    plan_rest_npv : float
+        The original plan's expected value of the time from ``now`` to the
+        horizon, as of the start.
+    rest_npv : float
+        The expected value of the time from ``now`` to the horizon from the
+        states now, as of the start (``rest.npv`` is it as of ``now``).
+    variance_by_category : dict
+        The variance's present value by category (``"value"`` included).
+    variance_by_component : dict
+        The variance's present value by component.
+    period_ends : list
+        The ends of the periods, the horizon last; one is at ``now``.
+    expected_cash_flows : list
+        The plan's cash-flow rows to ``now`` that are compared, as in
+        ``ExpectedNPV.cash_flows``.
+    actual_cash_flows : list
+        The rows the log implies, in the same form.
+    variance_cash_flows : list
+        Actual less expected, row for row (by period, category and
+        component).
+    rest_cash_flows : list
+        The rest's expected rows from the states now, on the plan's clock
+        and periods, present values as of the start; no acquisition.
+    not_compared : list
+        A dict for each priced cell the log does not determine:
+        ``category``, ``component`` (None for the system's) and
+        ``reason``.
+    states : dict
+        The components' states now that the rest was valued from.
+    derived_states : list
+        The components whose states came from their logs (the others were
+        given).
+    plan : ExpectedNPV
+        The original plan over the horizon, from its start.
+    rest : ExpectedNPV or None
+        The rest valued as of ``now`` (its own clock from 0), with no
+        acquisition cost; None if ``now`` is the horizon.
+    """
+
+    now: float
+    horizon: float
+    discount_rate: float
+    value_rate: float
+    plan_npv: float
+    revalued_npv: float
+    change: float
+    expected_so_far: float
+    actual_so_far: float
+    variance_so_far: float
+    undiscounted_expected_so_far: float
+    undiscounted_actual_so_far: float
+    as_planned_so_far: float
+    plan_rest_npv: float
+    rest_npv: float
+    variance_by_category: Dict[str, float]
+    variance_by_component: Dict[Hashable, float]
+    period_ends: List[float]
+    expected_cash_flows: List[Dict[str, Any]]
+    actual_cash_flows: List[Dict[str, Any]]
+    variance_cash_flows: List[Dict[str, Any]]
+    rest_cash_flows: List[Dict[str, Any]]
+    not_compared: List[Dict[str, Any]]
+    states: Dict[Hashable, Any]
+    derived_states: List[Hashable]
+    plan: ExpectedNPV
+    rest: Optional[ExpectedNPV]
+
+    def __repr__(self) -> str:
+        return (
+            f"PlanVsActual(now={self.now:g}, horizon={self.horizon:g}, "
+            f"plan_npv={self.plan_npv:.6g}, "
+            f"revalued_npv={self.revalued_npv:.6g}, "
+            f"variance_so_far={self.variance_so_far:.6g}, "
+            f"not_compared={len(self.not_compared)})"
+        )
+
+
+@dataclass(frozen=True)
+class NodeActionRates(_ResultMapping):
+    """A component's actions per unit time in the long run: returned, one
+    for each component, by
+    [`RepairableRBD.node_action_rates`][repyability.RepairableRBD.node_action_rates].
+
+    A long-run rate is the expected number of actions in a long window
+    over its length. Multiplied by a price per action, it is that
+    action's cost per unit time, as
+    [`expected_cost_rate`][repyability.RepairableRBD.expected_cost_rate]
+    counts them.
+
+    Attributes
+    ----------
+    corrective : float
+        Failures per unit time, each one a repair (or replacement): of a
+        standby group, its units' failures.
+    preventive : float
+        Preventive replacements per unit time, under age or block
+        replacement or on condition; 0 for a component that has none.
+
+    Examples
+    --------
+    >>> from repyability import NodeActionRates
+    >>> rates = NodeActionRates(corrective=0.002, preventive=0.01)
+    >>> rates.to_dict()
+    {'corrective': 0.002, 'preventive': 0.01}
+    """
+
+    corrective: float
+    preventive: float
+
+
+@dataclass(frozen=True)
+class CrewJob(_ResultMapping):
+    """A job the repair crews work on: returned by
+    [`RepairableRBD.crew_jobs`][repyability.RepairableRBD.crew_jobs].
+
+    A plain component is one job. Each unit of a standby group is a job of
+    its own, so a group of three units can keep three crews busy.
+
+    Attributes
+    ----------
+    node : Hashable
+        The component (or standby group) the job is for.
+    unit : int or None
+        ``None`` for a plain component; for a standby group, the unit's
+        number in the group, from 0.
+
+    Examples
+    --------
+    >>> from repyability import CrewJob
+    >>> CrewJob("pumps", 1).to_dict()
+    {'node': 'pumps', 'unit': 1}
+    """
+
+    node: Hashable
+    unit: Optional[int]
+
+
+@dataclass(frozen=True)
+class CrewStates(_ResultMapping):
+    """The repair crews' Markov chain in the long run: returned by
+    [`RepairableRBD.crew_states`][repyability.RepairableRBD.crew_states].
+
+    With fewer repair crews than jobs, a failed component may wait for a
+    crew, so the components no longer fail and recover independently. The
+    long-run values then come from a Markov chain whose states say which
+    components are up and which jobs are waiting. In each state each
+    component the crews serve is either up (1) or down (0). A long-run
+    value is the average of its value in each state, weighed by the
+    states' ``probabilities``: a node's long-run availability is
+    ``probabilities @ node_availability[node]``.
+
+    Attributes
+    ----------
+    node_availability : dict
+        ``{node: array}``: each node's availability in each state. 1 or 0
+        for a component the crews serve, and for a node held working or
+        broken; a nested RBD's own long-run availability in every state
+        (it has crews of its own); 1 for the input and output nodes.
+    probabilities : numpy.ndarray
+        Each state's long-run probability, adding up to 1.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from repyability import CrewStates
+    >>> states = CrewStates(
+    ...     {"a": np.array([1.0, 0.0])}, np.array([0.9, 0.1])
+    ... )
+    >>> float(states.probabilities @ states.node_availability["a"])
+    0.9
+    """
+
+    node_availability: Dict[Hashable, np.ndarray]
+    probabilities: np.ndarray
+
+    def __repr__(self) -> str:
+        # A summary (#235): the states' values are in the fields.
+        return (
+            f"CrewStates(n_states={len(self.probabilities)}, "
+            f"nodes={len(self.node_availability)})"
+        )
+
+
+@dataclass(frozen=True)
+class ReplacementCycle(_ResultMapping):
+    """The renewal cycle of a component under block replacement or
+    replaced on condition, in the long run: returned by
+    [`RepairableRBD.replacement_cycle`][repyability.RepairableRBD.replacement_cycle].
+
+    Under block replacement every ``T`` a unit is replaced at each multiple
+    of ``T`` at which it is up, and repaired at each failure in between;
+    replaced on condition, it is inspected every ``T`` and replaced when
+    an inspection finds it worn. Its long-run values repeat over each
+    interval, which ``phase`` cuts into cells. Each mean over the cycle's
+    ``length`` is a long-run rate: ``up / length`` is the component's
+    long-run availability, and ``failures / length`` its failures per
+    unit time.
+
+    Attributes
+    ----------
+    up : float
+        The mean time up in a cycle.
+    length : float
+        The mean length of a cycle.
+    failures : float
+        The mean number of failures in a cycle.
+    phase : numpy.ndarray
+        A grid over one interval, from 0 to ``T``: the cells' edges.
+    availability : numpy.ndarray
+        The long-run probability that the component is up in each cell
+        (at the cell's middle), one fewer than ``phase``.
+    failure_rate : numpy.ndarray
+        The long-run failure intensity in each cell.
+    before : float
+        The probability that the component is up just before a block time
+        (or an inspection).
+    after : float
+        The probability that it is up just after one.
+
+    Examples
+    --------
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> spec = {
+    ...     "reliability": surv.Weibull.from_params([1000.0, 3.0]),
+    ...     "repairability": surv.Exponential.from_params([0.5]),
+    ...     "preventive": {"interval": 400.0, "policy": "block"},
+    ... }
+    >>> rbd = RepairableRBD([("s", "c"), ("c", "t")], {"c": spec})
+    >>> cycle = rbd.replacement_cycle("c")
+    >>> round(cycle.length, 1), round(cycle.up / cycle.length, 4)
+    (400.4, 0.9997)
+
+    The cycle is a little longer than the interval: a replacement due
+    while the pump is down is skipped.
+    """
+
+    up: float
+    length: float
+    failures: float
+    phase: np.ndarray
+    availability: np.ndarray
+    failure_rate: np.ndarray
+    before: float
+    after: float
+
+    def __repr__(self) -> str:
+        # A summary (#235): the profiles over the interval are in the
+        # fields.
+        return (
+            f"ReplacementCycle(up={self.up:.6g}, length={self.length:.6g}, "
+            f"failures={self.failures:.6g}, before={self.before:.6g}, "
+            f"after={self.after:.6g}, cells={len(self.availability)})"
+        )
+
+
+@dataclass(frozen=True)
+class SimulationSamples(_ResultMapping):
+    """Each simulation's values from a run: returned by
+    [`RepairableRBD.simulation_samples`][repyability.RepairableRBD.simulation_samples].
+
+    The run's draws are common random numbers: each comes from a stream
+    named by the component it is for (its node name, down through nested
+    RBDs) and seeded from the run's entropy. So two diagrams run with the
+    same entropy draw the same numbers for a component in the same place
+    in both, and the differences between their samples come from how they
+    differ rather than from chance.
+
+    Attributes
+    ----------
+    availability : numpy.ndarray
+        Each simulation's fraction of the window the system was up.
+    cost : numpy.ndarray or None
+        Each simulation's running cost over the window (as
+        [`cost`][repyability.RepairableRBD.cost] counts it, without the
+        acquisition cost); ``None`` for a diagram with no running costs.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from repyability import SimulationSamples
+    >>> samples = SimulationSamples(np.array([1.0, 0.98]), None)
+    >>> samples
+    SimulationSamples(n_simulations=2, mean_availability=0.99, cost=None)
+    """
+
+    availability: np.ndarray
+    cost: Optional[np.ndarray]
+
+    def __repr__(self) -> str:
+        # A summary (#235): each simulation's values are in the fields.
+        cost = (
+            "None"
+            if self.cost is None
+            else f"{float(np.mean(self.cost)):.6g} (mean)"
+        )
+        return (
+            f"SimulationSamples(n_simulations={len(self.availability)}, "
+            "mean_availability="
+            f"{float(np.mean(self.availability)):.6g}, cost={cost})"
+        )
+
+
+@dataclass(frozen=True)
+class CoreStructure(_ResultMapping):
+    """The part of a diagram that does not reduce to modules (its core):
+    returned by
+    [`RBD.core_structure`][repyability.RBD.core_structure].
+
+    A diagram is reduced to modules (series chains, parallel groups and
+    k-out-of-n groups, each independent of the rest) by replacing each
+    with a single vertex. What is left when nothing more reduces is the
+    core: a graph from the input to the output whose vertices are modules
+    and single nodes. Its minimal path sets are what the exact methods
+    must search. A component drawn in more than one place (a repeated
+    node) stays out of every module, as the modules' members must be
+    independent of the rest, so it is left in the core.
+
+    Attributes
+    ----------
+    graph : networkx.DiGraph
+        The core. Its vertices are numbers; each has ``k`` (how many of
+        its predecessors must work for it to be reached) and
+        ``components``, the frozenset of the diagram's nodes it stands
+        for (empty for the input and output). The input vertex is the
+        one with no predecessors.
+    output : int
+        The output vertex.
+
+    Examples
+    --------
+    >>> from repyability import RBD
+    >>> bridge = RBD(
+    ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("a", "d"),
+    ...      ("c", "d"), ("b", "e"), ("c", "e"), ("d", "t"), ("e", "t")]
+    ... )
+    >>> core = bridge.core_structure()
+    >>> core.graph.in_degree(core.output)
+    2
+    """
+
+    graph: Any
+    output: int
+
+    def to_dict(self) -> dict:
+        """The core as plain data, ready for ``json.dumps``: its vertices,
+        each with its ``k`` and the components it stands for, its edges,
+        and the output vertex.
+
+        Returns
+        -------
+        dict
+            ``{"vertices": [...], "edges": [[u, v], ...], "output": v}``.
+        """
+        return {
+            "vertices": [
+                {
+                    "vertex": int(v),
+                    "k": int(data["k"]),
+                    "components": [
+                        _json_key(n)
+                        for n in sorted(data["components"], key=str)
+                    ],
+                }
+                for v, data in self.graph.nodes(data=True)
+            ],
+            "edges": [[int(u), int(v)] for u, v in self.graph.edges],
+            "output": int(self.output),
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"CoreStructure(vertices={self.graph.number_of_nodes()}, "
+            f"edges={self.graph.number_of_edges()}, output={self.output})"
+        )
+
+
+@dataclass(frozen=True)
+class ConditionalProbabilities(_ResultMapping):
+    """A fault tree's top event probability, alone and given each basic
+    event: returned by
+    [`FaultTree.conditional_probabilities`][repyability.FaultTree.conditional_probabilities].
+
+    Every importance measure of a basic event is made of these three
+    numbers and the event's own probability: Birnbaum's is
+    ``given_occurred[e] - given_not_occurred[e]``, the risk achievement
+    worth ``given_occurred[e] / top`` and the risk reduction worth
+    ``top / given_not_occurred[e]``.
+
+    Attributes
+    ----------
+    top : float or numpy.ndarray
+        The top event's probability: a float for a number ``t``, an array
+        for an array.
+    given_occurred : dict
+        ``{event: probability}``: the top event's probability given that
+        the event has occurred.
+    given_not_occurred : dict
+        ``{event: probability}``: the top event's probability given that
+        it has not.
+
+    Examples
+    --------
+    >>> from repyability import FaultTree
+    >>> tree = FaultTree(
+    ...     {"top": ("or", ["valve", "flow"]),
+    ...      "flow": ("and", ["pump 1", "pump 2"])},
+    ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+    ... )
+    >>> given = tree.conditional_probabilities()
+    >>> round(given.top, 4), given.given_occurred["valve"]
+    (0.0595, 1.0)
+    """
+
+    top: Any
+    given_occurred: Dict[Hashable, Any]
+    given_not_occurred: Dict[Hashable, Any]
+
+
+@dataclass(frozen=True)
+class PrimeImplicant(_ResultMapping):
+    """A prime implicant of a fault tree's top event: a smallest
+    combination of basic events occurring and not occurring that makes it
+    occur, returned by
+    [`FaultTree.prime_implicants`][repyability.FaultTree.prime_implicants].
+    In a tree without NOT gates it is a minimal cut set, and
+    ``not_occurred`` is empty.
+
+    Attributes
+    ----------
+    occurred : frozenset
+        The events that occur.
+    not_occurred : frozenset
+        The events that do not.
+
+    Examples
+    --------
+    >>> from repyability import FaultTree
+    >>> tree = FaultTree(
+    ...     {"top": ("and", ["a", "not b"]), "not b": ("not", ["b"])},
+    ...     {"a": 0.1, "b": 0.2},
+    ... )
+    >>> [implicant] = tree.prime_implicants()
+    >>> sorted(implicant.occurred), sorted(implicant.not_occurred)
+    (['a'], ['b'])
+    """
+
+    occurred: frozenset
+    not_occurred: frozenset
+
+
+@dataclass(frozen=True)
+class ModelParameters(_ResultMapping):
+    """A parametric model's parameters, to rebuild it with them moved:
+    returned by [`model_parameters`][repyability.model_parameters].
+
+    Attributes
+    ----------
+    cls : object
+        The surpyval distribution the model is of (``surpyval.Weibull``,
+        say), whose ``from_params`` rebuilds it.
+    params : list of float
+        The parameters' values: the distribution's, then the share that
+        ever fails (``lfp_p``, a limited failure population) and the share
+        dead on arrival (``f0``, zero inflation) where it has them, the
+        order of surpyval's ``covariance()``.
+    names : list of str
+        The parameters' names, in the order of ``params``.
+    extras : dict
+        surpyval's ``model.extras`` (the offset ``gamma`` among them),
+        which the rebuilt model keeps.
+    bounds : list of tuple
+        Each parameter's range as its distribution bounds it, ``(low,
+        high)``, ``None`` where it does not.
+
+    Examples
+    --------
+    >>> import surpyval as surv
+    >>> from repyability import model_parameters
+    >>> found = model_parameters(surv.Weibull.from_params([100.0, 2.0]))
+    >>> found.names, found.params
+    (['alpha', 'beta'], [100.0, 2.0])
+    >>> round(float(found.build([200.0, 2.0]).sf(200.0)), 4)
+    0.3679
+    """
+
+    cls: Any
+    params: List[float]
+    names: List[str]
+    extras: Dict[str, Any]
+    bounds: List[Tuple[Any, Any]]
+
+    def build(self, values) -> Any:
+        """The model with its parameters at ``values``.
+
+        Parameters
+        ----------
+        values : sequence of float
+            A value for each parameter, in the order of ``params``.
+
+        Returns
+        -------
+        object
+            The surpyval model, with ``extras`` as the original's and the
+            shares (``lfp_p``, ``f0``) at their given values.
+        """
+        from repyability.rbd._model_utils import ParametricSpec
+
+        return ParametricSpec(
+            self.cls, self.params, self.names, self.extras, self.bounds
+        ).build(values)
+
+    def to_dict(self) -> dict:
+        """The parameters as plain data, ready for ``json.dumps``: the
+        distribution by its name.
+
+        Returns
+        -------
+        dict
+            The fields, ``cls`` as the distribution's name.
+        """
+        out = super().to_dict()
+        out["cls"] = getattr(self.cls, "name", str(self.cls))
+        return out

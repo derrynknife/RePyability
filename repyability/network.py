@@ -80,10 +80,14 @@ from repyability.rbd.results import UncertaintyResult
 from repyability.rbd.routes import AnalysisRoute, Refused
 from repyability.rbd.shannon import _minimal_cut_sets, _shannon_plan
 from repyability.rbd.uncertainty import (
+    band,
+    carried,
     check_draws,
     draw_models,
     draw_with,
     fitted_together,
+    input_band,
+    shares_fit,
 )
 from repyability.utils.checks import (
     no_distribution,
@@ -1464,7 +1468,9 @@ class Network:
         >>> round(lower, 3), round(upper, 3)
         (0.748, 0.896)
         """
-        drawn = self._uncertain_draws(uncertainty, n_draws, seed, sampling)
+        drawn, kind = self._uncertain_draws(
+            uncertainty, n_draws, seed, sampling
+        )
         fixed = self.is_fixed and all(
             is_fixed_probability(m) for ms in drawn.values() for m in ms
         )
@@ -1499,11 +1505,13 @@ class Network:
                 samples=samples[:, 0],
                 nominal=float(nominal[0]),
                 n_draws=n_draws,
+                band=kind,
             )
         return UncertaintyResult(
             samples=samples.reshape((n_draws,) + np.shape(x)),
             nominal=nominal.reshape(np.shape(x)),
             n_draws=n_draws,
+            band=kind,
         )
 
     def mean_uncertainty(
@@ -1563,7 +1571,9 @@ class Network:
         (3.43, 9.01)
         """
         self._require_lifetimes("mean lifetime")
-        drawn = self._uncertain_draws(uncertainty, n_draws, seed, sampling)
+        drawn, kind = self._uncertain_draws(
+            uncertainty, n_draws, seed, sampling
+        )
         samples = np.empty(n_draws)
         for i in range(n_draws):
             samples[i] = self._mean_of(
@@ -1576,6 +1586,7 @@ class Network:
             samples=samples,
             nominal=self._mean_of(self.models),
             n_draws=n_draws,
+            band=kind,
         )
 
     def _mean_of(self, models: Mapping) -> float:
@@ -1597,30 +1608,32 @@ class Network:
 
     def _uncertain_draws(
         self, uncertainty, n_draws: int, seed, sampling: str
-    ) -> Dict[Hashable, list]:
+    ) -> Tuple[Dict[Hashable, list], str]:
         """``n_draws`` plausible models for each uncertain element, after
         checking ``uncertainty`` and ``n_draws`` (see ``sf_uncertainty``):
         the elements given together share their models. Drawn as a
         diagram's nodes' are (``uncertainty.draw_with``), so the same
-        sources and seed give the same models."""
+        sources and seed give the same models. And what the band over
+        them is (``uncertainty.band``)."""
         check_draws(n_draws)
         sources = self._uncertainty_sources(uncertainty)
 
         def draw(n: int, source) -> Dict[Hashable, list]:
             drawn: Dict[Hashable, list] = {}
             for members, spec in sources:
+                first = self.models[members[0]]
                 models = draw_models(
-                    self.models[members[0]],
-                    spec,
-                    n,
-                    source,
-                    self._label(members),
+                    first, spec, n, source, self._label(members)
                 )
                 for name in members:
-                    drawn[name] = models
+                    drawn[name] = carried(models, first, self.models[name])
             return drawn
 
-        return draw_with(draw, n_draws, seed, sampling)
+        kind = band(
+            input_band(self.models[members[0]], spec)
+            for members, spec in sources
+        )
+        return draw_with(draw, n_draws, seed, sampling), kind
 
     def _uncertainty_sources(self, uncertainty) -> List[Tuple[tuple, Any]]:
         """The uncertain inputs, checked (see ``sf_uncertainty``): for each
@@ -1667,7 +1680,11 @@ class Network:
                 seen.add(name)
             model = self.models[members[0]]
             for name in members[1:]:
-                if not NonRepairableRBD._same_model(self.models[name], model):
+                theirs = self.models[name]
+                if not (
+                    NonRepairableRBD._same_model(theirs, model)
+                    or shares_fit(theirs, model)
+                ):
                     raise ValueError(
                         f"Elements {list(members)!r} share their "
                         "uncertainty, so they must have the same model."
@@ -1679,7 +1696,8 @@ class Network:
                 others = [
                     name
                     for name in self.models
-                    if name not in seen and self.models[name] is model
+                    if name not in seen
+                    and shares_fit(self.models[name], model)
                 ]
                 if others:
                     half_named(

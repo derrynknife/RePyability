@@ -30,6 +30,7 @@ from repyability import (
     NonRepairableRBD,
     PerfectReliability,
     PerfectUnreliability,
+    PosteriorPredictive,
     RegressionNode,
     RepairableRBD,
     RepeatedNode,
@@ -37,8 +38,13 @@ from repyability import (
     StandbyModel,
 )
 from repyability.rbd import routes
+from repyability.rbd._bayesian_life import as_life
 from repyability.rbd._degradation import is_degradation
-from repyability.rbd._model_utils import is_fixed_probability, is_mixture
+from repyability.rbd._model_utils import (
+    by_functions,
+    is_fixed_probability,
+    is_mixture,
+)
 from repyability.rbd.results import _ResultMapping
 from repyability.rbd.uncertainty import is_fit
 from repyability.tests import catalogue
@@ -60,13 +66,22 @@ NOT_NODES = {
     "FaultTree",
     "MGL",
     "MaintenancePolicy",
+    "RepairOrReplacePolicy",
+    "UnitDecision",
     "Network",
     "NodeState",
     "Opportunity",
     "PhasedMission",
+    "MissionPhase",
+    "BlockSetting",
+    "MissionSummary",
+    "MissionPhaseSummary",
+    "MissionDrivers",
     "RBD",
     # A component analysed alone: a diagram takes a NonRepairable.
     "Repairable",
+    # A fleet's repair-or-replace economics, from a joint frailty model.
+    "RepairOrReplace",
     # A part's maintenance plan, valued alone (#319).
     "ReplacementPlan",
     "SimulationChunk",
@@ -85,12 +100,14 @@ NONREPAIRABLE_NODES = {
     RepeatedStandbyNode,
     StandbyModel,
     JointNode,
+    PosteriorPredictive,
 }
 #: The node classes a RepairableRBD takes, as a component or its life.
 REPAIRABLE_NODES = {
     DegradingNode,
     NonRepairable,
     PerfectReliability,
+    PosteriorPredictive,
     RepairableRBD,
     StandbyModel,
 }
@@ -163,10 +180,14 @@ def model_kinds(model) -> set:
         return {"NonRepairable"} | model_kinds(model.reliability)
     if isinstance(model, JointNode):
         return {"JointNode"}
+    if isinstance(as_life(model), PosteriorPredictive):
+        return {"PosteriorPredictive"}
     if is_mixture(model):
         return {"surpyval MixtureModel"}
     if is_degradation(model):
         return {"surpyval degradation process"}
+    if by_functions(model):
+        return {"surpyval model by its functions"}
     if "Regression" in cls.__name__:
         return {"surpyval regression model"}
     if is_fixed_probability(model):
@@ -213,8 +234,13 @@ def repairable_kinds(rbd, components, options) -> set:
             found.add(f"policy {preventive.get('policy', 'age')!r}")
         if component.get("repair"):
             found.add(f"repair model {component['repair']['model']!r}")
+        restoration = (preventive or {}).get("restoration")
+        if isinstance(restoration, dict):
+            found.add(f"restoration model {restoration['model']!r}")
     for group in (options.get("maintenance_groups") or {}).values():
         found |= {f"maintenance group key {key!r}" for key in group}
+    for shut in (options.get("shutdowns") or {}).values():
+        found |= {f"shutdown key {key!r}" for key in shut}
     if options.get("k"):
         found.add("a k-out-of-n vote")
     if options.get("capacity"):
@@ -247,7 +273,9 @@ def required_repairable() -> set:
         | {f"standby key {key!r}" for key in cls.STANDBY_KEYS}
         | {"repair key 'model'", "repair key 'q'"}
         | {f"repair model {model!r}" for model in cls.REPAIR_MODELS}
+        | {f"restoration model {model!r}" for model in cls.REPAIR_MODELS}
         | {f"maintenance group key {key!r}" for key in cls.GROUP_KEYS}
+        | {f"shutdown key {key!r}" for key in cls.SHUTDOWN_KEYS}
         | {"repairability 'instant'"}
         | {"a k-out-of-n vote", "capacities", "downtime_cost_rate"}
         | {"repair crews", "repair crews around a nested RepairableRBD"}
@@ -260,7 +288,7 @@ def required_repairable() -> set:
         | {"a structure too meshed to work out", "StandbyModel, simulated"}
         | {node.__name__ for node in REPAIRABLE_NODES}
         | SURPYVAL_KINDS
-        | {"surpyval degradation process"}
+        | {"surpyval degradation process", "surpyval model by its functions"}
     )
 
 
@@ -269,6 +297,7 @@ def required_nonrepairable() -> set:
         {node.__name__ for node in NONREPAIRABLE_NODES}
         | SURPYVAL_KINDS
         | {"surpyval MixtureModel", "surpyval regression model"}
+        | {"surpyval model by its functions"}
         | {"surpyval degradation process"}
         | {"a k-out-of-n vote", "capacities"}
         | {
@@ -433,5 +462,31 @@ def test_the_simulation_agrees_with_the_exact_values(name):
                 Z * interval.standard_error + 1e-9 * abs(exact)
             ), (interval, exact)
             checked += 1
+        if (
+            computed(report["expected_events"])
+            and report["availability"].route == routes.SIMULATED
+        ):
+            # Planned against unplanned downtime (UC-25), each within Z
+            # standard errors of a simulation's downtime (which bounds its
+            # parts': each is at most the downtime).
+            events = rbd.expected_events(window)
+            if events.system_unplanned_downtime is not None:
+                run = rbd.availability(window, **plain)
+                down = window - np.asarray(run.uptimes)
+                error = math.sqrt(float(np.mean(down**2)) / n)
+                for exact, total in (
+                    (
+                        events.system_planned_downtime,
+                        run.system_planned_downtime,
+                    ),
+                    (
+                        events.system_unplanned_downtime,
+                        run.system_unplanned_downtime,
+                    ),
+                ):
+                    assert close(
+                        total / (n * window), exact / window, error / window, n
+                    ), (total / n, exact)
+                checked += 1
     if not checked:
         pytest.skip("Nothing here is exact or numerical.")

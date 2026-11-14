@@ -27,6 +27,7 @@ from repyability import (
     RepeatedNode,
     RepeatedStandbyNode,
     StandbyModel,
+    Timeline,
     network,
 )
 from repyability.rbd import _repairable_uncertainty, phased_mission, routes
@@ -36,6 +37,7 @@ from repyability.tests.catalogue import (
     E,
     W,
     fault_tree_kinds,
+    mission_kinds,
     nonrepairable_kinds,
     repairable_kinds,
 )
@@ -190,6 +192,11 @@ def held_back(rbd):
     )
 
 
+def quiet_logs(rbd):
+    """Each component's log over [0, 100]: up throughout."""
+    return {node: Timeline([], end=100.0) for node in rbd.components}
+
+
 def a_little_better(rbd):
     """A system availability a little above the current one."""
     try:
@@ -208,6 +215,16 @@ def stepped(rbd):
     while changes[-1][0] < 200.0:
         changes.append(rbd.next_event())
     return changes
+
+
+def replaced(rbd):
+    """The first component under block replacement or replaced on
+    condition, or else the first component (which has no replacement
+    cycle)."""
+    for node, schedule in rbd._preventive.items():
+        if schedule.policy in ("block", "condition"):
+            return node
+    return next(iter(rbd.components))
 
 
 REPAIRABLE_CALLS = {
@@ -230,6 +247,7 @@ REPAIRABLE_CALLS = {
             "differential_importance",
             "joint_importance",
             "barlow_proschan_importance",
+            "pfd_breakdown",
             "parameter_sensitivity",
             "expected_cost_rate",
             "capacity_distribution",
@@ -241,6 +259,10 @@ REPAIRABLE_CALLS = {
     "total_cost": lambda rbd: rbd.total_cost(1000.0),
     "spares_demand": lambda rbd: rbd.spares_demand(200.0),
     "spares_stock": lambda rbd: rbd.spares_stock(50.0, fill_rate=0.9),
+    "first_failure_sf": lambda rbd: rbd.first_failure_sf([10.0, 200.0]),
+    "mean_time_to_first_failure": (
+        lambda rbd: rbd.mean_time_to_first_failure()
+    ),
     "point_availability": lambda rbd: rbd.point_availability([10.0, 200.0]),
     "point_unavailability": (
         lambda rbd: rbd.point_unavailability([10.0, 200.0])
@@ -251,6 +273,18 @@ REPAIRABLE_CALLS = {
     "expected_failures": lambda rbd: rbd.expected_failures([10.0, 200.0]),
     "expected_events": lambda rbd: rbd.expected_events(200.0),
     "expected_cost": lambda rbd: rbd.expected_cost(200.0),
+    "expected_npv": lambda rbd: rbd.expected_npv(
+        200.0, discount_rate=0.01, value_rate=1.0, periods=2
+    ),
+    "plan_vs_actual": lambda rbd: rbd.plan_vs_actual(
+        quiet_logs(rbd), 100.0, 200.0, discount_rate=0.01, value_rate=1.0
+    ),
+    "expected_events_by_window": lambda rbd: rbd.expected_events_by_window(
+        width=100.0, count=2
+    ),
+    "cost_by_window": lambda rbd: rbd.cost_by_window(
+        width=100.0, count=2, mc_samples=20, seed=1
+    ),
     "point_capacity": lambda rbd: rbd.point_capacity([10.0, 200.0]),
     "mission_capacity": lambda rbd: rbd.mission_capacity(200.0),
     "availability": lambda rbd: rbd.availability(200.0, mc_samples=20, seed=1),
@@ -301,6 +335,15 @@ REPAIRABLE_CALLS = {
     ),
     "initialize_event_queue": stepped,
     "next_event": stepped,
+    "node_action_rates": lambda rbd: rbd.node_action_rates(),
+    "crew_states": lambda rbd: rbd.crew_states(),
+    "replacement_cycle": lambda rbd: rbd.replacement_cycle(replaced(rbd)),
+    "simulation_samples": lambda rbd: rbd.simulation_samples(
+        200.0, 20, seed=1
+    ),
+    "maintenance_effect": lambda rbd: rbd.maintenance_effect(
+        200.0, mc_samples=20, seed=1
+    ),
 }
 # What the two classes share: the methods on node probabilities.
 for calls in (NONREPAIRABLE_CALLS, REPAIRABLE_CALLS):
@@ -489,6 +532,12 @@ def test_the_report_covers_every_public_analysis(cls):
         "get_min_path_sets",
         "minimal_cut_sets",
         "minimal_path_sets",
+        "structure_summary",
+        "count_minimal_cut_sets",
+        "count_minimal_path_sets",
+        "core_structure",
+        "junctions",
+        "crew_jobs",
         "get_non_analytic_nodes",
         "is_analytically_solvable",
         "is_system_working",
@@ -535,6 +584,15 @@ PHASED_CALLS = {
     "reliability_interval": (
         lambda mission: mission.reliability_interval(200, seed=1)
     ),
+    "reliability_over_time": (
+        lambda mission: mission.reliability_over_time(
+            [0.0, mission.duration], mc_samples=200, seed=1
+        )
+    ),
+    "failure_drivers": (
+        lambda mission: mission.failure_drivers(mc_samples=200, seed=1)
+    ),
+    "summary": lambda mission: mission.summary(mc_samples=200, seed=1),
 }
 
 
@@ -565,6 +623,17 @@ def test_every_mission_method_does_what_the_report_says(
     assert set(PHASED_CALLS) == set(report)
 
 
+@pytest.mark.parametrize("name", sorted(mission_kinds()))
+def test_every_mission_with_settings_does_what_the_report_says(name):
+    # A mission drawn as one diagram: exact with blocks guaranteed, not
+    # needed or at a phase's covariates; simulated with one on standby.
+    phased = mission_kinds()[name]
+    report = phased.analysis_routes()
+    for method, call in PHASED_CALLS.items():
+        behaves_as_reported(report[method], lambda: call(phased))
+    assert set(PHASED_CALLS) == set(report)
+
+
 def test_the_mission_report_covers_every_public_analysis():
     # Everything public but the report itself and the structure.
     public = {
@@ -574,6 +643,7 @@ def test_the_mission_report_covers_every_public_analysis():
     }
     assert set(mission().analysis_routes()) == public - {
         "analysis_routes",
+        "from_diagram",
         "minimal_cut_sets",
     }
 
@@ -770,6 +840,7 @@ def test_the_readme_says_what_is_simulated():
     tested_group = repairable["common cause, tested"]
     revealed_group = repairable["common cause, revealed"]
     timed_group = repairable["common cause, timed tests and repairs"]
+    general_group = repairable["common cause, tests and repairs of any length"]
     # A unit dead on arrival, repaired and block replaced in no time (#322).
     dead_on_arrival = RepairableRBD(
         [("s", "a"), ("a", "t")],
@@ -909,6 +980,9 @@ def test_the_readme_says_what_is_simulated():
             (timed_group, "point_availability", "numerical"),
             (timed_group, "system_failure_frequency", "numerical"),
             (timed_group, "availability", "simulated"),
+            (general_group, "mean_availability", "numerical"),
+            (general_group, "point_availability", "numerical"),
+            (general_group, "availability", "simulated"),
             (tested_group, "mean_availability", "exact"),
             (tested_group, "system_failure_frequency", "exact"),
             (tested_group, "birnbaum_importance", "exact"),
@@ -973,18 +1047,117 @@ def test_the_readme_says_what_is_simulated():
             (timed_minimal, "expected_cost", "numerical"),
             (timed_minimal, "mean_availability", "refused"),
         ],
-        "Replacement on condition by a measured degradation level": [
-            (repairable["replaced on condition by level"], name, route)
-            for name, route in (
+        "Preventive maintenance that restores a unit only partly (Kijima), "
+        "with or without replacement at every *N*-th task": [
+            (repairable[name], analysis, route)
+            for name in (
+                "maintenance restores partly, by age",
+                "maintenance restores partly, every third replaces",
+                "maintenance restores partly, on condition",
+            )
+            for analysis, route in (
                 ("mean_availability", "refused"),
                 ("point_availability", "refused"),
                 ("expected_cost", "refused"),
                 ("availability", "simulated"),
+                ("cost", "simulated"),
+                ("simulate_timelines", "simulated"),
+            )
+        ],
+        "Shutdowns: outages that hold the system or some blocks off line "
+        "for a fixed time, the blocks' work done in them": [
+            (repairable[name], analysis, route)
+            for name, analysis, route in (
+                (
+                    "shutdown of the line, tasks at it",
+                    "mean_availability",
+                    "numerical",
+                ),
+                (
+                    "shutdown of the line, tasks at it",
+                    "point_availability",
+                    "numerical",
+                ),
+                (
+                    "shutdown of the line, tasks at it",
+                    "expected_npv",
+                    "numerical",
+                ),
+                (
+                    "shutdown of the line, tasks at it",
+                    "availability",
+                    "simulated",
+                ),
+                (
+                    "shutdown of the line, tasks at it",
+                    "birnbaum_importance",
+                    "refused",
+                ),
+                (
+                    "shutdown of some blocks, idle ones paused",
+                    "expected_cost",
+                    "numerical",
+                ),
+                (
+                    "shutdowns at given times, restoring",
+                    "mean_availability",
+                    "refused",
+                ),
+                (
+                    "shutdowns at given times, restoring",
+                    "expected_cost",
+                    "refused",
+                ),
+                ("shutdowns at given times, restoring", "cost", "simulated"),
+            )
+        ],
+        "Planned against unplanned downtime, and the failures a plan "
+        "avoids (`maintenance_effect`)": [
+            (
+                repairable["planned outages, nested and in a pair"],
+                "maintenance_effect",
+                "numerical",
+            ),
+            (
+                repairable["shutdown of the line, tasks at it"],
+                "maintenance_effect",
+                "numerical",
+            ),
+            (
+                repairable["planned outages, one repair crew"],
+                "maintenance_effect",
+                "simulated",
+            ),
+            (
+                repairable["common cause, timed tests and repairs"],
+                "maintenance_effect",
+                "simulated",
+            ),
+            (
+                repairable["shutdowns at given times, restoring"],
+                "maintenance_effect",
+                "simulated",
+            ),
+        ],
+        "Replacement on condition by a measured degradation level": [
+            (repairable["replaced on condition by level"], name, route)
+            for name, route in (
+                ("mean_availability", "numerical"),
+                ("point_availability", "numerical"),
+                ("expected_cost", "numerical"),
+                ("availability", "simulated"),
             )
         ],
         "Spares with repair crews, standby groups, opportunistic "
-        "maintenance or imperfect repair": [
+        "maintenance, imperfect repair or partial restoration": [
             (crew, "spares_stock", "refused"),
+            (
+                repairable[
+                    "maintenance restores partly, every third replaces"
+                ],
+                "spares_demand",
+                "refused",
+            ),
             (group, "spares_demand", "refused"),
             (
                 repairable["opportunistic maintenance"],
@@ -1067,6 +1240,7 @@ FAULT_TREE_CALLS = {
             "joint_importance",
             "barlow_proschan_importance",
             "parameter_sensitivity",
+            "conditional_probabilities",
         )
     },
     "time_to_reliability": lambda tree: tree.time_to_reliability(0.5),
@@ -1097,8 +1271,9 @@ def test_every_fault_tree_analysis_is_called():
 
 
 def test_the_fault_tree_report_covers_every_public_analysis():
-    # Everything public but building, saving, converting, the logic at one
-    # state, the cut and path sets, and the levers.
+    # Everything public but building, saving, converting (Open-PSA too),
+    # the logic at one state, the cut and path sets and prime implicants,
+    # and the levers.
     not_analyses = {
         "analysis_routes",
         "from_dict",
@@ -1112,6 +1287,8 @@ def test_the_fault_tree_report_covers_every_public_analysis():
         "get_min_path_sets",
         "minimal_cut_sets",
         "minimal_path_sets",
+        "prime_implicants",
+        "to_open_psa",
         "levers",
         "with_levers",
     }

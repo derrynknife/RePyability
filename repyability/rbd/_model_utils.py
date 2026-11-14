@@ -9,9 +9,13 @@ small helpers keeps that coupling in one place (easy to audit and to cover
 with a compatibility test) and gives the call sites intention-revealing names.
 """
 
-from typing import Any, Dict, List, NamedTuple, Optional
+import weakref
+from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from repyability.rbd.results import ModelParameters
 
 #: What a model raises when it cannot work out what it is asked (a quantile,
 #: a survival, a mean) at the values given: surpyval's models, and anything
@@ -47,6 +51,111 @@ def is_mixture(model) -> bool:
     return type(model).__name__ == "MixtureModel"
 
 
+def is_bayesian_fit(model) -> bool:
+    """Whether ``model`` is a surpyval Bayesian fit (``fit_bayes``'s
+    ``BayesianParametric``): its ``dist`` and ``params`` are only its
+    posterior's family and medians, while its life is the posterior
+    predictive, a mixture over the posterior (see
+    ``PosteriorPredictive``)."""
+    from surpyval.bayes import BayesianParametric
+
+    return isinstance(model, BayesianParametric)
+
+
+#: The functions a model taken as a life by what it can do (#93) has, each
+#: taking times (or, ``qf``, probabilities) alone, and ``mean()``: a
+#: diagram's exact methods integrate and differentiate the life through
+#: them, and its simulations draw it through ``qf``.
+LIFE_FUNCTIONS = ("sf", "ff", "df", "hf", "Hf", "qf", "mean")
+
+#: What ``life_functions`` found for each model probed, while it lives.
+_PROBED: "weakref.WeakKeyDictionary[Any, Dict[str, str]]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def life_functions(model) -> Dict[str, str]:
+    """What ``model`` lacks of ``LIFE_FUNCTIONS``: each function it has
+    not, or that fails with times alone, with why (surpyval's own message
+    where it gives one). Empty when it has them all.
+
+    Each is called once, at the median life (``qf(0.5)``; at 1 when the
+    model has no quantile), and must give a number: a probability for
+    ``sf`` and ``ff``, a mean that may be infinite (some units never
+    failing). A regression's functions need covariates, so it lacks them
+    all; a curve that ends at its data has no mean.
+    """
+    try:
+        return dict(_PROBED[model])
+    except (KeyError, TypeError):
+        pass
+    missing: Dict[str, str] = {}
+
+    def call(name, *args):
+        f = getattr(model, name, None)
+        if not callable(f):
+            missing[name] = "it has none"
+            return None
+        try:
+            with np.errstate(all="ignore"):
+                out = np.asarray(f(*args), dtype=float)
+        except MODEL_ERRORS as error:
+            missing[name] = f"{type(error).__name__}: {error}"
+            return None
+        if out.size != (args[0].size if args else 1) or np.isnan(out).any():
+            missing[name] = f"it gave {out!r}, not a number"
+            return None
+        return out
+
+    median = call("qf", np.array([0.5]))
+    at = (
+        median
+        if median is not None and np.isfinite(median).all() and median > 0
+        else np.array([1.0])
+    )
+    for name in ("sf", "ff", "df", "hf", "Hf"):
+        out = call(name, at)
+        if (
+            out is not None
+            and name in ("sf", "ff")
+            and not 0.0 <= float(out[0]) <= 1.0
+        ):
+            missing[name] = f"it gave {float(out[0])!r}, not a probability"
+    call("mean")
+    try:
+        _PROBED[model] = dict(missing)
+    except TypeError:  # not weakly referenced
+        pass
+    return missing
+
+
+def by_functions(model) -> bool:
+    """Whether ``model`` is a life taken by what it can do (#93): a
+    surpyval model none of the kinds RePyability takes by its class (a
+    parametric distribution, a mixture, a Bayesian fit, a degradation
+    process, a non-parametric estimate, a joint model's), with every one
+    of ``LIFE_FUNCTIONS`` (``life_functions``): a Royston-Parmar fit, a
+    regression at one unit's covariates (``regression.at(Z)``), a
+    destructive degradation model, and any other surpyval model with
+    them."""
+    from surpyval import NonParametric, Parametric
+
+    from ._degradation import is_degradation
+    from .joint_node import is_joint
+
+    if not type(model).__module__.startswith("surpyval."):
+        return False
+    if (
+        isinstance(model, (Parametric, NonParametric))
+        or is_mixture(model)
+        or is_bayesian_fit(model)
+        or is_degradation(model)
+        or is_joint(model)
+    ):
+        return False
+    return not life_functions(model)
+
+
 def distribution_name(model) -> Optional[str]:
     """Return the surpyval distribution name of ``model``.
 
@@ -54,10 +163,11 @@ def distribution_name(model) -> Optional[str]:
     (e.g. a ``StandbyModel``, ``RepeatedNode``, nested RBD, or the perfect
     reliability/unreliability helpers), and for a ``MixtureModel``, whose
     ``dist`` is only its components': a mixture of exponentials is not
-    memoryless, nor is it rebuilt by ``from_params``.
+    memoryless, nor is it rebuilt by ``from_params``; and for a surpyval
+    Bayesian fit, whose life is a mixture over its posterior.
     """
     dist = getattr(model, "dist", None)
-    if dist is None or is_mixture(model):
+    if dist is None or is_mixture(model) or is_bayesian_fit(model):
         return None
     return getattr(dist, "name", None)
 
@@ -84,9 +194,18 @@ def never_fails(model) -> float:
     """The fraction of units that never fail: ``1 - lfp_p`` for a surpyval
     limited-failure-population model; for a standby arrangement whose
     survival function is a convolution (a sum of lifetimes, some of which
-    may never end), the probability that it never fails; 0 for any
-    other."""
+    may never end), the probability that it never fails; for a Bayesian
+    fit's posterior predictive, or a model taken by its functions (see
+    ``life_functions``), the share its survival function levels off at;
+    0 for any other."""
     if distribution_name(model) is None:
+        own = getattr(model, "never_fails", None)
+        if isinstance(own, float):
+            return own
+        if by_functions(model):
+            with np.errstate(all="ignore"):
+                floor = float(np.ravel(model.sf(np.array([np.inf])))[0])
+            return floor if 0.0 < floor <= 1.0 else 0.0
         survival = getattr(model, "_sf_model", None)
         return float(getattr(survival, "never_fails", 0.0) or 0.0)
     p = lfp_p(model)
@@ -146,6 +265,16 @@ def failure_time_scale(model) -> float:
         mean = model_mean(failing)
         if np.isfinite(mean):
             return mean
+    share = never_fails(model)
+    if 0.0 < share < 1.0 and callable(getattr(model, "qf", None)):
+        # The median life of the units that fail.
+        try:
+            with np.errstate(all="ignore"):
+                median = float(np.ravel(model.qf(0.5 * (1.0 - share)))[0])
+        except MODEL_ERRORS:
+            median = float("nan")
+        if np.isfinite(median) and median > 0.0:
+            return median
     return float("nan")
 
 
@@ -220,6 +349,59 @@ def parametric_spec(model) -> Optional[ParametricSpec]:
             names.append(share)
             bounds.append((0, 1))
     return ParametricSpec(cls, params, names, extras, bounds)
+
+
+def model_parameters(model) -> Optional["ModelParameters"]:
+    """A parametric model's parameters, to rebuild the model with them
+    moved or drawn (for a sensitivity or an uncertainty of your own).
+
+    Parameters
+    ----------
+    model : object
+        A node's life or repair model: a surpyval parametric fit, or
+        anything else a diagram takes.
+
+    Returns
+    -------
+    ModelParameters or None
+        The parameters, their names and ranges, and ``build(values)``,
+        which rebuilds the model (see
+        [`ModelParameters`][repyability.ModelParameters]). ``None`` where
+        the model has none to rebuild: a nested diagram, a standby or
+        load-sharing group, a repeated node, a mixture, a Bayesian or
+        non-parametric fit, ``PerfectReliability``, a name or ``None``.
+
+    Examples
+    --------
+    A limited failure population: its share that ever fails is a
+    parameter too.
+
+    >>> import surpyval as surv
+    >>> from repyability import model_parameters
+    >>> model = surv.Weibull.from_params([100.0, 2.0], lfp_p=0.3)
+    >>> found = model_parameters(model)
+    >>> found.names
+    ['alpha', 'beta', 'lfp_p']
+    >>> rebuilt = found.build([100.0, 2.0, 0.6])
+    >>> round(float(rebuilt.ff(1e4)), 4)
+    0.6
+    >>> model_parameters("a name") is None
+    True
+    """
+    from repyability.rbd.results import ModelParameters
+
+    if model is None or isinstance(model, str):
+        return None
+    spec = parametric_spec(model)
+    if spec is None:
+        return None
+    return ModelParameters(
+        spec.cls,
+        list(spec.params),
+        list(spec.names),
+        dict(spec.extras),
+        list(spec.bounds),
+    )
 
 
 class CovariateSpec(NamedTuple):

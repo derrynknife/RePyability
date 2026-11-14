@@ -30,6 +30,7 @@ from repyability import (
     mtbf_pass_probability,
     mtbf_test_time,
 )
+from repyability._version import __version__
 from repyability.rbd.ccf import with_parameters
 from repyability.rbd.uncertainty import draw_ccf_models
 from repyability.utils import deprecation
@@ -110,7 +111,13 @@ def test_a_network_takes_a_probability_of_failing():
 
 # -- demonstration tests ---------------------------------------------------
 
+# Deprecated for surpyval.test_planning's (removed in 0.18): each warns.
+DEPRECATED = pytest.mark.filterwarnings(
+    "ignore:repyability.*is deprecated:FutureWarning"
+)
 
+
+@DEPRECATED
 @pytest.mark.parametrize(
     "function, arrays, fixed",
     [
@@ -145,6 +152,7 @@ def test_the_demonstration_functions_take_arrays(function, arrays, fixed):
     assert together.tolist() == one_by_one
 
 
+@DEPRECATED
 def test_a_count_is_not_a_bool():
     with pytest.raises(ValueError, match="failures"):
         demonstration_sample_size(0.9, 0.9, failures=True)
@@ -154,6 +162,7 @@ def test_a_count_is_not_a_bool():
         demonstrated_mtbf(1000.0, failures=1, failure_terminated="yes")
 
 
+@DEPRECATED
 def test_a_failure_terminated_test():
     # 2r degrees of freedom: the plan is a time-terminated test allowing
     # one failure fewer, and the bound the time at the r-th failure.
@@ -260,6 +269,13 @@ def test_the_spares_demand_values_are_properties():
     assert demand.std == pytest.approx(np.sqrt(10.0), rel=1e-4)
 
 
+def test_what_0_17_deprecates_goes_in_0_18():
+    # repyability.demonstration's nine functions, deprecated for
+    # surpyval.test_planning's: NEXT_REMOVAL (0.18) removes them.
+    version = tuple(map(int, __version__.split(".")))
+    assert version < tuple(map(int, NEXT_REMOVAL.split(".")))
+
+
 def test_a_deprecation_warns_until_the_next_removal():
     # The helpers a deprecation warns through.
     match = f"{NEXT_REMOVAL} will refuse it"
@@ -274,6 +290,10 @@ def test_a_deprecation_warns_until_the_next_removal():
         assert number() == 2.0
     with pytest.warns(FutureWarning, match=f"refused in {NEXT_REMOVAL}"):
         assert np.array_equal(array(), [1.0, 2.0])
+    with pytest.warns(
+        FutureWarning, match=f"use pkg.f, as.*in {NEXT_REMOVAL}"
+    ):
+        deprecation.moved("repyability.f", "pkg.f", "it is there")
 
 
 def test_an_uncertainty_result_shows_a_summary():

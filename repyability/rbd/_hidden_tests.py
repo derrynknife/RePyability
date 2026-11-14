@@ -873,6 +873,15 @@ class TestedLongRun:
         position, s = self._place(phase)
         return _values_at(self.setup, self.rows, position, s)
 
+    def planned_profile(self, phase) -> np.ndarray:
+        """The probability of being off line for a test of a working unit
+        (planned) at each ``phase``: the unit working at the test before,
+        and the test not over yet."""
+        position, s = self._place(phase)
+        if not self.setup.timed:
+            return np.zeros(np.shape(s))
+        return self.rows.tested[position] * (1.0 - self.setup.G(s))
+
     def intensity(self, phase) -> np.ndarray:
         """The rate of failing at each ``phase``: the slope of its failures
         on the grid cell it falls in."""
@@ -1176,6 +1185,27 @@ class TestedCurve:
                 self.first_restart,
                 k,
             )[0]
+        return np.clip(out, 0.0, 1.0).reshape(x.shape)
+
+    def failed_at(self, x: np.ndarray) -> np.ndarray:
+        """Its probability of being down unplanned at each time ``x``:
+        failed (unseen, in a test that found it, or in its repair), down
+        but not off line for a test of a working unit (planned)."""
+        x = np.asarray(x, dtype=float)
+        flat = x.ravel()
+        out = np.empty(flat.shape)
+        head = flat < self.first
+        if head.any():
+            out[head] = 1.0 - np.asarray(self.head_up(flat[head]), float)
+        if (~head).any():
+            k, s = self._place(flat[~head])
+            index = self._index(k)
+            down = _values_at(
+                self.setup, self.rows, index, s, self.first_restart, k
+            )[1]
+            if self.timed:
+                down = down - self.rows.tested[index] * (1.0 - self.setup.G(s))
+            out[~head] = down
         return np.clip(out, 0.0, 1.0).reshape(x.shape)
 
     def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:

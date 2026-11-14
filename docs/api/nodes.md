@@ -20,6 +20,8 @@ models provided here (see [Building an RBD](../guide/building.md) and
 
 ::: repyability.JointNode
 
+::: repyability.PosteriorPredictive
+
 ::: repyability.PerfectReliability
 
 ::: repyability.PerfectUnreliability
@@ -27,6 +29,10 @@ models provided here (see [Building an RBD](../guide/building.md) and
 ## Design inputs
 
 ::: repyability.ComponentOption
+
+## A model's parameters
+
+::: repyability.model_parameters
 
 ## Common-cause failures
 

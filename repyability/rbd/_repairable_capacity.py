@@ -371,7 +371,9 @@ def _groups_capacity(
         state=states,
         groups=True,
     )
-    return curves, _ccf_groups._groups_system(rbd, working, broken, "p")
+    return curves, _ccf_groups._groups_system(
+        rbd, working, broken, "p", states
+    )
 
 
 def _groups_capacity_rows(

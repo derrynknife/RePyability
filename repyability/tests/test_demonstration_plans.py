@@ -16,6 +16,11 @@ from repyability import (
     mtbf_demonstration_plan,
 )
 
+# Deprecated for surpyval.test_planning's (removed in 0.18): each warns.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:repyability.*is deprecated:FutureWarning"
+)
+
 
 def risks(target, good, n, failures, per_test=1.0):
     """A binomial plan's consumer's and producer's risks, the reliabilities

@@ -18,16 +18,22 @@ from repyability.rbd import (
     _crews,
     _curves,
     _event_loop,
+    _first_failure,
     _intervals,
     _long_run,
+    _plan_actual,
     _repairable_allocation,
     _repairable_capacity,
+    _repairable_importance,
     _repairable_uncertainty,
     _requirements,
     _runs,
+    _shutdowns,
     _spares,
     _timeline_runs,
+    _unplanned,
 )
+from repyability.rbd._bayesian_life import PosteriorPredictive
 from repyability.rbd._runs import (  # noqa: E402,F401
     _UNSTREAMED,
     failure_criticality_index_per_component_failures,
@@ -93,6 +99,29 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                     reason="Each component's share of the system's "
                     "long-run failure frequency (the Birnbaum/Vesely "
                     "formula's terms). " + long_run.reason,
+                )
+            )
+        ),
+    )
+    pfd_groups = r.refusal(
+        partial(_repairable_importance._require_pfd_groups, rbd)
+    )
+    give(
+        ("pfd_breakdown",),
+        (
+            r.refused(pfd_groups)
+            if pfd_groups
+            else (
+                long_run
+                if long_run.route == r.REFUSED
+                else dataclasses.replace(
+                    long_run,
+                    reason="Each component's Aumann-Shapley share of the "
+                    "long-run unavailability without the shared causes "
+                    "(each cut-set term shared equally among its "
+                    "components), and the common-cause groups' Shapley "
+                    "shares of the rest, from the long-run values. "
+                    + long_run.reason,
                 )
             )
         ),
@@ -257,6 +286,15 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         ),
         _curves._over_time(rbd),
     )
+    first_failure = r.refusal(partial(_first_failure._require_exact, rbd))
+    give(
+        ("first_failure_sf", "mean_time_to_first_failure"),
+        (
+            r.refused(first_failure)
+            if first_failure
+            else r.AnalysisRoute(r.NUMERICAL, _first_failure.exact_route(rbd))
+        ),
+    )
     give(
         ("availability_rate",),
         (
@@ -310,6 +348,21 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         if unpriced
         else (window if rbd.has_costs else acquisition_only)
     )
+    # The net present value is the window's costs, discounted, less the
+    # discounted expected time up: it is as exact as the worse of them.
+    uptime = out["mission_availability"]
+    if uptime.route == r.REFUSED:
+        out["expected_npv"] = uptime
+    elif rbd.has_costs:
+        out["expected_npv"] = (
+            out["expected_cost"]
+            if out["expected_cost"].route == r.REFUSED
+            or uptime.route == r.EXACT
+            else (window if window.route == r.NUMERICAL else uptime)
+        )
+    else:
+        out["expected_npv"] = uptime
+    out["plan_vs_actual"] = _plan_actual.route(rbd, out["expected_npv"])
     # A group's members' MTTF and MTTR are their group's: the
     # availability allocations hold them, and a member's copies join its
     # group.
@@ -681,13 +734,56 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             "shards",
         ):
             out[name] = r.refused(meshed)
-    out = rbd._meshed_routes(out, free)
+    # A run of windows: the exact values over time (the window's own
+    # route), and for the cost its spread simulated from one seeded run.
+    out["expected_events_by_window"] = out["expected_events"]
+    if out["expected_cost"].route not in (r.EXACT, r.NUMERICAL):
+        out["cost_by_window"] = out["expected_cost"]
+    elif out["cost"].route == r.REFUSED:
+        out["cost_by_window"] = out["cost"]
+    else:
+        out["cost_by_window"] = dataclasses.replace(
+            out["cost"],
+            reason="Each window's mean is the difference of expected_cost "
+            "(exact); its spread comes from the simulations cost runs, "
+            "one seeded set of histories cut at every window's end.",
+            twin="",
+        )
+    drawn = {"cost_by_window"} if rbd.has_costs else set()
+    out = rbd._meshed_routes(out, free, drawn)
     # Parameter uncertainty (#200): each draw's diagram rebuilt and its
     # value worked out as the diagram's own, so refused where that is
     # (a structure too meshed included).
     # By default every fitted model is drawn: without one, the uncertain
     # nodes must be given (a nested RBD's fits are not drawn here).
     unfitted = r.refusal(partial(_repairable_uncertainty.require_fitted, rbd))
+    bayesian = [
+        node
+        for node in rbd.components
+        if any(
+            isinstance(model, PosteriorPredictive)
+            for model in _repairable_uncertainty._models(rbd, node).values()
+        )
+    ]
+    from .uncertainty import rebuilt_by_surpyval
+
+    rebuilt = [
+        node
+        for node in rbd.components
+        if any(
+            model is not None and rebuilt_by_surpyval(model)
+            for model in _repairable_uncertainty._models(
+                rbd, node, fit=True
+            ).values()
+        )
+    ]
+    posterior = (
+        f" The Bayesian fits (of {', '.join(map(repr, bayesian))}) are "
+        "drawn from their posteriors, a credible band, the nominal value "
+        "their posterior predictives'."
+        if bayesian
+        else ""
+    )
     for name, method in (
         ("mean_availability_uncertainty", "mean_availability"),
         ("point_availability_uncertainty", "point_availability"),
@@ -703,6 +799,7 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                 "The components' models drawn from their uncertainty, "
                 f"and each draw's diagram's {method} worked out as its "
                 f"own ({own.route})."
+                + posterior
                 + (
                     f" Given no uncertainty, it refuses: {unfitted}"
                     if unfitted
@@ -719,7 +816,81 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             "The delta method: parameter_sensitivity's derivatives in "
             "each uncertain parameter, with their covariance "
             "(method='sobol' estimates Sobol indices from draws "
-            "instead).",
+            "instead)."
+            + (
+                " The delta method refuses a Bayesian fit, which has a "
+                "posterior, not one value of its parameters to move: "
+                "method='sobol' takes it."
+                if bayesian
+                else ""
+            )
+            + (
+                " The delta method refuses the fits drawn through "
+                f"surpyval's with_params (of {', '.join(map(repr, rebuilt))}"
+                "), whose parameters are not levers of "
+                "parameter_sensitivity: method='sobol' takes them."
+                if rebuilt
+                else ""
+            ),
         )
     )
+    # Each component's actions per unit time: from its own long-run
+    # values (node_availability's), the common-cause groups' chains
+    # first.
+    frequencies_given = r.refusal(
+        partial(_ccf_groups._require_ccf_frequencies, rbd)
+    )
+    own = out["node_availability"]
+    out["node_action_rates"] = (
+        r.refused(frequencies_given)
+        if frequencies_given
+        else (
+            own
+            if own.route == r.REFUSED
+            else dataclasses.replace(
+                own,
+                reason="Each component's long-run failures and preventive "
+                "replacements per unit time, from its renewal cycle and "
+                "its long-run availability. " + own.reason,
+            )
+        )
+    )
+    coupling = r.refusal(partial(_crews._require_coupling_crews, rbd))
+    out["crew_states"] = (
+        r.refused(coupling) if coupling else _long_run._crew_chain_route(rbd)
+    )
+    out["replacement_cycle"] = _long_run._replacement_cycle_route(rbd)
+    engine, why = _runs._engine_choice(rbd, capacity=False)
+    out["simulation_samples"] = (
+        r.refused(groups)
+        if groups
+        else (
+            r.AnalysisRoute(
+                r.SIMULATED,
+                "Each simulation of a discrete-event simulation of the "
+                "components' failures, repairs and maintenance, every "
+                "draw from a stream named by its component (common random "
+                "numbers).",
+                engine=engine,
+                engine_reason=why,
+            )
+            if streamed
+            else r.refused(_UNSTREAMED)
+        )
+    )
+    if rbd._shutdowns:
+        # What does not take shutdowns in yet refuses them.
+        for name in _shutdowns.NOT_TAKEN:
+            out[name] = r.refused(
+                r.refusal(partial(_shutdowns.refuse, rbd, name)) or ""
+            )
+        stepping = r.refusal(
+            partial(_shutdowns.require_none, rbd, _shutdowns.STEPPING)
+        )
+        give(
+            ("initialize_event_queue", "next_event"), r.refused(stepping or "")
+        )
+    # What the plan does (planned against unplanned, failures avoided):
+    # from the routes above, the plan's and running to failure's.
+    out["maintenance_effect"] = _unplanned.effect_route(rbd, out)
     return r.AnalysisRoutes(sorted(out.items()))

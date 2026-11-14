@@ -33,6 +33,7 @@ from surpyval import Parametric
 from ._degradation import is_degradation
 from ._model_utils import (
     MODEL_ERRORS,
+    by_functions,
     is_fixed_probability,
     is_mixture,
     lfp_p,
@@ -117,8 +118,9 @@ def inverse_sampler(model) -> Optional[Sampler]:
     return None
 
 
-#: Steps a mixture's quantile takes at most: Newton's, or halving its
-#: bracket where a Newton step would leave it (about 6 are taken).
+#: Steps a mixture's life left at an age takes at most: Newton's, or
+#: halving its bracket where a Newton step would leave it (about 3 are
+#: taken).
 _STEPS = 200
 #: A Newton step this small, relative to the point, ends the search.
 _SETTLED = 4.0 * np.finfo(float).eps
@@ -164,91 +166,24 @@ def _components(model) -> Callable[[str, np.ndarray], np.ndarray]:
     return together if ok else one_by_one
 
 
-def mixture_quantile(model) -> Sampler:
-    """A surpyval ``MixtureModel``'s quantile function, which its own
-    (from surpyval 0.24) is not yet fit to replace: that loses the upper
-    tail, inverting ``F`` there, and takes some 200 times as long (surpyval
-    #821). For each ``u``, the ``x`` with ``F(x) = u``, to the last bit or
-    two. The mixture's quantile lies between its
-    components' (``F`` is their weighted sum), which bracket it; Newton's
-    steps, with the density, go from the bracket's middle (geometric while
-    its lower end is above 0), and a step that would leave the bracket
-    halves it instead. Above ``u = 1/2`` the survival function is compared
-    with ``1 - u``, which is exact, for the long lives' precision."""
-    weights = np.ravel(np.asarray(model.w, dtype=float))
-    values = _components(model)
-
-    def mixed(name: str, x: np.ndarray) -> np.ndarray:
-        return np.sum(values(name, x) * weights, axis=1)
-
-    def middle(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        return np.where(a > 0.0, np.sqrt(a) * np.sqrt(b), 0.5 * (a + b))
-
-    def quantile(u):
-        u = np.asarray(u, dtype=float)
-        shape = u.shape
-        u = u.ravel()
-        with np.errstate(all="ignore"):
-            each = values("qf", u)
-        lo, hi = each.min(axis=1), each.max(axis=1)
-        x = hi.copy()
-        upper = u > 0.5
-        left = 1.0 - u
-        active = np.flatnonzero(hi > lo)
-        with np.errstate(all="ignore"):
-            x[active] = middle(lo[active], hi[active])
-        for _ in range(_STEPS):
-            if not active.size:
-                break
-            at = x[active]
-            with np.errstate(all="ignore"):
-                # Positive past the quantile, and rising at the density.
-                residual = np.where(
-                    upper[active],
-                    left[active] - mixed("sf", at),
-                    mixed("ff", at) - u[active],
-                )
-                newton = at - residual / mixed("df", at)
-            exact = residual == 0.0
-            past = residual > 0.0
-            hi[active[past]] = at[past]
-            short = ~past & ~exact
-            lo[active[short]] = at[short]
-            a, b = lo[active], hi[active]
-            inside = (newton > a) & (newton < b)
-            with np.errstate(all="ignore"):
-                step = np.where(inside, newton, middle(a, b))
-            # Newton's step, within the bracket, too small to go on with.
-            small = (
-                (newton >= a)
-                & (newton <= b)
-                & (np.abs(newton - at) <= _SETTLED * np.abs(at))
-            )
-            spent = ~((step > a) & (step < b))
-            # The root itself, Newton's last step, the bracket's upper end
-            # where no float is left inside it, or the next step.
-            x[active] = np.where(
-                exact | small,
-                np.where(exact, at, newton),
-                np.where(spent, b, step),
-            )
-            active = active[~(exact | small | spent)]
-        return x.reshape(shape)
-
-    return quantile
-
-
 class MixtureLife:
-    """A surpyval ``MixtureModel`` with :func:`mixture_quantile` for its
-    quantile function (surpyval #821), for surpyval's ``conditional_gaps``
-    to draw a life given an age with: its cumulative hazard and quantile.
-    :meth:`of` keeps one a mixture."""
+    """A surpyval ``MixtureModel``'s life left at a virtual age
+    (:meth:`aged`, #295), with its cumulative hazard and quantile function
+    (the model's own) as surpyval's ``conditional_gaps`` takes a lifetime.
+    :meth:`of` keeps one a mixture.
+
+    Kept although surpyval 0.27 draws the same life itself
+    (``conditional_gaps``): that inverts the quantile function wherever
+    the cumulative hazard to reach is under 20, which loses about
+    ``eps * exp(H)`` of the age it finds (some 1e-10 relative at ``u =
+    1e-6``), where :meth:`aged` is the root to the last bit or two, in
+    a few evaluations (about a seventh of the time)."""
 
     _made: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
     def __init__(self, model):
         self._model = model
-        self.qf = mixture_quantile(model)
+        self.qf = model.qf
         self._values = _components(model)
         self._log_w = np.log(np.ravel(np.asarray(model.w, dtype=float)))
         self._w = np.exp(self._log_w)
@@ -354,15 +289,29 @@ class MixtureLife:
 def stream_sampler(model) -> Optional[Sampler]:
     """What a ``RepairableRBD``'s streams turn a model's uniforms into its
     draws with, one uniform a draw: :func:`inverse_sampler`'s, or a
-    surpyval ``MixtureModel``'s quantile worked out
-    (:func:`mixture_quantile`). None for a model that draws its own way.
+    surpyval ``MixtureModel``'s quantile function (its own, precise in
+    both tails from surpyval 0.25), or a Bayesian fit's posterior predictive's
+    draw (``PosteriorPredictive._draw``), or the quantile function of a
+    degradation process or of any other surpyval model taken by its
+    functions (``by_functions``). None for a model that draws its own
+    way.
     (A ``NonRepairableRBD``'s draws replay surpyval's own, and a mixture
     draws there as surpyval does.)"""
+    from ._bayesian_life import PosteriorPredictive
+
     sampler = inverse_sampler(model)
     if sampler is None and is_mixture(model):
-        return mixture_quantile(model)
+        return lambda u: np.asarray(model.qf(u), dtype=float)
+    if isinstance(model, PosteriorPredictive):
+        # A Bayesian fit's posterior predictive: a posterior point and a
+        # life from it, both from the one uniform (see its _draw).
+        return model._draw
     if sampler is None and is_degradation(model):
         # A degradation process's first-passage time from its starting
         # level (#271), by its own quantile function.
+        return lambda u: np.asarray(model.qf(u), dtype=float)
+    if sampler is None and by_functions(model):
+        # Any other surpyval model taken by its functions (#93): by its
+        # own quantile function.
         return lambda u: np.asarray(model.qf(u), dtype=float)
     return sampler

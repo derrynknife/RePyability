@@ -19,6 +19,7 @@ from repyability import (
     NonRepairableRBD,
     RepairableRBD,
     SparesDemand,
+    Timeline,
 )
 from repyability.rbd.results import _ResultMapping
 
@@ -76,18 +77,38 @@ def test_the_results_of_the_exact_methods_go_through_json(repairable):
         repairable.expected_events(1000.0),
         repairable.expected_cost(1000.0),
         repairable.availability_rate(100.0),
+        repairable.pfd_breakdown(),
         repairable.spares_demand(300.0)["a"],
         repairable.spares_demand(300.0, parts={"p": ["a", "b"]})["p"],
         repairable.spares_stock(10.0, fill_rate=0.9)["a"],
+        repairable.expected_npv(
+            1000.0, discount_rate=1e-3, value_rate=1.0, periods=2
+        ),
+        repairable.plan_vs_actual(
+            {
+                "a": Timeline.from_outages([(100.0, 110.0)], end=400.0),
+                "b": Timeline([], end=400.0),
+            },
+            400.0,
+            1000.0,
+            discount_rate=1e-3,
+            value_rate=1.0,
+        ),
+        repairable.maintenance_effect(),
+        repairable.maintenance_effect(1000.0),
+        repairable.maintenance_effect(
+            1000.0, method="simulate", mc_samples=50
+        ),
+        repairable.expected_events_by_window(width=500.0, count=2),
     ]
     for result in results:
         assert isinstance(result, _ResultMapping)
         assert set(as_json(result)) == fields_of(result)
-    demand = as_json(results[3])
+    demand = as_json(results[4])
     assert demand["probabilities"] == pytest.approx(
-        results[3].probabilities.tolist()
+        results[4].probabilities.tolist()
     )
-    assert as_json(results[4])["members"] == ["a", "b"]
+    assert as_json(results[5])["members"] == ["a", "b"]
 
 
 def test_the_single_unit_policies_go_through_json():

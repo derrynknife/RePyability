@@ -2,16 +2,16 @@
 
 A mixture (two modes, such as infant mortality and wear-out) has the
 survival function, distribution, density and mean the analyses take, and
-from surpyval 0.24 a quantile function, which loses the upper tail and is
-slow (surpyval #821): the simulations' streams draw its lives by inverting
-its distribution function (``mixture_quantile``), one uniform a draw, and
-a life given an age through its cumulative hazard (``MixtureLife``).
+a quantile function, precise in both tails from surpyval 0.25 (#821): the
+simulations' streams draw its lives by it, one uniform a draw, and a life
+given an age through its cumulative hazard (``MixtureLife``).
 Every analysis on diagrams with a mixture life is checked in
 ``test_analysis_routes`` (the catalogue's "mixture life" diagrams), and
 the engines against each other in ``test_catalogue``.
 """
 
 import json
+import warnings
 
 import numpy as np
 import pytest
@@ -22,7 +22,6 @@ from repyability.rbd._event_loop import _aged_life
 from repyability.rbd._sampling import (
     MixtureLife,
     inverse_sampler,
-    mixture_quantile,
     stream_sampler,
 )
 from repyability.tests.catalogue import mixture_life
@@ -55,23 +54,25 @@ def survival(mix, x):
 
 def test_the_quantile_inverts_the_distribution(mix):
     u = np.random.default_rng(5).random(20000)
-    x = mixture_quantile(mix)(u)
+    x = stream_sampler(mix)(u)
     lower = u <= 0.5
-    np.testing.assert_allclose(mix.ff(x[lower]), u[lower], rtol=1e-14)
+    # surpyval's quantile (from 0.25) is the root to a bit or two of x,
+    # which comes back through F as at most about 1e-14 of u.
+    np.testing.assert_allclose(mix.ff(x[lower]), u[lower], rtol=5e-14)
     np.testing.assert_allclose(
-        survival(mix, x[~lower]), 1 - u[~lower], rtol=1e-14
+        survival(mix, x[~lower]), 1 - u[~lower], rtol=5e-14
     )
     order = np.argsort(u)
     assert np.all(np.diff(x[order]) >= 0.0)
 
 
 def test_the_quantile_s_ends(mix):
-    x = mixture_quantile(mix)(np.array([0.0, 1e-300, 1.0 - 1e-16, 1.0]))
+    x = stream_sampler(mix)(np.array([0.0, 1e-300, 1.0 - 1e-16, 1.0]))
     assert x[0] == 0.0
     assert 0.0 < x[1] < 1e-290
     assert np.isfinite(x[2])
     assert x[3] == np.inf
-    assert mixture_quantile(mix)(np.array([[0.25, 0.5]])).shape == (1, 2)
+    assert stream_sampler(mix)(np.array([[0.25, 0.5]])).shape == (1, 2)
 
 
 def test_only_a_repairable_diagram_s_streams_invert_it(mix):
@@ -173,7 +174,10 @@ def test_two_mixtures_are_the_same_by_their_weights_too(mix):
 
 
 @pytest.mark.parametrize("cls", [NonRepairableRBD, RepairableRBD])
-def test_its_parameters_cannot_be_drawn(mix, cls):
+def test_its_parameters_are_drawn_from_its_fit(mix, cls):
+    # From surpyval 0.27 a fitted mixture is rebuilt at drawn parameters
+    # (with_params): "fit" draws its components and weights together from
+    # its covariance (before 0.17 it was refused).
     if cls is NonRepairableRBD:
         rbd = cls(EDGES, {"a": mix})
         method, spec = rbd.sf_uncertainty, {"a": "fit"}
@@ -182,10 +186,16 @@ def test_its_parameters_cannot_be_drawn(mix, cls):
         rbd = cls(EDGES, {"a": {"reliability": mix, "repairability": REPAIR}})
         method = rbd.mean_availability_uncertainty
         spec, args = {"a": {"reliability": "fit"}}, ()
-    with pytest.raises(
-        ValueError, match="MixtureModel.*no parameter covariance"
-    ):
-        method(*args, spec)
+    # Each scale and shape is drawn on the log scale and the weights as
+    # log-ratios, so surpyval refuses no draw (on the parameters' own
+    # scale, about three in ten of this loosely known infant mortality's).
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = method(*args, spec, n_draws=20, seed=0)
+        again = method(*args, spec, n_draws=20, seed=0)
+    assert result.band == "confidence"
+    assert result.std > 0
+    np.testing.assert_array_equal(result.samples, again.samples)
 
 
 def test_other_lives_are_refused_naming_the_component():
@@ -239,6 +249,11 @@ def exact_life_left(age, u):
     return float((lo + hi) / 2 - L(age))
 
 
+@pytest.mark.skipif(
+    np.finfo(np.longdouble).eps >= np.finfo(float).eps,
+    reason="the reference needs a long double wider than a double "
+    "(arm64 macOS and Windows have none)",
+)
 def test_a_life_given_an_age_is_the_root_to_the_last_bits():
     # #295: the mixture's life left at an age, by Newton's steps on its
     # cumulative hazard, is the root to a few bits of age + x, from new to

@@ -127,6 +127,7 @@ def _unsupported_level(
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     from . import _crews
+    from ._covariate_schedule import scheduled
 
     if rbd._too_meshed() is not None:
         # Its structure is the graph itself (modular.GraphStructure).
@@ -139,8 +140,21 @@ def _unsupported_level(
         return "standby groups"
     if rbd._maintenance:
         return "maintenance groups"
+    if rbd._shutdowns and (
+        not numba
+        or any(
+            shut.duration > 0.0 or shut.cost or not shut.periodic
+            for shut in rbd._shutdowns.values()
+        )
+    ):
+        # numba's own loop runs the tasks bound to shuts on a period that
+        # take no time and cost nothing (block replacement and tests with
+        # the shut's offset), which are those shuts entirely.
+        return "shutdowns"
     if rbd._imperfect:
         return "imperfect repair"
+    if rbd._restoring:
+        return "partial restoration by preventive maintenance"
     if rbd._preventive:
         if not numba:
             return "scheduled preventive maintenance"
@@ -167,6 +181,8 @@ def _unsupported_level(
             continue
         if type(component) is not NonRepairable:
             return f"the {type(component).__name__} of node {name!r}"
+        if scheduled(component) is not None:
+            return f"the covariate schedule of node {name!r}"
         if not _streamed(prefix + (name,), plan, rbd._standby.get(name)):
             return (
                 f"the models of node {name!r} (their draws cannot be "
@@ -339,7 +355,7 @@ class _System:
         from repyability.rbd._tally import _CATEGORIES
         from repyability.rbd.repairable_rbd import RepairableRBD
 
-        from . import _crews
+        from . import _crews, _unplanned
 
         nodes = list(rbd.components)
         index = {node: c for c, node in enumerate(nodes)}
@@ -501,6 +517,10 @@ class _System:
         #: ``unsupported``).
         policy = np.zeros(n_all, np.int8)
         interval = np.zeros(n_all)
+        # The time of a block's first replacement on a shutdown's calendar
+        # (then every interval: see _Preventive.due), -1 for one on the
+        # multiples of its interval.
+        phase = np.full(n_all, -1.0)
         duration = np.full(n_all, -1, np.int64)
         charge = np.full(n_all, -2, np.int64)
         amount = np.zeros(n_all)
@@ -510,6 +530,8 @@ class _System:
                 continue
             policy[c] = 1 if schedule.policy == "age" else 2
             interval[c] = float(schedule.interval)
+            if schedule.shutdown is not None or schedule.offset:
+                phase[c] = float(schedule.offset)
             if schedule.duration is not None:
                 duration[c] = stream((path, _streams.DURATION))
             charge[c], amount[c] = charge_of(c, "preventive_cost")
@@ -564,6 +586,28 @@ class _System:
         )
         #: The nested RBDs, innermost first, the order they start in.
         level_order = np.arange(levels - 1, 0, -1, dtype=np.int64)
+        #: Every level's structure (the system's, then each nested RBD's).
+        structures = [_structure(rbd, index)] + [
+            _structure(
+                level_rbds[level],
+                {
+                    name: int(level_start[level]) + c
+                    for c, name in enumerate(level_rbds[level].components)
+                },
+            )
+            for level in range(1, levels)
+        ]
+        #: Planned against unplanned downtime (see ``_unplanned``): whether
+        #: the run follows it (a diagram that takes planned outages), each
+        #: level that is followed for its parent, and every level's
+        #: structure on the components that have not failed, kept as
+        #: ``kept`` is (all of them sound at the start, from new).
+        self.split = _unplanned.takes_planned_outages(rbd)
+        tracking = np.array(
+            [_unplanned.takes_planned_outages(here) for here in level_rbds],
+            np.int8,
+        )
+        kept_f = _kept(structures, start)
         #: Everything numba's own loop simulates besides plain components
         #: (see ``_kernel._simulate``).
         self.upkeep = (
@@ -599,27 +643,18 @@ class _System:
             level_start,
             level_stop,
             level_order,
+            phase,
+            int(self.split),
+            tracking,
+            kept_f,
         )
         initial_up = rbd.is_system_working(
             {node: bool(start[c]) for c, node in enumerate(nodes)}, method
         )
         #: The system's structure function, and every level's laid out to
         #: be kept up to date as components change (#255).
-        self.structure = _structure(rbd, index)
-        self.kept = _kept(
-            [self.structure]
-            + [
-                _structure(
-                    level_rbds[level],
-                    {
-                        name: int(level_start[level]) + c
-                        for c, name in enumerate(level_rbds[level].components)
-                    },
-                )
-                for level in range(1, levels)
-            ],
-            start,
-        )
+        self.structure = structures[0]
+        self.kept = _kept(structures, start)
         self.system = (
             start,
             active,
@@ -1006,6 +1041,7 @@ class Runner:
                 np.empty((batch, caused), np.int32),
                 np.empty((batch, caused), np.int64),
                 np.empty((batch, caused), np.int8),
+                np.empty(batch),
             )
         return tuple(array[:size] for array in out)
 
@@ -1120,6 +1156,7 @@ class Runner:
             change_cause,
             change_index,
             change_planned,
+            unplanned,
         ) = out
         tally = self._tally
         tally.n += size
@@ -1160,6 +1197,9 @@ class Runner:
         tally.system_restorations += restorations
         tally.system_planned_outages += planned
         tally.fold_columns(uptime, node[:, :, 0], node[:, :, 1], node[:, :, 2])
+        if self._model.split:
+            # The time each was down unplanned (see _unplanned).
+            tally.add_unplanned(unplanned)
         for i, added in enumerate(counts.sum(axis=0).tolist()):
             tally.counts[i] = [a + b for a, b in zip(tally.counts[i], added)]
         kept = np.arange(change_times.shape[1]) < change_count[:, None]

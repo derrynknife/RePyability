@@ -12,6 +12,7 @@ import math
 from collections.abc import Mapping
 from functools import partial
 from typing import (
+    Any,
     Dict,
     Hashable,
     NoReturn,
@@ -25,10 +26,13 @@ from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _ccf_groups,
     _chain_transient,
+    _covariate_schedule,
     _crews,
     _long_run,
+    _overrides,
     _repairable_capacity,
     _requirements,
+    _shutdowns,
     _standby_chain,
     _windows,
 )
@@ -39,6 +43,7 @@ from repyability.rbd._block_replacement import (
 from repyability.rbd._common import (
     _common_period,
     _constant_rate,
+    _keeps_virtual_age,
     _repair_rate,
     _sf_values,
 )
@@ -46,12 +51,14 @@ from repyability.rbd._condition_replacement import (
     ConditionHead,
     condition_availability,
 )
+from repyability.rbd._covariate_schedule import scheduled
 from repyability.rbd._hidden_life import (
     TestedLife,
     TestedLifeCurve,
     TestedLifeSteady,
 )
 from repyability.rbd._hidden_tests import TestedUnit
+from repyability.rbd._level_replacement import LevelHead, level_model
 from repyability.rbd._long_run import (
     _TESTED_CYCLE,
 )
@@ -85,9 +92,12 @@ from repyability.utils.checks import (
 def _draws_start(start) -> bool:
     """Whether a component started from ``start`` (a ``NodeState``, or
     None for new) draws what is left of its life, repair or maintenance:
-    when it is down, or up at an age. Up at age 0, it is new, whatever its
-    ``since_scheduled``."""
-    return isinstance(start, NodeState) and (not start.alive or start.age > 0)
+    when it is down, up at an age, or up with a life of its own (a
+    measured level, or its own model). Up at age 0 with the node's life,
+    it is new, whatever its ``since_scheduled``."""
+    return isinstance(start, NodeState) and (
+        not start.alive or start.age > 0 or start.own_life
+    )
 
 
 #: Why a simulation does not start in the long-run state.
@@ -108,8 +118,10 @@ _MAX_CREW_NESTED = 10
 #: How a system's values over time take in its common-cause groups (#158).
 _GROUPS_OVER_TIME = (
     " Each common-cause group's members' joint states come from its Markov "
-    "chain followed from every member up at 0 (by uniformization, or through "
-    "its tests' first period, after which they repeat the long run's), and "
+    "chain followed from every member up at 0, or from their states (by "
+    "uniformization, or through its tests' first periods, after which they "
+    "repeat the long run's; tests and repairs of a general length on pieces "
+    "of the time since the test, each at constant rates), and "
     "the system is worked out over the combinations of its members up and "
     "down, the other nodes independent of them; the members' failures by "
     "each cause, at its rate where it takes the system down."
@@ -236,6 +248,10 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
         message = r.refusal(
             partial(_requirements._require_no_opportunities, rbd, node)
         )
+    if not message:
+        message = r.refusal(
+            partial(_requirements._require_full_restoration, rbd, node)
+        )
     if not message and node in rbd._imperfect:
         message = r.refusal(
             partial(_requirements._require_minimal_repair, rbd, node)
@@ -265,6 +281,19 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
         )
     if message:
         return r.REFUSED, message
+    if calendar and schedule.level is not None:  # type: ignore
+        return (
+            r.NUMERICAL,
+            "replacement on condition by level: followed from one "
+            "inspection to the next on a grid, the units kept by level",
+        )
+    if calendar and schedule.older_than is not None:  # type: ignore
+        return (
+            r.NUMERICAL,
+            "replacement at a shutdown once older than older_than: "
+            "followed from one shut to the next on a grid, the units kept "
+            "by age",
+        )
     if calendar and schedule.policy == "condition":  # type: ignore
         return (
             r.NUMERICAL,
@@ -296,6 +325,9 @@ def _over_time(
     ``_crew_over_time``)."""
     from repyability.rbd import routes as r
 
+    refusal = r.refusal(partial(_shutdowns.require_exact, rbd))
+    if refusal:
+        return r.refused(refusal)
     if rbd._crews_couple():
         return _crew_over_time(rbd, kind)
     if rbd.ccf_groups:
@@ -315,6 +347,8 @@ def _over_time(
     }
     if refusals:
         return r.refused(next(iter(refusals.values())), tuple(refusals))
+    if _shutdowns.timed(rbd):
+        reason = reason + _shutdowns.HELD
     return r.with_nodes(r.NUMERICAL, reason, nodes, "availabilities")
 
 
@@ -477,7 +511,9 @@ def _availability_curves(
                 plain.append((node, start, node in degrading))
         if memo is not None and key is not None:
             memo[(key, counts)] = curves[node]
-    return curves
+    # The nodes a shutdown holds off line, held down inside its windows
+    # (see _shutdowns.MaskedCurve).
+    return _shutdowns.masked_curves(rbd, curves)
 
 
 def _plain_unit(rbd, node) -> bool:
@@ -718,21 +754,36 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
     imperfectly repaired one's, outside a simulation)."""
     schedule = rbd._preventive.get(node)
     inspection = rbd._inspection.get(node)
-    if state.virtual_age is not None and node not in rbd._imperfect:
+    _shutdowns.check_state(rbd, node, state)
+    if state.virtual_age is not None and not _keeps_virtual_age(rbd, node):
         raise ValueError(
             f"Component {node!r} is not repaired imperfectly (it has no "
-            "'repair'), so it has no virtual age: give its age alone."
+            "'repair') nor restored partly by its maintenance (no "
+            "'restoration'), so it has no virtual age: give its age "
+            "alone."
         )
     if (
         schedule is not None
         and schedule.level is not None
-        and not (state.new and state.since_scheduled is None)
+        and state.alive
+        and not state.stationary
     ):
-        raise NotImplementedError(
-            f"Component {node!r} is replaced on condition by its "
-            "measured degradation level, which a state does not give: "
-            "leave it out (new)."
-        )
+        if state.model is not None:
+            raise NotImplementedError(
+                f"Component {node!r} is replaced on condition by its "
+                "measured degradation level, which its inspections read "
+                "from the process of the node: a model of its own is not "
+                "followed past them. Give its measured level (level=) "
+                "instead."
+            )
+        if state.level is None and (state.age or state.virtual_age):
+            raise ValueError(
+                f"Component {node!r} is replaced on condition by its "
+                "measured degradation level, which its age does not "
+                "give (nor whether its inspections so far kept it): give "
+                "the level measured now (level=), with the time since its "
+                "last inspection (since_scheduled=)."
+            )
     if (
         inspection is not None
         and inspection.partial
@@ -778,6 +829,24 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
             f"Component {node!r} is a standby group, whose units' "
             "states are not taken as a state: leave it out (new)."
         )
+    restoration = rbd._restoring.get(node)
+    if restoration is not None:
+        if not simulated:
+            raise NotImplementedError(
+                f"Component {node!r} is restored only partly by its "
+                "maintenance: its state (its age and virtual age) is "
+                "taken by the simulations (availability, cost, "
+                "simulate_timelines), not here: leave it out (new)."
+            )
+        if restoration.replace_every is not None and not (
+            state.alive and not state.age and not state.virtual_age
+        ):
+            raise NotImplementedError(
+                f"Component {node!r} is replaced at every "
+                f"{restoration.replace_every} tasks since it was renewed, "
+                "and a state does not say how many it has had since: "
+                "leave it out (new), or give no replace_every."
+            )
     imperfect = rbd._imperfect.get(node)
     if imperfect is not None:
         if not simulated:
@@ -786,6 +855,16 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
                 "(its age and virtual age) is taken by the simulations "
                 "(availability, cost, simulate_timelines), not here: "
                 "leave it out (new)."
+            )
+        if imperfect.process is not None and (
+            state.virtual_age is not None or state.own_life
+        ):
+            raise NotImplementedError(
+                f"Component {node!r} is repaired by its fitted "
+                f"{imperfect.process.kind} model's own rule, whose state "
+                "after a failure is not a Kijima virtual age: give its "
+                "age alone (the time it has run since new without a "
+                "failure), or leave it out (new)."
             )
         if (
             imperfect.replace_after is not None
@@ -799,13 +878,25 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
                 "since it was renewed, which a state does not give: "
                 "leave it out (new)."
             )
+    component = rbd.components[node]
+    if scheduled(component) is not None:
+        _covariate_schedule.check_state(
+            rbd, node, state, inspection is not None
+        )
+        if state.alive:
+            return
+    life = component.reliability
+    if state.own_life:
+        life = _check_own_life(rbd, node, state, simulated)
     if state.stationary or (
-        state.alive and not state.age and not state.virtual_age
+        state.alive
+        and not state.age
+        and not state.virtual_age
+        and not state.own_life
     ):
         return
-    component = rbd.components[node]
     for what, model in [
-        ("reliability", component.reliability),
+        ("reliability", life),
         ("repairability", component.time_to_replace),
     ]:
         if is_fixed_probability(model):
@@ -821,7 +912,11 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
         if inspection is not None:
             since = min(state.age, state.since_scheduled or 0.0)
         age = state.age - since + (state.virtual_age or 0.0)
-        survive = _sf_values(component.reliability.sf, np.array([age]))
+        if state.own_life:
+            # Its own life, at its age within it (from now: 0).
+            own, at = _overrides.life_now(node, component, state)
+            life, age = own, 0.0 if at is None else at
+        survive = _sf_values(life.sf, np.array([age]))
         if not survive[0] > 0.0:
             raise ValueError(
                 f"Component {node!r} cannot be up at age {age:g}: its "
@@ -841,6 +936,66 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
             f"{'maintenance' if state.maintenance else 'repair'} is "
             "always over by then."
         )
+
+
+def _check_own_life(rbd, node, state: NodeState, simulated: bool):
+    """Raise if component ``node`` cannot start with a life of its own
+    (``state.level`` or ``state.model``, see ``_overrides``): its own
+    model must be one the component could have been given, and its level
+    one of the life it is of; and the unit must be one whose first life
+    the analyses follow by itself (a plain unit, or one on age or block
+    replacement), not one tested for hidden failures, repaired
+    imperfectly, run part of the time, in a standby or common-cause
+    group, replaced on condition, or (outside a simulation) in a repair
+    crews' Markov chain, each of which starts its units its own way.
+    Return the life of the unit in service now."""
+    from repyability.rbd.non_repairable_rbd import _check_joint_state
+
+    life = _overrides.unit_life(node, rbd.components[node], state)
+    # A joint model's unit is at its prediction's age.
+    _check_joint_state(node, life, state)
+    what = None
+    schedule = rbd._preventive.get(node)
+    spec = getattr(rbd, "_init_args", {}).get("components", {}).get(node)
+    if node in rbd._inspection:
+        what = "is tested for hidden failures"
+    elif node in rbd._imperfect:
+        what = "is repaired imperfectly"
+    elif node in rbd._restoring:
+        what = "is restored partly by its maintenance"
+    elif node in rbd._standby:
+        what = "is a standby group"
+    elif isinstance(spec, dict) and spec.get("duty") is not None:
+        what = "operates part of the time (a duty)"
+    elif any(node in group.members for group in rbd.ccf_groups):
+        what = "is in a common-cause group"
+    elif (
+        schedule is not None
+        and schedule.policy == "condition"
+        and (schedule.level is None or state.model is not None)
+    ):
+        what = "is replaced on condition"
+    elif (
+        not simulated
+        and _crews._crews_limited(rbd)
+        and node in _crews._crew_served(rbd)
+    ):
+        what = (
+            "shares limited repair crews, whose Markov chain takes "
+            "exponential lives"
+        )
+    if what is not None:
+        raise NotImplementedError(
+            f"Component {node!r} {what}: starting it with a life of its "
+            "own (a measured level, or its own model) is not worked out "
+            "yet. Give its age alone, or leave it out (new)."
+            + (
+                " Or simulate it: availability(state=...)."
+                if "crews" in what
+                else ""
+            )
+        )
+    return life
 
 
 def _simulation_states(rbd, state, forced=frozenset()) -> dict:
@@ -878,7 +1033,10 @@ def _check_simulated(rbd, states: dict) -> None:
             continue
         if (
             type(component) is not NonRepairable
-            or stream_sampler(component.reliability) is None
+            or (
+                stream_sampler(component.reliability) is None
+                and scheduled(component) is None
+            )
             or stream_sampler(component.time_to_replace) is None
         ):
             raise NotImplementedError(
@@ -887,6 +1045,15 @@ def _check_simulated(rbd, states: dict) -> None:
                 "surpyval parametric ones), so it cannot start part way "
                 "through a life or repair: leave it out (new)."
             )
+        if start.own_life and start.model is not None:
+            life, at = _overrides.life_now(node, component, start)
+            if at is not None and stream_sampler(life) is None:
+                raise NotImplementedError(
+                    f"Component {node!r}: its own model draws its events "
+                    "its own way (it is not a surpyval parametric one), so "
+                    "a simulation cannot draw what is left of its life: "
+                    "give a surpyval parametric model."
+                )
         if not start.alive and node in served:
             in_hand += 1
     if served and in_hand > rbd.repair_crews:  # type: ignore[operator]
@@ -925,6 +1092,12 @@ def _curves_down_at(
     ``_closed_form_down``)."""
     failures = {}
     for node, curve in curves.items():
+        if isinstance(curve, _shutdowns.MaskedCurve):
+            # Held down inside a shut's windows; its own otherwise.
+            failures[node] = curve.down_at(
+                x, partial(_closed_form_at, rbd, node, states)
+            )
+            continue
         down = _closed_form_down(rbd, node, x, states)
         failures[node] = 1.0 - curve.at(x) if down is None else down
     probabilities = {node: 1.0 - q for node, q in failures.items()}
@@ -961,6 +1134,11 @@ def _closed_form_down(rbd, node, x, states) -> Optional[np.ndarray]:
     if math.isinf(total):
         return np.zeros(len(x))
     return -(life / total) * np.expm1(-total * np.asarray(x, float))
+
+
+def _closed_form_at(rbd, node, states, x) -> Optional[np.ndarray]:
+    """``_closed_form_down`` with the times last."""
+    return _closed_form_down(rbd, node, x, states)
 
 
 def _closed_form_pair(rbd, node) -> Tuple[float, float]:
@@ -1166,6 +1344,7 @@ def _crew_start(rbd, chain, states: dict) -> np.ndarray:
     exponential, however long it has taken), and none waits, so there
     can be no more down than crews."""
     named = {node: states[node] for node in chain.nodes if node in states}
+    _overrides.refuse_in_chain(named)
     stationary = [node for node, s in named.items() if s.stationary]
     if stationary:
         if len(stationary) < len(chain.nodes):
@@ -1525,6 +1704,7 @@ def _unit_curve(
     block-replacement curve, up to its first block time."""
     _requirements._require_time_models(rbd, node)
     _requirements._require_no_opportunities(rbd, node)
+    _requirements._require_full_restoration(rbd, node)
     component = rbd.components[node]
     if node in rbd._imperfect:
         return _minimal_repair_curve(rbd, node, horizon, counts)
@@ -1572,6 +1752,7 @@ def _unit_curve(
             failures,
             maintained,
             takedown=duration is not None,
+            failed=_long_run._node_failed(rbd, node),
             fractions=(
                 None if stage_model is None else stage_model.stage_fractions()
             ),
@@ -1588,6 +1769,16 @@ def _unit_curve(
             stage_model,
         )
     scale = _up_scale(life, age)
+    if first is not None and start is not None and start.own_life:
+        # The grid follows the first life too, which may be the shorter.
+        own, _ = _overrides.life_now(node, component, start)
+        first_scale = _up_scale(own, None)
+        if np.isfinite(first_scale) and first_scale > 0.0:
+            scale = (
+                first_scale
+                if not np.isfinite(scale)
+                else min(scale, first_scale)
+            )
     if schedule is not None:
         up, cycle, _, _ = _long_run._maintenance_cycle(rbd, node, schedule)
     else:
@@ -1674,6 +1865,8 @@ def _unit_curve(
             break
         end = min(horizon, _settling_end(curve, long_run, cycle, end))
     curve.long_run = long_run
+    if curve.failed_curve is not None and long_run is not None:
+        curve.failed_curve.long_run = 1.0 - _long_run._node_failed(rbd, node)
     if curve.unit_events is not None and long_run is None:
         # Followed to the horizon: no rates past it.
         curve.unit_events.failure_rate = None
@@ -1689,8 +1882,9 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     its long-run state (a stationary ``start``), its settled cycle from
     its phase on; from another state, its own curve up to its first
     block time or inspection, and the schedule's from there (see
-    ``StartedBlockCurve``)."""
-    _requirements._refuse_level(rbd, node)
+    ``StartedBlockCurve``). Replaced on condition by its level (see
+    ``_level_replacement``), the unit up at the start is at its measured
+    level (``y0`` if new), which its first inspection reads."""
     component = rbd.components[node]
     schedule = rbd._preventive[node]
     duration = schedule.duration
@@ -1700,16 +1894,40 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     models = (life, component.time_to_replace, duration, schedule.interval)
 
     def followed(horizon: float, head=None):
+        if schedule.level is not None:
+            return level_model(rbd, node).availability(horizon, head)
         if schedule.policy == "condition":
             return condition_availability(
-                *models, float(schedule.threshold), horizon, node, head
+                *models,
+                float(schedule.threshold),
+                horizon,
+                node,
+                head,
+                older_than=schedule.older_than,
             )
         return block_availability(*models, horizon, node, head)
 
-    if start is not None and not start.new and not stationary:
-        length = schedule.interval - (start.since_scheduled or 0.0)
+    if schedule.offset and start is None:
+        # New at 0 on a shutdown's calendar: its own curve until the
+        # shut's first time (see StartedBlockCurve).
+        start = NodeState()
+    if (
+        start is not None
+        and (not start.new or schedule.offset)
+        and not stationary
+    ):
+        if schedule.shutdown is not None:
+            # The shut's calendar places it (since_scheduled is refused).
+            length = schedule.offset or schedule.interval
+        else:
+            length = schedule.interval - (start.since_scheduled or 0.0)
         head = _unit_curve(
-            rbd, node, length, counts=True, start=start, unscheduled=True
+            rbd,
+            node,
+            length,
+            counts=True,
+            start=None if start.new else start,
+            unscheduled=True,
         )
         down_sf = None
         first = None
@@ -1717,6 +1935,8 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
             down_sf = _first_unit(
                 rbd, node, start, None, (), None, None
             ).down_sf
+        elif schedule.level is not None:
+            pass  # its level, not its age, decides (see LevelHead)
         else:
             # The unit in service now, if unfailed by the first
             # inspection, and its age there.
@@ -1728,11 +1948,16 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
             return head.events(np.asarray(u, dtype=float))["failures"]
 
         up = float(head.at(np.array([length]))[0])
-        reached = (
-            ConditionHead(length, up, failures, down_sf, first)
-            if schedule.policy == "condition"
-            else BlockHead(length, up, failures, down_sf)
-        )
+        reached: Any
+        if schedule.level is not None:
+            level = None
+            if start.alive:
+                level = float(life.y0 if start.level is None else start.level)
+            reached = LevelHead(length, up, failures, down_sf, level)
+        elif schedule.policy == "condition":
+            reached = ConditionHead(length, up, failures, down_sf, first)
+        else:
+            reached = BlockHead(length, up, failures, down_sf)
         result = followed(max(horizon - length, 0.0), reached)
         return StartedBlockCurve(head, BlockCurve(result, knots), length)
     result = followed(np.inf if stationary else max(horizon, 0.0))
@@ -1740,7 +1965,12 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     if not stationary:
         return curve
     assert start is not None
-    return ShiftedCurve(curve, curve.settle + (start.since_scheduled or 0.0))
+    since = start.since_scheduled or 0.0
+    if schedule.shutdown is not None and schedule.offset:
+        # Its last replacement on the shut's calendar was period - offset
+        # before 0.
+        since = schedule.interval - schedule.offset
+    return ShiftedCurve(curve, curve.settle + since)
 
 
 def _first_unit(
@@ -1753,7 +1983,21 @@ def _first_unit(
     its repair or maintenance (``G(r + s) / G(r)``, after ``r`` so
     far). ``_check_state`` has checked that it can be in the state."""
     if start.alive:
-        a = float(start.age)
+        # Its operating age, from which its replacement falls due.
+        operated = float(start.age)
+        a = operated
+        if start.own_life:
+            # A life of its own (from a measured level, or its own model),
+            # at its age within it (0 for one from now).
+            if stage_model is not None:
+                raise NotImplementedError(
+                    f"Component {node!r} degrades through stages, which a "
+                    "life of its own (a measured level, or its own model) "
+                    "does not have: give its age alone."
+                )
+            life, at = _overrides.life_now(node, rbd.components[node], start)
+            up_sf, up_splits = life.sf, point_knots(life)
+            a = 0.0 if at is None else at
         survive = float(_sf_values(up_sf, np.array([a]))[0])
 
         def cdf(s):
@@ -1767,7 +2011,7 @@ def _first_unit(
         return First(
             cdf,
             splits[splits > 0.0],
-            None if age is None else age - a,
+            None if age is None else age - operated,
             stages=None if stage_model is None else stages,
         )
     if start.maintenance:
@@ -1781,4 +2025,8 @@ def _first_unit(
         return _sf_values(model.sf, r + s) / left
 
     splits = point_knots(model) - r
-    return First(down_sf=down_sf, down_splits=splits[splits > 0.0])
+    return First(
+        down_sf=down_sf,
+        down_splits=splits[splits > 0.0],
+        maintenance=bool(start.maintenance),
+    )

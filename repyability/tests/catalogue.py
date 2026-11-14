@@ -105,6 +105,21 @@ def aft():
 
 
 @_fitted_once
+def ph():
+    """A pump's life at its load (surpyval's ExponentialPH): 500 at load
+    1, 125 at load 2."""
+    x = np.array([250.0, 500.0, 750.0, 62.5, 125.0, 187.5])
+    load = np.array([[1.0], [1.0], [1.0], [2.0], [2.0], [2.0]])
+    return surv.ExponentialPH.fit(x, Z=load)
+
+
+def load_steps():
+    """Load 1 for the first 200, and 2 after (a covariate schedule on the
+    diagram's clock)."""
+    return surv.StepSchedule.from_changepoints([0.0, 200.0], [[1.0], [2.0]])
+
+
+@_fitted_once
 def joint_model():
     """A Weibull joint model (surpyval's WeibullJointPH) of a fleet of 60
     pumps, each with a marker read every 10 hours and a load: a pump's
@@ -182,6 +197,60 @@ def crow_amsaa():
     return surv.CrowAMSAA.fit(np.cumsum(gaps))
 
 
+def ara_process():
+    """An ARA process (arithmetic reduction of age, memory 1) with a
+    Weibull life and half its age taken away at each repair, which the
+    simulation steps with surpyval (a repair surpyval fits that is not
+    Kijima's)."""
+    return surv.ARA.fit_from_parameters([300.0, 1.5], 0.5)
+
+
+@_fitted_once
+def bayes_life():
+    """A Bayesian Weibull fit, its posterior 400 draws about alpha 500
+    and beta 1.5 (from another sampler, say): its life is the posterior
+    predictive (``PosteriorPredictive``)."""
+    g = np.random.default_rng(7)
+    draws = np.c_[
+        500 * g.lognormal(0, 0.1, 400), 1.5 * g.lognormal(0, 0.1, 400)
+    ]
+    return surv.bayes.BayesianParametric.from_draws(surv.Weibull, draws)
+
+
+@_fitted_once
+def bayes_shares_life():
+    """A Bayesian Weibull fit with an offset and a limited failure
+    population: 400 draws about an offset of 20, alpha 500, beta 1.5 and
+    a share that ever fails of 0.8, each draw its own model."""
+    g = np.random.default_rng(7)
+    draws = np.c_[
+        g.uniform(10.0, 30.0, 400),
+        500 * g.lognormal(0, 0.1, 400),
+        1.5 * g.lognormal(0, 0.1, 400),
+        g.uniform(0.7, 0.9, 400),
+    ]
+    return surv.bayes.BayesianParametric.from_draws(
+        surv.Weibull, draws, ["gamma", "alpha", "beta", "lfp_p"]
+    )
+
+
+@_fitted_once
+def royston_parmar_life():
+    """A Royston-Parmar fit (a spline on the log cumulative hazard) to 40
+    lives about a Weibull of alpha 500 and beta 1.5: a surpyval model
+    taken as a life by its functions (#93)."""
+    x = 500 * np.random.default_rng(7).weibull(1.5, 40)
+    return surv.RoystonParmar.fit(x)
+
+
+@_fitted_once
+def life_at_load():
+    """The pump of ``aft()`` at a load of 1.5: a regression at one unit's
+    covariates (``regression.at(Z)``), taken as a life by its functions
+    (#93)."""
+    return aft().at([[1.5]])
+
+
 @_fitted_once
 def mixture_life():
     """A two-mode population, infant mortality and wear-out (#227)."""
@@ -216,6 +285,20 @@ def nonrepairable_kinds():
             EDGES,
             {
                 "a": StandbyModel([unit] * 3, k=2, dormancy_factor=0.5),
+                **rest,
+            },
+        ),
+        "exact warm standby": NonRepairableRBD(
+            EDGES,
+            {
+                # Warm, two operating, a spare that may fail to start:
+                # exact for exponential units (#339).
+                "a": StandbyModel(
+                    [E([0.01])] * 3,
+                    k=2,
+                    dormancy_factor=0.5,
+                    start_probability=0.9,
+                ),
                 **rest,
             },
         ),
@@ -313,6 +396,13 @@ def nonrepairable_kinds():
         "fitted shares": NonRepairableRBD(EDGES, {"a": shares_life(), **rest}),
         "degradation process": NonRepairableRBD(EDGES, {"a": wear(), **rest}),
         "mixture": NonRepairableRBD(EDGES, {"a": mixture_life(), **rest}),
+        "Bayesian fit": NonRepairableRBD(EDGES, {"a": bayes_life(), **rest}),
+        "Bayesian fit with shares": NonRepairableRBD(
+            EDGES, {"a": bayes_shares_life(), **rest}
+        ),
+        "Royston-Parmar fit": NonRepairableRBD(
+            EDGES, {"a": royston_parmar_life(), **rest}
+        ),
         "degrading": NonRepairableRBD(
             EDGES,
             {
@@ -337,11 +427,100 @@ def nonrepairable_kinds():
     }
 
 
+def mission_kinds():
+    """The phased missions drawn as one diagram whose analyses are checked
+    on: with blocks guaranteed, not needed, at a phase's covariates and a
+    phase's vote count (exact), on a phase's own model (exact, and with a
+    block on standby), with a block on standby (simulated), and with
+    blocks on standby, warm and switching imperfectly, every life of a
+    constant rate (exact, by the Markov chain)."""
+    from repyability import BlockSetting, MissionPhase, PhasedMission
+
+    unit = W([100, 2])
+    edges = [
+        ("s", "a"),
+        ("s", "b"),
+        ("s", "c"),
+        ("a", "v"),
+        ("b", "v"),
+        ("c", "v"),
+        ("v", "d"),
+        ("d", "t"),
+    ]
+    models = {
+        "a": unit,
+        "b": unit,
+        "c": E([0.01]),
+        "v": PerfectReliability,
+        "d": RegressionNode(aft(), covariates=[1.0]),
+    }
+    vote = NonRepairableRBD(edges, models, k={"v": 2})
+    settings = [
+        MissionPhase(
+            "up",
+            20.0,
+            blocks={"a": "guaranteed", "d": BlockSetting(covariates=[2.0])},
+            k={"v": 3},
+        ),
+        MissionPhase("on", 30.0, blocks={"c": "not_needed"}),
+    ]
+    standby = [
+        MissionPhase("up", 20.0, blocks={"c": "standby"}),
+        MissionPhase("on", 30.0, k={"v": 1}),
+    ]
+    # A block on a model of the phase's own, exact and with standby.
+    start_up = BlockSetting(model=W([40, 0.8]))
+    models = [
+        MissionPhase("up", 20.0, blocks={"b": start_up}),
+        MissionPhase("on", 30.0, blocks={"c": BlockSetting(model=E([0.03]))}),
+    ]
+    standby_models = [
+        MissionPhase("up", 20.0, blocks={"c": "standby", "b": start_up}),
+        MissionPhase("on", 30.0, k={"v": 1}),
+    ]
+    constant = NonRepairableRBD(
+        edges,
+        {
+            "a": E([0.01]),
+            "b": E([0.02]),
+            "c": E([0.01]),
+            "v": PerfectReliability,
+            "d": RegressionNode(aft(), covariates=[1.0]),
+        },
+        k={"v": 2},
+    )
+    warm = BlockSetting(
+        state="standby", dormancy_factor=0.2, start_probability=0.9
+    )
+    chain = [
+        MissionPhase(
+            "up",
+            20.0,
+            blocks={"c": warm, "a": "guaranteed"},
+            k={"v": 2},
+        ),
+        MissionPhase(
+            "on",
+            30.0,
+            blocks={"b": "standby", "d": BlockSetting(covariates=[2.0])},
+            k={"v": 1},
+        ),
+    ]
+    return {
+        "standby_exact": PhasedMission.from_diagram(constant, chain),
+        "settings": PhasedMission.from_diagram(vote, settings),
+        "standby": PhasedMission.from_diagram(vote, standby),
+        "models": PhasedMission.from_diagram(vote, models),
+        "standby_models": PhasedMission.from_diagram(vote, standby_models),
+    }
+
+
 def fault_tree_kinds():
     """The fault trees of every kind the tree's analyses are checked on
     (#314): events given as probabilities, as lifetime models (surpyval
     distributions, a fit with its covariance) and as both, a repeated
-    event, and common-cause groups of each model and basis."""
+    event, common-cause groups of each model and basis, a NOT gate, a
+    functional dependency, and dynamic gates integrated or shared."""
     unit = W([100, 2])
     gates = {"top": ("or", ["pair", "c"]), "pair": ("and", ["a", "b"])}
     rest = {"b": W([80, 1.5]), "c": E([0.002])}
@@ -381,6 +560,41 @@ def fault_tree_kinds():
             gates,
             {"a": 0.05, "b": 0.05, "c": 0.01},
             ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+        ),
+        # A NOT gate (non-coherent): exact, its prime implicants for cut
+        # sets, Birnbaum's the one importance measure.
+        "not gate": FaultTree(
+            {
+                "top": ("or", ["pair", "c and not a"]),
+                "pair": ("and", ["a", "b"]),
+                "c and not a": ("and", ["c", "not a"]),
+                "not a": ("not", ["a"]),
+            },
+            {"a": unit, **rest},
+        ),
+        # A functional dependency: the static tree it is written out as.
+        "functional dependency": FaultTree(
+            {**gates, "power": ("fdep", "p", ["a", "b"])},
+            {"a": unit, **rest, "p": E([0.0005])},
+        ),
+        # Dynamic gates, each an independent module: integrated.
+        "dynamic": FaultTree(
+            {
+                "top": ("or", ["order", "spare"]),
+                "order": ("pand", ["a", "b"]),
+                "spare": ("spare", 0.2, ["c", "d"]),
+            },
+            {"a": unit, **rest, "d": W([150, 1.2])},
+        ),
+        # A dynamic gate sharing an event with the rest: simulated on
+        # request (method="simulate"), refused exactly.
+        "dynamic, shared": FaultTree(
+            {
+                "top": ("or", ["order", "pair"]),
+                "order": ("seq", ["a", "b"]),
+                "pair": ("and", ["b", "c"]),
+            },
+            {"a": unit, **rest},
         ),
     }
 
@@ -576,6 +790,66 @@ def repairable_kinds():
                     replace_cost=10.0,
                 )
             ),
+            # Preventive maintenance that restores a unit only partly
+            # (Kijima): by age, on the calendar with every third task
+            # replacing it, on condition, with imperfect repair too, and
+            # on a duty.
+            "maintenance restores partly, by age": system(
+                unit(
+                    preventive={
+                        "interval": 300.0,
+                        "cost": 2.0,
+                        "restoration": {"model": "kijima1", "q": 0.3},
+                    },
+                    repair_cost=1.0,
+                    replace_cost=10.0,
+                )
+            ),
+            "maintenance restores partly, every third replaces": system(
+                unit(
+                    preventive={
+                        "interval": 300.0,
+                        "policy": "block",
+                        "duration": E([0.5]),
+                        "cost": 2.0,
+                        "restoration": {"model": "kijima2", "q": 0.5},
+                        "replace_every": 3,
+                        "replacement_cost": 8.0,
+                    },
+                    repair_cost=1.0,
+                )
+            ),
+            "maintenance restores partly, on condition": system(
+                unit(
+                    preventive={
+                        "interval": 100.0,
+                        "policy": "condition",
+                        "threshold": 0.1,
+                        "inspection_cost": 1.0,
+                        "restoration": {"model": "kijima1", "q": 0.5},
+                    },
+                    replace_cost=10.0,
+                )
+            ),
+            "imperfect repair, maintenance restores partly": system(
+                unit(
+                    repair={"model": "kijima1", "q": 0.5},
+                    preventive={
+                        "interval": 300.0,
+                        "restoration": {"model": "kijima1", "q": 0.0},
+                    },
+                    repair_cost=1.0,
+                )
+            ),
+            "operated part of the time, maintenance restores partly": system(
+                unit(
+                    duty=0.25,
+                    preventive={
+                        "interval": 300.0,
+                        "restoration": {"model": "kijima2", "q": 0.4},
+                    },
+                )
+            ),
             "tested, constant rate": system(
                 {
                     "reliability": E([0.002]),
@@ -621,12 +895,67 @@ def repairable_kinds():
             "mixture life": system(
                 unit(reliability=mixture_life(), replace_cost=10.0)
             ),
+            "Bayesian fit life": system(
+                unit(reliability=bayes_life(), replace_cost=10.0)
+            ),
+            "Bayesian fit with shares life": system(
+                unit(reliability=bayes_shares_life(), replace_cost=10.0)
+            ),
+            "Royston-Parmar life": system(
+                unit(reliability=royston_parmar_life(), replace_cost=10.0)
+            ),
+            "life at a regression's covariates": system(
+                unit(reliability=life_at_load(), replace_cost=10.0)
+            ),
             "fitted Crow-AMSAA process": system(
                 unit(reliability=crow_amsaa(), repair_cost=1.0)
             ),
+            "fitted ARA process": system(
+                unit(reliability=ara_process(), repair_cost=1.0)
+            ),
             "degradation process life": system(unit(reliability=wear())),
+            "covariate schedule, proportional hazards, maintained": system(
+                unit(
+                    reliability=ph(),
+                    covariates=load_steps(),
+                    preventive={"interval": 300.0},
+                    replace_cost=10.0,
+                )
+            ),
+            "covariate schedule, accelerated failure time": system(
+                unit(
+                    reliability=aft(),
+                    covariates=surv.StepSchedule.cyclic(
+                        [0.0, 60.0], [[1.0], [2.0]], 100.0
+                    ),
+                )
+            ),
             "operated part of the time": system(
                 unit(duty=0.25, preventive={"interval": 300.0})
+            ),
+            # Tasks counted in operating time, put on the calendar
+            # through the block's duty.
+            "operated part of the time, maintained by running hours": system(
+                unit(
+                    duty=0.25,
+                    preventive={
+                        "interval": 75.0,
+                        "basis": "operating",
+                        "cost": 2.0,
+                    },
+                    replace_cost=10.0,
+                )
+            ),
+            "operated part of the time, tested by running hours": system(
+                unit(
+                    duty=0.5,
+                    repairability="instant",
+                    inspection={
+                        "interval": 50.0,
+                        "offset": 10.0,
+                        "basis": "operating",
+                    },
+                )
             ),
             "mixture life, maintained": system(
                 unit(
@@ -764,6 +1093,21 @@ def repairable_kinds():
                 ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
                 downtime_cost_rate=5.0,
             ),
+            # A repair of any length (#106; a test of any length is in
+            # test_ccf_general.py).
+            "common cause, tests and repairs of any length": RepairableRBD(
+                EDGES,
+                {
+                    node: {
+                        "reliability": E([0.002]),
+                        "repairability": W([8.0, 2.0]),
+                        "inspection": {"interval": 100.0, "offset": offset},
+                    }
+                    for node, offset in (("a", 0.0), ("b", 50.0))
+                }
+                | {"c": unit(repair_cost=2.0)},
+                ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+            ),
             "common cause, one repair crew": RepairableRBD(
                 EDGES,
                 {
@@ -807,6 +1151,87 @@ def repairable_kinds():
                 downtime_cost_rate=5.0,
             ),
             "fitted life": system(unit(reliability=fitted_life())),
+            # Shutdowns: the line shut every 300 for 5 (from 100), every
+            # block's work done there.
+            "shutdown of the line, tasks at it": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={"shutdown": "line", "cost": 2.0},
+                        repair_cost=3.0,
+                    ),
+                    "b": unit(
+                        preventive={"shutdown": "line", "older_than": 400.0}
+                    ),
+                    "c": {
+                        "reliability": E([0.001]),
+                        "repairability": E([0.5]),
+                        "inspection": {"shutdown": "line", "cost": 1.0},
+                    },
+                },
+                shutdowns={
+                    "line": {
+                        "period": 300.0,
+                        "offset": 100.0,
+                        "duration": 5.0,
+                        "cost": 20.0,
+                    }
+                },
+                downtime_cost_rate=5.0,
+            ),
+            "shutdown of some blocks, idle ones paused": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(preventive={"shutdown": "unit"}),
+                    "b": unit(repair_cost=2.0),
+                    "c": unit(),
+                },
+                shutdowns={
+                    "unit": {
+                        "period": 200.0,
+                        "duration": 10.0,
+                        "scope": ["a", "b"],
+                        "idle_ageing": False,
+                    }
+                },
+            ),
+            "shutdowns at given times, restoring": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={
+                            "shutdown": "outage",
+                            "restoration": {"model": "kijima1", "q": 0.5},
+                            "cost": 2.0,
+                        }
+                    ),
+                    "b": unit(),
+                    "c": unit(),
+                },
+                shutdowns={
+                    "outage": {
+                        "times": [150.0, 400.0, 700.0],
+                        "duration": 8.0,
+                        "scope": ["a"],
+                        "cost": 30.0,
+                    }
+                },
+            ),
+            "shutdown in no time": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(preventive={"shutdown": "check"}),
+                    "b": unit(),
+                    "c": {
+                        "reliability": E([0.001]),
+                        "repairability": E([0.5]),
+                        "inspection": {"shutdown": "check"},
+                    },
+                },
+                shutdowns={
+                    "check": {"period": 250.0, "offset": 40.0, "duration": 0}
+                },
+            ),
             "standby group, two needed": system(
                 {
                     "reliability": E([0.002]),
@@ -824,6 +1249,47 @@ def repairable_kinds():
                     "b": unit(),
                     "c": unit(),
                 },
+                repair_crews=1,
+            ),
+            # Planned outages (#319, UC-25): maintenance that takes time
+            # in a nested pair and at block times, its downtime split into
+            # planned and unplanned exactly; and with a repair crew, whose
+            # chain does not tell them apart (simulated).
+            "planned outages, nested and in a pair": RepairableRBD(
+                EDGES,
+                {
+                    "a": RepairableRBD(
+                        [("s", "x"), ("s", "y"), ("x", "t"), ("y", "t")],
+                        {
+                            "x": unit(
+                                preventive={
+                                    "interval": 250.0,
+                                    "duration": E([0.25]),
+                                }
+                            ),
+                            "y": unit(),
+                        },
+                    ),
+                    "b": unit(
+                        preventive={
+                            "interval": 300.0,
+                            "policy": "block",
+                            "duration": surv.ExactEventTime.from_params([6.0]),
+                            "cost": 3.0,
+                        },
+                        downtime_cost=1.0,
+                    ),
+                    "c": unit(),
+                },
+                downtime_cost_rate=5.0,
+            ),
+            "planned outages, one repair crew": system(
+                unit(
+                    preventive={
+                        "interval": 300.0,
+                        "duration": E([0.5]),
+                    }
+                ),
                 repair_crews=1,
             ),
             "one repair crew, exponential": RepairableRBD(

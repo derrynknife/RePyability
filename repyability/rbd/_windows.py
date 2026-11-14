@@ -28,6 +28,8 @@ from repyability.rbd import (
     _quadrature,
     _rates,
     _requirements,
+    _shutdowns,
+    _unplanned,
 )
 from repyability.rbd._common import (
     _DISCOUNT_ROUNDS,
@@ -125,6 +127,7 @@ def _system_at(
     over ``[0, horizon]``, as a function of the times; the curves whose
     bends its integral's pieces follow; and the crews' curve, where a
     component can wait for a crew (else None)."""
+    _shutdowns.require_exact(rbd)
     if rbd._crews_couple():
         crew = _curves._crew_curve(
             rbd, horizon, working_nodes, broken_nodes, method, states
@@ -233,6 +236,7 @@ def _integrated(
     ends: np.ndarray,
     horizon: float,
     relative: Optional[float] = None,
+    rate: float = 0.0,
 ) -> np.ndarray:
     """The integral from 0 to each of ``ends`` of the system's point
     availability, ``system_at``, from its nodes' ``curves`` (over the
@@ -241,7 +245,10 @@ def _integrated(
     ``relative``, a time scale, to a tolerance relative to the integral
     itself, pieces being halved down to that scale where the grids are
     coarser: for an unavailability, small, and changing in closed form
-    faster than the grids (#237)."""
+    faster than the grids (#237). With a ``rate`` above 0 each moment is
+    weighed by ``exp(-rate * t)``, the present value of a steady value
+    earned while the system works (``expected_npv``); the settled level
+    and the cycles after it are summed in closed form."""
     from repyability.rbd._curves import _MISSION_POINTS, _settling
 
     # After ``settle`` the system's availability is constant, or repeats
@@ -258,7 +265,10 @@ def _integrated(
 
     def estimate(a, b):
         x, half = _quadrature.points(a, b)
-        return {"up": _quadrature.summed(system_at(x), half)}
+        values = system_at(x)
+        if rate:
+            values = values * np.exp(-rate * x)
+        return {"up": _quadrature.summed(values, half)}
 
     try:
         edges, finest = _quadrature.pieces(
@@ -287,14 +297,35 @@ def _integrated(
     if beyond.any():
         if period is None:
             level = system_at(np.array([horizon]))[0]
-            totals[beyond] = uptime(reach) + (ends[beyond] - reach) * level
+            span = ends[beyond] - reach
+            # The level's integral from ``reach``: exp(-rate reach)
+            # (1 - exp(-rate span)) / rate, or ``span`` undiscounted.
+            weight = (
+                span
+                if not rate
+                else math.exp(-rate * reach) * -np.expm1(-rate * span) / rate
+            )
+            totals[beyond] = uptime(reach) + weight * level
         else:
             base = uptime(settle)
-            totals[beyond] = (
-                base
-                + cycles * (uptime(reach) - base)
-                + (uptime(settle + rest) - base)
-            )
+            if rate:
+                # Each cycle is worth exp(-rate period) of the one
+                # before: a geometric sum.
+                q = math.exp(-rate * period)
+                repeats = -np.expm1(-rate * period * cycles) / -math.expm1(
+                    -rate * period
+                )
+                totals[beyond] = (
+                    base
+                    + (uptime(reach) - base) * repeats
+                    + q**cycles * (uptime(settle + rest) - base)
+                )
+            else:
+                totals[beyond] = (
+                    base
+                    + cycles * (uptime(reach) - base)
+                    + (uptime(settle + rest) - base)
+                )
     return totals
 
 
@@ -316,6 +347,7 @@ def _window(
     ``causes``, the system failures each node (or common cause)
     causes."""
     method = structure_method(method)
+    _shutdowns.require_exact(rbd)
     windows = nonnegative_times(t)
     working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     forced = working | broken
@@ -395,14 +427,39 @@ def expected_events(
             for node in rbd.components
         }
 
-    downtime = {
-        node: shaped(
+    down = {
+        node: (
             counts["downtime"][node]
             if node in curves
             else (ends if node in broken else zero)
         )
         for node in rbd.components
     }
+    downtime = {node: shaped(values) for node, values in down.items()}
+    system_down = np.maximum(ends - counts["uptime"], 0.0)
+    split = _split(rbd, curves, ends, working, broken, state, system_down)
+    planned_fields: dict = {}
+    if split is not None:
+        unplanned, failed = split
+        node_unplanned = {
+            node: failed.get(node, down[node]) for node in rbd.components
+        }
+        planned_fields = dict(
+            system_planned_downtime=shaped(
+                np.maximum(system_down - unplanned, 0.0)
+            ),
+            system_unplanned_downtime=shaped(
+                np.minimum(unplanned, system_down)
+            ),
+            node_planned_downtime={
+                node: shaped(np.maximum(down[node] - value, 0.0))
+                for node, value in node_unplanned.items()
+            },
+            node_unplanned_downtime={
+                node: shaped(np.minimum(value, down[node]))
+                for node, value in node_unplanned.items()
+            },
+        )
     return ExpectedEvents(
         window=shaped(ends),
         system_failures=shaped(counts["failures"]),
@@ -413,7 +470,25 @@ def expected_events(
         node_preventive=per_node("preventive"),
         node_inspections=per_node("inspections"),
         node_downtime=downtime,
+        shutdowns=shaped(_shutdowns.started_before(rbd, ends)),
+        **planned_fields,
     )
+
+
+def _split(rbd, curves, ends, working, broken, state, system_down):
+    """The system's expected time down unplanned to each of ``ends``, and
+    each component's time failed where it differs from its downtime (see
+    ``_unplanned.window_split``); all the downtime without planned
+    outages; None where the exact methods cannot tell them apart."""
+    if not _unplanned.takes_planned_outages(rbd):
+        return system_down, {}
+    states = _curves._states(rbd, state, working | broken)
+    try:
+        return _unplanned.window_split(
+            rbd, curves, ends, working, broken, states
+        )
+    except NotImplementedError:
+        return None
 
 
 def expected_cost(
@@ -425,8 +500,11 @@ def expected_cost(
     state,
     *,
     discount_rate: float,
+    cells: Optional[dict] = None,
 ) -> ExpectedCost:
-    """See ``RepairableRBD.expected_cost``."""
+    """See ``RepairableRBD.expected_cost``. With ``cells`` (a dict), it is
+    filled with each component's cost by category, ``{(node, category):
+    values}``, as ``expected_npv``'s cash-flow table needs."""
     _requirements._require_costs(rbd)
     rate = _discount_rate(discount_rate)
     if rate > 0.0 and rbd.has_costs:
@@ -434,7 +512,7 @@ def expected_cost(
             _horizons(t, 0.0), rate, partial(_requirements._mean_lives, rbd)
         )  # warns of a rate that discounts the costs away
         return _discounted_cost(
-            rbd, t, rate, working_nodes, broken_nodes, method, state
+            rbd, t, rate, working_nodes, broken_nodes, method, state, cells
         )
     if not rbd.has_costs:
         # An acquisition cost alone: no running cost, exactly.
@@ -495,11 +573,17 @@ def expected_cost(
         for category, charge in charges:
             categories[category] = categories[category] + charge
             own = own + charge
+            if cells is not None:
+                cell = (node, category)
+                cells[cell] = cells.get(cell, 0.0) + charge
         by_component[node] = _shaped(own, t, windows)
     if rbd.downtime_cost_rate:
         categories["system_downtime"] = rbd.downtime_cost_rate * (
             np.maximum(ends - counts["uptime"], 0.0)
         )
+    if rbd._shutdowns:
+        # Each shut's cost, at its start (see _shutdowns).
+        categories["shutdown"] = _shutdowns.cost_before(rbd, ends)
     for name, spec in rbd._maintenance.items():
         if not spec.setup_cost:
             continue
@@ -529,7 +613,14 @@ def expected_cost(
 
 
 def _discounted_cost(
-    rbd, t, rate: float, working_nodes, broken_nodes, method: str, state
+    rbd,
+    t,
+    rate: float,
+    working_nodes,
+    broken_nodes,
+    method: str,
+    state,
+    cells: Optional[dict] = None,
 ) -> ExpectedCost:
     """``expected_cost`` at ``t`` discounted at ``rate`` (#231): each
     window's ``exp(-r T) C(T) + r * integral_0^T exp(-r s) C(s) ds``,
@@ -543,23 +634,34 @@ def _discounted_cost(
     ends = windows.ravel()
     horizon = float(ends.max()) if ends.size else 0.0
     keys: list = []
+    cell_keys: list = []
 
     def values(times: np.ndarray) -> np.ndarray:
         """``C`` at ``times``: its mean, each category's and each
         component's, as rows. The longest window is worked out too, so
         that every call's curves reach it, and are shared."""
-        got = rbd.expected_cost(
+        own: Optional[dict] = {} if cells is not None else None
+        got = expected_cost(
+            rbd,
             np.append(times, horizon),
             working_nodes,
             broken_nodes,
             method,
             state,
+            discount_rate=0.0,
+            cells=own,
         )
         if not keys:
             keys.extend(got.by_component)
+            if own is not None:
+                cell_keys.extend(own)
         rows = [got.mean]
         rows += [got.by_category[category] for category in _CATEGORIES]
         rows += [got.by_component[node] for node in keys]
+        if own is not None:
+            rows += [
+                np.broadcast_to(own[k], got.mean.shape) for k in cell_keys
+            ]
         return np.vstack([np.ravel(row)[:-1] for row in rows])
 
     def rules(a: np.ndarray, b: np.ndarray):
@@ -602,6 +704,8 @@ def _discounted_cost(
     mean = next(rows)
     categories = {category: next(rows) for category in _CATEGORIES}
     components = {node: next(rows) for node in keys}
+    if cells is not None:
+        cells.update({k: next(rows) for k in cell_keys})
     return ExpectedCost(
         window=_shaped(ends, t, windows),
         mean=_shaped(mean, t, windows),
@@ -812,7 +916,10 @@ def _window_counts(
     followed = list(curves.values()) + ([crew.curve] if crew else [])
     settle, period = _settling(followed)
     reach = min(horizon, settle if period is None else settle + period)
-    if period is not None:
+    if period is not None and reach < horizon:
+        # Only the end of the period the counts are extended by moves:
+        # an end at the horizon (within it) is counted as it is, events
+        # a rounding short of it included.
         reach = _before_period_end(reach, curves, crew)
     beyond = ends > reach
     atoms = {node: curve.atoms(reach) for node, curve in curves.items()}
@@ -823,11 +930,14 @@ def _window_counts(
     # ``totals_at``), so that a nested RBD counted at many times costs
     # no more pieces.
     fixed = [jumps.times] + [own.times for own in atoms.values()]
-    cycles = rest = np.empty(0)
+    cycles = stop = np.empty(0)
     if period is not None and beyond.any():
         cycles = np.floor((ends[beyond] - settle) / period)
         rest = np.clip(ends[beyond] - settle - cycles * period, 0.0, period)
-        fixed += [np.array([settle]), settle + rest]
+        # The period counted is ``[settle, reach)``: an end past ``reach``
+        # (moved a rounding short of the period's end) has the whole of it.
+        stop = np.minimum(settle + rest, reach)
+        fixed += [np.array([settle]), stop]
 
     # Each node's events at exact times, kept apart (taken together,
     # below): their running totals, by time.
@@ -863,6 +973,8 @@ def _window_counts(
             importance, works, fails, _, _ = rbd._importances(
                 _filled(rbd, at_points, len(x), working_nodes, broken_nodes)
             )
+            # A node a shut holds off line changes nothing then.
+            importance = _shutdowns.held_importance(curves, importance, x)
             up = works if structure_method(method) == "p" else 1.0 - fails
         out: Dict[Hashable, np.ndarray] = {
             "uptime": _quadrature.summed(up, half)
@@ -1000,7 +1112,7 @@ def _window_counts(
                 totals[beyond] = values[-1] + (ends[beyond] - reach) * rate
             else:
                 base = values[np.searchsorted(edges, settle)]
-                partial = values[np.searchsorted(edges, settle + rest)]
+                partial = values[np.searchsorted(edges, stop)]
                 totals[beyond] = (
                     base + cycles * (values[-1] - base) + (partial - base)
                 )

@@ -420,7 +420,9 @@ def test_a_nested_rbd_counts_as_the_flat_one_does():
     np.testing.assert_allclose(
         left.node_preventive["n"], own.system_planned_outages, rtol=1e-6
     )
-    assert np.all(left.node_preventive["n"] > 0.0)
+    # None before the first task at 200 (zero to rounding), some after.
+    np.testing.assert_allclose(left.node_preventive["n"][0], 0.0, atol=1e-12)
+    assert np.all(left.node_preventive["n"][1:] > 0.0)
     assert not np.any(left.node_inspections["n"])
 
 
@@ -623,3 +625,108 @@ def test_a_nested_node_counts_as_the_simulation_counts_it():
     assert events.node_corrective["sub"] == pytest.approx(
         own.system_failures, rel=1e-6
     )
+
+
+def maintained(scale, shape, **more):
+    return {
+        "reliability": W([scale, shape]),
+        "repairability": L([1.0, 0.5]),
+        **more,
+    }
+
+
+def maintained_pair():
+    """A parallel pair maintained in time: one on its age, one on a block
+    schedule every 12 (its curve repeats with that period once settled;
+    the other's settles later)."""
+    return RepairableRBD(
+        PARALLEL,
+        {
+            "a": maintained(
+                40, 2.5, preventive={"interval": 15.0, "duration": E([1.0])}
+            ),
+            "b": maintained(
+                45,
+                2.0,
+                preventive={
+                    "interval": 12.0,
+                    "policy": "block",
+                    "duration": E([2.0]),
+                },
+            ),
+        },
+    )
+
+
+def three_levels():
+    """Timed maintenance at every level, three deep: the pair inside a
+    line with a tested unit, that line beside a maintained unit."""
+    middle = RepairableRBD(
+        [("s", "x"), ("x", "y"), ("y", "t")],
+        {
+            "x": maintained_pair(),
+            "y": maintained(
+                60, 1.5, inspection={"interval": 9.0, "duration": E([4.0])}
+            ),
+        },
+    )
+    return RepairableRBD(
+        PARALLEL,
+        {
+            "a": middle,
+            "b": maintained(
+                30, 2.0, preventive={"interval": 10.0, "duration": E([1.5])}
+            ),
+        },
+        downtime_cost_rate=1.0,
+    )
+
+
+def test_a_nested_rbd_counted_a_rounding_past_a_block_replacement():
+    # The pair's curves settle (the block replaced one repeating every 12)
+    # after the window of the RBD it is in, so the pair's counts are
+    # worked out to the window's end, at which the block replacement at
+    # 96 is a rounding short: that end was taken for the end of the
+    # period the counts repeat with, moved down to the replacement, and
+    # the end, then past it, extended a negative number of periods (an
+    # IndexError). It is counted as any other end: the replacement at 96
+    # falls before a window a rounding longer, and after one of 96.
+    line = RepairableRBD(
+        SERIES,
+        {"a": maintained_pair(), "b": maintained(60, 1.5)},
+    )
+    T = np.array([96.0, np.nextafter(96.0, np.inf), 96.0 + 1e-7])
+    events = line.expected_events(T)
+    for field in ("system_failures", "system_planned_outages"):
+        values = getattr(events, field)
+        assert np.all(np.isfinite(values))
+        assert values[1] == pytest.approx(values[2], rel=1e-6)
+    for counts in (events.node_preventive["a"], events.system_planned_outages):
+        assert counts[0] < counts[1]
+    # One end at a time, the end a rounding past the replacement the
+    # last: as all together.
+    for k, end in enumerate(T):
+        alone = line.expected_events(end)
+        assert alone.node_preventive["a"] == pytest.approx(
+            events.node_preventive["a"][k], rel=1e-9
+        )
+
+
+def test_three_levels_deep_counted_at_and_a_rounding_past_their_tasks():
+    # The pair, two levels down, is counted to the middle line's window
+    # ends: at 96, a block replacement's time, it raised the IndexError
+    # too. Counted at 96 (where the replacement falls after the window)
+    # and a rounding past it (where it falls in it), every level's counts
+    # are as near those a little past it as the window's lengths are.
+    rbd = three_levels()
+    ends = np.array([96.0, np.nextafter(96.0, np.inf), 96.0 + 1e-7])
+    events = rbd.expected_events(ends)
+    for values in (
+        events.system_failures,
+        events.system_planned_outages,
+        events.node_failures["a"],
+        events.node_preventive["a"],
+    ):
+        assert np.all(np.isfinite(values))
+        assert values[1] == pytest.approx(values[2], rel=1e-6)
+    assert events.node_preventive["a"][0] < events.node_preventive["a"][1]

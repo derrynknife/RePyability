@@ -46,6 +46,7 @@ A node model is anything that exposes `sf(t)` and `ff(t)`:
 |---|---|
 | A surpyval parametric distribution (`Weibull`, `Exponential`, `LogNormal`, …) | An ordinary component with a fitted lifetime. |
 | A surpyval `MixtureModel` | A population of failure modes (infant mortality and wear-out). |
+| A surpyval Bayesian fit (`fit_bayes`, a `BayesianParametric`) | A component whose life is known with uncertainty: the life is the fit's posterior predictive (see [below](#a-bayesian-fit-as-a-life)). |
 | A surpyval `WienerProcess` or `GammaProcess` fit | A component that fails when its degradation reaches a threshold: its life is the time to the threshold (see [Costs](system-maintenance.md#replacing-on-the-measured-level) for replacing it on the measured level). |
 | A surpyval non-parametric fit (`KaplanMeier`, `NelsonAalen`, …) | Refused (`ValueError`): its curve ends at the data, and says nothing beyond it. Fit a parametric distribution in surpyval instead. |
 | `surpyval.FixedEventProbability` | A component with a fixed probability of failure (a demand, a mission). |
@@ -73,6 +74,108 @@ one.node_mttf()["c"]    # inf
 (surpyval's own `mean()` of such a model is the *defective* mean, its
 failing units' mean weighted by their fraction: RePyability never uses it as
 a lifetime.)
+
+## A Bayesian fit as a life
+
+A Bayesian fit in surpyval (`surv.Weibull.fit_bayes(...)`, or
+`surv.bayes.BayesianParametric.from_draws(...)` from another sampler's
+draws) says how sure we are of a life's parameters. Given to a diagram, a
+[`NonRepairable`][repyability.NonRepairable] or a `RepairableRBD`'s
+component, the block's life is the fit's averaged prediction over that
+uncertainty: the life of a new unit, all things considered. It is a little
+more spread than the life at the best single estimate, with more early
+failures and more long lives.
+
+In symbols, the block's reliability is the posterior predictive,
+`S(t) = sum_i w_i S(t | theta_i)`: the survival function at each
+posterior point `theta_i`, averaged with its probability `w_i` (equal for
+draws). Where the fit has it in closed form (an Exponential with a Gamma posterior on its rate, whose predictive
+is a Lomax), that is used. The block is a
+[`PosteriorPredictive`][repyability.PosteriorPredictive]: each function is
+the predictive's (its probability of failing worked out in its own right,
+its quantile by inverting it, its mean the points' means averaged), and the
+simulations draw a posterior point and a life from it, from one uniform.
+
+```python
+import numpy as np
+
+# The rate of a pump's exponential life has a Gamma(5, 1250) posterior,
+# here as 4000 draws from another sampler.
+rate = np.random.default_rng(1).gamma(5.0, 1 / 1250.0, 4000)
+fit = surv.bayes.BayesianParametric.from_draws(surv.Exponential, rate[:, None])
+plant = NonRepairableRBD(
+    [("s", "pump"), ("pump", "valve"), ("valve", "t")],
+    {"pump": fit, "valve": surv.Weibull.from_params([2000, 1.5])},
+)
+plant.sf(100)                                # -> 0.676
+plant.reliabilities["pump"].sf(100)          # -> 0.6836   the draws' average
+```
+
+### Its credible band, carried to the system
+
+The predictive is one number for each question: the best single answer,
+with the uncertainty averaged in. How sure the fit is of that answer is
+its *credible band*, and the [parameter-uncertainty
+methods](reliability.md#uncertainty-in-the-component-models)
+(`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`,
+`time_to_reliability_uncertainty`, and a `RepairableRBD`'s
+`mean_availability_uncertainty` and the like) carry it to the system. For
+an ordinary fit they draw plausible parameters from the fit's sampling
+uncertainty; for a Bayesian fit the plausible parameters are the posterior
+itself. Each draw picks a posterior point by its probability (grid points
+have unequal probabilities; none is left out or thinned), or, for a
+conjugate posterior, a value from its exact family; the block in that draw
+is the plain distribution at that point, not the predictive. The system's
+value is worked out for every draw, and the spread of those values is the
+band. The point value (`nominal`) stays the predictive's.
+
+In symbols, with `theta_k` the `k`-th draw from the posterior, the band is
+the percentiles of `R_sys(t | theta_k)` over the draws: for one exponential
+block whose rate `lam` has a Gamma(a, b) posterior, `R(t) = exp(-lam t)`
+falls as `lam` rises, so the 90% band is `(exp(-t q_0.95), exp(-t
+q_0.05))`, `q` the Gamma's quantiles, and the point value the Lomax
+`(b / (b + t)) ** a`.
+
+```python
+band = plant.sf_uncertainty(100, n_draws=10_000, seed=0)
+band.band                                    # 'credible'
+band.nominal                                 # -> 0.676   the predictive's
+lower, upper = band.interval(0.9)
+round(lower, 3), round(upper, 3)             # (0.483, 0.847)
+```
+
+Against the closed form: the Gamma(5, 1250) quantiles give `(0.475,
+0.845)` (times the valve's 0.9978); the 4000 draws the fit is made of are
+that posterior to within their own sampling error.
+
+By default every fitted block is drawn: the Bayesian ones from their
+posteriors, the ones fitted by maximum likelihood from their covariance.
+A band over both is `"mixed"`: each draw takes every block's draw, so it
+holds both kinds of uncertainty at once, and is neither a confidence band
+nor a credible band alone. `UncertaintyResult.band` says which it is:
+`"credible"` (Bayesian blocks only), `"confidence"` (covariance-based fits
+only), `"given"` (distributions or lists of models given) or `"mixed"`.
+
+Blocks given the same fit object are one population, as blocks given one
+ordinary fit are: they share one draw of the posterior in every draw (the
+diagram holds one model for them), and drawing one without the others is
+warned about. Two fit objects, even of the same data, are drawn apart.
+`uncertainty_importance` takes a Bayesian block with `method="sobol"`; its
+default, the delta method, moves parameters a little about one value with
+their covariance, which a posterior has not, and refuses it. A
+`{parameter: distribution}` for a Bayesian block is refused too: give
+`"fit"`, or a list of models.
+
+A fit with an offset, a limited failure population or zero inflation
+(`fit_bayes(offset=True)`, `lfp=True`, `zi=True`, or draws with `gamma`,
+`lfp_p` or `f0` columns) is taken too: each posterior point is its own
+model, with its own offset and shares, and the predictive is their
+average. Its functions are the fit's own; a draw picks a point and inverts
+that point's model (0 for a unit dead on arrival, `inf` for one that never
+fails); its share that never fails is the points' `1 - lfp_p` averaged, so
+in the long run a repaired unit is up for good; and its credible band
+draws each point with its offset and shares. A fit of a discrete
+distribution is refused: it is of a count, not a life.
 
 ## k-out-of-n nodes
 
@@ -266,6 +369,29 @@ list(redundant_b.get_all_path_sets())      # [['s', 'a', 't'], ['s', 'b', 'a', '
 ```
 
 Path and cut sets depend only on the structure and are computed once per RBD.
+
+### How big is the structure?
+
+A large diagram can have far more path or cut sets than you want to list.
+`structure_summary()` tells you the size first, from the same reduction
+that makes the probabilities fast: the reduction folds series chains,
+parallel groups and k-out-of-n groups into *modules*, and what it cannot
+fold (a bridge, say) is the *core*. A diagram that folds completely is
+series-parallel.
+
+```python
+info = two_of_three.structure_summary()
+info.n_components, info.series_parallel   # -> (4, True)
+info.n_path_sets, info.n_cut_sets         # -> (3, 4)
+```
+
+The summary also gives how deeply the modules nest (`module_depth`), how
+many modules there are (`n_modules`), and the size of the core
+(`core_size`, `core_path_sets`; both 0 for a series-parallel diagram).
+`count_minimal_path_sets()` and `count_minimal_cut_sets()` give just the
+counts. Each count is exact unless a component is drawn in more than one
+place (`counts_exact` says), when it is an upper bound. A diagram too
+meshed to work out exactly gives `None` and says why in `too_meshed`.
 
 ## Is the system time-dependent, and is it exact?
 

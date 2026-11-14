@@ -467,8 +467,18 @@ subtraction, so a small probability keeps its precision. The members need
 exponential lives, and either revealed failures with exponential repairs, as
 here, or hidden failures found by tests (with one coverage for the group),
 at offsets of their own if they are staggered, whose tests and repairs take
-no time, a fixed time or an exponential one (#220); see [the PFDavg of a
+no time, a fixed time or an exponential one (#220), or any other length a
+surpyval model gives (#106); see [the PFDavg of a
 safety function](system-maintenance.md#common-cause-staggered-tests-and-test-coverage).
+A test or repair of a fixed or exponential length is followed exactly. One
+of another length (a Weibull repair, a lognormal test) ends at a rate that
+changes with the time since the member's test, so the chain follows it on
+short pieces of that time, each at constant rates chosen so that the
+member's chance of still being in its test, or its repair, is exact at the
+pieces' ends; the pieces are halved until a constant rate follows it within
+each to 1e-5. The test and repair must be over by the member's next test
+(but for a chance below 1e-12): one that can run longer is refused, and the
+simulation takes it.
 `mean_availability`, `mean_unavailability`, `system_failure_frequency`,
 MTBF, MUT and MDT, the cost rate, `capacity_distribution`, and the interval
 choices built on them take the groups in. So do the importance measures:
@@ -497,10 +507,10 @@ refused too, by every exact value, `node_availability` among them: the
 groups' chains do not take the crews' queue in, and the crews' chain does
 not take the common causes in, as yet. The simulations take both.
 
-Over time from new, each group's chain is followed from every member up at
-0 (by uniformization, or through the members' tests, after whose first
-period it repeats its long run), and each group is conditioned on within
-its module at each time, as in the long run. `point_availability`,
+Over time, each group's chain is followed from every member up at 0 (by
+uniformization, or through the members' tests, after whose first periods it
+repeats its long run), or from the members' states, and each group is
+conditioned on within its module at each time, as in the long run. `point_availability`,
 `mission_availability`, `expected_failures`, `expected_events`,
 `expected_cost`, `point_capacity` and `mission_capacity` take the groups in,
 and settle into the long-run values. A member's own curve, and so its own
@@ -519,8 +529,8 @@ causes: each strikes as a Poisson process at its share of the members'
 failure rate, and fails the members it names that are up, at once. A test
 that can miss a failure tosses one coin for all the failures a cause makes.
 They run in Python (the compiled engine does not draw the causes, as yet),
-and they take in what the chains cannot: tests and repairs of any length,
-and revealed failures' repairs of any distribution:
+and they take in what the chains cannot: tests and repairs that can run
+into the next test, and revealed failures' repairs of any distribution:
 
 ```python
 run = shared.availability(1000.0, mc_samples=2000, seed=0)
@@ -590,13 +600,47 @@ shared failures hold the plant to 0.98415, and a higher target is refused:
 plant_shared.availability_allocation(0.983).mttf["v"]   # -> 1704.4   the valve's MTTF, at its 2 h repairs
 ```
 
+### From the members' current states
+
+The values over time, and the simulations, start from the members' states
+(`state=`, a `NodeState` each, see [condition-based
+evaluation](condition-based.md)). The members' lives are exponential, so a
+state needs no age, only what the member is doing:
+
+- a member up whose failures are revealed is up now;
+- a member up whose failures are hidden was last known to be up when it was
+  last tested and found working (`since_scheduled` ago, which also places
+  its test calendar) or put into service (`age` ago), whichever is later.
+  It may have failed since, unseen: by its own cause, or by a shared cause,
+  which would have struck the other members up then too. The chain starts
+  from every member up at the earliest of those times and follows the causes
+  to 0, each member put back up as it comes to be known up;
+- a member down (`alive=False`) is in a repair under way for `down_for`;
+- `state="stationary"` starts every member in the group's long run, whose
+  values over time then repeat the long run's every period. A group's
+  members are in their long run together or not at all.
+
+The simulations start from the same states: a member's own cause's life is
+drawn from when it was last known up, and for each shared cause, when it
+last struck before 0 (a draw of its own), which fails each member it names
+known up since before then. With two pumps of the example above, one in a
+repair that has run four hours:
+
+```python
+from repyability import NodeState
+
+shared.point_availability(10.0, state={"p1": NodeState(alive=False, down_for=4.0)})
+# -> 0.97262   p1 in a repair at 0
+shared.point_availability(10.0, state="stationary")   # -> 0.98415   the long run's
+```
+
 What the groups' chains need (exponential lives, and revealed failures with
-exponential repairs or tests and repairs in no time) holds for the exact and
-numerical values; the simulations need exponential lives alone. A member
-held working or broken, a member started from a current state (`state=`), a
-member maintained on a schedule, repaired imperfectly or in a maintenance
-group, and a group with limited repair crews are refused, with the reason;
-`analysis_routes()` says which.
+exponential repairs, or tests and repairs over by the next test) holds for
+the exact and numerical values; the simulations need exponential lives
+alone. A member held working or broken, a member with a life of its own (a
+`level` or `model` in its state), a member maintained on a schedule,
+repaired imperfectly or in a maintenance group, and a group with limited
+repair crews are refused, with the reason; `analysis_routes()` says which.
 
 Common-cause groups can also be added to a diagram in the browser in
 [Reliafy](https://reliafy.com/guides/common-cause-group).

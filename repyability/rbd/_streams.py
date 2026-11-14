@@ -52,6 +52,10 @@ TEST = 10
 #: uniforms that decide whether the tests that can miss its failures find
 #: them (one per strike: they are found, or missed, alike).
 CAUSE, CAUSE_TEST = 11, 12
+#: The uniform that draws how long before 0 a shared common cause last
+#: struck, where members it strikes start from states (#106): one per
+#: simulation.
+CAUSE_START = 14
 #: The uniforms a unit replaced on condition by its measured degradation
 #: level (#271) draws its level at each inspection from, and its failure
 #: from that level: two an inspection.
@@ -255,6 +259,46 @@ def entropy_of(seed) -> int:
     if check_seed(seed) is None:
         return int(np.random.randint(0, 2**62, dtype=np.int64))
     return int(np.random.RandomState(seed).randint(0, 2**62, dtype=np.int64))
+
+
+def seed_entropy(seed: Optional[int] = None) -> int:
+    """The entropy a [`RepairableRBD`][repyability.RepairableRBD] run's
+    random streams are seeded from, given its seed.
+
+    Every draw a simulation makes comes from a stream of its own, named by
+    the component it is for and seeded from one number, the run's
+    entropy. A run given ``seed=s`` takes ``seed_entropy(s)``. Pass it as
+    [`simulation_samples`][repyability.RepairableRBD.simulation_samples]'s
+    ``entropy`` to run two diagrams on the same random numbers, or one
+    run in several parts.
+
+    Parameters
+    ----------
+    seed : int or sequence of int, optional
+        A seed as numpy's ``np.random.seed`` takes it (a whole number from
+        0 to ``2**32 - 1``, or a sequence of them). By default None: a
+        number drawn from numpy's global random number generator (seed it
+        for a reproducible one). A seed leaves that generator as it was.
+
+    Returns
+    -------
+    int
+        The entropy, from 0 to ``2**62 - 1``.
+
+    Raises
+    ------
+    TypeError, ValueError
+        If ``seed`` is not a seed numpy takes.
+
+    Examples
+    --------
+    >>> from repyability import seed_entropy
+    >>> seed_entropy(1) == seed_entropy(1)
+    True
+    >>> seed_entropy(1) == seed_entropy(2)
+    False
+    """
+    return entropy_of(seed)
 
 
 class Run:

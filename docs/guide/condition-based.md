@@ -107,10 +107,130 @@ failures over the next 20 hours. Each pump is critical in 23% of them, however
 worn: a pump is critical to a system failure only when both pumps have failed
 and the valve works.
 
+## A measured level
+
+Some components are not just old: they are measured. A vibration level, a
+wear depth or a crack length is read, and the unit fails when it reaches a
+limit. When the unit's life is a **degradation process** fitted in surpyval
+(a `WienerProcess` or `GammaProcess`, whose life is the time the level
+takes to first reach the failure threshold), the question becomes: *we
+measured the wear; from here, how long until it reaches the threshold?*
+Give the reading as the state's `level`:
+
+```python
+from surpyval.degradation import GammaProcessModel
+
+# Bearing vibration in mm/s: healthy at 1.0, failed at 7, rising as a gamma
+# process (each year's rise a gamma of shape 4 and rate 2, so 2 mm/s a year
+# on average).
+bearing = GammaProcessModel(alpha=4.0, beta=2.0, threshold=7.0, y0=1.0)
+station = NonRepairableRBD(
+    [("s", "b1"), ("s", "b2"), ("b1", "t"), ("b2", "t")],
+    {"b1": bearing, "b2": bearing},
+)
+now = {
+    "b1": NodeState(age=2.0, level=2.4),   # two years in, still healthy
+    "b2": NodeState(age=2.0, level=5.5),   # two years in, near the limit
+}
+station.sf_given_state(1.0, now)   # -> 0.9881   the next year
+station.sf(1.0)                    # -> 1.0      two new bearings
+station.remaining_life(0.9, now)   # -> 1.516    years to 90% reliability
+station.importances_given_state(1.0, now)["birnbaum"]["b1"]   # -> 0.6472
+```
+
+Each bearing's life from now is the first passage from its own level,
+which surpyval gives (`bearing.sf(t, y0=5.5)`). A gamma process and a
+Wiener process both have **independent increments**: how the level moves
+from here does not depend on how it got here. So once the level is known,
+the age adds nothing about the life left, and it does not condition it
+again. It keeps its one meaning, the operating time, for what else needs
+it: in a `RepairableRBD`, an age replacement falls due when the operating
+time reaches its interval, whatever the level.
+
+- A level at or past the threshold is a failed unit: give `alive=False`.
+- A gamma process only rises, so its level cannot be below its starting
+  level `y0`. A Wiener path can fall, so a level below its start is taken.
+- A level needs a degradation process as the unit's life (the node's, or
+  the unit's own `model`, below); any other life refuses it.
+- The levels, the threshold and the process's scale are in one unit of
+  measure: measuring in other units, scaled together, changes nothing.
+
+In a [`RepairableRBD`][repyability.RepairableRBD], the unit measured is the
+one in service now; its replacements are new, starting at the process's
+`y0`:
+
+```python
+from repyability import RepairableRBD
+
+plant = RepairableRBD(
+    [("s", "b"), ("b", "t")],
+    {"b": {"reliability": bearing,
+           "repairability": surv.Exponential.from_params([52.0]),
+           "replace_cost": 4000.0}},
+)
+worn = {"b": NodeState(age=2.0, level=5.5)}
+plant.expected_failures(3.0)               # -> 0.4631   three years from new
+plant.expected_failures(3.0, state=worn)   # -> 1.1438   from bearing 2 now
+```
+
+## A unit's own model
+
+Sometimes one unit is known better than its fleet: a model refitted to its
+own history, or one conditioned on its own readings. Give it as the
+state's `model`: it is used instead of the node's for the unit in service
+now, conditioned on its `age` as the node's model would be.
+
+```python
+W = surv.Weibull.from_params
+pumps = NonRepairableRBD(
+    [("s", "p1"), ("s", "p2"), ("p1", "t"), ("p2", "t")],
+    {"p1": W([20000, 2.0]), "p2": W([20000, 2.0])},
+)
+aged = {"p1": NodeState(age=6000), "p2": NodeState(age=6000)}
+mine = {"p1": NodeState(age=6000, model=W([9000, 2.5])), "p2": NodeState(age=6000)}
+pumps.sf_given_state(2000, aged)   # -> 0.9954   the fleet's model for both
+pumps.sf_given_state(2000, mine)   # -> 0.9785   pump 1 refitted to itself
+```
+
+- The model must be one the node could itself have been given as its life
+  in that diagram (a fitted surpyval model, a `RegressionNode` at the
+  unit's covariates, a degradation process, ...); a joint model's
+  prediction of the unit from its readings (a
+  [`JointNode`](#a-unit-with-readings-joint-models)) is taken too, at its
+  prediction's age, as it already is from now. Standby, load-sharing and
+  repeated nodes and nested diagrams take no state, so no model either.
+- Given the node's own model, it is exactly the age alone.
+- In a `RepairableRBD` the model is that of the unit in service at the
+  start only: the units that replace it have the node's life again. So a
+  joint model's prediction, which a repaired component refuses as its life,
+  can be the life of the unit in service now. A probability of failing
+  cannot: a repaired unit's life is a time.
+- A `level` with a `model` is a level of that model's process.
+- A state with a `level` or a `model` describes a working unit: with
+  `alive=False`, `stationary=True` or a `virtual_age` it is refused.
+
+**Where they are taken.** A `NonRepairableRBD`'s `sf_given_state`,
+`remaining_life`, `mean_residual_life` and `importances_given_state`; a
+`RepairableRBD`'s exact analyses from a state (`point_availability`,
+`mission_availability`, `expected_failures`, `expected_cost`,
+`expected_npv`, ...) and its simulations from a state (`availability`,
+`cost`, `simulate_timelines`, ..., in the Python engine, as every start
+from a state is), for a unit on its own or on age or block replacement.
+A common-cause group's members start from their states too (see
+[Common cause](common-cause.md#from-the-members-current-states)). A unit
+tested for hidden failures, repaired imperfectly, run part of the
+time (a `"duty"`), in a standby group or replaced on
+condition starts its units its own way, and refuses them as not worked out
+yet; so does the Markov chain of limited repair crews (simulate them) and
+of the first system failure of a structure that is not a series.
+
 ## What can take a state
 
 - Parametric distributions and `RegressionNode`s age.
   For them, `NodeState(age=0)` is the same as leaving the node out.
+- A degradation process takes a measured `level` too, and any node that
+  takes a state takes a `model` of its unit's own: see
+  [above](#a-measured-level).
 - A [`JointNode`][repyability.JointNode] (a unit of a joint model, given
   its readings) takes its age from its prediction: see
   [below](#a-unit-with-readings-joint-models).
@@ -232,6 +352,80 @@ ramped.sf_given_state(1000, {"m": NodeState(age=2500)})   # -> 0.7036
 - The node saves with the RBD; the fitted model round-trips through
   `surpyval.from_dict`.
 
+### Is it worth running hot?
+
+Running a unit harder often earns more but wears it out sooner. "If we run
+at 70 °C instead of 30 °C we make more, but the bearings wear out faster.
+Does it pay?" [`operating_schedule_value`][repyability.operating_schedule_value]
+answers it for one unit that is replaced whenever it fails. You give the
+operating schedule in model time from 0: when each stretch starts, the
+covariates in it, and what the unit earns per hour while it works there
+(here in proportion to the temperature, 30 and 70 an hour). Each failure
+costs `failure_cost` and stops the unit for the `down_time` while a new one
+goes in; nothing is earned while it is down, and a spare does not age on
+the shelf. A unit put in at hour `v` runs along the rest of the schedule,
+so a bearing fitted at hour 1500 has 500 cool hours before the heat.
+
+The answer is the net present value (NPV): what the unit earns less what
+its failures cost, each amount counted at what it is worth now (8% a year
+here), with the two kept apart and a row for each stretch:
+
+```python
+import math
+from repyability import best_switch_time, operating_schedule_value
+
+r = math.log(1.08) / 8760  # 8% a year, per hour
+costs = dict(failure_cost=150_000.0, down_time=24.0, discount_rate=r)
+cool = operating_schedule_value(model, [0], [30.0], [30.0], 20_000.0, **costs)
+ramp = operating_schedule_value(
+    model, [0, 2000], [30.0, 70.0], [30.0, 70.0], 20_000.0, **costs
+)
+hot = operating_schedule_value(model, [0], [70.0], [70.0], 20_000.0, **costs)
+[round(p.npv / 1000) for p in (cool, ramp, hot)]       # [177, 368, 392] thousand
+[round(p.value / 1000) for p in (cool, ramp, hot)]     # [548, 1195, 1274]
+[round(p.cost / 1000) for p in (cool, ramp, hot)]      # [371, 827, 882]
+[round(p.failures, 2) for p in (cool, ramp, hot)]      # [2.73, 6.07, 6.44]
+[(row["start"], round(row["value"] / 1000), round(row["failures"], 2))
+ for row in ramp.stretches]                            # [(0.0, 59, 0.07), (2000.0, 1136, 6.0)]
+```
+
+Running hot more than doubles the failures, but at 150,000 a failure the
+extra output pays for them: the NPV is highest running hot throughout.
+[`best_switch_time`][repyability.best_switch_time] finds the best time to
+change from one way of running to the other, and the NPV of never
+switching and of switching at once beside it:
+
+```python
+best = best_switch_time(model, [30.0, 70.0], [30.0, 70.0], 20_000.0, **costs)
+best.choice                     # 'switch at once'  run hot from the start
+round(best.never_switch_npv / 1000)   # -> 177
+```
+
+At 300,000 a failure the balance turns: cool's NPV is the higher, and the
+best switch is never. The NPV as a function of the switch time need not
+have one peak (a young unit fails rarely, so running it hard while it is
+new can pay even when running hard for good does not), so the search
+scans the horizon before it polishes the best, and returns the scan
+(`best.times`, `best.npvs`).
+
+How it is worked out, in brief: each unit's life is the model's survival
+along the schedule from the hour it was put in (`model.sf_tvc`), so the
+failures form a renewal process whose life depends on when each unit went
+in. Its expected failures and chance of being up are worked out
+numerically (no simulation) on a grid sized from the lives, halved until
+the answer agrees with its halving to `tolerance` (1e-6 by default; the
+switch search values each switch time to 1e-4). The result says how
+closely it did (`error`) and that it is numerical (`method`).
+
+- One unit only, for now: a whole diagram on a load schedule is not built
+  yet, as a `RepairableRBD` component cannot take a covariate-dependent
+  life.
+- `age` is how long the unit in service at 0 has already run, at the first
+  stretch's covariates.
+- A semiparametric (Cox) model is refused: it has no proper curve to renew.
+- The other single-unit maintenance numbers are in [Maintenance
+  policies](maintenance.md).
+
 ## A unit with readings: joint models
 
 Some components are watched: a vibration level, a wear measurement or an
@@ -280,6 +474,31 @@ as a node becomes a [`JointNode`][repyability.JointNode];
 `JointNode(joint, Z=..., markers=..., age=...)` makes the same node from the
 fitted model and the unit's covariates, readings and age.
 
+The readings can also come as surpyval's `Measurements`, the fleet's
+readings in one object, each unit's by its id, with the measurement's name
+and unit. Give the unit's id as `i=`; where the `Measurements` hold
+several measurements, name the one the joint model was fitted to with
+`measurement=`:
+
+```python
+from surpyval import Measurements
+
+readings = Measurements(
+    {"P-101": {0: 2.1, 20: 2.5, 40: 3.0}, "P-102": {0: 1.9, 10: 2.0}},
+    name="vibration", units="mm/s",
+)
+p101 = JointNode(joint, markers=readings, i="P-101", age=40)
+p101.sf(20) == JointNode(pump).sf(20)   # -> True   the same readings
+p101.marker_unit                        # -> 'mm/s'
+```
+
+The node keeps the unit's id, the measurement's name and its unit as
+typed (`i`, `measurement`, `marker_unit`), in its `repr` and when it is
+saved; the unit is a label, and nothing is converted. A unit with no
+readings in them, or several measurements and none named, is refused,
+saying which units or measurements there are. A plain `{age: value}` dict
+works as before.
+
 It takes part in everything an ordinary node does: the system's
 reliability, MTTF and B-lives, the importance measures and the
 simulations.
@@ -316,4 +535,5 @@ line.sf_given_state(20, {"valve": NodeState(age=30)})   # -> 0.6048
   mission from now.
 - The node saves with the RBD: the joint model in surpyval's format
   (`JointModel.to_dict()`, a built-in path model) and the unit's
-  covariates, readings and age.
+  covariates, readings and age (and, for readings from `Measurements`,
+  the unit's id, the measurement's name and its unit).

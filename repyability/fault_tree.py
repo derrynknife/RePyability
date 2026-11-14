@@ -1,4 +1,4 @@
-"""Static fault tree analysis.
+"""Fault tree analysis: static trees exactly, NOT gates and dynamic gates.
 
 A fault tree works down from an undesired *top event*, usually the system
 failing, to its causes, through *gates*:
@@ -34,6 +34,14 @@ call the functions ``rbd/non_repairable_rbd.py`` shares with
 diagram's; the uncertainty from fitted event models is drawn by the
 diagram of the tree (``to_rbd()``, converted once), whose draws are the
 events'.
+
+A tree with NOT gates (non-coherent) is evaluated through its decision
+diagram, with prime implicants for cut sets (``_ft_logic.py``); a tree
+with dynamic gates (PAND, SPARE, SEQ) over time, each integrated where it
+is an independent module and simulated otherwise, its static part exact
+(``_ft_dynamic.py``). An FDEP gate is written out as OR gates before
+anything else (``_without_fdep``), so a tree whose only dynamic gates are
+FDEPs is a static one. ``_ft_open_psa.py`` writes a tree as Open-PSA.
 """
 
 import functools
@@ -70,16 +78,26 @@ from repyability.utils.checks import (
     no_distribution,
     one_of,
     real_array,
-    simulation_options,
 )
+from repyability.utils.checks import seed as checked_seed
+from repyability.utils.checks import simulation_options, whole_number
 from repyability.utils.wrappers import outside_level
 
 if TYPE_CHECKING:  # pragma: no cover
     from repyability.rbd.non_repairable_rbd import NonRepairableRBD
-    from repyability.rbd.results import Lever, UncertaintyResult
+    from repyability.rbd.results import (
+        ConditionalProbabilities,
+        Lever,
+        PrimeImplicant,
+        UncertaintyResult,
+    )
 
-#: The kinds of gate.
-GATE_KINDS = ("or", "and", "vote")
+#: The kinds of gate: the static ones, NOT, and the dynamic ones.
+GATE_KINDS = ("or", "and", "vote", "not", "pand", "spare", "seq", "fdep")
+
+#: The dynamic gates whose output depends on the order of their inputs'
+#: occurrences (FDEP is rewritten as OR gates, see ``FaultTree``).
+DYNAMIC_KINDS = ("pand", "spare", "seq")
 
 #: Building the core's decision diagram gives up, with guidance, beyond
 #: this many nodes.
@@ -93,19 +111,45 @@ class _Made(NamedTuple):
     place: int
 
 
+class Forced(NamedTuple):
+    """The place of a basic event a functional dependency (an FDEP gate)
+    forces: the OR gate of the event and its triggers that stands in for
+    it wherever it is an input."""
+
+    event: Hashable
+
+
 class _Gate(NamedTuple):
     kind: str
-    # The gate occurs when at least k of its inputs occur.
+    # The gate occurs when at least k of its inputs occur (an OR, AND or
+    # VOTE gate; k = n for PAND, SPARE and SEQ, 1 for NOT and FDEP).
     k: int
     inputs: Tuple[Hashable, ...]
+    # A SPARE gate's dormancy factor (0 cold, 1 hot).
+    dormancy: float = 0.0
+
+    def written(self) -> tuple:
+        """The gate as it is given to ``FaultTree``."""
+        inputs = list(self.inputs)
+        if self.kind == "vote":
+            return (self.kind, self.k, inputs)
+        if self.kind == "spare" and self.dormancy != 0.0:
+            return (self.kind, self.dormancy, inputs)
+        if self.kind == "fdep":
+            return (self.kind, inputs[0], inputs[1:])
+        return (self.kind, inputs)
 
 
 def _parse_gate(name, spec) -> _Gate:
-    """A gate from ``("or", inputs)``, ``("and", inputs)`` or
-    ``("vote", k, inputs)``, or a ValueError naming the gate."""
+    """A gate from ``("or", inputs)``, ``("and", inputs)``, ``("vote", k,
+    inputs)``, ``("not", [input])``, ``("pand", inputs)``, ``("spare",
+    inputs)`` or ``("spare", dormancy, inputs)``, ``("seq", inputs)`` or
+    ``("fdep", trigger, dependents)``, or a ValueError naming the gate."""
     usage = (
-        f"Gate {name!r} must be ('or', inputs), ('and', inputs) or "
-        f"('vote', k, inputs), got {spec!r}."
+        f"Gate {name!r} must be ('or', inputs), ('and', inputs), ('vote', "
+        "k, inputs), ('not', [input]), ('pand', inputs), ('spare', inputs), "
+        "('spare', dormancy, inputs), ('seq', inputs) or ('fdep', trigger, "
+        f"dependents), got {spec!r}."
     )
     if not isinstance(spec, (tuple, list)) or not spec:
         raise ValueError(usage)
@@ -113,7 +157,8 @@ def _parse_gate(name, spec) -> _Gate:
     if not isinstance(kind, str) or kind.lower() not in GATE_KINDS:
         raise ValueError(usage)
     kind = kind.lower()
-    if len(spec) != (3 if kind == "vote" else 2):
+    three = kind in ("vote", "fdep") or (kind == "spare" and len(spec) == 3)
+    if len(spec) != (3 if three else 2):
         raise ValueError(usage)
     inputs = spec[-1]
     if not isinstance(inputs, (tuple, list)) or not inputs:
@@ -122,6 +167,8 @@ def _parse_gate(name, spec) -> _Gate:
             f"{inputs!r}."
         )
     inputs = tuple(inputs)
+    if kind == "fdep":
+        inputs = (spec[1],) + inputs
     if len(set(inputs)) != len(inputs):
         raise ValueError(f"Gate {name!r} lists an input more than once.")
     n = len(inputs)
@@ -129,6 +176,35 @@ def _parse_gate(name, spec) -> _Gate:
         return _Gate(kind, 1, inputs)
     if kind == "and":
         return _Gate(kind, n, inputs)
+    if kind == "not":
+        if n != 1:
+            raise ValueError(
+                f"NOT gate {name!r} takes one input, got {n}: {list(inputs)}."
+            )
+        return _Gate(kind, 1, inputs)
+    if kind == "fdep":
+        return _Gate(kind, 1, inputs)
+    if kind in DYNAMIC_KINDS:
+        if n < 2:
+            raise ValueError(
+                f"{kind.upper()} gate {name!r} needs at least two inputs, "
+                f"got {list(inputs)}."
+            )
+        dormancy = 0.0
+        if kind == "spare" and len(spec) == 3:
+            dormancy = spec[1]
+            if (
+                isinstance(dormancy, bool)
+                or not isinstance(
+                    dormancy, (int, float, np.integer, np.floating)
+                )
+                or not 0.0 <= float(dormancy) <= 1.0
+            ):
+                raise ValueError(
+                    f"SPARE gate {name!r}: the dormancy factor must be a "
+                    f"number in [0, 1] (0 cold, 1 hot), got {dormancy!r}."
+                )
+        return _Gate(kind, n, inputs, float(dormancy))
     k = spec[1]
     if isinstance(k, bool) or not isinstance(k, (int, np.integer)):
         raise ValueError(
@@ -164,12 +240,64 @@ def _parse_event(name, model):
     return model
 
 
+#: What a tree with dynamic gates gives (the rest is refused, saying so).
+_DYNAMIC_GIVES = frozenset(
+    {
+        "top_event_probability",
+        "ff",
+        "sf",
+        "random",
+        "levers",
+        "with_levers",
+    }
+)
+#: What a tree with NOT gates gives.
+_NON_COHERENT_GIVES = frozenset(
+    {
+        "top_event_probability",
+        "ff",
+        "sf",
+        "birnbaum_importance",
+        "conditional_probabilities",
+        "occurs",
+        "prime_implicants",
+        "to_open_psa",
+        "levers",
+        "with_levers",
+    }
+)
+_NEEDS_CUT_SETS = frozenset(
+    {
+        "minimal_cut_sets",
+        "get_min_cut_sets",
+        "minimal_path_sets",
+        "get_min_path_sets",
+        "ranked_cut_sets",
+        "fussell_vesely",
+    }
+)
+_NEEDS_A_LIFETIME = frozenset(
+    {
+        "Hf",
+        "df",
+        "hf",
+        "mean",
+        "random",
+        "time_to_reliability",
+        "bx_life",
+        "barlow_proschan_importance",
+        "mean_uncertainty",
+    }
+)
+_NEEDS_A_DIAGRAM = frozenset({"to_rbd", "sf_uncertainty"})
+
+
 def _sort_key(s: frozenset) -> tuple:
     return (len(s), sorted(map(str, s)))
 
 
 class FaultTree:
-    """A static fault tree: gates over basic events.
+    """A fault tree: gates over basic events.
 
     Parameters
     ----------
@@ -177,7 +305,17 @@ class FaultTree:
         ``{gate name: gate}``, each gate one of ``("or", inputs)`` (occurs
         when any input occurs), ``("and", inputs)`` (when all do) or
         ``("vote", k, inputs)`` (when at least ``k`` of them do, ``1 <= k <=
-        len(inputs)``). ``inputs`` is a list of gate and event names. An
+        len(inputs)``); ``("not", [input])`` (while its input has not
+        occurred); or the dynamic gates ``("pand", inputs)`` (all occur,
+        in order), ``("spare", inputs)`` or ``("spare", dormancy,
+        inputs)`` (a primary and its spares, basic events, cold by
+        default), ``("seq", inputs)`` (basic events that occur in order,
+        each ageing once the one before has occurred) and ``("fdep",
+        trigger, dependents)`` (the trigger forces its dependents, basic
+        events; it is no gate's input). See the guide's
+        [NOT gates](../guide/fault-trees.md#not-gates-non-coherent-trees)
+        and [dynamic gates](../guide/fault-trees.md#dynamic-gates).
+        ``inputs`` is a list of gate and event names. An
         input may feed several gates, but the gates must not form a loop.
     events : dict
         ``{event name: model}`` for the basic events: the probability that
@@ -214,6 +352,10 @@ class FaultTree:
     is_fixed : bool
         Whether no event's probability depends on time, so that ``t`` may
         be left out.
+    is_coherent : bool
+        Whether the tree has no NOT gate.
+    is_dynamic : bool
+        Whether the tree has a PAND, SPARE or SEQ gate.
     ccf_groups : list of CCFGroup
         The common-cause groups, as given.
 
@@ -224,7 +366,12 @@ class FaultTree:
         name is both, the gates form a loop, a gate or event is not below
         the top event, the top event is not a gate (or cannot be inferred),
         an event's model is invalid, or a common-cause group's member is
-        not an event, is in two groups, or has a model the others do not.
+        not an event, is in two groups, or has a model the others do not;
+        or a SPARE's spare or a SEQ's input is not a basic event.
+    NotImplementedError
+        For NOT gates and dynamic gates in one tree, common-cause groups
+        with either, an event shared between SPARE or SEQ gates, or one an
+        FDEP forces as a spare or a member of a sequence.
 
     Examples
     --------
@@ -256,25 +403,33 @@ class FaultTree:
     ):
         if not gates:
             raise ValueError("A fault tree needs at least one gate.")
-        self._gates = {
+        self._given = {
             name: _parse_gate(name, spec) for name, spec in gates.items()
         }
         self.events = {
             name: _parse_event(name, m) for name, m in events.items()
         }
-        both = set(self._gates) & set(self.events)
+        both = set(self._given) & set(self.events)
         if both:
             raise ValueError(
                 f"Name(s) {sorted(map(str, both))} are both gates and events."
             )
-        parents: Dict[Hashable, List[Hashable]] = {}
-        for name, gate in self._gates.items():
+        for name, gate in self._given.items():
             for x in gate.inputs:
-                if x not in self._gates and x not in self.events:
+                if x not in self._given and x not in self.events:
                     raise ValueError(
                         f"Gate {name!r} has input {x!r}, which is neither a "
                         "gate nor an event."
                     )
+                if x in self._given and self._given[x].kind == "fdep":
+                    raise ValueError(
+                        f"Gate {name!r} has input {x!r}, an FDEP gate, which "
+                        "has no output: it forces its dependents."
+                    )
+        self._gates = _without_fdep(self._given, self.events)
+        parents: Dict[Hashable, List[Hashable]] = {}
+        for name, gate in self._gates.items():
+            for x in gate.inputs:
                 parents.setdefault(x, []).append(name)
         if top is None:
             roots = [g for g in self._gates if g not in parents]
@@ -294,7 +449,9 @@ class FaultTree:
                 )
             top = roots[0]
         elif top not in self._gates:
-            raise ValueError(f"The top event {top!r} must be a gate.")
+            raise ValueError(
+                f"The top event {top!r} must be a gate (not an FDEP gate)."
+            )
         self.top = top
         self._parents = parents
         order = self._post_order()
@@ -311,9 +468,41 @@ class FaultTree:
             isinstance(m, float) or _model_is_fixed(m)
             for m in self.events.values()
         )
-        self._decomposition = self._decompose(order)
+        kinds = {g.kind for g in self._gates.values()}
+        self.is_coherent = "not" not in kinds
+        self.is_dynamic = bool(kinds & set(DYNAMIC_KINDS))
+        if self.is_dynamic and not self.is_coherent:
+            raise NotImplementedError(
+                "NOT gates and dynamic gates (PAND, SPARE, SEQ) in one tree "
+                "are not supported: a NOT gate over an order of failures has "
+                "no agreed meaning over time."
+            )
+        self._dynamic: Optional[Any] = None
+        if self.is_dynamic:
+            from repyability._ft_dynamic import Dynamic
+
+            self._dynamic = Dynamic(self)
+            self._decomposition: Any = None
+        elif not self.is_coherent:
+            from repyability._ft_logic import NonCoherent
+
+            self._decomposition = NonCoherent(
+                {n: (g.kind, g.k, g.inputs) for n, g in self._gates.items()},
+                self.events,
+                self.top,
+                order,
+                DIAGRAM_LIMIT,
+            )
+        else:
+            self._decomposition = self._decompose(order)
         self._cut_sets: Optional[List[frozenset]] = None
         self.ccf_groups = self._validated_ccf(ccf_groups)
+        if self.ccf_groups and (self.is_dynamic or not self.is_coherent):
+            raise NotImplementedError(
+                "Common-cause groups are supported in static trees of OR, "
+                "AND and VOTE gates only, not with "
+                + ("dynamic gates." if self.is_dynamic else "NOT gates.")
+            )
         self._ccf_warned: set = set()
 
     def _validated_ccf(self, groups) -> list:
@@ -403,7 +592,7 @@ class FaultTree:
 
         if groups is None:
             groups = self.ccf_groups
-        gates = self.gates
+        gates = {name: g.written() for name, g in self._gates.items()}
         events: Dict[Hashable, Any] = {e: 0.5 for e in self.events}
         failed: Dict[Hashable, Any] = {}
         for g, sets in chosen.items():
@@ -448,6 +637,103 @@ class FaultTree:
         if largest > VALIDITY:
             self._ccf_warned.add(index)
             validity_warning(group, largest)
+
+    def _refuse(self, name: str) -> None:
+        """Raise ``NotImplementedError`` if the analysis ``name`` does not
+        apply to this tree's gates: a tree with dynamic gates gives the
+        top event probability over time and simulated times to it; a tree
+        with NOT gates (non-coherent) gives the probability, the logic and
+        the measures made of the top event conditioned on each event."""
+        if self.is_dynamic and name not in _DYNAMIC_GIVES:
+            raise NotImplementedError(
+                f"{name}() is not available for a tree with dynamic gates "
+                "(PAND, SPARE, SEQ) yet: such a tree gives the probability "
+                "of its top event over time (top_event_probability, ff, sf) "
+                "and simulated times to it (random)."
+            )
+        if self.is_coherent or name in _NON_COHERENT_GIVES:
+            return
+        if name in _NEEDS_CUT_SETS:
+            raise NotImplementedError(
+                f"{name}() needs minimal cut or path sets, which a tree with "
+                "NOT gates (non-coherent) does not have: an event not "
+                "occurring can be what makes the top event occur. "
+                "prime_implicants() lists the smallest combinations of "
+                "events occurring and not occurring that make it occur."
+            )
+        if name in _NEEDS_A_LIFETIME:
+            raise NotImplementedError(
+                f"{name}() needs a time to the top event, which a tree with "
+                "NOT gates (non-coherent) does not have: the top event can "
+                "stop occurring once an event below a NOT gate occurs."
+            )
+        if name in _NEEDS_A_DIAGRAM:
+            raise NotImplementedError(
+                f"{name}() works through the tree's block diagram "
+                "(to_rbd), which cannot hold a NOT gate."
+            )
+        if name == "parameter_sensitivity":
+            raise NotImplementedError(
+                "parameter_sensitivity() is not available for a tree with "
+                "NOT gates yet."
+            )
+        raise NotImplementedError(
+            f"{name}() assumes a coherent tree, where an event occurring "
+            "can only make the top event more likely; this tree has NOT "
+            "gates. birnbaum_importance and conditional_probabilities "
+            "apply (the Birnbaum importance of an event can be negative "
+            "here)."
+        )
+
+    def _require_integrable(self) -> None:
+        """Raise unless every dynamic gate can be integrated: each an
+        independent module, its inputs sharing nothing."""
+        held = self._dynamic.needs_simulation() if self._dynamic else []
+        if held:
+            raise NotImplementedError(
+                "The top event probability cannot be integrated exactly: "
+                "the dynamic gates in the part(s) of the tree under "
+                f"{[str(g) for g in held]} share events with the rest of "
+                "the tree or with each other, so they are not independent "
+                "modules. Ask for "
+                "method='simulate', which simulates those parts and keeps "
+                "the rest exact."
+            )
+
+    def _probabilities(
+        self, t, method: str, mc_samples, seed, what: str
+    ) -> Tuple[np.ndarray, np.ndarray, tuple]:
+        """The probabilities that the top event has not occurred and that
+        it has, by the times ``t``, and their shape: exactly, or with the
+        dynamic gates simulated (``method="simulate"``)."""
+        one_of("method", method, ("exact", "simulate"))
+        times, shape = self._times(t)
+        if method == "exact":
+            simulation_options(
+                f"{what}()", {"mc_samples": mc_samples, "seed": seed}
+            )
+            if self._dynamic is not None:
+                self._require_integrable()
+                works, fails = self._dynamic.probabilities(
+                    times, False, 0, None
+                )
+                return works, fails, shape
+            works, fails = self._sf_and_ff(times)
+            return works, fails, shape
+        if self._dynamic is None:
+            raise Refused(
+                "method='simulate' simulates the dynamic gates of a tree, "
+                "and this tree has none: its top event probability is "
+                "exact."
+            )
+        size = (
+            100_000
+            if mc_samples is None
+            else whole_number(mc_samples, "mc_samples")
+        )
+        entropy = np.random.SeedSequence(checked_seed(seed)).entropy
+        works, fails = self._dynamic.probabilities(times, True, size, entropy)
+        return works, fails, shape
 
     def _require_time_varying(self) -> None:
         """Raise if no event's probability depends on time, so that the
@@ -546,20 +832,16 @@ class FaultTree:
 
     @property
     def gates(self) -> Dict[Hashable, tuple]:
-        """``{gate name: gate}``: ``("or", inputs)``, ``("and", inputs)`` or
-        ``("vote", k, inputs)``."""
-        return {
-            name: (
-                (g.kind, g.k, list(g.inputs))
-                if g.kind == "vote"
-                else (g.kind, list(g.inputs))
-            )
-            for name, g in self._gates.items()
-        }
+        """``{gate name: gate}`` as given: ``("or", inputs)``, ``("and",
+        inputs)``, ``("vote", k, inputs)``, ``("not", [input])``,
+        ``("pand", inputs)``, ``("spare", inputs)`` (or ``("spare",
+        dormancy, inputs)`` for a warm or hot spare), ``("seq", inputs)``
+        or ``("fdep", trigger, dependents)``."""
+        return {name: g.written() for name, g in self._given.items()}
 
     def __repr__(self) -> str:
         return (
-            f"FaultTree(top={self.top!r}, {len(self._gates)} gates, "
+            f"FaultTree(top={self.top!r}, {len(self._given)} gates, "
             f"{len(self.events)} events)"
         )
 
@@ -761,18 +1043,42 @@ class FaultTree:
             return {k: shaped(v) for k, v in values.items()}
         return shaped(values)
 
-    def top_event_probability(self, t: Optional[ArrayLike] = None):
+    def top_event_probability(
+        self,
+        t: Optional[ArrayLike] = None,
+        method: str = "exact",
+        *,
+        mc_samples: Optional[int] = None,
+        seed=None,
+    ):
         """The probability that the top event has occurred.
 
         Exact, repeated events included. With lifetime models it is the
         probability that the top event has occurred by time ``t``: the
-        unreliability of the system the tree describes.
+        unreliability of the system the tree describes. With NOT gates it
+        is exact too, from the tree's decision diagram; with dynamic gates
+        (PAND, SPARE, SEQ) each is integrated over its inputs'
+        distributions, to about ``1e-9`` (see the guide's
+        [dynamic gates](../guide/fault-trees.md#dynamic-gates)).
 
         Parameters
         ----------
         t : array_like, optional
             Time/s, a number or an array. May be left out when no event's
             probability depends on time.
+        method : str, optional
+            ``"exact"`` (the default) or ``"simulate"``, for a tree with
+            dynamic gates: exact integrates every dynamic gate (each must
+            be an independent module), ``"simulate"`` simulates them (the
+            smallest independent part of the tree holding each), keeping
+            the static part exact. A tree without dynamic gates is exact
+            and refuses ``"simulate"``.
+        mc_samples : int, optional
+            With ``method="simulate"``, the number of simulations, by
+            default 100_000.
+        seed : int, optional
+            With ``method="simulate"``, seeds the simulations, by default
+            None.
 
         Returns
         -------
@@ -783,7 +1089,11 @@ class FaultTree:
         Raises
         ------
         ValueError
-            If ``t`` is left out and an event's probability depends on time.
+            If ``t`` is left out and an event's probability depends on
+            time, or ``method`` is unknown.
+        NotImplementedError
+            With ``method="exact"``, if a dynamic gate is not an
+            independent module, so cannot be integrated.
 
         Examples
         --------
@@ -803,11 +1113,27 @@ class FaultTree:
         >>> round(tree.top_event_probability(), 4)  # 0.01 + 0.99 * 0.1 ** 2
         0.0199
         """
+        if self._dynamic is not None or (method, mc_samples, seed) != (
+            "exact",
+            None,
+            None,
+        ):
+            _, fails, shape = self._probabilities(
+                t, method, mc_samples, seed, "top_event_probability"
+            )
+            return self._out(fails, shape)
         t, shape = self._times(t)
         p, q = self._event_probabilities(t)
         return self._out(self._top(p, q, len(t)), shape)
 
-    def ff(self, t: Optional[ArrayLike] = None):
+    def ff(
+        self,
+        t: Optional[ArrayLike] = None,
+        method: str = "exact",
+        *,
+        mc_samples: Optional[int] = None,
+        seed=None,
+    ):
         """The probability that the top event has occurred by ``t``: the
         unreliability of the system the tree describes, by the name an
         RBD's ``ff`` has (the same as ``top_event_probability``).
@@ -816,15 +1142,30 @@ class FaultTree:
         ----------
         t : array_like, optional
             Time/s, as for ``top_event_probability``.
+        method : str, optional
+            As for ``top_event_probability``.
+        mc_samples : int, optional
+            As for ``top_event_probability``.
+        seed : int, optional
+            As for ``top_event_probability``.
 
         Returns
         -------
         float or numpy.ndarray
             The probability.
         """
-        return self.top_event_probability(t)
+        return self.top_event_probability(
+            t, method, mc_samples=mc_samples, seed=seed
+        )
 
-    def sf(self, t: Optional[ArrayLike] = None):
+    def sf(
+        self,
+        t: Optional[ArrayLike] = None,
+        method: str = "exact",
+        *,
+        mc_samples: Optional[int] = None,
+        seed=None,
+    ):
         """The probability that the top event has not occurred by ``t``: the
         reliability of the system the tree describes, as an RBD's ``sf``
         gives it. Worked out in its own right, not as one less ``ff``, so a
@@ -834,6 +1175,12 @@ class FaultTree:
         ----------
         t : array_like, optional
             Time/s, as for ``top_event_probability``.
+        method : str, optional
+            As for ``top_event_probability``.
+        mc_samples : int, optional
+            As for ``top_event_probability``.
+        seed : int, optional
+            As for ``top_event_probability``.
 
         Returns
         -------
@@ -849,6 +1196,15 @@ class FaultTree:
         >>> round(tree.sf(), 4), round(tree.ff(), 4)
         (0.98, 0.02)
         """
+        if self._dynamic is not None or (method, mc_samples, seed) != (
+            "exact",
+            None,
+            None,
+        ):
+            works, _, shape = self._probabilities(
+                t, method, mc_samples, seed, "sf"
+            )
+            return self._out(works, shape)
         t, shape = self._times(t)
         p, q = self._event_probabilities(t)
         size = len(t)
@@ -917,6 +1273,7 @@ class FaultTree:
         >>> round(tree.Hf(50), 6)
         0.5
         """
+        self._refuse("Hf")
         from repyability.rbd._measures import cumulative_hazard
 
         times, shape = self._times(t)
@@ -983,6 +1340,7 @@ class FaultTree:
         >>> round(tree.df(50), 6)
         0.006065
         """
+        self._refuse("df")
         times, shape = self._times(t)
         return self._out(self._density(times, dx), shape)
 
@@ -1026,6 +1384,7 @@ class FaultTree:
         >>> round(tree.hf(50), 6)
         0.01
         """
+        self._refuse("hf")
         times, shape = self._times(t)
         sf, _ = self._sf_and_ff(times)
         density = self._density(times, dx)
@@ -1107,6 +1466,7 @@ class FaultTree:
         >>> round(tree.mean(method="simulate", mc_samples=10_000, seed=1), 1)
         25.3
         """
+        self._refuse("mean")
         from repyability.rbd._mean_lifetime import (
             mean_lifetime,
             model_kinks,
@@ -1134,7 +1494,10 @@ class FaultTree:
         of ``to_rbd()`` (converted once), so the draws are the diagram's
         (an event given as a probability occurs at the start, with its
         probability, or never; a common-cause group that splits a
-        probability is left out, as there).
+        probability is left out, as there). A tree with dynamic gates is
+        simulated in its own right: each event's life drawn from its
+        model, the spares aged at their dormancy, the sequences and the
+        priorities followed.
 
         Parameters
         ----------
@@ -1166,6 +1529,11 @@ class FaultTree:
         >>> times.shape, bool((times == tree.to_rbd().random(5, seed=1)).all())
         ((5,), True)
         """
+        self._refuse("random")
+        if self._dynamic is not None:
+            size = whole_number(size, "size")
+            entropy = np.random.SeedSequence(checked_seed(seed)).entropy
+            return self._dynamic.simulate(self.top, size, entropy)
         return self._rbd().random(size, seed=seed)
 
     def time_to_reliability(self, target, upper_bound: Optional[float] = None):
@@ -1211,6 +1579,7 @@ class FaultTree:
         >>> round(tree.time_to_reliability(0.9), 2)
         32.46
         """
+        self._refuse("time_to_reliability")
         from repyability.rbd._measures import invert_reliability
 
         self._require_time_varying()
@@ -1254,6 +1623,7 @@ class FaultTree:
         >>> round(tree.bx_life(10), 2)
         32.46
         """
+        self._refuse("bx_life")
         x = real_array(x, "x")
         if not np.all((0.0 < x) & (x < 100.0)):
             raise ValueError("x must be a percentage in (0, 100).")
@@ -1287,6 +1657,7 @@ class FaultTree:
         >>> tree.occurs({"a"}), tree.occurs({"a", "c"})
         (False, True)
         """
+        self._refuse("occurs")
         # A bare string is one event's name, not its characters (#225).
         occurred: set = {events} if isinstance(events, str) else set(events)
         unknown = occurred - set(self.events)
@@ -1317,6 +1688,7 @@ class FaultTree:
         >>> [sorted(c) for c in tree.minimal_cut_sets()]
         [['a', 'b'], ['a', 'c'], ['b', 'c']]
         """
+        self._refuse("minimal_cut_sets")
         if self._cut_sets is None:
             self._cut_sets = sorted(
                 self._decomposition.cut_sets(), key=_sort_key
@@ -1332,6 +1704,7 @@ class FaultTree:
         set of frozenset
             The minimal cut sets.
         """
+        self._refuse("get_min_cut_sets")
         return set(self.minimal_cut_sets())
 
     def get_min_path_sets(self) -> set:
@@ -1344,6 +1717,7 @@ class FaultTree:
         set of frozenset
             The minimal path sets.
         """
+        self._refuse("get_min_path_sets")
         return set(self.minimal_path_sets())
 
     def minimal_path_sets(self) -> List[frozenset]:
@@ -1365,7 +1739,88 @@ class FaultTree:
         >>> [sorted(p) for p in tree.minimal_path_sets()]
         [['a', 'b'], ['a', 'c']]
         """
+        self._refuse("minimal_path_sets")
         return sorted(self._decomposition.path_sets(), key=_sort_key)
+
+    def prime_implicants(self) -> List["PrimeImplicant"]:
+        """The prime implicants: the smallest combinations of basic events
+        occurring, and of events not occurring, that make the top event
+        occur.
+
+        For a tree with NOT gates (non-coherent) they take the place of the
+        minimal cut sets, which such a tree does not have: an event not
+        occurring can be what brings the top event about. For a tree
+        without, they are the minimal cut sets, with no event required not
+        to occur. Found from the tree's binary decision diagram, by the
+        recursion of Coudert and Madre, every one of them (including those
+        that the gates do not spell out, the consensus of two others).
+
+        Returns
+        -------
+        list of PrimeImplicant
+            Each with the events that ``occurred`` and those that
+            ``not_occurred`` (see
+            [`PrimeImplicant`][repyability.PrimeImplicant]), smallest
+            first (then by name).
+
+        Raises
+        ------
+        NotImplementedError
+            For a tree with dynamic gates, or common-cause groups.
+
+        Examples
+        --------
+        The top event occurs if ``a`` and ``b`` do, or ``c`` does while
+        ``a`` does not; then also whenever ``b`` and ``c`` both do,
+        whatever ``a`` does:
+
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {
+        ...         "top": ("or", ["ab", "not a, c"]),
+        ...         "ab": ("and", ["a", "b"]),
+        ...         "not a, c": ("and", ["not a", "c"]),
+        ...         "not a": ("not", ["a"]),
+        ...     },
+        ...     {"a": 0.1, "b": 0.2, "c": 0.3},
+        ... )
+        >>> for i in tree.prime_implicants():
+        ...     print(sorted(i.occurred), sorted(i.not_occurred))
+        ['a', 'b'] []
+        ['b', 'c'] []
+        ['c'] ['a']
+        """
+        from repyability._ft_logic import NonCoherent
+        from repyability.rbd.results import PrimeImplicant
+
+        self._refuse("prime_implicants")
+        if self.ccf_groups:
+            raise NotImplementedError(
+                "prime_implicants() does not take common-cause groups: "
+                "minimal_cut_sets() lists the tree's cut sets, and "
+                "ranked_cut_sets() their probabilities with the groups."
+            )
+        logic = self._decomposition
+        if not isinstance(logic, NonCoherent):
+            logic = NonCoherent(
+                {n: (g.kind, g.k, g.inputs) for n, g in self._gates.items()},
+                self.events,
+                self.top,
+                self._post_order(),
+                DIAGRAM_LIMIT,
+            )
+        found = [
+            PrimeImplicant(occurred=a, not_occurred=b)
+            for a, b in logic.prime_implicants()
+        ]
+        return sorted(
+            found,
+            key=lambda i: (
+                len(i.occurred) + len(i.not_occurred),
+                sorted(map(str, i.occurred)),
+                sorted(map(str, i.not_occurred)),
+            ),
+        )
 
     def ranked_cut_sets(
         self, t: Optional[float] = None
@@ -1407,6 +1862,7 @@ class FaultTree:
         >>> [(sorted(c), round(p, 4)) for c, p in tree.ranked_cut_sets()]
         [(['pump 1', 'pump 2'], 0.01), (['valve'], 0.005)]
         """
+        self._refuse("ranked_cut_sets")
         if t is not None and np.ndim(t) != 0:
             raise ValueError("t must be a single number.")
         from repyability.rbd._ccf_modules import (
@@ -1482,6 +1938,58 @@ class FaultTree:
         top = np.broadcast_to(np.asarray(top_sum, dtype=float), (size,))
         return works, top, occurred, not_occurred, up, down, shape
 
+    def conditional_probabilities(
+        self, t: Optional[ArrayLike] = None
+    ) -> "ConditionalProbabilities":
+        """The top event's probability, and for each basic event the top
+        event's probability given that the event has occurred and given
+        that it has not.
+
+        Every importance measure of a basic event is made of these and the
+        event's own probability (Birnbaum's is the difference of the two
+        conditionals): use them for a measure of your own, or for several
+        measures from one pass. With common-cause groups, a member's
+        occurrence says something of the other members', so the top
+        event's probability given it is summed over its group's outcomes,
+        as the importance measures take it.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s, a number or an array. May be left out when no event's
+            probability depends on time.
+
+        Returns
+        -------
+        ConditionalProbabilities
+            ``top``, ``given_occurred`` and ``given_not_occurred`` (see
+            [`ConditionalProbabilities`][repyability.ConditionalProbabilities]):
+            floats for a number ``t``, arrays for an array.
+
+        Examples
+        --------
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["valve", "flow"]),
+        ...      "flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+        ... )
+        >>> given = tree.conditional_probabilities()
+        >>> round(given.given_occurred["pump 1"], 4)
+        0.145
+        >>> round(given.given_not_occurred["pump 1"], 4)
+        0.05
+        """
+        self._refuse("conditional_probabilities")
+        from repyability.rbd.results import ConditionalProbabilities
+
+        _, top, occurred, not_occurred, _, _, shape = self._conditioned(t)
+        return ConditionalProbabilities(
+            top=self._out(top, shape),
+            given_occurred=self._out(occurred, shape),
+            given_not_occurred=self._out(not_occurred, shape),
+        )
+
     def birnbaum_importance(self, t: Optional[ArrayLike] = None) -> dict:
         """Birnbaum importance of each basic event.
 
@@ -1515,6 +2023,7 @@ class FaultTree:
         >>> {e: round(v, 4) for e, v in tree.birnbaum_importance().items()}
         {'pump 1': 0.095, 'pump 2': 0.095, 'valve': 0.99}
         """
+        self._refuse("birnbaum_importance")
         _, _, occurred, not_occurred, _, _, shape = self._conditioned(t)
         return self._out(
             {e: occurred[e] - not_occurred[e] for e in self.events}, shape
@@ -1566,6 +2075,7 @@ class FaultTree:
         >>> {e: round(v, 4) for e, v in tree.criticality_importance().items()}
         {'pump 1': 0.1597, 'pump 2': 0.1597, 'valve': 0.8319}
         """
+        self._refuse("criticality_importance")
         one_of("kind", kind, ("failure", "success"))
         works, top, occurred, not_occurred, p, q, shape = self._conditioned(t)
         system, member = (works, p) if kind == "success" else (top, q)
@@ -1603,6 +2113,7 @@ class FaultTree:
         >>> {e: round(v, 2) for e, v in tree.risk_achievement_worth().items()}
         {'pump 1': 2.44, 'pump 2': 2.44, 'valve': 16.81}
         """
+        self._refuse("risk_achievement_worth")
         _, top, occurred, _, _, _, shape = self._conditioned(t)
         with np.errstate(divide="ignore", invalid="ignore"):
             out = {e: occurred[e] / top for e in self.events}
@@ -1638,6 +2149,7 @@ class FaultTree:
         >>> {e: round(v, 3) for e, v in tree.risk_reduction_worth().items()}
         {'pump 1': 1.19, 'pump 2': 1.19, 'valve': 5.95}
         """
+        self._refuse("risk_reduction_worth")
         _, top, _, not_occurred, _, _, shape = self._conditioned(t)
         with np.errstate(divide="ignore", invalid="ignore"):
             out = {e: top / not_occurred[e] for e in self.events}
@@ -1700,6 +2212,7 @@ class FaultTree:
         >>> {e: round(v, 4) for e, v in tree.fussell_vesely().items()}
         {'pump 1': 0.1681, 'pump 2': 0.1681, 'valve': 0.8403}
         """
+        self._refuse("fussell_vesely")
         if fv_type not in ("c", "p"):
             raise ValueError(
                 "fv_type must be either 'c' (cut-set) or 'p' (path-set), "
@@ -1815,6 +2328,7 @@ class FaultTree:
         >>> {g: round(v, 4) for g, v in shares.items()}
         {'pumps': 0.161, 'valve': 0.839}
         """
+        self._refuse("differential_importance")
         from repyability.rbd._differential import CHANGES, shares
 
         if change not in CHANGES:
@@ -1886,6 +2400,7 @@ class FaultTree:
         >>> round(joint[("pump 1", "valve")], 4)  # complements
         0.1
         """
+        self._refuse("joint_importance")
         from repyability.rbd.rbd import Pairs
 
         times, shape = self._times(t)
@@ -1957,6 +2472,7 @@ class FaultTree:
         >>> tree.structural_importance()
         {'pump 1': 0.25, 'pump 2': 0.25, 'valve': 0.75}
         """
+        self._refuse("structural_importance")
         half = {e: np.full(1, 0.5) for e in self.events}
         _, occurred, not_occurred = self._held(half, half, 1)
         return {
@@ -2005,6 +2521,7 @@ class FaultTree:
         >>> {e: round(v, 4) for e, v in tree.improvement_potential().items()}
         {'pump 1': 0.0095, 'pump 2': 0.0095, 'valve': 0.0495}
         """
+        self._refuse("improvement_potential")
         _, _, occurred, not_occurred, _, q, shape = self._conditioned(t)
         return self._out(
             {e: (occurred[e] - not_occurred[e]) * q[e] for e in self.events},
@@ -2097,6 +2614,7 @@ class FaultTree:
         >>> {e: round(v, 6) for e, v in shares.items()}
         {'a': 0.25, 'b': 0.75}
         """
+        self._refuse("barlow_proschan_importance")
         from repyability.rbd._measures import barlow_proschan, life_end
 
         self._require_varying_lifetimes(
@@ -2176,6 +2694,7 @@ class FaultTree:
         >>> {name: round(v, 3) for name, v in sens["c"].items()}
         {'failure_rate': -9.048}
         """
+        self._refuse("parameter_sensitivity")
         from repyability.rbd._model_utils import lever_spec
         from repyability.rbd.ccf import CCFGroup
         from repyability.rbd.non_repairable_rbd import (
@@ -2410,6 +2929,7 @@ class FaultTree:
         >>> round(lower, 3), round(upper, 3)
         (0.409, 0.813)
         """
+        self._refuse("sf_uncertainty")
         return self._rbd().sf_uncertainty(
             t, uncertainty, n_draws=n_draws, seed=seed, sampling=sampling
         )
@@ -2486,6 +3006,7 @@ class FaultTree:
         >>> round(lower), round(upper)
         (515, 1352)
         """
+        self._refuse("mean_uncertainty")
         self._require_lifetimes()
         return self._rbd().mean_uncertainty(
             uncertainty, n_draws=n_draws, seed=seed, sampling=sampling
@@ -2598,6 +3119,7 @@ class FaultTree:
                 "risk_achievement_worth",
                 "risk_reduction_worth",
                 "criticality_importance",
+                "conditional_probabilities",
             ),
             built(
                 r.EXACT,
@@ -2726,7 +3248,56 @@ class FaultTree:
                 + drawn,
             )
         )
+        if self.is_dynamic or not self.is_coherent:
+            self._gate_routes(out, built)
         return r.AnalysisRoutes(sorted(out.items()))
+
+    def _gate_routes(self, out: dict, built) -> None:
+        """The routes of a tree with dynamic or NOT gates, in ``out``:
+        what they refuse, and how the rest is worked out."""
+        from repyability.rbd import routes as r
+
+        for name in list(out):
+            reason = r.refusal(functools.partial(self._refuse, name))
+            if reason:
+                out[name] = r.refused(reason)
+        top = ("top_event_probability", "ff", "sf")
+        if not self.is_dynamic:
+            for name in top:
+                out[name] = built(
+                    r.EXACT,
+                    "The tree's binary decision diagram, NOT gates "
+                    "included, over the events' probabilities, exactly.",
+                )
+            for name in ("birnbaum_importance", "conditional_probabilities"):
+                out[name] = built(
+                    r.EXACT,
+                    "The exact top event probability, from the tree's "
+                    "decision diagram, with each event occurred and not.",
+                )
+            return
+        held = r.refusal(self._require_integrable)
+        for name in top:
+            out[name] = (
+                r.refused(held)
+                if held
+                else built(
+                    r.NUMERICAL,
+                    "Each dynamic gate integrated over its inputs' "
+                    "distributions (a PAND by Stieltjes sums, a SPARE or "
+                    "SEQ by carrying the measure of each unit's failure "
+                    "to the next), to about 1e-8, and the static gates "
+                    "exactly; method='simulate' simulates the dynamic "
+                    "gates instead.",
+                )
+            )
+        out["random"] = AnalysisRoute(
+            r.SIMULATED,
+            "Monte-Carlo times to the top event, the tree simulated in its "
+            "own right: each event's life drawn from its model, the spares "
+            "aged at their dormancy, the sequences and priorities "
+            "followed.",
+        )
 
     # -- conversion --------------------------------------------------------
 
@@ -2764,6 +3335,7 @@ class FaultTree:
         >>> round(rbd.sf(), 4), round(1 - tree.top_event_probability(), 4)
         (0.9405, 0.9405)
         """
+        self._refuse("to_rbd")
         from surpyval import FixedEventProbability
 
         from repyability.rbd.helper_classes import PerfectReliability
@@ -3074,8 +3646,9 @@ class FaultTree:
                     "kind": g.kind,
                     "k": g.k,
                     "inputs": list(g.inputs),
+                    **({"dormancy": g.dormancy} if g.kind == "spare" else {}),
                 }
-                for name, g in self._gates.items()
+                for name, g in self._given.items()
             ],
             "events": events,
         }
@@ -3113,11 +3686,18 @@ class FaultTree:
         gates: Dict[Hashable, tuple] = {}
         for g in d["gates"]:
             inputs = [_node_name(x) for x in g["inputs"]]
-            gates[_node_name(g["gate"])] = (
-                (g["kind"], g["k"], inputs)
-                if g["kind"] == "vote"
-                else (g["kind"], inputs)
-            )
+            if g["kind"] == "vote":
+                gates[_node_name(g["gate"])] = (g["kind"], g["k"], inputs)
+            elif g["kind"] == "fdep":
+                gates[_node_name(g["gate"])] = ("fdep", inputs[0], inputs[1:])
+            elif g["kind"] == "spare":
+                gates[_node_name(g["gate"])] = (
+                    "spare",
+                    g.get("dormancy", 0.0),
+                    inputs,
+                )
+            else:
+                gates[_node_name(g["gate"])] = (g["kind"], inputs)
         events = {
             _node_name(e["event"]): (
                 e["probability"]
@@ -3155,6 +3735,64 @@ class FaultTree:
 
         return write_json(json.dumps(self.to_dict(), **json_kwargs), fp)
 
+    def to_open_psa(
+        self, t: Optional[float] = None, name: str = "fault-tree"
+    ) -> str:
+        """The tree as an Open-PSA Model Exchange Format (MEF) document, the
+        XML that PRA tools (SCRAM, XFTA, RiskSpectrum's importer, ...)
+        read.
+
+        What the format holds is exported: the OR, AND, VOTE (``atleast``)
+        and NOT gates, an FDEP gate as its static equivalent (each event
+        it forces an OR of the event and its triggers), events given as
+        probabilities, exponential and Weibull lives as expressions of the
+        mission time, and common-cause groups of the beta-factor model
+        splitting a probability. A name that is not an MEF identifier is
+        made one, the name as given kept as its ``label``.
+
+        Parameters
+        ----------
+        t : float, optional
+            A time at which to export every event's probability, for
+            events whose models the format has no expression for; by
+            default None: each event as its model.
+        name : str, optional
+            The fault tree's name in the document, by default
+            ``"fault-tree"``.
+
+        Returns
+        -------
+        str
+            The document.
+
+        Raises
+        ------
+        NotImplementedError
+            For a tree with dynamic gates (PAND, SPARE, SEQ), which the
+            format has no gates for; for an event whose model it has no
+            expression for, unless ``t`` is given; and for a common-cause
+            group of another model or basis.
+
+        Examples
+        --------
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"no cooling": ("or", ["valve", "no flow"]),
+        ...      "no flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+        ... )
+        >>> line = tree.to_open_psa().splitlines()[3]
+        >>> line.startswith('    <define-gate name="no_cooling"><label>')
+        True
+        """
+        from repyability._ft_open_psa import to_open_psa
+
+        if t is not None:
+            if np.ndim(t) != 0:
+                raise ValueError("t must be a single number.")
+            t = float(real_array(t, "t"))
+        return to_open_psa(self, t, name)
+
     @classmethod
     def from_json(cls, s) -> "FaultTree":
         """Rebuild a tree from ``to_json``'s output.
@@ -3173,6 +3811,50 @@ class FaultTree:
         from repyability.utils.json_io import read_json
 
         return cls.from_dict(json.loads(read_json(s)))
+
+
+def _without_fdep(given: Dict[Hashable, _Gate], events) -> dict:
+    """The gates with each functional dependency written out: a basic
+    event an FDEP gate forces is replaced, wherever it is an input, by an
+    OR gate (named ``Forced(event)``) of itself and its triggers, so it
+    occurs at the first of its own occurrence and theirs. The FDEP gates
+    themselves, which have no output, are left out."""
+    triggers: Dict[Hashable, List[Hashable]] = {}
+    for name, gate in given.items():
+        if gate.kind != "fdep":
+            continue
+        trigger, *dependents = gate.inputs
+        for d in dependents:
+            if d not in events:
+                raise ValueError(
+                    f"FDEP gate {name!r}: the dependent {d!r} must be a "
+                    "basic event."
+                )
+            if trigger not in triggers.setdefault(d, []):
+                triggers[d].append(trigger)
+    if not triggers:
+        return dict(given)
+    for name, gate in given.items():
+        held = gate.inputs[1:] if gate.kind == "spare" else gate.inputs
+        if gate.kind in ("spare", "seq") and set(held) & set(triggers):
+            raise NotImplementedError(
+                f"{gate.kind.upper()} gate {name!r}: an event an FDEP gate "
+                f"forces ({sorted(map(str, set(held) & set(triggers)))}) as a "
+                + ("spare" if gate.kind == "spare" else "member of a sequence")
+                + " is not supported."
+            )
+
+    def place(x):
+        return Forced(x) if x in triggers else x
+
+    out: Dict[Hashable, _Gate] = {
+        name: gate._replace(inputs=tuple(place(x) for x in gate.inputs))
+        for name, gate in given.items()
+        if gate.kind != "fdep"
+    }
+    for d, ts in triggers.items():
+        out[Forced(d)] = _Gate("or", 1, (d, *(place(t) for t in ts)))
+    return out
 
 
 def _pruned(

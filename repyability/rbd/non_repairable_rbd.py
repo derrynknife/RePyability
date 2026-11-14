@@ -48,6 +48,7 @@ from . import _montecarlo as montecarlo
 from . import _sensitivity
 from . import capacity as _capacity
 from . import redundancy_allocation
+from ._bayesian_life import PosteriorPredictive, as_life
 from ._degradation import check_life, is_degradation
 from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 from ._measures import (
@@ -72,6 +73,7 @@ from ._model_utils import (
     parametric_spec,
     refuse_nonparametric,
 )
+from ._overrides import life_now, unit_life
 from ._sampling import RowSampler, column, inverse_sampler, row_sampler
 from .ccf import VALIDITY, BetaFactor, CCFGroup, as_groups, checked_groups
 from .ccf import parameters as ccf_parameters
@@ -110,11 +112,18 @@ from .results import (
 from .routes import EXACT, NUMERICAL, AnalysisRoute, Refused, model_route
 from .standby_node import StandbyModel
 from .uncertainty import (
+    GIVEN,
+    band,
+    carried,
     check_draws,
     draw_ccf_models,
     draw_models,
     draw_with,
     fitted_together,
+    input_band,
+    model_values,
+    moved_model,
+    shares_fit,
     split_group_levers,
     varied_ccf_parameters,
     varied_parameters,
@@ -377,6 +386,25 @@ def _check_joint_state(node, model, state: NodeState) -> None:
             "or alive=False); for the unit at another age, predict again "
             "with given= that age and its readings since."
         )
+
+
+def _stateable(model) -> bool:
+    """True if a single scalar age applies unambiguously to ``model``.
+
+    Excludes the composite / dynamic node models -- a standby arrangement,
+    a repeated node, and a nested RBD -- whose conditioning semantics are
+    out of scope for condition-based evaluation in this release.
+    """
+    return not isinstance(
+        model,
+        (
+            StandbyModel,
+            RepeatedStandbyNode,
+            LoadSharingModel,
+            RepeatedNode,
+            RBD,
+        ),
+    )
 
 
 def _check_model(node, model) -> None:
@@ -655,7 +683,7 @@ class NonRepairableRBD(RBD):
         # PerfectReliability() stands for the class (#232).
         # A joint model's prediction is the JointNode of its unit.
         reliabilities = {
-            node: perfect_class(as_node(model))
+            node: perfect_class(as_life(as_node(model)))
             for node, model in reliabilities.items()
         }
         self._init_args = {
@@ -1759,7 +1787,12 @@ class NonRepairableRBD(RBD):
           logit scale for one in (0, 1), so that every draw is valid:
           the distribution's parameters and a limited failure population's
           ``lfp_p`` or a zero-inflated fit's ``f0``; an offset, which the
-          covariance leaves out, keeps its fitted value, with a warning;
+          covariance leaves out, keeps its fitted value, with a warning.
+          For a node given a Bayesian fit, ``"fit"`` draws its posterior
+          itself: each draw a posterior point picked by its probability
+          (from the exact family of a conjugate posterior), the node in
+          that draw the plain distribution at that point. The nominal
+          value stays the posterior predictive's;
         - ``{parameter name: distribution}``: each named parameter is drawn
           from its distribution (anything with ``qf`` or ``ppf``, such as a
           surpyval or scipy.stats distribution), the others kept;
@@ -1800,7 +1833,8 @@ class NonRepairableRBD(RBD):
             nodes, and ``{CCFGroup: uncertainty}`` for an uncertain
             common-cause model (see above). The other nodes and groups
             keep their models. By default, every node whose model is a
-            surpyval fit with a parameter covariance is drawn as ``"fit"``,
+            surpyval fit with a parameter covariance, or a Bayesian fit,
+            is drawn as ``"fit"``,
             the nodes that share one model object (or a common-cause group)
             together. Nodes with separate but equal fits are drawn apart,
             which understates the uncertainty if they are one estimate:
@@ -1820,8 +1854,10 @@ class NonRepairableRBD(RBD):
         UncertaintyResult
             The system reliability of every draw (``samples``), the nominal
             value with the nodes' own models, and summaries: ``mean``,
-            ``median``, ``std``, ``percentile`` and ``interval`` (see
-            [`UncertaintyResult`][repyability.UncertaintyResult]).
+            ``median``, ``std``, ``percentile`` and ``interval``, and what
+            the band is (``band``: a credible band from Bayesian fits, a
+            confidence band from fits' covariances, ``"mixed"`` over
+            both; see [`UncertaintyResult`][repyability.UncertaintyResult]).
 
         Raises
         ------
@@ -1883,7 +1919,7 @@ class NonRepairableRBD(RBD):
         >>> round(lower, 3), round(upper, 3)
         (0.401, 0.795)
         """
-        drawn, drawn_groups = self._uncertain_draws(
+        drawn, drawn_groups, kind = self._uncertain_run(
             uncertainty, n_draws, seed, sampling
         )
 
@@ -1910,11 +1946,13 @@ class NonRepairableRBD(RBD):
                 samples=samples[:, 0],
                 nominal=float(nominal.reshape(-1)[0]),
                 n_draws=n_draws,
+                band=kind,
             )
         return UncertaintyResult(
             samples=samples.reshape((n_draws,) + np.shape(x)),
             nominal=nominal.reshape(np.shape(x)),
             n_draws=n_draws,
+            band=kind,
         )
 
     def _quantity_samples(
@@ -2096,14 +2134,17 @@ class NonRepairableRBD(RBD):
         (515, 1352)
         """
         self._require_lifetimes()
-        drawn, drawn_groups = self._uncertain_draws(
+        drawn, drawn_groups, kind = self._uncertain_run(
             uncertainty, n_draws, seed, sampling
         )
         samples = self._quantity_samples(
             "mean", None, drawn, drawn_groups, n_draws
         )
         return UncertaintyResult(
-            samples=samples, nominal=self._exact_mean(), n_draws=n_draws
+            samples=samples,
+            nominal=self._exact_mean(),
+            n_draws=n_draws,
+            band=kind,
         )
 
     def time_to_reliability_uncertainty(
@@ -2191,7 +2232,7 @@ class NonRepairableRBD(RBD):
                 "target reliability must be in (0, 1) (or an array of "
                 f"such), got {target!r}."
             )
-        drawn, drawn_groups = self._uncertain_draws(
+        drawn, drawn_groups, kind = self._uncertain_run(
             uncertainty, n_draws, seed, sampling
         )
         samples = self._quantity_samples(
@@ -2204,7 +2245,7 @@ class NonRepairableRBD(RBD):
         )
         nominal = self.time_to_reliability(target, upper_bound=upper_bound)
         return UncertaintyResult(
-            samples=samples, nominal=nominal, n_draws=n_draws
+            samples=samples, nominal=nominal, n_draws=n_draws, band=kind
         )
 
     def bx_life_uncertainty(
@@ -2327,7 +2368,9 @@ class NonRepairableRBD(RBD):
         ``covariance()``) for ``"fit"``, or the variances of the distributions
         given. The inputs are independent, so each one's part is its own
         term and the shares add up to 1. A list of models has no
-        parameters to move: it needs ``method="sobol"``.
+        parameters to move, nor a Bayesian fit one value of them (its
+        posterior need not be near a normal): they need
+        ``method="sobol"``.
 
         ``method="sobol"`` draws the inputs as ``sf_uncertainty`` does and
         estimates the variance-based (Sobol) indices: ``n_draws`` draws of
@@ -2547,19 +2590,23 @@ class NonRepairableRBD(RBD):
         for k, (_, members, _) in enumerate(sources):
             model = self.reliabilities[members[0]]
             positions = varied[k][0]
-            spec = parametric_spec(model)
-            assert spec is not None
+            values = model_values(model)
+            label = (
+                f"Node {members[0]!r}"
+                if len(members) == 1
+                else f"Nodes {list(members)!r}"
+            )
             models = []
             for which, move in configurations:
                 if which != k:
                     models.append(model)
                     continue
                 j, moved = move
-                changed = list(spec.params)
+                changed = values.copy()
                 changed[positions[j]] = moved
-                models.append(spec.build(changed))
+                models.append(moved_model(model, changed, label))
             for node in members:
-                drawn[node] = models
+                drawn[node] = carried(models, model, self.reliabilities[node])
         drawn_groups: list = [None] * len(self.ccf_groups)
         for offset, i in enumerate(groups):
             k = len(sources) + offset
@@ -2666,6 +2713,21 @@ class NonRepairableRBD(RBD):
 
         check_draws(n_draws)
         sources, ccf_specs = self._uncertainty_sources(uncertainty)
+        return self._draws_of(
+            sources, ccf_specs, n_draws, seed, sampling, paired
+        )
+
+    def _draws_of(
+        self,
+        sources,
+        ccf_specs,
+        n_draws: int,
+        seed,
+        sampling: str = "random",
+        paired: bool = False,
+    ) -> Tuple[Dict[Hashable, list], list]:
+        """``_uncertain_draws`` of the inputs ``_uncertainty_sources``
+        gave."""
 
         def draw(n: int, source) -> Tuple[Dict[Hashable, list], list]:
             drawn: Dict[Hashable, list] = {}
@@ -2675,11 +2737,12 @@ class NonRepairableRBD(RBD):
                     if len(members) == 1
                     else f"Nodes {list(members)!r}"
                 )
-                models = draw_models(
-                    self.reliabilities[members[0]], spec, n, source, label
-                )
+                first = self.reliabilities[members[0]]
+                models = draw_models(first, spec, n, source, label)
                 for node in members:
-                    drawn[node] = models
+                    drawn[node] = carried(
+                        models, first, self.reliabilities[node]
+                    )
             # The common-cause models after the nodes', so that the nodes'
             # draws are the same whether or not they are uncertain.
             groups: list = [
@@ -2719,10 +2782,10 @@ class NonRepairableRBD(RBD):
             if not uncertainty:
                 raise ValueError(
                     "No node's model is a surpyval fit with a parameter "
-                    "covariance, which the uncertainty is drawn from by "
-                    "default: give the uncertain nodes, uncertainty={node: "
-                    "'fit'} or {node: {parameter: distribution}}, for "
-                    "example."
+                    "covariance, or a Bayesian fit, which the uncertainty "
+                    "is drawn from by default: give the uncertain nodes, "
+                    "uncertainty={node: 'fit'} or {node: {parameter: "
+                    "distribution}}, for example."
                 )
         if not uncertainty:
             raise ValueError(
@@ -2780,10 +2843,15 @@ class NonRepairableRBD(RBD):
                 seen.add(node)
             model = self.reliabilities[members[0]]
             for node in members[1:]:
-                if not self._same_model(self.reliabilities[node], model):
+                theirs = self.reliabilities[node]
+                if not (
+                    self._same_model(theirs, model)
+                    or shares_fit(theirs, model)
+                ):
                     raise ValueError(
                         f"Nodes {list(members)!r} share their uncertainty, "
-                        "so they must have the same model."
+                        "so they must have the same model (or regression "
+                        "nodes of the same regression fit)."
                     )
             sources.append((key, tuple(members), spec))
         # A common-cause group's members carry one model, so they share
@@ -2813,7 +2881,7 @@ class NonRepairableRBD(RBD):
                     for node in self.nodes
                     if node not in seen
                     and node not in self.repeated
-                    and self.reliabilities[node] is model
+                    and shares_fit(self.reliabilities[node], model)
                 ]
                 if others:
                     label = (
@@ -2843,6 +2911,30 @@ class NonRepairableRBD(RBD):
             },
             (group.members for group in self.ccf_groups),
         )
+
+    def _band(self, sources, ccf_specs) -> str:
+        """What the band over draws of the inputs ``_uncertainty_sources``
+        gave is (``uncertainty.band``): credible, confidence, given or
+        mixed."""
+        return band(
+            [
+                input_band(self.reliabilities[members[0]], spec)
+                for _, members, spec in sources
+            ]
+            + [GIVEN] * len(ccf_specs)
+        )
+
+    def _uncertain_run(
+        self, uncertainty, n_draws: int, seed, sampling: str
+    ) -> Tuple[Dict[Hashable, list], list, str]:
+        """``_uncertain_draws``'s draws, and what their band is
+        (``_band``)."""
+        check_draws(n_draws)
+        sources, ccf_specs = self._uncertainty_sources(uncertainty)
+        drawn, groups = self._draws_of(
+            sources, ccf_specs, n_draws, seed, sampling
+        )
+        return drawn, groups, self._band(sources, ccf_specs)
 
     def _drawn_groups(self, drawn_groups: list, i: int) -> Optional[list]:
         """The common-cause groups of draw ``i`` (see ``_uncertain_draws``),
@@ -5371,6 +5463,18 @@ class NonRepairableRBD(RBD):
             if grouped
             else ""
         )
+        bayesian = [
+            node
+            for node in self.nodes
+            if isinstance(self.reliabilities[node], PosteriorPredictive)
+        ]
+        groups_drawn += (
+            f" A Bayesian block ({', '.join(map(repr, bayesian))}) is drawn "
+            "from its posterior, a credible band, its nominal value the "
+            "posterior predictive."
+            if bayesian
+            else ""
+        )
         # Each draw is worked out exactly, from the drawn nodes'
         # reliabilities: refused, as sf is, where a node has none.
         out["sf_uncertainty"] = built(
@@ -5383,7 +5487,15 @@ class NonRepairableRBD(RBD):
             "The delta method: the exact quantity's derivative in each "
             "uncertain parameter, by central differences, with their "
             "covariance (method='sobol' estimates Sobol indices from draws "
-            "instead)." + groups_drawn,
+            "instead)."
+            + groups_drawn
+            + (
+                " The delta method refuses a Bayesian block, which has a "
+                "posterior, not one value of its parameters to move: "
+                "method='sobol' takes it."
+                if bayesian
+                else ""
+            ),
         )
         no_lifetimes = r.refusal(self._require_lifetimes)
         out["mean_uncertainty"] = (
@@ -6981,22 +7093,9 @@ class NonRepairableRBD(RBD):
     # -- Condition-based ("digital twin") evaluation -----------------------
 
     def _node_is_stateable(self, model) -> bool:
-        """True if a single scalar age applies unambiguously to ``model``.
-
-        Excludes the composite / dynamic node models -- a standby arrangement,
-        a repeated node, and a nested RBD -- whose conditioning semantics are
-        out of scope for condition-based evaluation in this release.
-        """
-        return not isinstance(
-            model,
-            (
-                StandbyModel,
-                RepeatedStandbyNode,
-                LoadSharingModel,
-                RepeatedNode,
-                RBD,
-            ),
-        )
+        """True if a single scalar age applies unambiguously to ``model``
+        (see ``_stateable``)."""
+        return _stateable(model)
 
     def _validate_state(self, state) -> dict:
         """A condition-based ``state`` mapping, validated, with a plain
@@ -7043,7 +7142,12 @@ class NonRepairableRBD(RBD):
                     f"distribution components in this release; node {node!r} "
                     f"is a {type(self.reliabilities[node]).__name__}."
                 )
-            _check_joint_state(node, self.reliabilities[node], node_state)
+            life = self.reliabilities[node]
+            if node_state.alive and node_state.own_life:
+                # Its own model, if given, stands in for the node's, and a
+                # level is checked against the life it is of.
+                life = unit_life(node, life, node_state)
+            _check_joint_state(node, life, node_state)
         return state
 
     def _state_node_probabilities(self, x, state) -> Dict[Any, ArrayLike]:
@@ -7052,7 +7156,9 @@ class NonRepairableRBD(RBD):
         ``x`` is a 1-d array. Each node conditions on its own current life: a
         node absent from ``state`` uses its unconditioned reliability (age 0),
         a failed node contributes zero, and an alive node of age ``X``
-        contributes ``conditional_survival(model, x, X) = sf(X + x) / sf(X)``.
+        contributes ``conditional_survival(model, x, X) = sf(X + x) / sf(X)``,
+        of its own model if its state gives one; one at a measured level, the
+        first passage from it (see ``_overrides.life_now``).
         """
         self._require_no_ccf_for_states()
         state = self._validate_state(state)
@@ -7065,13 +7171,16 @@ class NonRepairableRBD(RBD):
                 node_probabilities[node_name] = np.atleast_1d(
                     PerfectUnreliability.sf(x)
                 )
-            elif isinstance(model, JointNode):
-                # Its reliability is from now already, at its age (which
-                # the state repeats, _check_joint_state).
-                node_probabilities[node_name] = np.atleast_1d(model.sf(x))
             else:
+                # The unit's own life (from its level, or its own model),
+                # or the node's, at its age; a joint model's unit and a
+                # life from a level are from now already (at the age the
+                # state repeats, _check_joint_state).
+                life, age = life_now(node_name, model, node_state)
                 node_probabilities[node_name] = np.atleast_1d(
-                    conditional_survival(model, x, node_state.age)
+                    life.sf(x)
+                    if age is None
+                    else conditional_survival(life, x, age)
                 )
         return node_probabilities
 
@@ -7097,7 +7206,10 @@ class NonRepairableRBD(RBD):
         A node that is alive at age ``X_i`` contributes ``R_i(x | X_i)``
         (0 where ``R_i(X_i)`` is 0), a failed node (``alive=False``)
         contributes 0, and a node left out of ``state`` contributes its
-        ordinary reliability ``R_i(x)``, as if new.
+        ordinary reliability ``R_i(x)``, as if new. A state's ``model``
+        takes the place of ``R_i`` for the unit, and a measured ``level``
+        of a degradation process makes its reliability the first passage
+        from that level (see [`NodeState`][repyability.NodeState]).
 
         Parameters
         ----------
@@ -7313,7 +7425,19 @@ class NonRepairableRBD(RBD):
             bends = np.asarray(model_kinks(model), dtype=float)
             knots.append(own)
             kinks.append(bends)
-            age = getattr(state.get(node), "age", None)
+            node_state = state.get(node)
+            age = getattr(node_state, "age", None)
+            if (
+                isinstance(node_state, NodeState)
+                and node_state.alive
+                and node_state.own_life
+            ):
+                # The unit's own life, from now or at its age.
+                life, age = life_now(node, model, node_state)
+                own = np.asarray(model_knots(life), dtype=float)
+                bends = np.asarray(model_kinks(life), dtype=float)
+                knots.append(own)
+                kinks.append(bends)
             if age:
                 knots.append(own - float(age))
                 kinks.append(bends - float(age))

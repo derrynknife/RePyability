@@ -18,17 +18,31 @@ use cases, under the same numbers.
 
 | # | The question here, in model time | State |
 |---|---|---|
-| UC-1 | A system's expected maintenance work in each of a run of windows from its state | Answered by hand |
+| UC-1 | A system's expected maintenance work in each of a run of windows from its state | **Built**: `RepairableRBD.expected_events_by_window` (#375) |
 | UC-2, UC-3, UC-4 | Tasks on dates and monthly rules: calendar only | Reliafy's |
 | UC-5 | A part's chance of failing, expected failures and their cost over a window, from its age | **Built**: `NonRepairable.failures` |
-| UC-6 | Right after a failure, the value of skipping the next planned replacement | **Built**: `NonRepairable.skip_next_replacement` |
+| UC-6 | Right after a failure, the value of skipping the next planned replacement; and, from any state, replace, defer, move to a shut or skip compared | **Built**: `NonRepairable.skip_next_replacement`, and `NonRepairable.compare_replacement_options` |
 | UC-7 | The cheapest replacement policy when replacing at a shut is cheaper than between shuts | Built as `replacement_policies`, then removed: UC-13 answers it |
-| UC-8 | Each policy's cost over a window from a state, and its spread | Answered by hand |
-| UC-9 | The cost in each of a run of windows from a state, and how often each outcome happens | Answered by hand |
+| UC-8 | Each policy's cost over a window from a state, and its spread | **Built** for a part: `NonRepairable.cost_distribution` (run to failure, age and block replacement, and a calendar policy, `calendar=`); a system's simulated by `RepairableRBD.cost_by_window` |
+| UC-9 | The cost in each of a run of windows from a state, and how often each outcome happens | **Built** for a part: `NonRepairable.cost_by_window` (the same policies); a system's simulated by `RepairableRBD.cost_by_window` (#375) |
 | UC-10 | Tasks by use on an operating schedule: calendar only | Reliafy's |
-| UC-11 | A part renewed at every service and at failure: its risk before each service, from its state, in running hours | Answered by hand |
+| UC-11 | A part renewed at every service and at failure: its risk before each service, from its state, in running hours | **Built**: `NonRepairable.renewal_forecast` |
+| UC-14 | The best visit interval and depth ratio for a layered package of visits | **Built**: `optimal_layered_visits` |
+| UC-15 | The cost and risk of letting a task slip by a tolerance | **Built**: `NonRepairable.slack_effect` |
+| UC-16 | The extra risk and cost of rounding a due replacement up to the next visit | **Built**: `NonRepairable.cost_of_waiting_for_visit` |
+| UC-18 | The numbers behind each maintenance decision for a failure mode: run to failure, scheduled replacement, failure finding, on condition | **Built**: `run_to_failure`, `scheduled_replacement`, `failure_finding`, `on_condition` |
+| UC-17 | The risk added when a visit is missed and its work waits | **Built**: `NonRepairable.cost_of_missed_visit` (and `delay_effect`) |
 | UC-12 | When to replace this part next: now, at a scheduled outage, at a planned replacement, or at its failure? | **Built**: `NonRepairable.optimal_next_replacement` |
 | UC-13 | The long-run optimal replacement policy over a calendar of shuts with prices of their own | **Built**: `NonRepairable.optimal_calendar_policy` |
+| UC-19 | What a plan is worth over a horizon at a discount rate, and as a yearly cost | **Built**: `RepairableRBD.expected_npv`, `NonRepairable.age_replacement_value` |
+| UC-20 | One unit run on an operating schedule (covariates and value by stretch, in model time): the value earned, the failures' cost and the NPV, and the best time to switch from one way of running to another | **Built** (one unit): `operating_schedule_value`, `best_switch_time` |
+| UC-21 | A plan against its outage log: expected and actual cash flows so far, the variance, and the plan re-valued from the states now | **Built**: `RepairableRBD.plan_vs_actual` |
+| UC-22 | Overhauls that restore a unit only partly (a Kijima restoration factor), every Nth replacing it: availability, failures and cost per year against overhauls that renew it, and the cheapest interval | **Built**: a `"preventive"` spec's `"restoration"`, `"replace_every"` and `"replacement_cost"`, simulated (#398) |
+| UC-23 | The line is shut 3 days every 12 months, every block gets its PM then and the bearing is replaced if older than X: availability, the shut's share of the downtime and cost, failures between shuts, and whether a 9- or 18-month shut is cheaper | **Built**: `RepairableRBD(shutdowns=...)`, tasks bound with `"shutdown"` and `"older_than"`; exact and numerical |
+| UC-24 | Outages on a timeline: shuts at given times with a duration and a scope (renew some blocks, restore others), the plan's cost by window and its NPV | **Built in part**: the same `shutdowns` at `"times"`, simulated (`availability`, `cost`); the exact cost by window and NPV take shuts on a period only |
+| UC-25 | How much of the downtime and lost production is planned and how much is from failures, and how many failures the plan avoids against running to failure | **Built**: `RepairableRBD.maintenance_effect`, and the split in `ExpectedEvents`, `EventsByWindow`, `AvailabilityResult` and `CostResult`; exact where the blocks fail independently, simulated otherwise |
+| UC-26 | A pump run part of the time with its overhaul counted in running hours: availability and cost, and at another duty | **Built**: a `"preventive"` or `"inspection"` spec's `"basis": "operating"`, put on the calendar through the block's `"duty"` |
+| UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
 
@@ -76,7 +90,10 @@ Keep to the project's rules (`CLAUDE.md`):
 (First asked month by month; months, as dates, are Reliafy's, and a
 window of 730 hours stands for a month here.)
 
-- **Status:** answered by hand with today's RePyability; not built.
+- **Status:** built: `RepairableRBD.expected_events_by_window(ends, state=)`
+  and `EventsByWindow` (#375), each window's counts in one call (the
+  differences below, a hair below 0 shown as 0). The record below is
+  the hand-worked answer it was checked against.
 - **Who asks, and why:** a planner building the next year's work and
   budget for one system already in service.
 - **What they know:** the system's diagram, each component's fitted life
@@ -356,6 +373,24 @@ question here is the model-time one it becomes.)
     on the part (`NonRepairable`). Deferring, or moving to a shut, are
     UC-12's and UC-13's.
 
+- **Extended (compared from any state):**
+  `NonRepairable.compare_replacement_options(age, due_in, every, *,
+  defer_by=, shuts=, discount_rate=)` replaces the one-purpose
+  comparison with every option side by side, as present-value costs from
+  the part's age now, on a plan of fixed times: replace as planned,
+  replace now, defer by given amounts, move to a shut (a time and its own
+  price), or skip. Each is costed to the following planned replacement,
+  where every option has a new part in: `F_age(u) + exp(-r u) (price +
+  F_0(horizon - u))`, with `F_a(t)` a part `a` old's failures' discounted
+  cost (exact, a `RepairableRBD` component). For a new part it agrees with
+  `skip_next_replacement` to 1e-9 (the table above), and every option
+  matches a seeded simulation of that plan within four standard errors.
+  Replacements that reset (age replacement) are not compared here: the
+  options shift the later replacements, which `skip_next_replacement`
+  (`resets=True`) works out. This is the first RCM calculator
+  (`NonRepairable.compare_replacement_options` and `scheduled_replacement`
+  share its numbers).
+
 ### UC-7: "Replacing the bearing at a shut (every 180 days) costs $100, a planned replacement between shuts $150, and one at a failure $400. Which replacement policy is cheapest in the long run?"
 
 - **Status:** built as `replacement_policies(life, shut_every=,
@@ -459,7 +494,14 @@ question here is the model-time one it becomes.)
 (First asked over a timeline of dates; the windows here are the days
 from now to the end of each quarter, as Reliafy would turn them.)
 
-- **Status:** answered by hand with today's RePyability; not built.
+- **Status:** built for one part under run to failure, age replacement
+  and block replacement: `NonRepairable.cost_distribution(window, every,
+  *, resets, age=, since_renewal=)` and `CostDistribution` (numerical by
+  default, `method="simulate"` as the check); and under a calendar policy
+  such as UC-7's best (at a shut if at least 138 days old), the
+  `CalendarPolicy` of `optimal_calendar_policy`: `cost_distribution(window,
+  calendar=policy, age=)`, numerical too. The answer by hand below is the
+  check.
 - **Who asks, and why:** the planner of UC-7: a long-run cost a day says
   which policy is cheapest, but a budget starts from the bearing as it
   is, and needs to know how far the spend can stray from the mean.
@@ -468,7 +510,7 @@ from now to the end of each quarter, as Reliafy would turn them.)
   interval).
 - **What they want back:** the cost over windows of 82, 447, 813 and 1,086
   days from now: its mean and its spread (10th, 50th, 90th percentiles).
-- **The answer** (dollars):
+- **The answer by hand** (dollars, 20,000 simulations):
 
   **The best policy** (at a shut if at least 138 days old):
 
@@ -493,20 +535,159 @@ from now to the end of each quarter, as Reliafy would turn them.)
   - **The spend comes in steps** ($100 at a shut, $400 at a failure), so
     the percentiles jump.
   - **The best policy lowers the mean more than the spread.**
-- **How it is solved:**
+- **How it was solved by hand:**
   - **the mean:** `RepairableRBD.expected_cost(t, state=...)`, exact, from
     `NodeState(age=224, since_scheduled=159)`;
-  - **the spread:** simulated, as a spread must be:
-    `RepairableRBD.cost(t, state=..., seed=...)` for each window with one
-    seed. Simulation *r* draws the same lives whatever the window, so the
-    runs to each window are the same histories cut off there.
-- **Checks:** the simulated means agree with the exact ones within $2
-  (20,000 simulations each).
-- **Learned:** each window's spread must come from the same simulations,
-  or the 90th percentiles of longer windows need not even rise; the
-  seeded streams give that for free. What RePyability could give in one
-  call: a policy's cost over several windows from a state, its mean exact
-  and its distribution from one run.
+  - **the spread:** simulated: `RepairableRBD.cost(t, state=...,
+    seed=...)` for each window with one seed. Simulation *r* draws the
+    same lives whatever the window, so the runs to each window are the
+    same histories cut off there.
+- **How it is solved, as built:** the cost over the window is `cu N_f +
+  cp N_p`, the failures and the planned replacements in it, so the joint
+  distribution of the two counts gives everything: the mean, the standard
+  deviation, every percentile, each outcome's chance and the chance of
+  exceeding a budget.
+  - **Age replacement and run to failure.** The part's history is a run
+    of cycles, each ending in a failure (before age *T*) or a planned
+    replacement (at exactly *T*); the part in now has a first cycle of its
+    own, from its age. A planned cycle has a fixed length, so *i* failure
+    cycles and *j* planned ones take the failure cycles' total plus *jT*
+    whatever their order: the chance of *(i, j)* is a binomial count of
+    orders times the chance that the failure cycles' total, shifted by
+    *jT*, ends before the window's end with the next cycle running past
+    it. The totals' distributions are convolutions of the failure cycle's,
+    worked out on a grid (exact cell increments, the trapezoidal rule in
+    the measure, error falling as the step squared), sized from the
+    lives' spread, never in absolute time. Run to failure is *T*
+    infinite.
+  - **Block replacement.** The planned replacements fall at fixed times,
+    so their number is known, and between them the part runs to failure
+    from new: the failures are a sum of independent counts, one for each
+    stretch (the first from the part's age), and their distribution is the
+    stretches' convolved.
+  - **Precision.** Worked out again on a grid twice as coarse; the
+    largest change of any probability, plus the mass the counts leave
+    out, is reported as `precision` (1e-9 to 3e-6 for the bearing; about
+    three times the true error, which the exponential checks measure).
+  - **Simulated** (`method="simulate"`, seeded): the part's cycles drawn
+    from its life, each count's share of the simulations.
+- **As built** (the bearing, 224 days old, the next shut in 21 days):
+
+  ```python
+  bearing = NonRepairable(surv.Weibull.from_params([365.0, 2.0]),
+                          planned_cost=100.0, unplanned_cost=400.0)
+  shuts = bearing.cost_distribution(1086.0, 180.0, resets=False,
+                                    age=224.0, since_renewal=159.0, budget=1500.0)
+  shuts.mean, shuts.percentiles, shuts.probability_above_budget
+  # 1155.0, [600, 1000, 1800], 0.151
+  ```
+
+  | Window (days) | Every shut: mean | 10% | 50% | 90% | Run to failure: mean | 10% | 50% | 90% |
+  |---|---|---|---|---|---|---|---|---|
+  | 82 | 139.6 | 100 | 100 | 100 | 113.2 | 0 | 0 | 400 |
+  | 447 | 521.5 | 300 | 300 | 700 | 583.6 | 400 | 400 | 800 |
+  | 813 | 903.9 | 500 | 900 | 1,300 | 1,035.3 | 800 | 1,200 | 1,600 |
+  | 1,086 | 1,155.0 | 600 | 1,000 | 1,800 | 1,372.9 | 800 | 1,200 | 2,000 |
+
+  Over 1,086 days, the shut policy makes six planned replacements for
+  certain, and 0, 1, 2 or 3 failures with chances 22%, 36%, 26% and 11%;
+  the chance of spending more than $1,500 is 15% with the shuts and 44%
+  run to failure.
+- **Checks:** by hand, the simulated means agreed with the exact ones
+  within $2 (20,000 simulations each). As built
+  (`test_maintenance_cost_spread.py`): the figures by hand over 1,086 days
+  (the means and percentiles of every shut and of run to failure);
+  an exponential life run to failure (failures Poisson(λW) from any age:
+  each probability within the precision reported, the mean, variance, P90
+  and the chance of exceeding a budget); an exponential life under age
+  replacement with no chance of a planned replacement in the window
+  (Poisson) and with exactly one (`P(k, 1) = exp(-λτ) pois(k, λ(W - τ))`,
+  `P(k, 0) = pois(k, λW) - P(k, 1)`); a life close to fixed (Weibull of
+  shape 60: two failures nearly surely); from an aged start, the chance of
+  a failure is the conditional life's, and `P(0, 0) = R(a + W) / R(a)`
+  under each policy; the mean against the module's expected cost
+  (`failures` and a one-component `RepairableRBD`'s `expected_cost`) for
+  each policy, at three ages and two windows (to 2e-6); the simulation
+  against the numerical route (every probability within four standard
+  errors); the same probabilities with time in units from 1e-6 to 1e6;
+  JSON; the input checks.
+- **Learned:**
+  - **The steps matter.** Every shut's 90th percentile over 447 days is
+    $700, three planned replacements and one failure, while the median
+    is three replacements alone: a budget range from the percentiles
+    alone hides the jump, which the outcomes show.
+  - **By hand,** each window's spread had to come from the same
+    simulations, or the 90th percentiles of longer windows need not even
+    rise; the seeded streams gave that for free. As built, each window is
+    worked out exactly on its own, so the percentiles rise with the
+    window by construction.
+- **The best policy, as built** (UC-7's: a calendar policy). The asker
+  has the policy from `optimal_calendar_policy` and wants the range its
+  budget should carry, as for the simpler policies.
+  - **Why the other policies' method does not carry over.** Under age
+    replacement every cycle of a new part has one distribution, so the
+    counts are convolutions of it. Under a calendar policy a part put in
+    at time `s` is next replaced as planned at a time `pi(s)` the policy
+    fixes (the first opportunity at which it is at least the threshold),
+    so cycles differ by when they start.
+  - **How it is solved:** on a grid of half the policy's own step, the
+    expected renewals at each grid time are kept by the counts so far:
+    failures, and planned replacements by kind of opportunity (their
+    prices differ). The renewals of a count pass a planned replacement to
+    the count with one more of its kind, and their failures to the count
+    with one more failure, so the counts are taken in order, none needing
+    a sweep in time: a count's failures by cell are one convolution (FFT)
+    of its renewals for each value `pi(s)` takes, cut there. Before the
+    window nothing is counted, and the renewals are followed forward in
+    time (the renewal measure). A failure in a cell renews half at each
+    end of it (the trapezoidal rule), and a renewal at a grid time takes
+    half of each neighbouring cell's `pi`, so a threshold on a grid time
+    splits it; the error falls as the step squared. Worked out again on
+    the policy's step, the largest change of a probability (plus any
+    mass left out) is `precision`. Numerical; simulated with
+    `method="simulate"` (each cycle's planned time asked of the policy,
+    as a `RepairableRBD` asks it).
+  - **The answer** (the policy worked out by `optimal_calendar_policy` for
+    a shut every 180 days, the next in 21, at $100, a failure at $400):
+
+    ```python
+    plant = Calendar([Opportunity("shut", 100.0, period=180.0, offset=21.0)],
+                     anytime=None)
+    best = bearing.optimal_calendar_policy(plant)     # at a shut if >= 138 days
+    spend = bearing.cost_distribution(1086.0, calendar=best, age=224.0,
+                                      budget=1500.0)
+    spend.mean, spend.percentiles, spend.probability_above_budget
+    # 1090.0, [600, 1000, 1600], 0.150
+    ```
+
+    | Window (days) | Mean | 10% | 50% | 90% | By hand: mean |
+    |---|---|---|---|---|---|
+    | 82 | 132.7 | 100 | 100 | 100 | 133 |
+    | 447 | 486.5 | 300 | 300 | 900 | 487 |
+    | 813 | 845.8 | 500 | 800 | 1,400 | 846 |
+    | 1,086 | 1,090.0 | 600 | 1,000 | 1,600 | 1,090 |
+
+    Every percentile is the one by hand. Over 1,086 days the most likely
+    outcomes are one failure and five shut replacements ($900, 26%) and
+    six shut replacements alone ($600, 22%); `outcomes()` lists them by
+    kind of opportunity, `{"failures": 1, "planned": {"shut": 5}, ...}`.
+    About half a second a window.
+  - **Checks** (`test_maintenance_calendar_spread.py`): the figures by
+    hand; an exponential life (no planned replacement pays, so the policy
+    never replaces: Poisson failures in every window, within the
+    precision); a part due at the next shut (`S(21)` of no event, then a
+    replacement there); the method's own simulation, and a one-component
+    `RepairableRBD` on the same policy simulated by its event loop (every
+    probability within four standard errors; seeds repeat); a calendar
+    of two kinds (each outcome priced by kind, the counts by kind adding
+    up to the counts); the same probabilities in hours; JSON; refusals (a
+    policy with `every`, one for another life; a policy worked out by
+    integration has no grid, so only `method="simulate"`).
+  - **Learned:** the calendar policy's spread is about as wide as every
+    shut's (10% to 90%, $600 to $1,600 against $600 to $1,800) for a mean
+    $65 lower; and, as with every shut, the steps decide it: a 90th
+    percentile of $900 over 447 days is one failure on top of the planned
+    shuts.
 
 ### UC-9: "What will the bearing cost in each of a run of consecutive windows from now, and how often does each outcome happen in each?"
 
@@ -515,7 +696,15 @@ windows here, 0 to 263, 263 to 629, 629 to 994 and 994 to 1,359 days
 from now, are those years as Reliafy would turn them. Summing by
 financial year is Reliafy's.)
 
-- **Status:** answered by hand with today's RePyability; not built.
+- **Status:** built for one part under run to failure, age replacement,
+  block replacement and a calendar policy such as UC-7's best:
+  `NonRepairable.cost_by_window(ends, every, *, resets, age=,
+  since_renewal=, calendar=)` and `WindowCosts`, numerical by default
+  (`method="simulate"` as the check). A system's windows are simulated:
+  `RepairableRBD.cost_by_window` and `CostByWindow` (#375) give each
+  window's exact mean and its simulated spread, outcomes and chance of
+  exceeding a budget from one run. The answer by hand below (the best
+  policy, simulated) is the check of the calendar policy's.
 - **Who asks, and why:** the planner of UC-8, passing a budget on: each
   window's own spend, not the running total, and what could happen in
   it.
@@ -539,12 +728,12 @@ financial year is Reliafy's.)
 
   The chance of more than $200 (any failure) is 29% in the first window
   and 40% in each full one; of more than $600, 4% and 9%.
-- **How it is solved:** as UC-8, at each window's end: the means by
+- **How it was solved by hand:** as UC-8, at each window's end: the means by
   differencing `expected_cost(t, state=...)`, exact; each simulation's
   cost in a window as its cost to the window's end less its cost to its
   start, from one seed (`cost(...).samples`), so every window's outcomes
   are of the same histories.
-- **Checks:** no simulation spends less than $0 in a window; the
+- **Checks by hand:** no simulation spends less than $0 in a window; the
   simulated means agree with the exact ones within $4.
 - **Learned:**
   - **Costs in steps need their outcomes, not percentiles.** Here the
@@ -555,6 +744,103 @@ financial year is Reliafy's.)
     $2,300; the 90th percentile of their total is $2,000.
   - What RePyability could give: each simulation's cost in each of a run
     of windows, from one run (by hand it took a run per window's end).
+- **How it is solved, as built:** each window from the process through
+  every earlier one, exactly: the windows are dependent (a failure in one
+  renews the part for the next), so a window's distribution is not that
+  of a part started afresh at its start.
+  - **Run to failure and age replacement.** What happens in a window
+    depends on the past only through its first event: after it a new
+    part is in, and the rest is UC-8's cycles of new parts. The first
+    event is the part's in service at the window's start, put in at the
+    last renewal before it: the part in now (never renewed), the last of
+    the planned replacements' chain from now (no failure yet: an atom of
+    known time and chance), or a renewal after a failure, spread by the
+    renewal measure (the expected number of renewals by each time, the
+    same sums of cycle totals as UC-8's counts). UC-8's formulas then
+    give the window's counts with that first cycle.
+  - **Block replacement.** The planned replacements in each window are
+    known; the failures are the stretch run to failure from the last
+    planned replacement before the window, seen from its start as above,
+    then each stretch after a planned replacement in it, from new,
+    independent.
+  - **Outcome classes:** nothing; planned work only (no failure: known
+    work at a known price); one failure; several failures (each whatever
+    the planned work beside it). They are what a planner acts on (the
+    failures are the unplanned spend and the crew call-outs), and the
+    full table of counts is there beside them (`outcomes(window)`).
+  - The whole span's own distribution is given too (`total`, UC-8's),
+    since ranges do not add.
+- **As built** (the bearing of UC-8 replaced at every shut, and run to
+  failure, over the four windows):
+
+  ```python
+  years = bearing.cost_by_window([263.0, 629.0, 994.0, 1359.0], 180.0,
+                                 resets=False, age=224.0, since_renewal=159.0,
+                                 budget=600.0)
+  years.mean, years.outcome_probabilities, years.probability_above_budget
+  ```
+
+  | Every shut | 0–263 | 263–629 | 629–994 | 994–1,359 |
+  |---|---|---|---|---|
+  | Planned only (two shuts, $200) | 70.8% | 61.3% | 61.3% | 61.3% |
+  | One failure ($600) | 26.2% | 32.4% | 32.3% | 32.3% |
+  | Several failures ($1,000+) | 3.1% | 6.3% | 6.3% | 6.4% |
+  | Mean | $330.0 | $382.3 | $382.1 | $382.2 |
+  | 10%, 50%, 90% | 200, 200, 600 | 200, 200, 600 | 200, 200, 600 | 200, 200, 600 |
+
+  | Run to failure | 0–263 | 263–629 | 629–994 | 994–1,359 |
+  |---|---|---|---|---|
+  | Nothing | 24.6% | 15.9% | 15.7% | 15.7% |
+  | One failure ($400) | 62.6% | 58.2% | 58.6% | 58.6% |
+  | Several failures ($800+) | 12.8% | 25.9% | 25.7% | 25.7% |
+  | Mean | $355.7 | $451.9 | $451.6 | $451.3 |
+
+  Over the whole span, every shut costs $1,476.5 on average, 10% to 90%
+  from $800 to $2,000, where the windows' 90th percentiles sum to $2,400;
+  run to failure $1,710.5, $1,200 to $2,400 (the windows' sum: $3,200).
+- **Checks** (`test_maintenance_window_outcomes.py`): an exponential life
+  run to failure (independent Poisson(λ w) windows from any age, and the
+  outcome classes' closed forms), and under block replacement (Poisson
+  failures, the planned ones known, one at the end of a window falling in
+  the next); for each policy, the windows' means adding up to the whole
+  span's (to 2e-6), the total being UC-8's, each window's and each
+  outcome row's chances adding up to 1, and the first window being UC-8's
+  within the precisions; each window's expected failures and planned
+  replacements against a one-component `RepairableRBD`'s
+  `expected_events` differenced (another method, through the windows'
+  dependence); the first window from an aged start, `R(a + e_1) / R(a)`;
+  the simulation, window by window and in total, within four standard
+  errors; units from 1e-6 to 1e6; JSON; the windows' input checks.
+- **The best policy, as built** (`calendar=`, UC-8's method window by
+  window: each window's counts start from the renewals the process
+  brings to its start, uncounted before it):
+
+  ```python
+  years = bearing.cost_by_window([263.0, 629.0, 994.0, 1359.0],
+                                 calendar=best, age=224.0, budget=600.0)
+  ```
+
+  | What happens in the window | Cost | 0–263 | 263–629 | 629–994 | 994–1,359 |
+  |---|---|---|---|---|---|
+  | No failure, one shut replacement | $100 | – | 0.9% | 1.2% | 1.5% |
+  | No failure, two shut replacements | $200 | 70.8% | 59.0% | 58.6% | 58.2% |
+  | One failure, no shut replacement | $400 | – | 0.5% | 0.7% | 0.8% |
+  | One failure, one shut replacement | $500 | 22.1% | 27.2% | 26.9% | 26.4% |
+  | One failure, two shut replacements | $600 | 3.1% | 2.9% | 3.2% | 3.5% |
+  | Two failures, no shut replacement | $800 | 1.4% | 4.8% | 4.6% | 4.5% |
+  | Two failures, one shut replacement | $900 | 2.4% | 3.5% | 3.6% | 3.7% |
+  | Mean | | $306.9 | $358.7 | $358.9 | $359.0 |
+
+  Every share is within 0.1 points of the million simulations by hand,
+  and every mean within $0.3 of the exact means by hand. The chance of
+  more than $600 is 4.1% in the first window and 9.5% in each full one;
+  over the whole span the mean is $1,383.5 and its 90th percentile
+  $2,000, where the windows' 90th percentiles sum to $2,300, as by hand.
+  Checks (`test_maintenance_calendar_spread.py`): the means by hand; the
+  windows' means adding up to the span's; the first window being
+  `cost_distribution`'s; the outcome classes adding up to 1; the
+  simulation, window by window and in total; the exponential's
+  independent Poisson windows.
 
 ### UC-11: "My pump's seal is replaced at every 500-hour service and whenever it fails. It has run 340 hours, and the next service is in 160. What's the chance it fails before each service, what will failures and replacements cost over the next 944 running hours, and is replacing it at every service worth it?"
 
@@ -565,7 +851,8 @@ and, through the operating schedule, how many running hours lie ahead
 (944 h to the end of the year, at 16 hours a weekday). Turning the
 answers back into dates is Reliafy's too.)
 
-- **Status:** answered by hand with today's RePyability; design to agree.
+- **Status:** built: `NonRepairable.renewal_forecast(window, every, *,
+  resets, age=, since_renewal=)` and `RenewalForecast` (see *As built*).
 - **Who asks, and why:** a planner whose part is renewed by the
   maintenance as well as at failures, so its risk starts again at each
   service: what is the risk before the next one, and is the plan right?
@@ -644,6 +931,22 @@ answers back into dates is Reliafy's too.)
   - **History in, risk out:** Reliafy's history gives the age and the
     time since the last service in running hours, RePyability the risk
     and cost in running hours, and the schedule turns them into dates.
+
+- **As built (UC-11):** `NonRepairable.renewal_forecast` takes the
+  window, the service interval, `resets` (said every time, as for UC-6:
+  `False` keeps the services to fixed times, block replacement; `True`
+  starts each interval at the last renewal, planned or not), the age and,
+  for fixed times, how far into the interval the part is. It gives the
+  chance of a failure before each service (the first from the age, each
+  later one from a part new at the service before: `1 - R(every)`), the
+  expected failures, renewals and cost over the window (a one-component
+  `RepairableRBD`, exact), the same without renewals, the plan's long-run
+  cost rate against running to failure and against the best age
+  replacement, and `worth_it`. The seal's numbers above are the test:
+  0.0024 and 0.0042, 0.00785 failures, 2 renewals, $407.06, 0.4076 a
+  hour against 0.1198 at the best age, 3,179 h. Its expected failures
+  match a seeded simulation of both plans (fixed and resetting) within
+  four standard errors.
 
 ### UC-12: "The bearing is 200 days old. Replacing it now costs $150; a planned replacement any time costs $150 too, and one at a failure $400. Outages are scheduled in 150 and 330 days, at which replacing it costs $100. Do I replace it now?"
 
@@ -929,3 +1232,925 @@ answers back into dates is Reliafy's too.)
       2.5) bearing given to the Weibull(365, 2) one simulated at a cost
       rate 19% off the one worked out for it, silently.
 
+
+
+### UC-14: "A cheap task every visit and a deeper one every few visits: how often should we visit, and how deep?"
+
+- **Status:** built: `optimal_layered_visits(light, deep, *, visit_cost=,
+  max_ratio=)` and `layered_cost_rate`.
+- **Who asks, and why:** a planner bundling the tasks of several parts
+  into visits that each cost something: more visits mean fewer failures
+  but more visit cost, and a part that lives long should be renewed at
+  every few visits only.
+- **What they know:** two parts with lives and prices, what a visit costs
+  by itself.
+- **What they want back:** the visit interval, the depth ratio `k` (the
+  deep part at every `k`-th visit), the cost rate and its parts.
+- **How it is solved:** the cost rate of a part renewed every `P` is
+  `(planned + unplanned M(P)) / P` with `M` the renewal count (exact,
+  `NonRepairable.failures`); the package is `visit_cost / T +
+  rate_light(T) + rate_deep(k T)`; for each `k` the best `T` is found on
+  a grid and refined. One layer without a visit cost is the optimal
+  block-replacement interval.
+- **Checks:** the cost rate against the closed form for exponential
+  lives and a seeded simulation of the plan; the optimum and each
+  ratio's best rate against a dense scan using a renewal function solved
+  here by a separate discretisation (within 0.4%).
+- **Learned:** with a cheap failure, ratio 1 wins; the ratio only pays
+  when the light part's failures are dear (a failure of 1,000 against a
+  renewal of 20 gives a ratio of 10 at every 30 days). Layers are
+  independent here: a failure replaces its part but does not move the
+  visits.
+
+### UC-15: "This task is due every 300 days but may slip by up to 60. What does the slip cost?"
+
+- **Status:** built: `NonRepairable.slack_effect(interval, slack)`.
+- **How it is solved:** age replacement at `T` and at `T + slack`:
+  the chance of a failure first and the long-run cost rate
+  (`(planned R + unplanned (1 - R)) / integral of R`), their
+  differences, and the rate averaged over a uniform lateness.
+- **Checks:** both rates against a seeded simulation of the cycles;
+  the risk against the survival function.
+- **Learned:** below the optimal age a slip can lower the cost rate
+  (a negative `added_cost_rate`): the tolerance is then free.
+
+### UC-16: "The replacement comes due in 10 days but the crew visits weekly. What does waiting for the visit cost?"
+
+- **Status:** built: `NonRepairable.cost_of_waiting_for_visit(age, due_in,
+  visits)`, with `visits` an `Opportunity` or a list of times.
+- **How it is solved:** the first visit at or after the due time, then
+  `delay_effect` from the due time to it: one cycle to the replacement,
+  `cost(u) = planned exp(-r u) S(u) + unplanned (1 - exp(-r u) S(u) - r
+  M(u))`, `S(u) = R(age + u) / R(age)`.
+- **Checks:** the exponential closed form (`added_cost = (unplanned -
+  planned) (exp(-lam d1) - exp(-lam d2))`) and a seeded simulation of
+  the cycle, discounted and not.
+
+### UC-17: "If we miss the visit, how much risk does the delay add?"
+
+- **Status:** built: `NonRepairable.cost_of_missed_visit(age, visit_in,
+  next_visit_in, miss_probability=)` and `delay_effect`.
+- **How it is solved:** as UC-16 with the next visit as the new time,
+  weighted by the chance the visit is missed for the expected added risk
+  and cost. Skipping and deferring a replacement for a whole interval
+  are UC-6's; this is one cycle.
+
+
+### UC-18: "For this failure mode, what do the four ways of managing it each cost and prevent?"
+
+- **Status:** built: `run_to_failure(part)`, `scheduled_replacement(part,
+  interval=None)`, `failure_finding(device, test_interval, ...)` with
+  `optimal_failure_finding_interval`, and `on_condition(pf_interval,
+  inspection_interval, ...)` with `optimal_on_condition_interval`. The
+  option compared at a planned replacement is UC-6's
+  `compare_replacement_options`.
+- **Who asks, and why:** someone choosing the task for one failure mode
+  who needs the numbers to compare: how often it fails, what it costs a
+  unit of time, and how much risk is left.
+- **How each is solved (exact, model time):**
+  - *Run to failure:* `1 / (MTTF + replacement time)` failures a unit of
+    time, at the unplanned cost.
+  - *Scheduled replacement at age `T`:* the cycle is the life cut off at
+    `T`: failures `(1 - R(T)) / M(T)`, planned replacements `R(T) /
+    M(T)`, cost `(planned R + unplanned (1 - R)) / M(T)`, `M` the
+    integral of `R`; the cheapest `T` is `optimal_replacement_policy`'s.
+  - *Failure finding:* a hidden failure found at a test, every `tau`, and
+    repaired as new; a working device carries its age on. A cycle ends at
+    the test that finds the failure, so the mean unavailability is `1 -
+    MTTF / (tau sum R(j tau))`, which for an exponential life is `1 - (1 -
+    exp(-lambda tau)) / (lambda tau)`, near `lambda tau / 2`. Demands at
+    a rate `d` meet a failed device at `d U`. The interval comes from a
+    target on `U` (the longest meeting it) or from the cost rate of tests,
+    repairs and the consequence of multiple failures.
+  - *On condition:* a warning precedes the failure by the P-F interval
+    `X`; inspections every `tau` at a random phase find it with
+    probability `p` each. A warning of length `x` is missed with
+    probability `q^floor(x/tau) (1 - p frac(x/tau))`, `q = 1 - p`; the
+    chance it is found is one less its mean over `X`. A fixed warning is
+    inspected best as often as it is long.
+- **Checks:** closed forms for an exponential life (each), and seeded
+  simulations of the plans themselves (cycles with tests; warnings with
+  random phase) that do not use the formulas, within four standard
+  errors; the intervals against dense scans.
+- **Learned / left:** repair and test times are taken as nil; one
+  device's hidden failure is independent of the demand; the detection
+  probability does not change as the warning grows. The system-level
+  consequence of a failure is a diagram's, not here.
+
+
+### UC-19: "What is this plan worth over ten years at 8%, and what is it as a yearly cost?"
+
+- **Status:** built (the first part of a net present value valuation):
+  `RepairableRBD.expected_npv(horizon, discount_rate=, value_rate=,
+  periods=)` and `NonRepairable.age_replacement_value(age,
+  discount_rate=)`.
+- **Who asks, and why:** someone who must justify a plan (an interval, a
+  spare, a repair crew, a redundant unit) at the cost of capital: what the
+  plant earns while it works, less what it costs to buy and run, each
+  amount counted at what it is worth now, and the same cost as a steady
+  yearly figure to compare plans of different lives.
+- **How it is solved (exact, model time):** by the linearity of
+  expectation, the expected present value of a cost charged at events is
+  its price times the discounted expected number of events, and of a value
+  earned per unit time the discounted expected time up: `integral exp(-r t)
+  A(t) dt`. The costs are `expected_cost(discount_rate=)`, which discounts
+  each event at its own time (a block replacement or a test at its exact
+  time); the value is that integral of the system's point availability,
+  summed on the same pieces as the mission availability, with the settled
+  level or period after it in closed form. The acquisition cost is paid at
+  the start. The equivalent annual cost is the cost over the annuity
+  factor `(1 - exp(-r H)) / r` (`H / 1` with no discounting), which tends
+  to the cost rate over a long horizon. For one part replaced at an age or
+  at a failure for ever, Fox (1966): `PV = [cu A + cp exp(-r T) R(T)] /
+  (r M(T))`, `A = 1 - exp(-r T) R(T) - r M(T)` the discounted chance of
+  failing first, `M` the integral of `exp(-r t) R(t)` to `T`.
+- **The answer:** the net present value, its value and cost, the
+  equivalent annual cost, the undiscounted totals, and a cash-flow table
+  by period, category and component, in model time (which period is which
+  financial year is the caller's).
+- **Checks:** `test_expected_npv.py`: an exponential pump's value against
+  the closed form of its availability, discounted; its repair cost as `cost
+  x lambda x` the time up; no discounting against `mission_availability` and
+  `expected_cost`; block replacements at exact times; an age replacement
+  over a long horizon against Fox's formula integrated independently; the
+  table adding up to the total; the cost rate as the rate goes to 0.
+- **Not yet:** value that varies in time, escalation, plans of actions at
+  given times, the simulated distribution, crews as cash flows, and NPV as
+  the optimisers' objective.
+
+
+### UC-20: "If we run at 70 °C instead of 30 °C we make more, but the bearings wear out faster. Does it pay?"
+
+- **Status:** built for one unit: `operating_schedule_value(model, times,
+  covariates, value_rates, horizon, failure_cost=, down_time=,
+  discount_rate=, age=)` and `best_switch_time(model, covariates,
+  value_rates, horizon, ...)`. A whole diagram on an operating schedule is
+  not built: a `RepairableRBD` component cannot yet take a covariate-
+  dependent life.
+- **Who asks, and why:** an operations manager who can raise output at
+  the cost of faster wear, and wants to know whether the extra output
+  pays for the extra failures, and when to change.
+- **What they know:** the unit's life against its covariates (a fitted
+  surpyval regression model: accelerated failure time, proportional
+  hazards or odds, additive hazards); the operating schedule in model
+  time from 0 (when each stretch starts, its covariates, and what the unit
+  earns per unit of time up in it: the calendar is the caller's, who turns
+  it into model time); the cost of a failure and how long a replacement
+  takes; the discount rate; the horizon.
+- **What they want back:** the NPV of each schedule with the value earned
+  and the failures' cost apart, the expected failures and time up, a table
+  by stretch, and the switch time that maximises the NPV, with the NPV of
+  never switching and of switching at once beside it.
+- **How it is solved (numerical, model time):** the unit is replaced by a
+  new one at each failure; a unit put in at time `v` runs along the rest
+  of the schedule, so its life is the model's `sf_tvc` along the schedule
+  shifted by `v`, and its failures and replacements form a renewal process
+  whose life depends on when each unit was put in. Its expected failures
+  and chance of being up solve a renewal equation in the plant's time, on
+  a grid sized from the lives with the schedule's changes at cell edges:
+  within the stretch a unit was put in, its life is that stretch's
+  fixed-covariate life averaged exactly over the cell; past it, the life
+  along the path of a unit put in at the cell's middle; a replacement's
+  end follows from the down time's distribution integrated exactly over
+  the cell. The value is the discounted integral of the value rate times
+  the chance of being up, the cost the discounted failures times their
+  cost. The grid is halved until every total agrees with the halved
+  grid's to a tolerance (1e-6 relative by default). The best switch time
+  is searched on 41 switch times across the horizon (the NPV need not have
+  one peak), then polished by Brent's method between the best one's
+  neighbours.
+- **Today:** a constant schedule is a one-component `RepairableRBD` whose
+  life is the model's at the fixed covariates (a Weibull of scale
+  `alpha / exp(beta z)` for the guide's Weibull AFT bearing), which
+  `expected_npv` values exactly. Over 20,000 hours at 8% a year, 150,000
+  a failure, 24 hours down and value 30 or 70 an hour: cool (30 °C), NPV
+  177,051 (value 548,462, cost 371,411); hot (70 °C), NPV 391,649 (value
+  1,274,025, cost 882,376). `operating_schedule_value` gives the same to
+  the unit. The guide's schedule (cool for 2000 hours, then hot) has no
+  such model: a `RepairableRBD` refuses a `RegressionNode` as a life, so
+  it could be answered only by simulating the process by hand, as the
+  checks below do. It is NPV 368,081 (value 1,195,407, cost 827,326).
+- **Checks:** `test_operating_schedule.py`: exponential lives and repairs
+  against the two-state Markov chain stretch by stretch; an accelerated
+  life with instant replacement against the baseline's renewal function
+  at the accumulated exposure (from `NonRepairable.failures`); a constant
+  schedule against a one-component `RepairableRBD`'s `expected_npv` and
+  `expected_events`; proportional hazards (where time does not rescale)
+  against a hand-written seeded simulation drawing each life along its
+  shifted path, with a unit aged at 0 and log-normal down times; the best
+  switch time against a fine scan, with an end best each way; results
+  scaling with the unit of time from 1e-6 to 1e6 and with the
+  covariate's unit; the refusals, JSON and `help()`.
+- **Learned / left:** each unit put in before the last change has its own
+  life, so the work grows with the cells before it (one evaluation of the
+  model along a path each); `best_switch_time` values each switch time to
+  a looser tolerance by default (1e-4) for that reason. Left: a diagram on
+  a schedule (covariate-dependent lives in a `RepairableRBD`), a schedule
+  that varies continuously (a `CovariatePath`), and value that depends on
+  more than the stretch.
+
+### UC-21: "We've had two years on this plan. How does what happened compare with what we expected, and what's the plan worth now?"
+
+- **Status:** built: `RepairableRBD.plan_vs_actual(timelines, now,
+  horizon, discount_rate=, value_rate=, periods=, state=)`.
+- **Who asks, and why:** an engineer (or an agent) reviewing a plan part
+  way through: where the plan's assumptions were wrong, and what the plan
+  is worth from today, knowing what happened.
+- **What they know:** the diagram with its costs (the plan), the outage
+  log of each component (`Timeline`s, planned outages flagged) on the
+  diagram's clock from the start of the plan to `now`, and, where the log
+  does not give it, a component's state now.
+- **How it is solved (exact, model time):** the expected side is
+  `expected_npv`'s cash-flow table, its periods cut at `now`. The actual
+  side prices the log with the same costs: each failure its repair and
+  replace costs at its instant, each planned outage its preventive cost,
+  each down span its downtime rate, the system's down and up spans (merged
+  from the components' through the structure, as `system_timeline` does)
+  its downtime rate and its value, each discounted exactly (`exp(-r t)` at
+  an event, `(exp(-r a) - exp(-r b)) / r` over a span). A cost the log
+  does not determine (tests that find nothing, a hidden failure's repair,
+  a standby group's units, replacements that take no time, calendar
+  prices, set-up and acquisition costs) is compared on neither side and
+  listed with its reason. The states now are read off the logs where the
+  diagram's rules let it (a unit renewed at each repair, or replaced at an
+  age, on a block calendar or on condition by maintenance that takes time:
+  its age since its last restoration, or how long it has been down and
+  why, and where it is on its calendar); elsewhere it refuses and asks for
+  `state=`. The rest is `expected_npv` from those states, discounted back
+  to the start, without the purchase.
+- **The answer:** the expected, actual and variance tables to `now` by
+  period, category and component (a positive variance in the plan's
+  favour), what is not compared and why, the states used, and the plan's
+  value now (what happened so far, the uncompared costs as planned, and
+  the rest from today) beside its original value.
+- **Checks:** `test_plan_vs_actual.py`: a pump's log priced by hand
+  (each discount factor written out) and its variance against
+  `expected_npv`'s table; the states read off logs by hand, and each
+  refusal; simulated histories (`simulate_timelines`) priced as logs
+  averaging to the plan's exact table, cell by cell, for a redundant pair
+  and for age and block replacement; and the tower property, the mean of
+  what happened so far plus the rest valued from each history's state
+  equal to the plan's value, for the same diagrams.
+- **Learned / open questions:** the actual prices paid are not used (the
+  log is priced at the plan's mean prices; a cost drawn from a
+  distribution at its mean); the states the log does not give are asked
+  for; and the spread of the expected side (is the actual inside what the
+  plan allowed for?) is not given for a diagram yet: the comparison is
+  against the plan's expectation.
+
+### UC-22: "A pump's 6-monthly overhaul restores it only partly (a fitted Kijima restoration factor), and every third overhaul replaces it. What availability, failures and cost per year, against overhauls that renew it, and which overhaul interval is cheapest?"
+
+- **Status:** built (#398): a `"preventive"` spec's `"restoration"` (Kijima's
+  model and `q`, or a fitted `GeneralizedRenewal`), `"replace_every"` and
+  `"replacement_cost"`, simulated by `availability`, `cost`,
+  `simulate_timelines`, `cost_by_window` and
+  `spares_demand(method="simulate")`. The record below is the
+  hand-worked answer it was checked against.
+- **Who asks, and why:** a reliability engineer who has fitted a
+  generalised renewal process (Kijima I, restoration factor `q = 0.3`)
+  to the overhaul history of a fleet of pumps, and finds an overhaul
+  takes away only 70% of the age the pump gained since its last one. The
+  plan has always been priced as if each overhaul renewed the pump.
+- **What they know:** the pump's life in operating hours (Weibull,
+  `alpha = 9000`, `beta = 2.5`); a failure is repaired by replacing the
+  pump (as new; exponential repair, mean 24 h; 20,000 a failure, lost
+  production included); an overhaul every 6 months (4380 h, on the
+  calendar, skipped while the pump is down), 24 h long, 2,500 each;
+  every third overhaul replaces the pump instead, at 9,000; a horizon of
+  10 years (87,600 h), from new. Model time only: hours, no dates.
+- **What they want back:** per year, the expected failures, overhauls
+  that restore and overhauls that replace, the cost, and the
+  availability; the same with overhauls that renew (today's plan); and
+  the cost per year at overhaul intervals of 3, 4, 6, 9 and 12 months.
+- **How it is solved:** simulated (a partial restoration does not renew
+  the unit, so its failures are not a renewal process's and the exact
+  methods do not apply). The overhaul keeps the unit's virtual age
+  (Kijima I: `v <- v + q x`; Kijima II: `v <- q (v + x)`, `x` the
+  operating time since the last action), and the next life is drawn
+  given it, as an imperfect repair's is; every Nth overhaul since the
+  unit was last put in as new replaces it. The event loop's imperfect
+  repair stand-in keeps the virtual age, so it is extended to the
+  overhaul; `availability`, `cost`, `simulate_timelines` and
+  `cost_by_window` then answer. The interval is chosen by simulating each
+  candidate with the same seed.
+- **Today (by hand):** RePyability takes an overhaul only as a renewal.
+  The overhauls that renew are exact; the partial restoration is
+  simulated directly, written out from Kijima's definition in numpy
+  (`direct` below, 4,000 runs a case).
+
+  ```python
+  import numpy as np
+  import surpyval as surv
+  from repyability import RepairableRBD
+
+  ALPHA, BETA, YEAR = 9000.0, 2.5, 8760.0
+  HORIZON = 10 * YEAR
+  COSTS = dict(failure=20000.0, overhaul=2500.0, replacement=9000.0)
+
+  def as_new(interval):  # today: the overhaul renews the pump
+      return RepairableRBD(
+          [("s", "pump"), ("pump", "t")],
+          {"pump": {
+              "reliability": surv.Weibull.from_params([ALPHA, BETA]),
+              "repairability": surv.Exponential.from_params([1 / 24.0]),
+              "repair_cost": COSTS["failure"],
+              "preventive": {
+                  "interval": interval, "policy": "block",
+                  "duration": surv.ExactEventTime.from_params([24.0]),
+                  "cost": COSTS["overhaul"],
+              },
+          }},
+      )
+
+  def direct(interval, q, kijima, every, n, seed):
+      """Per year: failures, restoring and replacing overhauls, cost;
+      and the availability, simulated from Kijima's definition."""
+      rng = np.random.default_rng(seed)
+      out = np.zeros((n, 5))
+      for r in range(n):
+          t = v = up = 0.0
+          count = fails = restored = replaced = 0
+          while t < HORIZON:
+              # A life from virtual age v: H(v + X) = H(v) + E.
+              life = ALPHA * ((v / ALPHA) ** BETA + rng.exponential()) ** (1 / BETA) - v
+              due = (np.floor(t / interval) + 1.0) * interval
+              if t + life <= due:  # fails first: repaired as new
+                  if t + life >= HORIZON:
+                      up += HORIZON - t
+                      break
+                  up += life
+                  fails += 1
+                  t += life + rng.exponential(24.0)
+                  v, count = 0.0, 0
+                  continue
+              if due >= HORIZON:
+                  up += HORIZON - t
+                  break
+              x = due - t  # operated since the last action
+              up += x
+              if every is not None and count + 1 >= every:
+                  v, count, replaced = 0.0, 0, replaced + 1
+              else:
+                  v = v + q * x if kijima == "kijima1" else q * (v + x)
+                  count, restored = count + 1, restored + 1
+              t = due + 24.0  # down, not ageing, for the overhaul
+          cost = (fails * COSTS["failure"] + restored * COSTS["overhaul"]
+                  + replaced * COSTS["replacement"])
+          out[r] = (fails, restored, replaced, cost, up / HORIZON)
+      return out.mean(axis=0), out.std(axis=0, ddof=1) / np.sqrt(n)
+  ```
+
+  Per year (± one standard error of the simulated ones):
+
+  | Overhaul every 6 months | Failures | Restoring | Replacing | Cost | Availability |
+  |---|---|---|---|---|---|
+  | Renews (today, exact) | 0.3055 | 1.896 | 0 | 10,851 | 0.99397 |
+  | Renews (`direct`, `q = 0`) | 0.3015 ± 0.0026 | 1.896 | 0 | 10,771 ± 52 | 0.99398 |
+  | `q = 0.3`, never replaced | 0.6819 ± 0.0024 | 1.895 | 0 | 18,375 ± 47 | 0.99296 |
+  | `q = 0.3`, every third replaces | 0.4976 ± 0.0029 | 1.498 | 0.397 | 17,273 ± 51 | 0.99345 |
+  | `q = 1` (as bad as old) | 1.0495 ± 0.0023 | 1.894 | 0 | 25,726 ± 46 | 0.99194 |
+
+  The interval, with `q = 0.3` and every third overhaul replacing (seed
+  2), against overhauls that renew (exact):
+
+  | Interval | 3 months | 4 months | 6 months | 9 months | 12 months |
+  |---|---|---|---|---|---|
+  | Cost per year, `q = 0.3`, every third | 21,530 ± 37 | 18,577 ± 45 | **17,259 ± 51** | 18,117 ± 52 | 19,046 ± 50 |
+  | Availability | 0.98876 | 0.99123 | 0.99346 | 0.99453 | 0.99526 |
+  | Cost per year, renewing | 11,991 | **10,685** | 10,851 | 13,166 | 15,565 |
+
+  Priced as renewals the plan costs about 10,900 a year; with the fitted
+  restoration it costs about 17,300, and the failures more than double.
+  Replacing at every third overhaul pays (17,300 against 18,400 for
+  never replacing), and 6 months stays the cheapest interval, where the
+  renewal model put it at 4.
+
+- **Built:** the overhaul's `"restoration"` and every third replacing,
+  simulated (4,000 runs, seed 1):
+
+  ```python
+  def restored(interval, q, every=None):  # as as_new, the overhaul partial
+      preventive = {
+          "interval": interval, "policy": "block",
+          "duration": surv.ExactEventTime.from_params([24.0]),
+          "cost": COSTS["overhaul"],
+          "restoration": {"model": "kijima1", "q": q},  # or the fitted
+      }                                                 # GeneralizedRenewal
+      if every is not None:
+          preventive["replace_every"] = every
+          preventive["replacement_cost"] = COSTS["replacement"]
+      return RepairableRBD(
+          [("s", "pump"), ("pump", "t")],
+          {"pump": {
+              "reliability": surv.Weibull.from_params([ALPHA, BETA]),
+              "repairability": surv.Exponential.from_params([1 / 24.0]),
+              "repair_cost": COSTS["failure"],
+              "preventive": preventive,
+          }},
+      )
+
+  run = restored(YEAR / 2, 0.3, every=3).availability(
+      HORIZON, mc_samples=4000, seed=1, control_variate=False
+  )
+  run.cost.by_category["repair"] / COSTS["failure"] / 10   # failures a year
+  run.cost.mean / 10, run.mean_availability
+  ```
+
+  | Overhaul every 6 months | Failures a year | Cost a year | Availability | `direct` |
+  |---|---|---|---|---|
+  | `q = 0.3`, never replaced | 0.6785 | 18,308 | 0.99294 | 0.6819 ± 0.0024, 18,375 ± 47 |
+  | `q = 0.3`, every third replaces | 0.4960 | 17,247 | 0.99344 | 0.4976 ± 0.0029, 17,273 ± 51 |
+  | `q = 1` | 1.0454 | 25,642 | 0.99194 | 1.0495 ± 0.0023, 25,726 ± 46 |
+
+  The interval, as the guide's example runs it (2,000 runs, seed 1):
+  21,550, 18,574, **17,292**, 18,176 and 18,961 a year at 3, 4, 6, 9 and
+  12 months, against `direct`'s 21,530, 18,577, 17,259, 18,117 and
+  19,046 (± about 50).
+- **Checks:** `test_pm_restoration.py`: the simulation against a direct
+  simulation written in the test from Kijima's definition (failures,
+  tasks that restore and that replace, up time) for Kijima I and II,
+  the block, age and condition policies, every third replacing, and
+  tasks and repairs that take time, within four standard errors; from a
+  virtual age; with minimal repairs and Kijima II overhauls in no time,
+  every second replacing, the cost over whole cycles is
+  `Repairable.overhaul_replace_cost_rate`'s, which is exact; `q = 1` with
+  instant tasks fails as often as with no task at all (the renewal
+  function, exact); `q = 0` is today's diagram to the last bit, with its
+  exact routes; the replacement's cost and spares; the refusals.
+- **Learned / open questions:**
+  - Priced as renewals the plan understates the failures by more than
+    half and the cost by 60%, and puts the cheapest interval at 4 months
+    instead of 6.
+  - Kijima I with `q = 0` is a renewal only while the unit's repairs
+    renew it: after imperfect repairs the unit is older than new at its
+    task, and Kijima I takes away only the age since the last action.
+    Only the exact renewals are taken as no restoration.
+  - From a state, a unit restored partly takes its virtual age at its
+    last action and its age since, and the age policy's clock is taken
+    to start at that action (true when its repairs renew it; with
+    imperfect repairs too, a state is refused, as for imperfect repair
+    alone). With `"replace_every"` a state is refused: it does not say
+    how many tasks the unit has had since it was renewed.
+  - Not built: with a calendar policy (worked out for a unit put in as
+    new), a degradation level (not a virtual age) or an opportunity (an
+    early renewal at a group's stop); imperfect repair under the
+    condition policy stays refused (the same code may take it, but it
+    needs checks of its own).
+  - Exact routes for a restoration that is clearly a renewal or clearly
+    nothing are open: `q = 1` with instant tasks is no task at all (the
+    unit's own renewal process), which the exact methods could take.
+
+### UC-23: "The line is shut 3 days every 12 months (in hours); every block gets its PM then, and the bearing is replaced if it is older than 18 months. What availability, how much of the downtime and cost is the shut's, how many failures between shuts, and is a 9- or 18-month shut cheaper?"
+
+- **Status:** built: `RepairableRBD(..., shutdowns={"line": {"period",
+  "offset", "duration", "scope", "cost", "idle_ageing"}})`, and the work
+  given on each block (`"preventive": {"shutdown": "line"}`, with
+  `"older_than"`; `"inspection": {"shutdown": "line"}`). Exact and
+  numerical by default, simulated on request.
+- **Who asks, and why:** a maintenance planner whose line stops for an
+  annual shutdown: every block's PM is done in it, the bearing is changed
+  only if it has run long enough, and the shutdown itself costs (crews,
+  scaffolding) and loses production. They want to know what the shut
+  costs against what it buys, and whether to shut more or less often.
+- **What they know:** three blocks in series: a pump (Weibull 30,000 h,
+  shape 2), a motor (Weibull 60,000 h, shape 1.5) and a bearing (Weibull
+  20,000 h, shape 3), each repaired in about 24 h (exponential) at 20,000
+  a failure; PM at the shut 3,000, 2,000 and 1,500; the shut every 8,760 h
+  for 72 h, 10,000 each; lost production 500 an hour; the bearing
+  replaced at a shut once older than 13,140 h (18 months). Model time
+  only: hours from new, no dates.
+- **What they want back:** the long-run availability and cost a year;
+  how much of the downtime and of the cost is the shut's; the failures a
+  year (between shuts); the same at 9- and 18-month shuts; and over 10
+  years the cost by category, with the shut's own.
+- **How it is solved:** a task bound to a periodic shut *is* today's
+  schedule aligned with it: a block renewed at every shut is block
+  replacement with the shut's period, its offset (the time of the first
+  shut, a new field of `_Preventive`, which numba's loop takes too) and
+  a fixed duration; a test at every shut an inspection likewise (which
+  has its offset already). They are translated so at construction, and
+  every exact method takes them as it is. The shut's windows are a
+  deterministic mask: the blocks in scope held at 0 inside them (the
+  long run's grid and the integrals' pieces get the windows' edges), each
+  start a planned outage at an exact time, and their Birnbaum importance
+  0 while held. "Older than X" is replacement on condition with the
+  decision on the age (`_condition_replacement`'s recursion, the rule
+  generalised; numerical). The simulation has the windows as events of
+  their own, the scope masked from the structure while the blocks' own
+  processes go on (`"idle_ageing"`), or a paused block's pending event
+  shifted by the shut's length.
+- **Today (by hand):** equal block schedules approximate the shut: each
+  block replaced every 8,760 h for 72 h (the bearing every 17,520 h,
+  whatever its age), and the shut's cost added by hand:
+
+  ```python
+  def today(months, bearing_every=2):
+      fixed = surv.ExactEventTime.from_params([72.0])
+      blocks = {}
+      for name, life in LIVES.items():
+          every = bearing_every if name == "bearing" else 1
+          blocks[name] = {
+              "reliability": life,
+              "repairability": E([1 / 24.0]),
+              "repair_cost": 20000.0,
+              "preventive": {
+                  "interval": every * months * YEAR / 12, "policy": "block",
+                  "duration": fixed, "cost": PM[name],
+              },
+          }
+      return RepairableRBD(EDGES, blocks, downtime_cost_rate=500.0)
+
+  rbd = today(12)
+  rbd.mean_availability()                                  # 0.99053
+  rbd.expected_cost_rate() * YEAR + 10000                  # 64,991 a year
+  rbd.system_failure_frequency() * YEAR                    # 0.3869
+  ```
+
+  | Shut every | 9 months | 12 months | 18 months |
+  |---|---|---|---|
+  | Availability | 0.98826 | 0.99053 | 0.99292 |
+  | Cost a year (shut's cost by hand) | 77,893 | 64,991 | 52,235 |
+  | Failures a year | 0.2726 | 0.3869 | 0.5344 |
+
+  Its shortcomings: the bearing is replaced every second block time
+  whatever its age (one renewed by a repair a week before is changed
+  anyway), so "older than X" cannot be said; the shut's cost is outside
+  the model, and its downtime is the blocks' own (a block in scope with
+  no PM of its own is not held down, and its failures in the shut count
+  against the system); the shut's share of the downtime cannot be read
+  off; shuts at given times cannot be said at all.
+- **Built:**
+
+  ```python
+  def line(months, older_than=1.5 * YEAR):
+      blocks = {}
+      for name, life in LIVES.items():
+          preventive = {"shutdown": "line", "cost": PM[name]}
+          if name == "bearing":
+              preventive["older_than"] = older_than
+          blocks[name] = {"reliability": life, "repairability": E([1 / 24.0]),
+                          "repair_cost": 20000.0, "preventive": preventive}
+      return RepairableRBD(
+          EDGES, blocks,
+          shutdowns={"line": {"period": months * YEAR / 12, "duration": 72.0,
+                              "cost": 10000.0}},
+          downtime_cost_rate=500.0,
+      )
+  ```
+
+  | Shut every | 9 months | 12 months | 18 months |
+  |---|---|---|---|
+  | Availability | 0.98791 | 0.99042 | 0.99301 |
+  | Cost a year | 81,448 | 65,899 | **51,866** |
+  | Failures a year (between shuts) | 0.4004 | 0.4237 | 0.5464 |
+
+  At 12 months the unavailability is 0.00958, of which the shut's 72 h a
+  year (0.00822) is 86%; of 65,899 a year, the shut's own cost and its
+  lost production (10,000 + 36,000) are 70%. Over 10 years from new
+  (`expected_cost(87600)`): 594,092, of which repairs 82,334, PM 48,672,
+  lost production 373,086 and the shuts 90,000; 9 shuts, 8.98 planned
+  outages, 4.10 failures. Simulated (2,000 runs, seed 1): 592,899 ±
+  1,331, availability 0.991480 against the exact 0.991482, 4.04 failures
+  and 8.99 planned outages. The 18-month shut is the cheapest: the
+  shuts' downtime and cost fall faster than the failures between them
+  rise.
+- **Checks:** `test_shutdowns.py`: closed forms for one exponential
+  block shut every period (long-run availability `(1 - D/P) mu/(lam +
+  mu)`, the point availability in and out of a shut, the planned outages
+  `sum A(s-)`, the failures, the costs and the NPV's discounting); a
+  block renewed at a shut in no time against block replacement from the
+  matching state, and a test at a shut against an inspection with its
+  offset; a block renewed at each shut (instant repair) against
+  `lam (1 - D/P)`; a paused block against its own curve shifted by the
+  shuts' time; "older than" between renewing at every shut and never;
+  the simulation against all of these, and the catalogue's diagrams
+  exact against simulated (`test_catalogue.py`); both engines to the last
+  bit on tasks at a shut in no time (`test_simulation_engines.py`);
+  units (`test_units.py`); saving; the refusals.
+- **Learned / open questions:**
+  - A block's age at a shut is its age since it was put in service: one
+    renewed at the last shut is `period - duration` old at the next, so
+    "older than 12 months" at 12-month shuts replaces it every *other*
+    shut.
+  - In this example the 18-month shut is cheapest, though the failures
+    between shuts rise by a third; the "today" approximation agreed on
+    the ranking but not the failures (it changes the bearing on a fixed
+    count of shuts, whatever its age).
+  - Not built: the masked windows in numba's loop (it runs shuts in no
+    time that cost nothing, which are their tasks alone); shuts of
+    different calendars that overlap; standing still a block with a
+    calendar of its own, inspected and kept at a shut, nested, in a
+    standby or common-cause group, a maintenance group or behind limited
+    repair crews (refused); importance measures, capacities, the first
+    failure, spares, allocations, parameter uncertainty, the interval
+    searches, `plan_vs_actual` and the crews' chain with shutdowns
+    (refused, in plain words); adding the shut's period to
+    `optimal_replacement_intervals`.
+
+### UC-24: "Our outages are planned at given times, each with a duration and a scope: some blocks are renewed in them, others restored. What does the plan cost by window, and what is it worth?"
+
+- **Status:** built in part: the same `shutdowns`, at `"times"` with a
+  `"scope"`, and the work on each block (`"preventive": {"shutdown":
+  ..., "restoration": ...}`), simulated by `availability` and `cost`.
+  `expected_npv`, `expected_cost` and `cost_by_window` (whose mean is
+  exact) take shuts on a period only, and refuse given times, as does a
+  restoration (UC-22) anywhere.
+- **Who asks, and why:** a planner laying out the next four years of
+  outages, irregularly spaced, who wants the plan's cash flows.
+- **What they know:** the line of UC-23; outages at 3,000, 12,000 and
+  26,000 h, 72 h each, holding the pump and motor off line, 10,000 each;
+  the pump renewed in each, the motor restored (Kijima I, `q = 0.5`).
+- **What they want back:** the cost in each year, and its present value.
+- **How it is solved:** simulated: the windows at their times, the tasks
+  bound to them at those times (`_Preventive.due` and `_Inspection.due`
+  read the times).
+- **Today (by hand, and as built):** the cost to each year's end by
+  `cost(..., seed=1)`, differenced (2,000 runs each):
+
+  ```python
+  ends = YEAR * np.arange(1, 5)
+  runs = np.vstack([rbd.cost(float(t), mc_samples=2000, seed=1).samples
+                    for t in ends])
+  np.diff(runs, axis=0, prepend=0.0).mean(axis=1)
+  # [56,733, 68,541, 78,070, 21,466]  (± 317, 489, 577, 525)
+  ```
+
+  Discounted at 8% a year at each year's middle, about 195,400. The
+  shutdowns' own cost is 10,000 at each of the three, and each run's
+  `shutdowns` is 3.
+- **Checks:** `test_shutdowns.py` (shuts at given times simulated, their
+  count and cost, the exact methods' refusal).
+- **Learned / open questions:**
+  - The exact cost by window and NPV of shuts at given times need the
+    over-time machinery to take windows at given times (a curve's
+    settling, the integrals' pieces): the mask works on any windows, but
+    the long run and the curves' periods assume a period. Small to add
+    where nothing settles before the last shut; not done here.
+  - `cost_by_window` and `expected_npv` could take the simulated mean
+    where the exact one refuses, as `cost_by_window` does for its spread.
+
+### UC-25: "How much of our downtime and lost production is planned and how much is from failures, and how many failures does the plan avoid each year against running to failure?"
+
+- **Status:** built: `RepairableRBD.maintenance_effect(t=None,
+  state=..., method=None)` returning a `MaintenanceEffect`; the split
+  natively in `ExpectedEvents` and `EventsByWindow`
+  (`system_planned_downtime`, `system_unplanned_downtime`,
+  `node_planned_downtime`, `node_unplanned_downtime`),
+  `AvailabilityResult` (`system_planned_downtime`,
+  `system_unplanned_downtime`) and `CostResult`
+  (`lost_production_planned`, `lost_production_unplanned`).
+- **Who asks, and why:** the planner of UC-23, reporting to operations:
+  of the hours the line is down, how many are the plan's own (which they
+  scheduled and can move) and how many are breakdowns; and whether the
+  plan earns its keep, the failures it avoids against what it costs.
+- **What they know:** the line of UC-23 (pump, motor and bearing in
+  series, shut 72 h every 12 months at 10,000 a shut, every block's PM
+  done in it, the bearing changed only once older than 18 months, 500 an
+  hour of lost production). Model time only.
+- **What they want back:** a year's downtime split into planned and
+  unplanned hours, and the lost production likewise; the failures a year
+  with the plan and running to failure, and the difference; the cost a
+  year either way.
+- **How it is solved:** the definition, in plain words: the system is
+  down *unplanned* if it would still be down with every planned task,
+  test and shut in progress finished; *planned* otherwise. A block in a
+  repair, waiting for a crew or failed unseen is failed (unplanned, also
+  while a shut holds it); one in maintenance or a test of a working unit
+  that takes time, or held by a shut, is in planned work. With
+  independent blocks, `P(down unplanned at t) = 1 - phi(P(block not
+  failed at t))`, so each exact route that tells a block's failed state
+  from its planned work gives the split: the renewal grid of age
+  replacement keeps its repairs' part apart (`GridCurve.failed_at`), a
+  block-replaced unit's replacement in progress is the share replaced at
+  the block time not yet back (`BlockCurve.failed_at`), a tested unit's
+  test of a working unit is its rows' `tested` share not yet over
+  (`TestedCurve.failed_at`), a shut's mask is planned, the block's own
+  process underneath (`MaskedCurve.failed_at`), and a nested RBD's is its
+  own structure's (`SystemCurve.failed_at`); the long run over the long
+  run's grid likewise. Running to failure is the diagram rebuilt without
+  `"preventive"`, shutdowns and maintenance groups (its tests kept: a test
+  avoids no failure). The simulation follows each block's failed state
+  path by path, the system's unplanned downtime added up as it changes,
+  on both engines (`_unplanned`, `_kernel`); a nested RBD running ahead
+  of its parent passes up whether it is down unplanned, and each change
+  of that while it is down, taken in time order. Crews and common-cause
+  groups with planned outages (whose chains do not tell planned work
+  from a repair) are simulated.
+- **Today (by hand):** the twin with zero-length planned work that some
+  callers use: the same line with a shut that takes no time (so its
+  tasks too), its unavailability read as the unplanned part:
+
+  ```python
+  today = shut_line(12, duration=0.0)
+  today.mean_unavailability() * 8760          # 10.29 h a year
+  annual.mean_unavailability() * 8760         # 83.92 h a year in all
+  ```
+
+  so 73.63 h planned and 10.29 unplanned. It is not the same thing: with
+  no shut the blocks age on another timeline (renewed 72 h earlier each
+  year), and the failures that start in a shut, or are still being
+  repaired when it starts, are not there to count. Failures avoided
+  needed a second diagram drawn by hand without the tasks and shut.
+- **Built:**
+
+  ```python
+  effect = annual.maintenance_effect()        # per hour, the long run
+  ```
+
+  | A year | With the plan | Running to failure | The plan's effect |
+  |---|---|---|---|
+  | Downtime | 83.92 h: 70.55 planned, 13.37 unplanned | 23.52 h | 60.40 h more |
+  | Lost production | 41,960: 35,274 planned, 6,687 unplanned | 11,759 | |
+  | Failures | 0.4237 | 0.9791 | 0.5554 avoided |
+  | Cost | 65,899 | 31,372 | 34,526 more |
+
+  The shut's 72 h a year are 70.55 h planned: the rest is failures that
+  start or carry on in it (the blocks keep ageing through it). Over 10
+  years from new (`maintenance_effect(87600.0)`): 746.2 h down, 647.4
+  planned and 98.7 unplanned; 4.10 failures against 8.73, 4.62 avoided;
+  simulated (2,000 runs, seed 1) 647.4 and 98.9 h, 4.70 avoided, and the
+  cost saved -312,190 ± 1,440 against the exact -314,499. At a 9-month
+  shut 96.3 h planned and 9.7 unplanned a year, at 18 months 48.1 and
+  13.1.
+- **Checks:** `test_planned_split.py`: one block under age replacement
+  (planned `E[PM time] / E[cycle]`, unplanned `E[repair time] /
+  E[cycle]`), a parallel pair (unplanned `f^2`, planned `(f + m)^2 -
+  f^2`), one unit in maintenance and the other failed (planned), a
+  periodic shut of the whole system (unplanned `q`, planned `D / P (1 -
+  q)`, ageing or standing still), a timed test of a hidden failure
+  (planned `w D / T`); exact against simulated on a nested diagram and on
+  the catalogue's (`test_catalogue.py`); both engines to the last bit
+  (`test_simulation_engines.py` compares every field); the parts adding up
+  to the downtime in every result; failures avoided against two runs
+  differenced and two diagrams' exact values; units; saving to JSON.
+- **Learned / open questions:**
+  - By the definition, a parallel pair with one unit in maintenance and
+    the other failed is down *planned* (it would be up with the
+    maintenance over), though the change that took it down was a
+    failure: `system_failures` and `system_planned_outages` count by that
+    change, the split by the state.
+  - Here the plan avoids more than half the failures but costs more than
+    it saves: the shut's lost production dominates. The split shows where
+    to look (moving the shut, or shortening it).
+  - Not built: the split through the crews' and common-cause groups'
+    chains (they could keep a block in planned work apart from one in a
+    repair), and shuts at given times exactly (as UC-24).
+
+### UC-26: "Our pump runs 60% of the time and its overhaul is every 4,000 running hours: what does that do to availability and cost, and what if it ran 80%?"
+
+- **Status:** built: a `"preventive"` or `"inspection"` spec's `"basis":
+  "operating"`, with the block's `"duty"`.
+- **Who asks, and why:** a reliability engineer whose maintenance plan
+  counts the pump's tasks by its hour meter, as the maker's manual does,
+  while the plant is planned on the calendar. Production wants to run
+  the pump harder (80% of the time): what does that cost?
+- **What they know:** the pump's life fitted in running hours (a Weibull
+  of scale 5,000 h and shape 2.5), its share of the time running (60%),
+  the overhaul every 4,000 running hours (24 h, 8,000; it renews the
+  pump), a failure's repair (48 h) and cost (30,000). Model time only.
+  (Not UC-10: there the duty follows an operating schedule on dates,
+  Reliafy's; here it is one average share.)
+- **What they want back:** the availability, the failures and the cost a
+  year, the downtime split into planned and unplanned, at 60% and at
+  80%; and the best overhaul interval, in running hours.
+- **How it is solved:** at construction. A block of duty `d` ages only
+  while it runs, so its life on the diagram's clock is `R(d t)` (the
+  `"duty"` already did this); a task counted in running hours falls due
+  every `N` of them, every `N / d` hours on the clock, so its times
+  (`interval`, `opportunity`, `older_than`; a test's `interval`,
+  `offset`, `full_test`) are divided by `d`. Every exact route, both
+  engines and the planned split then take the converted schedule as
+  they take any other: no new code in the analyses. The spec as given
+  keeps the running hours, for saving, the levers, `with_intervals` and
+  the interval choices (`optimal_replacement_intervals` takes and gives
+  the intervals in running hours). Refused: a task in running hours with
+  no duty (say what share of the time the block runs, or give the
+  interval on the calendar), at a shut (on the calendar), or under a
+  `"calendar"` policy (whose thresholds are its own).
+- **Today (by hand):** the life and the interval converted by hand,
+  `5000 / 0.6` and `4000 / 0.6` calendar hours. The trap is to convert
+  the life and not the task (an overhaul every 4,000 calendar hours,
+  about 2,400 running hours):
+
+  | A year | By running hours (6,667 h on the calendar) | Every 4,000 calendar hours |
+  |---|---|---|
+  | Availability | 0.99403 | 0.99285 |
+  | Failures | 0.6616 | 0.3354 |
+  | Cost | 26,699 | 25,566 |
+  | Downtime, planned + unplanned | 20.55 h + 31.76 h | 46.51 h + 16.10 h |
+
+- **Built:**
+
+  ```python
+  pump = {
+      "reliability": W([5000.0, 2.5]),        # running hours
+      "repairability": FIXED([48.0]),
+      "replace_cost": 30000.0,
+      "duty": 0.6,
+      "preventive": {
+          "interval": 4000.0, "basis": "operating",
+          "duration": FIXED([24.0]), "cost": 8000.0,
+      },
+  }
+  ```
+
+  | A year | 60% of the time | 80% of the time |
+  |---|---|---|
+  | Availability | 0.99403 | 0.99205 |
+  | Failures | 0.6616 | 0.8804 |
+  | Cost | 26,699 | 35,529 |
+  | Downtime, planned + unplanned | 20.55 h + 31.76 h | 27.35 h + 42.26 h |
+  | Best overhaul interval | 2,870 running hours | 2,868 running hours |
+
+  The 60% figures are the hand conversion's to the last bit (the same
+  objects). Running harder costs a third more a year, almost all of it
+  the pump's own running: per running hour nothing changed. The best
+  interval in running hours hardly moves with the duty (only the repair
+  and overhaul times, on the calendar, weigh differently).
+- **Checks:** `test_duty_tasks.py`: every task in running hours against
+  the same block given on the calendar by hand (age, block and condition
+  policies, an opportunity, tests with an offset and full tests, a
+  restoring task, a shut with the block ageing or standing still), exact
+  values and seeded simulations equal, both engines to the last bit; the
+  planned split exact against simulated; the levers and the interval
+  choices in running hours (a sensitivity per running hour is the
+  calendar's over `d`); saving keeps the running hours and the basis;
+  the refusals. `test_units.py`: tasks in running hours scale with the
+  unit.
+- **Learned / open questions:**
+  - A shut is on the calendar, so a task bound to one is refused in
+    running hours, `"older_than"` with it too. "Replace at the shut if it
+    has run more than X hours" would read naturally; it is `older_than`
+    over `d` on the calendar, which a caller can give today.
+  - A starting state (`NodeState`) stays on the diagram's clock: an age
+    and a time since the last task in calendar hours.
+
+### UC-27: "Our pumps that fail often also seem to get scrapped sooner. This one has just failed again: do we repair it, or replace it? And for a new pump, when should we stop repairing?"
+
+- **Status:** built: `RepairOrReplace(model, repair_cost=,
+  replacement_cost=, failure_cost=, write_off_cost=, discount_rate=)`,
+  with `fleet_policy`, `unit_decision`, `unit_decisions` and
+  `break_even_frailty`.
+- **Who asks, and why:** a reliability or fleet engineer whose repair
+  records show that some units are lemons: they fail more often and are
+  written off (beyond economic repair) sooner. Each failure is a choice:
+  pay for another repair, or buy a new unit.
+- **What they know:** a joint frailty model fitted in surpyval
+  (`surpyval.JointFrailty.fit`) to the fleet's failures and write-offs,
+  with each unit's frailty (`model.frailties`); the unit's age now and
+  whether it has just failed; a repair's cost, a failure's downtime cost,
+  a new unit's cost and a write-off's cost; optionally a discount rate.
+  Model time only (ages in the model's unit).
+- **What they want back:** for a new unit, the cost rate of keeping on
+  repairing it until it is written off, of replacing it at the best age,
+  and of replacing it at the best count of failures, with the cheapest;
+  for one unit, which of these to follow from now (or to replace it now),
+  what that saves, and the frailty at which the answer turns. Each cost
+  rate with its 90% two-sided band.
+- **How it is solved (numerical):** given its frailty `u` a unit's
+  failures are minimal repairs at the rate `u r(t)` and its write-off has
+  the hazard `u**alpha h(t)`, independent of each other. A rule's cost
+  rate is the expected cost of a cycle (new until replaced or written
+  off) over its expected length (each discounted at a continuous rate,
+  the equivalent cost rate, as in UC-19). The cycle's integrals are over
+  age (Gauss-Legendre on pieces even in the logarithm of age) and, for a
+  new unit, over the frailty (Gauss-Hermite on its normal score), of the
+  model's `iif`, `cif`, `hf` and `Hf` at each frailty; a count of failures
+  through the Poisson probabilities of the expected failures. For one
+  unit, the frailty is taken as known (its estimate), and each rule is
+  valued against replacing now with what follows a replacement priced at
+  the fleet's cost rate (the relative value: the rule's cost less the
+  fleet's cost rate times its time, less the replacement's cost); a
+  failure just had adds its repair to every rule that keeps the unit.
+  The bands draw the fitted parameters from their covariance (on the log
+  scale for the positive ones) and recompute each rule's cost rate at its
+  fitted best age or count.
+- **Today:** `Repairable` refuses the model (#404), as its `cif` counts
+  repairs as if no unit were ever written off, which overstates them.
+- **Checks:** `test_repair_or_replace.py`: with no frailty variance, every
+  rule against direct quadrature of minimal repair and an independent
+  write-off (to 1e-8), keep repairing against its closed form for
+  shapes alike, constant rates against `(cr + cf) / a + cw / b` and no age
+  rule paying; a small variance tends to none, a small discount rate to
+  none; the frailty nodes against the model's population `sf`; an age rule
+  against the model's `mcf`, `ff` and `sf`, and against its `random`; a
+  count rule against a simulation written from the model's definition; a
+  new unit like the fleet saving exactly the replacement; a unit's
+  numbers against quadrature from its age; break-even frailty: units
+  above it replaced now, below it kept, and it falls with age; every cost
+  rate rising with each cost; the answers scaling with the unit of time;
+  covariates as rescaled baselines; seeded bands; the refusals.
+- **Learned / open questions:**
+  - Counting failures pays for two reasons: a unit with many failures is
+    likely a lemon, and replacing at a failure saves that failure's
+    repair. The second holds with no frailty variance at all.
+  - A unit's frailty is a plug-in (surpyval gives each unit's posterior
+    mean, not its distribution); its failures from now would change the
+    estimate, which the decision does not foresee. Decide again with a
+    refitted model.
+  - The gap time scale (each failure renews the rate) is refused:
+    surpyval 0.27 has no expected count of failures for it and cannot
+    simulate a unit of a given frailty.
+  - surpyval's joint frailty model is experimental (its design decisions
+    are proposed), with Weibull baselines and no bootstrap: the bands are
+    Wald draws.

@@ -787,11 +787,16 @@ _CATEGORIES = (
     "component_downtime",
     "system_downtime",
     "setup",
+    # Appended: the categories' places index the engines'
+    # arrays and seeded costs, so a new one goes at the end.
+    "shutdown",
 )
 
 
 # The category of a repair's own cost (all an imperfect repair is charged).
 _REPAIR = _CATEGORIES.index("repair")
+# The category of a shutdown's own cost, charged at each of its starts.
+_SHUTDOWN = _CATEGORIES.index("shutdown")
 
 
 class _Replication:
@@ -809,7 +814,9 @@ class _Replication:
     capacity trace recorded (see ``_CapacityTrace``). ``replacements``
     counts each component's replacements (its failures, found ones for a
     component with hidden failures, its preventive replacements, and a
-    standby group's units' failures): the spares it used.
+    standby group's units' failures): the spares it used. ``unplanned`` is
+    the time the system was down unplanned (see ``_unplanned``), None for
+    a diagram that takes no planned outage (all its downtime is).
     """
 
     __slots__ = (
@@ -821,6 +828,7 @@ class _Replication:
         "failures",
         "restorations",
         "planned",
+        "unplanned",
         "changes",
         "deltas",
         "cost",
@@ -841,6 +849,7 @@ class _Replication:
     failures: int
     restorations: int
     planned: int
+    unplanned: Optional[float]
     changes: List[float]
     deltas: List[int]
     cost: Optional[float]
@@ -905,6 +914,12 @@ class _Tally:
         self.system_planned_outages = 0
         self.system_uptime = ExactSum()
         self.system_downtime = ExactSum()
+        # The time the systems were down unplanned (see _unplanned): None
+        # until a simulation that follows it is added (one of a diagram
+        # that takes no planned outage, all of whose downtime is), and
+        # each simulation's until it is folded in.
+        self.system_unplanned: Optional[ExactSum] = None
+        self._unplanned_rows: list = []
         self.node_uptime = [ExactSum() for _ in range(n)]
         self.node_downtime = [ExactSum() for _ in range(n)]
         self.intersection_uptime = [ExactSum() for _ in range(n)]
@@ -975,6 +990,8 @@ class _Tally:
         self.system_failures += rec.failures
         self.system_restorations += rec.restorations
         self.system_planned_outages += rec.planned
+        if rec.unplanned is not None:
+            self._unplanned_rows.append(rec.unplanned)
         self.changes.extend(rec.changes)
         self.deltas.extend(rec.deltas)
         self._rows.append(
@@ -1085,6 +1102,9 @@ class _Tally:
         if self._cost_rows:
             self.fold_costs(np.asarray(self._cost_rows, dtype=float))
             self._cost_rows = []
+        if self._unplanned_rows:
+            self.add_unplanned(np.asarray(self._unplanned_rows, dtype=float))
+            self._unplanned_rows = []
         if self.capacity_times or self.unlimited_times:
             self.capacity_arrays.append(
                 (
@@ -1147,6 +1167,21 @@ class _Tally:
                 ]
             ),
         )
+
+    def add_unplanned(self, values) -> None:
+        """Add simulations' times down unplanned (see ``_unplanned``),
+        exactly."""
+        if self.system_unplanned is None:
+            self.system_unplanned = ExactSum()
+        self.system_unplanned.add(values)
+
+    def unplanned_downtime(self) -> ExactSum:
+        """The time the systems were down unplanned, exactly: all their
+        downtime, for a diagram that takes no planned outage."""
+        self._fold()
+        if self.system_unplanned is None:
+            return ExactSum(self.system_downtime.partials)
+        return self.system_unplanned
 
     def fold_costs(self, table) -> None:
         """Add simulations' costs to the totals, exactly: one row per
@@ -1249,6 +1284,8 @@ class _Tally:
         self.n += other.n
         self.system_uptime.add(other.system_uptime)
         self.system_downtime.add(other.system_downtime)
+        if other.system_unplanned is not None:
+            self.add_unplanned(other.system_unplanned)
         for name in self._COUNTS:
             setattr(self, name, getattr(self, name) + getattr(other, name))
         for name in self._NODE_SUMS:
@@ -1304,6 +1341,11 @@ class _Tally:
             **{name: getattr(self, name) for name in self._COUNTS},
             "system_uptime": self.system_uptime.partials,
             "system_downtime": self.system_downtime.partials,
+            "system_unplanned": (
+                None
+                if self.system_unplanned is None
+                else self.system_unplanned.partials
+            ),
             **{
                 name: [total.partials for total in getattr(self, name)]
                 for name in self._NODE_SUMS
@@ -1372,6 +1414,8 @@ class _Tally:
             setattr(tally, name, int(data[name]))
         tally.system_uptime = _exact_total(data["system_uptime"])
         tally.system_downtime = _exact_total(data["system_downtime"])
+        if data.get("system_unplanned") is not None:
+            tally.system_unplanned = _exact_total(data["system_unplanned"])
         for name in cls._NODE_SUMS:
             setattr(tally, name, [_exact_total(v) for v in data[name]])
         tally.uptimes = [float(v) for v in data["uptimes"]]

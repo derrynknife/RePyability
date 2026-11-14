@@ -17,6 +17,7 @@ import numpy as np
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _long_run,
+    _shutdowns,
 )
 from repyability.rbd._block_replacement import (
     _check_life,
@@ -27,6 +28,7 @@ from repyability.rbd._common import (
     _constant_rate,
     _sf_values,
 )
+from repyability.rbd._covariate_schedule import ScheduledLife
 from repyability.rbd._hidden_life import (
     TestedLife,
 )
@@ -124,14 +126,15 @@ def _require_capacities_given(rbd) -> None:
 def _require_reliabilities(rbd, node) -> None:
     """Raise, as the model itself does, if a component's life or repair
     model has no exact or numerical reliability: a ``StandbyModel`` or
-    ``LoadSharingModel`` that only simulations take (#149)."""
+    ``LoadSharingModel`` that only simulations take (#149), or a life
+    under a covariate schedule."""
     component = rbd.components[node]
     for model in (
         getattr(component, "reliability", None),
         getattr(component, "time_to_replace", None),
     ):
         if (
-            isinstance(model, (StandbyModel, LoadSharingModel))
+            isinstance(model, (StandbyModel, LoadSharingModel, ScheduledLife))
             and model.is_simulated
         ):
             raise model._no_reliability()
@@ -180,8 +183,11 @@ def _require_unscheduled_stages(rbd, node) -> None:
 def _imperfect_phrase(rbd, node) -> str:
     """How a component is repaired imperfectly, in words."""
     imperfect = rbd._imperfect[node]
-    kind = "I" if imperfect.kijima == "kijima1" else "II"
-    phrase = f"Kijima {kind}, q = {imperfect.q:g}"
+    if imperfect.process is not None:
+        phrase = f"by its fitted {imperfect.process.kind} model's own rule"
+    else:
+        kind = "I" if imperfect.kijima == "kijima1" else "II"
+        phrase = f"Kijima {kind}, q = {imperfect.q:g}"
     if imperfect.replace_after is not None:
         phrase += (
             f", replaced at failure {imperfect.replace_after} since it "
@@ -197,12 +203,44 @@ def _repairs_take_time(component) -> bool:
     return float(np.ravel(_sf_values(repair.sf, np.zeros(1)))[0]) > 0.0
 
 
+def _restoration_phrase(rbd, node) -> str:
+    """How a component's preventive maintenance restores it, in words."""
+    restoration = rbd._restoring[node]
+    kind = "I" if restoration.kijima == "kijima1" else "II"
+    phrase = f"Kijima {kind}, q = {restoration.q:g}"
+    if restoration.replace_every is not None:
+        phrase += (
+            f", replaced at task {restoration.replace_every} since it was "
+            "renewed"
+        )
+    return phrase
+
+
+def _require_full_restoration(rbd, node) -> None:
+    """Raise if a component's preventive maintenance restores it only
+    partly (a ``"restoration"``): a task does not renew it, so its
+    failures are not a renewal process's, and its long-run values and
+    values over time are known only by simulation."""
+    if node in rbd._restoring:
+        raise NotImplementedError(
+            f"Component {node!r} is restored only partly by its "
+            f"preventive maintenance ({_restoration_phrase(rbd, node)}), "
+            "so a task does not renew it: its failures are not a renewal "
+            "process's, and its availability and costs have no exact "
+            "value here. Estimate them by simulation, with "
+            "availability(), cost(), simulate_timelines() or "
+            "cost_by_window()."
+        )
+
+
 def _require_perfect_repair(rbd, node) -> None:
     """Raise if a component is repaired imperfectly (a spec's
     ``"repair"``): a repair does not renew it, so its long-run values
     are known only by simulation (its values over time, only by
     simulation too, but for minimal repair: see
-    ``_require_minimal_repair``)."""
+    ``_require_minimal_repair``); or if its maintenance restores it only
+    partly (``_require_full_restoration``)."""
+    _require_full_restoration(rbd, node)
     if node in rbd._imperfect:
         if _minimal_repair_blocker(rbd, node) is not None:
             over_time = "nor its values over time"
@@ -238,6 +276,11 @@ def _minimal_repair_blocker(rbd, node) -> Optional[str]:
     operating age is followed on a grid (see ``MinimalRepairCurve``)."""
     imperfect = rbd._imperfect[node]
     component = rbd.components[node]
+    if imperfect.process is not None:
+        return (
+            "its fitted model's repairs are followed only by the "
+            "simulation, failure by failure"
+        )
     if imperfect.q < 1.0:
         return "its repairs take away some of its age (q below 1)"
     if imperfect.replace_after is not None:
@@ -335,27 +378,25 @@ def _on_a_clock(rbd, node) -> bool:
 
 def _require_block_models(rbd, node) -> None:
     """Raise unless the exact block-replacement values cover the
-    component's models (the checks ``block_cycle`` makes first)."""
+    component's models (the checks ``block_cycle`` makes first); replaced
+    on condition by its level, those of ``_level_replacement``."""
+    from ._level_replacement import check_models
 
-    _refuse_level(rbd, node)
     component = rbd.components[node]
+    schedule = rbd._preventive[node]
+    if schedule.level is not None:
+        check_models(
+            component.reliability,
+            component.time_to_replace,
+            schedule.duration,
+            schedule.level,
+            schedule.interval,
+            node,
+        )
+        return
     _check_life(component.reliability, node)
     _Duration(component.time_to_replace, "repair", node)
-    _Duration(rbd._preventive[node].duration, "replacement", node)
-
-
-def _refuse_level(rbd, node) -> None:
-    """Raise for a component replaced on condition by its measured
-    degradation level (#271): its inspections follow the level, which
-    only the simulation draws."""
-    schedule = rbd._preventive.get(node)
-    if schedule is not None and schedule.level is not None:
-        raise NotImplementedError(
-            f"Component {node!r} is replaced on condition by its "
-            "measured degradation level, which only the simulation "
-            "follows: estimate it by simulation, with availability() or "
-            "cost()."
-        )
+    _Duration(schedule.duration, "replacement", node)
 
 
 def _require_calendars(rbd) -> None:
@@ -381,6 +422,8 @@ def _require_calendars(rbd) -> None:
         )
     intervals = {rbd._preventive[node].interval for node in blocks}
     intervals |= {rbd._inspection[node].interval for node in rbd._inspection}
+    _shutdowns.require_exact(rbd)
+    intervals |= {shut.period for shut in _shutdowns.timed(rbd)}
     if not intervals:
         return
     period = _common_period(intervals)

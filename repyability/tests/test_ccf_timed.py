@@ -233,14 +233,17 @@ def refusal(**timing):
 
 
 def test_what_the_chain_does_not_take_says_what_to_do():
-    assert "take none of those" in refusal(repair=W([8.0, 2.0]))
-    assert "repairs a fixed one" in refusal(repair=X([8.0]), test=E([0.5]))
+    # Tests and repairs of any length are taken (#106, see
+    # test_ccf_general.py), but not ones that can run into the next test.
     assert "as long as its test interval" in refusal(repair=X([600.0]))
+    long = refusal(repair=W([300.0, 2.0]))
+    assert "as long as its test interval" in long
+    assert "but for a chance below" in long
     # The routes say the same.
-    rbd = pair(0.1, {"repair": W([8.0, 2.0])})
+    rbd = pair(0.1, {"repair": W([300.0, 2.0])})
     route = rbd.analysis_routes()["mean_unavailability"]
     assert route.route == r.REFUSED
-    assert "take none of those" in route.reason
+    assert "as long as its test interval" in route.reason
 
 
 def test_copies_of_members_whose_repairs_take_time_are_refused():

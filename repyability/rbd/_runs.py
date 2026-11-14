@@ -8,7 +8,6 @@ itself (``_run``, ``_replicate``) stays with the diagram. The methods of
 ``RepairableRBD`` of those names call these.
 """
 
-import dataclasses
 import hashlib
 import json
 from functools import partial
@@ -31,8 +30,9 @@ from repyability.rbd import (
     _conditional,
 )
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.rbd import _streams, _timeline_runs
+from repyability.rbd import _overrides, _streams, _timeline_runs
 from repyability.rbd._exact import (
+    ExactSum,
     bin_totals,
 )
 from repyability.rbd._model_utils import (
@@ -48,6 +48,7 @@ from repyability.rbd.results import (
     Criticalities,
     FailureCriticalityIndex,
     RestorationCriticalityIndex,
+    SimulationSamples,
     TimelineSimulation,
     UpDownImportance,
 )
@@ -62,6 +63,8 @@ from repyability.rbd import (
     _curves,
     _long_run,
     _requirements,
+    _shutdowns,
+    _spec,
     _windows,
 )
 from repyability.rbd._common import (
@@ -106,7 +109,7 @@ def _state_key(states: dict) -> Optional[str]:
             if isinstance(start, NodeState):
                 if start.new:
                     continue
-                value: Any = dataclasses.asdict(start)
+                value: Any = _overrides.state_to_dict(start)
             else:
                 value = plain(start)
                 if not value:
@@ -147,7 +150,7 @@ def _states_from_key(rbd, key: Optional[str]) -> dict:
         for name, value in entries:
             node = nodes[name]
             if isinstance(value, dict):
-                out[node] = NodeState(**value)
+                out[node] = _overrides.state_from_dict(value)
             else:
                 out[node] = states(rbd.components[node], value)
         return out
@@ -936,6 +939,61 @@ def _fingerprint(diagram) -> Optional[str]:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def simulation_samples(
+    rbd,
+    t_simulation: float,
+    mc_samples: Optional[int],
+    *,
+    working_nodes: Optional[Collection[Hashable]],
+    broken_nodes: Optional[Collection[Hashable]],
+    seed,
+    entropy: Optional[int],
+) -> SimulationSamples:
+    """See ``RepairableRBD.simulation_samples``."""
+    from . import _event_loop
+
+    N = 10_000 if mc_samples is None else mc_samples
+    montecarlo.check_count(N, False, "mc_samples")
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
+    if entropy is None:
+        entropy = _streams.entropy_of(seed)
+    elif seed is not None:
+        raise ValueError(
+            "Give seed or entropy, not both: the entropy is what a seed "
+            "makes (seed_entropy(seed))."
+        )
+    elif (
+        isinstance(entropy, (bool, np.bool_))
+        or not isinstance(entropy, (int, np.integer))
+        or not 0 <= entropy < 2**62
+    ):
+        raise ValueError(
+            "entropy must be a whole number from 0 to 2**62 - 1 (as "
+            f"seed_entropy gives), got {entropy!r}."
+        )
+    t_simulation = simulation_window(t_simulation)
+    tally = _event_loop._run(
+        rbd,
+        t_simulation,
+        working,
+        broken,
+        "p",
+        N,
+        False,
+        None,
+        entropy=int(entropy),
+        common=True,
+    )
+    return SimulationSamples(
+        availability=np.asarray(tally.uptimes, dtype=float) / t_simulation,
+        cost=(
+            np.asarray(tally.cost_samples, dtype=float)
+            if rbd.has_costs
+            else None
+        ),
+    )
+
+
 def compare(
     diagram,
     other: "RepairableRBD",
@@ -1183,6 +1241,7 @@ def _twin_from(
         on_infeasible_rbd=args["on_infeasible_rbd"],
         downtime_cost_rate=args["downtime_cost_rate"],
         ccf_groups=args.get("ccf_groups") if groups else None,
+        shutdowns=args.get("shutdowns"),
     )
 
 
@@ -1238,14 +1297,21 @@ def _twin_simpler(diagram, node, spec: dict) -> Tuple[Any, str]:
             if schedule.policy == "block"
             else "replacement on condition"
         )
-    if not drop:
+    restored = node in diagram._restoring and "preventive" not in drop
+    if not drop and not restored:
         return spec, ""
+    simpler = {key: value for key, value in spec.items() if key not in drop}
     what = list(dict.fromkeys(drop[key] for key in drop if key in spec))
+    if restored:
+        # Its tasks renew it.
+        simpler["preventive"] = {
+            key: value
+            for key, value in spec["preventive"].items()
+            if key not in _spec.RESTORATION_KEYS
+        }
+        what.append("partial restoration by maintenance")
     note = " (its failures are revealed)" if "inspection" in drop else ""
-    return (
-        {key: value for key, value in spec.items() if key not in drop},
-        f"the {' and '.join(what)} of {node!r}{note}",
-    )
+    return simpler, f"the {' and '.join(what)} of {node!r}{note}"
 
 
 def _simulated(
@@ -1565,7 +1631,8 @@ def _conditional_applies(
     groups the exact methods over time refuse, prevent."""
     from repyability.rbd import routes as r
 
-    if diagram._too_meshed() is not None:
+    if diagram._too_meshed() is not None or diagram._shutdowns:
+        # (Shutdowns hold the modules and the rest off line together.)
         return []
     if diagram.ccf_groups and r.refusal(
         partial(
@@ -2156,6 +2223,15 @@ def _availability_result(
 
     system_uptime = float(tally.system_uptime)
     system_downtime = float(tally.system_downtime)
+    # Planned against unplanned (see _unplanned): the time down unplanned,
+    # and the rest of the downtime, each exactly and then rounded.
+    unplanned_total = tally.unplanned_downtime()
+    system_unplanned = float(unplanned_total)
+    system_planned = float(
+        ExactSum(tally.system_downtime.partials).add(
+            [-part for part in unplanned_total.partials]
+        )
+    )
     both_up = rounded(tally.intersection_uptime)
     both_down = rounded(tally.intersection_downtime)
     # Collect Importance/Criticality measures from the simulation
@@ -2241,6 +2317,12 @@ def _availability_result(
             antithetic=antithetic,
             control_variate=controls[1],
             conditional=conditional,
+            lost_production_planned=(
+                diagram.downtime_cost_rate * system_planned / N
+            ),
+            lost_production_unplanned=(
+                diagram.downtime_cost_rate * system_unplanned / N
+            ),
         )
 
     capacity_fields: dict = {}
@@ -2308,6 +2390,11 @@ def _availability_result(
         ),
         control_variate=controls[0],
         conditional=conditional,
+        shutdowns=int(
+            _shutdowns.started_before(diagram, np.array([t_simulation]))[0]
+        ),
+        system_planned_downtime=system_planned,
+        system_unplanned_downtime=system_unplanned,
         **capacity_fields,
     )
 

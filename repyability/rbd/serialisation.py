@@ -29,10 +29,18 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
+import numpy as np
+
 from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
+from repyability.rbd._bayesian_life import PosteriorPredictive, as_life
 from repyability.rbd._degradation import is_degradation
-from repyability.rbd._model_utils import distribution_name, is_mixture
+from repyability.rbd._model_utils import (
+    by_functions,
+    distribution_name,
+    is_mixture,
+)
+from repyability.rbd._processes import COX_LEWIS_LIFE, cox_lewis_life
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
     PerfectReliability,
@@ -59,6 +67,7 @@ _WRAPPERS = {
     "non_repairable": NonRepairable,
     "regression_node": RegressionNode,
     "joint_node": JointNode,
+    "posterior_predictive": PosteriorPredictive,
     "load_sharing": LoadSharingModel,
 }
 
@@ -135,6 +144,13 @@ def _serialise_model(model: Any) -> dict:
             "k": model.k,
             "switching_probability": model.switching_probability,
             "dormancy_factor": model.dormancy_factor,
+            # Saved only when a spare may fail to start (#339), so that
+            # what earlier versions saved is unchanged.
+            **(
+                {"start_probability": model.start_probability}
+                if not np.all(np.asarray(model.start_probability) == 1.0)
+                else {}
+            ),
         }
     if isinstance(model, RepeatedStandbyNode):
         return {
@@ -164,6 +180,10 @@ def _serialise_model(model: Any) -> dict:
         # A joint model's unit (or its prediction, which loads as one):
         # the model in surpyval's format and the unit's inputs.
         return {"kind": "joint_node", **as_node(model).to_dict()}
+    if isinstance(as_life(model), PosteriorPredictive):
+        # A Bayesian fit (or its posterior predictive, which it loads as):
+        # the fit in surpyval's format, its posterior whole.
+        return {"kind": "posterior_predictive", **as_life(model).to_dict()}
     if isinstance(model, LoadSharingModel):
         return {
             "kind": "load_sharing",
@@ -171,10 +191,20 @@ def _serialise_model(model: Any) -> dict:
             "load": model.load,
             "k": model.k,
         }
+    if type(model).__name__ == "LifeAtCovariates" and by_functions(model):
+        # A regression at one unit's covariates (#93), a view with no
+        # to_dict of its own: the regression in surpyval's format and the
+        # row, which surpyval's at() binds again.
+        return {
+            "kind": "life_at_covariates",
+            "regression": model.regression.to_dict(),
+            **_saved_row(model.Z),
+        }
     if (
         distribution_name(model) is not None
         or is_mixture(model)
         or is_degradation(model)
+        or (by_functions(model) and callable(getattr(model, "to_dict", None)))
     ):
         # surpyval's own format: everything surpyval keeps (an offset, p,
         # f0, a fit's covariance, a mixture's components) round-trips,
@@ -182,11 +212,32 @@ def _serialise_model(model: Any) -> dict:
         return {"kind": "surpyval", "model": model.to_dict()}
     raise NotImplementedError(
         f"Cannot serialise a node model of type {type(model).__name__}. "
-        "Only surpyval's parametric models, the "
+        "Only surpyval's models with a to_dict (or a regression's "
+        "at(Z)), the "
         "RePyability node wrappers (standby, degrading, repeated, "
-        "NonRepairable, load-sharing, regression, joint), perfect "
+        "NonRepairable, load-sharing, regression, joint, posterior "
+        "predictive), perfect "
         "reliability/unreliability and nested RBDs are supported."
     )
+
+
+def _saved_row(Z: Any) -> dict:
+    """A regression's covariate row as JSON: a DataFrame's columns (a
+    model fitted with ``fit_from_df``), or the row's numbers."""
+    columns = getattr(Z, "columns", None)
+    if columns is not None:
+        return {"Z": Z.to_dict(orient="list")}
+    return {"Z": np.asarray(Z, dtype=float).tolist()}
+
+
+def _loaded_row(d: dict) -> Any:
+    """The covariate row ``_saved_row`` saved."""
+    Z = d["Z"]
+    if isinstance(Z, dict):
+        import pandas as pd  # type: ignore[import-untyped]
+
+        return pd.DataFrame(Z)
+    return np.asarray(Z, dtype=float)
 
 
 def deserialise_model(d: dict) -> Any:
@@ -199,6 +250,10 @@ def deserialise_model(d: dict) -> Any:
     if kind == "perfect_unreliability":
         return PerfectUnreliability
     if kind == "surpyval":
+        if d["model"].get("distribution") == COX_LEWIS_LIFE:
+            # A Cox-Lewis process's life (see _processes): registered in
+            # surpyval before it can be loaded by its name.
+            cox_lewis_life()
         return surpyval.from_dict(d["model"])
     if kind == "degrading":
         return DegradingNode(
@@ -224,6 +279,7 @@ def deserialise_model(d: dict) -> Any:
             k=d["k"],
             switching_probability=d.get("switching_probability", 1.0),
             dormancy_factor=d.get("dormancy_factor", 0.0),
+            start_probability=d.get("start_probability", 1.0),
         )
     if kind == "repeated_standby":
         return RepeatedStandbyNode(
@@ -246,6 +302,10 @@ def deserialise_model(d: dict) -> Any:
         return RegressionNode.from_dict(d)
     if kind == "joint_node":
         return JointNode.from_dict(d)
+    if kind == "posterior_predictive":
+        return PosteriorPredictive.from_dict(d)
+    if kind == "life_at_covariates":
+        return surpyval.from_dict(d["regression"]).at(_loaded_row(d))
     if kind == "load_sharing":
         return LoadSharingModel(
             [surpyval.from_dict(md) for md in d["models"]],
@@ -312,7 +372,16 @@ def _serialise_component(value) -> dict:
         if value.get("group") is not None:
             # A maintenance group's name, as a node's is.
             out["group"] = value["group"]
-        if value.get("repair") is not None:
+        repair = value.get("repair")
+        if isinstance(repair, dict) and repair.get("model") == "process":
+            # Repaired by a fitted renewal process's own rule: saved as
+            # the fitted model given as the reliability, which loads as
+            # it was built (see _processes.as_spec).
+            out["reliability"] = {
+                "kind": "surpyval",
+                "model": repair["process"].to_dict(),
+            }
+        elif repair is not None:
             # Imperfect repair: the model's name and its restoration factor.
             out["repair"] = {
                 "model": value["repair"]["model"],
@@ -322,6 +391,10 @@ def _serialise_component(value) -> dict:
             out["replace_after"] = int(value["replace_after"])
         if value.get("duty") is not None:
             out["duty"] = float(value["duty"])
+        if value.get("covariates") is not None:
+            from repyability.rbd._covariate_schedule import schedule_to_dict
+
+            out["covariates"] = schedule_to_dict(value["covariates"])
         for key in ("preventive", "inspection"):
             if value.get(key) is not None:
                 out[key] = _serialise_schedule(value[key])
@@ -346,7 +419,17 @@ def _serialise_schedule(spec: dict) -> dict:
             "is worked out from its part and calendar, not saved. Save the "
             "diagram without it, and work the policy out again."
         )
-    out: dict[str, Any] = {"interval": float(spec["interval"])}
+    out: dict[str, Any] = {}
+    if spec.get("shutdown") is not None:
+        # Done at a shutdown, whose calendar and duration it takes.
+        out["shutdown"] = spec["shutdown"]
+        if spec.get("older_than") is not None:
+            out["older_than"] = float(spec["older_than"])
+    else:
+        out["interval"] = float(spec["interval"])
+    if spec.get("basis") is not None:
+        # What its times are counted in, as given: they are kept in it.
+        out["basis"] = spec["basis"]
     if "policy" in spec:
         out["policy"] = spec["policy"]
     if spec.get("threshold") is not None:
@@ -361,23 +444,47 @@ def _serialise_schedule(spec: dict) -> dict:
         if spec.get(key) is not None:
             out[key] = float(spec[key])
     duration = spec.get("duration", "instant")
-    out["duration"] = (
-        "instant" if isinstance(duration, str) else serialise_model(duration)
-    )
+    if spec.get("shutdown") is None:
+        out["duration"] = (
+            "instant"
+            if isinstance(duration, str)
+            else serialise_model(duration)
+        )
     for key in ("cost", "inspection_cost"):
         cost = spec.get(key)
         if hasattr(cost, "qf"):
             out[key] = serialise_model(cost)
         elif cost:
             out[key] = float(cost)
+    if spec.get("restoration") is not None:
+        # A task that restores partly: its Kijima model and factor (a
+        # fitted process given has been written as these, see
+        # _processes.as_spec), the task that replaces and its cost.
+        out["restoration"] = {
+            "model": spec["restoration"]["model"],
+            "q": float(spec["restoration"]["q"]),
+        }
+    if spec.get("replace_every") is not None:
+        out["replace_every"] = int(spec["replace_every"])
+    cost = spec.get("replacement_cost")
+    if hasattr(cost, "qf"):
+        out["replacement_cost"] = serialise_model(cost)
+    elif cost is not None:
+        # Kept at 0 too: a replacement then costs nothing, not the task's
+        # cost.
+        out["replacement_cost"] = float(cost)
     return out
 
 
 def _deserialise_schedule(d: dict) -> dict:
     out = dict(d)
-    if isinstance(d["duration"], dict):
+    if "shutdown" in d:
+        out["shutdown"] = _node_name(d["shutdown"])
+    if isinstance(d.get("duration"), dict):
         out["duration"] = deserialise_model(d["duration"])
-    for key in ("cost", "inspection_cost"):
+    if "restoration" in d:
+        out["restoration"] = dict(d["restoration"])
+    for key in ("cost", "inspection_cost", "replacement_cost"):
         if isinstance(d.get(key), dict):
             out[key] = deserialise_model(d[key])
     return out
@@ -412,6 +519,12 @@ def _deserialise_component(d: dict) -> Any:
             out["replace_after"] = d["replace_after"]
         if "duty" in d:
             out["duty"] = d["duty"]
+        if "covariates" in d:
+            from repyability.rbd._covariate_schedule import (
+                schedule_from_dict,
+            )
+
+            out["covariates"] = schedule_from_dict(d["covariates"])
         for key in ("preventive", "inspection"):
             if key in d:
                 out[key] = _deserialise_schedule(d[key])
@@ -564,6 +677,12 @@ def rbd_to_dict(rbd: RBD) -> dict:
             ]
         if args.get("ccf_groups"):
             out["ccf_groups"] = _ccf_to_list(args["ccf_groups"])
+        if args.get("shutdowns"):
+            # Each shutdown's spec, by name (a name may not be a JSON key).
+            out["shutdowns"] = [
+                {"shutdown": name, **_shutdown_spec(spec)}
+                for name, spec in args["shutdowns"].items()
+            ]
     else:
         nodes = set(args["reliabilities"].keys())
         out["reliabilities"] = [
@@ -574,6 +693,22 @@ def rbd_to_dict(rbd: RBD) -> dict:
             for n, v in args["reliabilities"].items()
         ]
         out["ccf_groups"] = _ccf_to_list(args.get("ccf_groups"))
+    return out
+
+
+def _shutdown_spec(spec: dict) -> dict:
+    """A shutdown's spec as plain data: its numbers as floats, its times
+    as a list, its scope's nodes as they are."""
+    out: dict = {}
+    for key, value in spec.items():
+        if key == "times":
+            out[key] = [float(t) for t in np.atleast_1d(value)]
+        elif key == "scope":
+            out[key] = None if value is None else list(value)
+        elif key == "idle_ageing":
+            out[key] = bool(value)
+        elif value is not None:
+            out[key] = float(value)
     return out
 
 
@@ -603,6 +738,18 @@ def rbd_from_dict(d: dict) -> RBD:
             }
             for e in d.get("maintenance_groups") or ()
         }
+        shutdowns = {
+            _node_name(e["shutdown"]): {
+                key: (
+                    [_node_name(n) for n in value]
+                    if key == "scope" and value is not None
+                    else value
+                )
+                for key, value in e.items()
+                if key != "shutdown"
+            }
+            for e in d.get("shutdowns") or ()
+        }
         return RepairableRBD(
             edges,
             components,
@@ -610,6 +757,7 @@ def rbd_from_dict(d: dict) -> RBD:
             repair_crews=d.get("repair_crews"),
             maintenance_groups=groups or None,
             ccf_groups=_ccf_from_list(d.get("ccf_groups")),
+            shutdowns=shutdowns or None,
             **common,
         )
     if rbd_type == "NonRepairableRBD":

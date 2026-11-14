@@ -19,6 +19,7 @@ from typing import (
 import numpy as np
 
 from repyability.rbd import _requirements
+from repyability.rbd._covariate_schedule import is_scheduled
 from repyability.rbd._degradation import (
     is_degradation,
 )
@@ -33,6 +34,7 @@ from repyability.rbd._events import (
     _Inspection,
     _MaintenanceGroup,
     _Preventive,
+    _Restoration,
     _Standby,
 )
 from repyability.utils.checks import (
@@ -63,6 +65,7 @@ COMPONENT_SPEC_KEYS = (
         "repair",
         "replace_after",
         "duty",
+        "covariates",
     )
 )
 
@@ -80,7 +83,17 @@ PREVENTIVE_KEYS = (
     "opportunity",
     "level",
     "calendar",
+    "restoration",
+    "replace_every",
+    "replacement_cost",
+    "shutdown",
+    "older_than",
+    "basis",
 )
+
+#: The keys of a ``"preventive"`` spec that make its task restore the unit
+#: only partly (Kijima), and replace it as new at every so many tasks.
+RESTORATION_KEYS = ("restoration", "replace_every", "replacement_cost")
 
 #: The policies a ``"preventive"`` spec can name: replacement at an
 #: age, on a calendar (block), on the condition an inspection finds, or
@@ -98,6 +111,8 @@ INSPECTION_KEYS = (
     "offset",
     "coverage",
     "full_test",
+    "shutdown",
+    "basis",
 )
 
 #: The keys of a component's ``"standby"`` spec.
@@ -108,6 +123,7 @@ STANDBY_KEYS = ("units", "k", "dormancy_factor", "switching_probability")
 _PER_ACTION_COST_KEYS = PER_FAILURE_COST_KEYS + (
     "preventive_cost",
     "inspection_cost",
+    "replacement_cost",
 )
 
 
@@ -223,30 +239,12 @@ def _validate_imperfect(rbd, node, spec: dict) -> Optional[_Imperfect]:
     repair, limit = spec.get("repair"), spec.get("replace_after")
     if repair is None and limit is None:
         return None
-    q, model = 0.0, ""
-    if repair is not None:
-        if (
-            not isinstance(repair, dict)
-            or set(repair) != {"model", "q"}
-            or repair["model"] not in REPAIR_MODELS
-        ):
-            raise ValueError(
-                f"Component {node!r}: repair must be a dict of a "
-                f"'model' ({' or '.join(map(repr, REPAIR_MODELS))}) "
-                f"and its restoration factor 'q', got {repair!r}."
-            )
-        q = repair["q"]
-        if (
-            isinstance(q, bool)
-            or not isinstance(q, (int, float, np.number))
-            or not 0.0 <= float(q) <= 1.0
-        ):
-            raise ValueError(
-                f"Component {node!r}: the restoration factor q must be "
-                "a number in [0, 1] (0 renews the unit, 1 is minimal "
-                f"repair), got {q!r}."
-            )
-        q, model = float(q), repair["model"]
+    q, model, process = 0.0, "", None
+    if isinstance(repair, dict) and repair.get("model") == "process":
+        process = _validate_process(node, spec)
+        model, q = "process", 1.0
+    elif repair is not None:
+        model, q = _kijima_factor(node, repair, "repair", "is minimal repair")
     if limit is not None:
         if (
             isinstance(limit, bool)
@@ -281,7 +279,23 @@ def _validate_imperfect(rbd, node, spec: dict) -> Optional[_Imperfect]:
             "age as new, so it cannot be repaired imperfectly."
         )
     life = spec["reliability"]
-    if not (is_mixture(life) or (hasattr(life, "Hf") and hasattr(life, "qf"))):
+    if process is not None:
+        if isinstance(preventive, dict) and (
+            preventive.get("restoration") is not None
+        ):
+            raise ValueError(
+                f"Component {node!r} is repaired by its fitted "
+                f"{process.kind} model's own rule, which a task restoring "
+                "it partly cannot be put together with: give its "
+                "preventive maintenance no 'restoration' (a task then "
+                "replaces it)."
+            )
+        return _Imperfect(model, q, limit, process)
+    if not (
+        is_mixture(life)
+        or is_scheduled(life)
+        or (hasattr(life, "Hf") and hasattr(life, "qf"))
+    ):
         raise ValueError(
             f"Component {node!r}: an imperfectly repaired unit's lives "
             "are drawn given its virtual age, which needs a lifetime "
@@ -289,6 +303,184 @@ def _validate_imperfect(rbd, node, spec: dict) -> Optional[_Imperfect]:
             "such as a surpyval distribution."
         )
     return _Imperfect(model, q, limit)
+
+
+def _validate_process(node, spec: dict):
+    """The fitted renewal process of a ``"repair"`` of ``{"model":
+    "process", "process": model}`` (see ``_processes``), checked: a
+    surpyval renewal process whose repairs are not Kijima's, given with
+    its own life from new as the spec's ``"reliability"``."""
+    from repyability.rbd._processes import first_life, is_renewal_process
+
+    repair = spec["repair"]
+    process = repair.get("process")
+    if (
+        set(repair) != {"model", "process"}
+        or not is_renewal_process(process)
+        or str(process.kind) == "Generalized Renewal"
+    ):
+        raise ValueError(
+            f"Component {node!r}: a 'process' repair is a dict of 'model' "
+            "('process') and 'process', a fitted surpyval G1, ARA or ARI "
+            f"model, got {repair!r}. Give the fitted model as the "
+            "component's 'reliability' instead, with no 'repair'."
+        )
+    life, own = spec["reliability"], first_life(process)
+    probe = np.asarray(own.qf(np.array([0.1, 0.5, 0.9])), dtype=float)
+    if not np.allclose(
+        np.asarray(life.sf(probe), dtype=float),
+        np.asarray(own.sf(probe), dtype=float),
+        rtol=1e-12,
+        atol=0.0,
+    ):
+        raise ValueError(
+            f"Component {node!r}: its reliability is not the life from new "
+            f"of its fitted {process.kind} model. Give the fitted model as "
+            "the component's 'reliability' instead, with no 'repair'."
+        )
+    return process
+
+
+def _kijima_factor(
+    node, given, what: str, at_one: str, also: str = ""
+) -> Tuple[str, float]:
+    """A Kijima ``(model, q)`` given as a dict of a ``"model"`` and its
+    restoration factor ``"q"`` in [0, 1], checked: ``what`` names it
+    ("repair", "the preventive restoration"), ``at_one`` says what
+    ``q = 1`` is, and ``also`` what else it may be given as."""
+    if (
+        not isinstance(given, dict)
+        or set(given) != {"model", "q"}
+        or given["model"] not in REPAIR_MODELS
+    ):
+        raise ValueError(
+            f"Component {node!r}: {what} must be a dict of a "
+            f"'model' ({' or '.join(map(repr, REPAIR_MODELS))}) "
+            f"and its restoration factor 'q'{also}, got {given!r}."
+        )
+    q = given["q"]
+    if (
+        isinstance(q, bool)
+        or not isinstance(q, (int, float, np.number))
+        or not 0.0 <= float(q) <= 1.0
+    ):
+        raise ValueError(
+            f"Component {node!r}: the restoration factor q must be "
+            f"a number in [0, 1] (0 renews the unit, 1 {at_one}), "
+            f"got {q!r}."
+        )
+    return given["model"], float(q)
+
+
+def _validate_restoration(
+    node,
+    spec: dict,
+    schedule: Optional[_Preventive],
+    imperfect: Optional[_Imperfect],
+) -> Tuple[Optional[_Restoration], Any]:
+    """A component's preventive task that restores it only partly (the
+    ``"preventive"`` spec's ``"restoration"``, ``"replace_every"`` and
+    ``"replacement_cost"``), validated: the restoration, and the cost of a
+    task that replaces (None for the task's own). None for a task that
+    renews the unit, as by default: no restoration, or one exactly as new
+    (``q = 0`` under Kijima II, or under Kijima I when the unit's repairs
+    renew it, so that its virtual age is 0 at every task)."""
+    preventive = spec.get("preventive")
+    if not isinstance(preventive, dict):
+        return None, None
+    given = preventive.get("restoration")
+    every = preventive.get("replace_every")
+    cost = preventive.get("replacement_cost")
+    if cost is not None and every is None:
+        raise ValueError(
+            f"Component {node!r}: a replacement_cost is the cost of the "
+            "task that replaces the unit, so it needs replace_every."
+        )
+    if given is None:
+        if every is not None:
+            raise ValueError(
+                f"Component {node!r}: replace_every needs a restoration "
+                "with q above 0: without one, every task renews the unit "
+                "anyway."
+            )
+        return None, None
+    model, q = _kijima_factor(
+        node,
+        given,
+        "the preventive restoration",
+        "leaves it as old as it was",
+        ", or a fitted surpyval GeneralizedRenewal (Kijima I or II)",
+    )
+    if every is not None:
+        if (
+            isinstance(every, bool)
+            or not isinstance(every, (int, np.integer))
+            or every < 1
+        ):
+            raise ValueError(
+                f"Component {node!r}: replace_every must be a whole "
+                f"number of tasks of at least 2, got {every!r}."
+            )
+        if every == 1:
+            raise ValueError(
+                f"Component {node!r}: a replace_every of 1 replaces the "
+                "unit at every task, which is preventive maintenance "
+                "that renews it, the default: give no restoration and "
+                "no replace_every."
+            )
+        if q == 0.0:
+            raise ValueError(
+                f"Component {node!r}: replace_every needs a restoration "
+                "with q above 0."
+            )
+        every = int(every)
+    if cost is not None:
+        cost = _validate_component_cost(node, "replacement_cost", cost)
+    policy = preventive.get("policy", "age")
+    if policy == "calendar":
+        raise ValueError(
+            f"Component {node!r}: a restoration applies under the 'age', "
+            "'block' and 'condition' policies. A 'calendar' policy is "
+            "worked out for a unit put in as new at each replacement: "
+            "give it no restoration, or schedule the task by age or "
+            "block."
+        )
+    if preventive.get("level") is not None:
+        raise ValueError(
+            f"Component {node!r}: a restoration takes away part of the "
+            "unit's virtual age, and a measured degradation level is not "
+            "one: judge the unit by its age (a threshold), or give no "
+            "restoration."
+        )
+    if preventive.get("opportunity") is not None:
+        raise ValueError(
+            f"Component {node!r}: a restoration is not taken with an "
+            "opportunity yet (an early task at a stop of its maintenance "
+            "group renews the unit): give one or the other."
+        )
+    if spec.get("standby") is not None:
+        raise ValueError(
+            f"Component {node!r} is a standby group, whose units are "
+            "renewed by their tasks, so its task cannot restore it partly."
+        )
+    if schedule is None or (
+        q == 0.0 and (model == "kijima2" or imperfect is None)
+    ):
+        # No task, or one that renews the unit.
+        return None, None
+    life = spec["reliability"]
+    if not (
+        is_mixture(life)
+        or is_scheduled(life)
+        or (hasattr(life, "Hf") and hasattr(life, "qf"))
+    ):
+        raise ValueError(
+            f"Component {node!r}: a unit restored partly draws its lives "
+            "given its virtual age, which needs a lifetime model with a "
+            "cumulative hazard (Hf) and quantiles (qf), such as a "
+            "surpyval distribution."
+        )
+    return _Restoration(model, q, every), cost
 
 
 def _validate_groups(
@@ -499,12 +691,14 @@ def _validate_calendar(node, spec: dict, policy: str, life):
 
 
 def _validate_preventive(
-    node, spec, life=None
+    node, spec, life=None, shutdowns: Optional[dict] = None
 ) -> Tuple[_Preventive, Any, Any]:
     """A component's ``"preventive"`` spec, validated: its schedule,
     and the cost of each replacement and of each inspection (None if
     it prices nothing); ``life`` is the component's life model, which a
-    ``"level"`` needs to be a degradation process (#271)."""
+    ``"level"`` needs to be a degradation process (#271). A task done at
+    one of the diagram's ``shutdowns`` (its ``"shutdown"``) is the
+    schedule the shut gives it (see ``_shutdowns.bound_preventive``)."""
     if not isinstance(spec, dict):
         raise ValueError(
             f"Component {node!r}: preventive must be a dict with "
@@ -516,6 +710,16 @@ def _validate_preventive(
             f"Component {node!r} has unknown preventive key(s) "
             f"{sorted(map(str, unknown))}. A preventive spec takes "
             f"{', '.join(PREVENTIVE_KEYS)}."
+        )
+    bound: dict = {}
+    if spec.get("shutdown") is not None:
+        from repyability.rbd import _shutdowns
+
+        spec, bound = _shutdowns.bound_preventive(node, spec, shutdowns or {})
+    elif spec.get("older_than") is not None:
+        raise ValueError(
+            f"Component {node!r}: older_than replaces the unit at a "
+            "shutdown if it is that old, so it needs a shutdown."
         )
     policy = spec.get("policy", "age")
     if policy not in PREVENTIVE_POLICIES:
@@ -612,7 +816,14 @@ def _validate_preventive(
                 cost = None
         costs.append(cost)
     schedule = _Preventive(
-        interval, policy, duration, threshold, opportunity, level, calendar
+        interval,
+        policy,
+        duration,
+        threshold,
+        opportunity,
+        level,
+        calendar,
+        **bound,
     )
     return schedule, costs[0], costs[1]
 
@@ -721,9 +932,13 @@ def _validate_standby(node, spec: dict) -> _Standby:
     )
 
 
-def _validate_inspection(node, spec) -> Tuple[_Inspection, Any]:
+def _validate_inspection(
+    node, spec, shutdowns: Optional[dict] = None
+) -> Tuple[_Inspection, Any]:
     """A component's ``"inspection"`` spec, validated: its schedule, and
-    its cost (None if it prices nothing)."""
+    its cost (None if it prices nothing). Tests done at one of the
+    diagram's ``shutdowns`` take the shut's calendar and duration (see
+    ``_shutdowns.bound_inspection``)."""
     if not isinstance(spec, dict):
         raise ValueError(
             f"Component {node!r}: inspection must be a dict with "
@@ -736,6 +951,11 @@ def _validate_inspection(node, spec) -> Tuple[_Inspection, Any]:
             f"{sorted(map(str, unknown))}. An inspection spec takes "
             f"{', '.join(INSPECTION_KEYS)}."
         )
+    bound: dict = {}
+    if spec.get("shutdown") is not None:
+        from repyability.rbd import _shutdowns
+
+        spec, bound = _shutdowns.bound_inspection(node, spec, shutdowns or {})
     try:
         interval = number_or_nan(spec["interval"])
     except KeyError:
@@ -805,7 +1025,9 @@ def _validate_inspection(node, spec) -> Tuple[_Inspection, Any]:
             "interval (the mission time, say, after which it is "
             "renewed)."
         )
-    schedule = _Inspection(interval, duration, offset, coverage, full_test)
+    schedule = _Inspection(
+        interval, duration, offset, coverage, full_test, **bound
+    )
     return schedule, cost
 
 

@@ -107,7 +107,7 @@ result.criticalities.iou.up  # intersection-over-union importance (system up)
 | Area | Capabilities | Guide |
 |---|---|---|
 | Structure | Series, parallel, *k*-out-of-*n*, junctions, shared components, nested subsystems, path and cut sets, validation | [Building an RBD](guide/building.md) |
-| Fault trees | OR, AND and VOTE gates with repeated events; exact top event probability, minimal cut sets ranked by probability, importance measures, common-cause groups; conversion to and from block diagrams | [Fault trees](guide/fault-trees.md) |
+| Fault trees | OR, AND and VOTE gates with repeated events; exact top event probability, minimal cut sets ranked by probability, importance measures, common-cause groups; conversion to and from block diagrams; NOT gates with prime implicants; dynamic gates (PAND, SPARE, SEQ, FDEP) over time; Open-PSA export | [Fault trees](guide/fault-trees.md) |
 | Reliability | Exact `sf`/`ff`, density, hazard, conditional survival, the exact MTTF (or simulated, with confidence intervals), B*X* life; uncertainty intervals from uncertain component models | [Reliability of a system](guide/reliability.md) |
 | Phased missions | Missions through phases with their own durations and diagrams over the same components: the exact mission reliability and the chance of failing in each phase, or simulated | [Phased missions](guide/phased-missions.md) |
 | Networks | Undirected networks with failing links and nodes: the exact two-terminal reliability, minimal paths and cuts, link importance and mean time to disconnection, or simulated | [Networks](guide/networks.md) |
