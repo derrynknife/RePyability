@@ -9,6 +9,19 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Documentation
+
+- The surpyval workarounds still in RePyability were each checked
+  against surpyval 0.27 (a mixture's life left at an age, a degradation
+  level given survival, rescaling time for a duty cycle, parameter
+  ranges of fits other than distributions, a joint frailty model's
+  expected failures far past its write-off ages, and a Bayesian fit's
+  quantile with an offset or shares). 0.27 fixes none of them, so all
+  stay and no number changes; the joint frailty one can go once the
+  minimum surpyval is 0.28. The contributor notes record what was
+  measured, and no longer name a release as the latest; the maintenance
+  stories' statuses are as of 0.17.
+
 ## [0.17] - 2026-11-14
 
 surpyval 0.27, and maintenance in model time. A `RepairableRBD` takes
