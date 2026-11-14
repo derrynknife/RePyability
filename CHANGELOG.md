@@ -26,16 +26,23 @@ interference is new. RePyability is tested against surpyval 0.27 and
 needs it: 0.27 removes no name and deprecates nothing RePyability uses,
 and the fitted models RePyability takes give the same values. Every
 repair model surpyval fits is a repairable block (G1, ARA and ARI
-simulated, Cox-Lewis exact), so is any surpyval model with a life's
+simulated, Cox-Lewis exact), as is any surpyval model with a life's
 functions (a Royston-Parmar fit, a regression at a unit's covariates)
-and a Bayesian fit with an offset or shares, `"fit"` uncertainty draws every fitted kind
-of block, a `JointNode` takes surpyval `Measurements`, and
+and a Bayesian fit with an offset or shares; a repairable block's
+covariates can follow a schedule over the system's time; common-cause
+groups take tests and repairs of any length and start from the members'
+states; standby arrangements of Exponential units are exact by their
+Markov chain (warm standby, spares that fail to start, imperfect
+switching), and a phased mission takes warm standby and spares that fail
+to start, exactly where its blocks are Exponential; fault trees take NOT
+gates (prime implicants), the dynamic gates PAND, SPARE, SEQ and FDEP,
+and export to Open-PSA. `"fit"` uncertainty draws every fitted kind of
+block, a `JointNode` takes surpyval `Measurements`, and
 `RepairOrReplace` says whether to repair a unit again or replace it, from
-a joint frailty model.
-RePyability now imports only surpyval's public interface. The
-demonstration test functions are deprecated for
-`surpyval.test_planning`'s, and 0.18 removes them. Nothing was deprecated
-in 0.16, so nothing is removed.
+a joint frailty model. RePyability now imports only surpyval's public
+interface. The demonstration test functions are deprecated for
+`surpyval.test_planning`'s, and 0.18 removes them. Nothing was
+deprecated in 0.16, so nothing is removed.
 
 Behaviour changes: surpyval 0.27 is required; `Repairable` refuses the
 surpyval models whose count of failures it misread (a joint frailty
@@ -54,7 +61,9 @@ becomes 0.9797765460669152); a Bayesian fit's predictive `ff`, `Hf` and
 `qf` are the fit's own, equal to 0.16's to about 1e-14 relative; the
 demonstration functions' probabilities, test times and bounds are
 surpyval's, equal to 0.16's to within 2e-15 relative (sample sizes,
-failures and plans exactly); with a component replaced on condition by
+failures and plans exactly); a `StandbyModel` of Exponential units that
+was worked out numerically is now exact, its reliability and mean moving
+by up to about 1e-5 (1e-4 for two different units operating); with a component replaced on condition by
 its level, `availability()` and `cost()` give the exact expected values
 as their means by default (the liner example's quoted mean moves); a
 seeded run from the state of a unit repaired imperfectly now draws from
@@ -615,7 +624,6 @@ Every other seeded result is unchanged.
   run). The simulations themselves, their histories and the results with
   `control_variate=False` are unchanged. The guide's quoted mean for the
   liner example changes accordingly.
-
 - A phased mission's take-overs by blocks on standby are worked out for
   all the simulated missions at once with numpy, rather than one mission
   at a time: about 5 to 10 times faster where many missions need them.
