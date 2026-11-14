@@ -23,9 +23,11 @@ decision for a failure mode, from new or from its state. A phased mission
 can be drawn from one diagram with a model per phase, a Bayesian fit is a
 block with its credible band carried to the system, and stress-strength
 interference is new, as is where a safety function's PFDavg comes from
-(`pfd_breakdown`, each component's and common-cause group's share).
-RePyability is tested against surpyval 0.27 and
-needs it: 0.27 removes no name and deprecates nothing RePyability uses,
+(`pfd_breakdown`, each component's and common-cause group's share). A
+part's cost over a window, and its spread, can follow a calendar policy
+of opportunistic replacement, and replacement on condition by a measured
+level starts from a state. RePyability is tested against surpyval 0.27
+and needs it: 0.27 removes no name and deprecates nothing RePyability uses,
 and the fitted models RePyability takes give the same values. Every
 repair model surpyval fits is a repairable block (G1, ARA and ARI
 simulated, Cox-Lewis exact), as is any surpyval model with a life's
@@ -92,7 +94,6 @@ Every other seeded result is unchanged.
   time), checked against the policy's own step; simulated with
   `method="simulate"`. A policy worked out by integration has no grid
   and is simulated only.
-
 - **Where a safety function's PFDavg comes from**:
   `RepairableRBD.pfd_breakdown()` returns a `PFDBreakdown`, the long-run
   unavailability (for a periodically tested protective function, its
@@ -108,7 +109,6 @@ Every other seeded result is unchanged.
   1oo1, 1oo2 and 2oo3 voting with and without a beta factor, IEC
   61508-6's simplified equations and the simulation. See the guide's
   "Where the PFDavg comes from".
-
 - Common-cause groups in a `RepairableRBD` with tests and repairs of any
   length, and from the members' current states. A tested member's test or
   repair may now be any surpyval parametric model (a Weibull repair, a
@@ -184,7 +184,6 @@ Every other seeded result is unchanged.
   and replayed alike one draw at a time or in a diagram's blocks. A
   `start_probability` saves with the diagram (and only when it is not 1,
   so what earlier versions saved is unchanged).
-
 - Tasks counted in running hours (UC-26). A `"preventive"` or
   `"inspection"` spec takes `"basis"`: `"calendar"` (the default, as
   before) or `"operating"`, the block's operating time. On a block with a
@@ -702,7 +701,6 @@ Every other seeded result is unchanged.
 - `NonRepairableRBD.uncertainty_importance`'s delta method varies these
   fits' parameters; a `RepairableRBD`'s refuses them (their parameters
   are not levers of `parameter_sensitivity`), naming `method="sobol"`.
-
 - RePyability uses surpyval's public interface only. The regression
   families come from `surpyval.univariate.regression.kinds`, the
   degradation processes from `surpyval.degradation`, the Cox model and
@@ -757,7 +755,6 @@ Every other seeded result is unchanged.
   minimum surpyval is 0.28. The contributor notes record what was
   measured, and no longer name a release as the latest; the maintenance
   stories' statuses are as of 0.17.
-
 - The user stories' statuses are brought up to date with `dev`, each
   built part citing the test that is its oracle, and `stories/README.md`
   says how a story gets its oracle test and status. A new test checks
