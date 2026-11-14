@@ -13,11 +13,24 @@ ends.
 - ``Task``: when a task falls due by its rule (and a second limit,
   whichever comes first), at its visits; ``work_by_period`` sums the
   work by calendar period.
+- ``DutyPlan``: how equipment runs (``Runs``, ``Shifts``, ``Roster``,
+  ``Rate``, ``Continuous``; a background and specific parts on top), in
+  the site's time zone; its ``forecast`` is a ``UsageForecast``, the map
+  between moments and meter readings both ways, which puts a ``Usage``
+  limit ("every 2,000 operating hours") on dates.
 
 ``README.md`` in this package records the use cases, the question each
 answers and how it is solved.
 """
 
+from repyability.schedule._duty import (
+    Continuous,
+    DutyPlan,
+    Rate,
+    Roster,
+    Runs,
+    Shifts,
+)
 from repyability.schedule._recurrence import (
     Recurrence,
     RecurrenceNotes,
@@ -29,8 +42,32 @@ from repyability.schedule._task import (
     WorkByPeriod,
     work_by_period,
 )
+from repyability.schedule._usage import (
+    Crossing,
+    DutySchedule,
+    PeriodUsage,
+    Readings,
+    Stretch,
+    Usage,
+    UsageDue,
+    UsageForecast,
+)
 
 __all__ = [
+    "Continuous",
+    "Crossing",
+    "DutyPlan",
+    "DutySchedule",
+    "PeriodUsage",
+    "Rate",
+    "Readings",
+    "Roster",
+    "Runs",
+    "Shifts",
+    "Stretch",
+    "Usage",
+    "UsageDue",
+    "UsageForecast",
     "Recurrence",
     "RecurrenceNotes",
     "Season",

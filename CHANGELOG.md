@@ -9,6 +9,32 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- Duty plans: `repyability.schedule.DutyPlan` says how equipment runs,
+  from concrete runs (`Runs`), a repeating week (`Shifts`), a roster
+  (`Roster`), a general rate or a range of rates (`Rate`: 3 h a day, 15 h
+  a month, 2 to 4 h a day) or all the time (`Continuous`), with seasons,
+  outages, a utilisation, other meters (starts, per hour, per run, or a
+  rate of their own) and a time zone (real hours across daylight saving).
+  A plan is a background with specific parts on top, used where they
+  cover; the background applies only to the time they leave
+  (`fill="pro_rata"`, or `"top_up"` for a budget), so no duty is made at
+  the handover. Overlapping parts are refused, naming both. Every part
+  and plan saves with `to_dict()`/`from_dict()`.
+- `DutyPlan.forecast` gives a `UsageForecast`, the map between moments
+  and meter readings both ways: `at`, `when` (with the stop before and
+  after a mid-run moment), `due`, `by_period`, `model_time` and
+  `moment`, `duty`, `rate` and `schedule`, and which layer each stretch
+  came from (`describe`, `stretches`). `UsageForecast.calendar` is the
+  identity map, for no plan.
+- Limits by use on tasks: `Task(every=Usage(2000, "hours"),
+  last_done_reading=...)`, alone or with a calendar limit (whichever
+  comes first), with `task.due(..., usage=forecast)` and
+  `work_by_period(..., usage=)`; `TaskDue` gives each due moment, reading
+  and the stop after it.
+- `tzdata` is required on Windows, for the time zones.
+
 ## [0.17] - 2026-11-14
 
 surpyval 0.27, and maintenance in model time. A `RepairableRBD` takes
