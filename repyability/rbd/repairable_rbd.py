@@ -31,6 +31,7 @@ from surpyval import ExactEventTime
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _ccf_modules,
+    _covariate_schedule,
     _importance_time,
     _sensitivity,
     _spares,
@@ -326,6 +327,16 @@ class RepairableRBD(RBD):
           ``with_intervals`` and the interval choices, which take and
           give them in operating time. The life must be a surpyval
           parametric distribution of a time.
+          ``"covariates"``, a surpyval ``StepSchedule``, runs a block
+          whose ``"reliability"`` is a fitted surpyval regression model
+          (proportional or additive hazards, accelerated failure time or
+          accelerated life) under covariates that change over the
+          diagram's time, from 0: each unit's life is drawn from when it
+          is put into service, at the covariates in force as it ages,
+          its age reset by its repairs and tasks as for any block while
+          the schedule runs on. Only the simulations take it
+          (``availability``, ``cost``, ``simulate_timelines``, in
+          Python); see the guide's "Covariates that change over time".
           ``"standby"`` makes the node a standby group of identical units,
           each failing and repaired as ``"reliability"`` and
           ``"repairability"`` say: a dict of ``"units"`` (by default 2),
@@ -784,6 +795,10 @@ class RepairableRBD(RBD):
         # duty, its spec as given keeping its times in operating time.
         # The duty of each such component, by node, converts the
         # intervals the interval choices give and take (see _intervals).
+        # A block on a covariate schedule takes its life under it (see
+        # _covariate_schedule); the spec as given keeps the regression
+        # model and the schedule, for saving and drawing.
+        components = _covariate_schedule.on_schedules(components)
         components, self._operating_tasks = _on_duty(components)
         self.repair_crews = _validate_crews(repair_crews)
         # Each component's place in the queue for a crew (higher first).
@@ -1003,6 +1018,7 @@ class RepairableRBD(RBD):
         self._maintenance = _spec._validate_groups(self, maintenance_groups)
         self.ccf_groups = _spec._validate_ccf_groups(self, ccf_groups)
         _shutdowns.check(self)
+        _covariate_schedule.check(self)
         _spec._warn_nested_costs(components)
 
     #: Whether a diagram this one is nested in has warned that it carries

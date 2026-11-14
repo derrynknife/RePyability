@@ -9,6 +9,7 @@ from repyability.maintenance import (
     SkipValue,
 )
 from repyability.rbd._bayesian_life import PosteriorPredictive, as_life
+from repyability.rbd._covariate_schedule import is_scheduled
 from repyability.rbd._degradation import check_life, is_degradation
 from repyability.rbd._model_utils import (
     distribution_name,
@@ -249,6 +250,12 @@ class NonRepairable:
             # is only simulated, and its sf refuses.
             self.model_parameterization = "standby"
             self.reliability_function = _scalar_sf(reliability)
+        elif is_scheduled(reliability):
+            # A life under a covariate schedule on a RepairableRBD's clock
+            # (a spec's "covariates"): only its simulations take it, and
+            # its survival function refuses, saying so.
+            self.model_parameterization = "covariate schedule"
+            self.reliability_function = reliability.sf
         elif is_joint(reliability):
             raise ValueError(NOT_REPAIRABLE)
         elif reliability is PerfectReliability:
@@ -265,6 +272,15 @@ class NonRepairable:
                 "from_params), a surpyval Wiener or gamma degradation "
                 "process, a surpyval non-parametric estimate or a "
                 f"StandbyModel; got a {type(reliability).__name__}."
+                + (
+                    " For a surpyval regression model: in a RepairableRBD, "
+                    "give the block's covariates over time with the spec's "
+                    "'covariates' (a StepSchedule); for one unit run on a "
+                    "schedule, see operating_schedule_value."
+                    if getattr(reliability, "kind", None) is not None
+                    and callable(getattr(reliability, "sf_tvc", None))
+                    else ""
+                )
             )
 
         self.reliability = reliability

@@ -127,6 +127,7 @@ def _unsupported_level(
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     from . import _crews
+    from ._covariate_schedule import scheduled
 
     if rbd._too_meshed() is not None:
         # Its structure is the graph itself (modular.GraphStructure).
@@ -180,6 +181,8 @@ def _unsupported_level(
             continue
         if type(component) is not NonRepairable:
             return f"the {type(component).__name__} of node {name!r}"
+        if scheduled(component) is not None:
+            return f"the covariate schedule of node {name!r}"
         if not _streamed(prefix + (name,), plan, rbd._standby.get(name)):
             return (
                 f"the models of node {name!r} (their draws cannot be "

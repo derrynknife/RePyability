@@ -163,6 +163,79 @@ diagram is refused (give its life on the calendar instead). The duty is a
 fixed share of the time: a component that runs only while the system runs,
 or ages while idle too, needs that modelled in its life.
 
+### Covariates that change over time
+
+**In plain words:** a block whose life depends on how hard it is run (a
+pump's load, a motor's temperature) can be run under a load that changes
+over time: 60% for the first 2,000 hours, say, then 85%. Fit a
+regression model in surpyval, then give the block the load as a
+schedule on the diagram's clock with `"covariates"`. The schedule is the
+system's, not the unit's: the pump fitted at hour 2,500 is new, but runs
+at 85% from its first hour. A repair or replacement resets the unit's age
+as it always does (a replacement makes it new, imperfect repair leaves it
+a virtual age), and the load keeps following the clock.
+
+`"covariates"` takes a surpyval `StepSchedule` that says the covariates
+from 0 on: built with `StepSchedule.from_changepoints` (its last value
+held on) or `StepSchedule.cyclic` (a pattern repeated, such as a day
+shift and a night shift). The `"reliability"` is the fitted regression
+model, of one of these kinds:
+
+- **Proportional or additive hazards** (`WeibullPH`, `ExponentialAH`,
+  ...): the unit's hazard at any moment is the model's at its age and the
+  covariates in force then, `h0(a) exp(beta Z(t))` for proportional
+  hazards. Within a step, where `Z` is constant, the cumulative hazard
+  from age `a` to `b` is `Hf(b, Z) - Hf(a, Z)`.
+- **Accelerated failure time or accelerated life** (`WeibullAFT`, ...):
+  the covariates speed the unit's clock up or slow it down (the
+  cumulative exposure model). At each change it carries its cumulative
+  hazard over, at the age with that hazard under the new covariates. A
+  virtual age has no one meaning on a clock that changes speed, so such
+  a block takes no imperfect repair, no partial restoration and no start
+  at an age.
+- Proportional odds and other kinds have no hazard that follows the
+  covariates in force alone, and are refused.
+
+Each life is drawn from when the unit is put into service: from one
+uniform `u`, the time at which its cumulative hazard along the steps
+reaches `-log(1 - u)`, found within its step to the last bits. A first
+life from 0 is the one surpyval's `sf_tvc` gives along the path.
+
+```python
+import numpy as np
+
+# Field data: hours to failure and the load (share of rated) each pump ran at.
+rng = np.random.default_rng(3)
+load = rng.uniform(0.5, 0.9, size=200)
+hours = 3000 * rng.weibull(1.8, size=200) * np.exp(-3.0 * (load - 0.6))
+model = surv.WeibullPH.fit(hours, Z=load.reshape(-1, 1))
+
+# 60% load for the first 2,000 hours, then 85% from then on.
+duty = surv.StepSchedule.from_changepoints([0, 2000], [[0.6], [0.85]])
+pump = {"reliability": model,
+        "repairability": surv.Exponential.from_params([1 / 24]),
+        "covariates": duty}
+rbd = RepairableRBD([("s", "p"), ("p", "t")], {"p": pump})
+run = rbd.availability(8760.0, mc_samples=1000, seed=1)
+run.mean_availability                        # -> 0.9837
+run.system_failures / run.n_simulations     # -> 5.92   failures in the year
+# At 60% all year: 0.9924 and 2.71 failures.
+```
+
+**Which methods take it.** A unit's life depends on when it starts, so
+the block is no renewal process, and only the simulations take it:
+`availability`, `cost` and `simulate_timelines` (in Python; the compiled
+engine leaves it to the event loop), with maintenance, tests, repair
+crews and Kijima repair as for any block, and a start from a state
+(a proportional or additive hazards unit at an age draws what is left of
+its life at the covariates in force from 0). The exact and numerical
+methods (`mean_availability`, `point_availability`, the first failure,
+the frequencies, the allocations, ...) refuse it, saying so, as
+`analysis_routes()` reports. Not taken with a schedule: a `"duty"` (give
+the covariates the block runs at on the calendar instead), a standby or
+common-cause group, replacement on condition by a threshold, and a
+shutdown that stands the block still.
+
 ### Junctions
 
 A k-out-of-n vote needs a node to vote at, and that node is often no part
