@@ -220,6 +220,16 @@ New work goes under the CHANGELOG's `[Unreleased]`. `dev` needs surpyval
   simulation. Likewise a standby group's chain (`_standby_chain.py`) copies
   `_events._StandbyGroup`'s rules (switching, spares, repairs), checked by
   `test_repairable_standby.py`.
+- **A phased mission's Markov chain (`repyability/rbd/_mission_chain.py`)
+  copies the simulation's take-overs** (`_mission_runs._take_over`,
+  `_after_standby`, `draw_switches`): spares called on in the phase's
+  order, each starting if alive and it starts on demand (one outcome per
+  spare and phase, so a spare stood down after starting starts again),
+  the ones not needed stood down latest first, idle spares failing at
+  their dormancy, every live spare idle again at a phase's start. A
+  change to one goes into the other: `test_mission_standby_chain.py`
+  checks the chain against closed forms, the decision diagram and the
+  simulation.
 - **A `StandbyModel`'s rules are stated in its draws (`_played`, and
   `_random_warm` and the cold samplers where no spare may fail on
   demand)**: the first `k` units left operate, a waiting spare ages at

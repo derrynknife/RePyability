@@ -416,7 +416,9 @@ def mission_kinds():
     """The phased missions drawn as one diagram whose analyses are checked
     on: with blocks guaranteed, not needed, at a phase's covariates and a
     phase's vote count (exact), on a phase's own model (exact, and with a
-    block on standby), and with a block on standby (simulated)."""
+    block on standby), with a block on standby (simulated), and with
+    blocks on standby, warm and switching imperfectly, every life of a
+    constant rate (exact, by the Markov chain)."""
     from repyability import BlockSetting, MissionPhase, PhasedMission
 
     unit = W([100, 2])
@@ -461,7 +463,36 @@ def mission_kinds():
         MissionPhase("up", 20.0, blocks={"c": "standby", "b": start_up}),
         MissionPhase("on", 30.0, k={"v": 1}),
     ]
+    constant = NonRepairableRBD(
+        edges,
+        {
+            "a": E([0.01]),
+            "b": E([0.02]),
+            "c": E([0.01]),
+            "v": PerfectReliability,
+            "d": RegressionNode(aft(), covariates=[1.0]),
+        },
+        k={"v": 2},
+    )
+    warm = BlockSetting(
+        state="standby", dormancy_factor=0.2, start_probability=0.9
+    )
+    chain = [
+        MissionPhase(
+            "up",
+            20.0,
+            blocks={"c": warm, "a": "guaranteed"},
+            k={"v": 2},
+        ),
+        MissionPhase(
+            "on",
+            30.0,
+            blocks={"b": "standby", "d": BlockSetting(covariates=[2.0])},
+            k={"v": 1},
+        ),
+    ]
     return {
+        "standby_exact": PhasedMission.from_diagram(constant, chain),
         "settings": PhasedMission.from_diagram(vote, settings),
         "standby": PhasedMission.from_diagram(vote, standby),
         "models": PhasedMission.from_diagram(vote, models),

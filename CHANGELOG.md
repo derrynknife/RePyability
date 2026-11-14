@@ -224,15 +224,31 @@ Every other seeded result is unchanged.
 - `PhasedMission.from_diagram(rbd, phases)`: a mission drawn as one
   diagram, each phase (`MissionPhase(name, duration, blocks=..., k=...)`)
   setting how its blocks behave: `"working"` (the default), `"standby"`
-  (cold standby, idle until the phase's structure needs it, started in a
-  set order, switching perfect and instant), `"guaranteed"` (ages but
+  (idle until the phase's structure needs it, called on in the order the
+  phase names them; cold by default, warm with
+  `BlockSetting(state="standby", dormancy_factor=f)`, ageing at `f` of
+  the clock while idle and able to fail there, found failed when called
+  on; and starting with `start_probability`, by default 1, a failed start
+  a failure on demand, the next spare then called on, as a
+  `StandbyModel`'s `dormancy_factor` and `start_probability` behave),
+  `"guaranteed"` (ages but
   cannot fail in the phase) or `"not_needed"` (taken as working by the
   phase, while it ages and can fail), the covariates of a regression block
   in the phase (`BlockSetting(state=..., covariates=...)`, age carried
   over as along a step schedule), and the k of a vote. Missions with no
   block on standby are exact (the Esary-Ziehms segments, 1 in a
-  guaranteed phase); with standby, simulated (one simulation across the
-  phases), with `analysis_routes()` saying which.
+  guaranteed phase). With standby they are exact where every block's
+  life has a constant failure rate in every phase (exponential lives, an
+  exponential regression at each phase's covariates): a Markov chain over
+  the blocks' states (running, idle, failed), carried through the phases
+  with the take-overs, switching and dormancy as the simulation plays
+  them, up to `_mission_chain.MAX_STATES` (20,000) states a phase, which
+  gives the reliability, each phase's failure probability, the
+  reliability over time, the take-overs and the drivers. Otherwise
+  simulated (one simulation across the phases). `analysis_routes()` says
+  which. A simulated `summary()` carries a confidence band about its
+  reliability over time (`lower`, `upper`: Wilson's interval at each
+  time, at `confidence`).
 - `PhasedMission.reliability_over_time(t)`, `failure_drivers()` (the fall
   in each phase's failure probability if a block never failed, exact or
   with common random numbers) and `summary()`, the whole mission at once
