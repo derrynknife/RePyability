@@ -96,22 +96,46 @@ class JointNode:
         or a row in the order of the model's ``feature_names``), needed
         where the model has covariates; or an ``ItemLifetime`` still
         running, which holds the unit's covariates, readings and age.
-    markers : dict, optional
+    markers : dict or surpyval Measurements, optional
         With a ``JointModel``: the unit's readings so far, ``{age:
-        value}``.
+        value}``; or a ``surpyval.Measurements`` holding them, with the
+        unit's id ``i`` (and ``measurement``, where it holds several).
     age : float, optional
         With a ``JointModel``: the unit's age now (surpyval's ``given``),
         at or after its last reading; 0 (new) by default, when it has no
         readings.
+    i : str, number or tuple, optional
+        With ``markers`` a ``Measurements``: the unit's id in it, whose
+        readings (``markers.for_unit(i)``) the prediction takes.
+    measurement : str, optional
+        With ``markers`` a ``Measurements`` of several measurements: the
+        one the joint model was fitted to
+        (``markers.with_measurement(measurement)``).
+
+    Attributes
+    ----------
+    i : str, number, tuple or None
+        The unit's id in the ``Measurements`` its readings came from
+        (None for readings given as a dict, or a prediction).
+    measurement : str or None
+        The name of the measurement the readings are of, where they came
+        from a ``Measurements`` that names it.
+    marker_unit : str or None
+        The unit the readings are in, the ``Measurements``' label for the
+        measurement as it was typed (``"mm/s"``), or None where it has
+        none. It is a label only: nothing is converted.
 
     Raises
     ------
     TypeError
         If ``model`` is neither, or ``Z``, ``markers`` or ``age`` is given
-        with a prediction, which holds them.
+        with a prediction, which holds them, or ``i`` or ``measurement``
+        without a ``Measurements``.
     ValueError
-        If the model's checks refuse the unit's inputs, or a covariate is
-        missing (``nan``).
+        If the model's checks refuse the unit's inputs, a covariate is
+        missing (``nan``), or the ``Measurements`` has no readings of
+        unit ``i``, no measurement ``measurement``, or several and no
+        ``measurement`` named.
 
     Examples
     --------
@@ -143,16 +167,52 @@ class JointNode:
     ...                        {"pump": pump})
     >>> bool(rbd.sf(20.0) == pred.sf(60.0))
     True
+
+    The same pump's readings kept as surpyval ``Measurements``, with the
+    fleet's other pumps and their unit, read by its id:
+
+    >>> from surpyval import Measurements
+    >>> readings = Measurements(
+    ...     {"P-101": {0: 2.1, 20: 2.5, 40: 3.0}, "P-102": {0: 1.9}},
+    ...     name="vibration", units="mm/s",
+    ... )
+    >>> node = JointNode(model, markers=readings, i="P-101", age=40)
+    >>> bool(node.sf(20.0) == pump.sf(20.0))
+    True
+    >>> node.i, node.measurement, node.marker_unit
+    ('P-101', 'vibration', 'mm/s')
     """
 
     def __init__(
         self,
         model: Any,
         Z: Any = None,
-        markers: Optional[dict] = None,
+        markers: Any = None,
         age: Optional[float] = None,
+        *,
+        i: Any = None,
+        measurement: Any = None,
     ):
         joint_model, prediction = _joint_classes()
+        self.i: Any = None
+        self.measurement: Any = None
+        self.marker_unit: Optional[str] = None
+        if isinstance(model, joint_model) and _is_measurements(markers):
+            markers = self._unit_readings(markers, i, measurement) or None
+        elif (i is not None or measurement is not None) and not isinstance(
+            model, prediction
+        ):
+            given = [
+                name
+                for name, value in (("i", i), ("measurement", measurement))
+                if value is not None
+            ]
+            raise TypeError(
+                f"{' and '.join(given)} pick a unit's readings out of a "
+                "surpyval Measurements given as markers=; these markers "
+                "are not one (a dict {age: value} is the unit's readings "
+                "already)."
+            )
         if isinstance(model, prediction):
             given = [
                 name
@@ -160,6 +220,8 @@ class JointNode:
                     ("Z", Z),
                     ("markers", markers),
                     ("age", age),
+                    ("i", i),
+                    ("measurement", measurement),
                 )
                 if value is not None
             ]
@@ -193,6 +255,42 @@ class JointNode:
         self.prediction = pred
         self.model = pred.model
         self.age = float(pred.age)
+
+    def _unit_readings(self, readings: Any, i: Any, name: Any) -> dict:
+        """Unit ``i``'s readings ``{age: value}`` of the measurement
+        ``name`` (the one there is, if None) in the surpyval
+        ``Measurements`` ``readings``, keeping the unit's id, the
+        measurement's name and its unit label on the node."""
+        if i is None:
+            raise ValueError(
+                "Give the unit's id, i=..., to read its readings from the "
+                f"Measurements (its units: {_listed(readings.ids)})."
+            )
+        if name is None:
+            if len(readings.names) > 1:
+                raise ValueError(
+                    "The Measurements hold several measurements ("
+                    f"{_listed(readings.names)}): name the one the joint "
+                    "model was fitted to, measurement=..."
+                )
+            name = readings.names[0]
+        elif name not in readings.names:
+            raise ValueError(
+                f"The Measurements have no measurement {name!r}; they "
+                f"have {_listed(readings.names)}."
+            )
+        one = readings.with_measurement(name)
+        try:
+            unit_readings = one.for_unit(i)[name]
+        except KeyError:
+            raise ValueError(
+                f"The measurement {name!r} has no readings of unit {i!r}; "
+                f"its units are {_listed(one.ids)}."
+            ) from None
+        self.i = i
+        self.measurement = name
+        self.marker_unit = one.units.get(name)
+        return dict(unit_readings)
 
     # -- Node reliability interface ---------------------------------------
 
@@ -336,19 +434,31 @@ class JointNode:
         on a path model of one's own does not save (surpyval raises
         ``NotImplementedError``).
 
+        Readings taken from a ``Measurements`` keep the unit's id
+        (``"i"``), the measurement's name (``"measurement"``) and its unit
+        label (``"marker_unit"``), each where it has one.
+
         Returns
         -------
         dict
             ``{"model": ..., "covariates": [...], "markers": [[age,
-            value], ...], "age": ...}``.
+            value], ...], "age": ...}``, and ``"i"``, ``"measurement"``
+            and ``"marker_unit"`` where the node has them.
         """
         pred = self.prediction
-        return {
+        out = {
             "model": self.model.to_dict(),
             "covariates": [float(z) for z in np.ravel(pred.covariates)],
             "markers": [[float(a), float(v)] for a, v in pred.markers.items()],
             "age": self.age,
         }
+        if self.i is not None:
+            out["i"] = _saved_id(self.i)
+        if self.measurement is not None:
+            out["measurement"] = _saved_id(self.measurement)
+        if self.marker_unit is not None:
+            out["marker_unit"] = self.marker_unit
+        return out
 
     @classmethod
     def from_dict(cls, d: dict) -> "JointNode":
@@ -395,15 +505,61 @@ class JointNode:
         model = surpyval.from_dict(d["model"])
         covariates = list(d.get("covariates") or [])
         markers = {float(a): float(v) for a, v in d.get("markers") or []}
-        return cls(
+        node = cls(
             model,
             Z=covariates if covariates else None,
             markers=markers or None,
             age=float(d["age"]),
         )
+        node.i = _loaded_id(d.get("i"))
+        node.measurement = _loaded_id(d.get("measurement"))
+        node.marker_unit = d.get("marker_unit")
+        return node
 
     def __repr__(self) -> str:
+        labels = "".join(
+            f"{name}={value!r}, "
+            for name, value in (
+                ("i", self.i),
+                ("measurement", self.measurement),
+                ("marker_unit", self.marker_unit),
+            )
+            if value is not None
+        )
         return (
-            f"JointNode(age={self.age:g}, readings="
+            f"JointNode({labels}age={self.age:g}, readings="
             f"{len(self.prediction.markers)})"
         )
+
+
+def _is_measurements(markers: Any) -> bool:
+    """Whether ``markers`` is a surpyval ``Measurements``."""
+    from surpyval import Measurements
+
+    return isinstance(markers, Measurements)
+
+
+def _listed(values: list) -> str:
+    """``values`` for a message: each repr'd, at most ten."""
+    shown = ", ".join(repr(v) for v in values[:10])
+    return shown + (
+        f" and {len(values) - 10} more" if len(values) > 10 else ""
+    )
+
+
+def _saved_id(value: Any) -> Any:
+    """A unit's id or a measurement's name as JSON keeps it: a tuple as
+    ``{"tuple": [...]}`` (as surpyval saves a dataset's ids), text or a
+    number as it is."""
+    if isinstance(value, tuple):
+        return {"tuple": [_saved_id(v) for v in value]}
+    if isinstance(value, (np.integer, np.floating)):
+        return value.item()
+    return value
+
+
+def _loaded_id(value: Any) -> Any:
+    """``_saved_id``'s value back."""
+    if isinstance(value, dict) and set(value) == {"tuple"}:
+        return tuple(_loaded_id(v) for v in value["tuple"])
+    return value
