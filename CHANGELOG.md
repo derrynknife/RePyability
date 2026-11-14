@@ -561,6 +561,11 @@ Every other seeded result is unchanged.
   says how a story gets its oracle test and status. A new test checks
   `expected_npv` with limited repair crews against the Markov chain built
   by hand (story MX-13).
+- The README's list of what RePyability does and the user guide's
+  overview name 0.17's maintenance in model time (shutdowns, partial
+  restoration, tasks in running hours, planned against unplanned
+  downtime), `RepairOrReplace`, fitted repair models and joint models'
+  readings, and say the demonstration functions are deprecated.
 
 ### Fixed
 
