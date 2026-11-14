@@ -182,6 +182,14 @@ def crow_amsaa():
     return surv.CrowAMSAA.fit(np.cumsum(gaps))
 
 
+def ara_process():
+    """An ARA process (arithmetic reduction of age, memory 1) with a
+    Weibull life and half its age taken away at each repair, which the
+    simulation steps with surpyval (a repair surpyval fits that is not
+    Kijima's)."""
+    return surv.ARA.fit_from_parameters([300.0, 1.5], 0.5)
+
+
 @_fitted_once
 def bayes_life():
     """A Bayesian Weibull fit, its posterior 400 draws about alpha 500
@@ -756,6 +764,9 @@ def repairable_kinds():
             ),
             "fitted Crow-AMSAA process": system(
                 unit(reliability=crow_amsaa(), repair_cost=1.0)
+            ),
+            "fitted ARA process": system(
+                unit(reliability=ara_process(), repair_cost=1.0)
             ),
             "degradation process life": system(unit(reliability=wear())),
             "operated part of the time": system(

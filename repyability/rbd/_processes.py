@@ -1,27 +1,37 @@
 """surpyval's fitted repairable-unit models as components (#269).
 
 surpyval fits a repairable unit's failure history: a Poisson process
-(``CrowAMSAA``, ``Duane``, ``HPP``) or a generalised renewal process
-(``GeneralizedRenewal``, Kijima I or II). Given as a component's
-``"reliability"``, each is a life and a repair RePyability already
-simulates and works out:
+(``CrowAMSAA``, ``Duane``, ``HPP``, ``CoxLewis``) or a renewal process
+(``GeneralizedRenewal``, Kijima I or II; ``GeneralizedOneRenewal``;
+``ARA``; ``ARI``). Given as a component's ``"reliability"``, each is a
+life and a repair RePyability simulates:
 
 - a Poisson process is minimal repair (Kijima ``q = 1``) of the life whose
   cumulative hazard is the process's cumulative intensity: Crow-AMSAA's
   ``(t / alpha) ** beta`` is a Weibull(``alpha``, ``beta``), Duane's
-  ``b * t ** alpha`` a Weibull(``b ** (-1 / alpha)``, ``alpha``), and a
-  homogeneous process's ``lambda * t`` an Exponential(``lambda``), which
-  any repair renews;
+  ``b * t ** alpha`` a Weibull(``b ** (-1 / alpha)``, ``alpha``),
+  Cox-Lewis's ``exp(alpha) * (exp(beta * t) - 1) / beta`` the life of that
+  cumulative hazard (``cox_lewis_life``), and a homogeneous process's
+  ``lambda * t`` an Exponential(``lambda``), which any repair renews;
 - a generalised renewal process is its life distribution repaired by its
   Kijima model with its restoration factor ``q`` (0 renews, 1 is minimal,
-  as a spec's ``"repair"`` takes it).
+  as a spec's ``"repair"`` takes it);
+- the other renewal processes (G1, ARA, ARI) repair a unit their own way,
+  which RePyability does not write out: the unit is its life from new (G1
+  and ARA's lifetime distribution, ARI's baseline intensity's life) and a
+  ``"repair"`` of ``{"model": "process", "process": model}``, and the
+  Python simulation steps the fitted model itself, failure by failure,
+  with surpyval's ``states``, ``next_failure_qf`` and ``advance``: each
+  life after a repair is the model's quantile at a uniform from the
+  unit's own stream, so a seeded run is reproducible. Only the
+  simulations (``availability``, ``cost``, ``simulate_timelines``, by the
+  Python loop) take such a unit; each event costs some tens of
+  microseconds more than a plain unit's.
 
 A generalised renewal process given as a ``"preventive"`` spec's
 ``"restoration"`` is its Kijima model and ``q`` alone: the task restores
-the unit as the fitted repairs did.
-
-The other renewal models (ARA, ARI, G1) are refused: their repairs are not
-Kijima's, and drawing their next failure needs surpyval (SurPyval#833).
+the unit as the fitted repairs did. The other renewal processes are
+refused there.
 """
 
 from functools import lru_cache
@@ -64,6 +74,54 @@ def is_renewal_process(model) -> bool:
     return isinstance(model, RenewalModel)
 
 
+#: The name RePyability's Cox-Lewis life is registered under in surpyval.
+COX_LEWIS_LIFE = "RePyability Cox-Lewis life"
+
+
+@lru_cache(maxsize=None)
+def cox_lewis_life():
+    """The life whose cumulative hazard is a Cox-Lewis process's
+    cumulative intensity, ``exp(alpha) * (exp(beta * t) - 1) / beta``
+    (``exp(alpha) * t`` at ``beta = 0``): a surpyval
+    ``CustomDistribution`` with the parameters ``alpha`` and ``beta``,
+    registered once so a saved diagram with one loads. For ``beta``
+    below 0 the intensity falls and the life is defective: the unit may
+    never fail again."""
+    import warnings
+
+    import surpyval as surv
+    from autograd import numpy as anp  # type: ignore[import-untyped]
+
+    def Hf(x, alpha, beta):
+        # expm1(b x) / b, written to hold at b = 0 (the limit x).
+        small = anp.abs(beta) < 1e-12
+        safe = anp.where(small, 1.0, beta)
+        return anp.exp(alpha) * anp.where(small, x, anp.expm1(safe * x) / safe)
+
+    with warnings.catch_warnings():
+        # Registered once a session; a second import is not a clash.
+        warnings.simplefilter("ignore", UserWarning)
+        return surv.CustomDistribution(
+            COX_LEWIS_LIFE,
+            Hf,
+            ["alpha", "beta"],
+            ((None, None), (None, None)),
+            (0, float("inf")),
+        )
+
+
+def first_life(model):
+    """The life from new of a renewal process stepped by the simulation
+    (G1, ARA: its lifetime distribution; ARI: the life of its baseline
+    intensity)."""
+    baseline = model.model
+    if is_poisson_process(baseline):
+        translated = _translated(baseline)
+        assert translated is not None
+        return translated[0]
+    return baseline
+
+
 def is_surpyval_model(model) -> bool:
     """Whether ``model`` is one of surpyval's own objects."""
     return type(model).__module__.partition(".")[0] == "surpyval"
@@ -88,20 +146,26 @@ def _translated(model) -> Optional[Tuple[Any, Optional[dict], str]]:
         alpha, b = (float(p) for p in model.params)
         life = surv.Weibull.from_params([b ** (-1.0 / alpha), alpha])
         return life, {"model": "kijima1", "q": 1.0}, "Duane"
+    if fitter is surv.CoxLewis:
+        alpha, beta = (float(p) for p in model.params)
+        life = cox_lewis_life().from_params([alpha, beta])
+        return life, {"model": "kijima1", "q": 1.0}, "CoxLewis"
     if not _is_renewal(model):
         return None
-    repair = _kijima(
-        model,
-        "its reliability",
-        "a GeneralizedRenewal (Kijima I or II), CrowAMSAA, Duane or HPP fit",
+    kijima = _KIJIMA.get(str(getattr(model, "kijima_type", "")))
+    if str(model.kind) == "Generalized Renewal" and kijima:
+        repair = {"model": kijima, "q": float(model.restoration)}
+        return model.model, repair, "GeneralizedRenewal"
+    return (
+        first_life(model),
+        {"model": "process", "process": model},
+        str(model.kind),
     )
-    return model.model, repair, "GeneralizedRenewal"
 
 
 def _is_renewal(model) -> bool:
     """Whether ``model`` is a fitted surpyval renewal process."""
-    kind = str(getattr(model, "kind", ""))
-    return hasattr(model, "restoration") and kind.endswith("Renewal")
+    return is_renewal_process(model)
 
 
 def _kijima(model, what: str, takes: str) -> dict:
@@ -112,8 +176,7 @@ def _kijima(model, what: str, takes: str) -> dict:
     if str(model.kind) != "Generalized Renewal" or not kijima:
         raise ValueError(
             f"{what} is a surpyval {model.kind} model, whose repairs are "
-            f"not Kijima's; RePyability takes {takes} (drawing the "
-            "others' failures needs SurPyval#833)."
+            f"not Kijima's; RePyability takes {takes}."
         )
     return {"model": kijima, "q": float(model.restoration)}
 
@@ -162,8 +225,8 @@ def as_spec(name, spec):
         raise ValueError(
             f"Component {name!r}: its reliability, a fitted {kind}, brings "
             "its own repair (a Poisson process is minimal repair, a "
-            "generalised renewal process its Kijima model and q): give no "
-            "'repair'."
+            "generalised renewal process its Kijima model and q, any other "
+            "renewal process its own rule): give no 'repair'."
         )
     out = {**spec, "reliability": life}
     if repair is not None:

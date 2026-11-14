@@ -892,13 +892,20 @@ every few failures (or on a preventive schedule) bounds it.
 what surpyval fits to a repairable unit's failure times (#269), and the
 component is then the life and repair that model is:
 
-- a Poisson process, `CrowAMSAA`, `Duane` or `HPP`, is minimal repair of the
-  life whose cumulative hazard is the process's cumulative intensity
-  (Crow-AMSAA's `(t / alpha) ** beta` is a Weibull life, and a homogeneous
-  process an exponential one), so with repairs in no time its expected
-  failures are the process's own;
+- a Poisson process, `CrowAMSAA`, `Duane`, `CoxLewis` or `HPP`, is minimal
+  repair of the life whose cumulative hazard is the process's cumulative
+  intensity (Crow-AMSAA's `(t / alpha) ** beta` is a Weibull life,
+  Cox-Lewis's `exp(alpha) * (exp(beta * t) - 1) / beta` a life of that
+  cumulative hazard, and a homogeneous process an exponential one), so with
+  repairs in no time its expected failures are the process's own;
 - a `GeneralizedRenewal` (Kijima I or II) is its life distribution with the
-  `"repair"` of its Kijima model and restoration factor `q`.
+  `"repair"` of its Kijima model and restoration factor `q`;
+- a `GeneralizedOneRenewal` (G1), `ARA` or `ARI` repairs the unit by its
+  own rule, which the simulation follows with the fitted model itself:
+  the unit's first life is the model's life from new, and after each
+  failure surpyval gives its state after the repair (`advance`) and the
+  time to its next failure from that state (`next_failure_qf`, at a
+  uniform from the unit's own stream, so a seed gives the same run).
 
 ```python
 from surpyval import CrowAMSAA
@@ -910,8 +917,23 @@ rbd.expected_failures(8760.0)   # -> 4.8952, gearbox.cif(8760.0)
 ```
 
 Such a spec takes no `"repair"` of its own, and is saved as the life and
-repair it is. surpyval's other renewal models (ARA, ARI, G1) are refused:
-their repairs are not Kijima's.
+repair it is (a G1, ARA or ARI as the fitted model). A G1, ARA or ARI unit
+is taken only by the simulations (`availability`, `cost`,
+`simulate_timelines`, in Python): the exact methods refuse it, as for any
+imperfect repair but minimal repair, and each of its failures costs about
+60 to 140 microseconds more than a plain unit's, the price of stepping the
+fitted model. It may be started from its age (the time it has run since
+new without a failure), not from a virtual age, and its preventive
+maintenance replaces it (a partial `"restoration"` is refused).
+
+```python
+from surpyval import ARA
+
+pump = ARA.fit_from_parameters([1000, 2.0], 0.5)
+rbd = RepairableRBD([("s", "p"), ("p", "t")],
+                    {"p": {"reliability": pump, "repairability": "instant"}})
+run = rbd.availability(t_simulation=5000.0, mc_samples=1000, seed=1)
+```
 
 - **Costs and spares.** A repair is charged its `"repair_cost"`; a
   replacement, at the `N`-th failure or at any failure of a unit renewed by

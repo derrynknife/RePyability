@@ -512,7 +512,7 @@ def test_a_fitted_generalised_renewal_gives_its_restoration():
         for diagram in (rbd, written)
     ]
     np.testing.assert_array_equal(runs[0].uptimes, runs[1].uptimes)
-    with pytest.raises(ValueError, match="not Kijima's.*SurPyval#833"):
+    with pytest.raises(ValueError, match="not Kijima's"):
         unit(
             {
                 "interval": 400.0,

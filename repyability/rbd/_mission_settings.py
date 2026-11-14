@@ -376,7 +376,7 @@ def _time_ratio(before, after) -> Optional[float]:
         family whose covariates neither rescale time nor act on its
         hazard or odds, so that there is no age to carry.
     """
-    from surpyval.univariate.regression._kinds import (
+    from surpyval.univariate.regression.kinds import (
         ACCELERATED_FAILURE_TIME,
         ACCELERATED_LIFE,
         ADDITIVE_HAZARD,
