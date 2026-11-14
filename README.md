@@ -81,8 +81,11 @@ taking already-fitted lifetime models (from
   sampling); repairable systems simulated compiled, with numba installed.
 - **Cost, design and maintenance**: exact and simulated running costs,
   including scheduled (age or block) preventive replacement at system level,
-  replacement on condition at periodic inspections and opportunistic
-  maintenance of grouped components at each other's stops,
+  replacement on condition at periodic inspections (by age or by a measured
+  level), opportunistic maintenance of grouped components at each other's
+  stops, shutdowns, preventive maintenance that restores a unit only
+  partly, and tasks counted in running hours, with the downtime split into
+  planned and unplanned,
   with its intervals chosen for a cost or availability target, hidden
   failures found by periodic inspection, with the test intervals chosen for a
   PFDavg target, the total cost of ownership, discounted to a present
@@ -328,9 +331,11 @@ places, nested diagrams):
   probabilities (a diagram refuses a non-parametric fit, such as
   Kaplan–Meier: fit a parametric distribution in surpyval); a unit of a
   surpyval joint model of readings and failures, given its readings
-  (`JointNode`, from now); repeated nodes; cold standby with one or
-  two units operating (any units) or more (identical units); warm standby
-  with one unit operating, and hot standby (any units); load sharing of
+  (`JointNode`, from now); repeated nodes; standby of Exponential units
+  (any number operating, any dormancy); cold standby with one or two
+  units operating (any units) or more (identical units); warm standby
+  with one unit operating, and hot standby (any units); spares that may
+  fail to switch in or to start, in each of these; load sharing of
   identical units; common-cause groups, for the system's reliability,
   importance, sensitivity and redundancy allocation (and, splitting the
   failure rate, its MTTF);
@@ -364,8 +369,8 @@ places, nested diagrams):
 | The uncertainty from fitted component parameters (`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, `time_to_reliability_uncertainty`; for a repairable system `mean_availability_uncertainty`, `point_availability_uncertainty`, `mission_availability_uncertainty`, `expected_cost_rate_uncertainty`) | Sampled over the parameters, randomly or quasi-randomly (`sampling="sobol"`), each draw exact or numerical as the diagram's own value is | Sampling is the method. |
 | Small failure probabilities, with a node only simulations take | Rare-event simulation (`unreliability_interval`); `ff` refused | Only while the node has no reliability of its own: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |
 | **Components** | | |
-| Warm standby with two or more units operating, of non-exponential units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare is switched in where, and how much each has aged, branch with the order of the failures. With one unit operating it is numerical, and hot standby (k-out-of-*n*) exact. |
-| Cold standby with three or more different units operating, and load sharing of different units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare goes where, and how old the others are, branch with the order of the failures. Identical units are numerical in both, and so are two different units operating. |
+| Warm standby with two or more units operating, of non-exponential units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare is switched in where, and how much each has aged, branch with the order of the failures. With one unit operating it is numerical, hot standby (k-out-of-*n*) exact, and Exponential units exact (a Markov chain), spares that may fail to switch in or start included. |
+| Cold standby with three or more different units operating, and load sharing of different units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare goes where, and how old the others are, branch with the order of the failures. Identical units are numerical in both, and so are two different units operating; Exponential units in standby are exact. |
 | Anything such a node is part of | Simulated in the system's simulations; the analyses that need the node's reliability refused | Only while the node has no reliability of its own. |
 | Common-cause groups: analyses given ages, and the MTTF of a group splitting a failure probability | Refused (a simulated MTTF leaves a probability split out) | No: the analyses given ages need a model of members of different ages. A group splitting the failure rate (`basis="rate"`) has an exact MTTF, and the simulations draw its shared shocks. Importance, parameter sensitivity and redundancy allocation are exact with groups (a beta-factor member's copies join its group), and parameter uncertainty is sampled with them. |
 | **Architecture and maintenance** | | |

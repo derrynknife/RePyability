@@ -89,6 +89,40 @@ class _Gridded:
         return float(trapezoid(self._sf, self._t))
 
 
+class MayNotStart:
+    """A cold spare's life when it starts with probability ``p`` (#339):
+    one that fails to start is lost at once, as a unit dead on arrival
+    is, so its life is 0 with probability ``1 - p`` and the unit's own
+    otherwise. Cold standby's numerical methods take it as a unit, and a
+    unit of life 0 is switched in (its switch may fail) and passed at
+    once, which are the rules for a spare that fails to start."""
+
+    def __init__(self, model, p: float):
+        self.model = model
+        self.p = float(p)
+        #: The probability that it never fails (``_model_utils.never_fails``
+        #: reads it here).
+        self._sf_model = self
+        self.never_fails = self.p * never_fails(model)
+
+    def sf(self, x, *args, **kwargs):
+        x = np.asarray(x, dtype=float)
+        return np.where(
+            x < 0.0, 1.0, self.p * _sf(self.model, x).reshape(x.shape)
+        )
+
+    def ff(self, x, *args, **kwargs):
+        x = np.asarray(x, dtype=float)
+        return np.where(
+            x < 0.0,
+            0.0,
+            (1.0 - self.p) + self.p * _cdf(self.model, x).reshape(x.shape),
+        )
+
+    def mean(self, *args, **kwargs) -> float:
+        return self.p * float(np.ravel(self.model.mean())[0])
+
+
 class KOutOfNSurvival:
     """Exact lifetime distribution of an active k-out-of-n group: it works
     while at least ``k`` of its independent units do (hot standby).
@@ -166,6 +200,13 @@ class WarmStandbySurvival(_Gridded):
     The grid is half even and half geometric (see ``_grid``), and the
     error falls as the square of its step; units' CDFs are interpolated
     from a grid 100 times as fine.
+
+    A spare reached alive may fail to switch in (``switching``, one
+    probability a spare), which ends the arrangement then, or fail to
+    start (``starting``), when it is passed over as a dead one is: a spare
+    is passed over with probability ``D + (1 - D) s (1 - p)`` for ``D``
+    its probability of having died dormant, runs with ``(1 - D) s p``, and
+    stops the arrangement with ``(1 - D) (1 - s)`` (#339).
     """
 
     how = "a numerical recursion over its spares' switch-ins"
@@ -176,8 +217,14 @@ class WarmStandbySurvival(_Gridded):
         dormancy_factor: float,
         n_points: int = WARM_POINTS,
         eps: float = 1e-10,
+        switching: Sequence[float] = (),
+        starting: Sequence[float] = (),
     ):
         models = list(models)
+        # Each unit's chance that its switch works and that it starts (the
+        # first operates from 0).
+        s = [1.0] + (list(switching) or [1.0] * (len(models) - 1))
+        p = [1.0] + (list(starting) or [1.0] * (len(models) - 1))
         kappa = float(dormancy_factor)
         c = 1.0 - kappa
         upper = sum(_upper_time(model, eps) for model in models)
@@ -199,13 +246,24 @@ class WarmStandbySurvival(_Gridded):
         dead = [F(i, kappa * mid) for i in range(len(models))]
         dead_at_0 = [float(F(i, 0.0)) for i in range(len(models))]
 
+        # Each spare's probability of being passed over when reached: dead,
+        # or alive with its switch working and failing to start.
+        passed = [
+            d + (1.0 - d) * s[i] * (1.0 - p[i]) for i, d in enumerate(dead)
+        ]
+        passed_at_0 = [
+            d + (1.0 - d) * s[i] * (1.0 - p[i])
+            for i, d in enumerate(dead_at_0)
+        ]
+
         def after(last: int, upto: int):
             """The probability that the spares after ``last`` and before
-            ``upto`` are all dead, at each cell's midpoint and at 0."""
+            ``upto`` are all passed over, at each cell's midpoint and at
+            0."""
             cells, zero = np.ones(n_points - 1), 1.0
             for i in range(last + 1, upto):
-                cells = cells * dead[i]
-                zero *= dead_at_0[i]
+                cells = cells * passed[i]
+                zero *= passed_at_0[i]
             return cells, zero
 
         # Unit 1 runs from 0: its end's probability in each cell, and at 0
@@ -213,6 +271,10 @@ class WarmStandbySurvival(_Gridded):
         ends: List[np.ndarray] = [np.diff(F(0, t))]
         ends_at_0 = [dead_at_0[0]]
         running = S(0, t).copy()
+        # The arrangement stopped by a switch that failed, in each cell and
+        # at 0.
+        stopped = np.zeros(n_points - 1)
+        stopped_at_0 = 0.0
         for m in range(1, len(models)):
             switch = np.zeros(n_points - 1)
             switch_at_0 = 0.0
@@ -220,6 +282,11 @@ class WarmStandbySurvival(_Gridded):
                 cells, zero = after(last, m)
                 switch += ends[last] * cells
                 switch_at_0 += ends_at_0[last] * zero
+            stopped += switch * (1.0 - dead[m]) * (1.0 - s[m])
+            stopped_at_0 += switch_at_0 * (1.0 - dead_at_0[m]) * (1.0 - s[m])
+            # It runs if its switch works and it starts.
+            switch = switch * (s[m] * p[m])
+            switch_at_0 *= s[m] * p[m]
             ended = switch_at_0 * (F(m, t) - dead_at_0[m])
             runs = switch_at_0 * S(m, t)
             for j in np.flatnonzero(switch):
@@ -233,6 +300,8 @@ class WarmStandbySurvival(_Gridded):
             running += runs
 
         failed = np.zeros(n_points)
+        failed[1:] += np.cumsum(stopped)
+        failed += stopped_at_0
         for last in range(len(models)):
             cells, zero = after(last, len(models))
             failed[1:] += np.cumsum(ends[last] * cells)
@@ -246,6 +315,33 @@ class WarmStandbySurvival(_Gridded):
             if any(never_fails(model) > 0.0 for model in models)
             else 0.0
         )
+
+
+def served_probabilities(
+    switching: Sequence[float], starting: Sequence[float]
+) -> np.ndarray:
+    """The probability that the first ``m`` demands on a list of spares
+    are met, for ``m`` from 0 to the number of spares: each spare in turn
+    is switched in (which fails with ``1 - s``, and then nothing more is
+    met), then starts (with ``p``; else the next is tried). The ``m``-th
+    demand is met by spare ``j`` with ``m - 1`` met before it by the
+    spares before it, none of whose switches failed."""
+    spares = len(switching)
+    out = np.zeros(spares + 1)
+    out[0] = 1.0
+    # The probability of r spares run among those tried, with no switch
+    # failed.
+    so_far = np.zeros(spares + 1)
+    so_far[0] = 1.0
+    for s, p in zip(switching, starting):
+        out[1:] += so_far[:-1] * s * p
+        so_far = np.concatenate(
+            (
+                [so_far[0] * s * (1.0 - p)],
+                so_far[1:] * s * (1.0 - p) + so_far[:-1] * s * p,
+            )
+        )
+    return out
 
 
 class RenewalStandbySurvival(_Gridded):
@@ -263,7 +359,12 @@ class RenewalStandbySurvival(_Gridded):
     probability ``p_j`` (``switch_probs``, one per spare), and a failed
     switch ends the arrangement's life then: the arrangement works at ``t``
     with ``m`` failures so far with probability
-    ``P(m failures) * p_1 * ... * p_m``.
+    ``P(m failures) * p_1 * ... * p_m``. A spare may also fail to start
+    (``start_probs``, one per spare), when it is lost and the next is
+    switched in at once: the units being identical, the arrangement then
+    works with ``m`` failures so far with the probability that ``m``
+    spares run before a switch fails or the spares run out
+    (``served_probabilities``, #339).
     """
 
     how = (
@@ -279,9 +380,11 @@ class RenewalStandbySurvival(_Gridded):
         switch_probs: Sequence[float] = (),
         n_points: int = 100_001,
         eps: float = 1e-10,
+        start_probs: Sequence[float] = (),
     ):
         spares = n - k
         switch_probs = list(switch_probs) or [1.0] * spares
+        start_probs = list(start_probs) or [1.0] * spares
         sums = ConvolvedSurvival(
             [model] * (spares + 1), n_points=n_points, eps=eps, partials=True
         )
@@ -303,7 +406,7 @@ class RenewalStandbySurvival(_Gridded):
             for a in range(spares + 1):
                 added[a:] += total[: spares + 1 - a] * one[a]
             total = added
-        ok = np.cumprod([1.0] + switch_probs[:spares])
+        ok = served_probabilities(switch_probs, start_probs)
         works = (total * ok[:, None]).sum(axis=0)
         self._t = t
         self._sf = np.clip(works, 0.0, 1.0)

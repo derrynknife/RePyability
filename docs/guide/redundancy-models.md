@@ -59,33 +59,49 @@ two_of_three = StandbyModel([pump, pump, pump], k=2)
 two_of_three.sf(100)   # -> 0.5172
 ```
 
-### Imperfect switching
+### Spares that fail to switch in or to start
 
-`switching_probability` is the probability that each switch-over succeeds,
-one value for all or one per spare; a failed switch ends the arrangement. It
-is supported for cold standby, with any `k`:
+A spare can let the arrangement down on demand in two ways, each a
+probability given once for all spares or one per spare (in list order):
+
+- `switching_probability`: the switch onto it works. A failed switch ends
+  the arrangement then.
+- `start_probability`: it starts once switched in. A spare that fails to
+  start is lost, and the next spare is switched in at once.
+
+Both apply to cold, warm and hot standby, with any `k`. A warm spare that
+has died while it waited is passed over without a switch.
 
 ```python
 unreliable_switch = StandbyModel([pump, pump], switching_probability=0.9)
 unreliable_switch.sf(150)   # -> 0.5813   against 0.6342 with a perfect switch
 StandbyModel([pump, pump, pump], k=2, switching_probability=0.9).sf(100)
 # -> 0.479   against 0.5172
+may_not_start = StandbyModel([pump] * 3, start_probability=0.8)
+may_not_start.sf(200)   # -> 0.6133   against 0.786 if both spares always start
+StandbyModel([pump, pump], dormancy_factor=0.3, switching_probability=0.9).sf(150)
+# -> 0.4439   warm, against 0.4815
 ```
 
-Warm or hot standby with imperfect switching raises `NotImplementedError`.
+With two exponential units of rate `λ` and one warm spare, for example, the
+spare is still alive when it is needed with probability `exp(-κλu)`, so the
+reliability is `exp(-λt) (1 + sp (1 - exp(-κλt)) / κ)`, which falls to
+`exp(-λt) (1 + sp λt)` cold (`κ` the `dormancy_factor`, `s` and `p` the
+two probabilities).
 
 ### How the survival function is obtained
 
 | Arrangement | Method |
 |---|---|
-| Identical Exponential units, cold, perfect switching (any `k`) | Exact: Erlang. |
-| Identical Exponential units, warm or hot | Exact: hypoexponential. |
-| Hot, any units (any `k`) | Exact: `k`-out-of-`n` of the units, each working independently. |
-| Cold, `k = 1` (any units, including imperfect switching) | Numerical convolution of the units' lifetimes: deterministic, and accurate to about 1e-6 (1e-5 for the steepest early-life densities, a gamma with shape 0.5 or less). |
-| Cold, `k ≥ 2`, identical units (including imperfect switching) | Numerical: each operating position runs a renewal process of the units' lives, and the arrangement fails at the `n − k + 1`-th failure in all; the counts come from the same convolution. |
-| Cold, `k = 2`, different units (including imperfect switching) | Numerical: a recursion over the switch-ins on the time and the other operating unit's start (the newcomer starts new), accurate to about 1e-4 (1e-3 for lives with a steep start, such as a Weibull of shape below 1). |
-| Warm, `k = 1` (any units) | Numerical: a recursion over the spares' switch-ins on a time grid (a spare switched in at `τ` has aged `dormancy_factor · τ`), accurate to about 1e-5. |
-| Everything else (warm with `k ≥ 2`, cold `k ≥ 3` of different units) | None: the arrangement draws lifetimes for the system's simulations, and `is_simulated` is `True`. |
+| Identical Exponential units, cold, perfect switching and starts (any `k`) | Exact: Erlang. |
+| Identical Exponential units, warm or hot, perfect switching and starts | Exact: hypoexponential. |
+| Hot, any units (any `k`), perfect switching and starts | Exact: `k`-out-of-`n` of the units, each working independently. |
+| Any other arrangement of Exponential units: different rates, any `k`, any dormancy, spares that may fail to switch in or start | Exact: a Markov chain of which units are left, operating or waiting, followed by uniformization (each probability, of working or of having failed, to full precision however small). A chain of more than 200 states (many different units, warm) is simulated, saying so. |
+| Cold, `k = 1` (any units) | Numerical convolution of the units' lifetimes: deterministic, and accurate to about 1e-6 (1e-5 for the steepest early-life densities, a gamma with shape 0.5 or less). A spare that may fail to start is one of life 0 with that probability. |
+| Cold, `k ≥ 2`, identical units | Numerical: each operating position runs a renewal process of the units' lives, and the arrangement fails at the `n − k + 1`-th failure in all; the counts come from the same convolution, weighted by the chance that that many spares switch in and start. |
+| Cold, `k = 2`, different units | Numerical: a recursion over the switch-ins on the time and the other operating unit's start (the newcomer starts new), accurate to about 1e-4 (1e-3 for lives with a steep start, such as a Weibull of shape below 1). |
+| Warm or hot, `k = 1` (any units) | Numerical: a recursion over the spares' switch-ins on a time grid (a spare switched in at `τ` has aged `dormancy_factor · τ`), accurate to about 1e-5. |
+| Everything else: warm with `k ≥ 2`, hot with `k ≥ 2` and spares that may fail to switch in or start, cold with `k ≥ 3` different units, each of units not all Exponential | None: the arrangement draws lifetimes for the system's simulations, and `is_simulated` is `True`. Which spare goes where, and how much each operating unit and spare has aged, branch with the order of the failures; the refusal says so. |
 
 An arrangement with no exact or numerical survival function is simulated
 where it is used. Its `sf`, `ff`, `cs` and `mean()` raise
