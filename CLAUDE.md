@@ -563,6 +563,15 @@ What remains:
   `hf` and `Hf` itself instead. Take `mcf` once the minimum surpyval's
   holds at every age.
 
+- **A Bayesian fit's quantile with an offset or shares** (no surpyval
+  issue yet). surpyval 0.27's `BayesianParametric.qf` fails to bracket
+  some roots of a fit with an offset and a limited failure population
+  (`ValueError: f(a) and f(b) must have different signs`, e.g. `p` of
+  0.04 with an offset of 20 and `lfp_p` 0.8), and of arrays with zero
+  inflation. `PosteriorPredictive._extras_qf` inverts the fit's own `ff`
+  (0 up to `ff(0)`, `inf` from the share that ever fails). Take the fit's
+  `qf` again once the minimum surpyval's brackets these.
+
 Refused until surpyval has it: an ARA, ARI or G1 renewal model as a life,
 whose next failure surpyval cannot draw yet (surpyval #833,
 `rbd/_processes.py`).
