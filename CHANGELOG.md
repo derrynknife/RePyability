@@ -117,6 +117,19 @@ API keeps working as it was.
   way (`RuleCost.dated_cost`), and `optimal_next_replacement(..., site=)`
   sees the fixed dates ahead.
 
+### Changed
+
+- A Bayesian fit as a life (`PosteriorPredictive`) takes `sf`, `df` and
+  `hf` from the fit itself too, as `ff`, `Hf` and `qf` already were, so
+  a posterior of more than 2,000 points is read from surpyval 0.28's
+  cached table: within 1e-6 of the full sum relative (1e-5 for `df` and
+  `hf`), many times faster. `fit.predictive_table = False` gives the
+  full sum. Its quantile with an offset, a limited failure population or
+  zero inflation is now the fit's own as well (RePyability's inversion
+  is gone, so this release needs surpyval 0.28); at `p = 0` it is where
+  the predictive starts (0 with zero inflation, else the smallest
+  offset), not the fit's point offset.
+
 ## [0.18] - 2026-11-14
 
 Schedules on the calendar, and units. A new module,

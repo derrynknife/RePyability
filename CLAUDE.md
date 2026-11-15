@@ -622,15 +622,17 @@ the joint frailty `mcf` is fixed on `dev`, for 0.28):
   `JointFrailty.from_params((100, 2), (400, 1.5), 0.5, 1.0).mcf` is 21.7
   at 4e4, 13.2 at 4e6 and 3e-4 at 4e8.
 
-- **A Bayesian fit's quantile with an offset or shares** (no surpyval
-  issue yet). surpyval 0.27's `BayesianParametric.qf` fails to bracket
-  some roots of a fit with an offset and a limited failure population
-  (`ValueError: f(a) and f(b) must have different signs`, e.g. `p` of
-  0.04 with an offset of 20 and `lfp_p` 0.8), and of arrays with zero
-  inflation. `PosteriorPredictive._extras_qf` inverts the fit's own `ff`
-  (0 up to `ff(0)`, `inf` from the share that ever fails). Take the fit's
-  `qf` again once the minimum surpyval's brackets these. (Still raised
-  by 0.27 for that example; `surpyval.bayes` is unchanged on its `dev`.)
+- **A Bayesian fit's quantile at 0 with an offset or shares** (no
+  surpyval issue yet). surpyval 0.28's `BayesianParametric.qf(0)` is the
+  fit's point offset when the points each have their own offset or the
+  fit is zero-inflated, which is not where the predictive starts (and is
+  above `qf` of small `p`). `PosteriorPredictive.qf` gives 0 there with
+  zero inflation, else the smallest point's offset. Take the fit's
+  `qf(0)` again once the minimum surpyval gives it. (The rest of the
+  fit's `qf` with an offset or shares brackets its roots from 0.28, so
+  `_extras_qf` went in 0.19; 0.27's raised `f(a) and f(b) must have
+  different signs` for some, so **RePyability 0.19 needs surpyval
+  0.28**: raise the minimum with the release.)
 
 An ARA, ARI or G1 renewal model is no longer refused (surpyval #833 is
 in 0.27): the Python simulation steps the fitted model itself with its
