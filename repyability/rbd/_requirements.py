@@ -241,6 +241,10 @@ def _require_perfect_repair(rbd, node) -> None:
     ``_require_minimal_repair``); or if its maintenance restores it only
     partly (``_require_full_restoration``)."""
     _require_full_restoration(rbd, node)
+    if node in rbd._imperfect and _minimal_cycle_blocker(rbd, node) is None:
+        # Minimally repaired and replaced: a renewal cycle (#402).
+        _minimal_cycle_model(rbd, node)  # raises if it may never end
+        return
     if node in rbd._imperfect:
         if _minimal_repair_blocker(rbd, node) is not None:
             over_time = "nor its values over time"
@@ -261,6 +265,89 @@ def _require_perfect_repair(rbd, node) -> None:
             f"({over_time}). Estimate them by simulation, with "
             "availability() or cost()."
         )
+
+
+def _minimal_cycle_blocker(rbd, node) -> Optional[str]:
+    """Why an imperfectly repaired component has no replacement cycle
+    worked out exactly or numerically, or None if it has (#402): when
+    it is minimally repaired (Kijima, ``q = 1``, as a fitted Poisson
+    process is) and replaced at its ``replace_after``-th failure or at an
+    operating age (age replacement), or both, with no tests, and a life
+    with a cumulative hazard that works at 0. Each replacement then
+    renews it, and its failures between are a non-homogeneous Poisson
+    process in its operating age (see ``_minimal_cycle``)."""
+    from repyability.rbd._model_utils import is_mixture
+
+    imperfect = rbd._imperfect[node]
+    component = rbd.components[node]
+    if imperfect.process is not None:
+        return (
+            "its fitted model's repairs are followed only by the "
+            "simulation, failure by failure"
+        )
+    if imperfect.q < 1.0:
+        return "its repairs take away some of its age (q below 1)"
+    if node in rbd._inspection:
+        return "its failures are found only by its tests"
+    schedule = rbd._preventive.get(node)
+    if schedule is not None and schedule.policy != "age":
+        return f"it is maintained on a {schedule.policy} policy"
+    if node in rbd._early_members:
+        return "it is renewed early at the stops of its maintenance group"
+    age = math.inf if schedule is None else float(schedule.interval)
+    if imperfect.replace_after is None and not math.isfinite(age):
+        return "it is never replaced, so it has no renewal cycle"
+    life = component.reliability
+    if (
+        is_mixture(life)
+        or isinstance(life, ScheduledLife)
+        or not callable(getattr(life, "Hf", None))
+    ):
+        return "its life has no cumulative hazard to count its failures by"
+    if float(np.ravel(_sf_values(life.sf, np.zeros(1)))[0]) < 1.0:
+        return "its life may end at 0 (dead on arrival)"
+    return None
+
+
+def _minimal_cycle_model(rbd, node):
+    """The replacement cycle of a minimally repaired component (see
+    ``_minimal_cycle_blocker``) in its operating time, a
+    ``_minimal_cycle.Cycle``, kept; raise ``NotImplementedError`` if it
+    may never end."""
+    from repyability.rbd import _minimal_cycle
+
+    component = rbd.components[node]
+    imperfect = rbd._imperfect[node]
+    schedule = rbd._preventive.get(node)
+    age = math.inf if schedule is None else float(schedule.interval)
+    life = component.reliability
+    cache = rbd._cache.kept("minimal_cycles")
+    key = (node, id(life), imperfect.replace_after, age)
+    if key not in cache:
+
+        def hazard(t: float) -> float:
+            with np.errstate(all="ignore"):
+                return float(np.ravel(life.Hf(np.array([float(t)])))[0])
+
+        try:
+            cache[key] = _minimal_cycle.cycle(
+                hazard,
+                imperfect.replace_after,
+                age,
+                _minimal_cycle.power_law(life),
+            )
+        except NotImplementedError as error:
+            cache[key] = error
+    kept = cache[key]
+    if isinstance(kept, NotImplementedError):
+        raise NotImplementedError(
+            f"Component {node!r} is repaired minimally and replaced at its "
+            f"failure {imperfect.replace_after}, but {kept}, so its "
+            "replacement cycle has no long-run value. Give it an age at "
+            "which it is replaced too, or estimate it by simulation, with "
+            "availability() or cost()."
+        )
+    return kept
 
 
 def _minimal_repair_blocker(rbd, node) -> Optional[str]:

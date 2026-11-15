@@ -624,7 +624,8 @@ class _Cache:
     """What a diagram has worked out and keeps between analyses, each made
     when it is first wanted (``kept``): its common-cause plans
     (``ccf_plans``), the renewal cycles of age and block replacement by
-    interval (``age_cycles``, ``block_cycles``), its tested units' lives
+    interval (``age_cycles``, ``block_cycles``), its minimally repaired
+    units' replacement cycles (``minimal_cycles``), its tested units' lives
     and cycles (``tested_lives``, ``tested_units``), its repair crews'
     chains (``crew_chains``) and its common-cause groups' long-run tables
     (``ccf_tables``). A shallow copy of the diagram shares what is made
@@ -635,6 +636,7 @@ class _Cache:
         "ccf_plans",
         "age_cycles",
         "block_cycles",
+        "minimal_cycles",
         "tested_lives",
         "tested_units",
         "crew_chains",

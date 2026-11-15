@@ -25,6 +25,29 @@ API keeps working as it was.
 
 ### Added
 
+- A component repaired minimally (Kijima with `q = 1`, or a fitted
+  Crow-AMSAA, Duane or Cox-Lewis process) and replaced at its
+  `replace_after`-th failure, at an operating age (age replacement), or
+  whichever comes first, now has exact long-run values (#402):
+  `mean_availability`, `node_availability`, `system_failure_frequency`,
+  `mean_time_between_failures`, `mean_up_time`, `mean_down_time`,
+  `node_action_rates` and `expected_cost_rate`, alone and in any diagram,
+  and with them the importance measures and the interval searches. They
+  were refused ("a repair does not renew it"). Each replacement ends a
+  renewal cycle: the failures between are a Poisson process in the
+  operating age, so the cycle's operating time is the integral of the
+  chance of fewer than `N` failures, in closed form for a power law and
+  by quadrature for Cox-Lewis's intensity (reported as numerical), and
+  its length adds each repair's mean time and the replacement's. A
+  falling intensity that may never reach the `N`-th failure, with no
+  age, is refused with the reason.
+- `Repairable`'s failure-limit policy (`optimal_failure_limit_policy`,
+  `find_optimal_replacement_failure_count`) and
+  `expected_time_to_nth_failure` take an analytic (`cif`) model, exactly:
+  `E[T_n]` in closed form for a power law (Crow-AMSAA, Duane, HPP) and by
+  quadrature for any other (Cox-Lewis). They were refused. For a power
+  law with shape `beta > 1` the best count is the smallest at or above
+  `(co - cr) / (cr (beta - 1))` (a tie with the next at a whole number).
 - `Shutdowns([...], any_day=, time_zone=)` and `Shutdown(name, rule |
   dates= | every= (a plain period such as "30 days", or a `Usage`),
   also_every=, replace_cost=, duration=, at=)`, with `describe()`,

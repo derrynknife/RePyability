@@ -105,7 +105,20 @@ def _node_cost_rate(
     preventive = node_costs.get("preventive_cost")
     if (per_action or preventive is not None) and not forced:
         failures, maintained = _node_actions(rbd, node, availability)
-        rate += per_action * failures
+        if node in rbd._imperfect:
+            # Repaired minimally and replaced (#402): every failure is
+            # charged its repair, and only the one that replaces it its
+            # replacement, as in the simulation.
+            cycle = _long_run._minimal_cycle_terms(rbd, node)
+            replaced = (
+                failures * cycle.replaced / cycle.failures
+                if cycle.failures > 0.0
+                else 0.0
+            )
+            rate += _mean_cost(node_costs.get("repair_cost", 0.0)) * failures
+            rate += _mean_cost(node_costs.get("replace_cost", 0.0)) * replaced
+        else:
+            rate += per_action * failures
         if preventive is not None:
             rate += _mean_cost(preventive) * maintained
     inspection = node_costs.get("inspection_cost")
