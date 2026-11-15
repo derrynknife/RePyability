@@ -54,10 +54,25 @@ NODES = 32
 AGES = 801
 #: The most points the age grid may have.
 MAX_AGES = 20_000
+#: Points of a run of real shuts' age grid (``_horizon._Shuts``) a mean
+#: life, at least: its cost to go has a kink at every later shut's
+#: threshold, carried back by the gaps to ages off any grid, so linear
+#: interpolation between coarse points moves a threshold (by 8% at a
+#: turnaround a few days before a dip in the stops' thresholds, at
+#: ``AGES`` points); at this density it is within about 1e-4.
+AGES_A_MEAN = 4_000
 #: The most opportunities a cycle may have.
 MAX_OPPORTUNITIES = 20_000
 #: Bisection steps for a threshold.
 HALVINGS = 60
+
+
+def run_ages(mean: float, oldest: float) -> int:
+    """The age grid's points over a run of real shuts, ages 0 to
+    ``oldest``: ``AGES``, or ``AGES_A_MEAN`` a mean life where more, up to
+    ``MAX_AGES``."""
+    wanted = math.ceil(AGES_A_MEAN * oldest / max(mean, 1e-300)) + 1
+    return int(min(MAX_AGES, max(AGES, wanted)))
 
 
 def _cycle(calendar, repeat) -> tuple:
@@ -104,10 +119,15 @@ def _cycle(calendar, repeat) -> tuple:
 
 class _Gap:
     """A gap's quadrature, by its length: the matrices that give ``G`` at
-    its nodes and ``W`` on the age grid from the cost to go at its end."""
+    its nodes and ``W`` on the age grid from the cost to go at its end.
 
-    def __init__(self, length, sf, ages, failure):
+    ``rho`` discounts the values continuously at that rate a unit of time
+    (each piece's failures at its middle, the end's at the end); a gap
+    with one gives values only (``forward`` counts with ``rho`` 0)."""
+
+    def __init__(self, length, sf, ages, failure, rho=0.0):
         self.length = length
+        self.rho = rho
         x = np.linspace(0.0, length, NODES + 1)
         self.x = x
         m = NODES
@@ -119,13 +139,16 @@ class _Gap:
             sf(np.clip(left, 0.0, None)) - sf(np.clip(right, 0.0, None)),
             0.0,
         )
+        if rho:
+            middle = 0.5 * (x[None, :-1] + x[None, 1:]) - x[:, None]
+            weights = weights * np.exp(-rho * np.clip(middle, 0.0, None))
         a = np.eye(m + 1)
         a[:m, :m] -= 0.5 * weights[:m]
         a[:m, 1:] -= 0.5 * weights[:m]
         self.a_inverse = np.linalg.inv(a)
         self.failed_new = failure * weights[:m].sum(axis=1)
         self.remaining = length - x[:m]
-        self.lasting_new = sf(self.remaining)
+        self.lasting_new = sf(self.remaining) * np.exp(-rho * self.remaining)
         # W on the age grid: a unit of each age kept through the gap.
         self.ages = ages
         self.failure = failure
@@ -155,7 +178,12 @@ class _Gap:
         dead = held <= 0.0
         q[dead] = 0.0
         q[dead, 0] = 1.0
-        return q, scaled[:, -1], ages + self.length
+        lasting = scaled[:, -1]
+        if self.rho:
+            middle = 0.5 * (self.x[:-1] + self.x[1:])
+            q = q * np.exp(-self.rho * middle)[None, :]
+            lasting = lasting * math.exp(-self.rho * self.length)
+        return q, lasting, ages + self.length
 
     def new_unit(self, after: np.ndarray, grid: np.ndarray) -> np.ndarray:
         """``G`` at the gap's nodes, given the cost to go ``after`` (on
@@ -180,6 +208,8 @@ class _Gap:
         """The chance of the unit in place being of each age at the gap's
         end, from ``share`` at its start, and the expected failures in
         it."""
+        if self.rho:
+            raise ValueError("A discounted gap gives values only.")
         pieces = share @ self.q
         nodes = np.zeros(NODES + 1)
         nodes[:-1] += 0.5 * pieces
@@ -325,10 +355,19 @@ class _OpportunityTable:
 
 
 def integrated_policy(
-    part, calendar, failure, *, max_age=None, tail="repeat", life=None
+    part,
+    calendar,
+    failure,
+    *,
+    max_age=None,
+    tail="repeat",
+    life=None,
+    fixed=None,
 ):
     """The calendar policy between opportunities in continuous time (see
-    the module's docstring)."""
+    the module's docstring). ``fixed`` prices a given rule instead: the
+    age from which each kind replaces, by name (a kind left out never
+    does)."""
     sf = _survival(part)
     mean = _mean(part, sf)
     if not calendar.opportunities:
@@ -375,6 +414,11 @@ def integrated_policy(
             f"{oldest:g} need {points}: use method='dp'."
         )
     grid = np.arange(points) * spacing
+    limits = None
+    if fixed is not None:
+        limits = np.array(
+            [float(fixed.get(names[k], math.inf)) for k in kinds]
+        )
     shapes: Dict[float, _Gap] = {}
 
     def gap(width):
@@ -392,7 +436,7 @@ def integrated_policy(
             w = shape.kept(g_nodes, after, grid)
             if keep_values:
                 kept[k] = (shape, g_nodes, after, w)
-            after = np.minimum(w, prices[k] + w[0])
+            after = _decided(w, prices[k], grid, limits, k)
         return after, kept
 
     h = np.zeros(grid.size)
@@ -412,27 +456,16 @@ def integrated_policy(
     thresholds = np.empty(times.size)
     upper = True
     for k, (shape, g_nodes, after, w) in enumerate(kept):
-        replace = prices[k] + w[0]
-        act = replace < w
-        if not act.any():
-            thresholds[k] = math.inf
+        if limits is not None:
+            thresholds[k] = limits[k]
             continue
-        i = int(np.argmax(act))
-        if not act[i:].all():
-            upper = False
-        if i == 0:
-            thresholds[k] = 0.0
-            continue
-        lo, hi = grid[i - 1], grid[i]
-        for _ in range(HALVINGS):
-            middle = 0.5 * (lo + hi)
-            value = shape.kept(g_nodes, after, grid, np.array([middle]))[0]
-            if replace < value:
-                hi = middle
-            else:
-                lo = middle
-        thresholds[k] = hi
-    replaced, failures = _stationary(kept, prices, grid, length, oldest)
+        thresholds[k], whole = threshold(
+            shape, g_nodes, after, w, prices[k], grid
+        )
+        upper = upper and whole
+    replaced, failures = _stationary(
+        kept, prices, grid, length, oldest, limits
+    )
     rates = {name: 0.0 for name in names if name != ANYTIME}
     spent = dict(rates)
     for k in range(times.size):
@@ -478,7 +511,47 @@ def integrated_policy(
     return policy._bind(table, names, None, oldest)
 
 
-def _stationary(kept, prices, grid, length, oldest):
+def threshold(shape, g_nodes, after, w, price, grid):
+    """The youngest age at which replacing at an opportunity (at
+    ``price``) beats keeping the part, ``W(a) = price + W(0)``, by
+    bisection between the age grid's points; and whether every older age
+    replaces too (a threshold)."""
+    replace = price + w[0]
+    act = replace < w
+    if not act.any():
+        return math.inf, True
+    i = int(np.argmax(act))
+    whole = bool(act[i:].all())
+    if i == 0:
+        return 0.0, whole
+    lo, hi = grid[i - 1], grid[i]
+    for _ in range(HALVINGS):
+        middle = 0.5 * (lo + hi)
+        value = shape.kept(g_nodes, after, grid, np.array([middle]))[0]
+        if replace < value:
+            hi = middle
+        else:
+            lo = middle
+    return hi, whole
+
+
+def _decided(w, price, grid, limits, k):
+    """The cost to go at an opportunity by age: the cheaper of keeping
+    and replacing, or, for a fixed rule (``limits``), replacing from its
+    age on."""
+    if limits is None:
+        return np.minimum(w, price + w[0])
+    return np.where(grid >= limits[k] * (1 - 1e-12), price + w[0], w)
+
+
+def _acts(w, price, grid, limits, k):
+    """The ages replaced at an opportunity."""
+    if limits is None:
+        return price + w[0] < w
+    return grid >= limits[k] * (1 - 1e-12)
+
+
+def _stationary(kept, prices, grid, length, oldest, limits=None):
     """The long-run chance of a replacement at each opportunity of the
     cycle, and the expected failures over it: forward across the cycle
     (each opportunity replacing the ages its last sweep did, then its
@@ -490,7 +563,7 @@ def _stationary(kept, prices, grid, length, oldest):
         replaced = np.zeros(len(kept))
         failures = 0.0
         for k, (shape, _, _, w) in enumerate(kept):
-            act = prices[k] + w[0] < w
+            act = _acts(w, prices[k], grid, limits, k)
             moved = float(share[act].sum())
             share = np.where(act, 0.0, share)
             share[0] += moved

@@ -7,11 +7,12 @@ the uncertainty in the parameters averaged in, is the posterior predictive
 distribution, ``S(t) = sum_i w_i S(t | theta_i)``: a mixture of the
 distribution at the posterior's points, weighted by their probabilities
 (equal for draws). ``PosteriorPredictive`` is that mixture as a node model,
-each function to its own precision (its ``ff``, ``Hf`` and ``qf`` are the
-fit's own, which keep their digits in both tails from surpyval 0.27), and
-its draws a point and a life from one uniform. Where the fit has the predictive
-in closed form (an Exponential with a Gamma posterior on its rate: a Lomax;
-a Normal mean with the spread known), that is used, as surpyval does. A fit
+its functions the fit's own (surpyval's, which keep their digits in both
+tails and, from surpyval 0.28, read a posterior of more than 2,000 points
+from a cached table), and its draws a point and a life from one uniform.
+Where the fit has the predictive in closed form (an Exponential with a
+Gamma posterior on its rate: a Lomax; a Normal mean with the spread
+known), that is used, as surpyval does. A fit
 with an offset, a limited failure population or zero inflation is a mixture
 of those models, the posterior's points each holding its own offset, share
 that ever fails and share dead on arrival: every function is then the
@@ -37,9 +38,6 @@ from numpy.typing import ArrayLike
 from ._model_utils import is_bayesian_fit
 from ._sampling import RowSampler
 
-#: The most values of the points' functions worked out at once (16 MB):
-#: a query is taken in rows of at most this many over the points.
-_BLOCK = 1 << 21
 #: The largest double below 1, a draw's share of a point's life at most.
 _BELOW_ONE = float(np.nextafter(1.0, 0.0))
 #: The extras a surpyval parametric model may have after its
@@ -85,17 +83,21 @@ class PosteriorPredictive:
     [`RepairableRBD`][repyability.RepairableRBD] take the fit itself and
     wrap it in this; it can be built by hand too.
 
-    Each function is the predictive's, to its own precision: ``sf`` and
-    ``df`` are the points' averaged, ``hf`` follows from them, ``ff``,
-    ``Hf`` and ``qf`` are the fit's own (surpyval's, which keep their
-    digits in both tails), and ``mean`` is the points' means averaged
-    (``inf`` if any is). Where the fit has the predictive
-    in closed form (an Exponential with a Gamma posterior on its rate,
-    whose predictive is a Lomax; a Normal mean with the spread known),
-    that is used, as surpyval does. A life is drawn from one uniform: it
-    picks a posterior point by the points' probabilities, and the share of
-    that point's probability the uniform falls at is the point's life's
-    quantile (the closed forms are inverted instead).
+    Each function is the fit's own (surpyval's predictive, which keeps
+    its digits in both tails): ``sf``, ``ff`` and ``df`` are the points'
+    averaged, ``hf`` is ``df / sf``, ``Hf`` is ``-log sf``, ``qf`` inverts
+    ``ff``, and ``mean`` is the points' means averaged (``inf`` if any
+    is). For a posterior of more than 2,000 points surpyval (0.28 on)
+    reads ``sf``, ``ff``, ``Hf``, ``df`` and ``hf`` from a table it builds
+    once, within 1e-6 of the full sum relative (1e-5 for ``df`` and
+    ``hf``); ``fit.predictive_table = False`` turns it off. Where the
+    fit has the predictive in closed form (an Exponential with a Gamma
+    posterior on its rate, whose predictive is a Lomax; a Normal mean
+    with the spread known), that is used, as surpyval does. A life is
+    drawn from one uniform: it picks a posterior point by the points'
+    probabilities, and the share of that point's probability the uniform
+    falls at is the point's life's quantile (the closed forms are
+    inverted instead).
 
     A diagram's value is worked out with the predictive (its point value).
     How sure the fit is of that value, its credible band, is what the
@@ -218,68 +220,6 @@ class PosteriorPredictive:
             spread = float(np.hypot(fit.fixed["sigma"], s))
             self._closed = family.from_params([float(m), spread])
 
-    # -- The points' functions ---------------------------------------------
-
-    def _values(self, name: str, x: np.ndarray) -> np.ndarray:
-        """The function ``name`` of every point at the 1-d ``x``: one row
-        a value of ``x``, one column a point."""
-        with np.errstate(all="ignore"):
-            out = getattr(self._family, name)(x[:, None], *self._columns)
-        return np.asarray(out, dtype=float)
-
-    def _rows(self) -> int:
-        """How many values of a query are worked out at once."""
-        return max(1, _BLOCK // len(self.weights))
-
-    def _mixed(self, name: str, x: np.ndarray) -> np.ndarray:
-        """The points' function ``name`` averaged with their probabilities,
-        at the 1-d ``x``, in rows of ``_rows()`` values at a time."""
-        step = self._rows()
-        parts = [
-            np.sum(self._values(name, x[i : i + step]) * self.weights, axis=1)
-            for i in range(0, len(x), step)
-        ]
-        return np.concatenate(parts) if parts else np.empty(0)
-
-    def _lomax_values(self, name: str, x: np.ndarray) -> np.ndarray:
-        """The Lomax predictive of an Exponential with a Gamma(a, b)
-        posterior on its rate, by its cumulative hazard ``H(x) = a log(1 +
-        x / b)`` (which keeps both tails)."""
-        assert self._lomax is not None
-        a, b = self._lomax
-        after = np.maximum(x, 0.0)
-        with np.errstate(all="ignore"):
-            H = a * np.log1p(after / b)
-            h = np.where(x >= 0.0, a / (b + after), 0.0)
-            return {
-                "sf": lambda: np.exp(-H),
-                "df": lambda: h * np.exp(-H),
-                "hf": lambda: h,
-            }[name]()
-
-    def _function(self, name: str, x: ArrayLike) -> Any:
-        """The predictive's function ``name`` (``sf``, ``df`` or ``hf``)
-        at ``x``, with its shape."""
-        t = np.asarray(x, dtype=float)
-        flat = t.ravel()
-        if self._lomax is not None:
-            out = self._lomax_values(name, flat)
-        elif self._closed is not None:
-            out = np.asarray(getattr(self._closed, name)(flat), dtype=float)
-        elif self.extras:
-            # The points' offsets and shares: the fit's own predictive.
-            out = self._fits(name, flat)
-        elif name == "sf":
-            # (a probability, which the weights' rounding can take a
-            # last bit past 1)
-            out = np.clip(self._mixed(name, flat), 0.0, 1.0)
-        elif name == "df":
-            out = self._mixed(name, flat)
-        else:
-            with np.errstate(all="ignore"):
-                out = self._mixed("df", flat) / self._mixed("sf", flat)
-        return np.asarray(out, dtype=float).reshape(t.shape)[()]
-
     def _fits(self, name: str, x: ArrayLike) -> Any:
         """The fit's own function ``name`` at ``x`` (surpyval's
         ``BayesianParametric``'s), as floats with the shape of ``x``."""
@@ -303,7 +243,7 @@ class PosteriorPredictive:
         float or numpy.ndarray
             With the shape of ``x``.
         """
-        return self._function("sf", x)
+        return self._fits("sf", x)
 
     def ff(self, x: ArrayLike) -> Any:
         """The probability that a new unit fails by ``x``: the fit's own
@@ -326,7 +266,7 @@ class PosteriorPredictive:
         x : array_like
             The time(s).
         """
-        return self._function("df", x)
+        return self._fits("df", x)
 
     def hf(self, x: ArrayLike) -> Any:
         """The hazard of the predictive, ``df / sf`` (not the points'
@@ -337,7 +277,7 @@ class PosteriorPredictive:
         x : array_like
             The time(s).
         """
-        return self._function("hf", x)
+        return self._fits("hf", x)
 
     def Hf(self, x: ArrayLike) -> Any:
         """The cumulative hazard of the predictive, ``-log sf``: the fit's
@@ -370,52 +310,17 @@ class PosteriorPredictive:
     def qf(self, p: ArrayLike) -> Any:
         """The age by which a fraction ``p`` of new units have failed: the
         predictive's quantile, the fit's own (surpyval's, which converges
-        in the upper tail).
+        in the upper tail, gives 0 up to the share dead on arrival and
+        ``inf`` from the share that ever fails). At ``p = 0`` it is where
+        the predictive's support starts: 0 with zero inflation, else the
+        smallest point's offset.
 
         Parameters
         ----------
         p : array_like
             The probabilities of failing.
         """
-        if self.extras:
-            return self._extras_qf(p)
         return self._fits("qf", p)
-
-    def _extras_qf(self, p: ArrayLike) -> Any:
-        """The quantile of a fit with an offset or shares, by inverting
-        its ``ff``: 0 up to the share dead on arrival (``ff(0)``), ``inf``
-        from the share that ever fails, and between them the root of
-        ``ff(x) = p`` (surpyval 0.27's own fails to bracket some of these
-        roots)."""
-        from scipy.optimize import brentq
-
-        q = np.asarray(p, dtype=float)
-        flat = q.ravel()
-        out = np.full(flat.shape, np.nan)
-        dead = float(self._fits("ff", np.array([0.0]))[0])
-        ever = 1.0 - self.never_fails
-        out[flat <= dead] = 0.0
-        out[flat >= ever] = np.inf
-        gamma = self.extras.get("gamma")
-        low = float(np.min(gamma)) if gamma is not None else 0.0
-        middle = np.flatnonzero((flat > dead) & (flat < ever))
-        if middle.size:
-
-            def ff(x: float) -> float:
-                return float(self._fits("ff", np.array([x]))[0])
-
-            high = max(low, 1.0) * 2.0
-            for i in middle[np.argsort(flat[middle])]:
-                while ff(high) < flat[i]:
-                    high *= 2.0
-                out[i] = brentq(
-                    lambda x: ff(x) - flat[i],
-                    low,
-                    high,
-                    xtol=1e-300,
-                    rtol=4 * np.finfo(float).eps,
-                )
-        return out.reshape(q.shape)[()]
 
     def mean(self) -> float:
         """The mean life of a new unit: the points' means averaged with

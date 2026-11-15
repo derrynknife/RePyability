@@ -250,6 +250,250 @@ it is followed as worked out, in a maintenance group too, whose stops are
 then chances to renew the part that the policy did not plan for: it is not
 re-optimised for them.
 
+## Shutdown policies on real dates (`Shutdowns`)
+
+A site keeps its shuts as rules on dates ("every Saturday", "the first
+Tuesday of November"), fixed dates (turnarounds), plain periods or a use
+("every 15,000 km"). [`Shutdowns`][repyability.Shutdowns] holds them as **one record**:
+each [`Shutdown`][repyability.Shutdown] with what replacing a part then
+costs (and how long it lasts, for diagrams), the price of a planned
+replacement on any other day (or none), and the site's time zone. A failure
+always costs the part's own `unplanned_cost`. Given a site,
+[`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]
+returns a [`ShutdownPolicy`][repyability.ShutdownPolicy] with the answer on
+the real dates and how it was worked out, by one of the routes it always
+names:
+
+| Route | When | You give | It says |
+|---|---|---|---|
+| **exact** | The shuts repeat in the part's own clock on a short cycle (about a minute's work or less) | nothing | "Exact long-run average: $X a year." |
+| **long cycle** | They repeat, but only after a long cycle | `method="exact"` (slow, said beforehand) or `"sampling"` (with its ±) | "Estimated long-run average: $X a year ± $Y" |
+| **averaged** | They don't repeat (rules by month or year, a use on another meter) | `method="averaged"` | "Long-run average, assuming shuts fall evenly within their usual gaps (...)" |
+| **horizon** | Any site | `horizon=` and `discount=` (0 for the plain total) | "Lowest net present cost to ... at 7% a year: $X. Decisions from about ... depend on where the horizon ends." |
+| **dated then long run** | Some shuts are on fixed dates (or you give `dated_until=`) | nothing more, or what the recurring shuts' long run needs (above) | "Dated window to 9 Sep 2028, then the long-run average: $X a year. ..." |
+
+**Fixed dates are never averaged.** Without a horizon, a site with fixed
+dates takes a dated window from now to the last of them (or to
+`dated_until=`, a later day, for a shut schedule planned further ahead).
+Inside the window every shut is on its real dates, the recurring kinds'
+too, so fixed dates and rules combine freely. After it only the recurring
+shuts remain, and their long-run average cost a year, by the route they
+take on their own, values everything beyond: no horizon or discount is
+needed. The rule comes in two phases, each fixed date with its own
+threshold (`rule.dated`); `cost` is the long run's a year and
+`dated_cost` the expected cost to the window's end. A kind given
+`then_every="4 years"` keeps its known dates exactly and then recurs at
+that gap from the last, as one of the recurring shuts; the result says
+so. Undiscounted, the long run's cost a year adds the same to every
+choice in the window, so the window's decisions turn on what a part of
+each age is worth carrying past its end: worked out by running on over
+the recurring shuts' real dates until the window's decisions no longer
+change.
+
+Nothing is chosen silently: where a choice is needed, the call is refused
+with what to choose, and
+[`Shutdowns.route`][repyability.Shutdowns.route] says beforehand which
+route, which solver (`"closed form"`, `"grid"`, `"quadrature"` or
+`"sampling"`) and about how long. Routes 1-3 give a cost a year, the horizon
+a net present cost (`measure`), so the two are never compared by accident.
+`failure_timing="half_step"` (the default) works on a grid, a failure's
+replacement counted half a step old; `"exact"` integrates between the shuts
+in continuous time (a `SlowSolverWarning` where that takes over about 5 s;
+it does not price a replacement on any other day). The averaged route's
+formula is opportunity-based age replacement in the sense of Dekker &
+Dijkstra (1992, *Naval Research Logistics* 39(2):175-190) and Dekker &
+Smeitink (1991, *European Journal of Operational Research* 53(1):46-63).
+
+**Example 1: the classic, no dates at all.** Nothing here changes it:
+
+```python
+import surpyval as surv
+from repyability import NonRepairable
+
+bearing = NonRepairable(surv.Weibull.from_params([1000, 2.5]))   # life in days
+bearing.set_costs_planned_and_unplanned(1, 5)
+policy = bearing.optimal_replacement_policy()
+round(policy.interval, 2)      # -> 493.05
+round(policy.cost_rate, 6)     # -> 0.003462   a day
+```
+
+**Example 2: replacement only at a stop every 30 days.** `every=` is a
+plain period (a fixed length of time), so the stops repeat in the part's
+clock and the route is exact:
+
+```python
+from repyability import Shutdown, Shutdowns
+
+site = Shutdowns([Shutdown("monthly stop", every="30 days", replace_cost=1)])
+best = bearing.optimal_calendar_policy(site, unit="days")   # the life's unit
+best.route                     # 'exact'
+best.rule.text                 # 'Replace at a monthly stop if older than 479.1 days; never on any other day (the site allows none).'
+round(best.cost, 3)            # -> 1.265   a year
+best.measure                   # 'cost per year'
+```
+
+**Example 3: a fixed plant.** Weekday shifts in Brisbane, a weekly stop on
+Saturday, a quarterly shut, the first Tuesday of November, and two
+turnarounds. The bearing's life is in operating hours, so the plan turns
+dates into its clock:
+
+```python
+from repyability.schedule import DutyPlan, Recurrence, Shifts
+
+pump_bearing = NonRepairable(surv.Weibull.from_params([20_000, 2.5]), unplanned_cost=40.0)
+plant = Shutdowns(
+    [
+        Shutdown("weekly stop", Recurrence.weekly("Sat"), replace_cost=3.0, duration="8h"),
+        Shutdown("quarterly shut", Recurrence.monthly(weekday="Sunday", nth=1, every=3,
+                                                      anchor="2026-12-06"),
+                 replace_cost=2.0, duration="1d"),
+        Shutdown("annual shut", Recurrence.yearly(month="November", weekday="Tuesday", nth=1),
+                 replace_cost=1.0, duration="3d"),
+        Shutdown("turnaround", dates=["2027-03-03", "2028-09-09"], replace_cost=0.5,
+                 duration="14d"),
+    ],
+    any_day=4.0,
+    time_zone="Australia/Brisbane",
+)
+shifts = DutyPlan(Shifts("Mon-Fri", "06:00", "22:00"), time_zone="Australia/Brisbane")
+plant.route(pump_bearing, plan=shifts, now="2026-11-16", unit="hours").route   # 'horizon_or_averaged'
+```
+
+The route check explains: the turnarounds are used as dated to 9 Sep 2028;
+after that the quarterly shut falls 84 to 98 days apart and the annual
+shut 364 or 371, so the recurring shuts' long run needs a choice. With
+`method="averaged"` it spreads each recurring kind evenly within its usual
+gaps (the turnarounds are never averaged):
+
+```python
+when = dict(plan=shifts, now="2026-11-16", unit="hours", age=3100)
+best = pump_bearing.optimal_calendar_policy(plant, method="averaged", **when)
+best.route                         # 'dated_then_long_run'
+best.solver, best.long_run_route   # ('grid', 'averaged')
+round(best.cost, 2)                # -> 1.9   a year, after the window
+round(best.dated_cost, 2)          # -> 3.31  expected to 9 Sep 2028
+best.route_text.split(" Expected")[0]   # "Dated window to 9 Sep 2028, then the long-run average: $1.90 a year. Using the turnarounds on 3 Mar 2027 and 9 Sep 2028 as dated, then the recurring shuts' long-run average after 9 Sep 2028."
+best.rule.dated                    # [('2027-03-03', 'turnaround', 1543.8...), ('2028-09-09', 'turnaround', 798.5...)]
+str(best.next_replacement)         # 'At the turnaround, 3 Mar 2027, part 4,332 old'
+[k for d, k, a in best.schedule("2031-12-31")]
+# ['annual shut', 'turnaround', 'annual shut', 'annual shut', 'annual shut']   a bearing fitted today
+```
+
+`best.rule.text` gives both phases: "To 9 Sep 2028: replace at the
+turnaround on 3 Mar 2027 if older than 1,544 hours; at the turnaround on
+9 Sep 2028 if older than 798.5 hours; ... After 9 Sep 2028: Replace at an
+annual shut if older than 1,949 hours; ...". The long-run figure is the
+recurring shuts' own: the same site without the turnarounds gives $1.90 a
+year too. Were the turnarounds to go on every four years,
+`Shutdown("turnaround", dates=[...], then_every="4 years", ...)` says so,
+and the result states "turnarounds after 9 Sep 2028 assumed every 4 years
+(your setting)". A horizon uses every date to its end and needs a
+discount:
+
+```python
+ten_years = pump_bearing.optimal_calendar_policy(
+    plant, horizon="2036-11-16", discount=0.07, **when
+)
+ten_years.measure                  # 'net present cost'
+round(ten_years.cost, 2)           # -> 12.30
+str(ten_years.next_replacement)    # 'At the turnaround, 3 Mar 2027, part 4,332 old'
+ten_years.settings["decisions_depend_from"] is not None   # True
+```
+
+**Example 4: a truck serviced every 15,000 km.** A shut can recur by use,
+with a calendar limit, whichever comes first. The gearbox's life is in km,
+the services are in km, so they repeat exactly in its clock, whatever the
+duty: the duty only turns the answers into dates.
+
+```python
+from repyability.schedule import Rate, Usage
+
+gearbox = NonRepairable(surv.Weibull.from_params([180_000, 2.2]), unplanned_cost=40_000)
+truck = DutyPlan(Rate(400, per="day", meter="km"))
+depot = Shutdowns(
+    [Shutdown("service", every=Usage(15_000, "km"), also_every="6 months",
+              replace_cost=9_000, duration="6h")],
+    any_day=14_000,
+)
+road = dict(plan=truck, now="2026-11-16", readings={"km": 212_000}, unit="km")
+depot.route(gearbox, **road).route      # 'exact'
+service = gearbox.optimal_calendar_policy(depot, age=28_000, **road)
+service.rule.text                       # 'Replace at a service if older than 89,000 km; on any other day once older than 243,143 km.'
+str(service.next_replacement)           # 'At the service, 17 May 2027, part 101,000 old'
+service.schedule("2027-12-31")[0]       # ('2027-07-31', 'service', 103000.0)   a gearbox fitted today
+```
+
+**Example 5: an aircraft on a daily plan.** Four sectors a day; the brakes'
+life is in landings, the A-check is every 600 flight hours, the C-check
+every 2 years, a night stop every night at 21:00. Landings, flight hours
+and days don't keep step, so the route check asks for a choice:
+
+```python
+flights = DutyPlan(
+    Shifts([("Mon-Sun", "06:10", "07:40"), ("Mon-Sun", "08:30", "10:05"),
+            ("Mon-Sun", "15:00", "16:35"), ("Mon-Sun", "17:20", "18:50")]),
+    per_run={"landings": 1},            # each sector is one landing
+    time_zone="Australia/Brisbane",
+)
+base = Shutdowns(
+    [
+        Shutdown("night stop", Recurrence.weekly("Mon-Sun"), at="21:00",
+                 replace_cost=1_200, duration="7h"),
+        Shutdown("A-check", every=Usage(600, "hours"), replace_cost=800, duration="10h"),
+        Shutdown("C-check", every="2 years", replace_cost=300, duration="21d"),
+    ],
+    time_zone="Australia/Brisbane",
+)
+brakes = NonRepairable(surv.Weibull.from_params([2_400, 3.0]), unplanned_cost=25_000)
+fleet = dict(plan=flights, now="2026-11-16", unit="landings",
+             readings={"landings": 8_410, "hours": 14_220})
+base.route(brakes, **fleet).route       # 'horizon_or_averaged'
+brakes_policy = brakes.optimal_calendar_policy(base, method="averaged", **fleet)
+brakes_policy.rule.text                 # 'Replace at a C-check if older than 124.6 landings; at an A-check if older than 440.5 landings; never at a night stop or on any other day (the site allows none).'
+```
+
+**Example 6: no shuts at all.** Any day is as good as any other, so it is
+plain age replacement, and says so:
+
+```python
+anyday = bearing.optimal_calendar_policy(Shutdowns([], any_day=1), unit="days")
+anyday.solver                                    # 'closed form'
+round(anyday.rule.thresholds["any other day"][0], 2)   # -> 493.05
+round(anyday.cost_rate, 6)                       # -> 0.003462
+```
+
+**Example 7: replace this unit now, at the next shut, or later?**
+[`optimal_next_replacement`][repyability.NonRepairable.optimal_next_replacement]
+with `site=` looks a few shuts ahead on the real dates, valuing the time
+beyond at the policy's figure:
+
+```python
+choice = gearbox.optimal_next_replacement("120,000 km", site=depot, policy=service)
+choice.best                             # 'At the service, 18 Dec 2026'
+[str(o) for o in choice.options][:3]    # ['Now', 'At the service, 18 Dec 2026', 'At the service, 25 Jan 2027']
+```
+
+**Simpler rules, a rule's price, its spread, and diagrams.** `compare()`
+prices run to failure, age replacement on any day and every shut of each
+kind by the same route;
+[`calendar_policy_cost`][repyability.NonRepairable.calendar_policy_cost]
+with a site prices a rule you give and returns a
+[`RuleCost`][repyability.RuleCost] (cost, measure, route, replacements by
+kind). `cost_distribution(until=, policy=)` and `cost_by_window(dates,
+policy=)` give the spend's range on the real dates. And the same record
+gives a diagram its outages, each shut's `duration` at its dates:
+`RepairableRBD(..., shutdowns=site.on_diagram(start, end, unit=...))`,
+with a component's `"preventive": {"policy": "calendar", "calendar":
+best}` taking the policy (one worked out in calendar time from the
+diagram's day 0, `now`). Change a shut's rule once, and both move.
+
+```python
+rules = {c.name: round(c.cost) for c in service.compare()}
+rules["run to failure"], rules["every service"]   # (36660, 89303)   a year
+priced = gearbox.calendar_policy_cost(depot, {"service": 89_000}, **road)
+priced.measure, round(priced.cost)                 # ('cost per year', 26113)
+```
+
 ## Overhaul under minimal repair (`Repairable`)
 
 Each failure is minimally repaired at cost `cr`; every `t` the unit is
@@ -345,19 +589,32 @@ The result is a [`FailureLimitPolicy`][repyability.FailureLimitPolicy].
 bound, raise it. The cost rate is usually flat near its minimum, so the
 optimal count can move by several failures with the seed or `mc_samples`
 while the cost rate barely changes: read it as a region, and compare cost
-rates. These methods need a simulation-backed (imperfect-repair) model and
-raise `ValueError` otherwise.
+rates.
 
-For the minimal-repair limit (`q = 1`, a power-law process), `E[T_n]` is exact
-and needs no simulation:
+For minimal repair (an analytic model: `CrowAMSAA`, `Duane`, `HPP` or
+`CoxLewis`), the same methods are exact and need no simulation (#402):
+the failures are a Poisson process with `cif(t)` expected by `t`, so the
+N-th comes after `t` with the chance of fewer than N failures, and
+`E[T_N]` is the integral of that chance. For a power law it is
+`alpha · Γ(N + 1/beta) / Γ(N)`, and for Cox-Lewis a quadrature. With a
+power law the cost rate falls while `N < (co − cr) / (cr (beta − 1))` and
+rises after, so the best N is the smallest at or above that (at a whole
+number the two counts either side tie; with `beta <= 1` it never rises,
+and the bound is returned):
 
 ```python
 from repyability import minimal_repair_time_to_nth_failure
+from surpyval.recurrent import CrowAMSAA
 
 minimal_repair_time_to_nth_failure(alpha=1500, beta=2.0, n=5)   # -> 3271.4
-```
 
-It is `alpha · Γ(n + 1/beta) / Γ(n)`.
+worn = Repairable(CrowAMSAA.from_params([1500, 2.0]))
+worn.set_repair_and_overhaul_costs(100, 1050)
+worn.expected_time_to_nth_failure(5)        # -> 3271.4
+policy = worn.optimal_failure_limit_policy()
+policy.failure_count                        # -> 10   (1050 - 100) / 100 = 9.5
+policy.cost_rate                            # -> 0.41626
+```
 
 ### Repair, overhaul and replace in cycles
 

@@ -659,11 +659,15 @@ def _validate_calendar(node, spec: dict, policy: str, life):
                 "'calendar' policy."
             )
         return None
-    if not isinstance(given, CalendarPolicy):
+    from repyability.maintenance import ShutdownPolicy
+
+    if isinstance(given, ShutdownPolicy):
+        _check_site_policy(node, given)
+    elif not isinstance(given, CalendarPolicy):
         raise ValueError(
             f"Component {node!r}: the 'calendar' policy needs a calendar, "
-            "the CalendarPolicy of NonRepairable.optimal_calendar_policy; "
-            f"got {given!r}."
+            "the CalendarPolicy or ShutdownPolicy of "
+            f"NonRepairable.optimal_calendar_policy; got {given!r}."
         )
     for key, why in (
         ("interval", "its policy's thresholds say when to replace"),
@@ -688,6 +692,25 @@ def _validate_calendar(node, spec: dict, policy: str, life):
                 "NonRepairable(life, ...).optimal_calendar_policy(calendar)."
             )
     return given
+
+
+def _check_site_policy(node, policy) -> None:
+    """A site's policy (``ShutdownPolicy``) on a diagram: its clock must
+    be the diagram's, calendar time from the policy's ``now`` (a diagram's
+    outages come from the same site, ``Shutdowns.on_diagram``)."""
+    layout = policy._layout
+    if layout.plan is not None:
+        raise ValueError(
+            f"Component {node!r}: its policy was worked out on an operating "
+            "plan, and a diagram's clock is calendar time: work the policy "
+            "out with no plan (a life in calendar time) to use it here."
+        )
+    if layout.now is None:
+        raise ValueError(
+            f"Component {node!r}: its policy has no dates (no now=), so its "
+            "shuts cannot be put on the diagram's clock: work it out with "
+            "now=, the diagram's time 0."
+        )
 
 
 def _validate_preventive(

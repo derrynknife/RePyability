@@ -42,6 +42,7 @@ records and decides what "today" is.
 | UC-24 | Outages on a timeline: shuts at given times with a duration and a scope (renew some blocks, restore others), the plan's cost by window and its NPV | **Built in part**: the same `shutdowns` at `"times"`, simulated (`availability`, `cost`); the exact cost by window and NPV take shuts on a period only |
 | UC-25 | How much of the downtime and lost production is planned and how much is from failures, and how many failures the plan avoids against running to failure | **Built**: `RepairableRBD.maintenance_effect`, and the split in `ExpectedEvents`, `EventsByWindow`, `AvailabilityResult` and `CostResult`; exact where the blocks fail independently, simulated otherwise |
 | UC-26 | A pump run part of the time with its overhaul counted in running hours: availability and cost, and at another duty | **Built**: a `"preventive"` or `"inspection"` spec's `"basis": "operating"`, put on the calendar through the block's `"duty"` |
+| UC-43 | A site's shuts on real dates (rules, one-offs, plain periods, a use on a meter) in one record, the best rule for a part there, worked out by a route that is always named and never chosen silently, given back as dates; the unit in service, its cost's spread, and a diagram's outages from the same record | **Built**: `Shutdowns`, `Shutdown`, `optimal_calendar_policy(site, ...)` returning a `ShutdownPolicy`, `Shutdowns.route`, `calendar_policy_cost(site, ...)`, `optimal_next_replacement(..., site=)`, `cost_distribution`/`cost_by_window(policy=)`, `Shutdowns.on_diagram` |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -1233,6 +1234,194 @@ answers back into dates is Reliafy's too.)
       2.5) bearing given to the Weibull(365, 2) one simulated at a cost
       rate 19% off the one worked out for it, silently.
 
+
+### UC-43: "Our shuts are on real dates: every Saturday, the first Tuesday of November, two turnarounds, and the truck's service every 15,000 km. What is the best rule for this part, on those dates, and how was it worked out?"
+
+- **Status:** built: `Shutdowns([Shutdown(...)], any_day=, time_zone=)`,
+  `NonRepairable.optimal_calendar_policy(site, plan=, now=, readings=,
+  age=, unit=, method=, horizon=, discount=, failure_timing=)` returning a
+  `ShutdownPolicy`, `Shutdowns.route(...)` (a `ShutdownRoute`),
+  `calendar_policy_cost(site, rule, ...)` (a `RuleCost`),
+  `optimal_next_replacement(age, site=, ...)` (a
+  `NextReplacementOnDates`), `cost_distribution(until=, policy=)` and
+  `cost_by_window(dates, policy=)`, `Shutdowns.on_diagram(start, end)`
+  for a `RepairableRBD`'s outages, and a `ShutdownPolicy` as a diagram
+  component's `"calendar"` policy.
+- **Who asks, and why:** UC-13's engineer, whose shuts are not periods
+  in the part's clock but rules on dates ("every Saturday", "the first
+  Tuesday of November"), one-off dates, plain periods, or a use ("every
+  15,000 km or 6 months"); and the planner who keeps the site's shuts as
+  one record that gives the diagrams their outages too. UC-40 laid one
+  rule's dates on the part's clock as given times; that answered the
+  policy but said nothing about the assumption a plan of given dates
+  makes past its end (it was repeated), and kept the diagram's outages
+  (`shutdown_spec`, UC-41) a separate record.
+- **What they know:** the part's life (in calendar time, operating hours,
+  km, landings: one clock); its failure price (`unplanned_cost`, always:
+  the site prices only planned replacements); each shut's rule and price
+  (and duration, for diagrams); the price of a planned replacement on any
+  other day, or none; how the equipment runs (a `DutyPlan`), the meters
+  now, the day answers count from.
+- **What they want back:** the best rule ("replace at the annual shut if
+  older than ..."), its cost a year (or its net present cost to a
+  horizon), how it was worked out in words, the next replacement of the
+  part in service as a date, the schedule of planned replacements by
+  date, the replacements a year by kind, and what simpler rules cost.
+- **How it is solved:** the shuts are laid on the part's clock (calendar
+  time since `now`'s midnight in the life's unit, or a meter of the plan's
+  forecast), over 28 years ahead (after which weekdays fall on the same
+  dates again). Whether they *truly repeat in that clock* is checked on
+  those model times (the fewest shuts `p` after which each is a fixed
+  length on, within 1e-9, seen at least twice over), not assumed from the
+  rule. Four routes, the result naming its route, solver and measure:
+  1. **exact**: the shuts repeat on a cycle short enough to work out in
+     about a minute (the estimate: relative value iteration's steps at
+     about 12 µs a step and 5.5 ns an age): UC-13's calendar policy over
+     the shuts as a repeating calendar (a kind with several shuts a
+     cycle, as Saturdays on weekday shifts are not, is laid as one
+     opportunity a shut), on the grid (`failure_timing="half_step"`) or
+     by UC-13's quadrature (`"exact"`). A use on the life's own meter is
+     exact whatever the duty: its shuts fall every 15,000 km in the
+     gearbox's km.
+  2. **a long cycle**: refused without `method="exact"` (said
+     beforehand, with the time) or `method="sampling"` (UC-13's sampled
+     windows, with the standard error).
+  3. **averaged** (`method="averaged"`): the renewal-reward formula with
+     each kind's timing spread evenly within its usual gaps: with
+     thresholds `a_k` a kind and `a_0` for any other day, the planned
+     replacement comes at `P = min(a_0, min_k a_k + U_k)`, `U_k` the
+     equilibrium residual of kind `k`'s gaps (density `Pr(G_k > x) /
+     E[G_k]`, the gaps those the rule gives in the part's clock over 28
+     years), independent. Fixed dates are never averaged (5).
+     Then a cycle lasts `∫ R Q`, kind `k` replaces with `∫ R q_k`, any
+     other day with `R(a_0) Q(a_0)`, a failure the rest: integrals of `R`
+     times piecewise polynomials, by Gauss-Legendre on the pieces (the
+     closed form). The thresholds minimise the rate (each in turn over a
+     scan and Brent's method, against never; then Nelder-Mead). After
+     Dekker & Dijkstra (1992), NRL 39(2):175-190, and Dekker & Smeitink
+     (1991), EJOR 53(1):46-63. With no shuts it is plain age replacement,
+     route 1.
+  4. **horizon** (`horizon=`, `discount=`, both required, 0% allowed):
+     the backward dynamic programme over the real shuts to the horizon,
+     each grid step discounted by the calendar time it spans (or UC-13's
+     quadrature, each gap discounted at its own rate); the policy is
+     worked out again to a horizon at least 5 years (or 3 life spans)
+     later, and the first decision that differs is named: from about then
+     on, decisions depend on where the horizon ends.
+  5. **dated then long run** (`"dated_then_long_run"`, the default where
+     a kind has fixed `dates=` from now on, or `dated_until=` is given;
+     a decision of 15 Nov 2026): a dated window from now to the last
+     fixed date (or `dated_until`), in which every shut, the recurring
+     kinds' too, is on its real dates, so fixed dates and rules combine
+     freely; after it only the recurring shuts remain (a kind with
+     `then_every="4 years"` recurring at that gap from its last date),
+     and their long-run average, by the route they take on their own
+     (1-3, `method` applying to them, a choice asked for as there; with
+     none recurring and no other day, running to failure), values
+     everything beyond. Undiscounted, the long run's cost a year adds the
+     same to every choice in the window, so the window's decisions turn
+     on its relative values: the backward programme of 4 at 0%, over the
+     recurring shuts on their real dates past the window's end, run on 5
+     years (or 3 life spans) and doubled until two runs give the window
+     the same decisions (to a grid step and 0.1%). After the window a
+     part is replaced by the long run's own rule. `cost` is the long
+     run's a year, `dated_cost` the expected cost to the window's end,
+     and the rule is in two phases (`rule.dated`: each fixed date's own
+     threshold). Fixed dates all before now are left out.
+
+  Results are dated through the layout: a shut's own date, a planned
+  replacement on any other day at the first moment the part's clock
+  reaches its time.
+- **The answers, by hand** (the part Weibull(1000, 2.5) days, planned 1,
+  failure 5, unless said):
+  - Example 1, no site: 493.05 days, 0.003462 a day (the textbook;
+    `optimal_replacement_policy`). Example 6, `Shutdowns([], any_day=1)`:
+    route 1, closed form, **493.05 days and 0.0034620 a day**, $1.26 a
+    year.
+  - Example 2, a monthly stop every 30 days, no other day: the same
+    as UC-13's `Calendar([Opportunity("m", 1, period=30)],
+    anytime=None)`: **0.0034635 a day** ($1.27 a year), replace at a stop
+    once **479.1 days** old. Averaged (one kind, equal gaps): 0.0034628,
+    within 0.02% (see *Learned*).
+  - UC-13's quarterly (91 days, 3) and annual (364 days, 1) shuts at a
+    failure price of 20, laid from 16 November 2026: route 1,
+    **0.0069430 a day**, UC-13's own figure; by quadrature 0.0069430
+    (1.6e-6 apart). To 2046 and 2066 at 0%: net present costs 49.84 and
+    100.68, so 0.006959 a day between them (0.2% from route 1: the two
+    horizons end at different points of the 364-day cycle), and decisions
+    in the first 18 years are the same either way.
+  - The 7, 93 and 400-day shuts at 3, 2 and 1, any other day 4, failure
+    40, the part Weibull(1000, 5): one cycle is 260,400 days; exactly
+    (method="exact", 15 s) **1.2801 a year**; sampled, 48 windows, 1.2766
+    ± 0.0192 and 1.2588 ± 0.0176 (seeds 2 and 3).
+  - The plant (Mon-Fri 06:00-22:00 in Brisbane, the bearing Weibull(20,000
+    h, 2.5), failure 40, aged 3,100 h on 16 November 2026; a weekly stop on Saturday at 3, a
+    quarterly shut on the first Sunday of every third month at 2, the
+    first Tuesday of November at 1, turnarounds on 3 March 2027 and 9
+    September 2028 at 0.50, any other day 4): the route check gives the
+    dated window to 9 September 2028 and refuses to choose the long run
+    (the quarterly shut falls 84 to 98 days apart, the annual 364 or 371).
+    Averaged long run: **$1.90 a year** after the window (the recurring
+    shuts' own figure); in the window replace at the turnaround of 3
+    March 2027 if older than 1,544 h and at that of 9 September 2028 if
+    older than 798.5 h; after it at the annual shut if older than 1,949
+    h; the part in service next at the turnaround of 3 March 2027, 4,332
+    h old; $3.31 expected to 9 September 2028. To 16 November 2036 at 7%:
+    $12.30, the turnaround of 3 March 2027 next, then the annual shuts,
+    decisions from about 29 May 2034 depending on the horizon. (Before 15
+    Nov 2026 the averaged route took the two turnarounds as one every 18
+    months: $1.50 a year, all at turnarounds that stop after 2028.)
+  - The truck (Example 4: 400 km a day, the gearbox Weibull(180,000 km,
+    2.2), failure 40,000, the service every 15,000 km or 6 months at 9,000,
+    any other day 14,000, the odometer at 212,000 km): route 1 whatever
+    the 6-month limit, which never bites at 37.5 days a service; replace
+    at a service once 89,000 km old, $26,113 a year; services on 18
+    December 2026, 25 January, 3 March, 10 April, 17 May 2027 (every 37.5
+    days). At 50 km a day the 6-month limit always bites, and the
+    services repeat every 9,131 km in the gearbox's clock: still route 1.
+- **Checks** (`test_maintenance_shutdowns.py`): route 1 against the
+  textbook (no shuts; a shut every day; one kind against UC-13's
+  `Calendar`); sampling within its error of exact on 7/93/400; averaged
+  against exact on one kind with equal gaps, its statement listing every
+  kind with its gaps, and its formula against a plain simulation of its
+  own assumption; the horizon to a long one at 0% against route 1's rate,
+  its early decisions the same for 10 and 20 years, grid against
+  quadrature; one record moving both a diagram's outages and the policy's
+  opportunities; every refusal with its wording; saving and loading; the
+  old model-time API unchanged. The dated window
+  (`test_maintenance_shutdowns_dated.py`): the plant's turnarounds before
+  September 2028 and annual shuts after; the long-run figure the
+  recurring shuts' alone; the window's decisions those of a horizon 40
+  years out at 0%, and by quadrature close to the grid's; a monthly rule
+  with two fixed dates the same as all of them fixed dates; `then_every`
+  the same as adding the recurring kind; the route check's words; the
+  part in service seeing the turnarounds ahead; `dated_until`.
+- **Learned:**
+  - **"Averaged equals exact when the gaps are equal" holds closely for
+    one kind, not exactly, and not for several.** The averaged formula
+    takes each part as meeting the shuts at a random phase; on a truly
+    repeating calendar a part fitted at a shut meets the next at a fixed
+    phase, and kinds that coincide (a quarterly shut on the annual) are
+    not independent. One kind every 30 days: 0.0034628 against 0.0034635
+    (0.02%); UC-13's quarterly and annual shuts: 0.0071122 against
+    0.0069430 (2.4%). So the averaged route says its assumption on every
+    result, and is offered only by request.
+  - **Averaging one-off dates over their gaps was too strong an
+    assumption, so it went.** Two turnarounds 18 months apart were
+    averaged as a turnaround every 18 months; at $0.50 the averaged rule
+    replaced only at turnarounds, which stop after the second. Since 15
+    Nov 2026 fixed dates take the dated window (route 5): the turnarounds
+    as they come, then the recurring shuts' long run, with no horizon or
+    discount to choose.
+  - **The short-cycle limit is about work, not years.** 7/93/400 days is
+    a 713-year cycle, but on a day's grid it is about 50 s of work for the
+    textbook part (route 1, by the one-minute limit) and longer for a
+    part needing a finer grid (route 2). The route check gives the
+    estimate either way.
+  - **A time zone with daylight saving breaks "repeats" for a life in
+    calendar time:** a weekly stop at midnight is 167 or 169 hours apart
+    across the changes. The route says so; `time_zone=None` takes clock
+    times as they are, if that is what is meant.
 
 
 ### UC-14: "A cheap task every visit and a deeper one every few visits: how often should we visit, and how deep?"

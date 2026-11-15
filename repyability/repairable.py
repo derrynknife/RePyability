@@ -35,9 +35,10 @@ and returns the horizon instead).
 ``Repairable`` also prices a *failure-limit* policy: repair the first
 ``n - 1`` failures and replace the unit at the ``n``-th, with long-run cost
 rate ``(cr * (n - 1) + co) / E[T_n]``, where ``E[T_n]``, the expected time to
-the ``n``-th failure, is simulated from an imperfect-repair model (for
-power-law minimal repair, ``minimal_repair_time_to_nth_failure`` gives it in
-closed form).
+the ``n``-th failure, is exact for an analytic (minimal-repair) model (in
+closed form for a power law, as ``minimal_repair_time_to_nth_failure``
+gives it, and by quadrature for any other ``cif``, such as Cox-Lewis's) and
+simulated from an imperfect-repair model.
 
 Contrast with ``NonRepairable``, which models renewal *by replacement* ("as
 good as new") and the age-replacement policy. RBD components are assumed to
@@ -208,7 +209,7 @@ class Repairable:
     - failure limit: repair the first ``n - 1`` failures and replace at
       the ``n``-th, with cost rate ``(cr * (n - 1) + co) / E[T_n]``, where
       ``E[T_n]`` is the expected time to the ``n``-th failure; see
-      ``optimal_failure_limit_policy()`` (simulation-backed models only).
+      ``optimal_failure_limit_policy()`` (exact for an analytic model).
 
     Repairs and overhauls take no time and costs are per event, so cost
     rates are per unit of the model's time. Set the costs with
@@ -231,11 +232,12 @@ class Repairable:
           ``GeneralizedRenewal`` (Kijima I/II) model, fitted or built with
           ``fit_from_parameters``.
 
-        If both are present ``cif`` is used (analytic, exact). The
-        failure-count methods (``expected_time_to_nth_failure()`` and the
-        failure-limit policy) also call the model's
-        ``count_terminated_simulation``, which surpyval's
-        simulation-backed models provide.
+        If both are present ``cif`` is used (analytic, exact). For a
+        simulation-backed model the failure-count methods
+        (``expected_time_to_nth_failure()`` and the failure-limit policy)
+        also call the model's ``count_terminated_simulation``, which
+        surpyval's simulation-backed models provide; for an analytic one
+        they are exact.
 
     Attributes
     ----------
@@ -857,13 +859,41 @@ class Repairable:
 
     # -- Replace-at-N-th-failure policy ------------------------------------
 
-    def _require_simulation(self) -> None:
-        if self._analytic:
-            raise ValueError(
-                "the N-th-failure policy needs an imperfect-repair "
-                "(simulation-backed) model; for a power-law minimal-repair "
-                "process use minimal_repair_time_to_nth_failure() directly."
+    def _exact_times_to_failures(self, max_failures: int) -> np.ndarray:
+        """``[E[T_1], ..., E[T_max_failures]]`` for an analytic (``cif``)
+        model, exactly: minimal repair's failures are a Poisson process
+        with mean ``cif(t)`` by ``t``, so ``E[T_n]`` is the integral of
+        ``P(N(t) < n)`` (see ``_minimal_cycle``): in closed form for a
+        power law (Crow-AMSAA, Duane, HPP), by quadrature for any other
+        (Cox-Lewis, say)."""
+        from repyability.rbd import _minimal_cycle
+        from repyability.rbd._processes import _translated
+
+        translated = (
+            _translated(self.model) if is_poisson_process(self.model) else None
+        )
+        power = (
+            None
+            if translated is None
+            else _minimal_cycle.power_law(translated[0])
+        )
+
+        def hazard(t: float) -> float:
+            with np.errstate(over="ignore"):
+                return self._expected_failures_scalar(t, None, 0)
+
+        try:
+            return np.array(
+                [
+                    _minimal_cycle.nth_failure_mean(hazard, n, power)
+                    for n in range(1, max_failures + 1)
+                ]
             )
+        except NotImplementedError as error:
+            raise ValueError(
+                "the expected time to a failure is infinite for this "
+                f"model: {error}"
+            ) from None
 
     def _expected_times_to_failures(
         self, max_failures: int, seed: Optional[int], n_simulations: int
@@ -879,7 +909,8 @@ class Repairable:
         halved until it succeeds and the (shorter) achievable curve is
         returned with a warning.
         """
-        self._require_simulation()
+        if self._analytic:
+            return self._exact_times_to_failures(max_failures)
         with numpy_seed(seed):
             achievable = max_failures
             result = None
@@ -930,14 +961,18 @@ class Repairable:
     ) -> float:
         """Expected time to the ``n``-th failure, ``E[T_n]``.
 
-        Estimated from a single count-terminated simulation of
-        ``mc_samples`` failure histories (the model's
-        ``count_terminated_simulation``), as the mean of their ``n``-th
-        failure times. It needs a simulation-backed (imperfect-repair)
-        model; for a power-law minimal-repair process the closed form
-        [`minimal_repair_time_to_nth_failure`]
-        [repyability.minimal_repair_time_to_nth_failure] is exact and
-        cheaper.
+        For an analytic (``cif``, minimal-repair) model it is exact: the
+        failures are a Poisson process with ``cif(t)`` expected by ``t``,
+        so the ``n``-th comes after ``t`` with probability ``Q(n,
+        cif(t))`` (the chance of fewer than ``n``), whose integral is
+        ``E[T_n]``: in closed form for a power law (Crow-AMSAA, Duane,
+        HPP; as [`minimal_repair_time_to_nth_failure`]
+        [repyability.minimal_repair_time_to_nth_failure]), by quadrature
+        for any other (Cox-Lewis's). ``seed`` and ``mc_samples`` are then
+        ignored. For a simulation-backed model it is estimated from a
+        single count-terminated simulation of ``mc_samples`` failure
+        histories (the model's ``count_terminated_simulation``), as the
+        mean of their ``n``-th failure times.
 
         If the simulation fails at a high failure count (surpyval's
         simulator can, for near-minimal repair), it is retried with the
@@ -963,8 +998,9 @@ class Repairable:
         Raises
         ------
         ValueError
-            If ``n < 1``, if the model is analytic (``cif``), or if the
-            simulation cannot reach ``n`` failures.
+            If ``n < 1``, if the simulation cannot reach ``n`` failures,
+            or if an analytic model's intensity falls so that it may never
+            fail ``n`` times (``E[T_n]`` is infinite).
 
         Examples
         --------
@@ -1026,10 +1062,15 @@ class Repairable:
         (cost ``cr``) at each of its first ``n - 1`` failures and replaced
         (cost ``co``, renewing it) at the ``n``-th, so the long-run cost
         rate is ``(cr * (n - 1) + co) / E[T_n]``. ``E[T_1], ...,
-        E[T_max_failures]`` come from a single count-terminated
-        simulation (see ``expected_time_to_nth_failure()``), and the
-        cheapest ``n`` is returned. It needs a simulation-backed
-        (imperfect-repair) model.
+        E[T_max_failures]`` are exact for an analytic (``cif``) model and
+        come from a single count-terminated simulation for a
+        simulation-backed one (see ``expected_time_to_nth_failure()``),
+        and the cheapest ``n`` is returned. For a power law with shape
+        ``beta > 1`` the cost rate falls while ``n < (co - cr) / (cr
+        (beta - 1))`` and rises after, so the best ``n`` is the smallest
+        at or above that (at a whole number the counts either side tie);
+        with ``beta <= 1`` (no wear-out) it falls throughout, and the
+        largest count searched is returned.
 
         ``n = 1`` means replace at every failure. If the simulation fails
         at a high failure count (as surpyval's simulator can for
@@ -1058,9 +1099,9 @@ class Repairable:
         Raises
         ------
         ValueError
-            If the costs have not been set, if the model is analytic
-            (``cif``), or if the failure process cannot be simulated at
-            all.
+            If the costs have not been set, if the failure process
+            cannot be simulated at all, or if an analytic model's expected
+            times to failures are infinite (a falling intensity).
 
         Examples
         --------
@@ -1117,9 +1158,9 @@ class Repairable:
         Raises
         ------
         ValueError
-            If the costs have not been set, if the model is analytic
-            (``cif``), or if the failure process cannot be simulated at
-            all.
+            If the costs have not been set, if the failure process
+            cannot be simulated at all, or if an analytic model's expected
+            times to failures are infinite (a falling intensity).
 
         Examples
         --------
@@ -1136,6 +1177,18 @@ class Repairable:
         ... )
         >>> policy.failure_count, round(policy.cost_rate, 3)
         (7, 0.031)
+
+        For minimal repair (a Crow-AMSAA process) it is exact: here
+        ``(co - cr) / (cr (beta - 1)) = 5.5``, so the unit is replaced at
+        its sixth failure, after ``E[T_6] = 100 Gamma(6.5) / Gamma(6)`` on
+        average, at ``(5 * 1 + 6.5) / E[T_6]`` per unit time:
+
+        >>> from surpyval.recurrent import CrowAMSAA
+        >>> unit = Repairable(CrowAMSAA.from_params([100.0, 2.0]))
+        >>> unit.set_repair_and_overhaul_costs(cr=1.0, co=6.5)
+        >>> policy = unit.optimal_failure_limit_policy()
+        >>> policy.failure_count, round(policy.cost_rate, 5)
+        (6, 0.04794)
         """
         n_simulations = _samples(mc_samples)
 

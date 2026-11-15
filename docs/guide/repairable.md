@@ -1054,7 +1054,8 @@ run = rbd.availability(t_simulation=5000.0, mc_samples=1000, seed=1)
   group, or replacement on condition, cannot be repaired imperfectly.
 - **Exact or simulated.** A repair does not renew the unit, so the exact
   long-run values, the availability over time and the spares counts refuse
-  it, with the reason (but minimal repair's values over time, below);
+  it, with the reason (but minimal repair's values over time, and its
+  long-run values when it is replaced, below);
   `availability`, `cost` and `compare` simulate it, in
   Python, with its own streams (seeds, antithetic pairs and common random
   numbers work as for any component). `q = 0`, and `replace_after=1`
@@ -1108,6 +1109,51 @@ repaired = RepairableRBD(
 )
 repaired.expected_failures(8760.0)      # -> 103.85   fewer: it is down for each repair
 repaired.mission_availability(8760.0)   # -> 0.7310
+```
+
+- **Minimal repair with replacement has exact long-run values** (#402).
+  Repaired minimally (`q = 1`, or a fitted Crow-AMSAA, Duane or Cox-Lewis
+  process) and replaced as new at its `N`-th failure (`"replace_after"`),
+  at an operating age (age replacement), or whichever comes first, the
+  unit starts afresh at each replacement, so its long run is that of one
+  replacement cycle (renewal-reward). Between replacements its failures
+  are a Poisson process in its operating age with `H(t)` expected by `t`,
+  so the `N`-th comes after `t` with probability `Q(N, H(t))`, the chance
+  of fewer than `N` failures. A cycle then runs, on average,
+  `integral from 0 to T of Q(N, H(t)) dt` of operating time (`T` the
+  age), has `E[min(N(T), N)]` failures, and ends at a failure with
+  probability `P(N, H(T)) = 1 - Q(N, H(T))`; its length adds a repair's
+  mean time for each failure (the `N`-th's too, which replaces it) and
+  the replacement's mean time at the age. The availability is the
+  operating time over the length, the failure frequency the failures
+  over it, and the cost rate charges each failure its `"repair_cost"`,
+  the `N`-th its `"replace_cost"` too, and each replacement at the age
+  its preventive `"cost"`. For a power law (Crow-AMSAA, Duane, a Weibull
+  life) it is in closed form, `E[T_N] = alpha Gamma(N + 1 / beta) /
+  Gamma(N)`; for Cox-Lewis's intensity the operating time is a
+  quadrature (numerical); age replacement alone is exact for any
+  intensity (`T` and `H(T)`). The component then joins any diagram
+  (series, parallel, k-out-of-*n*, nested) through its long-run
+  availability, as any other does, and the importance measures and the
+  interval searches take it. A falling intensity (Cox-Lewis with `beta`
+  below 0) may never reach its `N`-th failure, and with no age is
+  refused. Its values over time stay simulated.
+
+```python
+from scipy.special import gammaln
+
+pump = CrowAMSAA.from_params([1000, 2.5])
+replaced = RepairableRBD(
+    [("s", "p"), ("p", "t")],
+    {"p": {"reliability": pump,
+           "repairability": surv.LogNormal.from_params([3.0, 0.5]),  # 22.76 h
+           "replace_after": 4,
+           "repair_cost": 500.0, "replace_cost": 5000.0}},
+)
+up = 1000 * np.exp(gammaln(4.4) - gammaln(4))   # E[T_4], 1689.35 h
+cycle = up + 4 * np.exp(3.125)                  # four repairs
+replaced.mean_availability()                    # -> 0.94887  = up / cycle
+replaced.expected_cost_rate()                   # -> 3.9317   = (4 * 500 + 5000) / cycle
 ```
 
 ## Instantly repaired components

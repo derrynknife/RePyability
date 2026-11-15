@@ -2,12 +2,7 @@ import numpy as np
 from scipy.optimize import minimize, minimize_scalar
 from surpyval import ExactEventTime, NonParametric, Parametric
 
-from repyability.maintenance import (
-    CalendarPolicy,
-    MaintenancePolicy,
-    NextReplacement,
-    SkipValue,
-)
+from repyability.maintenance import MaintenancePolicy, SkipValue
 from repyability.rbd._bayesian_life import PosteriorPredictive, as_life
 from repyability.rbd._covariate_schedule import is_scheduled
 from repyability.rbd._degradation import check_life, is_degradation
@@ -977,8 +972,18 @@ class NonRepairable:
         return MaintenancePolicy(interval=float(interval), cost_rate=rate)
 
     def optimal_next_replacement(
-        self, age, *, now_cost=None, scheduled_outages=(), policy=None
-    ) -> NextReplacement:
+        self,
+        age,
+        *,
+        now_cost=None,
+        scheduled_outages=(),
+        policy=None,
+        site=None,
+        plan=None,
+        now=None,
+        readings=None,
+        unit=None,
+    ):
         """When to replace the part in service next: now, at one of the
         scheduled outages, at a planned replacement between them, or at
         its failure.
@@ -1016,16 +1021,38 @@ class NonRepairable:
             The scheduled outages (shuts, turnarounds) as (time from now,
             price) pairs: when each is, in the life's time unit, more than
             0, and what replacing the part at it costs, at least 0.
-        policy : CalendarPolicy or MaintenancePolicy, optional
+        policy : CalendarPolicy, MaintenancePolicy or ShutdownPolicy, optional
             The policy whose ``cost_rate`` is the baseline, by default
-            ``optimal_replacement_policy()``.
+            ``optimal_replacement_policy()`` (with a site, the site's
+            policy, worked out by its route).
+        site : Shutdowns, optional
+            On real dates: the site's shuts. The choices are then now,
+            each of the next two shuts of each kind, a planned replacement
+            on any other day (where the site allows one) and running to
+            failure, on the real dates, with the time beyond valued at the
+            policy's figure (its cost a year, or for a horizon its net
+            present cost spread evenly over its years). ``age`` may be
+            text in the part's unit (``"3,100 h"``).
+        plan : optional
+            As for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        now : optional
+            As for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        readings : optional
+            As for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        unit : optional
+            As for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
 
         Returns
         -------
-        NextReplacement
+        NextReplacement or NextReplacementOnDates
             Every choice with its cost and break-even age (the youngest at
             which replacing now costs no more), the best, and the age from
-            which replacing now is the best.
+            which replacing now is the best; with a site, each choice with
+            its date and the best in words.
 
         Raises
         ------
@@ -1078,7 +1105,25 @@ class NonRepairable:
         (0.99, 256.1)
         """
         from repyability.maintenance._next import optimal_next_replacement
+        from repyability.maintenance._site_policy import next_on_dates
 
+        if site is not None:
+            if now_cost is not None or tuple(scheduled_outages):
+                raise ValueError(
+                    "With a site, the shuts and the price on any other day "
+                    "come from it: give no now_cost or scheduled_outages."
+                )
+            return next_on_dates(
+                self,
+                age,
+                site,
+                plan=plan,
+                now=now,
+                readings=readings,
+                unit=unit,
+                policy=policy,
+            )
+        _calendar_only(plan=plan, now=now, readings=readings, unit=unit)
         return optimal_next_replacement(
             self,
             age,
@@ -1633,13 +1678,19 @@ class NonRepairable:
 
     def cost_distribution(
         self,
-        window,
+        window=None,
         every=None,
         *,
         resets=None,
         age=0.0,
         since_renewal=None,
         calendar=None,
+        policy=None,
+        site=None,
+        plan=None,
+        now=None,
+        readings=None,
+        until=None,
         budget=None,
         levels=(10.0, 50.0, 90.0),
         method="exact",
@@ -1683,6 +1734,22 @@ class NonRepairable:
         since_renewal : float, optional
             For block replacement: how far into the interval it is, less
             than ``every``, by default the age.
+        policy : ShutdownPolicy, optional
+            On real dates: a site's policy (or give it as ``calendar``).
+            The window starts at the policy's ``now``, with the part at the
+            policy's ``age`` unless ``age`` is given.
+        until : date or str, optional
+            With ``policy``: the last day the window runs to, in place of
+            ``window``.
+        site : optional
+            With ``policy``: where given, must be the policy's.
+        plan : optional
+            With ``policy``: where given, must be the policy's.
+        now : optional
+            With ``policy``: where given, must be the policy's.
+        readings : optional
+            With ``policy``: where given, must be the policy's.
+
         calendar : CalendarPolicy, optional
             Instead of ``every``: a calendar policy worked out for this
             part, its calendar's times counted from now. Failures cost the
@@ -1738,8 +1805,20 @@ class NonRepairable:
         >>> round(spend.probability_above(1500.0), 3)
         0.151
         """
+        from repyability.maintenance._site_policy import on_dates
         from repyability.maintenance._window_cost import cost_distribution
 
+        calendar, window, age = on_dates(
+            calendar,
+            policy,
+            window,
+            until,
+            age,
+            site=site,
+            plan=plan,
+            now=now,
+            readings=readings,
+        )
         return cost_distribution(
             self,
             window,
@@ -1766,6 +1845,11 @@ class NonRepairable:
         age=0.0,
         since_renewal=None,
         calendar=None,
+        policy=None,
+        site=None,
+        plan=None,
+        now=None,
+        readings=None,
         budget=None,
         levels=(10.0, 50.0, 90.0),
         method="exact",
@@ -1805,6 +1889,20 @@ class NonRepairable:
             The part's age now, by default 0.
         since_renewal : float, optional
             As for `cost_distribution`.
+        policy : ShutdownPolicy, optional
+            On real dates: a site's policy (or give it as ``calendar``);
+            ``ends`` may then be dates, each window's last day. The windows
+            start at the policy's ``now``, with the part at the policy's
+            ``age`` unless ``age`` is given.
+        site : optional
+            With ``policy``: where given, must be the policy's.
+        plan : optional
+            With ``policy``: where given, must be the policy's.
+        now : optional
+            With ``policy``: where given, must be the policy's.
+        readings : optional
+            With ``policy``: where given, must be the policy's.
+
         calendar : CalendarPolicy, optional
             As for `cost_distribution`.
         budget : float, optional
@@ -1851,8 +1949,21 @@ class NonRepairable:
         >>> [round(float(p), 3) for p in years.outcome_probabilities[1]]
         [0.0, 0.613, 0.324, 0.063]
         """
+        from repyability.maintenance._site_policy import on_dates
         from repyability.maintenance._window_outcomes import cost_by_window
 
+        calendar, ends, age = on_dates(
+            calendar,
+            policy,
+            ends,
+            None,
+            age,
+            site=site,
+            plan=plan,
+            now=now,
+            readings=readings,
+            many=True,
+        )
         return cost_by_window(
             self,
             ends,
@@ -1874,15 +1985,71 @@ class NonRepairable:
         self,
         calendar,
         *,
+        plan=None,
+        now=None,
+        readings=None,
+        age=0.0,
+        unit=None,
+        method=None,
+        horizon=None,
+        discount=None,
+        failure_timing="half_step",
         max_age=None,
-        method="auto",
         tail="repeat",
         mc_samples=64,
         seed=None,
-    ) -> CalendarPolicy:
+        dated_until=None,
+    ):
         """The long-run optimal replacement policy over a calendar of
         opportunities: shuts at their own prices, a planned replacement on
         any day at a dearer one (or none), and a failure at the dearest.
+
+        **A site's shuts on real dates.** Given a
+        [`Shutdowns`][repyability.Shutdowns] (the site's shuts as rules,
+        dates, plain periods or uses, each with its price, and the price on
+        any other day), it returns a
+        [`ShutdownPolicy`][repyability.ShutdownPolicy], worked out by the
+        route the shuts allow, which the result names in words
+        (``route``, ``route_text``;
+        [`Shutdowns.route`][repyability.Shutdowns.route] says it
+        beforehand):
+
+        1. **exact**: the shuts repeat in the part's own clock on a short
+           cycle (about a minute's work or less): the exact long-run
+           average cost a year;
+        2. a **long cycle**: give ``method="exact"`` (slow, said
+           beforehand) or ``method="sampling"`` (an estimate with its
+           standard error);
+        3. shuts that **don't repeat** (rules by month or year, a use on
+           another meter): give ``method="averaged"`` (the renewal-reward
+           formula, each shut spread evenly within its usual gaps, said on
+           the result) or
+        4. ``horizon=`` and ``discount=``: the lowest net present cost on
+           the real dates to the horizon.
+
+        **Fixed dates** (a ``Shutdown`` with ``dates=``, such as
+        turnarounds) are never averaged. Without a horizon the policy is
+        ``"dated_then_long_run"``: a dated window from now to the last
+        fixed date (or to ``dated_until``), in which every shut, the
+        recurring kinds' too, is on its real dates; after it only the
+        recurring shuts remain, and their long-run average (by the route
+        above that they take on their own, ``method`` applying to them)
+        values everything beyond. The rule is given in two phases, and
+        ``cost`` is the long run's a year (``dated_cost`` the expected
+        cost to the window's end). A kind given ``then_every`` recurs at
+        that gap after its last date, joining the recurring shuts.
+
+        Nothing is chosen silently: a route that needs a choice is refused
+        with what to choose. A failure costs the part's
+        ``unplanned_cost``. ``failure_timing`` is ``"half_step"`` (a grid,
+        each failure's replacement counted half a step old) or ``"exact"``
+        (quadrature between the shuts, failures at their instant; a
+        ``SlowSolverWarning`` where it takes over about 5 s). The guide's
+        [shutdown policies](../guide/maintenance.md) has the examples.
+
+        **A calendar in model time** (a [`Calendar`][repyability.Calendar])
+        is worked out as before, returning a
+        [`CalendarPolicy`][repyability.CalendarPolicy]:
 
         Age replacement
         ([`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy])
@@ -1933,9 +2100,37 @@ class NonRepairable:
 
         Parameters
         ----------
-        calendar : Calendar
-            The opportunities and prices; its ``"part"`` prices are this
-            part's planned and unplanned costs.
+        calendar : Shutdowns or Calendar
+            The site's shuts, or opportunities in model time (whose
+            ``"part"`` prices are this part's planned and unplanned costs).
+        plan : DutyPlan, optional
+            With a site: how the equipment runs, turning dates into the
+            part's clock; without, the part's clock is calendar time.
+        now : date or str, optional
+            With a site: the day answers count from (needed for shuts on
+            dates, uses and horizons).
+        readings : dict, optional
+            With a site: the meters at ``now``, placing shuts by use.
+        age : float or str, optional
+            With a site: the age of the part in service at ``now``, by
+            default 0 (just fitted), for ``next_replacement``.
+        unit : str, optional
+            With a site: the part's unit (``"days"``, ``"hours"``, or a meter
+            of the plan such as ``"km"``), by default its model's label.
+        method : str, optional
+            With a site: None (exact where the shuts allow), ``"exact"``,
+            ``"sampling"`` or ``"averaged"``. With a calendar: ``"auto"``
+            (as None), ``"dp"``, ``"integration"`` or ``"sampling"``.
+        horizon, discount : optional
+            With a site: the last day costs count to, and the yearly
+            discount rate (required with a horizon; 0 for the plain total).
+        failure_timing : str, optional
+            With a site: ``"half_step"`` (the default) or ``"exact"``.
+        dated_until : date or str, optional
+            With a site: the last day of the dated window, to extend it
+            past the last fixed date (a shut schedule planned for the next
+            three years); by default the window ends at the last fixed
+            date, and with no fixed dates there is none.
         max_age : float, optional
             The oldest age on the grid, by default the age a unit outlives
             with a chance of 1e-9.
@@ -1953,8 +2148,9 @@ class NonRepairable:
 
         Returns
         -------
-        CalendarPolicy
-            The long-run cost rate and what it is made of by kind, each
+        ShutdownPolicy or CalendarPolicy
+            With a site, the policy on real dates. With a calendar, the
+            long-run cost rate and what it is made of by kind, each
             shut's threshold and chance of a replacement (``schedule()``),
             a unit's next replacement (``next_replacement()``), how it
             was worked out, and the life it was worked out for.
@@ -1993,22 +2189,92 @@ class NonRepairable:
         from repyability.maintenance._replacement import (
             optimal_calendar_policy,
         )
+        from repyability.maintenance._shutdowns import Shutdowns
+        from repyability.maintenance._site_policy import find_policy
 
+        if isinstance(calendar, Shutdowns):
+            if max_age is not None or tail != "repeat":
+                raise ValueError(
+                    "max_age and tail are for a Calendar in model time; a "
+                    "site's shuts take neither."
+                )
+            return find_policy(
+                self,
+                calendar,
+                plan=plan,
+                now=now,
+                readings=readings,
+                age=age,
+                unit=unit,
+                method=method,
+                horizon=horizon,
+                discount=discount,
+                failure_timing=failure_timing,
+                mc_samples=mc_samples,
+                seed=seed,
+                dated_until=dated_until,
+            )
+        _calendar_only(
+            plan=plan,
+            now=now,
+            readings=readings,
+            unit=unit,
+            horizon=horizon,
+            discount=discount,
+            dated_until=dated_until,
+        )
+        if age != 0.0:
+            raise ValueError(
+                "age is for a site's shuts (Shutdowns); a Calendar's policy "
+                "gives next_replacement(age, now) instead."
+            )
+        if failure_timing != "half_step":
+            raise ValueError(
+                "failure_timing is for a site's shuts (Shutdowns); a Calendar "
+                "takes method='dp' or 'integration'."
+            )
         return optimal_calendar_policy(
             self,
             calendar,
             max_age=max_age,
-            method=method,
+            method="auto" if method is None else method,
             tail=tail,
             mc_samples=mc_samples,
             seed=seed,
         )
 
-    def calendar_policy_cost(self, calendar, rule, *, max_age=None) -> float:
+    def calendar_policy_cost(
+        self,
+        calendar,
+        rule,
+        *,
+        max_age=None,
+        plan=None,
+        now=None,
+        readings=None,
+        unit=None,
+        method=None,
+        horizon=None,
+        discount=None,
+        failure_timing="half_step",
+        mc_samples=64,
+        seed=None,
+        dated_until=None,
+    ):
         """The long-run average cost a unit of time of a given replacement
         rule over a calendar of opportunities: to price simple policies
         against
         [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+
+        Given a site ([`Shutdowns`][repyability.Shutdowns]), the rule
+        names the site's kinds of shut (and ``"any other day"``), it is
+        priced by the same route as the policy would be (``plan``,
+        ``now``, ``readings``, ``unit``, ``method``, ``horizon``,
+        ``discount``, ``failure_timing``, ``dated_until`` as there), and a
+        [`RuleCost`][repyability.RuleCost] comes back: the cost, its
+        measure, the route and words, and the replacements by kind. Given
+        a [`Calendar`][repyability.Calendar] it returns the rate, a float,
+        as before.
 
         The rule gives, for each kind of replacement it uses (an
         opportunity's name, or ``"anytime"`` for any day), the age from
@@ -2029,6 +2295,39 @@ class NonRepairable:
             failure.
         max_age : float, optional
             The oldest age on the grid, as for ``optimal_calendar_policy``.
+        plan : optional
+            With a site: as for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        now : optional
+            With a site: as for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        readings : optional
+            With a site: as for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        unit : optional
+            With a site: as for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        method : optional
+            With a site: as for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        horizon : optional
+            With a site: as for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        discount : optional
+            With a site: as for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        failure_timing : optional
+            With a site: as for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        mc_samples : optional
+            With a site: as for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        seed : optional
+            With a site: as for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        dated_until : optional
+            With a site: as for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
 
         Returns
         -------
@@ -2051,7 +2350,42 @@ class NonRepairable:
         from repyability.maintenance._replacement import (
             calendar_policy_cost,
         )
+        from repyability.maintenance._shutdowns import Shutdowns
+        from repyability.maintenance._site_policy import price_rule
 
+        if isinstance(calendar, Shutdowns):
+            if max_age is not None:
+                raise ValueError("max_age is for a Calendar in model time.")
+            return price_rule(
+                self,
+                calendar,
+                rule,
+                plan=plan,
+                now=now,
+                readings=readings,
+                unit=unit,
+                method=method,
+                horizon=horizon,
+                discount=discount,
+                failure_timing=failure_timing,
+                mc_samples=mc_samples,
+                seed=seed,
+                dated_until=dated_until,
+            )
+        _calendar_only(
+            plan=plan,
+            now=now,
+            readings=readings,
+            unit=unit,
+            horizon=horizon,
+            discount=discount,
+            method=method,
+            dated_until=dated_until,
+        )
+        if failure_timing != "half_step":
+            raise ValueError(
+                "failure_timing is for a site's shuts (Shutdowns)."
+            )
         return calendar_policy_cost(self, calendar, rule, max_age=max_age)
 
     def reset(self):
@@ -2118,3 +2452,14 @@ class NonRepairable:
         elif self.__next_event_type == REPLACE:
             self.__next_event_type = FAILURE
             return self.time_to_replace.random(1).item(), True
+
+
+def _calendar_only(**given) -> None:
+    """Refuse a site's options given with a ``Calendar`` in model time."""
+    named = sorted(k for k, v in given.items() if v is not None)
+    if named:
+        raise ValueError(
+            f"{', '.join(named)} {'is' if len(named) == 1 else 'are'} for a "
+            "site's shuts on real dates (Shutdowns); a Calendar is in model "
+            "time and takes none."
+        )

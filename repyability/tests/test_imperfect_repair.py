@@ -263,10 +263,12 @@ def test_expected_time_to_nth_failure_matches_closed_form_at_q1():
         assert sim == pytest.approx(exact, rel=0.05)
 
 
-def test_expected_time_to_nth_failure_analytic_raises():
+def test_expected_time_to_nth_failure_analytic_is_the_closed_form():
+    # A Crow-AMSAA process is power-law minimal repair (#402).
     analytic = Repairable(CrowAMSAA.from_params([0.5, 1.6]))
-    with pytest.raises(ValueError, match="minimal_repair_time_to_nth_failure"):
-        analytic.expected_time_to_nth_failure(3)
+    assert analytic.expected_time_to_nth_failure(3) == pytest.approx(
+        minimal_repair_time_to_nth_failure(0.5, 1.6, 3), rel=1e-12
+    )
 
 
 def test_expected_time_to_nth_failure_validation():

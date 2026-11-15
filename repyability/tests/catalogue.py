@@ -910,6 +910,35 @@ def repairable_kinds():
             "fitted Crow-AMSAA process": system(
                 unit(reliability=crow_amsaa(), repair_cost=1.0)
             ),
+            # Minimal repair, replaced (#402): a renewal cycle, exact for
+            # a power law, by quadrature for Cox-Lewis's intensity.
+            "fitted Crow-AMSAA process, replaced at its third failure": (
+                system(
+                    unit(
+                        reliability=crow_amsaa(),
+                        replace_after=3,
+                        repair_cost=1.0,
+                        replace_cost=10.0,
+                    )
+                )
+            ),
+            "Cox-Lewis process, replaced at its second failure or an age": (
+                system(
+                    unit(
+                        reliability=surv.CoxLewis.from_params(
+                            [np.log(0.001), 0.005]
+                        ),
+                        replace_after=2,
+                        preventive={
+                            "interval": 400.0,
+                            "duration": E([0.5]),
+                            "cost": 5.0,
+                        },
+                        repair_cost=1.0,
+                        replace_cost=10.0,
+                    )
+                )
+            ),
             "fitted ARA process": system(
                 unit(reliability=ara_process(), repair_cost=1.0)
             ),

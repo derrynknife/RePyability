@@ -16,6 +16,7 @@ from typing import (
     Dict,
     Hashable,
     List,
+    NamedTuple,
     NoReturn,
     Optional,
     Tuple,
@@ -139,6 +140,17 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
         message = r.refusal(partial(check, node))
         if message:
             return r.REFUSED, message
+    if node in rbd._imperfect:
+        # Passed _require_perfect_repair: minimally repaired and
+        # replaced, a renewal cycle (#402).
+        cycle = _requirements._minimal_cycle_model(rbd, node)
+        how = (
+            "its replacement cycle with minimal repairs: the failures "
+            "of a Poisson process in its operating age"
+        )
+        if cycle.route == r.EXACT:
+            return r.EXACT, how + ", in closed form"
+        return r.NUMERICAL, how + ", its operating time by quadrature"
     if node in rbd._standby:
         message = r.refusal(
             partial(functools.partial(_standby_rates, rbd), node)
@@ -359,6 +371,9 @@ def _node_availability(rbd, node) -> float:
         if node in chain.nodes:
             return chain.availability(node)
         return float(rbd.components[node].mean_availability())
+    if node in rbd._imperfect:
+        terms = _minimal_cycle_terms(rbd, node)
+        return terms.up / terms.length
     if node in rbd._standby:
         return _standby_long_run(rbd, node).availability
     if node in rbd._inspection:
@@ -397,6 +412,9 @@ def _node_unavailability(rbd, node) -> float:
     not couple the components (see ``_long_run_unavailabilities``)."""
     _requirements._require_perfect_repair(rbd, node)
     _requirements._require_times(rbd, node)
+    if node in rbd._imperfect:
+        terms = _minimal_cycle_terms(rbd, node)
+        return min(1.0, (terms.failed + terms.planned) / terms.length)
     if node in rbd._standby:
         return _standby_long_run(rbd, node).unavailability
     component = rbd.components[node]
@@ -430,6 +448,10 @@ def _node_failed(rbd, node) -> float:
     component = rbd.components[node]
     if isinstance(component, RepairableRBD):
         return _unplanned.long_run_split(component, set(), set())[1]
+    if node in rbd._imperfect:
+        _requirements._require_perfect_repair(rbd, node)
+        terms = _minimal_cycle_terms(rbd, node)
+        return min(1.0, terms.failed / terms.length)
     schedule = rbd._preventive.get(node)
     if schedule is None or schedule.duration is None:
         return _node_unavailability(rbd, node)
@@ -1180,6 +1202,13 @@ def _node_frequencies(rbd, node) -> Tuple[float, float, float]:
     if isinstance(component, RepairableRBD):
         failures, planned = _outage_frequencies(component)
         return failures, 0.0, planned
+    if node in rbd._imperfect:
+        terms = _minimal_cycle_terms(rbd, node)
+        maintained = terms.maintained / terms.length
+        schedule = rbd._preventive.get(node)
+        timed = schedule is not None and schedule.duration is not None
+        planned = maintained if timed else 0.0
+        return terms.failures / terms.length, maintained, planned
     if node in rbd._standby:
         return _standby_long_run(rbd, node).failure_frequency, 0.0, 0.0
     if node in rbd._inspection:
@@ -1206,6 +1235,52 @@ def _node_frequencies(rbd, node) -> Tuple[float, float, float]:
     maintained = maintenances / cycle
     planned = 0.0 if schedule.duration is None else maintained
     return failures / cycle, maintained, planned
+
+
+class _MinimalTerms(NamedTuple):
+    """A minimally repaired component's replacement cycle on the
+    diagram's clock (see ``_minimal_cycle_terms``)."""
+
+    up: float
+    length: float
+    failures: float
+    replaced: float
+    maintained: float
+    #: Its mean time in a repair after a failure (the replacing one's
+    #: too): unplanned.
+    failed: float
+    #: Its mean time in the replacement at its age: planned.
+    planned: float
+
+
+def _minimal_cycle_terms(rbd, node) -> _MinimalTerms:
+    """A minimally repaired component's replacement cycle (#402; see
+    ``_minimal_cycle``): its operating time, then its length, adding a
+    repair's mean time for each failure (the one at ``replace_after``,
+    which replaces it, takes a repair's time too, as in the simulation)
+    and the replacement's mean time at its age; its mean failures, and
+    the chances that it ends at a failure or at the age."""
+    _requirements._require_perfect_repair(rbd, node)
+    cycle = _requirements._minimal_cycle_model(rbd, node)
+    component = rbd.components[node]
+    schedule = rbd._preventive.get(node)
+    repair = model_mean(component.time_to_replace)
+    maintenance = (
+        0.0
+        if schedule is None or schedule.duration is None
+        else model_mean(schedule.duration)
+    )
+    failed = cycle.failures * repair
+    planned = cycle.maintained * maintenance
+    return _MinimalTerms(
+        cycle.up,
+        cycle.up + failed + planned,
+        cycle.failures,
+        cycle.replaced,
+        cycle.maintained,
+        failed,
+        planned,
+    )
 
 
 def _maintenance_cycle(

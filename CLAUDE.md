@@ -8,7 +8,7 @@ first. This file adds the internals and conventions it does not cover.
 release; the latest published release is on PyPI
 (`https://pypi.org/pypi/repyability/json`) and the CHANGELOG's newest
 dated section. New work goes under the CHANGELOG's `[Unreleased]`. The
-minimum surpyval is in `pyproject.toml` (0.27 as of 0.18).
+minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
 
 ## Architecture & scope
 
@@ -497,9 +497,9 @@ minimum surpyval is in `pyproject.toml` (0.27 as of 0.18).
   nothing, so 0.16 and 0.17 remove nothing. 0.17 deprecated
   `repyability.demonstration`'s nine functions for
   `surpyval.test_planning`'s, and 0.18 removed them with
-  `DemonstrationPlan` (`test_removed_in_0_18.py`). 0.18 deprecates
-  nothing; `NEXT_REMOVAL` is 0.19, which
-  `test_what_0_18_deprecates_goes_in_0_19` reminds. A new
+  `DemonstrationPlan` (`test_removed_in_0_18.py`). 0.18 and 0.19
+  deprecate nothing, so 0.19 removes nothing; `NEXT_REMOVAL` is 0.20,
+  which `test_what_0_19_deprecates_goes_in_0_20` reminds. A new
   deprecation warns through `deprecation.renamed`, `renamed_attribute`,
   `called`, `ignored` or `moved`, with a test that fails once the version
   reaches its removal.
@@ -537,16 +537,17 @@ CONTRIBUTING.md. What it leaves to the maintainer's say:
   locally only when the maintainer asks. Work going into `dev` is checked
   locally by the tests of what it changes (`scripts/check.sh <tests>`) and
   merged without waiting for CI.
-- Every merge and every release needs the maintainer's go-ahead. Merge the
+- Every release needs the maintainer's go-ahead. Pull requests into `dev` for work the maintainer asked for may be merged once their targeted tests and checks pass (and any CI on the PR is green); the `dev` → `main` release PR, tags and publishes always need the go-ahead. Merge the
   release pull request with a merge commit (`release.yml` finds CI's pass
   on the merged `dev` commit), run `release.yml` with `dry_run` first, and afterwards check the run, the tag
   `vX.Y`, the GitHub Release and `https://pypi.org/pypi/repyability/X.Y/json`.
 
 ## surpyval workarounds to remove
 
-surpyval 0.27 is the minimum (the release 0.17 is tested against; it
-removes nothing, and 0.26 removed what 0.25 deprecated, none of which
-RePyability used). 0.25 has
+surpyval 0.28 is the minimum (the release 0.19 is tested against: a
+Bayesian fit's `qf(0)` with an offset or shares, #1242, and `same_unit`,
+which RePyability now takes as they are). 0.27 removed nothing, and 0.26
+removed what 0.25 deprecated, none of which RePyability used. 0.25 has
 the joint models a `JointNode` takes; 0.24
 gives a mixture a precise tail (`sf`, #671) and
 has `conditional_gaps` read a limited failure population's `lfp_p`, not a
@@ -566,9 +567,7 @@ else. Two names have no public home yet and are listed there
 `conditional_gaps` (`rbd/_event_loop._aged_life`). Take each from its
 public home once surpyval gives it one; that test fails when it does.
 
-What remains (each checked against surpyval 0.27, and against its `dev`
-for 0.28, on 14 Nov 2026: none is fixed in 0.27, so none could go; only
-the joint frailty `mcf` is fixed on `dev`, for 0.28):
+What remains (each checked against surpyval 0.28 on 15 Nov 2026):
 
 - **A mixture's life left at a virtual age** (surpyval #857, #295).
   0.27's `conditional_gaps` inverts the quantile function wherever the
@@ -609,28 +608,15 @@ the joint frailty `mcf` is fixed on `dev`, for 0.28):
   scale. Take surpyval's ranges once the minimum surpyval says them.
   (0.27 keeps them private, such as a regression's `_parameter_bounds`.)
 
-- **A joint frailty model's expected failures far past its write-off
-  life** (no surpyval issue yet). surpyval 0.27's
-  `JointFrailtyModel.mcf` integrates on a fixed Gauss-Legendre grid in
-  the cumulative intensity, so far past the units' write-off ages it
-  falls (and tends to 0) where it should level off. `RepairOrReplace`
-  (`maintenance/_repair_or_replace.py`) integrates each frailty's `iif`,
-  `hf` and `Hf` itself instead. Take `mcf` once the minimum surpyval's
-  holds at every age: **surpyval 0.28 fixes it** (on its `dev`,
-  unreleased on 14 Nov 2026: integrated over log age, rising to its limit
-  and staying there), so this can go when the minimum is 0.28. On 0.27,
-  `JointFrailty.from_params((100, 2), (400, 1.5), 0.5, 1.0).mcf` is 21.7
-  at 4e4, 13.2 at 4e6 and 3e-4 at 4e8.
-
-- **A Bayesian fit's quantile with an offset or shares** (no surpyval
-  issue yet). surpyval 0.27's `BayesianParametric.qf` fails to bracket
-  some roots of a fit with an offset and a limited failure population
-  (`ValueError: f(a) and f(b) must have different signs`, e.g. `p` of
-  0.04 with an offset of 20 and `lfp_p` 0.8), and of arrays with zero
-  inflation. `PosteriorPredictive._extras_qf` inverts the fit's own `ff`
-  (0 up to `ff(0)`, `inf` from the share that ever fails). Take the fit's
-  `qf` again once the minimum surpyval's brackets these. (Still raised
-  by 0.27 for that example; `surpyval.bayes` is unchanged on its `dev`.)
+- **A joint frailty model's own integration in `RepairOrReplace`**
+  (`maintenance/_repair_or_replace.py`). surpyval 0.27's
+  `JointFrailtyModel.mcf` fell towards 0 far past the write-off ages;
+  0.28 fixes it (21.67 from 4e4 to 4e8 for
+  `JointFrailty.from_params((100, 2), (400, 1.5), 0.5, 1.0)`).
+  `RepairOrReplace` still integrates each frailty's `iif`, `hf` and `Hf`
+  itself, as its policies need each frailty's cycle under replacement,
+  which the marginal `mcf` does not give; use `mcf` where a value is the
+  marginal count with no policy.
 
 An ARA, ARI or G1 renewal model is no longer refused (surpyval #833 is
 in 0.27): the Python simulation steps the fitted model itself with its

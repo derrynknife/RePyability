@@ -95,6 +95,10 @@ is a Lomax), that is used. The block is a
 the predictive's (its probability of failing worked out in its own right,
 its quantile by inverting it, its mean the points' means averaged), and the
 simulations draw a posterior point and a life from it, from one uniform.
+Each function is surpyval's own; for a posterior of more than 2,000
+points surpyval (0.28 on) reads them from a table it builds once, within
+1e-6 of the full sum relative (1e-5 for the density and hazard). Set
+`fit.predictive_table = False` for the full sum.
 
 ```python
 import numpy as np
@@ -274,7 +278,7 @@ labels. When its models name different units, it is built with a warning
 that names the blocks and their units, because its answers would mix the
 two; models with no unit say nothing, so a diagram of unlabelled models is
 as before. Labels are compared as units, so `"h"`, `"hrs"` and `"hours"`
-agree (this needs surpyval 0.28; before it, labels are compared as text).
+agree.
 The diagram keeps its unit as `rbd.unit` (shown in its printout), and the
 results it returns carry it as `model_unit` (and in `to_dict()`), so a
 report can say what its times are in. A fault tree, a network and a phased

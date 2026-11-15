@@ -9,6 +9,134 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+## [0.19] - 2026-11-15
+
+Shutdown policies on real dates. A site's shuts become one record,
+`Shutdowns`: each `Shutdown` by a calendar rule, given dates, a plain
+period or a use on a meter (with a calendar limit, whichever comes
+first), what replacing a part then costs and how long the shut lasts,
+the price on any other day and the time zone. The same record gives a
+part's replacement policy its cheap moments and a diagram its outages.
+How a policy is worked out is never chosen silently: it is exact where
+the shuts truly repeat in the part's own clock on a short cycle; for a
+long cycle, or shuts that don't repeat, you choose the method, and every
+result names its route, solver and measure in words.
+
+No number RePyability gave before changes; the model-time `Calendar`
+API keeps working as it was.
+
+### Added
+
+- A component repaired minimally (Kijima with `q = 1`, or a fitted
+  Crow-AMSAA, Duane or Cox-Lewis process) and replaced at its
+  `replace_after`-th failure, at an operating age (age replacement), or
+  whichever comes first, now has exact long-run values (#402):
+  `mean_availability`, `node_availability`, `system_failure_frequency`,
+  `mean_time_between_failures`, `mean_up_time`, `mean_down_time`,
+  `node_action_rates` and `expected_cost_rate`, alone and in any diagram,
+  and with them the importance measures and the interval searches. They
+  were refused ("a repair does not renew it"). Each replacement ends a
+  renewal cycle: the failures between are a Poisson process in the
+  operating age, so the cycle's operating time is the integral of the
+  chance of fewer than `N` failures, in closed form for a power law and
+  by quadrature for Cox-Lewis's intensity (reported as numerical), and
+  its length adds each repair's mean time and the replacement's. A
+  falling intensity that may never reach the `N`-th failure, with no
+  age, is refused with the reason.
+- `Repairable`'s failure-limit policy (`optimal_failure_limit_policy`,
+  `find_optimal_replacement_failure_count`) and
+  `expected_time_to_nth_failure` take an analytic (`cif`) model, exactly:
+  `E[T_n]` in closed form for a power law (Crow-AMSAA, Duane, HPP) and by
+  quadrature for any other (Cox-Lewis). They were refused. For a power
+  law with shape `beta > 1` the best count is the smallest at or above
+  `(co - cr) / (cr (beta - 1))` (a tie with the next at a whole number).
+- `Shutdowns([...], any_day=, time_zone=)` and `Shutdown(name, rule |
+  dates= | every= (a plain period such as "30 days", or a `Usage`),
+  also_every=, replace_cost=, duration=, at=)`, with `describe()`,
+  `dates(start, end)`, `to_dict()` / `from_dict()`, `route(part, ...)`
+  (the route, solver, words and a time estimate, before anything is
+  worked out) and `on_diagram(start, end, unit=)` (a `RepairableRBD`'s
+  outages from the same record). A failure always costs the part's own
+  `unplanned_cost`.
+- `NonRepairable.optimal_calendar_policy(site, plan=, now=, readings=,
+  age=, unit=, method=, horizon=, discount=, failure_timing=)` returns a
+  `ShutdownPolicy` by one of four routes: exact (the shuts repeat in the
+  part's clock on a cycle worked out in about a minute or less, a use on
+  the life's own meter included whatever the duty); a long cycle, by
+  `method="exact"` or `"sampling"` (with its standard error); averaged,
+  `method="averaged"`, the renewal-reward formula with each shut spread
+  evenly within its usual gaps (Dekker & Dijkstra 1992; Dekker &
+  Smeitink 1991), its assumption stated on the result; or a horizon,
+  `horizon=` and `discount=` (both required), the lowest net present cost
+  on the real dates, naming from when decisions depend on the horizon's
+  end. Anything that needs a choice is refused with what to choose. The
+  result has `route`, `route_text`, `measure` (cost per year or net
+  present cost), `cost` (and `cost_se`), `solver`, `failure_timing`, the
+  `rule` in words and as data, `next_replacement` (a date), `schedule(until)`,
+  `replacements_by_kind` and `compare()`.
+- `failure_timing="half_step"` (the default: a grid, a failure's
+  replacement counted half a step old) or `"exact"` (quadrature between
+  the shuts, now also over a horizon and real-date shuts; a
+  `SlowSolverWarning` when it would take over about 5 s, and refused
+  beyond 20,000 ages or shuts, naming `half_step`). Over real-date
+  shuts its age grid has 4,000 points a mean life (at least 801, at
+  most 20,000): the cost to go has a kink at every later shut's
+  threshold, and at 801 points linear interpolation moved a dated
+  threshold by up to 8% (30.66 days at a turnaround where keeping and
+  replacing cost the same at 28.40, checked by an independent forward
+  computation; now 28.40). Costs were right to about 5e-5.
+- `calendar_policy_cost(site, rule, ...)` prices a given rule by the same
+  route and returns a `RuleCost` (with a `Calendar` it returns the rate,
+  as before).
+- `optimal_next_replacement(age, site=, ...)` on the real dates: now, the
+  next two shuts of each kind, any other day, or run to failure, valued
+  beyond at the policy's figure (a `NextReplacementOnDates`); `age` may
+  be text in the part's unit ("3,100 h").
+- `cost_distribution(until=, policy=)` and `cost_by_window(dates,
+  policy=)` take a site's policy on real dates.
+- A `ShutdownPolicy` worked out in calendar time is a `RepairableRBD`
+  component's `"calendar"` policy (simulated, as before).
+- The maintenance README's UC-43, and the maintenance guide's "Shutdown
+  policies on real dates" with seven examples.
+- **Fixed dates are never averaged: a dated window, then the long run.**
+  A site with fixed dates (turnarounds on 3 Mar 2027 and 9 Sep 2028)
+  takes the route `"dated_then_long_run"` unless a horizon is given: from
+  now to the last fixed date every shut, the recurring kinds' too, is on
+  its real dates, and after it only the recurring shuts remain, their
+  long-run average cost a year (by the route they take on their own;
+  `method` applies to them) valuing everything beyond, with no horizon or
+  discount to choose. The result says so ("Dated window to 9 Sep 2028,
+  then the long-run average: ..."), gives the rule in two phases (each
+  fixed date's own threshold in `rule.dated`), the long run's figure as
+  `cost`, the expected cost to the window's end as `dated_cost`, and
+  `dated_until`, `long_run_route` and `long_run_solver` (also on
+  `Shutdowns.route`). `dated_until=` extends the window past the last
+  fixed date. `Shutdown(..., dates=[...], then_every="4 years")` keeps
+  the known dates and then recurs at that gap from the last, stated on
+  the result. The averaged route now spreads the recurring shuts only
+  (it averaged fixed dates over the gaps between them before this
+  release); `calendar_policy_cost` and `compare()` price a rule the same
+  way (`RuleCost.dated_cost`), and `optimal_next_replacement(..., site=)`
+  sees the fixed dates ahead.
+
+### Changed
+
+- RePyability needs surpyval 0.28 or later (it was 0.27). A Bayesian
+  fit's quantile at 0 is surpyval's own now (RePyability's correction for
+  an offset or zero inflation is gone; surpyval 0.28 gives the same
+  values), and unit labels are always compared as units (`"h"` and
+  `"hours"` agree), with no text comparison for older surpyval.
+- A Bayesian fit as a life (`PosteriorPredictive`) takes `sf`, `df` and
+  `hf` from the fit itself too, as `ff`, `Hf` and `qf` already were, so
+  a posterior of more than 2,000 points is read from surpyval 0.28's
+  cached table: within 1e-6 of the full sum relative (1e-5 for `df` and
+  `hf`), many times faster. `fit.predictive_table = False` gives the
+  full sum. Its quantile with an offset, a limited failure population or
+  zero inflation is now the fit's own as well (RePyability's inversion
+  is gone, so this release needs surpyval 0.28); at `p = 0` it is where
+  the predictive starts (0 with zero inflation, else the smallest
+  offset), not the fit's point offset.
+
 ## [0.18] - 2026-11-14
 
 Schedules on the calendar, and units. A new module,

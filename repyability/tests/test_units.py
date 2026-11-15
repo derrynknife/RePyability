@@ -17,7 +17,6 @@ from repyability import (
     RepairableRBD,
     StandbyModel,
 )
-from repyability.rbd import _units
 from repyability.rbd._duty import _SCALED, on_calendar
 from repyability.rbd.serialisation import rbd_from_json, rbd_to_json
 
@@ -442,12 +441,6 @@ def test_a_duty_is_checked(life, duty, match):
 
 # The models' unit labels --------------------------------------------------
 
-#: Whether surpyval reads labels as units ("h" is "hours"): 0.28 and later.
-PINT = _units._surpyval_same_unit is not None
-needs_pint = pytest.mark.skipif(
-    not PINT, reason="surpyval before 0.28 compares unit labels as text"
-)
-
 
 def mixed_warning(record):
     return [w for w in record if "different units" in str(w.message)]
@@ -484,7 +477,6 @@ def test_models_with_no_unit_say_nothing(recwarn):
     assert "model_unit" not in rbd.structure_summary().to_dict()
 
 
-@needs_pint
 def test_labels_are_compared_as_units(recwarn):
     rbd = NonRepairableRBD(
         SERIES, {"a": W([1000, 2], unit="hrs"), "b": E([0.01], unit="h")}
@@ -553,12 +545,3 @@ def test_fault_trees_networks_and_missions_read_the_units():
     phase = NonRepairableRBD(ONE, {"a": W([100, 2], unit="cycles")})
     mission = PhasedMission([("one", 1.0, phase), ("two", 2.0, phase)])
     assert mission.unit == "cycles" and "unit 'cycles'" in repr(mission)
-
-
-def test_same_unit_falls_back_to_text_before_surpyval_0_28(monkeypatch):
-    monkeypatch.setattr(_units, "_surpyval_same_unit", None)
-    assert _units.same_unit("hours", " hours ")
-    assert not _units.same_unit("h", "hours")
-    assert _units.same_unit(None, None) and not _units.same_unit("h", None)
-    message = _units.mixed_units_message([("h", ["a"]), ("hours", ["b"])])
-    assert "upgrade surpyval" in message

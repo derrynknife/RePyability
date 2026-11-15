@@ -78,6 +78,12 @@ NOT_NODES = {
     "MissionPhaseSummary",
     "MissionDrivers",
     "RBD",
+    # A site's shuts on real dates: a calendar policy's input, and a
+    # diagram's outages through Shutdowns.on_diagram (a spec, not a node).
+    "Shutdown",
+    "Shutdowns",
+    # A warning that a policy worked out by quadrature will be slow.
+    "SlowSolverWarning",
     # A component analysed alone: a diagram takes a NonRepairable.
     "Repairable",
     # A fleet's repair-or-replace economics, from a joint frailty model.
