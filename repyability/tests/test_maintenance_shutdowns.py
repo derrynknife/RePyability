@@ -287,7 +287,7 @@ def test_averaged_is_close_to_exact_for_one_kind_of_equal_gaps():
     )
 
 
-def test_the_averaged_statement_lists_every_kind_with_its_gaps():
+def test_the_averaged_statement_lists_every_recurring_kind_with_its_gaps():
     site = Shutdowns(
         [
             Shutdown(
@@ -306,13 +306,18 @@ def test_the_averaged_statement_lists_every_kind_with_its_gaps():
     best = part.optimal_calendar_policy(
         site, unit="days", now=NOW, method="averaged"
     )
+    # Averaging is for the recurring shuts' long run: the turnarounds are
+    # fixed dates, used as dated, never averaged.
+    assert best.route == "dated_then_long_run"
+    assert best.long_run_route == "averaged"
     for words in (
+        "Using the turnarounds on 3 Mar 2027 and 9 Sep 2028 as dated",
         "weekly stop: every 7 days",
         "annual shut: every 364 or 371 days, averaged",
-        "turnaround: one-offs (2 dates), averaged over the gaps between them",
         "Exact dates not used for the cost",
     ):
         assert words in best.route_text
+    assert "one-offs" not in best.route_text
 
 
 def test_the_averaged_formula_is_its_assumption_simulated():
@@ -627,8 +632,19 @@ def test_the_route_check_says_what_to_choose():
         (Shutdowns([], any_day=None), {"unit": "days"}, "no planned"),
         (
             Shutdowns([Shutdown("t", dates=["2027-03-03"], replace_cost=1.0)]),
-            {"unit": "days", "now": NOW, "method": "averaged"},
-            "one date",
+            {"unit": "days", "now": NOW, "dated_until": "2027-01-01"},
+            "before the last fixed date",
+        ),
+        (
+            Shutdowns([Shutdown("t", dates=["2027-03-03"], replace_cost=1.0)]),
+            {
+                "unit": "days",
+                "now": NOW,
+                "dated_until": "2028-01-01",
+                "horizon": "2030-01-01",
+                "discount": 0.0,
+            },
+            "give one or the other",
         ),
         (
             Shutdowns([Shutdown("m", every="30 days", replace_cost=1.0)]),

@@ -1292,7 +1292,7 @@ answers back into dates is Reliafy's too.)
      replacement comes at `P = min(a_0, min_k a_k + U_k)`, `U_k` the
      equilibrium residual of kind `k`'s gaps (density `Pr(G_k > x) /
      E[G_k]`, the gaps those the rule gives in the part's clock over 28
-     years; a one-off kind's, the gaps between its dates), independent.
+     years), independent. Fixed dates are never averaged (5).
      Then a cycle lasts `∫ R Q`, kind `k` replaces with `∫ R q_k`, any
      other day with `R(a_0) Q(a_0)`, a failure the rest: integrals of `R`
      times piecewise polynomials, by Gauss-Legendre on the pieces (the
@@ -1308,6 +1308,26 @@ answers back into dates is Reliafy's too.)
      worked out again to a horizon at least 5 years (or 3 life spans)
      later, and the first decision that differs is named: from about then
      on, decisions depend on where the horizon ends.
+  5. **dated then long run** (`"dated_then_long_run"`, the default where
+     a kind has fixed `dates=` from now on, or `dated_until=` is given;
+     a decision of 15 Nov 2026): a dated window from now to the last
+     fixed date (or `dated_until`), in which every shut, the recurring
+     kinds' too, is on its real dates, so fixed dates and rules combine
+     freely; after it only the recurring shuts remain (a kind with
+     `then_every="4 years"` recurring at that gap from its last date),
+     and their long-run average, by the route they take on their own
+     (1-3, `method` applying to them, a choice asked for as there; with
+     none recurring and no other day, running to failure), values
+     everything beyond. Undiscounted, the long run's cost a year adds the
+     same to every choice in the window, so the window's decisions turn
+     on its relative values: the backward programme of 4 at 0%, over the
+     recurring shuts on their real dates past the window's end, run on 5
+     years (or 3 life spans) and doubled until two runs give the window
+     the same decisions (to a grid step and 0.1%). After the window a
+     part is replaced by the long run's own rule. `cost` is the long
+     run's a year, `dated_cost` the expected cost to the window's end,
+     and the rule is in two phases (`rule.dated`: each fixed date's own
+     threshold). Fixed dates all before now are left out.
 
   Results are dated through the layout: a shut's own date, a planned
   replacement on any other day at the first moment the part's clock
@@ -1338,13 +1358,19 @@ answers back into dates is Reliafy's too.)
     h, 2.5), failure 40, aged 3,100 h on 16 November 2026; a weekly stop on Saturday at 3, a
     quarterly shut on the first Sunday of every third month at 2, the
     first Tuesday of November at 1, turnarounds on 3 March 2027 and 9
-    September 2028 at 0.50, any other day 4): the route check refuses to choose
-    (the quarterly shut falls 84 to 98 days apart, the annual 364 or 371,
-    the turnarounds are one-offs). Averaged: $1.50 a year, all at the
-    turnarounds, which the averaging takes as coming every 18 months; to
-    16 November 2036 at 7%: $12.30, the turnaround of 3 March 2027 next,
-    then the annual shuts, decisions from about 29 May 2034 depending on
-    the horizon.
+    September 2028 at 0.50, any other day 4): the route check gives the
+    dated window to 9 September 2028 and refuses to choose the long run
+    (the quarterly shut falls 84 to 98 days apart, the annual 364 or 371).
+    Averaged long run: **$1.90 a year** after the window (the recurring
+    shuts' own figure); in the window replace at the turnaround of 3
+    March 2027 if older than 1,544 h and at that of 9 September 2028 if
+    older than 798.5 h; after it at the annual shut if older than 1,949
+    h; the part in service next at the turnaround of 3 March 2027, 4,332
+    h old; $3.31 expected to 9 September 2028. To 16 November 2036 at 7%:
+    $12.30, the turnaround of 3 March 2027 next, then the annual shuts,
+    decisions from about 29 May 2034 depending on the horizon. (Before 15
+    Nov 2026 the averaged route took the two turnarounds as one every 18
+    months: $1.50 a year, all at turnarounds that stop after 2028.)
   - The truck (Example 4: 400 km a day, the gearbox Weibull(180,000 km,
     2.2), failure 40,000, the service every 15,000 km or 6 months at 9,000,
     any other day 14,000, the odometer at 212,000 km): route 1 whatever
@@ -1362,7 +1388,14 @@ answers back into dates is Reliafy's too.)
   its early decisions the same for 10 and 20 years, grid against
   quadrature; one record moving both a diagram's outages and the policy's
   opportunities; every refusal with its wording; saving and loading; the
-  old model-time API unchanged.
+  old model-time API unchanged. The dated window
+  (`test_maintenance_shutdowns_dated.py`): the plant's turnarounds before
+  September 2028 and annual shuts after; the long-run figure the
+  recurring shuts' alone; the window's decisions those of a horizon 40
+  years out at 0%, and by quadrature close to the grid's; a monthly rule
+  with two fixed dates the same as all of them fixed dates; `then_every`
+  the same as adding the recurring kind; the route check's words; the
+  part in service seeing the turnarounds ahead; `dated_until`.
 - **Learned:**
   - **"Averaged equals exact when the gaps are equal" holds closely for
     one kind, not exactly, and not for several.** The averaged formula
@@ -1373,12 +1406,13 @@ answers back into dates is Reliafy's too.)
     (0.02%); UC-13's quarterly and annual shuts: 0.0071122 against
     0.0069430 (2.4%). So the averaged route says its assumption on every
     result, and is offered only by request.
-  - **Averaging one-off dates over their gaps is a strong assumption.**
-    Two turnarounds 18 months apart are averaged as a turnaround every 18
-    months; at $0.50 the averaged rule replaces only at turnarounds, which
-    stop after the second. The horizon route, on the real dates, uses the
-    turnaround that comes and then the annual shuts. The statement says
-    so ("one-offs (2 dates), averaged over the gaps between them").
+  - **Averaging one-off dates over their gaps was too strong an
+    assumption, so it went.** Two turnarounds 18 months apart were
+    averaged as a turnaround every 18 months; at $0.50 the averaged rule
+    replaced only at turnarounds, which stop after the second. Since 15
+    Nov 2026 fixed dates take the dated window (route 5): the turnarounds
+    as they come, then the recurring shuts' long run, with no horizon or
+    discount to choose.
   - **The short-cycle limit is about work, not years.** 7/93/400 days is
     a 713-year cycle, but on a day's grid it is about 50 s of work for the
     textbook part (route 1, by the one-minute limit) and longer for a

@@ -84,16 +84,22 @@ class ReplacementRule(_ResultMapping):
         the annual waits for an older part).
     by_period : list or None
         For a horizon, the thresholds by calendar year:
-        ``(first day, last day, {kind: (youngest, oldest)})``; None
-        otherwise.
+        ``(first day, last day, {kind: (youngest, oldest)})``; for a
+        dated window, the window's and then the long run's (whose last
+        day is None); None otherwise.
     unit : str or None
         The unit of the ages.
+    dated : list or None
+        For a dated window: each shut of a kind with fixed dates in it,
+        ``(day, kind, threshold age)`` (``inf``: it does not replace);
+        None otherwise.
     """
 
     text: str
     thresholds: Dict[str, Tuple[float, float]]
     by_period: Optional[List[Any]] = None
     unit: Optional[str] = None
+    dated: Optional[List[Any]] = None
 
 
 @dataclass(frozen=True)
@@ -173,6 +179,10 @@ class RuleCost(_ResultMapping):
         has no pace).
     cost_rate : float
         The long-run cost a unit of the part's clock (routes 1-3).
+    dated_cost : float or None
+        For a dated window: the expected cost of a new part and its
+        successors to the window's end (``cost`` is the long run's after
+        it).
     """
 
     name: str
@@ -186,6 +196,7 @@ class RuleCost(_ResultMapping):
     failure_timing: Optional[str]
     replacements_by_kind: Dict[str, float]
     cost_rate: Optional[float]
+    dated_cost: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -199,7 +210,10 @@ class ShutdownPolicy(_ResultMapping):
     ----------
     route : str
         ``"exact"``, ``"exact_long_cycle"``, ``"sampling"``,
-        ``"averaged"`` or ``"horizon"``.
+        ``"averaged"``, ``"horizon"`` or ``"dated_then_long_run"`` (a
+        dated window to the last fixed date, then the long-run average of
+        the recurring shuts: ``cost`` is the long run's, ``solver`` the
+        window's).
     route_text : str
         The answer and how it was worked out, in plain words.
     measure : str
@@ -234,6 +248,15 @@ class ShutdownPolicy(_ResultMapping):
         How it was worked out (the solver's own settings).
     life : dict or None
         The saved form of the life it was worked out for.
+    dated_until : str or None
+        For ``"dated_then_long_run"``: the dated window's last day.
+    dated_cost : float or None
+        For ``"dated_then_long_run"``: the expected cost from ``now`` to
+        the window's end, of the part in service and its successors.
+    long_run_route : str or None
+        For ``"dated_then_long_run"``: the long run's route.
+    long_run_solver : str or None
+        For ``"dated_then_long_run"``: the long run's solver.
     """
 
     # Bound after construction (``_bind``), not fields: how the dates are
@@ -258,6 +281,10 @@ class ShutdownPolicy(_ResultMapping):
     notes: Tuple[str, ...] = ()
     settings: Dict[str, Any] = field(default_factory=dict)
     life: Optional[dict] = None
+    dated_until: Optional[str] = None
+    dated_cost: Optional[float] = None
+    long_run_route: Optional[str] = None
+    long_run_solver: Optional[str] = None
 
     def _bind(self, engine, layout, decision) -> "ShutdownPolicy":
         object.__setattr__(self, "_engine", engine)
@@ -638,6 +665,20 @@ def _rule_text(
 ) -> str:
     """The rule in words: the kinds that replace, youngest age first, then
     those that never do."""
+    parts, nots = _rule_parts(thresholds, unit, any_day_allowed, varies)
+    if not parts:
+        return "Run to failure: never " + " or ".join(nots) + "."
+    text = "Replace " + "; ".join(parts)
+    if nots:
+        text += "; never " + " or ".join(nots)
+    return text + "."
+
+
+def _rule_parts(
+    thresholds, unit, any_day_allowed, varies
+) -> Tuple[List[str], List[str]]:
+    """The rule's phrases: where it replaces (youngest age first), and
+    where it never does."""
     unit_words = f" {unit}" if unit else ""
     used = []
     never = []
@@ -677,12 +718,7 @@ def _rule_text(
             if any_day_allowed
             else "on any other day (the site allows none)"
         )
-    if not parts:
-        return "Run to failure: never " + " or ".join(nots) + "."
-    text = "Replace " + "; ".join(parts)
-    if nots:
-        text += "; never " + " or ".join(nots)
-    return text + "."
+    return parts, nots
 
 
 # -------------------------------------------------------- averaged route
@@ -1038,11 +1074,10 @@ def find_policy(
     failure_timing="half_step",
     mc_samples=64,
     seed=None,
+    dated_until=None,
 ) -> ShutdownPolicy:
     """The work of ``NonRepairable.optimal_calendar_policy`` with a site
     (see there)."""
-    from repyability.maintenance._replacement import _saved_life
-
     if not hasattr(part, "cu"):
         raise ValueError(
             "A failure costs the part's own unplanned_cost, which this part "
@@ -1060,10 +1095,31 @@ def find_policy(
         horizon=horizon,
         discount=discount,
         failure_timing=failure_timing,
+        dated_until=dated_until,
     )
+    return _policy_for(layout, decision, age, mc_samples, seed)
+
+
+def _policy_for(
+    layout: _Layout, decision: _Decision, age: float, mc_samples, seed
+) -> ShutdownPolicy:
+    """The policy at a site by the route decided."""
+    from repyability.maintenance._replacement import _saved_life
+
+    part = layout.part
+    site = layout.site
     pace, measure = _measure(layout)
     notes = list(layout.notes)
     life = _saved_life(part)
+    if decision.route == "dated_then_long_run":
+        from repyability.maintenance._dated import dated_policy
+
+        return dated_policy(layout, decision, age, life, mc_samples, seed)
+    if decision.recurring is not None and decision.long_run is not None:
+        # Fixed dates, all before now: the recurring shuts alone.
+        return _policy_for(
+            decision.recurring, decision.long_run, age, mc_samples, seed
+        )
     if decision.route == "horizon":
         from repyability.maintenance._horizon import horizon_policy
 
@@ -1195,6 +1251,20 @@ def _rule_cost(layout, decision, rule, name, settings) -> RuleCost:
     """A fixed rule priced by the decision's route."""
     pace, measure = _measure(layout)
     names = list(layout.site.names)
+    if decision.route == "dated_then_long_run":
+        from repyability.maintenance._dated import dated_rule_cost
+
+        return dated_rule_cost(layout, decision, rule, name, settings)
+    if decision.recurring is not None and decision.long_run is not None:
+        from repyability.maintenance._dated import recurring_rule
+
+        return _rule_cost(
+            decision.recurring,
+            decision.long_run,
+            recurring_rule(decision, rule),
+            name,
+            settings,
+        )
     if decision.route == "horizon":
         from repyability.maintenance._horizon import horizon_rule_cost
 
@@ -1365,6 +1435,7 @@ def price_rule(
     failure_timing="half_step",
     mc_samples=64,
     seed=None,
+    dated_until=None,
 ) -> RuleCost:
     """The work of ``NonRepairable.calendar_policy_cost`` with a site."""
     if not hasattr(part, "cu"):
@@ -1381,6 +1452,7 @@ def price_rule(
         horizon=horizon,
         discount=discount,
         failure_timing=failure_timing,
+        dated_until=dated_until,
     )
     named = _named_rule(layout, rule)
     words = (
@@ -1483,6 +1555,11 @@ def _baseline_rate(policy: ShutdownPolicy) -> Tuple[float, str]:
     """The policy's figure a unit of the part's clock, and its words."""
     layout = policy._layout
     pace = layout.pace() or 1.0
+    if policy.route == "dated_then_long_run":
+        return float(cast(float, policy.cost_rate)), (
+            "the long-run cost of the recurring shuts after the dated window "
+            f"({policy.long_run_route} route)"
+        )
     if policy.route != "horizon":
         return float(cast(float, policy.cost_rate)), (
             f"the policy's long-run cost ({policy.route} route)"

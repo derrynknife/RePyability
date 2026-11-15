@@ -225,6 +225,32 @@ def quantity(value, unit: Optional[str], name: str) -> float:
     return amount
 
 
+def _gap(value, name: str) -> Tuple[int, str]:
+    """A gap such as ``"4 years"`` as a whole number and a unit of
+    [`Recurrence.every`][repyability.schedule.Recurrence.every]."""
+    from repyability.schedule._recurrence import UNITS as EVERY_UNITS
+
+    words = value.strip().split() if isinstance(value, str) else []
+    unit = words[1].lower() if len(words) == 2 else ""
+    if unit + "s" in EVERY_UNITS:
+        unit += "s"
+    if (
+        len(words) != 2
+        or not words[0].isdigit()
+        or int(words[0]) < 1
+        or unit not in EVERY_UNITS
+    ):
+        raise ValueError(
+            f"{name} must be a whole number of days, weeks, months or years, "
+            f"such as '4 years'; got {value!r}."
+        )
+    return int(words[0]), unit
+
+
+def _gap_words(n: int, unit: str) -> str:
+    return f"{n} {unit[:-1] if n == 1 else unit}"
+
+
 # ---------------------------------------------------------------- records
 
 
@@ -235,7 +261,9 @@ class Shutdown:
 
     When is one of: a ``rule`` (a
     [`Recurrence`][repyability.schedule.Recurrence]: every Saturday, the
-    first Tuesday of November), ``dates`` (one-offs), or ``every``, a
+    first Tuesday of November), ``dates`` (fixed dates, such as
+    turnarounds; with ``then_every`` they recur at that gap after the
+    last), or ``every``, a
     plain period (``"30 days"``, ``"2 years"``: a fixed length of real
     time, a month a twelfth of 365.25 days; a number is that many of the
     part's own units) or a use (``Usage(15_000, "km")``: at each whole
@@ -249,7 +277,16 @@ class Shutdown:
     rule : Recurrence, optional
         When it happens, on dates.
     dates : list of date or str, optional
-        Its dates, instead of a rule.
+        Its fixed dates, instead of a rule. A policy uses them as dated
+        (never averaged): see
+        [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+    then_every : str, optional
+        With ``dates``: the gap at which the kind recurs after its last
+        date (``"4 years"``, ``"18 months"``, ``"6 weeks"``, ``"90
+        days"``; whole numbers), counted from that date as
+        [`Recurrence.every`][repyability.schedule.Recurrence.every]
+        counts. The known dates are used exactly; after them the kind is
+        one of the recurring shuts, and results say so.
     every : str, float or Usage, optional
         A plain period or a use, instead of a rule or dates.
     also_every : str, optional
@@ -270,11 +307,15 @@ class Shutdown:
     >>> Shutdown("weekly stop", Recurrence.weekly("Sat"), replace_cost=3.0,
     ...          duration="8h").describe()
     'weekly stop (every Saturday, $3)'
+    >>> Shutdown("turnaround", dates=["2027-03-03", "2028-09-09"],
+    ...          then_every="4 years", replace_cost=0.5).describe()
+    'turnaround (3 Mar 2027, 9 Sep 2028, then every 4 years, $0.50)'
     """
 
     name: str
     rule: Any = None
     dates: Optional[Tuple[date, ...]] = None
+    then_every: Optional[str] = None
     every: Any = None
     also_every: Optional[str] = None
     replace_cost: float = math.nan
@@ -329,6 +370,13 @@ class Shutdown:
                     f"Shutdown {self.name!r}: dates must have at least one."
                 )
             object.__setattr__(self, "dates", tuple(days))
+        if self.then_every is not None:
+            if self.dates is None:
+                raise ValueError(
+                    f"Shutdown {self.name!r}: then_every is the gap after "
+                    "the last of its dates: give dates= too."
+                )
+            _gap(self.then_every, f"Shutdown {self.name!r}: then_every")
         if self.every is not None:
             if isinstance(self.every, Usage):
                 pass
@@ -375,6 +423,7 @@ class Shutdown:
         rule=None,
         *,
         dates=None,
+        then_every=None,
         every=None,
         also_every=None,
         replace_cost,
@@ -385,6 +434,7 @@ class Shutdown:
             ("name", name),
             ("rule", rule),
             ("dates", dates),
+            ("then_every", then_every),
             ("every", every),
             ("also_every", also_every),
             ("replace_cost", replace_cost),
@@ -408,7 +458,11 @@ class Shutdown:
         if self.rule is not None:
             return self.rule.describe()
         if self.dates is not None:
-            return ", ".join(_day_text(d) for d in self.dates)
+            text = ", ".join(_day_text(d) for d in self.dates)
+            if self.then_every is not None:
+                n, unit = _gap(self.then_every, "then_every")
+                text += f", then every {_gap_words(n, unit)}"
+            return text
         if self.by_use:
             text = self.every.describe()
             if self.also_every is not None:
@@ -420,6 +474,23 @@ class Shutdown:
         if isinstance(self.every, float):
             return f"every {_number(self.every)} (the part's units)"
         return f"every {_period_hours(self.every, 'every')[1]}"
+
+    def _after_dates(self) -> Optional["Shutdown"]:
+        """With ``then_every``: the kind as it recurs from its last date
+        (a [`Recurrence.every`][repyability.schedule.Recurrence.every]
+        anchored there, whose first date is that last date), else None."""
+        from repyability.schedule import Recurrence
+
+        if self.then_every is None or not self.dates:
+            return None
+        n, unit = _gap(self.then_every, "then_every")
+        return Shutdown(
+            self.name,
+            Recurrence.every(n, unit, self.dates[-1]),
+            replace_cost=self.replace_cost,
+            duration=self.duration,
+            at=None if self.at is None else self.at.strftime("%H:%M"),
+        )
 
     def describe(self) -> str:
         """The shut in a few words: ``"annual shut (the first Tuesday of
@@ -443,6 +514,7 @@ class Shutdown:
                 if self.dates is None
                 else [d.isoformat() for d in self.dates]
             ),
+            "then_every": self.then_every,
             "every": every,
             "also_every": self.also_every,
             "replace_cost": self.replace_cost,
@@ -473,6 +545,7 @@ class Shutdown:
             data["name"],
             None if rule is None else Recurrence.from_dict(rule),
             dates=data.get("dates"),
+            then_every=data.get("then_every"),
             every=every,
             also_every=data.get("also_every"),
             replace_cost=data["replace_cost"],
@@ -649,6 +722,7 @@ class Shutdowns:
         readings=None,
         unit=None,
         failure_timing="half_step",
+        dated_until=None,
     ) -> "ShutdownRoute":
         """How a policy for ``part`` at this site will be worked out,
         before working it out: the route, the solver, why, and about how
@@ -682,6 +756,9 @@ class Shutdowns:
         failure_timing : optional
             As for
             [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        dated_until : optional
+            As for
+            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
 
         Returns
         -------
@@ -702,6 +779,7 @@ class Shutdowns:
             discount=discount,
             failure_timing=failure_timing,
             refuse=False,
+            dated_until=dated_until,
         )
         return decision.as_route()
 
@@ -854,7 +932,9 @@ class ShutdownRoute(_ResultMapping):
     ----------
     route : str
         ``"exact"``, ``"exact_long_cycle"``, ``"sampling"``,
-        ``"averaged"`` or ``"horizon"``; where a choice is needed,
+        ``"averaged"``, ``"horizon"`` or ``"dated_then_long_run"`` (a
+        dated window to the last fixed date, then the long-run average of
+        the recurring shuts); where a choice is needed,
         ``"long_cycle"`` (choose ``method="exact"`` or ``"sampling"``)
         or ``"horizon_or_averaged"`` (choose ``method="averaged"``, or
         ``horizon=`` and ``discount=``).
@@ -867,6 +947,13 @@ class ShutdownRoute(_ResultMapping):
         About how long it takes.
     seconds : float or None
         The estimate, in seconds (None where a choice is needed).
+    long_run_route : str or None
+        For ``"dated_then_long_run"``: the route of the long run after
+        the dated window (``solver`` is the window's).
+    long_run_solver : str or None
+        For ``"dated_then_long_run"``: the long run's solver.
+    dated_until : str or None
+        For ``"dated_then_long_run"``: the window's last day.
     """
 
     route: str
@@ -874,6 +961,9 @@ class ShutdownRoute(_ResultMapping):
     solver: Optional[str] = None
     estimate: str = ""
     seconds: Optional[float] = None
+    long_run_route: Optional[str] = None
+    long_run_solver: Optional[str] = None
+    dated_until: Optional[str] = None
 
     def __repr__(self) -> str:
         return f"ShutdownRoute({self.route!r}, {self.text!r})"
@@ -950,6 +1040,14 @@ class _Kind:
             else:
                 given: Tuple[date, ...] = shut.dates or ()
                 days = tuple(d for d in given if first_day <= d <= last_day)
+                after = shut._after_dates()
+                if after is not None:
+                    days = tuple(
+                        sorted(
+                            set(days)
+                            | set(after.rule.dates(first_day, last_day))
+                        )
+                    )
             at = shut.at or time()
             moments = [clock_.wall(datetime.combine(d, at)) for d in days]
             return [m for m in moments if start <= m < end]
@@ -1024,30 +1122,18 @@ class _Kind:
         layout = self.layout
         shut = self.shut
         pattern = None
-        if not (shut.dates is not None):
-            try:
-                pattern = self.pattern()
-            except ValueError:
-                pattern = None
+        if shut.dates is not None:
+            # Fixed dates take the dated window (``_dated``), never this.
+            raise AssertionError("fixed dates are never averaged")
+        try:
+            pattern = self.pattern()
+        except ValueError:
+            pattern = None
         if pattern is not None and len(pattern.offsets) == 1:
             values = np.array([pattern.period])
             counts = np.array([1.0])
         else:
-            if shut.dates is not None:
-                stamps = [
-                    layout.clock.wall(datetime.combine(d, shut.at or time()))
-                    for d in shut.dates
-                ]
-                if len(stamps) < 2:
-                    raise ValueError(
-                        f"The averaged route spreads each shut evenly within "
-                        f"its usual gaps, and {shut.name!r} has one date, so "
-                        "no gap: give its next date too, or a horizon= and "
-                        "discount=."
-                    )
-                times = layout.model_at(stamps)
-            else:
-                times = self.times(layout.span_model())
+            times = self.times(layout.span_model())
             diffs = np.diff(np.sort(times))
             diffs = diffs[diffs > _SAME * max(1.0, float(np.max(times)))]
             if diffs.size == 0:
@@ -1063,17 +1149,6 @@ class _Kind:
         """The kind's gaps in words, for the averaged route's statement."""
         layout = self.layout
         shut = self.shut
-        if shut.dates is not None:
-            days = np.diff([d.toordinal() for d in shut.dates])
-            if days.size == 0:
-                return f"{shut.name}: one date"
-            mean = float(np.mean(days))
-            months = mean / (365.25 / 12.0)
-            return (
-                f"{shut.name}: one-offs ({len(shut.dates)} dates), averaged "
-                "over the gaps between them (about "
-                f"{_number(round(months))} months)"
-            )
         if shut.by_use:
             stamps = [layout.origin] + layout.use_moments(
                 shut, layout.span_end()
@@ -1215,6 +1290,7 @@ class _Layout:
         self.part = part
         self.site = site
         self.plan = plan
+        self.given = dict(plan=plan, now=now, readings=readings, unit=unit)
         self.clock = Clock(zone)
         self.time_zone = zone
         self.notes: List[str] = []
@@ -1589,7 +1665,12 @@ class _Layout:
             return model_times / pace
         forecast = self._forecast(self.span_end())
         top = float(np.max(model_times)) if model_times.size else 0.0
-        while float(self.model_at([self._forecast_end])[0]) < top:
+        # model_at looks a day past what it is asked, so ask a day short
+        # of the forecast's end (else every call would extend it).
+        while (
+            float(self.model_at([self._forecast_end - timedelta(days=1)])[0])
+            < top
+        ):
             self._forecast(
                 self._forecast_end + (self._forecast_end - self.first_moment)
             )
@@ -1630,14 +1711,26 @@ class _Decision:
     failure_timing: Optional[str] = None
     why: str = ""
     how: str = ""
+    #: The dated window (``"dated_then_long_run"``): its last day, its end
+    #: in the part's clock, the long run's decision and layout, and the
+    #: fixed dates ``(kind, date)`` in it.
+    window_day: Optional[date] = None
+    window_end: Optional[float] = None
+    long_run: Optional["_Decision"] = None
+    recurring: Any = None
+    fixed: Tuple[Tuple[str, date], ...] = ()
 
     def as_route(self) -> ShutdownRoute:
+        long_run = self.long_run
         return ShutdownRoute(
             self.route,
             self.text,
             self.solver,
             "" if self.seconds is None else _seconds_text(self.seconds),
             self.seconds,
+            None if long_run is None else long_run.route,
+            None if long_run is None else long_run.solver,
+            None if self.window_day is None else self.window_day.isoformat(),
         )
 
 
@@ -1689,10 +1782,13 @@ def _decide(
     discount,
     failure_timing,
     refuse: bool = True,
+    dated_until=None,
 ) -> _Decision:
     """The route a policy takes, its solver and the words for both;
     ``refuse``: raise where the caller must choose (else return the
-    choice as the route)."""
+    choice as the route). A site with fixed dates (or ``dated_until``)
+    takes the dated window, then the long run of its recurring shuts
+    (``_dated``)."""
     from repyability.maintenance._integration import (
         MAX_AGES,
         MAX_OPPORTUNITIES,
@@ -1731,6 +1827,12 @@ def _decide(
             raise ValueError(
                 "A horizon is on real dates: give now= too, the day costs "
                 "count from."
+            )
+        if dated_until is not None:
+            raise ValueError(
+                "dated_until= extends the dated window before the long run; "
+                "a horizon already takes every shut on its real dates to its "
+                "end: give one or the other."
             )
     any_day = site.any_day
     if not site.shutdowns and any_day is None:
@@ -1798,6 +1900,18 @@ def _decide(
             discount=rate,
             failure_timing=failure_timing,
         )
+    if horizon is None:
+        from repyability.maintenance._dated import dated_decision
+
+        dated = dated_decision(
+            layout,
+            method=method,
+            failure_timing=failure_timing,
+            refuse=refuse,
+            dated_until=dated_until,
+        )
+        if dated is not None:
+            return dated
     if not site.shutdowns:
         return _Decision(
             "exact",
