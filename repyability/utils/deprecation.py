@@ -1,13 +1,14 @@
 """Deprecated names, arguments and calls.
 
-A deprecation gives one minor release's notice: what 0.18 deprecates goes
-in 0.19 (``NEXT_REMOVAL``). Each warns with a ``FutureWarning``, which
+A deprecation gives one minor release's notice: what 0.19 deprecates goes
+in 0.20 (``NEXT_REMOVAL``). Each warns with a ``FutureWarning``, which
 Python always shows, as the notice is short: an argument renamed
 (``renamed``; an attribute, ``renamed_attribute``), a result's value
 called that is now a property (``called``), arguments a method ignores
-(``ignored``), or a function that moved to surpyval (``moved``). 0.18
+(``ignored``), or a function that moved to surpyval (``moved``). 0.19
 deprecates nothing.
 
+0.18 deprecated nothing, so 0.19 removes nothing.
 What 0.17 deprecated went in 0.18: ``repyability.demonstration``'s nine
 functions and ``DemonstrationPlan``, for ``surpyval.test_planning``'s.
 0.16 deprecated nothing, nor did 0.15, so 0.16 and 0.17 removed nothing.
@@ -36,8 +37,8 @@ import numpy as np
 
 from repyability.utils.wrappers import outside_level
 
-#: The release that removes what 0.18 deprecates.
-NEXT_REMOVAL = "0.19"
+#: The release that removes what 0.19 deprecates.
+NEXT_REMOVAL = "0.20"
 
 
 def _called_warning(name: str, removal: str) -> None:

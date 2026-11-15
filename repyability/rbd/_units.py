@@ -8,9 +8,7 @@ are, so a block in hours beside a block in days gives a wrong answer. A
 diagram whose models name different units is built with a warning that
 names the blocks and their units; models with no unit say nothing. Labels
 are compared with surpyval's ``same_unit``, so ``"h"``, ``"hrs"`` and
-``"hours"`` agree. Before surpyval 0.28, which made it public, the labels
-are compared as text (spaces aside), so ``"h"`` and ``"hours"`` are then
-taken for different units.
+``"hours"`` agree.
 """
 
 from __future__ import annotations
@@ -19,13 +17,10 @@ import warnings
 from typing import Any, Hashable, Iterator, List, Mapping, Optional, Tuple
 
 import numpy as np
-import surpyval.utils as _surpyval_utils
+from surpyval.utils import same_unit as _surpyval_same_unit
 
 from repyability.rbd.results import _ResultMapping
 from repyability.utils.wrappers import outside_level
-
-#: surpyval's ``same_unit``, public from 0.28 (None before it).
-_surpyval_same_unit = getattr(_surpyval_utils, "same_unit", None)
 
 #: The attributes through which RePyability's node models (standby,
 #: repeated, load-sharing, regression and joint nodes, ``NonRepairable``,
@@ -48,13 +43,8 @@ _DEPTH = 12
 def same_unit(a: Optional[str], b: Optional[str]) -> bool:
     """Whether the unit labels ``a`` and ``b`` name one unit: by
     surpyval's ``same_unit`` (pint reads them, so ``"h"`` and ``"hours"``
-    agree), or, before surpyval 0.28, as text with runs of spaces made one.
-    None (unknown) is the same only as None."""
-    if _surpyval_same_unit is not None:
-        return bool(_surpyval_same_unit(a, b))
-    if a is None or b is None:
-        return a is None and b is None
-    return " ".join(a.split()) == " ".join(b.split())
+    agree). None (unknown) is the same only as None."""
+    return bool(_surpyval_same_unit(a, b))
 
 
 def model_units(model: Any, _depth: int = 0) -> Iterator[str]:
@@ -125,13 +115,6 @@ def mixed_units_message(
         f"would mix {first!r} with {second!r} and its answers would be "
         "wrong. Give every model in one unit: convert the times and refit "
         "(or rebuild) the others, with unit= naming that unit."
-        + (
-            ""
-            if _surpyval_same_unit is not None
-            else " (surpyval before 0.28 compares the labels as text; if "
-            "these name one unit written two ways, such as 'h' and "
-            "'hours', upgrade surpyval or write them the same.)"
-        )
     )
 
 

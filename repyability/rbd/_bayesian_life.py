@@ -320,16 +320,7 @@ class PosteriorPredictive:
         p : array_like
             The probabilities of failing.
         """
-        q = self._fits("qf", p)
-        if not self.extras:
-            return q
-        # (surpyval 0.28's qf(0) is the fit's point offset there)
-        f0 = self.extras.get("f0")
-        gamma = self.extras.get("gamma")
-        start = 0.0
-        if gamma is not None and (f0 is None or not np.any(f0 > 0.0)):
-            start = float(np.min(gamma))
-        return np.where(np.asarray(p, dtype=float) == 0.0, start, q)[()]
+        return self._fits("qf", p)
 
     def mean(self) -> float:
         """The mean life of a new unit: the points' means averaged with
