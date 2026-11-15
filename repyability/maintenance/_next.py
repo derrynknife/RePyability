@@ -284,14 +284,31 @@ def _baseline(part, policy) -> float:
     return _amount(policy.cost_rate, "the cost rate of policy")
 
 
+#: ``planned``'s default: the part's planned cost.
+_PART = "part"
+
+
 def optimal_next_replacement(
-    part, age, *, now_cost=None, scheduled_outages=(), policy=None
+    part,
+    age,
+    *,
+    now_cost=None,
+    scheduled_outages=(),
+    policy=None,
+    planned=_PART,
+    rate=None,
 ) -> NextReplacement:
     """The work of ``NonRepairable.optimal_next_replacement`` (see
-    there)."""
+    there). ``planned`` prices a planned replacement on any day (None: no
+    such choice) and ``rate`` gives the baseline directly, for a site's
+    shuts on real dates."""
     from repyability.rbd._model_utils import model_mean
 
-    part._require_costs()
+    if isinstance(planned, str) or now_cost is None:
+        part._require_costs()
+    elif not hasattr(part, "cu"):
+        part._require_costs()
+    planned_price = part.cp if isinstance(planned, str) else planned
     if part.model_parameterization not in ("parametric", "degradation"):
         raise NotImplementedError(
             "optimal_next_replacement needs a life with a survival function "
@@ -304,7 +321,7 @@ def optimal_next_replacement(
     age = float(age)
     now = part.cp if now_cost is None else _amount(now_cost, "now_cost")
     coming = _coming(scheduled_outages)
-    rate = _baseline(part, policy)
+    rate = _baseline(part, policy) if rate is None else _amount(rate, "rate")
     mean = model_mean(part.reliability)
     life = _Life(part.reliability_function, mean, part.cu, rate)
     if not life.survival(age) > 0.0:
@@ -315,7 +332,9 @@ def optimal_next_replacement(
     # Each later choice: its kind, time (a planned replacement's is its
     # best) and price.
     later = [("outage", time, price) for time, price in coming]
-    later += [("planned", 0.0, part.cp), ("failure", math.inf, part.cu)]
+    if planned_price is not None:
+        later.append(("planned", 0.0, planned_price))
+    later.append(("failure", math.inf, part.cu))
 
     def chosen(kind: str, time: float, price: float, at: float) -> tuple:
         """A choice's time, price and cost for a part ``at`` old. A

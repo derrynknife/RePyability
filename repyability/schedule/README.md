@@ -63,6 +63,7 @@ model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
 | UC-39 | A system's events by calendar month | **Built**: `events_by_period` |
 | UC-40 | Shuts on dates as opportunities on the part's clock | **Built**: `Opportunity.from_recurrence` |
 | UC-41 | The annual overhaul on the first Tuesday of November, as a diagram's shutdown | **Built**: `shutdown_spec` (simulated; the exact methods take shuts on a period) |
+| UC-43 | A site's shuts on real dates, one record for policies and diagrams | **Built** in `repyability.maintenance` (`Shutdowns`; its README's UC-43), laid on the part's clock through this module's rules, plans and forecasts |
 | UC-42 | Starts per operating hour for a life on two clocks | **Built**: `UsageForecast.life_at_usage` (needs surpyval 0.28) |
 
 ## Use cases
