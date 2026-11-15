@@ -345,19 +345,32 @@ The result is a [`FailureLimitPolicy`][repyability.FailureLimitPolicy].
 bound, raise it. The cost rate is usually flat near its minimum, so the
 optimal count can move by several failures with the seed or `mc_samples`
 while the cost rate barely changes: read it as a region, and compare cost
-rates. These methods need a simulation-backed (imperfect-repair) model and
-raise `ValueError` otherwise.
+rates.
 
-For the minimal-repair limit (`q = 1`, a power-law process), `E[T_n]` is exact
-and needs no simulation:
+For minimal repair (an analytic model: `CrowAMSAA`, `Duane`, `HPP` or
+`CoxLewis`), the same methods are exact and need no simulation (#402):
+the failures are a Poisson process with `cif(t)` expected by `t`, so the
+N-th comes after `t` with the chance of fewer than N failures, and
+`E[T_N]` is the integral of that chance. For a power law it is
+`alpha · Γ(N + 1/beta) / Γ(N)`, and for Cox-Lewis a quadrature. With a
+power law the cost rate falls while `N < (co − cr) / (cr (beta − 1))` and
+rises after, so the best N is the smallest at or above that (at a whole
+number the two counts either side tie; with `beta <= 1` it never rises,
+and the bound is returned):
 
 ```python
 from repyability import minimal_repair_time_to_nth_failure
+from surpyval.recurrent import CrowAMSAA
 
 minimal_repair_time_to_nth_failure(alpha=1500, beta=2.0, n=5)   # -> 3271.4
-```
 
-It is `alpha · Γ(n + 1/beta) / Γ(n)`.
+worn = Repairable(CrowAMSAA.from_params([1500, 2.0]))
+worn.set_repair_and_overhaul_costs(100, 1050)
+worn.expected_time_to_nth_failure(5)        # -> 3271.4
+policy = worn.optimal_failure_limit_policy()
+policy.failure_count                        # -> 10   (1050 - 100) / 100 = 9.5
+policy.cost_rate                            # -> 0.41626
+```
 
 ### Repair, overhaul and replace in cycles
 
