@@ -372,7 +372,7 @@ best.route                         # 'dated_then_long_run'
 best.solver, best.long_run_route   # ('grid', 'averaged')
 round(best.cost, 2)                # -> 1.9   a year, after the window
 round(best.dated_cost, 2)          # -> 3.31  expected to 9 Sep 2028
-best.route_text.split(" Expected")[0]   # 'Dated window to 9 Sep 2028, then the long-run average: $1.90 a year. Using the turnarounds on 3 Mar 2027 and 9 Sep 2028 as dated, then the recurring shuts' long-run average after 9 Sep 2028.'
+best.route_text.split(" Expected")[0]   # "Dated window to 9 Sep 2028, then the long-run average: $1.90 a year. Using the turnarounds on 3 Mar 2027 and 9 Sep 2028 as dated, then the recurring shuts' long-run average after 9 Sep 2028."
 best.rule.dated                    # [('2027-03-03', 'turnaround', 1543.8...), ('2028-09-09', 'turnaround', 798.5...)]
 str(best.next_replacement)         # 'At the turnaround, 3 Mar 2027, part 4,332 old'
 [k for d, k, a in best.schedule("2031-12-31")]
