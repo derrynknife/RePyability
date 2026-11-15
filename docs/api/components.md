@@ -12,6 +12,12 @@
 
 ::: repyability.Calendar
 
+::: repyability.Shutdowns
+
+::: repyability.Shutdown
+
+::: repyability.SlowSolverWarning
+
 ::: repyability.optimal_layered_visits
 
 ::: repyability.layered_cost_rate

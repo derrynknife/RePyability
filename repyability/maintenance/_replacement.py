@@ -192,7 +192,7 @@ def _sweep(
     costs: np.ndarray,
     p: np.ndarray,
     failure: float,
-    beta: float = 1.0,
+    beta: Any = 1.0,
     fixed: Optional[np.ndarray] = None,
     record: Optional[np.ndarray] = None,
 ):
@@ -200,7 +200,9 @@ def _sweep(
     go, by age index, after the last): each step, keep the part or
     replace it at the step's price (``inf``: no replacement).
 
-    ``beta`` discounts a step (1: none). ``fixed`` gives, for a fixed
+    ``beta`` discounts a step (1: none), or each step by its own (an
+    array by step, for real dates whose steps are not equally long in
+    calendar time). ``fixed`` gives, for a fixed
     rule, the age index from which each step replaces (-1: never),
     instead of the best. ``record`` gets the cost to go of a new part at
     each step.
@@ -213,13 +215,14 @@ def _sweep(
     upper = True
     v = values
     shifted = np.empty_like(values)
+    betas = np.broadcast_to(np.asarray(beta, float), costs.shape)
     for n in range(costs.size - 1, -1, -1):
         shifted[:-1] = v[1:]
         shifted[-1] = v[-1]
         keep = p * shifted
         keep += (1.0 - p) * (failure + 0.5 * (v[0] + v[1]))
-        if beta != 1.0:
-            keep *= beta
+        if betas[n] != 1.0:
+            keep *= betas[n]
         cost = costs[n]
         if cost < math.inf:
             replace = cost + keep[0]
