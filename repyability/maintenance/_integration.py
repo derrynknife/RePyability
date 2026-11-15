@@ -54,10 +54,25 @@ NODES = 32
 AGES = 801
 #: The most points the age grid may have.
 MAX_AGES = 20_000
+#: Points of a run of real shuts' age grid (``_horizon._Shuts``) a mean
+#: life, at least: its cost to go has a kink at every later shut's
+#: threshold, carried back by the gaps to ages off any grid, so linear
+#: interpolation between coarse points moves a threshold (by 8% at a
+#: turnaround a few days before a dip in the stops' thresholds, at
+#: ``AGES`` points); at this density it is within about 1e-4.
+AGES_A_MEAN = 4_000
 #: The most opportunities a cycle may have.
 MAX_OPPORTUNITIES = 20_000
 #: Bisection steps for a threshold.
 HALVINGS = 60
+
+
+def run_ages(mean: float, oldest: float) -> int:
+    """The age grid's points over a run of real shuts, ages 0 to
+    ``oldest``: ``AGES``, or ``AGES_A_MEAN`` a mean life where more, up to
+    ``MAX_AGES``."""
+    wanted = math.ceil(AGES_A_MEAN * oldest / max(mean, 1e-300)) + 1
+    return int(min(MAX_AGES, max(AGES, wanted)))
 
 
 def _cycle(calendar, repeat) -> tuple:

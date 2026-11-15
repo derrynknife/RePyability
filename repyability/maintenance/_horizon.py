@@ -210,11 +210,7 @@ class _Shuts:
         rhos=None,
         rule_ages=None,
     ):
-        from repyability.maintenance._integration import (
-            AGES,
-            MAX_AGES,
-            _Gap,
-        )
+        from repyability.maintenance._integration import _Gap, run_ages
         from repyability.maintenance._replacement import (
             FAR,
             _age_where,
@@ -225,8 +221,7 @@ class _Shuts:
         self.sf = _survival(part)
         mean = _mean(part, self.sf)
         self.oldest = _age_where(self.sf, FAR, mean)
-        points = min(MAX_AGES, AGES)
-        self.grid = np.linspace(0.0, self.oldest, points)
+        self.grid = np.linspace(0.0, self.oldest, run_ages(mean, self.oldest))
         self.times = np.asarray(times, float)
         self.prices = np.asarray(prices, float)
         self.kinds = list(kinds)
