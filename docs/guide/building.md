@@ -95,6 +95,10 @@ is a Lomax), that is used. The block is a
 the predictive's (its probability of failing worked out in its own right,
 its quantile by inverting it, its mean the points' means averaged), and the
 simulations draw a posterior point and a life from it, from one uniform.
+Each function is surpyval's own; for a posterior of more than 2,000
+points surpyval (0.28 on) reads them from a table it builds once, within
+1e-6 of the full sum relative (1e-5 for the density and hazard). Set
+`fit.predictive_table = False` for the full sum.
 
 ```python
 import numpy as np

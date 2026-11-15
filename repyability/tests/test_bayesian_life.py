@@ -71,7 +71,11 @@ def mixture_of(life: PosteriorPredictive):
 # -- the life itself, hand-checked ---------------------------------------
 
 
-def test_the_average_over_the_draws_exactly(drawn, rates):
+def test_the_average_over_the_draws_exactly(rates):
+    # The full sum over the 4000 draws (surpyval's table, used above
+    # 2,000 points, is off: the next test checks it).
+    drawn = BayesianParametric.from_draws(surv.Exponential, rates[:, None])
+    drawn.predictive_table = False
     life = PosteriorPredictive(drawn)
     t = np.array([0.0, 1.0, 100.0, 1000.0, 10000.0])
     survival = np.exp(-np.outer(t, rates))
@@ -85,6 +89,23 @@ def test_the_average_over_the_draws_exactly(drawn, rates):
         rtol=1e-12,
     )
     assert life.mean() == pytest.approx(np.mean(1.0 / rates), rel=1e-12)
+
+
+def test_the_table_is_within_its_promise_of_the_full_sum(rates):
+    # By default surpyval reads a posterior of more than 2,000 points
+    # from a table: within 1e-6 of the full sum relative (1e-5 for the
+    # density and hazard).
+    drawn = BayesianParametric.from_draws(surv.Exponential, rates[:, None])
+    life = PosteriorPredictive(drawn)
+    t = np.array([0.0, 1.0, 100.0, 1000.0, 10000.0])
+    survival = np.exp(-np.outer(t, rates)).mean(axis=1)
+    failed = (-np.expm1(-np.outer(t, rates))).mean(axis=1)
+    density = (rates * np.exp(-np.outer(t, rates))).mean(axis=1)
+    np.testing.assert_allclose(life.sf(t), survival, rtol=1e-6)
+    np.testing.assert_allclose(life.ff(t), failed, rtol=1e-6, atol=0)
+    np.testing.assert_allclose(life.Hf(t), -np.log(survival), rtol=1e-6)
+    np.testing.assert_allclose(life.df(t), density, rtol=1e-5)
+    np.testing.assert_allclose(life.hf(t), density / survival, rtol=1e-5)
 
 
 def test_the_lomax_closed_form_within_the_draws_error(drawn, rates):
@@ -404,6 +425,50 @@ def test_with_extras_its_functions_are_the_fits(shares_fit):
     assert life.never_fails == pytest.approx(1 - np.mean(p), rel=1e-12)
     assert life.sf(1e9) == pytest.approx(life.never_fails, rel=1e-9)
     assert life.mean() == np.inf
+
+
+def test_with_extras_its_quantile_is_the_fits_and_brackets_both_shares(
+    shares_fit,
+):
+    # 0 up to the share dead on arrival, inf from the share that ever
+    # fails, and between them the root of ff(x) = p past the offsets.
+    life = PosteriorPredictive(shares_fit)
+    dead = float(life.ff(0.0))
+    ever = 1.0 - life.never_fails
+    assert 0.0 < dead < ever < 1.0
+    p = np.array([0.0, dead / 2, dead + 1e-4, 0.1, 0.5, ever - 1e-4])
+    q = life.qf(p)
+    assert np.array_equal(q[1:], shares_fit.qf(p[1:]))
+    assert q[0] == 0.0 and q[1] == 0.0
+    middle = q[2:]
+    assert np.all(np.isfinite(middle)) and np.all(np.diff(middle) > 0)
+    assert middle[0] >= np.min(life.extras["gamma"])
+    np.testing.assert_allclose(life.ff(middle), p[2:], rtol=1e-9)
+    assert np.all(np.isinf(life.qf(np.array([ever + 1e-4, 0.95]))))
+
+
+def test_with_extras_its_quantile_at_zero_is_where_its_support_starts():
+    # Each point its own offset, 10 to 30: nothing fails before the
+    # smallest; with zero inflation too, some fail at 0.
+    g = np.random.default_rng(7)
+    base = np.c_[
+        200 * g.lognormal(0, 0.15, 200),
+        1.8 * g.lognormal(0, 0.15, 200),
+        g.uniform(10.0, 30.0, 200),
+    ]
+    offset = BayesianParametric.from_draws(
+        surv.Weibull, base, ["alpha", "beta", "gamma"]
+    )
+    life = PosteriorPredictive(offset)
+    assert life.qf(0.0) == np.min(base[:, 2])
+    assert life.ff(life.qf(0.0)) == 0.0
+    assert life.qf(np.array([0.0, 1e-6]))[1] > life.qf(0.0)
+    inflated = BayesianParametric.from_draws(
+        surv.Weibull,
+        np.c_[base, np.full(200, 0.02)],
+        ["alpha", "beta", "gamma", "f0"],
+    )
+    assert PosteriorPredictive(inflated).qf(0.0) == 0.0
 
 
 def test_with_extras_its_draws_have_its_distribution(shares_fit):
