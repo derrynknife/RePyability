@@ -90,6 +90,26 @@ API keeps working as it was.
   component's `"calendar"` policy (simulated, as before).
 - The maintenance README's UC-43, and the maintenance guide's "Shutdown
   policies on real dates" with seven examples.
+- **Fixed dates are never averaged: a dated window, then the long run.**
+  A site with fixed dates (turnarounds on 3 Mar 2027 and 9 Sep 2028)
+  takes the route `"dated_then_long_run"` unless a horizon is given: from
+  now to the last fixed date every shut, the recurring kinds' too, is on
+  its real dates, and after it only the recurring shuts remain, their
+  long-run average cost a year (by the route they take on their own;
+  `method` applies to them) valuing everything beyond, with no horizon or
+  discount to choose. The result says so ("Dated window to 9 Sep 2028,
+  then the long-run average: ..."), gives the rule in two phases (each
+  fixed date's own threshold in `rule.dated`), the long run's figure as
+  `cost`, the expected cost to the window's end as `dated_cost`, and
+  `dated_until`, `long_run_route` and `long_run_solver` (also on
+  `Shutdowns.route`). `dated_until=` extends the window past the last
+  fixed date. `Shutdown(..., dates=[...], then_every="4 years")` keeps
+  the known dates and then recurs at that gap from the last, stated on
+  the result. The averaged route now spreads the recurring shuts only
+  (it averaged fixed dates over the gaps between them before this
+  release); `calendar_policy_cost` and `compare()` price a rule the same
+  way (`RuleCost.dated_cost`), and `optimal_next_replacement(..., site=)`
+  sees the fixed dates ahead.
 
 ## [0.18] - 2026-11-14
 

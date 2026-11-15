@@ -253,23 +253,42 @@ re-optimised for them.
 ## Shutdown policies on real dates (`Shutdowns`)
 
 A site keeps its shuts as rules on dates ("every Saturday", "the first
-Tuesday of November"), one-off dates, plain periods or a use ("every 15,000
-km"). [`Shutdowns`][repyability.Shutdowns] holds them as **one record**:
+Tuesday of November"), fixed dates (turnarounds), plain periods or a use
+("every 15,000 km"). [`Shutdowns`][repyability.Shutdowns] holds them as **one record**:
 each [`Shutdown`][repyability.Shutdown] with what replacing a part then
 costs (and how long it lasts, for diagrams), the price of a planned
 replacement on any other day (or none), and the site's time zone. A failure
 always costs the part's own `unplanned_cost`. Given a site,
 [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]
 returns a [`ShutdownPolicy`][repyability.ShutdownPolicy] with the answer on
-the real dates and how it was worked out, by one of four routes it always
+the real dates and how it was worked out, by one of the routes it always
 names:
 
 | Route | When | You give | It says |
 |---|---|---|---|
 | **exact** | The shuts repeat in the part's own clock on a short cycle (about a minute's work or less) | nothing | "Exact long-run average: $X a year." |
 | **long cycle** | They repeat, but only after a long cycle | `method="exact"` (slow, said beforehand) or `"sampling"` (with its ±) | "Estimated long-run average: $X a year ± $Y" |
-| **averaged** | They don't repeat (rules by month or year, one-offs, a use on another meter) | `method="averaged"` | "Long-run average, assuming shuts fall evenly within their usual gaps (...)" |
+| **averaged** | They don't repeat (rules by month or year, a use on another meter) | `method="averaged"` | "Long-run average, assuming shuts fall evenly within their usual gaps (...)" |
 | **horizon** | Any site | `horizon=` and `discount=` (0 for the plain total) | "Lowest net present cost to ... at 7% a year: $X. Decisions from about ... depend on where the horizon ends." |
+| **dated then long run** | Some shuts are on fixed dates (or you give `dated_until=`) | nothing more, or what the recurring shuts' long run needs (above) | "Dated window to 9 Sep 2028, then the long-run average: $X a year. ..." |
+
+**Fixed dates are never averaged.** Without a horizon, a site with fixed
+dates takes a dated window from now to the last of them (or to
+`dated_until=`, a later day, for a shut schedule planned further ahead).
+Inside the window every shut is on its real dates, the recurring kinds'
+too, so fixed dates and rules combine freely. After it only the recurring
+shuts remain, and their long-run average cost a year, by the route they
+take on their own, values everything beyond: no horizon or discount is
+needed. The rule comes in two phases, each fixed date with its own
+threshold (`rule.dated`); `cost` is the long run's a year and
+`dated_cost` the expected cost to the window's end. A kind given
+`then_every="4 years"` keeps its known dates exactly and then recurs at
+that gap from the last, as one of the recurring shuts; the result says
+so. Undiscounted, the long run's cost a year adds the same to every
+choice in the window, so the window's decisions turn on what a part of
+each age is worth carrying past its end: worked out by running on over
+the recurring shuts' real dates until the window's decisions no longer
+change.
 
 Nothing is chosen silently: where a choice is needed, the call is refused
 with what to choose, and
@@ -340,17 +359,38 @@ shifts = DutyPlan(Shifts("Mon-Fri", "06:00", "22:00"), time_zone="Australia/Bris
 plant.route(pump_bearing, plan=shifts, now="2026-11-16", unit="hours").route   # 'horizon_or_averaged'
 ```
 
-The route check explains: the quarterly shut falls 84 to 98 days apart, the
-annual shut 364 or 371, and the turnarounds are one-offs, so choose. The
-averaged route spreads each kind evenly within its usual gaps, and takes
-the two turnarounds as coming every 18 months; the horizon uses the real
-dates:
+The route check explains: the turnarounds are used as dated to 9 Sep 2028;
+after that the quarterly shut falls 84 to 98 days apart and the annual
+shut 364 or 371, so the recurring shuts' long run needs a choice. With
+`method="averaged"` it spreads each recurring kind evenly within its usual
+gaps (the turnarounds are never averaged):
 
 ```python
 when = dict(plan=shifts, now="2026-11-16", unit="hours", age=3100)
-averaged = pump_bearing.optimal_calendar_policy(plant, method="averaged", **when)
-round(averaged.cost, 2)            # -> 1.50   a year
-averaged.rule.text                 # 'Replace at a turnaround if older than 61.33 hours; never at a weekly stop or at a quarterly shut or at an annual shut or on any other day.'
+best = pump_bearing.optimal_calendar_policy(plant, method="averaged", **when)
+best.route                         # 'dated_then_long_run'
+best.solver, best.long_run_route   # ('grid', 'averaged')
+round(best.cost, 2)                # -> 1.9   a year, after the window
+round(best.dated_cost, 2)          # -> 3.31  expected to 9 Sep 2028
+best.route_text.split(" Expected")[0]   # 'Dated window to 9 Sep 2028, then the long-run average: $1.90 a year. Using the turnarounds on 3 Mar 2027 and 9 Sep 2028 as dated, then the recurring shuts' long-run average after 9 Sep 2028.'
+best.rule.dated                    # [('2027-03-03', 'turnaround', 1543.8...), ('2028-09-09', 'turnaround', 798.5...)]
+str(best.next_replacement)         # 'At the turnaround, 3 Mar 2027, part 4,332 old'
+[k for d, k, a in best.schedule("2031-12-31")]
+# ['annual shut', 'turnaround', 'annual shut', 'annual shut', 'annual shut']   a bearing fitted today
+```
+
+`best.rule.text` gives both phases: "To 9 Sep 2028: replace at the
+turnaround on 3 Mar 2027 if older than 1,544 hours; at the turnaround on
+9 Sep 2028 if older than 798.5 hours; ... After 9 Sep 2028: Replace at an
+annual shut if older than 1,949 hours; ...". The long-run figure is the
+recurring shuts' own: the same site without the turnarounds gives $1.90 a
+year too. Were the turnarounds to go on every four years,
+`Shutdown("turnaround", dates=[...], then_every="4 years", ...)` says so,
+and the result states "turnarounds after 9 Sep 2028 assumed every 4 years
+(your setting)". A horizon uses every date to its end and needs a
+discount:
+
+```python
 ten_years = pump_bearing.optimal_calendar_policy(
     plant, horizon="2036-11-16", discount=0.07, **when
 )
@@ -359,11 +399,6 @@ round(ten_years.cost, 2)           # -> 12.30
 str(ten_years.next_replacement)    # 'At the turnaround, 3 Mar 2027, part 4,332 old'
 ten_years.settings["decisions_depend_from"] is not None   # True
 ```
-
-The averaged rule leans on turnarounds that stop after 2028, as its
-statement warns; ten years on the real dates replace at the turnaround
-that comes and then at the annual shuts, and the result names the day from
-which decisions depend on where the horizon ends.
 
 **Example 4: a truck serviced every 15,000 km.** A shut can recur by use,
 with a calendar limit, whichever comes first. The gearbox's life is in km,

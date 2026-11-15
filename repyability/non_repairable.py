@@ -1998,6 +1998,7 @@ class NonRepairable:
         tail="repeat",
         mc_samples=64,
         seed=None,
+        dated_until=None,
     ):
         """The long-run optimal replacement policy over a calendar of
         opportunities: shuts at their own prices, a planned replacement on
@@ -2019,12 +2020,24 @@ class NonRepairable:
         2. a **long cycle**: give ``method="exact"`` (slow, said
            beforehand) or ``method="sampling"`` (an estimate with its
            standard error);
-        3. shuts that **don't repeat** (rules by month or year, one-off
-           dates, a use on another meter): give ``method="averaged"``
-           (the renewal-reward formula, each shut spread evenly within its
-           usual gaps, said on the result) or
+        3. shuts that **don't repeat** (rules by month or year, a use on
+           another meter): give ``method="averaged"`` (the renewal-reward
+           formula, each shut spread evenly within its usual gaps, said on
+           the result) or
         4. ``horizon=`` and ``discount=``: the lowest net present cost on
            the real dates to the horizon.
+
+        **Fixed dates** (a ``Shutdown`` with ``dates=``, such as
+        turnarounds) are never averaged. Without a horizon the policy is
+        ``"dated_then_long_run"``: a dated window from now to the last
+        fixed date (or to ``dated_until``), in which every shut, the
+        recurring kinds' too, is on its real dates; after it only the
+        recurring shuts remain, and their long-run average (by the route
+        above that they take on their own, ``method`` applying to them)
+        values everything beyond. The rule is given in two phases, and
+        ``cost`` is the long run's a year (``dated_cost`` the expected
+        cost to the window's end). A kind given ``then_every`` recurs at
+        that gap after its last date, joining the recurring shuts.
 
         Nothing is chosen silently: a route that needs a choice is refused
         with what to choose. A failure costs the part's
@@ -2113,6 +2126,11 @@ class NonRepairable:
             discount rate (required with a horizon; 0 for the plain total).
         failure_timing : str, optional
             With a site: ``"half_step"`` (the default) or ``"exact"``.
+        dated_until : date or str, optional
+            With a site: the last day of the dated window, to extend it
+            past the last fixed date (a shut schedule planned for the next
+            three years); by default the window ends at the last fixed
+            date, and with no fixed dates there is none.
         max_age : float, optional
             The oldest age on the grid, by default the age a unit outlives
             with a chance of 1e-9.
@@ -2194,6 +2212,7 @@ class NonRepairable:
                 failure_timing=failure_timing,
                 mc_samples=mc_samples,
                 seed=seed,
+                dated_until=dated_until,
             )
         _calendar_only(
             plan=plan,
@@ -2202,6 +2221,7 @@ class NonRepairable:
             unit=unit,
             horizon=horizon,
             discount=discount,
+            dated_until=dated_until,
         )
         if age != 0.0:
             raise ValueError(
@@ -2239,6 +2259,7 @@ class NonRepairable:
         failure_timing="half_step",
         mc_samples=64,
         seed=None,
+        dated_until=None,
     ):
         """The long-run average cost a unit of time of a given replacement
         rule over a calendar of opportunities: to price simple policies
@@ -2249,7 +2270,7 @@ class NonRepairable:
         names the site's kinds of shut (and ``"any other day"``), it is
         priced by the same route as the policy would be (``plan``,
         ``now``, ``readings``, ``unit``, ``method``, ``horizon``,
-        ``discount``, ``failure_timing`` as there), and a
+        ``discount``, ``failure_timing``, ``dated_until`` as there), and a
         [`RuleCost`][repyability.RuleCost] comes back: the cost, its
         measure, the route and words, and the replacements by kind. Given
         a [`Calendar`][repyability.Calendar] it returns the rate, a float,
@@ -2304,6 +2325,9 @@ class NonRepairable:
         seed : optional
             With a site: as for
             [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        dated_until : optional
+            With a site: as for
+            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
 
         Returns
         -------
@@ -2346,6 +2370,7 @@ class NonRepairable:
                 failure_timing=failure_timing,
                 mc_samples=mc_samples,
                 seed=seed,
+                dated_until=dated_until,
             )
         _calendar_only(
             plan=plan,
@@ -2355,6 +2380,7 @@ class NonRepairable:
             horizon=horizon,
             discount=discount,
             method=method,
+            dated_until=dated_until,
         )
         if failure_timing != "half_step":
             raise ValueError(
