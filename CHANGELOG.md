@@ -76,7 +76,13 @@ API keeps working as it was.
   replacement counted half a step old) or `"exact"` (quadrature between
   the shuts, now also over a horizon and real-date shuts; a
   `SlowSolverWarning` when it would take over about 5 s, and refused
-  beyond 20,000 ages or shuts, naming `half_step`).
+  beyond 20,000 ages or shuts, naming `half_step`). Over real-date
+  shuts its age grid has 4,000 points a mean life (at least 801, at
+  most 20,000): the cost to go has a kink at every later shut's
+  threshold, and at 801 points linear interpolation moved a dated
+  threshold by up to 8% (30.66 days at a turnaround where keeping and
+  replacing cost the same at 28.40, checked by an independent forward
+  computation; now 28.40). Costs were right to about 5e-5.
 - `calendar_policy_cost(site, rule, ...)` prices a given rule by the same
   route and returns a `RuleCost` (with a `Calendar` it returns the rate,
   as before).

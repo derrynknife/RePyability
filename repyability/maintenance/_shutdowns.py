@@ -1792,6 +1792,7 @@ def _decide(
     from repyability.maintenance._integration import (
         MAX_AGES,
         MAX_OPPORTUNITIES,
+        run_ages,
     )
 
     checks.one_of("failure_timing", failure_timing, FAILURE_TIMINGS)
@@ -1857,7 +1858,7 @@ def _decide(
         words = f"{_day_text(layout.clock.local_naive(end).date())}"
         if failure_timing == "exact":
             shuts = sum(k.times(end_model).size for k in layout.kinds)
-            ages = min(MAX_AGES, max(801.0, oldest / max(1e-12, mean) * 801.0))
+            ages = float(run_ages(mean, oldest))
             seconds = _quadrature_seconds(shuts, ages, 2.0)
             if shuts > MAX_OPPORTUNITIES:
                 raise ValueError(

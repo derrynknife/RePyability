@@ -225,8 +225,10 @@ def dated_decision(
     mean, oldest, _ = _life_scale(layout.part)
     end = _later_end(layout, window_end)
     if failure_timing == "exact":
+        from repyability.maintenance._integration import run_ages
+
         shuts = sum(k.times(end).size for k in layout.kinds)
-        ages = 801.0
+        ages = float(run_ages(mean, oldest))
         window_seconds = 2.0 * shuts * 2.0 * (5e-5 + 3e-7 * ages)
         how = (
             "by quadrature across each gap between the real shuts, failures "

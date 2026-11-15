@@ -236,17 +236,99 @@ def test_the_window_is_the_horizon_route_far_out_at_no_discount():
     on_grid = part.optimal_calendar_policy(exact_site, unit="days", now=NOW)
     assert by_quadrature.solver == "quadrature"
     assert by_quadrature.long_run_solver == "quadrature"
+    step = on_grid.settings["step"]
     for a, b in zip(by_quadrature.rule.dated, on_grid.rule.dated):
         assert a[:2] == b[:2]
-        # A threshold sits where two costs cross nearly flat: the grid's
-        # half step moves it a step or two; the costs agree closely.
-        assert a[2] == pytest.approx(b[2], rel=0.1) or a[2] == b[2]
+        # The grid's threshold is a whole number of its steps, the first
+        # age that replaces: within a step of the quadrature's.
+        assert abs(a[2] - b[2]) <= step
     assert by_quadrature.cost == pytest.approx(on_grid.cost, rel=1e-4)
     # The grid's window ends on the step its end is laid on, up to half a
     # step later: about a failure's chance in half a day more.
     assert by_quadrature.dated_cost == pytest.approx(
         on_grid.dated_cost, rel=5e-3
     )
+
+
+def _keep_less_replace(policy, at, ages, per_day=8, years=20.0):
+    """An independent check of a threshold at a shut (``at`` days from
+    now): what keeping a part of each age costs over replacing it there,
+    every other decision held at the policy's (each later shut's
+    threshold in the window, then the long run's), over ``years`` with
+    nothing after, by the trapezoid rule on a grid of ``per_day`` points a
+    day. The threshold is where it equals the shut's price."""
+    eta, beta, failure = 1000.0, 2.5, 20.0
+    window = policy._engine.window
+    long_limit = policy.rule.thresholds["stop"][0]
+    h = 1.0 / per_day
+    end = at + years * 365.25
+    times = list(window.times[window.times > at])
+    limits = list(window.thresholds[window.times > at])
+    prices = list(window.prices[window.times > at])
+    t = 5.0 + 28.0 * math.ceil((window.times[-1] - 5.0) / 28.0 + 1e-9)
+    while t <= end + 1000.0:
+        times.append(t)
+        limits.append(long_limit)
+        prices.append(3.0)
+        t += 28.0
+    times, limits, prices = map(np.array, (times, limits, prices))
+
+    def survival(x):
+        return np.exp(-((x / eta) ** beta))
+
+    def density(x):
+        return beta / eta * (x / eta) ** (beta - 1) * survival(x)
+
+    def first_due(t, age):
+        due = (times > t + 1e-9) & (age + times - t >= limits - 1e-9)
+        i = int(np.argmax(due))
+        return (times[i], prices[i]) if due.any() else (math.inf, 0.0)
+
+    def kept(age, i, values):
+        due, cost = first_due(at + i * h, age)
+        if due > end:
+            n, cost = values.size - 1 - i, None
+        else:
+            n = int(round((due - at) / h)) - i
+        w = density(age + np.arange(n + 1) * h) / survival(age) * h
+        w[[0, -1]] *= 0.5
+        value = np.dot(w, failure + values[i : i + n + 1])
+        if cost is not None:
+            value += (
+                survival(age + n * h) / survival(age) * (cost + values[i + n])
+            )
+        return value
+
+    n = int(round((end - at) / h))
+    new = np.zeros(n + 1)
+    for i in range(n, -1, -1):
+        new[i] = kept(0.0, i, new)
+    return np.array([kept(a, 0, new) - new[0] for a in ages])
+
+
+def test_a_dated_threshold_is_where_keeping_costs_the_shuts_price():
+    # Keeping a part at the turnaround on 3 Mar 2027 costs 0.5 more than
+    # replacing it from 28.4 days old, the rest of the policy held: the
+    # quadrature's threshold, and the grid's to its step. (The
+    # quadrature's age grid was once too coarse for the kinks later
+    # thresholds leave in the cost to go, and gave 30.66.)
+    part = plant_part()
+    site = Shutdowns([four_weekly(), turnaround()])
+    with pytest.warns(SlowSolverWarning):
+        exact = part.optimal_calendar_policy(
+            site, unit="days", now=NOW, failure_timing="exact"
+        )
+    on_grid = part.optimal_calendar_policy(site, unit="days", now=NOW)
+    first = exact.rule.dated[0]
+    assert first[:2] == ("2027-03-03", "turnaround")
+    at = 107.0  # 3 Mar 2027, days from now
+    ages = np.array([28.0, 28.5, 29.0])
+    extra = _keep_less_replace(exact, at, ages)
+    crossing = float(np.interp(0.5, extra, ages))
+    assert crossing == pytest.approx(28.40, abs=0.03)
+    assert first[2] == pytest.approx(crossing, abs=0.03)
+    step = on_grid.settings["step"]
+    assert abs(on_grid.rule.dated[0][2] - crossing) <= step
 
 
 def test_a_rule_and_dates_combine_freely_in_the_window():
