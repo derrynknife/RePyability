@@ -9,6 +9,20 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+Shutdown policies on real dates. A site's shuts become one record,
+`Shutdowns`: each `Shutdown` by a calendar rule, given dates, a plain
+period or a use on a meter (with a calendar limit, whichever comes
+first), what replacing a part then costs and how long the shut lasts,
+the price on any other day and the time zone. The same record gives a
+part's replacement policy its cheap moments and a diagram its outages.
+How a policy is worked out is never chosen silently: it is exact where
+the shuts truly repeat in the part's own clock on a short cycle; for a
+long cycle, or shuts that don't repeat, you choose the method, and every
+result names its route, solver and measure in words.
+
+No number RePyability gave before changes; the model-time `Calendar`
+API keeps working as it was.
+
 ### Added
 
 - A component repaired minimally (Kijima with `q = 1`, or a fitted
@@ -34,6 +48,48 @@ other release, fixes included, the minor.
   quadrature for any other (Cox-Lewis). They were refused. For a power
   law with shape `beta > 1` the best count is the smallest at or above
   `(co - cr) / (cr (beta - 1))` (a tie with the next at a whole number).
+- `Shutdowns([...], any_day=, time_zone=)` and `Shutdown(name, rule |
+  dates= | every= (a plain period such as "30 days", or a `Usage`),
+  also_every=, replace_cost=, duration=, at=)`, with `describe()`,
+  `dates(start, end)`, `to_dict()` / `from_dict()`, `route(part, ...)`
+  (the route, solver, words and a time estimate, before anything is
+  worked out) and `on_diagram(start, end, unit=)` (a `RepairableRBD`'s
+  outages from the same record). A failure always costs the part's own
+  `unplanned_cost`.
+- `NonRepairable.optimal_calendar_policy(site, plan=, now=, readings=,
+  age=, unit=, method=, horizon=, discount=, failure_timing=)` returns a
+  `ShutdownPolicy` by one of four routes: exact (the shuts repeat in the
+  part's clock on a cycle worked out in about a minute or less, a use on
+  the life's own meter included whatever the duty); a long cycle, by
+  `method="exact"` or `"sampling"` (with its standard error); averaged,
+  `method="averaged"`, the renewal-reward formula with each shut spread
+  evenly within its usual gaps (Dekker & Dijkstra 1992; Dekker &
+  Smeitink 1991), its assumption stated on the result; or a horizon,
+  `horizon=` and `discount=` (both required), the lowest net present cost
+  on the real dates, naming from when decisions depend on the horizon's
+  end. Anything that needs a choice is refused with what to choose. The
+  result has `route`, `route_text`, `measure` (cost per year or net
+  present cost), `cost` (and `cost_se`), `solver`, `failure_timing`, the
+  `rule` in words and as data, `next_replacement` (a date), `schedule(until)`,
+  `replacements_by_kind` and `compare()`.
+- `failure_timing="half_step"` (the default: a grid, a failure's
+  replacement counted half a step old) or `"exact"` (quadrature between
+  the shuts, now also over a horizon and real-date shuts; a
+  `SlowSolverWarning` when it would take over about 5 s, and refused
+  beyond 20,000 ages or shuts, naming `half_step`).
+- `calendar_policy_cost(site, rule, ...)` prices a given rule by the same
+  route and returns a `RuleCost` (with a `Calendar` it returns the rate,
+  as before).
+- `optimal_next_replacement(age, site=, ...)` on the real dates: now, the
+  next two shuts of each kind, any other day, or run to failure, valued
+  beyond at the policy's figure (a `NextReplacementOnDates`); `age` may
+  be text in the part's unit ("3,100 h").
+- `cost_distribution(until=, policy=)` and `cost_by_window(dates,
+  policy=)` take a site's policy on real dates.
+- A `ShutdownPolicy` worked out in calendar time is a `RepairableRBD`
+  component's `"calendar"` policy (simulated, as before).
+- The maintenance README's UC-43, and the maintenance guide's "Shutdown
+  policies on real dates" with seven examples.
 
 ## [0.18] - 2026-11-14
 

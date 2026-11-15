@@ -148,6 +148,20 @@
 
 ::: repyability.PlannedReplacement
 
+::: repyability.ShutdownPolicy
+
+::: repyability.ShutdownRoute
+
+::: repyability.ReplacementRule
+
+::: repyability.DatedReplacement
+
+::: repyability.RuleCost
+
+::: repyability.NextReplacementOnDates
+
+::: repyability.DatedChoice
+
 ::: repyability.ScheduleValue
 
 ::: repyability.SwitchTime

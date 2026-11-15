@@ -179,6 +179,20 @@ from repyability.maintenance._replacement import (  # noqa: E402
     CalendarPolicy,
     PlannedReplacement,
 )
+from repyability.maintenance._shutdowns import (  # noqa: E402
+    Shutdown,
+    ShutdownRoute,
+    Shutdowns,
+    SlowSolverWarning,
+)
+from repyability.maintenance._site_policy import (  # noqa: E402
+    DatedChoice,
+    DatedReplacement,
+    NextReplacementOnDates,
+    ReplacementRule,
+    RuleCost,
+    ShutdownPolicy,
+)
 from repyability.maintenance._skip import SkipValue  # noqa: E402
 from repyability.maintenance._visits import (  # noqa: E402
     LayeredVisits,
