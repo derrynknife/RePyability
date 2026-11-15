@@ -537,7 +537,7 @@ CONTRIBUTING.md. What it leaves to the maintainer's say:
   locally only when the maintainer asks. Work going into `dev` is checked
   locally by the tests of what it changes (`scripts/check.sh <tests>`) and
   merged without waiting for CI.
-- Every merge and every release needs the maintainer's go-ahead. Merge the
+- Every release needs the maintainer's go-ahead. Pull requests into `dev` for work the maintainer asked for may be merged once their targeted tests and checks pass (and any CI on the PR is green); the `dev` → `main` release PR, tags and publishes always need the go-ahead. Merge the
   release pull request with a merge commit (`release.yml` finds CI's pass
   on the merged `dev` commit), run `release.yml` with `dry_run` first, and afterwards check the run, the tag
   `vX.Y`, the GitHub Release and `https://pypi.org/pypi/repyability/X.Y/json`.
