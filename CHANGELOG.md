@@ -9,6 +9,8 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+## [0.19] - 2026-11-15
+
 Shutdown policies on real dates. A site's shuts become one record,
 `Shutdowns`: each `Shutdown` by a calendar rule, given dates, a plain
 period or a use on a meter (with a calendar limit, whichever comes
@@ -119,6 +121,11 @@ API keeps working as it was.
 
 ### Changed
 
+- RePyability needs surpyval 0.28 or later (it was 0.27). A Bayesian
+  fit's quantile at 0 is surpyval's own now (RePyability's correction for
+  an offset or zero inflation is gone; surpyval 0.28 gives the same
+  values), and unit labels are always compared as units (`"h"` and
+  `"hours"` agree), with no text comparison for older surpyval.
 - A Bayesian fit as a life (`PosteriorPredictive`) takes `sf`, `df` and
   `hf` from the fit itself too, as `ff`, `Hf` and `qf` already were, so
   a posterior of more than 2,000 points is read from surpyval 0.28's

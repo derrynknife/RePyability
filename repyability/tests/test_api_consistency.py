@@ -192,9 +192,9 @@ def test_the_spares_demand_values_are_properties():
     assert demand.std == pytest.approx(np.sqrt(10.0), rel=1e-4)
 
 
-def test_what_0_18_deprecates_goes_in_0_19():
-    # 0.18 deprecates nothing; a deprecation in 0.19's development goes
-    # in NEXT_REMOVAL (0.19), and this fails as a reminder once the
+def test_what_0_19_deprecates_goes_in_0_20():
+    # 0.19 deprecates nothing; a deprecation in 0.20's development goes
+    # in NEXT_REMOVAL (0.20), and this fails as a reminder once the
     # version reaches it.
     version = tuple(map(int, __version__.split(".")))
     assert version < tuple(map(int, NEXT_REMOVAL.split(".")))

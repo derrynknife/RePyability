@@ -278,7 +278,7 @@ labels. When its models name different units, it is built with a warning
 that names the blocks and their units, because its answers would mix the
 two; models with no unit say nothing, so a diagram of unlabelled models is
 as before. Labels are compared as units, so `"h"`, `"hrs"` and `"hours"`
-agree (this needs surpyval 0.28; before it, labels are compared as text).
+agree.
 The diagram keeps its unit as `rbd.unit` (shown in its printout), and the
 results it returns carry it as `model_unit` (and in `to_dict()`), so a
 report can say what its times are in. A fault tree, a network and a phased
