@@ -851,7 +851,9 @@ def dated_rule_cost(
 ):
     """A fixed rule at a site with a dated window: its long-run cost
     after the window (on the recurring shuts, by their route), and the
-    expected cost of a new part to the window's end."""
+    expected cost of a new part to the window's end; with a discount,
+    the recurring shuts' discounted long run (its equivalent annual
+    cost) and the present value to the window's end."""
     from repyability.maintenance._horizon import _grid_solve, _quadrature_solve
     from repyability.maintenance._site_policy import (
         ANY_DAY,
@@ -868,33 +870,44 @@ def dated_rule_cost(
     kept = recurring_rule(decision, rule)
     pace, measure = _measure(layout)
     scale = pace if pace is not None else 1.0
+    discount = float(decision.discount or 0.0)
+    eac = None
     if long_run.route == "run_to_failure":
         rate = _run_to_failure_rate(layout)
         long = None
+        if discount:
+            eac = _run_to_failure_eac(layout, discount) * scale
     else:
         long = _rule_cost(recurring, long_run, kept, name, settings)
         rate = float(long.cost_rate or 0.0)
+        eac = long.eac
     if decision.failure_timing == "exact":
-        _, values = _quadrature_solve(layout, end, 0.0, rule)
+        _, values = _quadrature_solve(layout, end, discount, rule)
         dated_cost = float(values[0])
     else:
         grid_rule = {
             (ANYTIME if k == ANY_DAY else k): v for k, v in rule.items()
         }
         grid_rule = {k: v for k, v in grid_rule.items() if math.isfinite(v)}
-        v, *_ = _grid_solve(layout, end, 0.0, grid_rule)
+        v, *_ = _grid_solve(layout, end, discount, grid_rule)
         dated_cost = float(v[0])
     day = _day_text(decision.window_day)
+    figure = float(rate * scale) if eac is None else float(eac)
+    if eac is not None:
+        from repyability.maintenance._site_policy import EAC
+
+        measure = EAC
+    worth = "expected cost" if eac is None else "present value"
     return RuleCost(
         name=name,
         rule=dict(rule),
-        cost=float(rate * scale),
+        cost=figure,
         measure=measure,
         cost_se=None if long is None else long.cost_se,
         route="dated_then_long_run",
         route_text=(
-            f"{name}: {_figure(measure, rate * scale, None)} after {day}; "
-            f"expected cost to {day} {_money(round(dated_cost, 2))}"
+            f"{name}: {_figure(measure, figure, None)} after {day}; "
+            f"{worth} to {day} {_money(round(dated_cost, 2))}"
         ),
         solver=decision.solver or "",
         failure_timing=decision.failure_timing,
@@ -905,4 +918,5 @@ def dated_rule_cost(
         ),
         cost_rate=rate,
         dated_cost=dated_cost,
+        eac=eac,
     )

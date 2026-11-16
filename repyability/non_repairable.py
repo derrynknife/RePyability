@@ -1169,7 +1169,11 @@ class NonRepairable:
         until the part is replaced (at the failure price if it fails
         first), less the time the part serves until then, valued at the
         baseline: the long-run cost a unit of time of how the position is
-        run, ``policy.cost_rate``. By default that is the age
+        run, ``policy.cost_rate``. A policy chosen at a discount values it
+        at its equivalent annual cost instead, and each choice is
+        discounted at the policy's rate (its present value and the
+        policy's after it, Fox, 1966; ``discount_rate`` on the result).
+        By default that is the age
         replacement's (``optimal_replacement_policy().cost_rate``); where
         cheap shuts keep coming, give the calendar's policy
         ([`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy]),
@@ -2283,7 +2287,23 @@ class NonRepairable:
           the seed; the threshold at a time is a solve over a window
           from it (deterministic).
         - ``"auto"``: ``"dp"``, or ``"sampling"`` for a periodic calendar
-          whose cycle is too long to sweep, with a warning that says so.
+          whose cycle is too long to sweep, with a ``FutureWarning``: from
+          0.21 that refuses, naming a ready ``horizon=`` (exact by
+          default, simulation on request: give ``horizon=`` or
+          ``method="sampling"``).
+
+        **Exact by default; refused where it can't be; a horizon never
+        refused.** Without ``horizon=`` the answer is the exact repeating
+        cycle's, with or without a discount. Where that can't be worked
+        out exactly (a cycle too long to sweep, given dates, shuts that
+        drift on real dates, a duty plan's clock), it is refused, and the
+        refusal names a ready horizon worked out from the inputs: with a
+        discount, the time past which costs count for under one part in a
+        billion; with none, the full cycle and three of the part's life
+        spans. ``horizon=`` (a model time here, a date on real dates)
+        sweeps backward from it over every opportunity as it falls: the
+        lowest net present cost to then (``npv``) and its equivalent
+        annual cost (``eac``), or with no discount the total to then.
 
         The grid's step is not an argument: it is a numerical setting,
         sized from the models (never in absolute time), not a choice of
@@ -2294,9 +2314,10 @@ class NonRepairable:
         of days, as dates turned into model time give) is laid at the
         grid time nearest it, with a warning.
 
-        A calendar with given dates (a plan) is extended past its last
-        date by ``tail``: ``"repeat"`` repeats the plan (from 0 to its
-        last date and its mean gap), ``"anytime"`` leaves only replacement
+        Without a horizon, a calendar with given dates (a plan) is
+        extended past its last date by ``tail``: ``"repeat"`` repeats the
+        plan (from 0 to its last date and its mean gap), ``"anytime"``
+        leaves only replacement
         on any day. Both are solved, and the policy says the first time
         they differ (``determined_until``); its cost rate is the repeated
         plan's.
@@ -2332,9 +2353,13 @@ class NonRepairable:
         horizon, discount : optional
             With a site: the last day costs count to, and the yearly
             discount rate as a fraction (0.07 for 7% a year; required with
-            a horizon, 0 for the plain total). ``discount`` without a
-            horizon discounts the long run: the policy minimises the
-            present value of every replacement from now on, forever, and
+            a horizon, 0 for the plain total). With opportunities in model
+            time, ``horizon`` is a time in their own time (a number), with
+            ``discount_rate`` (0 for the plain total), and the policy is
+            the lowest net present cost to it (``basis="horizon"``).
+            ``discount`` without a horizon discounts the long run: the
+            policy minimises the present value of every replacement from
+            now on, forever, and
             ``cost`` is its equivalent annual cost (EAC), the steady cost
             a year worth the same, ``ln(1 + discount)`` times the present
             value. A dated window is then discounted to its end, and the
@@ -2378,8 +2403,8 @@ class NonRepairable:
             ``math.log(1.07) / 365.25``. A periodic calendar of a short
             cycle only (``"dp"`` or ``"integration"``): a long cycle, a
             plan of given dates and ``"sampling"`` are refused with what to
-            give instead. A site takes ``discount`` (a yearly rate)
-            instead.
+            give instead (a ready ``horizon=`` among it). A site takes
+            ``discount`` (a yearly rate) instead.
 
         Returns
         -------
@@ -2453,7 +2478,7 @@ class NonRepairable:
                 now=now,
                 readings=readings,
                 unit=unit,
-                horizon=horizon,
+                horizon=None if is_number(horizon) else horizon,
                 discount=discount,
                 dated_until=dated_until,
                 age=age,
@@ -2491,12 +2516,12 @@ class NonRepairable:
                 ),
                 prices,
             )
+        _model_horizon(horizon)
         _calendar_only(
             plan=plan,
             now=now,
             readings=readings,
             unit=unit,
-            horizon=horizon,
             discount=discount,
             dated_until=dated_until,
         )
@@ -2520,6 +2545,7 @@ class NonRepairable:
                 mc_samples=mc_samples,
                 seed=seed,
                 discount_rate=discount_rate,
+                horizon=horizon,
             ),
             prices,
         )
@@ -2633,6 +2659,7 @@ class NonRepairable:
         mc_samples=64,
         seed=None,
         dated_until=None,
+        discount_rate=0.0,
     ):
         """The long-run average cost a unit of time of a given replacement
         rule over a calendar of opportunities: to price simple policies
@@ -2647,8 +2674,16 @@ class NonRepairable:
         ``now``, ``readings``, ``unit``, ``method``, ``horizon``,
         ``discount``, ``failure_timing``, ``dated_until`` as there), and a
         [`RuleCost`][repyability.RuleCost] comes back: the cost, its
-        measure, the route and words, and the replacements by kind. Given
-        opportunities in model time it returns the rate, a float.
+        measure, the route and words, and the replacements by kind. With
+        ``discount=`` and no horizon, the rule's discounted long run is
+        priced exactly where the shuts repeat (its equivalent annual cost,
+        as the policy's own is worked out, with the decisions fixed), and
+        refused with a ready horizon where they don't. Given opportunities
+        in model time it returns a float: the rate; with
+        ``discount_rate``, the equivalent cost a unit of time of the
+        rule's discounted long run (a periodic calendar of a short cycle;
+        otherwise refused with a ready ``horizon=``); with ``horizon`` (a
+        model time), the rule's net present cost to it.
 
         The rule gives, for each kind of replacement it uses (an
         opportunity's name, or ``"anytime"`` for any day), the age from
@@ -2704,11 +2739,16 @@ class NonRepairable:
         dated_until : optional
             With a site: as for
             [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
+        discount_rate : float, optional
+            With opportunities in model time: the continuous discount rate
+            a unit of their time, by default 0.
 
         Returns
         -------
-        float
-            The rule's long-run cost a unit of time.
+        float or RuleCost
+            In model time the rule's long-run cost a unit of time (its
+            EAC with ``discount_rate``, its net present cost with
+            ``horizon``); on real dates a ``RuleCost``.
 
         Examples
         --------
@@ -2745,7 +2785,7 @@ class NonRepairable:
                 now=now,
                 readings=readings,
                 unit=unit,
-                horizon=horizon,
+                horizon=None if is_number(horizon) else horizon,
                 discount=discount,
                 dated_until=dated_until,
                 failure_timing=failure_timing,
@@ -2755,6 +2795,12 @@ class NonRepairable:
         if isinstance(calendar, Shutdowns):
             if max_age is not None:
                 raise ValueError("max_age is for a Calendar in model time.")
+            if discount_rate != 0.0:
+                raise ValueError(
+                    "discount_rate is for opportunities in model time (a "
+                    "continuous rate a unit of their time); a site takes "
+                    "discount=, a yearly rate such as 0.07."
+                )
             return with_prices(
                 price_rule(
                     self,
@@ -2774,12 +2820,12 @@ class NonRepairable:
                 ),
                 prices,
             )
+        _model_horizon(horizon)
         _calendar_only(
             plan=plan,
             now=now,
             readings=readings,
             unit=unit,
-            horizon=horizon,
             discount=discount,
             method=method,
             dated_until=dated_until,
@@ -2788,7 +2834,14 @@ class NonRepairable:
             raise ValueError(
                 "failure_timing is for a site's shuts (Shutdowns)."
             )
-        return calendar_policy_cost(self, calendar, rule, max_age=max_age)
+        return calendar_policy_cost(
+            self,
+            calendar,
+            rule,
+            max_age=max_age,
+            discount_rate=discount_rate,
+            horizon=horizon,
+        )
 
     def calendar_policy_cost(
         self,
@@ -2807,6 +2860,7 @@ class NonRepairable:
         mc_samples=64,
         seed=None,
         dated_until=None,
+        discount_rate=0.0,
     ):
         """**Deprecated** (removed in 0.21): renamed
         [`opportunity_policy_cost`][repyability.NonRepairable.opportunity_policy_cost],
@@ -2842,6 +2896,8 @@ class NonRepairable:
             As for ``opportunity_policy_cost``.
         dated_until : optional
             As for ``opportunity_policy_cost``.
+        discount_rate : optional
+            As for ``opportunity_policy_cost``.
 
         Returns
         -------
@@ -2871,6 +2927,7 @@ class NonRepairable:
             mc_samples=mc_samples,
             seed=seed,
             dated_until=dated_until,
+            discount_rate=discount_rate,
         )
 
     @staticmethod
@@ -3024,6 +3081,17 @@ class NonRepairable:
         elif self.__next_event_type == REPLACE:
             self.__next_event_type = FAILURE
             return self.time_to_replace.random(1).item(), True
+
+
+def _model_horizon(horizon) -> None:
+    """Refuse a horizon on real dates given with opportunities in model
+    time, which take one in their own time."""
+    if horizon is not None and not is_number(horizon):
+        raise ValueError(
+            "These opportunities are in model time, so a horizon is a time "
+            f"in their own time (a number, such as 36500); got {horizon!r}. "
+            "A date is for opportunities on real dates."
+        )
 
 
 def _calendar_only(**given) -> None:

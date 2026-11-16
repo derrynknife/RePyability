@@ -371,11 +371,15 @@ def test_a_calendar_s_rate_going_to_zero_comes_to_the_long_run_average():
 @pytest.mark.parametrize(
     "calendar, options, match",
     [
-        (SHUTS, {"method": "sampling"}, "sampling.*no discount_rate"),
+        (
+            SHUTS,
+            {"method": "sampling"},
+            "sampling.*no discount_rate.*horizon=",
+        ),
         (
             Calendar([Opportunity("turnaround", 1.0, dates=[100.0, 400.0])]),
             {},
-            "given dates.*Shutdowns",
+            "given dates.*horizon=",
         ),
         (
             Calendar(
@@ -387,7 +391,7 @@ def test_a_calendar_s_rate_going_to_zero_comes_to_the_long_run_average():
                 anytime=None,
             ),
             {"method": "dp"},
-            "too long to discount",
+            "too long to discount.*horizon=",
         ),
     ],
 )
@@ -562,7 +566,11 @@ def test_a_duty_plan_with_a_discounted_long_run_is_refused():
         site_policy(Shutdowns([STOP]), plan=plan, discount=0.07)
 
 
-def test_pricing_a_rule_at_a_discounted_long_run_is_refused():
+def test_compare_prices_each_rule_at_the_discounted_long_run():
+    # Each simpler rule is priced as the policy is: its discounted long
+    # run, exactly (its EAC), so none beats the policy's own.
     policy = site_policy(Shutdowns([STOP]), discount=0.07)
-    with pytest.raises(NotImplementedError, match="not yet at a discount"):
-        policy.compare()
+    rows = policy.compare()
+    assert {r.measure for r in rows} == {"equivalent annual cost"}
+    assert all(r.cost >= policy.cost * (1 - 1e-9) for r in rows)
+    assert all(r.npv == pytest.approx(r.cost / math.log1p(0.07)) for r in rows)
