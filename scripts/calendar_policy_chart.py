@@ -17,7 +17,7 @@ matplotlib.use("svg")
 import matplotlib.pyplot as plt  # noqa: E402
 import surpyval as surv  # noqa: E402
 
-from repyability import Calendar, NonRepairable, Opportunity  # noqa: E402
+from repyability import NonRepairable, Opportunities, Opportunity  # noqa: E402
 
 OUT = (
     Path(__file__).resolve().parent.parent
@@ -36,17 +36,20 @@ TEXT, MUTED, SURFACE = "#262624", "#6b6a64", "#fcfcfb"
 
 
 def main() -> None:
-    bearing = NonRepairable(surv.Weibull.from_params([1000.0, 2.5]))
-    plant = Calendar(
-        [
-            Opportunity("weekly", 3.0, period=7.0),
-            Opportunity("quarterly", 2.0, period=91.0),
-            Opportunity("annual", 1.0, period=364.0),
-        ],
-        failure=20.0,
-        anytime=4.0,
+    bearing = NonRepairable(
+        surv.Weibull.from_params([1000.0, 2.5]),
+        planned_cost=4.0,
+        unplanned_cost=20.0,
+        opportunity_costs={"weekly": 3.0, "quarterly": 2.0, "annual": 1.0},
     )
-    policy = bearing.optimal_calendar_policy(plant)
+    plant = Opportunities(
+        [
+            Opportunity("weekly", period=7.0),
+            Opportunity("quarterly", period=91.0),
+            Opportunity("annual", period=364.0),
+        ]
+    )
+    policy = bearing.optimal_opportunity_policy(plant)
     figure, axes = plt.subplots(figsize=(8, 4.2), dpi=100)
     figure.patch.set_facecolor(SURFACE)
     axes.set_facecolor(SURFACE)

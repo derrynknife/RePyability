@@ -15,6 +15,13 @@ from repyability import Calendar, CalendarPolicy, NonRepairable, Opportunity
 from repyability.maintenance import _replacement
 from repyability.maintenance._calendar import _Grid
 
+# The 0.14 and 0.19 forms (Calendar, Shutdown, Shutdowns, prices on the
+# opportunities, optimal_calendar_policy) still work, deprecated: these
+# tests keep them unchanged, and test_opportunities.py the new forms.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:.*(is deprecated|puts a price on the opportunities):FutureWarning"
+)
+
 
 def solve(part, calendar, **options):
     """The calendar policy, on a grid of a given step where a check needs
@@ -210,6 +217,8 @@ def shut_every_180(offset):
 def test_an_offset_off_the_grid_keeps_the_period():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
+        # The 0.14 and 0.19 forms warn that they are deprecated.
+        warnings.simplefilter("ignore", FutureWarning)
         aligned = SHUT.optimal_calendar_policy(shut_every_180(0.0))
     with pytest.warns(UserWarning, match="nearest"):
         moved = SHUT.optimal_calendar_policy(shut_every_180(0.1234))
@@ -242,6 +251,8 @@ def test_an_offset_of_whole_steps_shifts_the_policy():
     offset = 10 * aligned.step
     with warnings.catch_warnings():
         warnings.simplefilter("error")
+        # The 0.14 and 0.19 forms warn that they are deprecated.
+        warnings.simplefilter("ignore", FutureWarning)
         shifted = SHUT.optimal_calendar_policy(shut_every_180(offset))
     assert shifted.step == aligned.step and shifted.period == 180.0
     assert shifted.cost_rate == pytest.approx(aligned.cost_rate, rel=1e-9)

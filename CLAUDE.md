@@ -500,10 +500,15 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   `DemonstrationPlan` (`test_removed_in_0_18.py`). 0.18 and 0.19
   deprecate nothing, so 0.19 removes nothing (nor does 0.19.1, which
   only adds the life at a usage rate as a block); `NEXT_REMOVAL` is 0.20,
-  which `test_what_0_19_deprecates_goes_in_0_20` reminds. A new
+  which `test_what_0_19_deprecates_goes_in_0_20` reminds. 0.20's
+  development deprecates, for 0.21 (`REMOVED_IN_0_21`), `Calendar`,
+  `Shutdown`, `Shutdowns`, prices on opportunities and
+  `optimal_calendar_policy`/`calendar_policy_cost` (UC-45; the prices
+  come with the part), which `test_what_0_20_deprecates_goes_in_0_21`
+  (`test_opportunities.py`) reminds. A new
   deprecation warns through `deprecation.renamed`, `renamed_attribute`,
-  `called`, `ignored` or `moved`, with a test that fails once the version
-  reaches its removal.
+  `called`, `ignored`, `moved`, `replaced` or `price_on_part`, with a test
+  that fails once the version reaches its removal.
 - **No result depends on the unit of time (or of a covariate).** A step,
   grid or probe is sized from the models (a typical life,
   `failure_time_scale`), never in absolute time, and a proportional

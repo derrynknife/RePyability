@@ -156,10 +156,7 @@ class OverhaulReplacePolicy(_ResultMapping):
 
 
 # After the policies, which the modules it imports may import from here.
-from repyability.maintenance._calendar import (  # noqa: E402
-    Calendar,
-    Opportunity,
-)
+from repyability.maintenance._calendar import Opportunity  # noqa: E402
 from repyability.maintenance._decisions import (  # noqa: E402
     FailureFinding,
     OnCondition,
@@ -182,6 +179,14 @@ from repyability.maintenance._operating import (  # noqa: E402
     best_switch_time,
     operating_schedule_value,
 )
+from repyability.maintenance._opportunities import (  # noqa: E402
+    Calendar,
+    Opportunities,
+    OpportunityPrice,
+    OpportunityPrices,
+    Shutdown,
+    Shutdowns,
+)
 from repyability.maintenance._options import (  # noqa: E402
     AgeReplacementValue,
     DelayEffect,
@@ -200,9 +205,7 @@ from repyability.maintenance._replacement import (  # noqa: E402
     PlannedReplacement,
 )
 from repyability.maintenance._shutdowns import (  # noqa: E402
-    Shutdown,
     ShutdownRoute,
-    Shutdowns,
     SlowSolverWarning,
 )
 from repyability.maintenance._site_policy import (  # noqa: E402

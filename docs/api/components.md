@@ -10,6 +10,8 @@
 
 ::: repyability.Opportunity
 
+::: repyability.Opportunities
+
 ::: repyability.Calendar
 
 ::: repyability.Shutdowns

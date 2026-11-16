@@ -18,7 +18,6 @@ from repyability import (
     MGL,
     AlphaFactor,
     BetaFactor,
-    Calendar,
     CCFGroup,
     DegradingNode,
     FaultTree,
@@ -26,6 +25,7 @@ from repyability import (
     LoadSharingModel,
     NonRepairable,
     NonRepairableRBD,
+    Opportunities,
     Opportunity,
     PerfectReliability,
     PerfectUnreliability,
@@ -663,10 +663,9 @@ def systems_of_every_kind():
 def calendar_policy(life):
     """A calendar policy for ``life`` (#319): shuts every 60 at 2, and a
     failure at 10."""
-    calendar = Calendar(
-        [Opportunity("shut", 2.0, period=60.0)], failure=10.0, anytime=None
-    )
-    return NonRepairable(life).optimal_calendar_policy(calendar)
+    shuts = Opportunities([Opportunity("shut", period=60.0)], any_day=False)
+    part = NonRepairable(life, unplanned_cost=10.0, opportunity_cost=2.0)
+    return part.optimal_opportunity_policy(shuts)
 
 
 def repairable_kinds():

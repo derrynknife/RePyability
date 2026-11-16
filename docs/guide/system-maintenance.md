@@ -22,7 +22,7 @@ between preventive and corrective maintenance:
 |---|---|
 | `interval` | Required (but under `"calendar"`): the replacement interval `T` (`inf`: never). |
 | `policy` | `"age"` (the default): `T` after the unit was last put into service as new, so a failure restarts the clock. `"block"`: at `T, 2T, 3T, …` whatever the unit's age, skipped while it is down. `"condition"`: inspected at `T, 2T, 3T, …`, and replaced if likely to fail before the next inspection (see [below](#replacement-on-condition)). `"calendar"`: at the first time the unit's age reaches a calendar policy's threshold (see [below](#replacement-on-a-calendar-policy)). |
-| `calendar` | Under `"calendar"`: the [`CalendarPolicy`][repyability.CalendarPolicy] of [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]. |
+| `calendar` | Under `"calendar"`: the [`CalendarPolicy`][repyability.CalendarPolicy] of [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy]. |
 | `duration` | `"instant"` (the default): renewed in place, never down. Or a time-to-maintain model: the unit is down meanwhile, a *planned outage*. |
 | `cost` | Charged at each preventive replacement: a number or a distribution (under `"calendar"`, none: the calendar's price is charged). |
 | `restoration` | The task restores the unit only partly: Kijima's model and restoration factor `q` (see [below](#planned-maintenance-that-restores-partly)). Left out, each task renews the unit. |
@@ -219,21 +219,22 @@ year.cost.by_category["preventive"]                # -> 11886.8   1000 each, exp
 
 A part whose replacement costs differently at different times (cheap in a
 shut, dearer on any other day) is best replaced on a threshold for each
-time: the policy [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]
+time: the policy [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy]
 works out (see [Maintenance policies](maintenance.md#replacement-over-a-calendar-of-shuts-nonrepairable)).
 Give it to the component, and the simulation replaces each unit at the first
 time its age reaches the threshold, charging the calendar's price there; a
 failure is charged the component's own `replace_cost`:
 
 ```python
-from repyability import Calendar, NonRepairable, Opportunity
+from repyability import NonRepairable, Opportunities, Opportunity
 
 life = surv.Weibull.from_params([1000.0, 2.5])
-plant = Calendar(
-    [Opportunity("quarterly", 2.0, period=91.0), Opportunity("annual", 1.0, period=364.0)],
-    failure=20.0, anytime=4.0,
+plant = Opportunities([Opportunity("quarterly", period=91.0), Opportunity("annual", period=364.0)])
+part = NonRepairable(
+    life, planned_cost=4.0, unplanned_cost=20.0,
+    opportunity_costs={"quarterly": 2.0, "annual": 1.0},
 )
-policy = NonRepairable(life).optimal_calendar_policy(plant)
+policy = part.optimal_opportunity_policy(plant)
 rbd = RepairableRBD(
     [("s", "bearing"), ("bearing", "t")],
     {"bearing": {

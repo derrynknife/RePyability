@@ -251,6 +251,87 @@ def _gap_words(n: int, unit: str) -> str:
     return f"{n} {unit[:-1] if n == 1 else unit}"
 
 
+def check_when(
+    label: str,
+    name: str,
+    *,
+    rule=None,
+    dates=None,
+    then_every=None,
+    every=None,
+    also_every=None,
+    at=None,
+):
+    """When a shut on real dates happens, checked: one of a ``rule``,
+    ``dates`` or ``every``, with what goes with each. ``label`` starts
+    each message (``"Shutdown 'weekly stop'"``), ``name`` names a bad
+    date. Returns the dates (in
+    order, once each), ``every`` (a number as a float) and ``at`` (a
+    clock time), as kept."""
+    from repyability.schedule import Recurrence, Usage
+    from repyability.schedule._meters import clock
+
+    given = [
+        k
+        for k, v in (("rule", rule), ("dates", dates), ("every", every))
+        if v is not None
+    ]
+    if len(given) != 1:
+        raise ValueError(
+            f"{label}: give when it happens one way: a "
+            "rule (a Recurrence), dates, or every= (a period such as "
+            "'30 days', or a Usage)."
+        )
+    if rule is not None and not isinstance(rule, Recurrence):
+        raise TypeError(
+            f"{label}: rule must be a Recurrence "
+            f"(Recurrence.weekly('Sat'), ...); got {rule!r}."
+        )
+    if dates is not None:
+        if isinstance(dates, (str, date)) or not hasattr(dates, "__iter__"):
+            raise TypeError(
+                f"{label}: dates must be a list of dates; got {dates!r}."
+            )
+        days = sorted({_iso_date(d, f"A date of {name!r}") for d in dates})
+        if not days:
+            raise ValueError(f"{label}: dates must have at least one.")
+        dates = tuple(days)
+    if then_every is not None:
+        if dates is None:
+            raise ValueError(
+                f"{label}: then_every is the gap after "
+                "the last of its dates: give dates= too."
+            )
+        _gap(then_every, f"{label}: then_every")
+    if every is not None:
+        if isinstance(every, Usage):
+            pass
+        elif checks.is_number(every):
+            if not 0.0 < float(every) < math.inf:
+                raise ValueError(
+                    f"{label}: every must be more than 0; got {every!r}."
+                )
+            every = float(every)
+        else:
+            _period_hours(every, f"{label}: every")
+    if also_every is not None:
+        if not isinstance(every, Usage):
+            raise ValueError(
+                f"{label}: also_every is a calendar limit "
+                "on a shut by use (every=Usage(...)), whichever comes "
+                "first."
+            )
+        _period_hours(also_every, f"{label}: also_every")
+    if at is not None:
+        if isinstance(every, Usage):
+            raise ValueError(
+                f"{label}: a shut by use falls when the "
+                "meter gets there, so it takes no clock time (at=)."
+            )
+        at = clock(at, "at")
+    return dates, every, at
+
+
 # ---------------------------------------------------------------- records
 
 
@@ -279,7 +360,7 @@ class Shutdown:
     dates : list of date or str, optional
         Its fixed dates, instead of a rule. A policy uses them as dated
         (never averaged): see
-        [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
     then_every : str, optional
         With ``dates``: the gap at which the kind recurs after its last
         date (``"4 years"``, ``"18 months"``, ``"6 weeks"``, ``"90
@@ -302,7 +383,7 @@ class Shutdown:
 
     Examples
     --------
-    >>> from repyability import Shutdown
+    >>> from repyability.maintenance._shutdowns import Shutdown
     >>> from repyability.schedule import Recurrence
     >>> Shutdown("weekly stop", Recurrence.weekly("Sat"), replace_cost=3.0,
     ...          duration="8h").describe()
@@ -323,9 +404,6 @@ class Shutdown:
     at: Optional[time] = None
 
     def __post_init__(self):
-        from repyability.schedule import Recurrence, Usage
-        from repyability.schedule._meters import clock
-
         if not isinstance(self.name, str) or not self.name.strip():
             raise TypeError(f"A shut's name must be text; got {self.name!r}.")
         if self.name in (ANYTIME, "failure", "any other day"):
@@ -334,71 +412,19 @@ class Shutdown:
                 "replacement on any other day, or a failure): give the shut "
                 "another name."
             )
-        given = [
-            k
-            for k, v in (
-                ("rule", self.rule),
-                ("dates", self.dates),
-                ("every", self.every),
-            )
-            if v is not None
-        ]
-        if len(given) != 1:
-            raise ValueError(
-                f"Shutdown {self.name!r}: give when it happens one way: a "
-                "rule (a Recurrence), dates, or every= (a period such as "
-                "'30 days', or a Usage)."
-            )
-        if self.rule is not None and not isinstance(self.rule, Recurrence):
-            raise TypeError(
-                f"Shutdown {self.name!r}: rule must be a Recurrence "
-                f"(Recurrence.weekly('Sat'), ...); got {self.rule!r}."
-            )
-        if self.dates is not None:
-            if isinstance(self.dates, (str, date)) or not hasattr(
-                self.dates, "__iter__"
-            ):
-                raise TypeError(
-                    f"Shutdown {self.name!r}: dates must be a list of dates; "
-                    f"got {self.dates!r}."
-                )
-            days = sorted(
-                {_iso_date(d, f"A date of {self.name!r}") for d in self.dates}
-            )
-            if not days:
-                raise ValueError(
-                    f"Shutdown {self.name!r}: dates must have at least one."
-                )
-            object.__setattr__(self, "dates", tuple(days))
-        if self.then_every is not None:
-            if self.dates is None:
-                raise ValueError(
-                    f"Shutdown {self.name!r}: then_every is the gap after "
-                    "the last of its dates: give dates= too."
-                )
-            _gap(self.then_every, f"Shutdown {self.name!r}: then_every")
-        if self.every is not None:
-            if isinstance(self.every, Usage):
-                pass
-            elif checks.is_number(self.every):
-                if not 0.0 < float(self.every) < math.inf:
-                    raise ValueError(
-                        f"Shutdown {self.name!r}: every must be more than 0; "
-                        f"got {self.every!r}."
-                    )
-                object.__setattr__(self, "every", float(self.every))
-            else:
-                _period_hours(self.every, f"Shutdown {self.name!r}: every")
-        if self.also_every is not None:
-            if not isinstance(self.every, Usage):
-                raise ValueError(
-                    f"Shutdown {self.name!r}: also_every is a calendar limit "
-                    "on a shut by use (every=Usage(...)), whichever comes "
-                    "first."
-                )
-            _period_hours(
-                self.also_every, f"Shutdown {self.name!r}: also_every"
-            )
+        dates, every, at = check_when(
+            f"Shutdown {self.name!r}",
+            self.name,
+            rule=self.rule,
+            dates=self.dates,
+            then_every=self.then_every,
+            every=self.every,
+            also_every=self.also_every,
+            at=self.at,
+        )
+        object.__setattr__(self, "dates", dates)
+        object.__setattr__(self, "every", every)
+        object.__setattr__(self, "at", at)
         if not (
             checks.is_number(self.replace_cost)
             and 0.0 <= float(self.replace_cost) < math.inf
@@ -409,13 +435,6 @@ class Shutdown:
             )
         object.__setattr__(self, "replace_cost", float(self.replace_cost))
         object.__setattr__(self, "duration", _duration(self.duration))
-        if self.at is not None:
-            if isinstance(self.every, Usage):
-                raise ValueError(
-                    f"Shutdown {self.name!r}: a shut by use falls when the "
-                    "meter gets there, so it takes no clock time (at=)."
-                )
-            object.__setattr__(self, "at", clock(self.at, "at"))
 
     def __init__(
         self,
@@ -560,7 +579,7 @@ class Shutdowns:
     site's time zone.
 
     The same record gives a part's replacement policy its cheap moments
-    ([`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy])
+    ([`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy])
     and a diagram its outages (``on_diagram``). A failure is not priced
     here: it costs the part's own ``unplanned_cost`` everywhere.
 
@@ -577,7 +596,7 @@ class Shutdowns:
 
     Examples
     --------
-    >>> from repyability import Shutdown, Shutdowns
+    >>> from repyability.maintenance._shutdowns import Shutdown, Shutdowns
     >>> from repyability.schedule import Recurrence
     >>> site = Shutdowns(
     ...     [
@@ -734,31 +753,31 @@ class Shutdowns:
             The part.
         plan : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         method : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         horizon : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         discount : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         now : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         readings : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         unit : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         failure_timing : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         dated_until : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
 
         Returns
         -------
@@ -926,7 +945,7 @@ class Shutdowns:
 @dataclass(frozen=True)
 class ShutdownRoute(_ResultMapping):
     """How a policy at a site will be worked out: returned by
-    [`Shutdowns.route`][repyability.Shutdowns.route].
+    [`Opportunities.route`][repyability.Opportunities.route].
 
     Attributes
     ----------
