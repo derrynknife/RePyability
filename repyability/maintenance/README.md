@@ -43,6 +43,7 @@ records and decides what "today" is.
 | UC-25 | How much of the downtime and lost production is planned and how much is from failures, and how many failures the plan avoids against running to failure | **Built**: `RepairableRBD.maintenance_effect`, and the split in `ExpectedEvents`, `EventsByWindow`, `AvailabilityResult` and `CostResult`; exact where the blocks fail independently, simulated otherwise |
 | UC-26 | A pump run part of the time with its overhaul counted in running hours: availability and cost, and at another duty | **Built**: a `"preventive"` or `"inspection"` spec's `"basis": "operating"`, put on the calendar through the block's `"duty"` |
 | UC-43 | A site's shuts on real dates (rules, one-offs, plain periods, a use on a meter) in one record, the best rule for a part there, worked out by a route that is always named and never chosen silently, given back as dates; the unit in service, its cost's spread, and a diagram's outages from the same record | **Built**: `Shutdowns`, `Shutdown`, `optimal_calendar_policy(site, ...)` returning a `ShutdownPolicy`, `Shutdowns.route`, `calendar_policy_cost(site, ...)`, `optimal_next_replacement(..., site=)`, `cost_distribution`/`cost_by_window(policy=)`, `Shutdowns.on_diagram` |
+| UC-44 | The best replacement policy in the long run at a discount rate: age replacement, a calendar of shuts in model time and a site on real dates, by the least equivalent annual cost | **Built**: `discount_rate=` of `find_optimal_replacement`, `optimal_replacement_policy` and `optimal_calendar_policy` (a `Calendar`), and `discount=` without a horizon (a `Shutdowns` site) |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -1327,7 +1328,13 @@ answers back into dates is Reliafy's too.)
      part is replaced by the long run's own rule. `cost` is the long
      run's a year, `dated_cost` the expected cost to the window's end,
      and the rule is in two phases (`rule.dated`: each fixed date's own
-     threshold). Fixed dates all before now are left out.
+     threshold). Fixed dates all before now are left out. With
+    `discount=` and no horizon (UC-44) the window and its run-on are
+    discounted (the programme of 4 at that rate), so what lies past the
+    window is valued by the recurring shuts' discounted long run, not by
+    undiscounted relative values; `cost` is then the long run's
+    equivalent annual cost and `dated_cost` the present value to the
+    window's end.
 
   Results are dated through the layout: a shut's own date, a planned
   replacement on any other day at the first moment the part's clock
@@ -1422,6 +1429,76 @@ answers back into dates is Reliafy's too.)
     calendar time:** a weekly stop at midnight is 167 or 169 hours apart
     across the changes. The route says so; `time_zone=None` takes clock
     times as they are, if that is what is meant.
+
+
+### UC-44: "Money spent later is worth less to us (7% a year). What replacement age, or rule at our shuts, is cheapest in the long run at that rate?"
+
+- **Status:** built.
+- **Who asks, and why:** a reliability or maintenance engineer whose
+  finance team discounts costs: the long-run cost rate (UC-13, age
+  replacement) treats a dollar in ten years as a dollar now, which
+  replaces earlier than their own figures would.
+- **What they know:** the part's life and prices, as for age replacement,
+  UC-13 or UC-43, and a discount rate: continuous, per unit of the
+  life's time (`discount_rate=`) in model time; yearly (`discount=`,
+  0.07 for 7%) on a site's real dates, as a horizon takes it.
+- **What they want back:** the age, or the rule at each shut, with the
+  least equivalent annual cost (EAC), that cost, and the present value
+  of every replacement from now on, forever (`npv`); the undiscounted
+  long-run figures of the rule chosen (`cost_rate`, the rates by kind)
+  stay beside them.
+- **How it is solved:**
+  - **Age replacement** (Fox, 1966): `EAC(T) = [cu (1 - exp(-r T) R(T) -
+    r M(T)) + cp exp(-r T) R(T)] / M(T)`, `M` the integral of `exp(-r t)
+    R(t)` to `T` (the cost rate at `r = 0`), scanned on a log grid of
+    ages by the trapezoidal rule up to where the part has all but surely
+    failed or a cost is discounted to `exp(-40)`, the best refined by a
+    bounded search on the cost by quadrature (`age_replacement_value`'s);
+    against running to failure, `cu (1 - r M) / M` with `M` to infinity.
+    A non-parametric estimate is scanned on its own grid.
+  - **A calendar in model time**, periodic, short cycle: value iteration
+    over the cycle, each grid step discounted by `exp(-r step)` (or each
+    gap of the quadrature at `r`), from the last sweep's values less a new
+    part's, stopped by MacQueen's bounds: every path through a cycle is
+    discounted by the same `exp(-r L)`, so the fixed point lies in a known
+    band of the last sweep. `npv` is a new part's at time 0. The rule so
+    chosen is then priced undiscounted by relative value iteration with
+    its decisions fixed.
+  - **A site:** `discount=` with no horizon takes the exact routes
+    discounted (the yearly rate as `ln(1 + d)` over the part's units a
+    year), plain age replacement on any day by Fox's formula, and the
+    dated window discounted with the recurring shuts' discounted long run
+    after it (UC-43, route 5). `cost` is the EAC a year, `ln(1 + d)`
+    times `npv`.
+  - **Refused, with what to give instead:** sampling and averaged gaps
+    (each gives a long-run average, not a present value from now), a
+    calendar of given dates in model time (give it as a site), a cycle
+    too long to sweep, a duty plan (its clock does not keep a steady pace
+    with the calendar: give a horizon), and pricing a given rule at a
+    discounted long run (`compare()`, `calendar_policy_cost` on a site).
+- **Today:** the Weibull(1000 h, 2.5) bearing at `cp = 1`, `cu = 5`:
+  493.0 h undiscounted; 493.2 h at 5% a year and 493.4 h at 10%, the
+  life in hours (8,760 a year), where a cycle is a few weeks and
+  discounting hardly matters; with the life in days, 497.7 and 502.3
+  days. A shut every 28 days at 3, a failure at 20, Weibull(1000 days,
+  2.5): the stop's threshold 414 days undiscounted, 419 at 7% and 433.5 at
+  30% a year.
+- **Checks:** `test_discounted_long_run.py`: rate 0 the undiscounted
+  answers unchanged; the age against Fox's cost from the density by
+  quadrature, and its present value against a simulation of the
+  discounted renewal costs; a later age as the rate rises for a part
+  that wears out; the rate going to 0 coming to the cost-rate optimum;
+  running to failure winning at a high rate; a calendar's present value
+  against a plain backward sweep over many cycles, grid against
+  quadrature; a site's against the horizon route's net present cost to
+  50 years, and the dated window's decisions against a long discounted
+  horizon's.
+- **Learned / open questions:** not yet discounted: given dates in model
+  time, long cycles, `calendar_policy_cost` and `compare()`,
+  `optimal_next_replacement`'s choices (it takes a discounted policy's
+  EAC as its baseline, its own choices still undiscounted), the
+  repairable unit's overhaul policies, failure finding and on-condition
+  intervals, and `RepairableRBD.optimal_replacement_intervals`.
 
 
 ### UC-14: "A cheap task every visit and a deeper one every few visits: how often should we visit, and how deep?"
@@ -1566,7 +1643,8 @@ answers back into dates is Reliafy's too.)
   table adding up to the total; the cost rate as the rate goes to 0.
 - **Not yet:** value that varies in time, escalation, plans of actions at
   given times, the simulated distribution, crews as cash flows, and NPV as
-  the optimisers' objective.
+  the objective of the optimisers other than age replacement and the
+  calendar policies (UC-44).
 
 
 ### UC-20: "If we run at 70 °C instead of 30 °C we make more, but the bearings wear out faster. Does it pay?"

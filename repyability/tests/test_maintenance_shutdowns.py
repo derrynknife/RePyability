@@ -585,7 +585,7 @@ DATED = Shutdowns(
         ({"method": "exact"}, "no repeating cycle to be exact over"),
         ({"method": "sampling"}, "no repeating cycle to sample"),
         ({"horizon": "2036-11-16"}, "needs discount= too"),
-        ({"discount": 0.07}, "goes with horizon="),
+        ({"discount": 0.07}, "discounted long run needs shuts that repeat"),
         (
             {"horizon": "2036-11-16", "discount": 0.07, "method": "averaged"},
             "its own route",

@@ -10,6 +10,34 @@ release between minors that only adds (0.19.1).
 
 ## [Unreleased]
 
+### Added
+
+- Added: a discount rate for the long-run replacement policies (Fox,
+  1966). `NonRepairable.find_optimal_replacement(discount_rate=)` and
+  `optimal_replacement_policy(discount_rate=)` (continuous, per unit of
+  the life's time) choose the age with the least equivalent annual cost
+  (EAC), the present value of every replacement forever spread as a
+  steady cost; `inf` where running to failure is cheaper, which a high
+  rate can make it. `MaintenancePolicy` gains `discount_rate`, `npv` and
+  `eac` (defaults 0, `inf` and `cost_rate`); `cost_rate` stays the
+  undiscounted rate of the age chosen. `optimal_calendar_policy` takes
+  `discount_rate=` for a `Calendar` (a periodic one of a short cycle, by
+  discounted value iteration on the grid or by quadrature), and, for a
+  `Shutdowns` site, `discount=` (yearly) without a horizon: the exact
+  routes and plain age replacement discounted, and the dated window
+  discounted to its end with the recurring shuts' discounted long run
+  after it, where it was valued undiscounted. `CalendarPolicy` and
+  `ShutdownPolicy` carry the rate, `npv` and the EAC (a site's `cost`,
+  measure `"equivalent annual cost"`). Sampling, averaged gaps, given
+  dates in model time, long cycles, duty plans and pricing a given rule
+  refuse a rate, saying what to give instead. At rate 0 every number is
+  unchanged. See the maintenance README's UC-44.
+
+### Changed
+
+- Changed: a site's `discount=` without `horizon=` was refused ("goes
+  with horizon="); it now asks for the discounted long run.
+
 ## [0.19.1] - 2026-11-16
 
 One addition to 0.19: a life on two clocks, surpyval's life at a usage

@@ -1803,12 +1803,10 @@ def _decide(
         )
     site = layout.site
     part = layout.part
-    if horizon is not None or discount is not None:
-        if horizon is None:
-            raise ValueError(
-                "discount= goes with horizon=: give the last day the costs "
-                "count to as well."
-            )
+    long_discount = None
+    if horizon is None and discount is not None:
+        long_discount = _long_run_discount(layout, discount, method)
+    elif horizon is not None:
         if discount is None:
             raise ValueError(
                 "horizon= needs discount= too: the yearly rate future costs "
@@ -1910,10 +1908,26 @@ def _decide(
             failure_timing=failure_timing,
             refuse=refuse,
             dated_until=dated_until,
+            discount=long_discount,
         )
         if dated is not None:
             return dated
     if not site.shutdowns:
+        if long_discount is not None:
+            return _Decision(
+                "exact",
+                "No shuts: this is plain age replacement, at the age with "
+                "the least equivalent annual cost at "
+                f"{_percent(long_discount)} a year (Fox, 1966; one "
+                "discounted integral of the part's survival an age).",
+                "closed form",
+                0.01,
+                cycle=None,
+                discount=long_discount,
+                failure_timing=None,
+                why="there are no shuts, so this is plain age replacement",
+                how="by Fox's formula (closed form)",
+            )
         return _Decision(
             "exact",
             "No shuts: this is plain age replacement (exact long-run "
@@ -1957,6 +1971,13 @@ def _decide(
             "usual gaps) or give horizon= and discount= (lowest net present "
             "cost on the real dates)."
         )
+        if long_discount is not None:
+            choice = (
+                "A discounted long run needs shuts that repeat, so that the "
+                "same cycle comes round again: give horizon= with discount= "
+                "(lowest net present cost on the real dates), or leave "
+                "discount= out for method='averaged'."
+            )
         reason = (
             "These shuts don't repeat on a fixed cycle in the part's clock: "
             f"{_listed(broken)}."
@@ -2019,22 +2040,25 @@ def _decide(
             "failure_timing='half_step' (the default), which gives the same "
             "to about 1e-7."
         )
-    how = (
-        "by quadrature (the part's life integrated across each gap between "
-        "shuts, failures timed at the instant they happen)"
-        if failure_timing == "exact"
-        else "on a grid of steps sized from the life, each failure's "
-        "replacement counted half a step old"
-    )
+    how = how_words(failure_timing)
+    lead = "Exact long-run average"
+    if long_discount is not None:
+        lead = (
+            "Lowest equivalent annual cost at "
+            f"{_percent(long_discount)} a year, discounted over the long run "
+            "(the present value of every replacement from now on, forever, "
+            "by discounted value iteration over the cycle)"
+        )
     if short:
         return _Decision(
             "exact",
-            f"Exact long-run average: {repeat}, so nothing about shut timing "
+            f"{lead}: {repeat}, so nothing about shut timing "
             f"is assumed; worked out {how}.",
             solver,
             seconds,
             patterns=patterns,
             cycle=cycle,
+            discount=long_discount,
             failure_timing=failure_timing,
             why=f"{repeat}, so nothing about shut timing is assumed",
             how=how,
@@ -2046,12 +2070,13 @@ def _decide(
     if method == "exact":
         return _Decision(
             "exact_long_cycle",
-            f"Exact long-run average over a long cycle ({repeat}), worked out "
+            f"{lead} over a long cycle ({repeat}), worked out "
             f"{how}: {_seconds_text(seconds)}.",
             solver,
             seconds,
             patterns=patterns,
             cycle=cycle,
+            discount=long_discount,
             failure_timing=failure_timing,
             why=f"over a long cycle: {repeat}",
             how=how,
@@ -2062,11 +2087,79 @@ def _decide(
         "its "
         "standard error, as many samples as you ask for)."
     )
+    if long_discount is not None:
+        choice = (
+            f"{long_text} Discounted, choose method='exact' (the same "
+            f"calculation, {_seconds_text(seconds)}), or give horizon= with "
+            "discount= (lowest net present cost on the real dates); sampling "
+            "gives a long-run average, not a present value."
+        )
     if refuse:
         raise ValueError(choice)
     return _Decision(
-        "long_cycle", choice, None, None, patterns=patterns, cycle=cycle
+        "long_cycle",
+        choice,
+        None,
+        None,
+        patterns=patterns,
+        cycle=cycle,
+        discount=long_discount,
     )
+
+
+def how_words(failure_timing) -> str:
+    """How the exact routes work a cycle out, in words."""
+    if failure_timing == "exact":
+        return (
+            "by quadrature (the part's life integrated across each gap "
+            "between shuts, failures timed at the instant they happen)"
+        )
+    return (
+        "on a grid of steps sized from the life, each failure's "
+        "replacement counted half a step old"
+    )
+
+
+def _percent(rate: float) -> str:
+    """A yearly rate in words: ``7%``, ``2.5%``."""
+    return f"{100.0 * rate:.4g}%"
+
+
+def _long_run_discount(layout: _Layout, discount, method) -> Optional[float]:
+    """The yearly discount of a discounted long run (``discount=`` with no
+    horizon), checked: None for 0 (the long-run average). Refused where
+    the long run is not discounted exactly: the averaged and sampled
+    routes (long-run averages), a duty plan (a clock that does not keep a
+    steady pace with the calendar) and a clock with no pace in time."""
+    if not (checks.is_number(discount) and 0.0 <= float(discount) < 10.0):
+        raise ValueError(
+            "discount must be a yearly rate such as 0.07 (7%), at least "
+            f"0; got {discount!r}."
+        )
+    rate = float(discount)
+    if rate == 0.0:
+        return None
+    if method in ("averaged", "sampling"):
+        raise ValueError(
+            f"method={method!r} gives a long-run average, which is not "
+            "discounted: leave method out (or give method='exact') with "
+            "discount=, or give horizon= with discount= (lowest net present "
+            "cost on the real dates)."
+        )
+    if layout.plan is not None:
+        raise ValueError(
+            "A discounted long run needs the part's clock to keep a steady "
+            "pace with the calendar, and a duty plan's does not: give "
+            "horizon= with discount= (lowest net present cost on the real "
+            "dates, through the plan), or leave discount= out."
+        )
+    if layout.pace() is None:
+        raise ValueError(
+            f"The part's clock ({layout.unit}) has no pace in time, so a "
+            "yearly discount is no rate on it: give a duty plan with "
+            "horizon= and discount=, or leave discount= out."
+        )
+    return rate
 
 
 def _exact_step(

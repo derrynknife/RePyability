@@ -124,6 +124,8 @@ def _then_every_notes(layout: _Layout, window_day: date) -> List[str]:
 
 
 def _run_to_failure(layout: _Layout) -> _Decision:
+    """The long run with nothing planned: running to failure, by the
+    closed form (discounted where the decision is given a discount)."""
     return _Decision(
         "run_to_failure",
         "After the window no shut recurs and the site allows no planned "
@@ -138,7 +140,13 @@ def _run_to_failure(layout: _Layout) -> _Decision:
 
 
 def dated_decision(
-    layout: _Layout, *, method, failure_timing, refuse, dated_until
+    layout: _Layout,
+    *,
+    method,
+    failure_timing,
+    refuse,
+    dated_until,
+    discount=None,
 ) -> Optional[_Decision]:
     """The dated window's decision, or None where the site has no window
     (no fixed date from now on and no ``dated_until``) and no fixed dates
@@ -175,13 +183,13 @@ def dated_decision(
     recurring = _recurring_site(site)
     rec_layout = _Layout(layout.part, recurring, **layout.given)
     if not recurring.shutdowns and recurring.any_day is None:
-        long_run = _run_to_failure(rec_layout)
+        long_run = replace(_run_to_failure(rec_layout), discount=discount)
     else:
         long_run = _decide(
             rec_layout,
             method=method,
             horizon=None,
-            discount=None,
+            discount=discount,
             failure_timing=failure_timing,
             refuse=False,
         )
@@ -192,7 +200,7 @@ def dated_decision(
                 rec_layout,
                 method=method,
                 horizon=None,
-                discount=None,
+                discount=discount,
                 failure_timing=failure_timing,
             )
         return replace(long_run, long_run=long_run, recurring=rec_layout)
@@ -200,6 +208,13 @@ def dated_decision(
     window_end = float(layout.model_at([end_moment])[0])
     day = _day_text(last)
     lead = f"Dated window to {day}, then the long-run average."
+    if discount is not None:
+        from repyability.maintenance._shutdowns import _percent
+
+        lead = (
+            f"Dated window to {day}, then the discounted long run, at "
+            f"{_percent(discount)} a year."
+        )
     using = (
         f"Using {_fixed_words(fixed)} as dated"
         if fixed
@@ -217,6 +232,7 @@ def dated_decision(
             text,
             None,
             None,
+            discount=discount,
             window_day=last,
             long_run=long_run,
             recurring=rec_layout,
@@ -251,14 +267,20 @@ def dated_decision(
         f"{lead} {using}, every shut in the window on its real dates, worked "
         f"out {how}; after {day} only the recurring shuts remain"
         + (f" ({'; '.join(notes)})" if notes else "")
-        + ", and their long-run average values everything beyond: "
-        f"{long_run.text} {_seconds_text(seconds).capitalize()} in all."
+        + (
+            ", and their long-run average values everything beyond: "
+            if discount is None
+            else ", and their discounted long run values everything beyond "
+            "(the window itself discounted to now too): "
+        )
+        + f"{long_run.text} {_seconds_text(seconds).capitalize()} in all."
     )
     return _Decision(
         "dated_then_long_run",
         text,
         solver,
         seconds,
+        discount=discount,
         failure_timing=failure_timing,
         why=using,
         how=how,
@@ -277,7 +299,11 @@ def _settled(layout: _Layout, decision: _Decision):
     """The window solved by the backward programme over every shut on its
     real dates, run on past its end until its decisions agree between
     two runs: the grid's (``_horizon._grid_solve``) or the quadrature's
-    (``_horizon._quadrature_solve``)."""
+    (``_horizon._quadrature_solve``). With a discount every step, the
+    run-on's too, is discounted by the calendar time it spans, so what
+    lies past the window is valued by the recurring shuts' discounted
+    long run (their own on the real dates), not by undiscounted relative
+    values."""
     from repyability.maintenance._horizon import (
         _grid_solve,
         _later_end,
@@ -286,11 +312,12 @@ def _settled(layout: _Layout, decision: _Decision):
 
     end = float(decision.window_end or 0.0)
     extra = _later_end(layout, end) - end
+    discount = float(decision.discount or 0.0)
     previous = None
     found: Any = None
     for _ in range(DOUBLINGS + 1):
         if decision.failure_timing == "exact":
-            shuts, values = _quadrature_solve(layout, end + extra, 0.0)
+            shuts, values = _quadrature_solve(layout, end + extra, discount)
             inside = _within(shuts.times, end)
             seen = (
                 tuple(np.asarray(shuts.kinds, object)[inside]),
@@ -298,7 +325,7 @@ def _settled(layout: _Layout, decision: _Decision):
             )
             found = ("exact", shuts, values, extra)
         else:
-            solved = _grid_solve(layout, end + extra, 0.0)
+            solved = _grid_solve(layout, end + extra, discount)
             first, kinds, grid, step = (
                 solved[1],
                 solved[2],
@@ -470,6 +497,16 @@ def _run_to_failure_rate(layout: _Layout) -> float:
     return float(part.cu) / _mean(part, _survival(part))
 
 
+def _run_to_failure_eac(layout: _Layout, discount: float) -> float:
+    """Running to failure's equivalent annual cost a unit of the part's
+    clock, at the yearly ``discount``."""
+    from repyability.maintenance._options import discounted_run_to_failure
+    from repyability.maintenance._site_policy import model_rate
+
+    rate = model_rate(layout, discount)
+    return discounted_run_to_failure(layout.part, rate, float(layout.part.cu))
+
+
 def _phrase_dated(layout, rows, unit) -> Tuple[List[str], List[str]]:
     """The window's shuts of kinds with fixed dates, one phrase each."""
     unit_words = f" {unit}" if unit else ""
@@ -531,6 +568,7 @@ def dated_policy(
     )
     from repyability.maintenance._site_policy import (
         ANY_DAY,
+        EAC,
         ReplacementRule,
         ShutdownPolicy,
         _figure,
@@ -540,6 +578,7 @@ def dated_policy(
     )
 
     site = layout.site
+    discount = decision.discount
     end = float(decision.window_end or 0.0)
     assert decision.window_day is not None
     day = _day_text(decision.window_day)
@@ -554,10 +593,11 @@ def dated_policy(
             n: (math.inf, math.inf) for n in decision.recurring.site.names
         }
         long_route, long_solver = "run_to_failure", "closed form"
-        long_statement = (
-            f"running to failure: {_figure(measure, rate * scale, None)}"
-        )
         cost, cost_se, cost_rate = rate * scale, None, rate
+        if discount is not None:
+            measure = EAC
+            cost = _run_to_failure_eac(layout, discount) * scale
+        long_statement = f"running to failure: {_figure(measure, cost, None)}"
         by_kind = {
             "failure": scale / R._mean(layout.part, R._survival(layout.part))
         }
@@ -570,6 +610,7 @@ def dated_policy(
         long_statement = long_policy.route_text
         cost, cost_se = long_policy.cost, long_policy.cost_se
         cost_rate = long_policy.cost_rate
+        measure = long_policy.measure
         by_kind = dict(long_policy.replacements_by_kind)
     kind, solved, values, extra = _settled(layout, decision)
     names_site = list(site.names)
@@ -599,9 +640,24 @@ def dated_policy(
         share = np.zeros(ages.size + 1)
         share[min(int(round(age / step)), ages.size)] = 1.0
         _, replaced, failures = R._propagate(share, first[:n], ages.p)
-        planned = replaced > 0
-        dated_cost = float(np.dot(replaced[planned], costs[:n][planned]))
-        dated_cost += float(failures) * float(failure)
+        if discount is None:
+            planned = replaced > 0
+            dated_cost = float(np.dot(replaced[planned], costs[:n][planned]))
+            dated_cost += float(failures) * float(failure)
+        else:
+            # The window's own decisions, each step discounted by the
+            # calendar time it spans: the present value to its end.
+            from repyability.maintenance._horizon import _betas
+
+            to_end, _, _ = R._sweep(
+                np.zeros(ages.size + 1),
+                costs[:n],
+                ages.p,
+                failure,
+                _betas(layout, n, step, discount),
+                fixed=first[:n],
+            )
+            dated_cost = float(to_end[min(int(round(age / step)), ages.size)])
         for k, name in enumerate(names):
             label = ANY_DAY if name == ANYTIME else name
             window_replacements[label] = float(replaced[kinds[:n] == k].sum())
@@ -640,6 +696,15 @@ def dated_policy(
         # The window's own decisions to its end, priced from the part now.
         from repyability.maintenance._horizon import _Shuts
 
+        rhos = None
+        if discount is not None:
+            from repyability.maintenance._horizon import _segment_rates
+
+            rhos = _segment_rates(
+                layout,
+                np.concatenate([[0.0], shuts.times[inside], [end]]),
+                discount,
+            )
         priced = _Shuts(
             layout.part,
             shuts.times[inside],
@@ -648,7 +713,7 @@ def dated_policy(
             0.0,
             end,
             layout.part.cu,
-            None,
+            rhos,
             shuts.thresholds[inside],
         )
         priced_values = priced.solve()
@@ -712,11 +777,22 @@ def dated_policy(
     )
     notes = _then_every_notes(layout, decision.window_day)
     figure = _figure(measure, cost, cost_se)
+    if discount is None:
+        then = "the long-run average"
+        cost_words = "Expected cost"
+    else:
+        from repyability.maintenance._shutdowns import _percent
+
+        then = f"the discounted long run at {_percent(discount)} a year"
+        figure += " (equivalent annual cost)"
+        cost_words = "Present value of the cost"
     text = (
-        f"Dated window to {day}, then the long-run average: {figure}. "
-        f"{using}, then the recurring shuts' long-run average after {day}"
+        f"Dated window to {day}, then {then}: {figure}. "
+        f"{using}, then the recurring shuts' "
+        + ("long-run average" if discount is None else "discounted long run")
+        + f" after {day}"
         + (f"; {'; '.join(notes)}" if notes else "")
-        + f". Expected cost to {day}: "
+        + f". {cost_words} to {day}: "
         + (
             _money(round(dated_cost, 2))
             if dated_cost >= 0.01
@@ -755,6 +831,7 @@ def dated_policy(
         dated_cost=float(dated_cost),
         long_run_route=long_route,
         long_run_solver=long_solver,
+        discount=None if discount is None else float(discount),
     )._bind(engine, layout, decision)
 
 

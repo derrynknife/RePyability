@@ -709,6 +709,21 @@ class AgeReplacementValue(_ResultMapping):
     cycle_cost: float
 
 
+def _cycle_value(part, age: float, rate: float, cp: float, cu: float):
+    """A new part's first cycle under replacement at ``age``: its present
+    cost (``cp`` at ``age``, ``cu`` at a failure first, each discounted to
+    when it falls) and its discounted length ``M(age)``."""
+    # The chance of reaching the planned replacement, discounted to then
+    # (kept), and of failing before it, discounted (failed): with M the
+    # discounted mean time up, 1 - kept - rate * M, by parts.
+    kept = math.exp(-rate * age) * float(
+        np.ravel(part.reliability_function(age))[0]
+    )
+    length = _discounted_length(part, 0.0, age, rate)
+    failed = max(1.0 - kept - rate * length, 0.0)
+    return cu * failed + cp * kept, length
+
+
 def age_replacement_value(
     part, age, *, discount_rate: float = 0.0
 ) -> AgeReplacementValue:
@@ -720,15 +735,7 @@ def age_replacement_value(
         )
     age = float(age)
     rate = _number(discount_rate, "discount_rate")
-    # The chance of reaching the planned replacement, discounted to then
-    # (kept), and of failing before it, discounted (failed): with M the
-    # discounted mean time up, 1 - kept - rate * M, by parts.
-    kept = math.exp(-rate * age) * float(
-        np.ravel(part.reliability_function(age))[0]
-    )
-    length = _discounted_length(part, 0.0, age, rate)
-    failed = max(1.0 - kept - rate * length, 0.0)
-    cycle = part.cu * failed + part.cp * kept
+    cycle, length = _cycle_value(part, age, rate, part.cp, part.cu)
     if rate == 0.0:
         # Renewal reward: the cost of a cycle over its mean length.
         return AgeReplacementValue(age, rate, math.inf, cycle / length, cycle)
@@ -736,3 +743,167 @@ def age_replacement_value(
     # discount, is 1 - rate * length.
     npv = cycle / (rate * length)
     return AgeReplacementValue(age, rate, npv, rate * npv, cycle)
+
+
+# -- the discounted optimum (Fox, 1966) --------------------------------------
+
+#: The discounted search's ages: a grid this many points a decade, over
+#: ``DECADES`` decades below the oldest age that matters.
+POINTS_A_DECADE = 500
+DECADES = 6
+#: Where the discounted search stops: the age by which a unit has all but
+#: surely failed, or by which a cost is discounted to ``exp(-REACH)``.
+REACH = 40.0
+FAILED_BY = 1e-12
+
+
+def discount_rate(value, name: str = "discount_rate") -> float:
+    """A continuous discount rate per unit of time, at least 0."""
+    return _number(value, name)
+
+
+def _discounted_rates(cp, cu, ages, R, rate):
+    """The equivalent annual cost of age replacement at each of ``ages``
+    (increasing, from 0), ``R`` the survival there: the discounted cycle
+    length and failures by the cumulative trapezoidal rule. At rate 0 it
+    is ``_cost_rates`` (the long-run cost rate); ``inf`` at age 0."""
+    disc = np.exp(-rate * ages)
+    kept = disc * R
+    length = np.concatenate(
+        [[0.0], np.cumsum(np.diff(ages) * (kept[1:] + kept[:-1]) / 2.0)]
+    )
+    failed = (1.0 - R[0]) + np.concatenate(
+        [[0.0], np.cumsum(-np.diff(R) * (disc[1:] + disc[:-1]) / 2.0)]
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rates = (cu * failed + cp * kept) / length
+    rates[0] = np.inf
+    return rates
+
+
+def _scale(part) -> float:
+    from repyability.rbd._model_utils import MODEL_ERRORS, model_mean
+
+    try:
+        mean = float(model_mean(part.reliability))
+    except MODEL_ERRORS:
+        mean = math.nan
+    if 0.0 < mean < math.inf:
+        return mean
+    return 1.0
+
+
+def _reach(part, rate: float) -> float:
+    """The oldest age that matters to a discounted cost: where the part
+    has all but surely failed, or where a cost is discounted to
+    ``exp(-REACH)``, whichever comes first."""
+    sf = part.reliability_function
+    upper = _scale(part)
+    for _ in range(400):
+        if rate * upper >= REACH:
+            return REACH / rate
+        if float(np.ravel(sf(upper))[0]) <= FAILED_BY:
+            return upper
+        upper *= 2.0
+    return upper
+
+
+def discounted_run_to_failure(part, rate: float, cu: float) -> float:
+    """The equivalent annual cost of running to failure, discounted at
+    ``rate`` (more than 0): ``cu`` at each failure, forever. With ``M``
+    the integral of ``exp(-r t) R(t)`` to infinity, ``cu (1 - r M) / M``
+    (the renewal sum ``cu L / (1 - L)`` with ``L = 1 - r M``, times
+    ``r``)."""
+    upper = _reach(part, rate)
+    if part.model_parameterization == "standby":
+        ages = np.linspace(0.0, upper, 20001)
+        R = np.clip(
+            np.ravel(np.asarray(part.reliability.sf(ages), dtype=float)),
+            0.0,
+            1.0,
+        )
+        kept = np.exp(-rate * ages) * R
+        length = float(np.sum(np.diff(ages) * (kept[1:] + kept[:-1]) / 2.0))
+    else:
+        length = _discounted_length(part, 0.0, upper, rate)
+    return cu * max(1.0 - rate * length, 0.0) / length
+
+
+def discounted_optimum(part, rate: float, cp: float, cu: float):
+    """The replacement age that minimises the equivalent annual cost of
+    age replacement at the continuous discount rate ``rate`` (more than
+    0), and that cost: ``(inf, run-to-failure cost)`` where no age beats
+    running to failure (by more than one part in a million).
+
+    The cost is scanned on a grid of ages, the discounted cycle length
+    and failures by the trapezoidal rule (``POINTS_A_DECADE`` a decade
+    over ``DECADES`` decades below the oldest age that matters, with the
+    model's knots), and the cheapest refined between its neighbours with
+    a bounded search on the cost worked out by quadrature. A
+    non-parametric estimate is scanned on its own grid (to its last time
+    point) and not refined, as the undiscounted search is.
+    """
+    from scipy.optimize import minimize_scalar
+
+    from repyability.rbd._mean_lifetime import model_knots
+
+    kind = part.model_parameterization
+    sf = part.reliability_function
+    if kind not in ("parametric", "degradation", "standby"):
+        knots = part._knots
+        ages = np.union1d(np.linspace(0.0, knots[-1], 10001), knots)
+        R = np.ravel(np.asarray(sf(ages), dtype=float))
+        rates = _discounted_rates(cp, cu, ages, R, rate)
+        i = int(np.nanargmin(rates))
+        return float(ages[i]), float(rates[i])
+    upper = _reach(part, rate)
+    points = POINTS_A_DECADE * DECADES + 1
+    ages = upper * np.logspace(-DECADES, 0.0, points)
+    if kind != "standby":
+        knots = model_knots(part.reliability)
+        ages = np.union1d(ages, knots[(knots > 0.0) & (knots < upper)])
+    offset = float(getattr(part.reliability, "gamma", 0) or 0)
+    if getattr(part.reliability, "offset", False) and 0.0 < offset < upper:
+        ages = np.union1d(ages, [offset])
+    ages = np.concatenate([[0.0], ages])
+    with np.errstate(all="ignore"):
+        if kind == "standby":
+            R = np.ravel(np.asarray(part.reliability.sf(ages), dtype=float))
+        else:
+            R = np.ravel(np.asarray(sf(ages), dtype=float))
+    R = np.clip(np.nan_to_num(R, nan=0.0), 0.0, 1.0)
+    rates = _discounted_rates(cp, cu, ages, R, rate)
+    i = int(np.nanargmin(rates))
+
+    def eac(t: float) -> float:
+        if kind == "standby":
+            grid = np.linspace(0.0, t, 4001)
+            S = np.clip(
+                np.ravel(np.asarray(part.reliability.sf(grid), dtype=float)),
+                0.0,
+                1.0,
+            )
+            return float(_discounted_rates(cp, cu, grid, S, rate)[-1])
+        with np.errstate(all="ignore"):
+            cycle, length = _cycle_value(part, t, rate, cp, cu)
+        return cycle / length
+
+    lo, hi = float(ages[max(i - 1, 1)]), float(ages[min(i + 1, ages.size - 1)])
+    best_age, best = float(ages[i]), eac(float(ages[i]))
+    if hi > lo:
+        found = minimize_scalar(
+            eac,
+            bounds=(lo, hi),
+            method="bounded",
+            options={"xatol": 1e-10 * hi},
+        )
+        if float(found.fun) < best:
+            best_age, best = float(found.x), float(found.fun)
+    if getattr(part.reliability, "offset", False) and 0.0 < offset < upper:
+        at_offset = eac(offset)
+        if at_offset < best:
+            best_age, best = offset, at_offset
+    rtf = discounted_run_to_failure(part, rate, cu)
+    if not best < rtf * (1.0 - 1e-6):
+        return math.inf, rtf
+    return best_age, best

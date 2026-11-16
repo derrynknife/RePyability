@@ -257,6 +257,19 @@ class ShutdownPolicy(_ResultMapping):
         For ``"dated_then_long_run"``: the long run's route.
     long_run_solver : str or None
         For ``"dated_then_long_run"``: the long run's solver.
+    discount : float or None
+        The yearly discount rate of a discounted long run (``discount=``
+        with no horizon; None otherwise, and for a horizon, whose rate is
+        in its text). ``cost`` is then the equivalent annual cost
+        (``measure`` ``"equivalent annual cost"``): the present value of
+        every replacement from now on, forever, spread as a steady cost a
+        year, ``ln(1 + discount)`` times it; ``cost_rate`` and the rates
+        by kind stay the long-run (undiscounted) figures of the rule
+        chosen.
+    npv : float or None
+        With ``discount``: the present value now of every replacement,
+        forever, from a new part put in now (None for a dated window,
+        whose ``dated_cost`` is the present value to its end).
     """
 
     # Bound after construction (``_bind``), not fields: how the dates are
@@ -285,6 +298,8 @@ class ShutdownPolicy(_ResultMapping):
     dated_cost: Optional[float] = None
     long_run_route: Optional[str] = None
     long_run_solver: Optional[str] = None
+    discount: Optional[float] = None
+    npv: Optional[float] = None
 
     def _bind(self, engine, layout, decision) -> "ShutdownPolicy":
         object.__setattr__(self, "_engine", engine)
@@ -561,10 +576,13 @@ def _exact(layout: _Layout, decision: _Decision, mc_samples, seed):
     calendar = _expanded(layout, decision.patterns)
     failure, anytime = calendar._prices(part)
     life = R._saved_life(part)
+    rate = model_rate(layout, decision.discount)
     if decision.failure_timing == "exact" and decision.route != "sampling":
         _warn_slow(decision)
         try:
-            return integrated_policy(part, calendar, failure, life=life)
+            return integrated_policy(
+                part, calendar, failure, life=life, discount_rate=rate
+            )
         except NotImplementedError as error:
             raise ValueError(
                 f"failure_timing='exact' is refused here ({error}): use "
@@ -609,7 +627,19 @@ def _exact(layout: _Layout, decision: _Decision, mc_samples, seed):
             f"exactly takes {_seconds_text(decision.seconds or 0.0)}.",
             stacklevel=outside_level(),
         )
-    return R._cycle_policy(grid, ages, failure, grid.names, life)
+    return R._cycle_policy(grid, ages, failure, grid.names, life, rate)
+
+
+def model_rate(layout: _Layout, discount: Optional[float]) -> float:
+    """A yearly discount as a continuous rate a unit of the part's clock,
+    which keeps a steady pace with the calendar (``_shutdowns.
+    _long_run_discount`` refuses one that does not): ``ln(1 + discount)``
+    over the units a year. 0 for none."""
+    if not discount:
+        return 0.0
+    pace = layout.pace()
+    assert pace is not None
+    return math.log1p(float(discount)) / pace
 
 
 def _warn_slow(decision: _Decision) -> None:
@@ -1040,6 +1070,10 @@ def _dated_grid_policy(layout: _Layout, rule: Dict[str, float], end: float):
 # --------------------------------------------------------- building results
 
 
+#: The measure of a discounted long run's figure.
+EAC = "equivalent annual cost"
+
+
 def _measure(layout: _Layout) -> Tuple[Optional[float], str]:
     pace = layout.pace()
     if pace is None:
@@ -1049,7 +1083,7 @@ def _measure(layout: _Layout) -> Tuple[Optional[float], str]:
 
 
 def _figure(measure: str, cost: float, se: Optional[float]) -> str:
-    if measure == "cost per year":
+    if measure in ("cost per year", EAC):
         money = _money(round(cost, 2)) if cost >= 0.01 else f"${cost:.3g}"
         text = f"{money} a year"
     else:
@@ -1132,6 +1166,7 @@ def _policy_for(
         inner = _exact(layout, decision, mc_samples, seed)
         engine: Any = _InnerEngine(inner, layout)
         rate = float(inner.cost_rate)
+        eac, npv = float(cast(float, inner.eac)), float(inner.npv)
         se = inner.cost_rate_se
         rates = _merged(inner.replacement_rates)
         thresholds = _inner_thresholds(inner, names)
@@ -1144,6 +1179,20 @@ def _policy_for(
     else:
         model = _averaged_model(layout)
         a, a0, rate = model.optimise()
+        eac, npv = rate, math.inf
+        if decision.discount:
+            # No shuts (a discounted long run refuses the averaged route):
+            # age replacement on any day at the least equivalent annual
+            # cost, its long-run figures those of the age chosen.
+            from repyability.maintenance._options import discounted_optimum
+
+            r = model_rate(layout, decision.discount)
+            best, eac = discounted_optimum(
+                part, r, float(cast(float, site.any_day)), float(part.cu)
+            )
+            a0 = None if math.isinf(best) else best
+            rate = model.rate(a, a0)
+            npv = eac / r
         length, by_kind, anyday, failed = model.evaluate(a, a0)
         thresholds = {
             name: (float(a[k]), float(a[k])) for k, name in enumerate(names)
@@ -1183,6 +1232,19 @@ def _policy_for(
             "usual gaps"
         ),
     }[decision.route]
+    discounted: Dict[str, Any] = {}
+    if decision.discount:
+        from repyability.maintenance._shutdowns import _percent
+
+        measure = EAC
+        cost = eac * scale
+        statement = (
+            f"Lowest equivalent annual cost at {_percent(decision.discount)} "
+            "a year, discounted over the long run"
+        )
+        discounted = {"discount": float(decision.discount), "npv": npv}
+        settings = dict(settings)
+        settings["long_run_cost_per_year"] = rate * scale
     figure = _figure(measure, cost, cost_se)
     if decision.route == "sampling":
         figure += f" ({int(mc_samples)} samples)"
@@ -1214,6 +1276,7 @@ def _policy_for(
         notes=tuple(notes),
         settings=settings,
         life=life,
+        **discounted,
     )._bind(engine, layout, decision)
 
 
@@ -1249,6 +1312,13 @@ def _named_rule(layout: _Layout, rule) -> Dict[str, float]:
 
 def _rule_cost(layout, decision, rule, name, settings) -> RuleCost:
     """A fixed rule priced by the decision's route."""
+    if decision.discount is not None and decision.route != "horizon":
+        raise NotImplementedError(
+            "A given rule is priced as a long-run average or over a horizon, "
+            "not yet at a discount over the long run: give horizon= with "
+            "discount= (its net present cost on the real dates), or leave "
+            "discount= out (its long-run average)."
+        )
     pace, measure = _measure(layout)
     names = list(layout.site.names)
     if decision.route == "dated_then_long_run":
@@ -1555,6 +1625,11 @@ def _baseline_rate(policy: ShutdownPolicy) -> Tuple[float, str]:
     """The policy's figure a unit of the part's clock, and its words."""
     layout = policy._layout
     pace = layout.pace() or 1.0
+    if policy.discount is not None:
+        return float(policy.cost) / pace, (
+            "the equivalent annual cost of the policy's discounted long run "
+            f"({policy.route} route)"
+        )
     if policy.route == "dated_then_long_run":
         return float(cast(float, policy.cost_rate)), (
             "the long-run cost of the recurring shuts after the dated window "
