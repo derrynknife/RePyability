@@ -9,6 +9,21 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- A life on two clocks as a block: surpyval's life at a usage rate
+  (`EquivalenceModel.at_usage(rate)`; for parts that wear by running
+  hours and by starts) is a block's life in a `NonRepairableRBD`, a
+  `NonRepairable` and a `RepairableRBD` component, in the first clock's
+  unit (hours). Where a diagram needs a surpyval distribution, the life
+  at the rate is the distribution it is (the combined clock's, its time
+  divided by `1 + k rate`); a `"duty"` applies on top. Its rate is a
+  lever (`"rate"`, or `"reliability.rate"` in a repairable component) of
+  `parameter_sensitivity`, `levers()` and `with_levers`, and a diagram
+  saves it (the model and the rate). The `EquivalenceModel` itself is
+  refused as a block, saying to give `model.at_usage(rate)`. See
+  [Building an RBD](docs/guide/building.md#a-life-on-two-clocks-hours-and-starts).
+
 ## [0.19] - 2026-11-15
 
 Shutdown policies on real dates. A site's shuts become one record,
