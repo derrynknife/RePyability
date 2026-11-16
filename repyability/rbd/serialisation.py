@@ -171,11 +171,23 @@ def _serialise_model(model: Any) -> dict:
             ),
         }
     if isinstance(model, NonRepairable):
-        return {
+        out = {
             "kind": "non_repairable",
             "reliability": serialise_model(model.reliability),
             "time_to_replace": serialise_model(model.time_to_replace),
         }
+        # The prices at opportunities, where given (an Opportunity key
+        # saved by its name, which the policies match it by too).
+        if model.opportunity_cost is not None:
+            out["opportunity_cost"] = model.opportunity_cost
+        if model.job_duration is not None:
+            out["job_duration"] = model.job_duration
+        if model.opportunity_costs:
+            out["opportunity_costs"] = {
+                getattr(k, "name", k): v
+                for k, v in model.opportunity_costs.items()
+            }
+        return out
     if isinstance(model, RegressionNode):
         return {"kind": "regression_node", **model.to_dict()}
     if isinstance(as_node(model), JointNode):
@@ -303,6 +315,9 @@ def deserialise_model(d: dict) -> Any:
         return NonRepairable(
             deserialise_model(d["reliability"]),
             deserialise_model(d["time_to_replace"]),
+            opportunity_cost=d.get("opportunity_cost"),
+            job_duration=d.get("job_duration"),
+            opportunity_costs=d.get("opportunity_costs"),
         )
     if kind == "regression_node":
         return RegressionNode.from_dict(d)

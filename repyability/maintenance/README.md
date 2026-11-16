@@ -33,7 +33,7 @@ records and decides what "today" is.
 | UC-18 | The numbers behind each maintenance decision for a failure mode: run to failure, scheduled replacement, failure finding, on condition | **Built**: `run_to_failure`, `scheduled_replacement`, `failure_finding`, `on_condition` |
 | UC-17 | The risk added when a visit is missed and its work waits | **Built**: `NonRepairable.cost_of_missed_visit` (and `delay_effect`) |
 | UC-12 | When to replace this part next: now, at a scheduled outage, at a planned replacement, or at its failure? | **Built**: `NonRepairable.optimal_next_replacement` |
-| UC-13 | The long-run optimal replacement policy over a calendar of shuts with prices of their own | **Built**: `NonRepairable.optimal_calendar_policy` |
+| UC-13 | The long-run optimal replacement policy over a calendar of shuts with prices of their own | **Built**: `NonRepairable.optimal_opportunity_policy` (0.14's `optimal_calendar_policy`, deprecated), the prices on the part since UC-45 |
 | UC-19 | What a plan is worth over a horizon at a discount rate, and as a yearly cost | **Built**: `RepairableRBD.expected_npv`, `NonRepairable.age_replacement_value` |
 | UC-20 | One unit run on an operating schedule (covariates and value by stretch, in model time): the value earned, the failures' cost and the NPV, and the best time to switch from one way of running to another | **Built** (one unit): `operating_schedule_value`, `best_switch_time` |
 | UC-21 | A plan against its outage log: expected and actual cash flows so far, the variance, and the plan re-valued from the states now | **Built**: `RepairableRBD.plan_vs_actual` |
@@ -42,8 +42,9 @@ records and decides what "today" is.
 | UC-24 | Outages on a timeline: shuts at given times with a duration and a scope (renew some blocks, restore others), the plan's cost by window and its NPV | **Built in part**: the same `shutdowns` at `"times"`, simulated (`availability`, `cost`); the exact cost by window and NPV take shuts on a period only |
 | UC-25 | How much of the downtime and lost production is planned and how much is from failures, and how many failures the plan avoids against running to failure | **Built**: `RepairableRBD.maintenance_effect`, and the split in `ExpectedEvents`, `EventsByWindow`, `AvailabilityResult` and `CostResult`; exact where the blocks fail independently, simulated otherwise |
 | UC-26 | A pump run part of the time with its overhaul counted in running hours: availability and cost, and at another duty | **Built**: a `"preventive"` or `"inspection"` spec's `"basis": "operating"`, put on the calendar through the block's `"duty"` |
-| UC-43 | A site's shuts on real dates (rules, one-offs, plain periods, a use on a meter) in one record, the best rule for a part there, worked out by a route that is always named and never chosen silently, given back as dates; the unit in service, its cost's spread, and a diagram's outages from the same record | **Built**: `Shutdowns`, `Shutdown`, `optimal_calendar_policy(site, ...)` returning a `ShutdownPolicy`, `Shutdowns.route`, `calendar_policy_cost(site, ...)`, `optimal_next_replacement(..., site=)`, `cost_distribution`/`cost_by_window(policy=)`, `Shutdowns.on_diagram` |
-| UC-44 | The best replacement policy in the long run at a discount rate: age replacement, a calendar of shuts in model time and a site on real dates, by the least equivalent annual cost | **Built**: `discount_rate=` of `find_optimal_replacement`, `optimal_replacement_policy` and `optimal_calendar_policy` (a `Calendar`), and `discount=` without a horizon (a `Shutdowns` site) |
+| UC-43 | A site's shuts on real dates (rules, one-offs, plain periods, a use on a meter) in one record, the best rule for a part there, worked out by a route that is always named and never chosen silently, given back as dates; the unit in service, its cost's spread, and a diagram's outages from the same record | **Built**: `Opportunities` of `Opportunity` on real dates (0.19's `Shutdowns` and `Shutdown`, deprecated), `optimal_opportunity_policy(site, ...)` returning a `ShutdownPolicy`, `Opportunities.route`, `opportunity_policy_cost(site, ...)`, `optimal_next_replacement(..., site=)`, `cost_distribution`/`cost_by_window(policy=)`, `Opportunities.on_diagram` |
+| UC-44 | The best replacement policy in the long run at a discount rate: age replacement, a calendar of shuts in model time and a site on real dates, by the least equivalent annual cost | **Built**: `discount_rate=` of `find_optimal_replacement`, `optimal_replacement_policy` and `optimal_opportunity_policy` (`discount_rate=` in model time, and `discount=` without a horizon on real dates) |
+| UC-45 | One record of a site's opportunities (stops and shuts) for every part, each part bringing its own prices (at an opportunity, on any other day, at a failure, and per opportunity) and the length of its job, so an opportunity too short for the job is not used; and the prices worked out from a replacement's cost and the plant's downtime | **Built**: `Opportunity`, `Opportunities`, `NonRepairable(opportunity_cost=, opportunity_costs=, job_duration=)`, the policy's `prices` (`OpportunityPrices`), `NonRepairable.opportunity_prices` |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -1146,7 +1147,26 @@ answers back into dates is Reliafy's too.)
 - **Status:** built (the maintainer's brief, "long-run optimal replacement
   policy over an outage calendar"): `NonRepairable.optimal_calendar_policy`,
   `calendar_policy_cost`, `Opportunity`, `Calendar`, `CalendarPolicy`.
+  Since UC-45 (0.20) the prices come with the part, and the names are
+  `optimal_opportunity_policy`, `opportunity_policy_cost` and
+  `Opportunities` (the old ones deprecated, with the same numbers).
   Decisions to take or verify: `repyability/maintenance/CALENDAR_DECISIONS.md`.
+- **In the 0.20 API:**
+
+  ```python
+  plant = Opportunities([
+      Opportunity("weekly", period=7.0),
+      Opportunity("quarterly", period=91.0),
+      Opportunity("annual", period=364.0),
+  ])                                         # any_day=True: 4 on any other day
+  bearing = NonRepairable(
+      surv.Weibull.from_params([1000.0, 2.5]),
+      planned_cost=4.0, unplanned_cost=20.0,
+      opportunity_costs={"weekly": 3.0, "quarterly": 2.0, "annual": 1.0},
+  )
+  policy = bearing.optimal_opportunity_policy(plant)   # 0.006943 a day
+  bearing.opportunity_policy_cost(plant, {"annual": 0.0})
+  ```
 - **Who asks, and why:** a reliability engineer setting a part's
   replacement rule in a plant whose shuts make replacing cheap at some
   times and dear at others. Age replacement assumes one planned price at
@@ -1238,6 +1258,37 @@ answers back into dates is Reliafy's too.)
 
 ### UC-43: "Our shuts are on real dates: every Saturday, the first Tuesday of November, two turnarounds, and the truck's service every 15,000 km. What is the best rule for this part, on those dates, and how was it worked out?"
 
+- **In the 0.20 API** (the prices on the part, UC-45): the plant of
+  the answers below is
+
+  ```python
+  plant = Opportunities(
+      [
+          Opportunity("weekly stop", Recurrence.weekly("Sat"), duration="8h"),
+          Opportunity("quarterly shut", Recurrence.monthly(
+              weekday="Sunday", nth=1, every=3, anchor="2026-12-06"),
+              duration="1d"),
+          Opportunity("annual shut", Recurrence.yearly(
+              month="November", weekday="Tuesday", nth=1), duration="3d"),
+          Opportunity("turnaround", dates=["2027-03-03", "2028-09-09"],
+                      duration="14d"),
+      ],
+      time_zone="Australia/Brisbane",
+  )
+  pump_bearing = NonRepairable(
+      surv.Weibull.from_params([20_000, 2.5]),
+      planned_cost=4.0, unplanned_cost=40.0,
+      opportunity_costs={"weekly stop": 3.0, "quarterly shut": 2.0,
+                         "annual shut": 1.0, "turnaround": 0.5},
+  )
+  pump_bearing.optimal_opportunity_policy(
+      plant, method="averaged", plan=shifts, now="2026-11-16",
+      unit="hours", age=3100,
+  )
+  ```
+
+  and Example 6 is `optimal_opportunity_policy(Opportunities(),
+  unit="days")` for a part with `planned_cost=1`.
 - **Status:** built: `Shutdowns([Shutdown(...)], any_day=, time_zone=)`,
   `NonRepairable.optimal_calendar_policy(site, plan=, now=, readings=,
   age=, unit=, method=, horizon=, discount=, failure_timing=)` returning a
@@ -1434,6 +1485,17 @@ answers back into dates is Reliafy's too.)
 ### UC-44: "Money spent later is worth less to us (7% a year). What replacement age, or rule at our shuts, is cheapest in the long run at that rate?"
 
 - **Status:** built.
+- **In the 0.20 API:**
+
+  ```python
+  stops = Opportunities([Opportunity("stop", period=28.0)], any_day=False)
+  part = NonRepairable(surv.Weibull.from_params([1000.0, 2.5]),
+                       unplanned_cost=20.0, opportunity_cost=3.0)
+  part.optimal_opportunity_policy(stops, discount_rate=math.log(1.07) / 365.25)
+  site = Opportunities([Opportunity("stop", Recurrence.every(4, "weeks", "2026-11-21"))],
+                       any_day=False)
+  part.optimal_opportunity_policy(site, unit="days", now="2026-11-16", discount=0.07)
+  ```
 - **Who asks, and why:** a reliability or maintenance engineer whose
   finance team discounts costs: the long-run cost rate (UC-13, age
   replacement) treats a dollar in ten years as a dollar now, which
@@ -1499,6 +1561,66 @@ answers back into dates is Reliafy's too.)
   EAC as its baseline, its own choices still undiscounted), the
   repairable unit's overhaul policies, failure finding and on-condition
   intervals, and `RepairableRBD.optimal_replacement_intervals`.
+
+
+### UC-45: "One list of our stops and shuts serves every part. Each part's replacement costs differently, and some jobs don't fit in a short stop. What is each part's best rule, and what did it price each stop at?"
+
+- **Status:** built (the maintainer's decision, 16 Nov 2026; see
+  `CALENDAR_DECISIONS.md`, G): `Opportunity`, `Opportunities`,
+  `NonRepairable(opportunity_cost=, opportunity_costs=, job_duration=)`,
+  `optimal_opportunity_policy` and `opportunity_policy_cost` (the policy's
+  `prices`, an `OpportunityPrices`), and `NonRepairable.opportunity_prices`.
+- **Who asks, and why:** a planner who keeps one record of the site's
+  stops and shuts, and an engineer setting rules for many parts against
+  it. Until 0.20 the price was on the opportunity (`Opportunity(name,
+  cost)`, `Shutdown(replace_cost=)`), so each part needed its own copy of
+  the site; and a model-time `Calendar` and a real-date `Shutdowns` were
+  two ways to say the same thing.
+- **What they know:** the site's opportunities (when, how long, what each
+  takes down); for each part its replacement's price at an opportunity,
+  on any other day and at a failure (or a replacement's cost, its
+  duration and the plant's downtime cost an hour, from which those
+  follow), any opportunity priced differently, and how long the job takes.
+- **What they want back:** each part's policy, as UC-13 and UC-43, with
+  the price each opportunity was given and where it came from, and the
+  opportunities not used and why ("the 6 h job doesn't fit in the 4 h
+  stop").
+- **How it is solved:** no new method. The part's prices are laid on the
+  opportunities (`_opportunities.resolve`): at each opportunity the part's
+  `opportunity_costs` for it (by name, or the `Opportunity` itself), else
+  its `opportunity_cost`, else its `planned_cost` (an opportunity priced
+  as any other day); on any other day its `planned_cost` where
+  `any_day=True`; at a failure its `unplanned_cost`. An opportunity shorter
+  than `job_duration` (either length unsaid: used), or with `where=` one
+  whose `takes_down` leaves that label out, is dropped. The result is the
+  solvers' own record (a model-time `Calendar`, or a site), solved as
+  UC-13 and UC-43 solve it. A key of `opportunity_costs` naming no
+  opportunity of the collection is refused, listing those it has. The
+  0.14 and 0.19 forms are read the same way, their prices taken as the
+  part's overrides for those opportunities. `opportunity_prices` works
+  out the prices: at a fitting opportunity the replacement alone, on any
+  day the replacement and its downtime, at a failure the failure's cost
+  and its downtime; `apply(part)` gives the part those prices (the
+  downtime cost is the system's, not kept on the part).
+- **The answers, by hand:** a replacement of 1,200 taking 6 h, the plant
+  down at 2,500 an hour, a failure of 4,200 with 18 h down: 1,200 at a
+  stop of 8 h; not at a stop of 4 h; 1,200 + 2,500 x 6 = 16,200 on any
+  other day; 4,200 + 2,500 x 18 = 49,200 at a failure. UC-13's plant as a
+  part with `planned_cost=4`, `unplanned_cost=20` and overrides 3, 2 and
+  1: 0.006943 a day, the `Calendar`'s figure bit for bit.
+- **Checks** (`test_opportunities.py`): the old forms against the new,
+  bit for bit, in model time, on a site with and without fixed dates, and
+  discounted both ways; overrides by name and by object; a misspelt name
+  refused with the names; a stop too short skipped, said, and the same as
+  the site without it; the price with no `opportunity_cost`; the helper
+  against the hand-worked prices, and applied; one record serving two
+  parts, each its own calendar's policy; `where=`; saving and loading the
+  opportunities, a saved `Shutdowns`, and the part's prices; each old
+  form's warning.
+- **Learned / open:** `takes_down` is recorded and filters a policy by
+  `where=`; a diagram does not read it yet (a shut's `scope` is still
+  given to `on_diagram`). The results keep the names `ShutdownPolicy`
+  and `ShutdownRoute`.
 
 
 ### UC-14: "A cheap task every visit and a deeper one every few visits: how often should we visit, and how deep?"

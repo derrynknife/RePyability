@@ -368,3 +368,64 @@ eye.
     - `test_api_docstrings` had been failing for the cost parameters of
       `NonRepairable`, `ReplacementPlan` and `replacement_policies`; this was
       fixed in #340.
+
+## G. Prices with the part (16 Nov 2026, UC-45)
+
+31. **★ The decision.** The maintainer, 16 Nov 2026: a replacement's
+    price "must come with the part", as an opportunity (a stop or shut)
+    applies to every part; and there should be one name for the two ways
+    of describing opportunities (`Calendar` in model time, 0.14, and
+    `Shutdowns` on real dates, 0.19; the word "Shutdowns" was not liked).
+    Done:
+    - **Names:** `Opportunity` says when, how long and what it takes down
+      (`takes_down`, by default the whole site), with no price;
+      `Opportunities([...], any_day=True|False, time_zone=None)` collects
+      them, in model time or on real dates by what they are (a mix is
+      refused). `optimal_opportunity_policy` and `opportunity_policy_cost`
+      replace `optimal_calendar_policy` and `calendar_policy_cost`, with
+      every keyword unchanged, and `where=` added.
+    - **Prices with the part:** `NonRepairable`'s `planned_cost` (any
+      day), `unplanned_cost` (a failure), and new `opportunity_cost` (at
+      an opportunity; without one, an opportunity is priced as any other
+      day, at `planned_cost`) and `opportunity_costs` (per opportunity).
+    - **Overrides by name or object, checked:** a key of
+      `opportunity_costs` is an opportunity's name or the `Opportunity`
+      itself; when the policy runs, a key that matches no opportunity of
+      the collection is refused, listing the names it has. Never ignored.
+    - **Jobs that don't fit are skipped:** an opportunity shorter than the
+      part's `job_duration` is not used for that part, and the policy's
+      `prices` say so ("the 6 h job doesn't fit in the 4 h stop"); with
+      either length unsaid it is used. In model time both are numbers in
+      the life's unit; on real dates text or hours.
+    - **Shown:** the policy's `prices` (`OpportunityPrices`) give each
+      opportunity's price and its source (an override, `opportunity_cost`,
+      `planned_cost`, a deprecated price, or not used and why), the any-day
+      and the failure prices.
+32. **The old forms keep their numbers.** `Calendar(failure=, anytime=)`,
+    `Opportunity(name, cost, ...)`, `Shutdown(replace_cost=)` and
+    `Shutdowns(any_day=<price>)` still work and warn (a `FutureWarning`,
+    as CONTRIBUTING has deprecations warn, naming the replacement), for
+    removal in 0.21. A price on an opportunity is the part's override for
+    it (the part's own `opportunity_costs` wins where both are given);
+    `failure=` the failure's price and `anytime=`/`any_day=` the any-day
+    price, exactly as before. The prices are laid on the opportunities as
+    the solvers' own `Calendar` or site, so no numerical method changed:
+    `test_opportunities.py` checks old against new bit for bit.
+33. **Choices made here.** `Opportunities(any_day=)` defaults to True (a
+    planned replacement on any other day, at the part's `planned_cost`;
+    as `Calendar`'s `anytime="part"` did; `Shutdowns` defaulted to none).
+    An empty collection with no time zone is in model time, unless the
+    policy is given a site's arguments (`now=`, `unit=`, `plan=`, ...).
+    The helper is a static method,
+    `NonRepairable.opportunity_prices(opportunities, *, replacement_cost,
+    replacement_duration, failure_cost, failure_duration, downtime_cost)`,
+    returning `OpportunityPrices` whose `apply(part)` gives the part its
+    `planned_cost`, `unplanned_cost`, `opportunity_cost` and
+    `job_duration`; the downtime cost is the system's and is not kept on
+    the part. Saving a part keeps its opportunity prices, an `Opportunity`
+    key by its name. The results keep their names (`ShutdownPolicy`,
+    `ShutdownRoute`).
+34. **Left for later.** A diagram does not read `takes_down` yet (a
+    shut's `scope` is still given to `on_diagram`); refusals and the
+    horizon (exact by default, horizon, sampling) are unchanged, as the
+    maintainer parked them.

@@ -148,7 +148,7 @@ class DatedReplacement(_ResultMapping):
 class RuleCost(_ResultMapping):
     """What a given rule costs at a site, and how that was worked out:
     returned by
-    [`NonRepairable.calendar_policy_cost`][repyability.NonRepairable.calendar_policy_cost]
+    [`NonRepairable.opportunity_policy_cost`][repyability.NonRepairable.opportunity_policy_cost]
     with a site, and listed by
     [`ShutdownPolicy.compare`][repyability.ShutdownPolicy.compare].
 
@@ -198,13 +198,36 @@ class RuleCost(_ResultMapping):
     cost_rate: Optional[float]
     dated_cost: Optional[float] = None
 
+    @property
+    def prices(self):
+        """How the opportunities were priced for the part
+        ([`OpportunityPrices`][repyability.OpportunityPrices]): each
+        opportunity's price and where it came from, any other day's and a
+        failure's, and the opportunities not used and why. None where
+        the policy was not worked out from opportunities."""
+        return self.__dict__.get("_prices")
+
+    def to_dict(self) -> dict:
+        """The result as plain data, ready for ``json.dumps``, with its
+        ``prices`` where it has them.
+
+        Returns
+        -------
+        dict
+            The fields, as plain data.
+        """
+        out = super().to_dict()
+        if self.prices is not None:
+            out["prices"] = self.prices.to_dict()
+        return out
+
 
 @dataclass(frozen=True)
 class ShutdownPolicy(_ResultMapping):
     """The best replacement rule for a part at a site whose shuts are on
     real dates, what it costs, and how that was worked out. Returned by
-    [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]
-    given a [`Shutdowns`][repyability.Shutdowns].
+    [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy]
+    given [`Opportunities`][repyability.Opportunities] on real dates.
 
     Attributes
     ----------
@@ -300,6 +323,29 @@ class ShutdownPolicy(_ResultMapping):
     long_run_solver: Optional[str] = None
     discount: Optional[float] = None
     npv: Optional[float] = None
+
+    @property
+    def prices(self):
+        """How the opportunities were priced for the part
+        ([`OpportunityPrices`][repyability.OpportunityPrices]): each
+        opportunity's price and where it came from, any other day's and a
+        failure's, and the opportunities not used and why. None where
+        the policy was not worked out from opportunities."""
+        return self.__dict__.get("_prices")
+
+    def to_dict(self) -> dict:
+        """The result as plain data, ready for ``json.dumps``, with its
+        ``prices`` where it has them.
+
+        Returns
+        -------
+        dict
+            The fields, as plain data.
+        """
+        out = super().to_dict()
+        if self.prices is not None:
+            out["prices"] = self.prices.to_dict()
+        return out
 
     def _bind(self, engine, layout, decision) -> "ShutdownPolicy":
         object.__setattr__(self, "_engine", engine)
@@ -552,7 +598,7 @@ def _expanded(layout: _Layout, patterns) -> Calendar:
         for i, offset in enumerate(offsets):
             name = kind.name if len(offsets) == 1 else f"{kind.name}{_PART}{i}"
             opportunities.append(
-                Opportunity(
+                Opportunity._at_price(
                     name, kind.price, period=pattern.period, offset=offset
                 )
             )
@@ -976,7 +1022,7 @@ def _age_replacement(part, price: float) -> float:
 def _dated_calendar(layout: _Layout, end: float) -> Calendar:
     times = _KindTimes(layout).upto(end)
     opportunities = [
-        Opportunity(k.name, k.price, dates=tuple(times[k.name]))
+        Opportunity._at_price(k.name, k.price, dates=tuple(times[k.name]))
         for k in layout.kinds
         if times[k.name].size
     ]

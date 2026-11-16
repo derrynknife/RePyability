@@ -20,6 +20,13 @@ from repyability import (
 )
 from repyability.maintenance import _replacement
 
+# The 0.14 and 0.19 forms (Calendar, Shutdown, Shutdowns, prices on the
+# opportunities, optimal_calendar_policy) still work, deprecated: these
+# tests keep them unchanged, and test_opportunities.py the new forms.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:.*(is deprecated|puts a price on the opportunities):FutureWarning"
+)
+
 
 def solve(part, calendar, **options):
     """The calendar policy, on a grid of a given step where a check needs

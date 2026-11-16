@@ -16,6 +16,13 @@ import surpyval as surv
 
 from repyability import NonRepairable, Opportunity
 
+# The 0.14 and 0.19 forms (Calendar, Shutdown, Shutdowns, prices on the
+# opportunities, optimal_calendar_policy) still work, deprecated: these
+# tests keep them unchanged, and test_opportunities.py the new forms.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:.*(is deprecated|puts a price on the opportunities):FutureWarning"
+)
+
 SCALE, SHAPE = 365.0, 2.0
 CP, CU = 150.0, 400.0
 DAY = math.log(1.08) / 365.25

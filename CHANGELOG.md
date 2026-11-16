@@ -12,6 +12,32 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: one record of opportunities for every part, the prices on the
+  part (UC-45 of the maintenance README). `Opportunity` says when a stop
+  or shut happens (a period or numeric dates in model time; a rule,
+  dates or `every=` on real dates), how long it lasts (`duration`) and
+  what it takes down (`takes_down`), with no price; `Opportunities([...],
+  any_day=True, time_zone=None)` collects them, in model time or on real
+  dates by what they are (a mix is refused), with `dates`, `on_diagram`,
+  `route`, `to_dict` and `from_dict` (which also reads a saved
+  `Shutdowns`). `NonRepairable` takes `opportunity_cost` (at an
+  opportunity; without one an opportunity is priced as any other day, at
+  `planned_cost`), `opportunity_costs` (per opportunity, keyed by name or
+  by the `Opportunity`; a key naming no opportunity of the collection is
+  refused when the policy runs, listing the names) and `job_duration` (an
+  opportunity shorter than the job is not used for the part), all saved
+  with it. `NonRepairable.optimal_opportunity_policy` and
+  `opportunity_policy_cost` take every keyword the calendar methods took,
+  and `where=` (only the opportunities that take that label down); the
+  policy's `prices` (`OpportunityPrices`, in `to_dict` too) give each
+  opportunity's price and where it came from, and each one not used and
+  why. `NonRepairable.opportunity_prices(opportunities, *,
+  replacement_cost, replacement_duration, failure_cost, failure_duration,
+  downtime_cost)` works the prices out (at a stop the job fits in the
+  replacement alone; on any day it plus the downtime; at a failure the
+  failure's cost plus its downtime), and its `apply(part)` gives the part
+  them. No numerical method changed.
+
 - Added: a discount rate for the long-run replacement policies (Fox,
   1966). `NonRepairable.find_optimal_replacement(discount_rate=)` and
   `optimal_replacement_policy(discount_rate=)` (continuous, per unit of
@@ -32,6 +58,20 @@ release between minors that only adds (0.19.1).
   dates in model time, long cycles, duty plans and pricing a given rule
   refuse a rate, saying what to give instead. At rate 0 every number is
   unchanged. See the maintenance README's UC-44.
+
+### Deprecated
+
+- Deprecated, for removal in 0.21 (each warns with a `FutureWarning`
+  naming its replacement, and gives the same numbers as before):
+  `Calendar` and `Shutdowns` for `Opportunities`; `Shutdown` for
+  `Opportunity`; a price on an opportunity (`Opportunity(name, cost,
+  ...)`, `cost=`, `Opportunity.from_recurrence(name, cost, ...)`,
+  `Shutdown(replace_cost=)`, `Shutdowns(any_day=<price>)`,
+  `Opportunities(any_day=<price>)`), taken as the part's price there,
+  and `Calendar(failure=, anytime=)`, taken as the failure and any-day
+  prices; `NonRepairable.optimal_calendar_policy` and
+  `calendar_policy_cost` for `optimal_opportunity_policy` and
+  `opportunity_policy_cost`.
 
 ### Changed
 

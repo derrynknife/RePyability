@@ -146,6 +146,10 @@
 
 ::: repyability.CalendarPolicy
 
+::: repyability.OpportunityPrices
+
+::: repyability.OpportunityPrice
+
 ::: repyability.PlannedReplacement
 
 ::: repyability.ShutdownPolicy

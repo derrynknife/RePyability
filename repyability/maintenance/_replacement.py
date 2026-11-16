@@ -576,7 +576,7 @@ class PlannedReplacement(_ResultMapping):
 class CalendarPolicy(_ResultMapping):
     """The long-run optimal replacement policy of a part over a calendar
     of opportunities. Returned by
-    [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+    [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
 
     At each opportunity the policy replaces the part if it is at least a
     threshold age, which depends on the time: a shut shortly before a
@@ -660,17 +660,20 @@ class CalendarPolicy(_ResultMapping):
     them, and 20 at a failure:
 
     >>> import surpyval as surv
-    >>> from repyability import Calendar, NonRepairable, Opportunity
-    >>> bearing = NonRepairable(surv.Weibull.from_params([1000.0, 2.5]))
-    >>> calendar = Calendar(
-    ...     [
-    ...         Opportunity("quarterly", 3.0, period=91.0),
-    ...         Opportunity("annual", 1.0, period=364.0),
-    ...     ],
-    ...     failure=20.0,
-    ...     anytime=None,
+    >>> from repyability import NonRepairable, Opportunities, Opportunity
+    >>> bearing = NonRepairable(
+    ...     surv.Weibull.from_params([1000.0, 2.5]),
+    ...     unplanned_cost=20.0,
+    ...     opportunity_costs={"quarterly": 3.0, "annual": 1.0},
     ... )
-    >>> policy = bearing.optimal_calendar_policy(calendar)
+    >>> shuts = Opportunities(
+    ...     [
+    ...         Opportunity("quarterly", period=91.0),
+    ...         Opportunity("annual", period=364.0),
+    ...     ],
+    ...     any_day=False,
+    ... )
+    >>> policy = bearing.optimal_opportunity_policy(shuts)
     >>> policy.method, policy.basis, policy.period
     ('dp', 'exact', 364.0)
     >>> round(policy.cost_rate * 364, 3)
@@ -704,6 +707,29 @@ class CalendarPolicy(_ResultMapping):
     discount_rate: float = 0.0
     npv: float = math.inf
     eac: Optional[float] = None
+
+    @property
+    def prices(self):
+        """How the opportunities were priced for the part
+        ([`OpportunityPrices`][repyability.OpportunityPrices]): each
+        opportunity's price and where it came from, any other day's and a
+        failure's, and the opportunities not used and why. None where
+        the policy was not worked out from opportunities."""
+        return self.__dict__.get("_prices")
+
+    def to_dict(self) -> dict:
+        """The result as plain data, ready for ``json.dumps``, with its
+        ``prices`` where it has them.
+
+        Returns
+        -------
+        dict
+            The fields, as plain data.
+        """
+        out = super().to_dict()
+        if self.prices is not None:
+            out["prices"] = self.prices.to_dict()
+        return out
 
     def __post_init__(self):
         if self.eac is None:
