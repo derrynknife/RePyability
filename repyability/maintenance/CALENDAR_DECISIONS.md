@@ -426,6 +426,62 @@ eye.
     key by its name. The results keep their names (`ShutdownPolicy`,
     `ShutdownRoute`).
 34. **Left for later.** A diagram does not read `takes_down` yet (a
-    shut's `scope` is still given to `on_diagram`); refusals and the
-    horizon (exact by default, horizon, sampling) are unchanged, as the
-    maintainer parked them.
+    shut's `scope` is still given to `on_diagram`). Refusals and the
+    horizon were parked here and decided next (H).
+
+## H. Exact by default, or a horizon (16 Nov 2026, UC-44)
+
+35. **★ The decision.** The maintainer, 16 Nov 2026: **"Exact by
+    default; refuse what can't be done exactly; `horizon=` never
+    refuses."** Done:
+    - **Default:** the exact repeating cycle's answer, discounted or
+      not, where the opportunities repeat within `MAX_CYCLE`: the exact
+      routes, their numbers unchanged bit for bit.
+    - **Refused, with a ready answer:** a cycle longer than `MAX_CYCLE`,
+      given dates in model time, shuts that drift on real dates and a
+      duty plan's clock, each with a discount (and pricing a rule there).
+      The message names a horizon worked out from the inputs
+      (`_horizon.ready_model_text`, `ready_site_text`): with a discount,
+      where costs are discounted to under one part in a billion
+      (`horizon='2333-11-16'` at 7% from 16 Nov 2026; `horizon=112000`
+      days in model time); with none, the full cycle and three life
+      spans. `method='sampling'` is named where it applies
+      (undiscounted).
+    - **`horizon=` never refuses for those reasons:** the backward sweep
+      (`_horizon.backward`, shared by real dates and model time), with
+      the net present cost and an EAC, or undiscounted the total.
+      Model time takes it too (a number, with `discount_rate=`).
+    - **Silent sampling stops:** `method="auto"` sampling a long cycle
+      warns with a `FutureWarning` (`deprecation.refuses_from`) and
+      refuses from 0.21; `test_auto_sampling_refuses_in_0_21` reminds.
+    - **A given rule's discounted long run** is priced exactly, the
+      optimiser's value iteration with the decisions fixed;
+      `compare()` follows. `optimal_next_replacement` discounts its own
+      choices at the policy's rate.
+36. **Choices made here.**
+    - **"One part in a billion"** is `exp(-r H) < 1e-9`, the share of a
+      steady cost's present value past `H`: 307 whole years at 7% (the
+      decision's example said 300, which leaves 1.5e-9). Model-time
+      values are rounded up to three significant figures.
+    - **Undiscounted, at most two million grid steps** (`READY_STEPS`,
+      about a minute's sweep): a co-prime calendar's full cycle can be
+      hundreds of millions of steps, a horizon nobody could run; the
+      message then says the cycle is longer than is worth sweeping.
+    - **A model-time horizon ignores `tail`:** it takes the given dates
+      as they are and assumes nothing after them; any other day's price
+      still applies throughout.
+    - **The horizon's EAC is continuous**, `r NPC / (1 - exp(-r H))` with
+      `r = ln(1 + d)`, matching the long run's `ln(1 + d)` times `npv`;
+      `optimal_next_replacement` with a horizon policy used `d` in place
+      of `ln(1 + d)` before.
+    - **A horizon policy's `cost_rate`** (model time) is the rule's
+      undiscounted average to the horizon from a new part, and its
+      schedule's chances are from that part.
+37. **Left for later.** The repairable unit's overhaul, failure-limit and
+    overhaul-replace policies, failure-finding and on-condition
+    intervals, and `RepairableRBD.optimal_replacement_intervals` are not
+    discounted. A site's horizon grid is sized from the life alone (the
+    shuts laid at the nearest step), so it agrees with the exact route
+    to about 1.5e-5, not 1e-9; laying it on the shuts would change the
+    horizon's published numbers. A rule's undiscounted price over a long
+    cycle in model time is still a long finite horizon differenced.

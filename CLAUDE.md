@@ -505,9 +505,13 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   `Shutdown`, `Shutdowns`, prices on opportunities and
   `optimal_calendar_policy`/`calendar_policy_cost` (UC-45; the prices
   come with the part), which `test_what_0_20_deprecates_goes_in_0_21`
-  (`test_opportunities.py`) reminds. A new
+  (`test_opportunities.py`) reminds, and `method="auto"` sampling a
+  calendar too long to sweep (UC-44, `refuses_from`), which
+  `test_auto_sampling_refuses_in_0_21` (`test_exact_or_horizon.py`)
+  reminds. A new
   deprecation warns through `deprecation.renamed`, `renamed_attribute`,
-  `called`, `ignored`, `moved`, `replaced` or `price_on_part`, with a test
+  `called`, `ignored`, `moved`, `replaced`, `price_on_part` or
+  `refuses_from`, with a test
   that fails once the version reaches its removal.
 - **No result depends on the unit of time (or of a covariate).** A step,
   grid or probe is sized from the models (a typical life,

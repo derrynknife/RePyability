@@ -178,11 +178,21 @@ class RuleCost(_ResultMapping):
         the horizon, for a horizon; per unit of the part's clock where it
         has no pace).
     cost_rate : float
-        The long-run cost a unit of the part's clock (routes 1-3).
+        The long-run cost a unit of the part's clock (routes 1-3),
+        undiscounted.
     dated_cost : float or None
         For a dated window: the expected cost of a new part and its
         successors to the window's end (``cost`` is the long run's after
-        it).
+        it); with a discount, its present value.
+    npv : float or None
+        With a discount: the present value now of every replacement under
+        the rule, from a new part put in now: forever, over a discounted
+        long run (``cost`` is then its equivalent annual cost, ``measure``
+        ``"equivalent annual cost"``); to the horizon, for a horizon.
+    eac : float or None
+        The equivalent annual cost, the steady cost a year worth ``npv``:
+        over a discounted long run, ``cost``; for a horizon, its net
+        present cost spread over its years (at 0%, the total over them).
     """
 
     name: str
@@ -197,6 +207,8 @@ class RuleCost(_ResultMapping):
     replacements_by_kind: Dict[str, float]
     cost_rate: Optional[float]
     dated_cost: Optional[float] = None
+    npv: Optional[float] = None
+    eac: Optional[float] = None
 
     @property
     def prices(self):
@@ -293,6 +305,12 @@ class ShutdownPolicy(_ResultMapping):
         With ``discount``: the present value now of every replacement,
         forever, from a new part put in now (None for a dated window,
         whose ``dated_cost`` is the present value to its end).
+    eac : float or None
+        The equivalent annual cost: over a discounted long run, ``cost``;
+        for a horizon, its net present cost spread as a steady cost a
+        year over the years to it (``ln(1 + d)`` times it over ``1 - (1 +
+        d)^-years`` at the yearly rate ``d``; at 0%, the total over the
+        years). None for a long-run average.
     """
 
     # Bound after construction (``_bind``), not fields: how the dates are
@@ -323,6 +341,7 @@ class ShutdownPolicy(_ResultMapping):
     long_run_solver: Optional[str] = None
     discount: Optional[float] = None
     npv: Optional[float] = None
+    eac: Optional[float] = None
 
     @property
     def prices(self):
@@ -427,12 +446,23 @@ class ShutdownPolicy(_ResultMapping):
     def compare(self) -> List[RuleCost]:
         """The same site under simpler rules, priced the same way, for
         context: run to failure, age replacement on any day (where the
-        site allows one), and every shut of each kind."""
+        site allows one; at the age with the least equivalent annual cost
+        for a discounted long run), and every shut of each kind. A
+        discounted long run prices each rule's discounted long run
+        exactly (its equivalent annual cost), as the policy's own."""
         layout = self._layout
         part = layout.part
         rules: List[Tuple[str, Dict[str, float]]] = [("run to failure", {})]
+        decision = self._decision
         if layout.site.any_day is not None:
-            best = _age_replacement(part, layout.site.any_day)
+            discount = (
+                None if decision.route == "horizon" else decision.discount
+            )
+            best = _age_replacement(
+                part,
+                layout.site.any_day,
+                model_rate(layout, discount) if discount else 0.0,
+            )
             rules.append(
                 (
                     f"age replacement on any day at {_number(best)}",
@@ -1009,11 +1039,36 @@ def _averaged_model(layout: _Layout) -> _Averaged:
     return _Averaged(part, kinds, layout.site.any_day, part.cu)
 
 
-def _age_replacement(part, price: float) -> float:
-    """The best age to replace the part on any day at ``price``."""
+def _age_replacement(part, price: float, rate: float = 0.0) -> float:
+    """The best age to replace the part on any day at ``price``: of the
+    long-run cost rate, or with a continuous discount ``rate`` a unit of
+    its clock, of the equivalent annual cost (Fox, 1966)."""
+    if rate > 0.0:
+        from repyability.maintenance._options import discounted_optimum
+
+        best, _ = discounted_optimum(part, rate, float(price), float(part.cu))
+        return float(best)
     model = _Averaged(part, [], price, part.cu)
     _, a0, _ = model.optimise()
     return math.inf if a0 is None else float(a0)
+
+
+def _age_replacement_eac(part, price: float, age: float, rate: float):
+    """The equivalent annual cost (a unit of the part's clock) of
+    replacing the part on any day at ``price`` once ``age`` old, at the
+    continuous discount ``rate`` (Fox, 1966); running to failure for an
+    ``age`` of ``inf``."""
+    from repyability.maintenance._options import (
+        _cycle_value,
+        discounted_run_to_failure,
+    )
+
+    if not math.isfinite(age):
+        return discounted_run_to_failure(part, rate, float(part.cu))
+    if age <= 0.0:
+        return math.inf
+    cycle, length = _cycle_value(part, age, rate, float(price), part.cu)
+    return cycle / length
 
 
 # ------------------------------------------------------------ grid helpers
@@ -1030,11 +1085,14 @@ def _dated_calendar(layout: _Layout, end: float) -> Calendar:
 
 
 class _FixedTable:
-    """Fixed thresholds by grid index (from 0, none past the end)."""
+    """Fixed thresholds by grid index (from 0, none past the end), and
+    the chance of a planned replacement at each from a new part at 0
+    where it is known (``chance``; else 0)."""
 
-    def __init__(self, first, kinds):
+    def __init__(self, first, kinds, chance=None):
         self.first, self.kinds = np.asarray(first), np.asarray(kinds)
         self.horizon = max(int(self.first.size), 1)
+        self.chance = None if chance is None else np.asarray(chance, float)
 
     def at(self, index):
         index = np.asarray(index, np.int64)
@@ -1046,7 +1104,11 @@ class _FixedTable:
         return first, kinds
 
     def chances(self, n):
-        return np.zeros(n)
+        out = np.zeros(n)
+        if self.chance is not None:
+            m = min(n, self.chance.size)
+            out[:m] = self.chance[:m]
+        return out
 
 
 def _dated_grid_policy(layout: _Layout, rule: Dict[str, float], end: float):
@@ -1288,7 +1350,11 @@ def _policy_for(
             f"Lowest equivalent annual cost at {_percent(decision.discount)} "
             "a year, discounted over the long run"
         )
-        discounted = {"discount": float(decision.discount), "npv": npv}
+        discounted = {
+            "discount": float(decision.discount),
+            "npv": npv,
+            "eac": float(eac * scale),
+        }
         settings = dict(settings)
         settings["long_run_cost_per_year"] = rate * scale
     figure = _figure(measure, cost, cost_se)
@@ -1357,14 +1423,9 @@ def _named_rule(layout: _Layout, rule) -> Dict[str, float]:
 
 
 def _rule_cost(layout, decision, rule, name, settings) -> RuleCost:
-    """A fixed rule priced by the decision's route."""
-    if decision.discount is not None and decision.route != "horizon":
-        raise NotImplementedError(
-            "A given rule is priced as a long-run average or over a horizon, "
-            "not yet at a discount over the long run: give horizon= with "
-            "discount= (its net present cost on the real dates), or leave "
-            "discount= out (its long-run average)."
-        )
+    """A fixed rule priced by the decision's route: with a discount and
+    no horizon, its discounted long run exactly (the routes that repeat
+    exactly, as the policy is chosen there)."""
     pace, measure = _measure(layout)
     names = list(layout.site.names)
     if decision.route == "dated_then_long_run":
@@ -1401,10 +1462,40 @@ def _rule_cost(layout, decision, rule, name, settings) -> RuleCost:
         rates["failure"] = failed / length
         se = None
         solver, timing = "closed form", None
+        eac = None
+        if decision.discount:
+            # No shuts (the averaged route refuses a discount): Fox's
+            # formula for the age on any day.
+            eac = _age_replacement_eac(
+                layout.part,
+                float(layout.site.any_day or 0.0),
+                math.inf if a0 is None else float(a0),
+                model_rate(layout, decision.discount),
+            )
     else:
-        rate, se, rates = _grid_rule_rate(layout, decision, rule, settings)
+        rate, se, rates, eac = _grid_rule_rate(
+            layout, decision, rule, settings
+        )
         solver, timing = decision.solver, decision.failure_timing
     scale = pace if pace is not None else 1.0
+    if eac is not None:
+        r = model_rate(layout, decision.discount)
+        figure = float(eac * scale)
+        return RuleCost(
+            name=name,
+            rule=dict(rule),
+            cost=figure,
+            measure=EAC,
+            cost_se=None,
+            route=decision.route,
+            route_text=f"{name}: {_figure(EAC, figure, None)}",
+            solver=solver or "",
+            failure_timing=timing,
+            replacements_by_kind={k: v * scale for k, v in rates.items()},
+            cost_rate=float(rate),
+            npv=float(eac / r),
+            eac=figure,
+        )
     scaled_se = None if se is None else se * scale
     return RuleCost(
         name=name,
@@ -1424,9 +1515,13 @@ def _rule_cost(layout, decision, rule, name, settings) -> RuleCost:
 def _grid_rule_rate(layout, decision, rule, settings):
     """A fixed rule's long-run rate on the exact routes: relative value
     iteration with the decisions fixed over the cycle (quadrature with
-    them fixed for ``failure_timing="exact"``), or sampled windows."""
+    them fixed for ``failure_timing="exact"``), or sampled windows; with
+    a discount, also its equivalent annual cost a unit of the part's
+    clock (discounted value iteration with the decisions fixed; None
+    without)."""
     from repyability.maintenance import _replacement as R
 
+    rate = model_rate(layout, decision.discount)
     part = layout.part
     calendar = _expanded(layout, decision.patterns)
     failure, anytime = calendar._prices(part)
@@ -1442,16 +1537,29 @@ def _grid_rule_rate(layout, decision, rule, settings):
         from repyability.maintenance._integration import integrated_policy
 
         inner = integrated_policy(
-            part, calendar, failure, life=None, fixed=expanded
+            part,
+            calendar,
+            failure,
+            life=None,
+            fixed=expanded,
+            discount_rate=rate,
         )
-        return inner.cost_rate, None, _merged(inner.replacement_rates)
+        return (
+            inner.cost_rate,
+            None,
+            _merged(inner.replacement_rates),
+            float(cast(float, inner.eac)) if rate > 0.0 else None,
+        )
     step = R._resolve_step(None, calendar, part)
     ages = R._Ages(part, step, None)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         grid = R._Grid(calendar, anytime, step)
     if decision.route == "sampling":
-        return _sampled_rule_rate(grid, ages, failure, expanded, settings)
+        return (
+            *_sampled_rule_rate(grid, ages, failure, expanded, settings),
+            None,
+        )
     cycle_steps = cast(int, grid.cycle)
     costs, first = R._rule_prices(grid, expanded, 0, cycle_steps)
     cycle = R._relative_values(costs, ages, failure, fixed=first)
@@ -1469,7 +1577,11 @@ def _grid_rule_rate(layout, decision, rule, settings):
         failure,
         cycle_steps * step,
     )
-    return cycle.rate, None, _merged(rates)
+    eac = None
+    if rate > 0.0:
+        values = R._discounted_values(costs, ages, failure, rate, fixed=first)
+        eac = rate * float(values.values[0])
+    return cycle.rate, None, _merged(rates), eac
 
 
 def _rule_kinds(grid, rule, n):
@@ -1657,6 +1769,10 @@ class NextReplacementOnDates(_ResultMapping):
         unit of the part's clock).
     valued_by : str
         Where that figure comes from, in words.
+    discount_rate : float
+        The continuous rate a unit of the part's clock each choice's cost
+        is discounted at: the policy's (its yearly rate at the clock's
+        pace, a duty plan's average), 0 for a policy with none.
     """
 
     best: str
@@ -1665,37 +1781,69 @@ class NextReplacementOnDates(_ResultMapping):
     age: float
     cost_rate: float
     valued_by: str
+    discount_rate: float = 0.0
 
 
-def _baseline_rate(policy: ShutdownPolicy) -> Tuple[float, str]:
-    """The policy's figure a unit of the part's clock, and its words."""
+def _baseline_rate(policy: ShutdownPolicy) -> Tuple[float, float, str]:
+    """The policy's figure a unit of the part's clock, the continuous
+    discount rate a unit of it its choices are discounted at (0 for
+    none), and its words."""
     layout = policy._layout
     pace = layout.pace() or 1.0
     if policy.discount is not None:
-        return float(policy.cost) / pace, (
-            "the equivalent annual cost of the policy's discounted long run "
-            f"({policy.route} route)"
+        r = _rate_of(layout, policy.discount)
+        return (
+            float(policy.cost) / pace,
+            r,
+            (
+                "the equivalent annual cost of the policy's discounted long "
+                f"run ({policy.route} route), each choice discounted at "
+                f"{_percent_text(policy.discount)} a year"
+            ),
         )
     if policy.route == "dated_then_long_run":
-        return float(cast(float, policy.cost_rate)), (
-            "the long-run cost of the recurring shuts after the dated window "
-            f"({policy.long_run_route} route)"
+        return (
+            float(cast(float, policy.cost_rate)),
+            0.0,
+            (
+                "the long-run cost of the recurring shuts after the dated "
+                f"window ({policy.long_run_route} route)"
+            ),
         )
     if policy.route != "horizon":
-        return float(cast(float, policy.cost_rate)), (
-            f"the policy's long-run cost ({policy.route} route)"
+        return (
+            float(cast(float, policy.cost_rate)),
+            0.0,
+            (f"the policy's long-run cost ({policy.route} route)"),
         )
     discount = float(policy._decision.discount)
-    end = policy._decision.horizon
-    years = (end - layout.origin).total_seconds() / 3600.0 / (24 * 365.25)
-    if discount > 0:
-        yearly = policy.cost * discount / (1.0 - (1.0 + discount) ** -years)
-    else:
-        yearly = policy.cost / years
-    return yearly / pace, (
+    words = (
         "the policy's net present cost spread evenly over the years to its "
-        "horizon"
+        "horizon (its equivalent annual cost)"
     )
+    if discount > 0:
+        words += (
+            f", each choice discounted at {_percent_text(discount)} a year"
+        )
+    return (
+        float(cast(float, policy.eac)) / pace,
+        _rate_of(layout, discount),
+        words,
+    )
+
+
+def _percent_text(rate: float) -> str:
+    from repyability.maintenance._shutdowns import _percent
+
+    return _percent(float(rate))
+
+
+def _rate_of(layout: _Layout, discount: float) -> float:
+    """A yearly discount as a continuous rate a unit of the part's clock,
+    at its average pace (a duty plan's over 28 years): 0 for none."""
+    if not discount:
+        return 0.0
+    return math.log1p(float(discount)) / (layout.pace() or 1.0)
 
 
 def next_on_dates(
@@ -1744,7 +1892,7 @@ def next_on_dates(
             "policy's day, or work the policy out from this one."
         )
     age = quantity(age, layout.unit, "age")
-    rate, valued_by = _baseline_rate(policy)
+    rate, discount_rate, valued_by = _baseline_rate(policy)
     mean = model_mean(part.reliability)
     held = float(np.ravel(part.reliability_function(age))[0])
     if not held > 0.0:
@@ -1787,6 +1935,7 @@ def next_on_dates(
             scheduled_outages=outages,
             planned=site.any_day,
             rate=rate,
+            discount_rate=discount_rate,
         )
     options = []
     shut_index = 0
@@ -1850,7 +1999,7 @@ def next_on_dates(
             )
     best = min(options, key=lambda c: (c.cost, c.time))
     return NextReplacementOnDates(
-        str(best), best, options, float(age), rate, valued_by
+        str(best), best, options, float(age), rate, valued_by, discount_rate
     )
 
 

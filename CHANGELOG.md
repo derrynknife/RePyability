@@ -59,6 +59,33 @@ release between minors that only adds (0.19.1).
   refuse a rate, saying what to give instead. At rate 0 every number is
   unchanged. See the maintenance README's UC-44.
 
+- Added: exact by default, refused where it can't be, and `horizon=`
+  never refused (the maintainer's decision of 16 Nov 2026, UC-44).
+  Opportunities in model time take `horizon=` (a time in their own time)
+  with `discount_rate=` (0 for the plain total), in
+  `optimal_opportunity_policy` and `opportunity_policy_cost`: a backward
+  sweep from the horizon over every opportunity as it falls (given dates
+  as they are, nothing assumed after them), the policy's `npv` the net
+  present cost to it, `eac` the steady cost a unit of time worth it, and
+  `basis` `"horizon"`. `opportunity_policy_cost(..., discount_rate=)` in
+  model time, and `discount=` on a site's exact routes and dated window,
+  price a given rule's discounted long run exactly (discounted value
+  iteration with the decisions fixed, on the grid or by quadrature): the
+  rule the optimiser picks prices at its own EAC, and a site's
+  `ShutdownPolicy.compare()` prices each simpler rule so (age
+  replacement at the discounted best age). `ShutdownPolicy` and
+  `RuleCost` gain `eac` (and `RuleCost` `npv`): a horizon's net present
+  cost spread over its years, which its words now give too.
+  `NextReplacement` and `NextReplacementOnDates` gain `discount_rate`.
+  Every refusal of a discounted long run (a cycle too long to sweep,
+  given dates in model time, shuts that drift on real dates, a duty
+  plan, sampling, pricing a rule where nothing repeats) now names a ready
+  horizon worked out from the inputs: with a discount, where costs are
+  discounted to under one part in a billion (`horizon='2333-11-16'` at
+  7% from 16 Nov 2026; `horizon=112000` days at 7% a year in model
+  time); with none, the full cycle and three life spans (at most two
+  million grid steps).
+
 ### Deprecated
 
 - Deprecated, for removal in 0.21 (each warns with a `FutureWarning`
@@ -72,9 +99,24 @@ release between minors that only adds (0.19.1).
   prices; `NonRepairable.optimal_calendar_policy` and
   `calendar_policy_cost` for `optimal_opportunity_policy` and
   `opportunity_policy_cost`.
+- Deprecated, refused from 0.21: `method="auto"` in model time sampling
+  a periodic calendar whose cycle is too long to sweep. It still samples,
+  with a `FutureWarning` (it was a `UserWarning`) naming a ready
+  `horizon=` and `method="sampling"`; from 0.21 it refuses with them
+  (exact by default, simulation on request).
 
 ### Changed
 
+- Changed: `optimal_next_replacement` with a policy chosen at a discount
+  (a `MaintenancePolicy` or `CalendarPolicy` with `discount_rate`, or a
+  site's discounted `ShutdownPolicy` or horizon) now discounts its own
+  choices at the policy's rate and values the time the part serves at
+  the policy's equivalent annual cost: each choice's present value and
+  the policy's after it, less the policy's from now (Fox, 1966). It took
+  the EAC (or, in model time, the undiscounted `cost_rate`) as its
+  baseline and chose undiscounted. A horizon policy's baseline is now
+  its continuous equivalent annual cost (`ln(1 + d)` where it used `d`).
+  Undiscounted policies give the same numbers as before.
 - Changed: a site's `discount=` without `horizon=` was refused ("goes
   with horizon="); it now asks for the discounted long run.
 

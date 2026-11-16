@@ -327,7 +327,11 @@ class _Discounted:
 
 
 def _discounted_values(
-    costs: np.ndarray, ages: _Ages, failure: float, rate: float
+    costs: np.ndarray,
+    ages: _Ages,
+    failure: float,
+    rate: float,
+    fixed: Optional[np.ndarray] = None,
 ) -> _Discounted:
     """The present value, by age, of a part at the start of a periodic
     calendar of ``costs`` (one cycle of steps), every replacement from
@@ -346,7 +350,9 @@ def _discounted_values(
     within ``TOLERANCE`` of the value, and the value is its middle; the
     decisions, which a constant added to every value does not change,
     converge as relative value iteration's do. ``low`` and ``high`` bound
-    a new part's value."""
+    a new part's value. ``fixed`` prices a given rule instead (each
+    step's first replacing age index, -1 for none), as
+    ``_relative_values`` does undiscounted."""
     beta = math.exp(-rate * ages.step)
     rho = math.exp(-rate * ages.step * costs.size)
     factor = rho / (1.0 - rho)
@@ -359,7 +365,7 @@ def _discounted_values(
     converged = False
     sweep = 0
     for sweep in range(1, limit + 1):
-        v, first, upper = _sweep(h, costs, ages.p, failure, beta)
+        v, first, upper = _sweep(h, costs, ages.p, failure, beta, fixed)
         change = v - h
         low, high = float(change.min()), float(change.max())
         top = abs(float(v[0]) + factor * high)
@@ -933,9 +939,15 @@ def optimal_calendar_policy(
     mc_samples=64,
     seed=None,
     discount_rate=0.0,
+    horizon=None,
 ) -> CalendarPolicy:
     """The work of ``NonRepairable.optimal_calendar_policy`` (see
-    there)."""
+    there). ``horizon`` (a model time) takes the lowest net present cost
+    to it instead of the long run (``_horizon.model_horizon_policy``)."""
+    from repyability.maintenance._horizon import (
+        model_horizon_policy,
+        ready_model_text,
+    )
     from repyability.maintenance._options import (
         discount_rate as _discount_rate,
     )
@@ -966,8 +978,27 @@ def optimal_calendar_policy(
         )
     dated = not calendar.periodic
     life = _saved_life(part)
+    if horizon is not None:
+        end = _horizon_time(horizon)
+        if method not in ("auto", "dp"):
+            raise ValueError(
+                "A horizon is its own route, a backward sweep on the grid "
+                "over every opportunity as it falls: give horizon= with "
+                f"method='auto' (or 'dp'), not method={method!r}."
+            )
+        return model_horizon_policy(
+            part,
+            calendar,
+            anytime,
+            failure,
+            _resolve_step(step, calendar, part),
+            None if max_age is None else float(max_age),
+            end,
+            rate,
+            life,
+        )
     if rate > 0.0:
-        _require_discountable(calendar, method)
+        _require_discountable(calendar, method, rate, part)
     if method == "integration":
         from repyability.maintenance._integration import integrated_policy
 
@@ -995,28 +1026,32 @@ def optimal_calendar_policy(
     if rate > 0.0:
         if not short:
             raise NotImplementedError(
-                f"The calendar repeats only after {grid.cycle:,} steps of "
-                f"the grid, more than {MAX_CYCLE:,}, too long to discount "
-                "over exactly, and sampled windows give a long-run average, "
-                "not a present value from now: give opportunities whose "
-                "periods share a shorter cycle, or give the shuts as a site "
-                "(Shutdowns) with horizon= and discount= for the lowest net "
-                "present cost on the real dates."
+                f"{_long_cycle_words(grid)}, too long to discount over "
+                "exactly. Give "
+                + ready_model_text(rate, ages.span, _cycle_time(grid))
+                + ": the lowest net present cost to then, on every "
+                "opportunity as it falls; or give opportunities whose "
+                "periods share a shorter cycle."
             )
         return _cycle_policy(grid, ages, failure, names, life, rate)
     if method == "auto":
         method = "sampling" if (not dated and not short) else "dp"
         if method == "sampling":
-            warnings.warn(
-                f"The calendar repeats only after {grid.cycle:,} steps of "
-                f"the grid, more than {MAX_CYCLE:,}, so the cost rate is "
-                f"sampled over mc_samples ({mc_samples}) windows of it, "
-                "each an exact solve that may take a second or more: "
-                "mc_samples sets the cost, and cost_rate_se says how close "
-                "the rate is; the rates by kind are estimates with no "
-                "standard error. method='dp' differences one long horizon "
-                "instead.",
-                stacklevel=outside_level(),
+            from repyability.utils.deprecation import refuses_from
+
+            refuses_from(
+                f"{_long_cycle_words(grid)}, too long to work out exactly, "
+                "so method='auto' samples the cost rate over mc_samples "
+                f"({mc_samples}) windows of it, each an exact solve that may "
+                "take a second or more (cost_rate_se says how close the rate "
+                "is; the rates by kind are estimates with no standard "
+                "error).",
+                "give "
+                + ready_model_text(
+                    0.0, ages.span, _cycle_time(grid), step=grid.step
+                )
+                + ", the lowest total cost to then, worked out exactly; or "
+                "method='sampling' for this estimate.",
             )
     if method == "sampling":
         if dated:
@@ -1057,23 +1092,55 @@ def _saved_life(part) -> Optional[dict]:
         return None
 
 
-def _require_discountable(calendar, method) -> None:
-    """Refuse, with what to give instead, a calendar or method whose long
-    run is not discounted exactly here."""
+def _horizon_time(horizon) -> float:
+    """A horizon in model time, checked: a number more than 0."""
+    if not (checks.is_number(horizon) and 0.0 < float(horizon) < math.inf):
+        raise ValueError(
+            "horizon must be a time in the calendar's own time (a number "
+            f"more than 0) for opportunities in model time; got {horizon!r}."
+        )
+    return float(horizon)
+
+
+def _span(part) -> float:
+    """The age the part outlives with a chance of ``SPAN``."""
+    sf = _survival(part)
+    return _age_where(sf, SPAN, _mean(part, sf))
+
+
+def _cycle_time(grid: _Grid) -> Optional[float]:
+    return None if grid.cycle is None else grid.cycle * grid.step
+
+
+def _long_cycle_words(grid: _Grid) -> str:
+    return (
+        f"The calendar repeats only after {grid.cycle:,} steps of the grid "
+        f"({_cycle_time(grid):,.6g} in its time), more than {MAX_CYCLE:,}"
+    )
+
+
+def _require_discountable(calendar, method, rate: float, part) -> None:
+    """Refuse, with a ready horizon to give instead, a calendar or method
+    whose long run is not discounted exactly here."""
+    from repyability.maintenance._horizon import ready_model_text
+
+    end = None if calendar.periodic else calendar.plan_end
+    ready = ready_model_text(rate, _span(part), end=end)
     if method == "sampling":
         raise NotImplementedError(
             "method='sampling' estimates a long-run average from sampled "
             "windows, not a present value from now, so it takes no "
-            "discount_rate: use method='dp' (or 'auto'), or leave "
-            "discount_rate at 0."
+            f"discount_rate. Give {ready}: the lowest net present cost to "
+            "then; or method='dp' (or 'auto') where the calendar repeats on "
+            "a short cycle; or leave discount_rate at 0."
         )
     if not calendar.periodic:
         raise NotImplementedError(
-            "A calendar of given dates is not discounted over the long run "
-            "in model time: give its shuts as a site (Shutdowns, the dates "
-            "as fixed dates) with discount=, whose dated window is "
-            "discounted to its end and the recurring shuts' discounted long "
-            "run after it; or leave discount_rate at 0."
+            "A calendar of given dates does not repeat, so there is no long "
+            f"run to discount over exactly. Give {ready}: the lowest net "
+            "present cost to then, on the dates as given and nothing "
+            "assumed after them; or leave discount_rate at 0 (the long-run "
+            "average, the plan repeated past its last date)."
         )
 
 
@@ -1397,9 +1464,31 @@ def _rule_prices(grid: _Grid, rule: dict, start: int, n: int):
 
 
 def calendar_policy_cost(
-    part, calendar, rule, *, step=None, max_age=None, tail="repeat"
+    part,
+    calendar,
+    rule,
+    *,
+    step=None,
+    max_age=None,
+    tail="repeat",
+    discount_rate=0.0,
+    horizon=None,
 ) -> float:
-    """The work of ``NonRepairable.calendar_policy_cost`` (see there)."""
+    """The work of ``NonRepairable.calendar_policy_cost`` (see there):
+    the rule's long-run cost rate; with ``discount_rate``, its equivalent
+    cost a unit of time over the discounted long run (a periodic
+    calendar of a short cycle: discounted value iteration with the
+    decisions fixed); with ``horizon``, its net present cost to then (the
+    plain total at rate 0)."""
+    from repyability.maintenance._horizon import (
+        model_horizon_rule_cost,
+        ready_model_text,
+    )
+    from repyability.maintenance._options import (
+        discount_rate as _discount_rate,
+    )
+
+    rate = _discount_rate(discount_rate)
     if not isinstance(calendar, Calendar):
         raise TypeError(f"calendar must be a Calendar; got {calendar!r}.")
     checks.one_of("tail", tail, TAILS)
@@ -1428,11 +1517,47 @@ def calendar_policy_cost(
             "allow (its anytime is None)."
         )
     step = _resolve_step(step, calendar, part)
+    if horizon is not None:
+        return model_horizon_rule_cost(
+            part,
+            calendar,
+            anytime,
+            failure,
+            step,
+            None if max_age is None else float(max_age),
+            rule,
+            _horizon_time(horizon),
+            rate,
+        )
     ages = _Ages(part, step, None if max_age is None else float(max_age))
     dated = not calendar.periodic
     grid = _Grid(calendar, anytime, step, tail="repeat" if dated else None)
-    if grid.cycle is not None and grid.cycle <= MAX_CYCLE:
-        costs, first = _rule_prices(grid, rule, grid.cycle_start, grid.cycle)
+    short = grid.cycle is not None and grid.cycle <= MAX_CYCLE
+    if rate > 0.0:
+        if dated or not short:
+            what = (
+                "A calendar of given dates does not repeat"
+                if dated
+                else f"{_long_cycle_words(grid)}"
+            )
+            ready = ready_model_text(
+                rate,
+                ages.span,
+                end=calendar.plan_end if dated else None,
+            )
+            raise NotImplementedError(
+                f"{what}, so a rule's discounted long run is not priced "
+                f"exactly. Give {ready}: the rule's net present cost to "
+                "then; or leave discount_rate at 0."
+            )
+        cycle = cast(int, grid.cycle)
+        costs, first = _rule_prices(grid, rule, 0, cycle)
+        values = _discounted_values(costs, ages, failure, rate, fixed=first)
+        return rate * float(values.values[0])
+    if short:
+        costs, first = _rule_prices(
+            grid, rule, grid.cycle_start, cast(int, grid.cycle)
+        )
         return _relative_values(costs, ages, failure, fixed=first).rate
     settle = _settle(grid, ages)
     span = max(settle, 1)

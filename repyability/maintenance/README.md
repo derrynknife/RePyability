@@ -1353,7 +1353,8 @@ answers back into dates is Reliafy's too.)
      Dekker & Dijkstra (1992), NRL 39(2):175-190, and Dekker & Smeitink
      (1991), EJOR 53(1):46-63. With no shuts it is plain age replacement,
      route 1.
-  4. **horizon** (`horizon=`, `discount=`, both required, 0% allowed):
+  4. **horizon** (`horizon=`, `discount=`, both required, 0% allowed;
+     never refused, and named with a ready value by every refusal, UC-44):
      the backward dynamic programme over the real shuts to the horizon,
      each grid step discounted by the calendar time it spans (or UC-13's
      quadrature, each gap discounted at its own rate); the policy is
@@ -1495,6 +1496,11 @@ answers back into dates is Reliafy's too.)
   site = Opportunities([Opportunity("stop", Recurrence.every(4, "weeks", "2026-11-21"))],
                        any_day=False)
   part.optimal_opportunity_policy(site, unit="days", now="2026-11-16", discount=0.07)
+  # Where nothing repeats exactly, a horizon (the refusal names one):
+  part.optimal_opportunity_policy(stops, discount_rate=math.log(1.07) / 365.25,
+                                  horizon=112000)
+  part.optimal_opportunity_policy(site, unit="days", now="2026-11-16",
+                                  discount=0.07, horizon="2333-11-16")
   ```
 - **Who asks, and why:** a reliability or maintenance engineer whose
   finance team discounts costs: the long-run cost rate (UC-13, age
@@ -1532,12 +1538,75 @@ answers back into dates is Reliafy's too.)
     dated window discounted with the recurring shuts' discounted long run
     after it (UC-43, route 5). `cost` is the EAC a year, `ln(1 + d)`
     times `npv`.
-  - **Refused, with what to give instead:** sampling and averaged gaps
-    (each gives a long-run average, not a present value from now), a
-    calendar of given dates in model time (give it as a site), a cycle
-    too long to sweep, a duty plan (its clock does not keep a steady pace
-    with the calendar: give a horizon), and pricing a given rule at a
-    discounted long run (`compare()`, `calendar_policy_cost` on a site).
+  - **The rule (the maintainer, 16 Nov 2026): "Exact by default; refuse
+    what can't be done exactly; `horizon=` never refuses."**
+    - **Exact by default:** with no `horizon=`, the exact repeating
+      cycle's answer, discounted or not, wherever the opportunities
+      repeat within `MAX_CYCLE` steps (the routes above, unchanged).
+    - **Refused, with a ready answer:** a cycle longer than `MAX_CYCLE`,
+      given dates in model time, shuts that drift on real dates, a duty
+      plan, sampling or averaged gaps with a discount, and pricing a rule
+      where nothing repeats. Each refusal names a horizon worked out from
+      the inputs: with a discount, where costs are discounted to under
+      one part in a billion (`ln(1e9) / ln(1 + d)` years, 307 at 7%: from
+      16 Nov 2026, `horizon='2333-11-16'`; in model time `ln(1e9) / r`,
+      rounded up to three figures: 112,000 days at 7% a year); with none,
+      the full cycle and three of the part's life spans (at most two
+      million grid steps). Where sampling applies (undiscounted) it names
+      `method='sampling'` too.
+    - **`horizon=` never refuses for those reasons:** a backward sweep
+      from the horizon (`_horizon.backward`, `_replacement._sweep` with
+      each step discounted), on the real dates (through a duty plan's
+      forecast) or in model time (`horizon=` a number, with
+      `discount_rate=`; given dates as they are, nothing assumed after
+      them). It gives the net present cost (`npv`, or a site's `cost`)
+      and the equivalent annual cost (`eac`: `r NPC / (1 - exp(-r H))`);
+      undiscounted, the total to the horizon (and it over `H`).
+    - **A given rule** (`opportunity_policy_cost(..., discount_rate=)`
+      in model time, `discount=` on a site, a site's `compare()`) is
+      priced over the exact discounted long run as the optimiser's is,
+      with the decisions fixed (`_discounted_values(fixed=)`, or the
+      quadrature's); where nothing repeats, the rules above.
+    - **`method="auto"`** in model time still samples a cycle too long
+      to sweep, undiscounted, as released, but with a `FutureWarning`:
+      from 0.21 it refuses, naming the ready horizon and
+      `method='sampling'`.
+    - **`optimal_next_replacement`** with a discounted policy discounts
+      its own choices at the policy's rate, its baseline the policy's
+      EAC (`_next`): each choice's present value and the policy's after
+      it, less the policy's from now, `price e^(-ru) S(u) + cu (1 -
+      e^(-ru) S(u) - r M(u)) - EAC M(u)`, `M(u) = ∫₀ᵘ e^(-rt) S(t) dt`;
+      at rate 0, the undiscounted cost as before.
+  - **The five cases once refused, before and after** (7% a year;
+    `A_DAY = ln(1.07) / 365.25`):
+    - (a) shuts every 7, 93 and 401 days at 3, 2 and 1, any day 4,
+      failure 40, Weibull(1000, 5), `discount_rate=A_DAY`: refused ("give
+      opportunities whose periods share a shorter cycle, or ... a site");
+      now refused with `horizon=112000`, and with it NPC 18.31, 1.239 a
+      year, the next replacement at the 401-day shut (4.7 s).
+    - (b) given model-time dates [100, 400] at 1, any day 4, failure 20,
+      Weibull(1000, 2.5): refused ("give its shuts as a site"); now
+      `horizon=112000`: NPC 69.84, 4.73 a year.
+    - (c) an annual shut on the first Tuesday of November (364 or 371
+      days apart) at 1, failure 20, `discount=0.07`: refused ("give
+      horizon= with discount="); now with `horizon='2333-11-16'`: $36.69
+      to then, $2.48 a year, replace at the shut if older than 89.6 to
+      91.4 days, next on 2 November 2027.
+    - (d) a stop every 4 weeks on `DutyPlan(Shifts("Mon-Fri", "06:00",
+      "22:00"))`, the bearing Weibull(20,000 h, 2.5), failure 40:
+      refused (steady pace); now `horizon='2333-11-16'`: $25.60, $1.73 a
+      year, at a stop from 3,815 to 3,833 hours.
+    - (e) pricing `{"annual shut": 400}` at (c)'s site: refused ("not yet
+      at a discount over the long run"); now refused only because the
+      shut drifts, with `horizon='2333-11-16'`: $61.03, $4.13 a year. On
+      the 28-day stop, which repeats, it is priced exactly: `{"stop":
+      419}` at $4.22 a year, the optimiser's own EAC to 1e-9.
+- **Horizon against exact** (the 28-day stop below, model time): the
+  horizon's EAC a year 4.0275 at 10 years, 4.1521 at 20, 4.2100 at 50,
+  4.21625 at 100, 4.2164614 at 200 and 4.2164617 at 307 (the ready
+  horizon), against the exact 4.2164617 (gaps 4.5%, 1.5%, 0.15%, 5e-5,
+  6e-8, 3e-11); the threshold at the first stop 419.125 days from 50
+  years on (410.4 at 10 years, where the end is a part's life away).
 - **Today:** the Weibull(1000 h, 2.5) bearing at `cp = 1`, `cu = 5`:
   493.0 h undiscounted; 493.2 h at 5% a year and 493.4 h at 10%, the
   life in hours (8,760 a year), where a cycle is a few weeks and
@@ -1555,12 +1624,24 @@ answers back into dates is Reliafy's too.)
   quadrature; a site's against the horizon route's net present cost to
   50 years, and the dated window's decisions against a long discounted
   horizon's.
-- **Learned / open questions:** not yet discounted: given dates in model
-  time, long cycles, `calendar_policy_cost` and `compare()`,
-  `optimal_next_replacement`'s choices (it takes a discounted policy's
-  EAC as its baseline, its own choices still undiscounted), the
-  repairable unit's overhaul policies, failure finding and on-condition
-  intervals, and `RepairableRBD.optimal_replacement_intervals`.
+- **Checks** (`test_exact_or_horizon.py`): rate 0 and the exact routes
+  bit for bit as before; the horizon's EAC coming to the exact one as it
+  lengthens, its first decisions within a step; each of (a)-(e) refused
+  with its ready horizon, which works and gives the same to 1e-8 doubled;
+  a fixed rule's discounted price against a plain backward sweep over
+  many cycles and a seeded simulation of its discounted costs, and the
+  optimiser's rule at its own EAC (grid and quadrature); the next
+  replacement's discounted choices against present values from the
+  density; the `FutureWarning` with its ready horizon.
+- **Learned / open questions:** the exact EAC of the 28-day stop is
+  4.2165 a year, not the 4.202 once quoted; its threshold 419.1 days. A
+  site's horizon lays the shuts on a grid sized from the life alone, the
+  exact route's on the shuts, so the two differ by about 1.5e-5 there.
+  Not yet discounted: the repairable unit's overhaul, failure-limit and
+  overhaul-replace policies, failure finding and on-condition intervals,
+  and `RepairableRBD.optimal_replacement_intervals`. A rule's undiscounted
+  price over a long cycle in model time is still differenced over a long
+  finite horizon, not refused.
 
 
 ### UC-45: "One list of our stops and shuts serves every part. Each part's replacement costs differently, and some jobs don't fit in a short stop. What is each part's best rule, and what did it price each stop at?"

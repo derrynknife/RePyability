@@ -373,12 +373,11 @@ def integrated_policy(
     from a new part at time 0 (discounted value iteration over the cycle,
     stopped by MacQueen's bounds, as ``_replacement._discounted_values``),
     and the rule so chosen is then priced undiscounted for the long-run
-    figures."""
+    figures; with ``fixed`` too, the given rule's present value is worked
+    out with its decisions fixed."""
     sf = _survival(part)
     mean = _mean(part, sf)
     rate = float(discount_rate)
-    if rate > 0.0 and fixed is not None:
-        raise ValueError("A fixed rule is priced undiscounted.")
     if not calendar.opportunities and rate > 0.0:
         raise NotImplementedError(
             "With no opportunities and no replacement on any day there is "
@@ -457,7 +456,7 @@ def integrated_policy(
     discounted: Dict[str, object] = {}
     if rate > 0.0:
         discounted = _discounted(
-            sweep, grid, times, gaps, prices, length, rate, oldest
+            sweep, grid, times, gaps, prices, length, rate, oldest, limits
         )
         limits = np.asarray(discounted.pop("thresholds"))
     h = np.zeros(grid.size)
@@ -548,13 +547,16 @@ def integrated_policy(
     return policy._bind(table, names, None, oldest)
 
 
-def _discounted(sweep, grid, times, gaps, prices, length, rate, oldest):
+def _discounted(
+    sweep, grid, times, gaps, prices, length, rate, oldest, limits=None
+):
     """The discounted thresholds at each opportunity of the cycle, and a
     new part's present value at time 0: value iteration across the cycle,
     each gap discounted at ``rate``, stopped by MacQueen's bounds (every
     path through a cycle is discounted by the same ``exp(-rate *
     length)``), each sweep from the last one's values less a new part's
-    (see ``_replacement._discounted_values``)."""
+    (see ``_replacement._discounted_values``). With ``limits`` (a fixed
+    rule's ages, which ``sweep`` applies), the thresholds are those."""
     rho = math.exp(-rate * length)
     factor = rho / (1.0 - rho)
     h = np.zeros(grid.size)
@@ -577,6 +579,9 @@ def _discounted(sweep, grid, times, gaps, prices, length, rate, oldest):
     thresholds = np.empty(times.size)
     upper = True
     for k, (shape, g_nodes, after, w) in enumerate(kept):
+        if limits is not None:
+            thresholds[k] = limits[k]
+            continue
         thresholds[k], whole = threshold(
             shape, g_nodes, after, w, prices[k], grid
         )

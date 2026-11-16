@@ -233,8 +233,10 @@ prices a rule given as the age from which each kind of replacement replaces):
   over `mc_samples` sampled times of the cycle of a window's rate, each window
   an exact solve, with its standard error (`cost_rate_se`); the threshold at a
   time is a solve over a window from it, deterministic. Each window takes a
-  second or more, so `mc_samples` (64 by default) sets the cost, and
-  `"auto"` warns when it falls to sampling. A sampled policy's rates by kind
+  second or more, so `mc_samples` (64 by default) sets the cost.
+  `"auto"` still falls to sampling there, with a `FutureWarning`: from
+  0.21 it refuses, naming a ready `horizon=` (the lowest total cost to
+  then, worked out exactly) and `method="sampling"`. A sampled policy's rates by kind
   (`replacement_rates`, `cost_rates`) and the schedule's chances are
   estimates from a new unit run in, with no standard error: only the cost
   rate has one, and the rates by kind move with the seed (by some 10% at
@@ -288,7 +290,7 @@ names:
 | **exact** | The shuts repeat in the part's own clock on a short cycle (about a minute's work or less) | nothing | "Exact long-run average: $X a year." |
 | **long cycle** | They repeat, but only after a long cycle | `method="exact"` (slow, said beforehand) or `"sampling"` (with its ±) | "Estimated long-run average: $X a year ± $Y" |
 | **averaged** | They don't repeat (rules by month or year, a use on another meter) | `method="averaged"` | "Long-run average, assuming shuts fall evenly within their usual gaps (...)" |
-| **horizon** | Any site | `horizon=` and `discount=` (0 for the plain total) | "Lowest net present cost to ... at 7% a year: $X. Decisions from about ... depend on where the horizon ends." |
+| **horizon** | Any site; never refused | `horizon=` and `discount=` (0 for the plain total) | "Lowest net present cost to ... at 7% a year: $X (an equivalent annual cost of $Y a year). Decisions from about ... depend on where the horizon ends." |
 | **dated then long run** | Some shuts are on fixed dates (or you give `dated_until=`) | nothing more, or what the recurring shuts' long run needs (above) | "Dated window to 9 Sep 2028, then the long-run average: $X a year. ..." |
 
 **Fixed dates are never averaged.** Without a horizon, a site with fixed
@@ -310,7 +312,16 @@ the recurring shuts' real dates until the window's decisions no longer
 change.
 
 Nothing is chosen silently: where a choice is needed, the call is refused
-with what to choose, and
+with what to choose, a ready horizon among it, worked out from the
+inputs (with a discount, the day past which costs are discounted to under
+one part in a billion: `horizon='2333-11-16'` at 7% from 16 Nov 2026; with
+none, the full cycle and three of the part's life spans). With `discount=`
+and no horizon, the answer is the exact discounted long run wherever the
+shuts repeat, and a given rule (`opportunity_policy_cost`, `compare()`)
+is priced the same way; shuts that drift on real dates, a duty plan or a
+long cycle refuse with the ready horizon. In model time the same holds:
+`horizon=` is a number in the calendar's own time, with `discount_rate=`.
+And
 [`Opportunities.route`][repyability.Opportunities.route] says beforehand which
 route, which solver (`"closed form"`, `"grid"`, `"quadrature"` or
 `"sampling"`) and about how long. Routes 1-3 give a cost a year, the horizon

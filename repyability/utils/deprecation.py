@@ -15,7 +15,10 @@ opportunity (``price_on_part``: ``Opportunity(name, cost, ...)``,
 the names ``Calendar``, ``Shutdown``, ``Shutdowns``,
 ``NonRepairable.optimal_calendar_policy`` and ``calendar_policy_cost``
 (``replaced``), for ``Opportunities``, ``Opportunity``,
-``optimal_opportunity_policy`` and ``opportunity_policy_cost``.
+``optimal_opportunity_policy`` and ``opportunity_policy_cost``; and a
+choice made for the caller that it should make itself (``refuses_from``:
+``method="auto"`` sampling a calendar too long to work out exactly, which
+0.21 refuses, naming a ready ``horizon=`` and ``method="sampling"``).
 
 0.18 deprecated nothing, so 0.19 removes nothing.
 What 0.17 deprecated went in 0.18: ``repyability.demonstration``'s nine
@@ -193,6 +196,17 @@ def price_on_part(how: str, removal: str = REMOVED_IN_0_21) -> None:
         "failure, opportunity_cost at an opportunity, and "
         "opportunity_costs={name: price} for one opportunity). It is used "
         f"as the part's price for now; {removal} will refuse it.",
+        FutureWarning,
+        stacklevel=outside_level(),
+    )
+
+
+def refuses_from(what: str, instead: str, removal: str = REMOVED_IN_0_21):
+    """Warn that ``what`` (a choice the call made for the caller, as it
+    has until now) is deprecated: from ``removal`` (``REMOVED_IN_0_21`` by
+    default) the call refuses, and the caller gives ``instead``."""
+    warnings.warn(
+        f"{what} From {removal} this refuses: {instead}",
         FutureWarning,
         stacklevel=outside_level(),
     )

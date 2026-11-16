@@ -1985,17 +1985,20 @@ def _decide(
         else:
             patterns[kind.name] = pattern
     if broken:
+        from repyability.maintenance._horizon import ready_site_text
+
+        ready = ready_site_text(layout, long_discount)
         choice = (
             "Choose method='averaged' (assumes shuts fall evenly within their "
-            "usual gaps) or give horizon= and discount= (lowest net present "
-            "cost on the real dates)."
+            f"usual gaps) or give {ready}: the lowest total cost on the real "
+            "dates to then, worked out exactly."
         )
         if long_discount is not None:
             choice = (
                 "A discounted long run needs shuts that repeat, so that the "
-                "same cycle comes round again: give horizon= with discount= "
-                "(lowest net present cost on the real dates), or leave "
-                "discount= out for method='averaged'."
+                f"same cycle comes round again. Give {ready}: the lowest net "
+                "present cost on the real dates to then, and its equivalent "
+                "annual cost; or leave discount= out for method='averaged'."
             )
         reason = (
             "These shuts don't repeat on a fixed cycle in the part's clock: "
@@ -2005,7 +2008,8 @@ def _decide(
             raise ValueError(
                 f"{reason} So there is no repeating cycle to "
                 f"{'be exact over' if method == 'exact' else 'sample'}: use "
-                "method='averaged' or a horizon (horizon= and discount=)."
+                f"method='averaged', or give {ready}, the lowest cost on the "
+                "real dates to then."
             )
         if refuse:
             raise ValueError(f"{reason} {choice}")
@@ -2100,17 +2104,23 @@ def _decide(
             why=f"over a long cycle: {repeat}",
             how=how,
         )
+    from repyability.maintenance._horizon import ready_site_text
+
+    pace = layout.pace()
+    ready = ready_site_text(
+        layout, long_discount, None if not pace else cycle / pace, step
+    )
     choice = (
         f"{long_text} Choose method='exact' (the same calculation, "
-        f"{_seconds_text(seconds)}) or method='sampling' (an estimate with "
-        "its "
-        "standard error, as many samples as you ask for)."
+        f"{_seconds_text(seconds)}), method='sampling' (an estimate with "
+        "its standard error, as many samples as you ask for), or give "
+        f"{ready}: the lowest total cost on the real dates to then."
     )
     if long_discount is not None:
         choice = (
             f"{long_text} Discounted, choose method='exact' (the same "
-            f"calculation, {_seconds_text(seconds)}), or give horizon= with "
-            "discount= (lowest net present cost on the real dates); sampling "
+            f"calculation, {_seconds_text(seconds)}), or give {ready}: the "
+            "lowest net present cost on the real dates to then; sampling "
             "gives a long-run average, not a present value."
         )
     if refuse:
@@ -2158,19 +2168,22 @@ def _long_run_discount(layout: _Layout, discount, method) -> Optional[float]:
     rate = float(discount)
     if rate == 0.0:
         return None
+    from repyability.maintenance._horizon import ready_site_text
+
     if method in ("averaged", "sampling"):
         raise ValueError(
             f"method={method!r} gives a long-run average, which is not "
             "discounted: leave method out (or give method='exact') with "
-            "discount=, or give horizon= with discount= (lowest net present "
-            "cost on the real dates)."
+            f"discount=, or give {ready_site_text(layout, rate)}: the "
+            "lowest net present cost on the real dates to then."
         )
     if layout.plan is not None:
         raise ValueError(
             "A discounted long run needs the part's clock to keep a steady "
-            "pace with the calendar, and a duty plan's does not: give "
-            "horizon= with discount= (lowest net present cost on the real "
-            "dates, through the plan), or leave discount= out."
+            "pace with the calendar, and a duty plan's does not. Give "
+            f"{ready_site_text(layout, rate)}: the lowest net present cost "
+            "on the real dates to then, through the plan, and its "
+            "equivalent annual cost; or leave discount= out."
         )
     if layout.pace() is None:
         raise ValueError(
