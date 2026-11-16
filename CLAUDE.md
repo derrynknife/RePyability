@@ -498,7 +498,8 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   `repyability.demonstration`'s nine functions for
   `surpyval.test_planning`'s, and 0.18 removed them with
   `DemonstrationPlan` (`test_removed_in_0_18.py`). 0.18 and 0.19
-  deprecate nothing, so 0.19 removes nothing; `NEXT_REMOVAL` is 0.20,
+  deprecate nothing, so 0.19 removes nothing (nor does 0.19.1, which
+  only adds the life at a usage rate as a block); `NEXT_REMOVAL` is 0.20,
   which `test_what_0_19_deprecates_goes_in_0_20` reminds. A new
   deprecation warns through `deprecation.renamed`, `renamed_attribute`,
   `called`, `ignored` or `moved`, with a test that fails once the version

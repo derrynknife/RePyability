@@ -114,8 +114,9 @@ reminder; the removed names then stay gone through
 
 Versions have two parts, major.minor (e.g. 0.11): from 1.0, a release
 that breaks compatibility raises the major number, and any other
-release, fixes included, the minor. There are no patch releases. To
-release:
+release, fixes included, the minor. A third part (0.19.1) marks a small
+release between minors that only adds; it removes and deprecates
+nothing. To release:
 
 1. On a branch, bump `repyability/_version.py` and roll the `CHANGELOG.md`
    `[Unreleased]` section into a dated `## [X.Y] - YYYY-MM-DD` section. Its
