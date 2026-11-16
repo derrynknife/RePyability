@@ -45,6 +45,7 @@ from repyability.rbd._model_utils import (
     is_fixed_probability,
     is_mixture,
 )
+from repyability.rbd._usage import has_at_usage, is_life_at_usage
 from repyability.rbd.results import _ResultMapping
 from repyability.rbd.uncertainty import is_fit
 from repyability.tests import catalogue
@@ -190,6 +191,8 @@ def model_kinds(model) -> set:
         return {"PosteriorPredictive"}
     if is_mixture(model):
         return {"surpyval MixtureModel"}
+    if is_life_at_usage(model):
+        return {"surpyval life at a usage rate"}
     if is_degradation(model):
         return {"surpyval degradation process"}
     if by_functions(model):
@@ -269,6 +272,10 @@ def repairable_kinds(rbd, components, options) -> set:
     return found | common_causes(options)
 
 
+#: A life at a usage rate, with a surpyval that has one (0.28 and later).
+USAGE = {"surpyval life at a usage rate"} if has_at_usage() else set()
+
+
 def required_repairable() -> set:
     cls = RepairableRBD
     return (
@@ -295,6 +302,7 @@ def required_repairable() -> set:
         | {node.__name__ for node in REPAIRABLE_NODES}
         | SURPYVAL_KINDS
         | {"surpyval degradation process", "surpyval model by its functions"}
+        | USAGE
     )
 
 
@@ -313,6 +321,7 @@ def required_nonrepairable() -> set:
             "AlphaFactor common cause, probability basis",
         }
         | {"a structure too meshed to work out", "StandbyModel, simulated"}
+        | USAGE
     )
 
 

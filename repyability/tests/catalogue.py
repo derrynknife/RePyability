@@ -36,6 +36,7 @@ from repyability import (
     StandbyModel,
 )
 from repyability.rbd import bdd, modular
+from repyability.rbd._usage import has_at_usage
 from repyability.tests.test_performance_equivalence import (
     binomial_first,
     instrument_air,
@@ -215,6 +216,24 @@ def bayes_life():
         500 * g.lognormal(0, 0.1, 400), 1.5 * g.lognormal(0, 0.1, 400)
     ]
     return surv.bayes.BayesianParametric.from_draws(surv.Weibull, draws)
+
+
+def usage_life():
+    """A part that wears by hours and by starts (one start worth 10
+    hours), at 0.1 starts per hour: surpyval's life at a usage rate
+    (surpyval 0.28 and later; None before)."""
+    if not has_at_usage():
+        return None
+    model = surv.WeibullEquivalence.from_params(
+        [2000.0, 2.0, 10.0], clocks=("hours", "starts")
+    )
+    return model.at_usage(0.1)
+
+
+def _if_usage(name: str, build) -> dict:
+    """``{name: build()}``, or nothing with a surpyval that has no life at
+    a usage rate."""
+    return {name: build()} if has_at_usage() else {}
 
 
 @_fitted_once
@@ -402,6 +421,10 @@ def nonrepairable_kinds():
         ),
         "Royston-Parmar fit": NonRepairableRBD(
             EDGES, {"a": royston_parmar_life(), **rest}
+        ),
+        **_if_usage(
+            "life at a usage rate",
+            lambda: NonRepairableRBD(EDGES, {"a": usage_life(), **rest}),
         ),
         "degrading": NonRepairableRBD(
             EDGES,
@@ -906,6 +929,12 @@ def repairable_kinds():
             ),
             "life at a regression's covariates": system(
                 unit(reliability=life_at_load(), replace_cost=10.0)
+            ),
+            **_if_usage(
+                "life at a usage rate",
+                lambda: system(
+                    unit(reliability=usage_life(), replace_cost=10.0)
+                ),
             ),
             "fitted Crow-AMSAA process": system(
                 unit(reliability=crow_amsaa(), repair_cost=1.0)
