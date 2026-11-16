@@ -788,7 +788,7 @@ class NonRepairable:
     def _cost_rate_with_log_x(self, x):
         return self._cost_rate(np.exp(x))
 
-    def find_optimal_replacement(self, discount_rate=0.0):
+    def find_optimal_replacement(self, *, discount_rate=0.0):
         """The replacement age that minimises the long-run cost rate, or,
         with a discount rate, the equivalent annual cost.
 
@@ -901,7 +901,8 @@ class NonRepairable:
         >>> unit = NonRepairable(surv.Weibull.from_params([1000, 2.5]))
         >>> unit.set_costs_planned_and_unplanned(cp=1, cu=5)
         >>> a_year = math.log(1.10) / 8760
-        >>> round(float(unit.find_optimal_replacement(a_year)), 1)
+        >>> best = unit.find_optimal_replacement(discount_rate=a_year)
+        >>> round(float(best), 1)
         493.4
         """
         from repyability.maintenance._options import (
@@ -1056,7 +1057,7 @@ class NonRepairable:
         return float(refined.x)
 
     def optimal_replacement_policy(
-        self, discount_rate=0.0
+        self, *, discount_rate=0.0
     ) -> MaintenancePolicy:
         """The optimal age-replacement policy as a typed result.
 
@@ -1117,7 +1118,8 @@ class NonRepairable:
         >>> import math
         >>> unit = NonRepairable(surv.Weibull.from_params([1000, 2.5]))
         >>> unit.set_costs_planned_and_unplanned(cp=1, cu=5)
-        >>> policy = unit.optimal_replacement_policy(math.log(1.1) / 8760)
+        >>> rate = math.log(1.1) / 8760
+        >>> policy = unit.optimal_replacement_policy(discount_rate=rate)
         >>> round(policy.interval, 1), round(policy.eac * 8760, 2)
         (493.4, 30.27)
         """

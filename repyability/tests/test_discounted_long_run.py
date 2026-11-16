@@ -80,9 +80,9 @@ def fox_run_to_failure(life, cu, rate):
 def test_rate_zero_is_the_undiscounted_policy_unchanged():
     unit = bearing()
     plain = unit.optimal_replacement_policy()
-    assert unit.optimal_replacement_policy(0.0) == plain
+    assert unit.optimal_replacement_policy(discount_rate=0.0) == plain
     assert unit.optimal_replacement_policy(discount_rate=0) == plain
-    assert unit.find_optimal_replacement(0.0) == plain.interval
+    assert unit.find_optimal_replacement(discount_rate=0.0) == plain.interval
     assert plain.discount_rate == 0.0 and plain.npv == math.inf
     assert plain.eac == plain.cost_rate
     # The doctest's numbers, as before.
@@ -93,7 +93,7 @@ def test_rate_zero_is_the_undiscounted_policy_unchanged():
 def test_the_discounted_age_minimises_fox_s_cost():
     unit = bearing()
     rate = 0.002  # a unit of the life's time: strong, to show the effect
-    policy = unit.optimal_replacement_policy(rate)
+    policy = unit.optimal_replacement_policy(discount_rate=rate)
     life = unit.reliability
     ages = np.linspace(300.0, 1200.0, 1801)
     costs = [fox_eac(life, 1.0, 5.0, rate, a) for a in ages]
@@ -115,7 +115,7 @@ def test_the_present_value_agrees_with_a_simulation():
     # a cost is discounted to exp(-25).
     unit = bearing()
     rate = 0.002
-    policy = unit.optimal_replacement_policy(rate)
+    policy = unit.optimal_replacement_policy(discount_rate=rate)
     age = policy.interval
     rng = np.random.default_rng(7)
     n = 40_000
@@ -136,10 +136,14 @@ def test_discounting_puts_the_replacement_off_for_a_part_that_wears_out(
 ):
     unit = bearing()
     plain = unit.find_optimal_replacement()
-    found = unit.find_optimal_replacement(a_year(yearly))
+    found = unit.find_optimal_replacement(discount_rate=a_year(yearly))
     assert found > plain
-    assert unit.find_optimal_replacement(a_year(2 * yearly)) > found
-    days = bearing().find_optimal_replacement(math.log1p(yearly) / 365.0)
+    assert (
+        unit.find_optimal_replacement(discount_rate=a_year(2 * yearly)) > found
+    )
+    days = bearing().find_optimal_replacement(
+        discount_rate=math.log1p(yearly) / 365.0
+    )
     assert days > found
 
 
@@ -148,7 +152,7 @@ def test_as_the_rate_goes_to_zero_it_comes_to_the_cost_rate_optimum():
     plain = unit.optimal_replacement_policy()
     previous = math.inf
     for rate in (1e-4, 1e-5, 1e-6, 1e-8, 1e-10):
-        policy = unit.optimal_replacement_policy(rate)
+        policy = unit.optimal_replacement_policy(discount_rate=rate)
         gap = abs(policy.interval - plain.interval)
         assert gap <= previous + 1e-6
         previous = gap
@@ -163,7 +167,7 @@ def test_discounting_can_make_running_to_failure_best():
     unit = bearing(cp=4.0, cu=5.0)
     life = unit.reliability
     assert math.isfinite(unit.find_optimal_replacement())
-    policy = unit.optimal_replacement_policy(3e-3)
+    policy = unit.optimal_replacement_policy(discount_rate=3e-3)
     assert policy.interval == math.inf
     rtf = fox_run_to_failure(life, 5.0, 3e-3)
     assert policy.eac == pytest.approx(rtf, rel=1e-6)
@@ -183,7 +187,7 @@ def test_discounting_can_make_running_to_failure_best():
 )
 def test_a_life_that_does_not_wear_out_is_run_to_failure(life):
     unit = bearing(life=life)
-    policy = unit.optimal_replacement_policy(1e-3)
+    policy = unit.optimal_replacement_policy(discount_rate=1e-3)
     assert policy.interval == math.inf
     assert policy.eac == pytest.approx(
         fox_run_to_failure(life, 5.0, 1e-3), rel=1e-6
@@ -196,7 +200,7 @@ def test_a_limited_failure_population_is_searched_when_discounted():
     life = surv.Weibull.from_params([1000, 3.0], lfp_p=0.9)
     unit = bearing(life=life)
     assert unit.find_optimal_replacement() == math.inf
-    policy = unit.optimal_replacement_policy(1e-3)
+    policy = unit.optimal_replacement_policy(discount_rate=1e-3)
     sf = life.sf
     rtf = (
         1e-3
@@ -241,7 +245,7 @@ def test_a_non_parametric_estimate_is_scanned_on_its_grid():
 
     ages = np.linspace(0.01, 40.0, 4000)
     best = ages[int(np.argmin([eac(a) for a in ages]))]
-    policy = unit.optimal_replacement_policy(rate)
+    policy = unit.optimal_replacement_policy(discount_rate=rate)
     assert policy.interval == pytest.approx(best, abs=0.02)
     assert policy.eac == pytest.approx(eac(policy.interval), rel=1e-5)
     assert policy.interval > unit.find_optimal_replacement()
@@ -268,7 +272,7 @@ def test_a_standby_arrangement_is_discounted_too():
 
     ages = np.linspace(100.0, 3000.0, 2901)
     best = ages[int(np.argmin([erlang_eac(a) for a in ages]))]
-    policy = unit.optimal_replacement_policy(rate)
+    policy = unit.optimal_replacement_policy(discount_rate=rate)
     assert policy.interval == pytest.approx(best, rel=2e-3)
     assert policy.eac == pytest.approx(erlang_eac(policy.interval), rel=1e-4)
 
@@ -276,7 +280,7 @@ def test_a_standby_arrangement_is_discounted_too():
 @pytest.mark.parametrize("rate", [-0.1, math.inf, "0.1", True])
 def test_a_discount_rate_out_of_range_is_refused(rate):
     with pytest.raises(ValueError, match="discount_rate must be a number"):
-        bearing().optimal_replacement_policy(rate)
+        bearing().optimal_replacement_policy(discount_rate=rate)
 
 
 # ------------------------------------------------- a calendar in model time
@@ -309,7 +313,7 @@ def test_a_calendar_at_rate_zero_is_unchanged(method):
 
 def test_a_calendar_with_only_any_day_is_discounted_age_replacement():
     policy = BEARING.optimal_calendar_policy(Calendar(), discount_rate=1e-3)
-    age = BEARING.optimal_replacement_policy(1e-3)
+    age = BEARING.optimal_replacement_policy(discount_rate=1e-3)
     assert policy.eac == pytest.approx(age.eac, rel=1e-3)
     planned = policy.next_replacement(age=0.0).time
     assert planned == pytest.approx(age.interval, abs=2 * policy.step)
@@ -478,7 +482,9 @@ def test_any_day_alone_is_discounted_age_replacement():
     policy = part.optimal_calendar_policy(
         site, unit="days", now=NOW, discount=0.07
     )
-    age = part.optimal_replacement_policy(math.log1p(0.07) / 365.25)
+    age = part.optimal_replacement_policy(
+        discount_rate=math.log1p(0.07) / 365.25
+    )
     assert policy.cost == pytest.approx(age.eac * 365.25, rel=1e-9)
     assert policy.rule.thresholds["any other day"][0] == pytest.approx(
         age.interval
