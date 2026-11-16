@@ -5,9 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions have two parts, major.minor (until 0.10.1 they had three): from
 1.0, a release that breaks compatibility raises the major number, and any
-other release, fixes included, the minor.
+other release, fixes included, the minor. A third part marks a small
+release between minors that only adds (0.19.1).
 
 ## [Unreleased]
+
+## [0.19.1] - 2026-11-16
+
+One addition to 0.19: a life on two clocks, surpyval's life at a usage
+rate, is a block. Nothing is removed or deprecated, and no number
+RePyability gave before changes.
+
+### Added
+
+- Added: a life on two clocks as a block. Surpyval's life at a usage
+  rate (`EquivalenceModel.at_usage(rate)`; for parts that wear by running
+  hours and by starts) is a block's life in a `NonRepairableRBD`, a
+  `NonRepairable` and a `RepairableRBD` component, in the first clock's
+  unit (hours). Where a diagram needs a surpyval distribution, the life
+  at the rate is the distribution it is (the combined clock's, its time
+  divided by `1 + k rate`); a `"duty"` applies on top. Its rate is a
+  lever (`"rate"`, or `"reliability.rate"` in a repairable component) of
+  `parameter_sensitivity`, `levers()` and `with_levers`, and a diagram
+  saves it (the model and the rate). The `EquivalenceModel` itself is
+  refused as a block, saying to give `model.at_usage(rate)`. See
+  [Building an RBD](docs/guide/building.md#a-life-on-two-clocks-hours-and-starts).
 
 ## [0.19] - 2026-11-15
 
