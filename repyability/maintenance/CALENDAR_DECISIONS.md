@@ -246,7 +246,11 @@ eye.
     then take every age from the youngest, so they no longer sum exactly
     to the cost rate.
 20. **The NPV hook.** `_sweep` takes `beta`, a discount per step that
-    defaults to 1. There is no public API yet, as the brief asks.
+    defaults to 1. Discounting now reaches the long run (UC-44):
+    `optimal_calendar_policy(discount_rate=)` on a periodic calendar of a
+    short cycle (dp and integration), and a site's `discount=` without a
+    horizon, the dated window's run-on included; the other routes refuse
+    a rate, saying what to give instead.
 
 ## D. Phase 2 (integration)
 

@@ -6,7 +6,9 @@ rules, operating schedules) is ``repyability.schedule``.
 ``README.md`` in this package records the use cases, the question each
 answers and how it is solved."""
 
+import math
 from dataclasses import dataclass
+from typing import Optional
 
 from repyability.rbd.results import _ResultMapping
 
@@ -32,9 +34,20 @@ class MaintenancePolicy(_ResultMapping):
         the overhaul interval for a repairable component. ``inf`` when
         preventive action never pays (run to failure / never overhaul).
     cost_rate : float
-        The long-run expected cost per unit time under the policy. When
-        ``interval`` is ``inf`` this is the limiting cost rate of running
-        without preventive action.
+        The long-run expected cost per unit time under the policy,
+        undiscounted (also when the policy was chosen with a discount
+        rate). When ``interval`` is ``inf`` this is the limiting cost rate
+        of running without preventive action.
+    discount_rate : float
+        The continuous discount rate per unit of time the policy was
+        chosen at, 0 for none.
+    npv : float
+        The present value of every replacement from a new unit, forever,
+        under the policy (Fox, 1966); ``inf`` with no discounting.
+    eac : float
+        The equivalent annual cost: the steady cost per unit time worth
+        the same as ``npv``, ``discount_rate * npv``. With no discounting
+        it is ``cost_rate``.
 
     Examples
     --------
@@ -49,6 +62,13 @@ class MaintenancePolicy(_ResultMapping):
 
     interval: float
     cost_rate: float
+    discount_rate: float = 0.0
+    npv: float = math.inf
+    eac: Optional[float] = None
+
+    def __post_init__(self):
+        if self.eac is None:
+            object.__setattr__(self, "eac", self.cost_rate)
 
 
 @dataclass(frozen=True)

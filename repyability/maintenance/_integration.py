@@ -28,7 +28,7 @@ past its last date. The threshold at an opportunity is where
 
 import math
 from fractions import Fraction
-from typing import Dict
+from typing import Dict, cast
 
 import numpy as np
 
@@ -363,13 +363,28 @@ def integrated_policy(
     tail="repeat",
     life=None,
     fixed=None,
+    discount_rate=0.0,
 ):
     """The calendar policy between opportunities in continuous time (see
     the module's docstring). ``fixed`` prices a given rule instead: the
     age from which each kind replaces, by name (a kind left out never
-    does)."""
+    does). With ``discount_rate`` (continuous, a unit of the calendar's
+    time) the thresholds minimise the present value of every replacement
+    from a new part at time 0 (discounted value iteration over the cycle,
+    stopped by MacQueen's bounds, as ``_replacement._discounted_values``),
+    and the rule so chosen is then priced undiscounted for the long-run
+    figures."""
     sf = _survival(part)
     mean = _mean(part, sf)
+    rate = float(discount_rate)
+    if rate > 0.0 and fixed is not None:
+        raise ValueError("A fixed rule is priced undiscounted.")
+    if not calendar.opportunities and rate > 0.0:
+        raise NotImplementedError(
+            "With no opportunities and no replacement on any day there is "
+            "only running to failure: leave discount_rate at 0, or use "
+            "method='dp'."
+        )
     if not calendar.opportunities:
         policy = CalendarPolicy(
             cost_rate=failure / mean,
@@ -419,19 +434,19 @@ def integrated_policy(
         limits = np.array(
             [float(fixed.get(names[k], math.inf)) for k in kinds]
         )
-    shapes: Dict[float, _Gap] = {}
+    shapes: Dict[tuple, _Gap] = {}
 
-    def gap(width):
-        key = round(width, 9)
+    def gap(width, rho=0.0):
+        key = (round(width, 9), rho)
         if key not in shapes:
-            shapes[key] = _Gap(width, sf, grid, failure)
+            shapes[key] = _Gap(width, sf, grid, failure, rho)
         return shapes[key]
 
-    def sweep(h, keep_values=False):
+    def sweep(h, keep_values=False, rho=0.0):
         after = h
         kept: list = [None] * times.size
         for k in range(times.size - 1, -1, -1):
-            shape = gap(gaps[k])
+            shape = gap(gaps[k], rho)
             g_nodes = shape.new_unit(after, grid)
             w = shape.kept(g_nodes, after, grid)
             if keep_values:
@@ -439,6 +454,12 @@ def integrated_policy(
             after = _decided(w, prices[k], grid, limits, k)
         return after, kept
 
+    discounted: Dict[str, object] = {}
+    if rate > 0.0:
+        discounted = _discounted(
+            sweep, grid, times, gaps, prices, length, rate, oldest
+        )
+        limits = np.asarray(discounted.pop("thresholds"))
     h = np.zeros(grid.size)
     limit = max(1, int(MAX_LIVES * oldest / length))
     low = high = math.nan
@@ -458,6 +479,8 @@ def integrated_policy(
     for k, (shape, g_nodes, after, w) in enumerate(kept):
         if limits is not None:
             thresholds[k] = limits[k]
+            if discounted:
+                upper = upper and bool(discounted["upper"])
             continue
         thresholds[k], whole = threshold(
             shape, g_nodes, after, w, prices[k], grid
@@ -494,8 +517,22 @@ def integrated_policy(
             "opportunities": int(times.size),
             "tail": tail if repeat is not None else None,
             "repeat": repeat,
+            **{
+                k: v
+                for k, v in discounted.items()
+                if k not in ("npv", "upper")
+            },
         },
         life=life,
+        **(
+            {}
+            if not discounted
+            else {
+                "discount_rate": rate,
+                "npv": float(cast(float, discounted["npv"])),
+                "eac": rate * float(cast(float, discounted["npv"])),
+            }
+        ),
     )
     origin = 0.0
     if repeat is not None:
@@ -509,6 +546,60 @@ def integrated_policy(
         length, times, thresholds, kinds, names, origin, prices, replaced
     )
     return policy._bind(table, names, None, oldest)
+
+
+def _discounted(sweep, grid, times, gaps, prices, length, rate, oldest):
+    """The discounted thresholds at each opportunity of the cycle, and a
+    new part's present value at time 0: value iteration across the cycle,
+    each gap discounted at ``rate``, stopped by MacQueen's bounds (every
+    path through a cycle is discounted by the same ``exp(-rate *
+    length)``), each sweep from the last one's values less a new part's
+    (see ``_replacement._discounted_values``)."""
+    rho = math.exp(-rate * length)
+    factor = rho / (1.0 - rho)
+    h = np.zeros(grid.size)
+    v = h
+    limit = max(1, int(MAX_LIVES * oldest / length))
+    low = high = math.nan
+    converged = False
+    sweeps = 0
+    for sweeps in range(1, limit + 1):
+        v, _ = sweep(h, rho=rate)
+        change = v - h
+        low, high = float(change.min()), float(change.max())
+        top = abs(float(v[0]) + factor * high)
+        if factor * (high - low) <= TOLERANCE * max(top, 1e-300):
+            converged = True
+            break
+        h = v - v[0]
+    values = v + factor * 0.5 * (low + high)
+    _, kept = sweep(values, keep_values=True, rho=rate)
+    thresholds = np.empty(times.size)
+    upper = True
+    for k, (shape, g_nodes, after, w) in enumerate(kept):
+        thresholds[k], whole = threshold(
+            shape, g_nodes, after, w, prices[k], grid
+        )
+        upper = upper and whole
+    # A new part at time 0: at the first opportunity if it falls then,
+    # else put in inside the cycle's last gap, which runs over time 0.
+    start = float(times[0]) % length
+    if start <= 1e-12 * length:
+        npv = float(values[0])
+    else:
+        shape, g_nodes, _, _ = kept[-1]
+        npv = float(np.interp(length - float(times[-1]), shape.x, g_nodes))
+    return {
+        "thresholds": thresholds,
+        "upper": upper,
+        "npv": npv,
+        "discounted_sweeps": sweeps,
+        "discounted_converged": converged,
+        "npv_bounds": (
+            float(v[0]) + factor * low,
+            float(v[0]) + factor * high,
+        ),
+    }
 
 
 def threshold(shape, g_nodes, after, w, price, grid):

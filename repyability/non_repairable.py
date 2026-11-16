@@ -744,8 +744,9 @@ class NonRepairable:
     def _cost_rate_with_log_x(self, x):
         return self._cost_rate(np.exp(x))
 
-    def find_optimal_replacement(self):
-        """The replacement age that minimises the long-run cost rate.
+    def find_optimal_replacement(self, discount_rate=0.0):
+        """The replacement age that minimises the long-run cost rate, or,
+        with a discount rate, the equivalent annual cost.
 
         Minimises the age-replacement cost rate (see ``cost_rate``)
         ``(cp * R(t) + cu * (1 - R(t))) / integral_0^t R(u) du`` over the
@@ -788,6 +789,38 @@ class NonRepairable:
         stopped on the flattening curve. A replacement age must save more
         than one part in a million to count.
 
+        **With a discount rate** money spent later is worth less now, so
+        the age is chosen to make the present value of every replacement,
+        forever, the least (Fox, 1966); ``discount_rate`` times that value
+        is the equivalent annual cost (EAC), a steady cost per unit time
+        worth the same. With ``r`` the rate, ``R`` the reliability and
+        ``M(t)`` the integral of ``exp(-r u) R(u)`` from 0 to ``t``::
+
+            EAC(t) = [cu * (1 - exp(-r t) R(t) - r M(t))
+                      + cp * exp(-r t) R(t)] / M(t)
+
+        which is the cost rate above at ``r = 0``. Discounting puts off
+        the planned replacement's cost, so for a part that wears out the
+        best age is usually older than undiscounted. The cost is scanned
+        on a grid of ages (the trapezoidal rule) up to where the part has
+        all but surely failed or a cost is discounted to ``exp(-40)``, and
+        the cheapest age refined by a bounded search on the cost by
+        quadrature (a non-parametric estimate: its own grid, as above).
+        An exponential life, or a Weibull of shape ``<= 1``, still returns
+        ``inf`` at once; a limited failure population is searched, as
+        running to failure is no longer free when the failures to come
+        are discounted. ``inf`` is returned where no age beats running to
+        failure, whose EAC is ``cu * (1 - r M) / M`` with ``M`` the
+        integral to infinity.
+
+        Parameters
+        ----------
+        discount_rate : float, optional
+            The continuous discount rate per unit of the lifetime model's
+            time, by default 0 (undiscounted, the long-run cost rate). For
+            a yearly rate of 7% with a life in hours, ``math.log(1.07) /
+            8760``.
+
         Returns
         -------
         float
@@ -816,7 +849,24 @@ class NonRepairable:
         >>> unit.set_costs_planned_and_unplanned(cp=1, cu=5)
         >>> unit.find_optimal_replacement()
         inf
+
+        Discounted at 10% a year, with the life in hours, the best age is
+        a little older:
+
+        >>> import math
+        >>> unit = NonRepairable(surv.Weibull.from_params([1000, 2.5]))
+        >>> unit.set_costs_planned_and_unplanned(cp=1, cu=5)
+        >>> a_year = math.log(1.10) / 8760
+        >>> round(float(unit.find_optimal_replacement(a_year)), 1)
+        493.4
         """
+        from repyability.maintenance._options import (
+            discount_rate as _discount_rate,
+        )
+
+        rate = _discount_rate(discount_rate)
+        if rate > 0.0:
+            return self._discounted_optimum(rate)[0]
         if self.model_parameterization == "parametric":
             if never_fails(self.reliability) > 0.0:
                 # Some units never fail: in the long run one of them is in
@@ -880,6 +930,40 @@ class NonRepairable:
             optimal = float(ages[int(np.nanargmin(rates))])
         return optimal
 
+    def _memoryless(self) -> bool:
+        """Whether the life is one preventive replacement never improves,
+        discounted or not: an exponential, or a Weibull of shape at most
+        1, with no offset, zero-inflation or limited failure
+        population."""
+        if self.model_parameterization != "parametric":
+            return False
+        model = self.reliability
+        if (
+            getattr(model, "offset", False)
+            or getattr(model, "zi", False)
+            or getattr(model, "lfp", False)
+        ):
+            return False
+        if is_exponential(model):
+            return True
+        return distribution_name(model) == "Weibull" and model.params[1] <= 1
+
+    def _discounted_optimum(self, rate: float):
+        """The age-replacement age with the least equivalent annual cost at
+        ``rate`` (more than 0), and that cost (see
+        ``find_optimal_replacement``)."""
+        from repyability.maintenance._options import (
+            discounted_optimum,
+            discounted_run_to_failure,
+        )
+
+        if self._memoryless():
+            if self.cu is None:
+                return np.inf, np.nan
+            return np.inf, discounted_run_to_failure(self, rate, self.cu)
+        self._require_costs()
+        return discounted_optimum(self, rate, self.cp, self.cu)
+
     def _run_to_failure_rate(self) -> float:
         """The long-run cost rate with no preventive replacement,
         ``cu / MTTF``: 0 when some units never fail (a limited failure
@@ -927,7 +1011,9 @@ class NonRepairable:
         )
         return float(refined.x)
 
-    def optimal_replacement_policy(self) -> MaintenancePolicy:
+    def optimal_replacement_policy(
+        self, discount_rate=0.0
+    ) -> MaintenancePolicy:
         """The optimal age-replacement policy as a typed result.
 
         Finds the replacement age with ``find_optimal_replacement()`` (see
@@ -937,11 +1023,26 @@ class NonRepairable:
         interval is ``inf`` and the cost rate is the run-to-failure rate
         ``cu / MTTF``, or 0 when some units never fail.
 
+        With a discount rate the age is the one with the least equivalent
+        annual cost (EAC; Fox, 1966): the present value of every
+        replacement, forever, spread as a steady cost per unit time. The
+        result then carries that present value (``npv``) and ``eac``, and
+        ``cost_rate`` is still the undiscounted long-run cost rate of the
+        age chosen (of running to failure, where ``interval`` is ``inf``).
+
+        Parameters
+        ----------
+        discount_rate : float, optional
+            The continuous discount rate per unit of the lifetime model's
+            time, by default 0 (undiscounted). For a yearly rate of 7%
+            with a life in hours, ``math.log(1.07) / 8760``.
+
         Returns
         -------
         MaintenancePolicy
             ``interval`` is the cost-optimal replacement age and
-            ``cost_rate`` the long-run cost per unit time under it.
+            ``cost_rate`` the long-run cost per unit time under it; with a
+            discount rate, ``discount_rate``, ``npv`` and ``eac`` too.
 
         Raises
         ------
@@ -966,14 +1067,39 @@ class NonRepairable:
         >>> policy = unit.optimal_replacement_policy()
         >>> policy.interval, round(policy.cost_rate, 4)
         (inf, 0.05)
+
+        Discounted at 10% a year, the life in hours:
+
+        >>> import math
+        >>> unit = NonRepairable(surv.Weibull.from_params([1000, 2.5]))
+        >>> unit.set_costs_planned_and_unplanned(cp=1, cu=5)
+        >>> policy = unit.optimal_replacement_policy(math.log(1.1) / 8760)
+        >>> round(policy.interval, 1), round(policy.eac * 8760, 2)
+        (493.4, 30.27)
         """
+        from repyability.maintenance._options import (
+            discount_rate as _discount_rate,
+        )
+
         self._require_costs()
-        interval = self.find_optimal_replacement()
+        discount = _discount_rate(discount_rate)
+        if discount > 0.0:
+            interval, eac = self._discounted_optimum(discount)
+        else:
+            interval = self.find_optimal_replacement()
         if np.isinf(interval):
             rate = self._run_to_failure_rate()
         else:
             rate = float(self._cost_rate(interval))
-        return MaintenancePolicy(interval=float(interval), cost_rate=rate)
+        if discount == 0.0:
+            return MaintenancePolicy(interval=float(interval), cost_rate=rate)
+        return MaintenancePolicy(
+            interval=float(interval),
+            cost_rate=rate,
+            discount_rate=discount,
+            npv=float(eac) / discount,
+            eac=float(eac),
+        )
 
     def optimal_next_replacement(
         self,
@@ -2003,6 +2129,7 @@ class NonRepairable:
         mc_samples=64,
         seed=None,
         dated_until=None,
+        discount_rate=0.0,
     ):
         """The long-run optimal replacement policy over a calendar of
         opportunities: shuts at their own prices, a planned replacement on
@@ -2127,7 +2254,19 @@ class NonRepairable:
             (as None), ``"dp"``, ``"integration"`` or ``"sampling"``.
         horizon, discount : optional
             With a site: the last day costs count to, and the yearly
-            discount rate (required with a horizon; 0 for the plain total).
+            discount rate as a fraction (0.07 for 7% a year; required with
+            a horizon, 0 for the plain total). ``discount`` without a
+            horizon discounts the long run: the policy minimises the
+            present value of every replacement from now on, forever, and
+            ``cost`` is its equivalent annual cost (EAC), the steady cost
+            a year worth the same, ``ln(1 + discount)`` times the present
+            value. A dated window is then discounted to its end, and the
+            recurring shuts' discounted long run values everything after
+            it. Only the routes that repeat exactly are discounted (the
+            exact routes, the dated window, and plain age replacement on
+            any day), with no duty plan (whose clock does not keep a steady
+            pace with the calendar); the others are refused with what to
+            give instead.
         failure_timing : str, optional
             With a site: ``"half_step"`` (the default) or ``"exact"``.
         dated_until : date or str, optional
@@ -2149,6 +2288,21 @@ class NonRepairable:
             methods take none.
         seed : int, optional
             Seeds the sampled times; the other methods draw nothing.
+        discount_rate : float, optional
+            With a calendar in model time: the continuous discount rate
+            per unit of the calendar's time, by default 0 (the long-run
+            average). Given, the thresholds minimise the present value at
+            time 0 of every replacement from a new part, forever (Fox,
+            1966; discounted value iteration over the cycle), and the
+            policy carries that value (``npv``) and ``discount_rate`` times
+            it, the equivalent annual cost (``eac``); ``cost_rate`` stays
+            the long-run (undiscounted) cost rate of the policy chosen. For
+            a yearly rate of 7% with a calendar in days,
+            ``math.log(1.07) / 365.25``. A periodic calendar of a short
+            cycle only (``"dp"`` or ``"integration"``): a long cycle, a
+            plan of given dates and ``"sampling"`` are refused with what to
+            give instead. A site takes ``discount`` (a yearly rate)
+            instead.
 
         Returns
         -------
@@ -2202,6 +2356,12 @@ class NonRepairable:
                     "max_age and tail are for a Calendar in model time; a "
                     "site's shuts take neither."
                 )
+            if discount_rate != 0.0:
+                raise ValueError(
+                    "discount_rate is for a Calendar in model time (a "
+                    "continuous rate a unit of its time); a site takes "
+                    "discount=, a yearly rate such as 0.07."
+                )
             return find_policy(
                 self,
                 calendar,
@@ -2245,6 +2405,7 @@ class NonRepairable:
             tail=tail,
             mc_samples=mc_samples,
             seed=seed,
+            discount_rate=discount_rate,
         )
 
     def calendar_policy_cost(
