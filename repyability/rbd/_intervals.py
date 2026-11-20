@@ -7,6 +7,7 @@ intervals (``with_intervals``). The methods of ``RepairableRBD`` of those
 names call these.
 """
 
+import dataclasses
 import itertools
 import math
 from typing import (
@@ -22,6 +23,7 @@ import numpy as np
 from scipy.optimize import minimize
 
 from repyability.rbd import _crews, _requirements
+from repyability.rbd._common import _crew_salaries
 from repyability.rbd._model_utils import (
     failure_time_scale,
 )
@@ -424,12 +426,14 @@ def optimal_replacement_intervals(
     if rbd._crews_couple():
         if not assume_unlimited_crews:
             _require_interval_crews(rbd)
-        return _unlimited_crews(rbd).optimal_replacement_intervals(
+        salaries = _crew_salaries(rbd)
+        plan = _unlimited_crews(rbd).optimal_replacement_intervals(
             chosen,
             allowed=allowed,
             min_availability=min_availability,
-            max_cost_rate=max_cost_rate,
+            max_cost_rate=_less_salaries(max_cost_rate, salaries),
         )
+        return _with_salaries(plan, salaries)
 
     def evaluate(intervals: dict) -> Tuple[float, float]:
         plan = _with_intervals(rbd, preventive=intervals)
@@ -528,13 +532,15 @@ def optimal_inspection_intervals(
     if rbd._crews_couple():
         if not assume_unlimited_crews:
             _require_interval_crews(rbd)
-        return _unlimited_crews(rbd).optimal_inspection_intervals(
+        salaries = _crew_salaries(rbd)
+        plan = _unlimited_crews(rbd).optimal_inspection_intervals(
             chosen,
             allowed=allowed,
             min_availability=min_availability,
-            max_cost_rate=max_cost_rate,
+            max_cost_rate=_less_salaries(max_cost_rate, salaries),
             offset_shares=offset_shares,
         )
+        return _with_salaries(plan, salaries)
     # Each failure rate per unit its interval is given in.
     rates = {
         node: _requirements._tested_scale(rbd, node) / _per_given(rbd, node)
@@ -651,10 +657,34 @@ def _require_interval_crews(rbd) -> None:
 
 
 def _unlimited_crews(rbd) -> "RepairableRBD":
-    """This RBD with as many repair crews as jobs, built as it was."""
+    """This RBD with as many repair crews as jobs, built as it was, but
+    with no crews' salaries (as many crews as are needed are not paid:
+    see ``_with_salaries``)."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
-    return RepairableRBD(**{**rbd._init_args, "repair_crews": None})
+    return RepairableRBD(
+        **{**rbd._init_args, "repair_crews": None, "crew_cost_rate": 0.0}
+    )
+
+
+def _less_salaries(max_cost_rate, salaries: float):
+    """A ``max_cost_rate`` for the plan without the crews' ``salaries``
+    (see ``_unlimited_crews``), which every plan pays."""
+    if max_cost_rate is None or not salaries:
+        return max_cost_rate
+    if max_cost_rate <= salaries:
+        raise ValueError(
+            f"max_cost_rate {max_cost_rate} cannot be met: the repair "
+            f"crews' salaries alone cost {salaries:.6g} per unit time."
+        )
+    return max_cost_rate - salaries
+
+
+def _with_salaries(plan: MaintenancePlan, salaries: float) -> MaintenancePlan:
+    """``plan``, chosen without the crews' ``salaries``, with them."""
+    if not salaries:
+        return plan
+    return dataclasses.replace(plan, cost_rate=plan.cost_rate + salaries)
 
 
 def with_intervals(rbd, intervals, offsets) -> "RepairableRBD":

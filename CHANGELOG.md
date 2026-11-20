@@ -12,6 +12,24 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: repair crews that cost something. `RepairableRBD(...,
+  repair_crews=n, crew_cost_rate=c)` pays each of the `n` crews `c` per
+  unit time, busy or not, so a crew more is a trade-off rather than free.
+  Every cost result has the crews' cost under the new category
+  `"crews"`: `expected_cost_rate` adds `n c`; `total_cost`,
+  `expected_cost` and `expected_npv` (and its cash-flow table, by
+  period) add `n c T` over a window `T`, or `n c (1 - exp(-r T)) / r`
+  discounted at `r`; the simulations (`availability`, `cost`,
+  `cost_by_window`, `compare`, `npv_distribution`, `plan_vs_actual`'s
+  actual side) add the same amount to every run, after it, on every
+  engine. The interval choices with `assume_unlimited_crews=True` and
+  `allocate_redundancy` keep the crews' cost in the cost rate they
+  report and in a `max_cost_rate`, and the crew count lever moves it.
+  `crew_cost_rate` without `repair_crews` is refused (as many crews as
+  are needed cannot be priced); it is saved by `to_dict` when given.
+  Without it every value is as before; the cost breakdowns gain a
+  `"crews"` entry of 0.
+
 - Added: the best time to switch a whole diagram from one way of running
   to another (UC-20 of the maintenance README, which was built for one
   unit). `RepairableRBD.best_switch_time(covariates, value_rates,

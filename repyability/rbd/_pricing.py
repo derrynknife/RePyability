@@ -1,9 +1,9 @@
 """Up/down histories priced with a diagram's own costs: each failure its
 repair and replace costs, each planned outage its preventive cost, each
-component's and the system's time down their downtime costs and the
-system's time up its value, each discounted at the time it fell (a rate
-over a span exactly), by period, category and component, and history by
-history.
+component's and the system's time down their downtime costs, the repair
+crews' salaries over the whole time and the system's time up its value,
+each discounted at the time it fell (a rate over a span exactly), by
+period, category and component, and history by history.
 
 ``plan_vs_actual`` prices one history (an outage log, ``_plan_actual``)
 and ``npv_distribution`` every simulated one (``_npv_runs``); what a
@@ -15,6 +15,7 @@ from typing import Any, Dict, Hashable, List, Mapping, Optional, Tuple
 
 import numpy as np
 
+from repyability.rbd._common import _crew_salaries
 from repyability.rbd._spec import _mean_cost
 from repyability.rbd._tally import _CATEGORIES
 
@@ -302,4 +303,13 @@ def priced(
             None,
         )
         ledger.spans(*spans(system, up=True), value_rate, "value", None)
+    # The repair crews' salaries, the same in every history.
+    ledger.spans(
+        np.arange(size),
+        np.zeros(size),
+        np.full(size, ledger.ends[-1]),
+        _crew_salaries(rbd),
+        "crews",
+        None,
+    )
     return ledger

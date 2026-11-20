@@ -1252,11 +1252,13 @@ class CostResult(_ResultMapping):
         ``"replace"`` (both charged per failure; for a hidden failure, when
         an inspection finds it), ``"preventive"`` (charged per preventive
         replacement), ``"inspection"`` (charged per inspection),
-        ``"component_downtime"``, ``"system_downtime"`` and ``"setup"`` (a
-        maintenance group's set-up cost, charged once per stop), found as
+        ``"component_downtime"``, ``"system_downtime"``, ``"setup"`` (a
+        maintenance group's set-up cost, charged once per stop),
+        ``"shutdown"`` and ``"crews"`` (the repair crews' salaries,
+        ``crew_cost_rate``, the same in every replication), found as
         ``mean`` is: exact for an exact ``mean``, given the modules'
         histories for a conditional one, and otherwise the simulations' own
-        means. The seven sum to ``mean``, but for a run controlled by a
+        means. They sum to ``mean``, but for a run controlled by a
         twin that is not the system itself (``control_variate=True``),
         whose breakdowns are the simulations' own and sum to
         ``sample_mean``.
@@ -1857,8 +1859,9 @@ class ExpectedCost(_ResultMapping):
         The expected cost of ``"repair"`` and ``"replace"`` (per corrective
         action), ``"preventive"`` (per preventive replacement),
         ``"inspection"`` (per test), ``"component_downtime"``,
-        ``"system_downtime"`` and ``"setup"`` (once per stop of a
-        maintenance group), as in ``CostResult``.
+        ``"system_downtime"``, ``"setup"`` (once per stop of a
+        maintenance group), ``"shutdown"`` and ``"crews"`` (the repair
+        crews' salaries), as in ``CostResult``.
     by_component : dict
         The expected cost attributable to each costed component (its
         repair, replace, preventive, inspection and own downtime cost).
@@ -2136,8 +2139,9 @@ class ExpectedNPV(_ResultMapping):
     cost_by_category : dict
         The present value of the cost in each category (``"repair"``,
         ``"replace"``, ``"preventive"``, ``"inspection"``,
-        ``"component_downtime"``, ``"system_downtime"``, ``"setup"``, and
-        ``"acquisition"``), as positive amounts.
+        ``"component_downtime"``, ``"system_downtime"``, ``"setup"``,
+        ``"shutdown"``, ``"crews"`` and ``"acquisition"``), as positive
+        amounts.
     cost_by_component : dict
         The present value of the cost attributable to each costed
         component, with its acquisition cost.

@@ -34,6 +34,8 @@ from repyability.rbd import (
 from repyability.rbd._common import (
     _DISCOUNT_ROUNDS,
     _DISCOUNT_TOLERANCE,
+    _crew_salaries,
+    _crew_salaries_to,
     _discount_pieces,
     _discount_rate,
     _horizons,
@@ -584,6 +586,9 @@ def expected_cost(
     if rbd._shutdowns:
         # Each shut's cost, at its start (see _shutdowns).
         categories["shutdown"] = _shutdowns.cost_before(rbd, ends)
+    if _crew_salaries(rbd):
+        # The repair crews' salaries, paid from 0 whatever happens.
+        categories["crews"] = _crew_salaries_to(rbd, ends)
     for name, spec in rbd._maintenance.items():
         if not spec.setup_cost:
             continue
@@ -629,9 +634,11 @@ def _discounted_cost(
     The pieces whose two rules differ most are halved until the
     differences add up to ``_DISCOUNT_TOLERANCE`` of the integral:
     ``C`` jumps at scheduled events (tests, block replacements), where
-    a piece's error only halves with it."""
+    a piece's error only halves with it. The crews' salaries, paid at a
+    steady rate, are discounted in closed form, outside the integral."""
     windows = nonnegative_times(t)
     ends = windows.ravel()
+    salaries = _crew_salaries(rbd)
     horizon = float(ends.max()) if ends.size else 0.0
     keys: list = []
     cell_keys: list = []
@@ -657,6 +664,10 @@ def _discounted_cost(
                 cell_keys.extend(own)
         rows = [got.mean]
         rows += [got.by_category[category] for category in _CATEGORIES]
+        if salaries:
+            # (Their present value is added in closed form below.)
+            rows[0] = rows[0] - got.by_category["crews"]
+            rows[1 + _CATEGORIES.index("crews")] = np.zeros_like(got.mean)
         rows += [got.by_component[node] for node in keys]
         if own is not None:
             rows += [
@@ -703,6 +714,9 @@ def _discounted_cost(
     rows = iter(present)
     mean = next(rows)
     categories = {category: next(rows) for category in _CATEGORIES}
+    if salaries:
+        categories["crews"] = _crew_salaries_to(rbd, ends, rate)
+        mean = mean + categories["crews"]
     components = {node: next(rows) for node in keys}
     if cells is not None:
         cells.update({k: next(rows) for k in cell_keys})

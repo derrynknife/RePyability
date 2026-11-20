@@ -36,6 +36,7 @@ from repyability.rbd import (
     _requirements,
 )
 from repyability.rbd._common import (
+    _crew_salaries,
     _discount_rate,
     _horizons,
     _present_horizon,
@@ -416,6 +417,8 @@ def allocate_redundancy(
             for node in rbd.components
         )
         + rbd.downtime_cost_rate * u
+        # The crews' salaries, which the copies do not change.
+        + _crew_salaries(rbd)
     )
     return TotalCostAllocation(
         units=units,

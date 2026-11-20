@@ -41,6 +41,7 @@ from repyability.rbd import (
     _unplanned,
 )
 from repyability.rbd._common import (
+    _crew_salaries,
     _keeps_virtual_age,
     _safe_mean,
 )
@@ -2662,9 +2663,13 @@ def _run_alone(
                 ),
                 jobs,
             )
+        # The crews' salaries, the same in every simulation: charged here,
+        # on every engine (a sharded run's shards charge their own).
+        salaries = 0.0 if sharded is not None else _crew_salaries(rbd)
         start, goal = first, first + N
         while True:
             runner(start, goal)
+            tally.charge_crews(goal - start, salaries * t_simulation)
             more = 0 if stop is None else stop(tally)
             if not more:
                 break
