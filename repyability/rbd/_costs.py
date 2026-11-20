@@ -49,6 +49,9 @@ def expected_cost_rate(
     # The shutdowns' own costs, at each shut, and the repair crews'
     # salaries, paid whatever happens.
     rate = _shutdowns.cost_rate(rbd) + _crew_salaries(rbd)
+    # A call-out crew's fees and its rate while engaged, from the crews'
+    # chain.
+    rate += _crews._call_out_cost_rate(rbd, working_nodes, broken_nodes)
 
     # Production lost while the *system* is down.
     if rbd.downtime_cost_rate:

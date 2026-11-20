@@ -26,6 +26,9 @@ from typing import Any, Dict, Hashable, List, Optional, Tuple
 
 import numpy as np
 
+from repyability.rbd import (
+    _crews,
+)
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import _npv, _pricing, _requirements, _streams
 from repyability.rbd._common import _discount_rate
@@ -56,6 +59,13 @@ def refusal(rbd) -> Optional[Tuple[str, Tuple[Hashable, ...]]]:
             "The diagram has shutdowns, which hold components off line and "
             "are charged at times the histories do not record: the runs "
             "cannot be priced from them." + _INSTEAD,
+            (),
+        )
+    if _crews._call_out_priced(rbd):
+        return (
+            "The call-out crew's fee and rate are charged when it is "
+            "called and while it is engaged, which the simulated "
+            "histories do not record." + _INSTEAD,
             (),
         )
     for category, node, why in _pricing.unrecorded(rbd):

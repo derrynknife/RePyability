@@ -63,6 +63,48 @@ def _crews_limited(rbd) -> bool:
     )
 
 
+def _call_when(rbd) -> int:
+    """How many waiting jobs call the call-out crew (``call_out``'s
+    ``"when_waiting"``); 0 with none, or where no job can wait."""
+    call_out = getattr(rbd, "_call_out", None)
+    if call_out is None or not _crews_limited(rbd):
+        return 0
+    return call_out.when_waiting
+
+
+def _call_out_priced(rbd) -> bool:
+    """Whether a call-out crew that can be called costs anything."""
+    call_out = getattr(rbd, "_call_out", None)
+    return bool(
+        call_out is not None
+        and (call_out.fee or call_out.rate)
+        and _crews_limited(rbd)
+    )
+
+
+def _call_out_charge(rbd, calls, engaged):
+    """What the call-out crew costs for ``calls`` call-outs and a time
+    ``engaged``: its fee each time it comes, and its rate while engaged."""
+    return rbd._call_out.fee * calls + rbd._call_out.rate * engaged
+
+
+def _call_out_vector(rbd, chain) -> np.ndarray:
+    """The rate at which the call-out crew costs in each state of the
+    crews' ``chain``: its fee at the rate it is called there, and its
+    rate where it is engaged."""
+    return _call_out_charge(rbd, chain.calls, chain.engaged.astype(float))
+
+
+def _call_out_cost_rate(rbd, working_nodes, broken_nodes) -> float:
+    """The call-out crew's long-run cost per unit time, from the crews'
+    chain without the nodes held (0.0 where it costs nothing)."""
+    if not _call_out_priced(rbd):
+        return 0.0
+    forced = frozenset(working_nodes or ()) | frozenset(broken_nodes or ())
+    chain = _crew_chain(rbd, forced)
+    return float(chain.probabilities @ _call_out_vector(rbd, chain))
+
+
 def _require_unlimited_crews(
     rbd,
     assumes: str = "these values assume",
@@ -141,16 +183,25 @@ def _crew_chain_rates(rbd) -> Dict[Any, Tuple[float, float]]:
                 f"and the repair times of component {node!r} are not",
             )
         rates[node] = (life, repair)
-    count = crew_chain.state_count(
-        [rbd._priority.get(node, 0.0) for node in rates],
-        [math.isinf(repair) for _, repair in rates.values()],
-        rbd.repair_crews,
-    )
-    if count > crew_chain.MAX_STATES:
+    priorities = tuple(rbd._priority.get(node, 0.0) for node in rates)
+    instant = tuple(math.isinf(repair) for _, repair in rates.values())
+    call_when = _call_when(rbd)
+    # (Kept beside the chains, under a key of another shape.)
+    counts = rbd._cache.kept("crew_chains")
+    key = (priorities, instant, rbd.repair_crews, call_when)
+    if key not in counts:
+        counts[key] = crew_chain.state_count(*key)
+    if counts[key] > crew_chain.MAX_STATES:
         _no_crew_chain(
             rbd,
-            f"here it has {count:,} states, more than the "
-            f"{crew_chain.MAX_STATES:,} it is solved for",
+            (
+                "here it has more than the "
+                if call_when
+                else f"here it has {counts[key]:,} states, more than the "
+            )
+            + f"{crew_chain.MAX_STATES:,} "
+            + ("states " if call_when else "")
+            + "it is solved for",
         )
     return rates
 
@@ -179,8 +230,10 @@ def _crew_chain(
     assert rbd.repair_crews is not None  # limited crews only
     nodes = [node for node in rates if node not in forced]
     priorities = [rbd._priority.get(node, 0.0) for node in nodes]
+    call_when = _call_when(rbd)
     key = (
         rbd.repair_crews,
+        call_when,
         tuple(zip(nodes, (rates[node] for node in nodes), priorities)),
     )
     cache = rbd._cache.kept("crew_chains")
@@ -191,6 +244,7 @@ def _crew_chain(
             [rates[node][1] for node in nodes],
             priorities,
             rbd.repair_crews,
+            call_when,
         )
     return cache[key]
 
@@ -261,7 +315,13 @@ def crew_states(
     working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     _require_coupling_crews(rbd)
     availability, probabilities = _chain_probabilities(rbd, working, broken)
-    return CrewStates(availability, probabilities)
+    chain = _crew_chain(rbd, frozenset(working) | frozenset(broken))
+    return CrewStates(
+        availability,
+        probabilities,
+        np.array(chain.calls, dtype=float),
+        chain.engaged.astype(float),
+    )
 
 
 def _chain_outage_terms(
