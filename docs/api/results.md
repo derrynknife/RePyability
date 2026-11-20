@@ -144,6 +144,8 @@
 
 ::: repyability.FailureFinding
 
+::: repyability.FailureFindingWindow
+
 ::: repyability.OnCondition
 
 ::: repyability.NextReplacement

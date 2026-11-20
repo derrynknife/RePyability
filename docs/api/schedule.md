@@ -63,4 +63,6 @@ tasks on dates and failures, events and work by calendar period (see the
 
 ::: repyability.schedule.Replaces
 
+::: repyability.schedule.Finds
+
 ::: repyability.schedule.TaskValue

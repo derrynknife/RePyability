@@ -12,6 +12,28 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: what a test of a hidden failure is worth (UC-53 of the
+  maintenance README and UC-54 of the schedule's).
+  `failure_finding_window(device, test_times, window, age=, test_cost=,
+  repair_cost=, demand_rate=, consequence_cost=, discount_rate=)` is
+  `failure_finding` over a window in model time: a protective device
+  tested at any list of times (none for "never tested"), from its age,
+  giving the chance each test finds it failed, the time it is failed,
+  the demands that meet it failed, the unavailability over time, and the
+  plan's cost and present value, in a `FailureFindingWindow`. A demand
+  that meets the device failed shows the failure, which is repaired
+  then (`demands_reveal=False` for `failure_finding`'s convention, whose
+  long-run numbers even tests over a long window then give). Exact at
+  the tests where only a test finds a failure, numerical where a demand
+  shows it, to the `precision` given. On dates,
+  `repyability.schedule.task_value` takes `Finds(device, demand_rate=,
+  consequence_cost=, repair_cost=)` for a task that tests the device:
+  the tests' cost, the repairs and the demands that meet the device
+  failed, against never testing it, by calendar period and as present
+  values with `discount=`. `TaskValue` gains `found`,
+  `unavailability_with` and `unavailability_without` (None for
+  `Replaces`, whose values are as before).
+
 - Added: mid-life upgrades, retirement and salvage in a net present
   value (UC-52 of the maintenance README). A component spec takes
   `"upgrade": {"at": time, "reliability": new_life, "cost": capital}`:

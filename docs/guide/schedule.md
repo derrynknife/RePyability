@@ -9,8 +9,8 @@ map between dates and operating hours it gives (`UsageForecast`), which
 puts tasks counted in running hours on dates; and, through that map,
 **failures, events and shuts on the calendar** (`failures_by_period`,
 `events_by_period`, `shutdown_spec`, `Opportunity.from_recurrence`),
-and what a replacement task is worth against not doing it
-(`task_value`).
+and what a task is worth against not doing it (`task_value`): a
+replacement, or a test that finds a hidden failure.
 
 The module computes and stores nothing. You pass it dates, rules and what
 you know (when a task was last done); it never reads the clock. Dates are
@@ -566,6 +566,57 @@ The task's `cost` is the planned ring's price. A task with no cost takes
 the part's `planned_cost`. If both are given and differ, the call is
 refused, naming the two numbers. A task by use (`every=Usage(2000,
 "hours")`) is done when the meter reaches its reading.
+
+### Is a test of a hidden failure worth it?
+
+A test of a protective device (a trip, a relief valve, a standby pump's
+start) replaces nothing and prevents no failure. What it buys is time: a
+device that has failed without anyone knowing is found and repaired at
+the next test, instead of sitting failed until it is needed. `Finds`
+says that is what the task does. Say a trip fails hidden at 0.1 a year
+and is tested every 6 months at $400; a repair costs $3,000; the event
+it protects against comes once in 2 years and costs $250,000 if the trip
+is failed then:
+
+```python
+from repyability.schedule import Finds, UsageForecast
+
+trip = NonRepairable(surv.Exponential.from_params([0.1]))  # per year
+trip_test = Task("trip test",
+                 every=Recurrence.every(6, "months", "2027-01-01"), cost=400.0)
+years = UsageForecast.calendar("2026-11-16", "2029-11-16")
+does = Finds(trip, demand_rate=0.5, consequence_cost=250_000.0,
+             repair_cost=3_000.0)
+tested = task_value(trip_test, does, years, unit="years", discount=0.07)
+round(tested.total["found"], 3)  # -> 0.228
+round(tested.total["unavailability_with"], 4)  # -> 0.0213
+round(tested.total["unavailability_without"], 4)  # -> 0.0894
+round(tested.total["failures_avoided"], 3)  # -> 0.102
+round(tested.total["value"], -2)  # -> 19800.0
+```
+
+The trip's life is in calendar years, so the forecast is
+`UsageForecast.calendar` and `unit="years"`; a device whose life is in
+running hours takes a duty plan's forecast, and demands then come only
+while it runs (`demand_rate` is per unit of the device's own time). With
+the task, the cost is the tests, the repairs of what they find, and the
+demands that meet the trip failed. Without it the trip is never tested.
+The result's "failures" are those demands: here the tests avoid about
+0.1 of them over three years, and are worth about $19,800 today.
+`found` is the failures the tests find, and `unavailability_with` and
+`unavailability_without` are the trip's mean unavailability in each
+period (and over the whole forecast in `total`).
+
+By default, a demand that meets the device failed also shows the
+failure, which is repaired then. That is what happens without the task,
+too: a failure stays until a demand finds it. With
+`demands_reveal=False`, only a test finds a failure, as
+[`failure_finding`](maintenance.md) has it, so never tested, a failure
+is for good. Tests and repairs take no time, a test never misses, and
+the device is taken to be working when the forecast starts. The task's
+`cost` is one test's. `precision` includes the error of the numerical
+solution. In model time, with the tests at any list of times,
+`failure_finding_window` gives the same numbers.
 
 ### A system, by month
 

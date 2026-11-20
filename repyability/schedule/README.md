@@ -66,6 +66,7 @@ model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
 | UC-48 | The wear ring's expected failure costs by month, as present values | **Built**: `failures_by_period(discount=)` (to a stated precision; a window, not the long run) |
 | UC-49 | A system's expected costs by month, as present values | **Built**: `events_by_period(cost=True, discount=)` (exact) |
 | UC-50 | Is replacing the wear ring at every 6-monthly service worth it, at 7% a year? | **Built**: `task_value(task, Replaces(part), usage, discount=)` |
+| UC-54 | Is the 6-monthly trip test worth it, at 7% a year? | **Built**: `task_value` with `Finds(device, demand_rate=, consequence_cost=, repair_cost=)` |
 | UC-32 | A pump on weekday shifts: its hours by month, and its 2,000-hour service on dates | **Built**: `DutyPlan`, `UsageForecast` |
 | UC-33 | A concrete run: when is the 500-hour check due? | **Built**: `Runs`, a crossing's stops |
 | UC-34 | About 3 h a day, or 2 to 4: when are the 250-hour inspections? | **Built**: `Rate`, ranges |
@@ -710,8 +711,9 @@ in `test_schedule_forecast.py`.
     cost).
   - A planned replacement takes no time on the part's clock (its
     `time_to_replace` is a failure's, which `failures` counts).
-  - Only a replacement is valued here (`Replaces`); what an inspection
-    or a service does is a later use case, refused with what to run.
+  - Only a replacement is valued here (`Replaces`); a test of a hidden
+    failure is UC-54's (`Finds`), and what a service does is a later
+    use case, refused saying so.
   - The `calendar=` of `cost_by_window` is an optimised policy's
     thresholds, so it does not say "replace at every date, whatever the
     age"; `every=` says it only for even gaps in model time, which
@@ -727,6 +729,88 @@ in `test_schedule_forecast.py`.
   `test_periods_add_up`, `test_one_price`,
   `test_what_is_not_a_replacement_is_refused`,
   `test_a_task_by_use_matches_block_replacement_in_model_time`.
+
+### UC-54: "Is the 6-monthly trip test worth it, at 7% a year?"
+
+- **Status:** built: `task_value(task, Finds(device, demand_rate=,
+  consequence_cost=, repair_cost=), usage, age=, discount=, period=)`
+  returning a `TaskValue`.
+- **Who asks:** UC-50's planner, about a task that replaces nothing: a
+  test of a protective device (a trip, a relief valve, a standby pump's
+  start). A test prevents no failure; what it is worth is the time the
+  device would otherwise sit failed with nobody knowing.
+- **What they know:** a trip failing hidden at a constant 0.1 a year,
+  working on Monday 16 November 2026; a test on 1 January and 1 July
+  (`Recurrence.every(6, "months", "2027-01-01")`), $400 each; a failure
+  repaired as new for $3,000; the protected event once in 2 years (0.5 a
+  year), which costs $250,000 if it meets the trip failed and shows the
+  failure, repaired then; three years, to 16 November 2029; 7% a year.
+- **The answer, by hand:** the trip's life is in calendar time, so its
+  clock is the calendar's: the six tests are 46, 227, 411, 593, 777 and
+  958 days from the start (0.126, 0.621, 1.125, 1.624, 2.127 and 2.623
+  years), and the forecast 1,096 days (3.0007 years). As UC-53 of the
+  maintenance README: from a test (or the start) the chance the trip is
+  failed after `s` years is `0.1 / 0.6 (1 - exp(-0.6 s))`. *With the
+  task* the tests find it failed with chances 0.0121, 0.0429, 0.0435,
+  0.0431, 0.0435 and 0.0429 (**0.2279 failures found**); it is failed
+  for 0.0640 years (a mean unavailability of **0.0213**), so **0.0320
+  demands** meet it failed: tests $2,400, repairs $3,000 x (0.2279 +
+  0.0320) = $779.60, consequences $250,000 x 0.0320 = $7,995.30:
+  **$11,174.90**. *Without the task* (never tested; a failure stays
+  until a demand shows it) it is failed for 0.2682 years (**0.0894**),
+  **0.1341 demands** meet it failed: $253,000 x 0.1341 = **$33,931.58**.
+  The tests save **$22,756.68**. At 7% a year (the calendar's clock is
+  the trip's, so the closed form discounts exactly, at `ln 1.07` a
+  year): the tests are worth $400 x sum 1.07^(-t) = $2,190.54, with the
+  task **$10,087.23**, without **$29,936.76**: the task's present value
+  is **$19,849.53**.
+- **How it is solved:** the task's dates come from `Task.due` and are
+  laid on the device's clock as UC-50's are. With them as the tests'
+  times, the device's chance of being failed over time is UC-53's
+  (`maintenance._finding_window`), from `age`, working at the start;
+  without the task it is the same with no tests. Each side's demands on
+  a failed device accrue with the device's operating time (the demand
+  rate times the failed time), so they go by period and are discounted
+  exactly as UC-50's failures are (`_accrued_npv`'s short windows, the
+  bracket's middle, its half in `precision`, with the grid's own error);
+  a test's cost and the repair of what it finds are discounted from the
+  instant the task is done. `value = without - with`. The result is
+  UC-50's `TaskValue`: its "failures" are the demands that meet the
+  device failed, and it adds `found` (the failures the tests find) and
+  `unavailability_with` and `unavailability_without` (the device's mean
+  unavailability in each period, and over the forecast in `total`).
+- **Decisions (defaults):**
+  - **A demand that meets the device failed shows the failure**, which
+    is repaired then at `repair_cost`, with the task and without it
+    (`demands_reveal=False` on `Finds` turns it off on both sides: only
+    a test finds a failure, as `failure_finding` has it, and never
+    tested a failure is for good).
+  - **Tests and repairs take no time and a test never misses**, as
+    `failure_finding` assumes.
+  - **The caller gives the demand rate and the consequence's cost**; a
+    `Task` does not carry them, and a diagram's system-level consequence
+    is not worked out here. The demand rate is per unit of the device's
+    own time, so demands come only while it runs.
+  - The task's `cost` is one test's; a task with no cost is refused
+    (0.0 for a free test). The device's own costs are not used.
+  - Tests at one time on the device's clock (two dates with no running
+    between them) are one test of the device: each costs, and the first
+    finds what there is to find.
+  - "Without" is never tested, not the best other interval
+    (`optimal_failure_finding_interval` answers that in the long run).
+- **Checks** (`test_schedule_finds.py`):
+  `test_uc54_six_monthly_trip_test` (the numbers above, undiscounted to
+  1e-9 and discounted within `precision`),
+  `test_only_tests_find_a_failure`,
+  `test_matches_the_model_time_calculation` (a Weibull device 1,000 h
+  old tested every 30 days against `failure_finding_window`, with and
+  without a discount), `test_uneven_dates_under_a_duty_plan` (the first
+  Tuesday of each month on a pump on weekday shifts, against the closed
+  form on the pump's clock, each day's cost discounted at its start and
+  its end by hand), `test_tests_while_the_device_does_not_run`,
+  `test_the_value_follows_the_prices` (rising with the consequence,
+  falling with the test's cost, zero at the break-even price),
+  `test_periods_add_up`, `test_refusals`.
 
 ### UC-40: "Replacing the part is cheap at the annual overhaul, the first Tuesday of November. Can the calendar policy use the real dates?"
 
@@ -792,10 +876,12 @@ in `test_schedule_forecast.py`.
   for the policies on dates, with `discounted_run_to_failure` and
   `age_replacement_value` where the usage keeps a steady pace) is not
   joined to it yet; a task's long run is (`Task.long_run_value`).
-- **The value of an inspection or a service.** `task_value` takes
-  `Replaces` only: a test that finds hidden failures, and a service
-  that changes the failure rate (whose model of the effect is still to
-  be chosen), are later use cases, refused with what to run.
+- **The value of a service.** `task_value` takes `Replaces` and
+  `Finds`: a service that changes the failure rate (whose model of the
+  effect is still to be chosen) is a later use case, refused saying so.
+  A test that can miss a failure or that takes the device off line, and
+  an inspection that finds a warning before the failure (on condition),
+  are not valued on dates yet either.
 - **A task's value for ever.** `task_value` values the forecast's window;
   the long run beyond it is not joined to it (as for the part's own
   failure costs above).

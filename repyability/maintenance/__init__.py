@@ -198,6 +198,10 @@ from repyability.maintenance._decisions import (  # noqa: E402
     run_to_failure,
     scheduled_replacement,
 )
+from repyability.maintenance._finding_window import (  # noqa: E402
+    FailureFindingWindow,
+    failure_finding_window,
+)
 from repyability.maintenance._next import (  # noqa: E402
     NextReplacement,
     ReplacementChoice,
