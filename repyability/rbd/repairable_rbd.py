@@ -232,6 +232,11 @@ class RepairableRBD(RBD):
           ``"opportunity"`` (an age from 0 to ``interval``) renews the
           unit early, from that age, at a stop of its maintenance group
           (see ``"group"``), as its scheduled replacement would.
+          A ``"restore_to"`` (a virtual age, 0 or more) makes each task
+          leave the unit as if that old, whatever its age before (an
+          overhaul that leaves a pump as if 3,000 hours old; 0 renews it),
+          its next life drawn given that age from the end of the task;
+          simulated, as a ``"restoration"`` is, and not given with one.
           A ``"restoration"`` makes each task restore the unit only
           partly, by Kijima's virtual-age models, under the ``"age"``,
           ``"block"`` and ``"condition"`` policies: a dict of a
@@ -602,7 +607,8 @@ class RepairableRBD(RBD):
         ``"threshold"`` and ``"inspection_cost"``, an ``"age"``
         policy's ``"opportunity"``, a ``"condition"`` policy's
         ``"level"``, a ``"calendar"`` policy's ``"calendar"``, and a
-        task's ``"restoration"``, ``"replace_every"`` and
+        task's ``"restoration"``, ``"restore_to"``, ``"replace_every"``
+        and
         ``"replacement_cost"``, a task's ``"shutdown"`` and
         ``"older_than"``, its times' ``"basis"``, and ``"replace_at"``,
         the times of a plan in place of an ``"interval"``.

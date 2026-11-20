@@ -92,6 +92,7 @@ PREVENTIVE_KEYS = (
     "level",
     "calendar",
     "restoration",
+    "restore_to",
     "replace_every",
     "replacement_cost",
     "shutdown",
@@ -102,7 +103,12 @@ PREVENTIVE_KEYS = (
 
 #: The keys of a ``"preventive"`` spec that make its task restore the unit
 #: only partly (Kijima), and replace it as new at every so many tasks.
-RESTORATION_KEYS = ("restoration", "replace_every", "replacement_cost")
+RESTORATION_KEYS = (
+    "restoration",
+    "restore_to",
+    "replace_every",
+    "replacement_cost",
+)
 
 #: The policies a ``"preventive"`` spec can name: replacement at an
 #: age, on a calendar (block), on the condition an inspection finds, or
@@ -291,6 +297,7 @@ def _validate_imperfect(rbd, node, spec: dict) -> Optional[_Imperfect]:
     if process is not None:
         if isinstance(preventive, dict) and (
             preventive.get("restoration") is not None
+            or preventive.get("restore_to")
         ):
             raise ValueError(
                 f"Component {node!r} is repaired by its fitted "
@@ -381,6 +388,27 @@ def _kijima_factor(
     return given["model"], float(q)
 
 
+#: A ``_Restoration``'s ``kijima`` for a task that restores the unit to
+#: a virtual age (``"restore_to"``), whose ``q`` is the age.
+TO_AGE = "to_age"
+
+
+def _restore_to(node, preventive: dict) -> Optional[float]:
+    """A ``"preventive"`` spec's ``"restore_to"``, checked: the virtual
+    age a task leaves the unit at (0 renews it), or None."""
+    to = preventive.get("restore_to")
+    if to is None:
+        return None
+    age = number_or_nan(to)
+    if not (age >= 0.0 and math.isfinite(age)):
+        raise ValueError(
+            f"Component {node!r}: restore_to is the virtual age a task "
+            "leaves the unit at, in the models' unit: a finite number, 0 "
+            f"or more (0 renews it); got {to!r}."
+        )
+    return age
+
+
 def _validate_restoration(
     node,
     spec: dict,
@@ -400,6 +428,16 @@ def _validate_restoration(
     given = preventive.get("restoration")
     every = preventive.get("replace_every")
     cost = preventive.get("replacement_cost")
+    to = _restore_to(node, preventive)
+    if to is not None and given is not None:
+        raise ValueError(
+            f"Component {node!r}: a task restores the unit by a Kijima "
+            "factor ('restoration') or to an age ('restore_to'), not both: "
+            "give one."
+        )
+    if to:
+        # To a virtual age (0 renews the unit: the default, below).
+        given = to
     if cost is not None and every is None:
         raise ValueError(
             f"Component {node!r}: a replacement_cost is the cost of the "
@@ -413,13 +451,16 @@ def _validate_restoration(
                 "anyway."
             )
         return None, None
-    model, q = _kijima_factor(
-        node,
-        given,
-        "the preventive restoration",
-        "leaves it as old as it was",
-        ", or a fitted surpyval GeneralizedRenewal (Kijima I or II)",
-    )
+    if to:
+        model, q = TO_AGE, to
+    else:
+        model, q = _kijima_factor(
+            node,
+            given,
+            "the preventive restoration",
+            "leaves it as old as it was",
+            ", or a fitted surpyval GeneralizedRenewal (Kijima I or II)",
+        )
     if every is not None:
         if (
             isinstance(every, bool)

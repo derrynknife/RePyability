@@ -492,11 +492,13 @@ class _ImperfectComponent(_StreamedComponent):
             return
         restoration: Any = self._restoration
         x = t - self.since
-        self.age = (
-            restoration.q * (self.age + x)
-            if restoration.kijima == "kijima2"
-            else self.age + restoration.q * x
-        )
+        if restoration.kijima == "to_age":
+            # To a given virtual age, whatever its age before (#570).
+            self.age = restoration.q
+        elif restoration.kijima == "kijima2":
+            self.age = restoration.q * (self.age + x)
+        else:
+            self.age = self.age + restoration.q * x
         self._fails_next = True
         self.operated = 0.0
         self.tasks += 1

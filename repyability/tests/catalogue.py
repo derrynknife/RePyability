@@ -1303,6 +1303,29 @@ def repairable_kinds():
                     }
                 },
             ),
+            # Outages at given times whose job leaves a block as if 50
+            # old (simulated).
+            "outages restoring to an age": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={
+                            "shutdown": "outage",
+                            "restore_to": 50.0,
+                            "cost": 2.0,
+                        }
+                    ),
+                    "b": unit(),
+                    "c": unit(),
+                },
+                shutdowns={
+                    "outage": {
+                        "times": [150.0, 400.0, 700.0],
+                        "duration": 8.0,
+                        "scope": ["a"],
+                    }
+                },
+            ),
             # Outages at given times, each renewing a block: exact over
             # a horizon (no long run).
             "outages at given times, renewing": RepairableRBD(

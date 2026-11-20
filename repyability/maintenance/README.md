@@ -52,6 +52,7 @@ records and decides what "today" is.
 | UC-55 | How sure an NPV and a choice of intervals are: the NPV's change with the discount rate, its spread over the fitted models' uncertainty with each input's share, and how often the chosen replacement intervals stay the best | **Built**: `expected_npv(rate_sensitivity=True)`, `RepairableRBD.expected_npv_uncertainty`, `optimal_replacement_intervals(robust=True or "reoptimise")` |
 | UC-56 | At each planned outage, also replace the parts close enough to their own replacement, since the plant is down anyway: what the scope adds, by outage, and what the plan then costs | **Built** (simulated): a shutdown's `"opportunistic"`, the count by outage in `AvailabilityResult.outage_jobs`; the exact methods refuse, naming the simulation |
 | UC-57 | What a plan is worth when the price it earns steps up, its costs escalate at their own rates, and the rate is real or nominal; and the same escalation on dates | **Built**: `expected_npv(value_rate=ValueSchedule(...), escalation=, rates=, inflation=)`; `escalation=` beside `discount=` in `repyability.schedule` |
+| UC-58 | An outage's overhaul that leaves a part as if a given age, not by a Kijima factor | **Built** (simulated): a `"preventive"` spec's `"restore_to"`; `restore_to=0` is a renewal (exact where renewals are) |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -2246,6 +2247,44 @@ answers back into dates is Reliafy's too.)
 - **Learned / open questions:** `plan_vs_actual` and `npv_distribution`
   take a constant value and no growth yet (they refuse a schedule or
   escalation, naming `expected_npv`).
+
+### UC-58: "At the outage the pump is overhauled, and leaves as if 3,000 hours old whatever it was before. What does that do to the plan?"
+
+- **Status:** built (simulated): a `"preventive"` spec's `"restore_to":
+  age`, for a task at a shutdown (UC-24) or on the part's own calendar.
+- **Who asks, and why:** the planner whose overhaul contractor states
+  the result as an age ("as good as 3,000 hours"), not as a share of the
+  age taken away, which is what a Kijima factor (`"restoration"`) says.
+- **What they know:** the diagram, the outages and their scope, the part's
+  life, and the age the overhaul leaves it at.
+- **What they want back:** the plan's availability, failures, costs and
+  their spread, as for any simulated plan.
+- **How it is solved (simulated):** the task sets the unit's virtual age
+  to the age given, whatever it was (`_ImperfectComponent.maintained`,
+  beside Kijima I and II, `_Restoration` with `kijima="to_age"`); the
+  unit's next life is drawn given that age from the end of the task
+  (`_aged_life`, the virtual age's own stream), as a Kijima restoration
+  draws it. `restore_to=0` is a renewal: it is taken as no restoration at
+  all, so it is exact wherever a renewal is and the same simulation, seed
+  for seed. A part restored to an age is refused by the exact methods, as
+  a Kijima restoration is ("restored only partly ... to a virtual age of
+  3000"), naming `availability()` and `cost()`; numba's loop leaves it to
+  Python (`_compiled.unsupported`: a restoration, and a dated shut).
+  `"restore_to"` and `"restoration"` are one or the other. The age is a
+  number; an age that depends on the age before is a Kijima factor
+  already.
+- **Today:** a Kijima factor only, whose age left depends on the age
+  before.
+- **Checks:** `test_restore_to.py`: `restore_to=0` the renewal's run to
+  the last bit, and its exact values; a memoryless part unchanged by any
+  age (against the renewal's exact availability, within the run's
+  error); a Weibull part whose repair outlasts the window (so it fails at
+  most once) against its survival from the age given, `R(TAU) R(a + t -
+  TAU - D) / R(a)`, integrated, at two ages, and far from the renewal's;
+  the refusals; saving. The catalogue's "outages restoring to an age"
+  runs every analysis against its route.
+- **Learned / open questions:** an age that is a function of the age at
+  the outage was left out; Kijima II is the proportional one.
 
 ### UC-22: "A pump's 6-monthly overhaul restores it only partly (a fitted Kijima restoration factor), and every third overhaul replaces it. What availability, failures and cost per year, against overhauls that renew it, and which overhaul interval is cheapest?"
 
