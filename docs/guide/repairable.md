@@ -850,7 +850,11 @@ birth-death chain, and the system is down when all three are.)
   `mean_time_between_failures`, `expected_cost_rate`, `total_cost` and
   `capacity_distribution` solve it exactly, for up to 15,000 states. A
   component held working or broken (`working_nodes`, `broken_nodes`) needs
-  no crew, and the others share them.
+  no crew, and the others share them. The chain takes
+  [common-cause groups](common-cause.md) in too: a shared cause fails the
+  members it names that are up at once, and they join the queue in the
+  group's order (causes that strike two members; more refuse, for the
+  simulation).
 - **Over time.** From new, or from the components' states, the same chain
   is followed over time by uniformization: its state after a Poisson
   number of steps of a discrete chain, taken until it has settled at its

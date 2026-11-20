@@ -502,10 +502,22 @@ times the long-run grid's times) the exact values refuse, saying so, before
 working anything out: simulate such a system with `availability()` or
 `cost()`. The capacity distribution and the allocations still take every
 combination of every group's states at once, and refuse, before building
-them, where those would take too much memory. Limited repair crews are
-refused too, by every exact value, `node_availability` among them: the
-groups' chains do not take the crews' queue in, and the crews' chain does
-not take the common causes in, as yet. The simulations take both.
+them, where those would take too much memory.
+
+With limited repair crews a shared failure's members queue for a crew with
+the other components, which the groups' own chains do not follow: the
+[crews' Markov chain](repairable.md#repair-crews) takes the groups in
+instead. A shared cause strikes at its rate and fails the members it names
+that are up, and they join the queue one after another in the group's
+order, as in the simulation, so the first named is repaired first when a
+crew is free. The long-run values, the importance measures and the values
+over time then come from that chain, as without groups. It takes causes
+that strike two members (any group of two; a larger `AlphaFactor` or `MGL`
+group whose causes of three or more have no share): the simulation queues
+three or more components struck at one instant in the order its event
+queue releases them, which is not a rule a chain can copy, so those
+refuse, as do members repaired instantly or found by tests. The
+simulations take them all.
 
 Over time, each group's chain is followed from every member up at 0 (by
 uniformization, or through the members' tests, after whose first periods it
@@ -639,8 +651,11 @@ exponential repairs, or tests and repairs over by the next test) holds for
 the exact and numerical values; the simulations need exponential lives
 alone. A member held working or broken, a member with a life of its own (a
 `level` or `model` in its state), a member maintained on a schedule,
-repaired imperfectly or in a maintenance group, and a group with limited
-repair crews are refused, with the reason; `analysis_routes()` says which.
+repaired imperfectly or in a maintenance group, and with limited repair
+crews a group one of whose causes strikes three or more members, are
+refused, with the reason; `analysis_routes()` says which. (With limited
+repair crews a member may be held: it is struck no more, and the causes it
+shares still strike the others.)
 
 Common-cause groups can also be added to a diagram in the browser in
 [Reliafy](https://reliafy.com/guides/common-cause-group).
