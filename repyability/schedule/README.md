@@ -40,6 +40,15 @@ model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
 - **Results are plain data** (`_ResultMapping`s with `to_dict()`, dates as
   ISO text); rules and tasks have `to_dict()` and `from_dict()` with a
   `"kind"` and a `"version"`.
+- **`discount=` is the effective yearly rate** (0.07 is 7% a year), the
+  one convention of the dated replacement policies
+  (`repyability.maintenance`): an amount `y` years after the date it is
+  discounted to is worth `(1 + discount)^(-y)`, a year being 365.25
+  days; the continuous rate a year is `ln(1 + discount)`. Money is
+  discounted to the forecast's first date (the caller's "today"). The
+  helpers are in `_discount.py`, which every present value here goes
+  through. With no `discount` nothing is discounted and every result is
+  as it was.
 
 ## The use cases, by number
 
@@ -53,6 +62,9 @@ model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
 | UC-29 | The first, or the fifth, Saturday of each month, and the months without one | **Built**: `Recurrence.monthly(nth=)`, `Recurrence.notes` |
 | UC-30 | Two limits, whichever comes first, and a task waiting for the crew's visit | **Built**: `Task(also=, visits=, tolerance=, last_done=)` |
 | UC-31 | The work in each month: how many tasks, hours and cost | **Built**: `work_by_period` |
+| UC-47 | $250 every 30 days at 7% a year: what is it worth this year, and for ever? | **Built**: `Task.due(discount=)`, `work_by_period(discount=)`, `Task.long_run_value` |
+| UC-48 | The wear ring's expected failure costs by month, as present values | **Built**: `failures_by_period(discount=)` (to a stated precision; a window, not the long run) |
+| UC-49 | A system's expected costs by month, as present values | **Built**: `events_by_period(cost=True, discount=)` (exact) |
 | UC-32 | A pump on weekday shifts: its hours by month, and its 2,000-hour service on dates | **Built**: `DutyPlan`, `UsageForecast` |
 | UC-33 | A concrete run: when is the 500-hour check due? | **Built**: `Runs`, a crossing's stops |
 | UC-34 | About 3 h a day, or 2 to 4: when are the 250-hour inspections? | **Built**: `Rate`, ranges |
@@ -259,6 +271,71 @@ model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
   for the periods module.
 - **Checks:** the counts above; the periods add up to each task's whole;
   the periods cover the dates asked with no gap.
+
+### UC-47: "I have a $250 task every 30 days from today. At 7% a year, what is it worth this year, and if it goes on for ever?"
+
+- **Status:** built: `Task.due(start, end, discount=)` (`TaskDue.npv`,
+  `eac`), `work_by_period(..., discount=)` (`WorkByPeriod.npv`,
+  `total_npv`, `eac`) and `Task.long_run_value(start, discount)`
+  returning a `TaskValue`.
+- **Who asks:** the owner of a maintenance budget comparing a recurring
+  task with a one-off spend (a modification that removes the task), who
+  has the NPV of replacement policies in model time and asks whether the
+  scheduled work ties into it.
+- **What they know:** the task, its rule and its cost each time; today's
+  date (20 November 2026 here); the yearly discount rate.
+- **The answer, by hand:** from 20 November 2026 to 19 November 2027 the
+  task is done on days 0, 30, 60, ..., 360: **13 times, $3,250**. Each is
+  worth `250 / 1.07^(days / 365.25)` today: 250.00, 248.61, 247.24,
+  245.87, 244.50, 243.15, 241.80, 240.46, 239.13, 237.80, 236.49, 235.18
+  and 233.87, **$3,144.10** in all. By quarter (the first and last cut to
+  the dates): 2, 3, 3, 3 and 2 tasks; $498.61, $737.61, $725.41, $713.42
+  and $469.05. Repeating for ever it is a geometric sum, `250 / (1 -
+  1.07^(-30 / 365.25))` = `250 / 0.0055417` = **$45,112**. The equivalent
+  annual cost of the perpetuity is `45,112 × ln(1.07)` = $3,052 a year
+  (a little more than 12.175 tasks a year at $250, $3,044, because each
+  interval's task is paid at its start).
+- **How it is solved:** the dates a task is done on are known, so a
+  period's present value is a finite sum, each cost discounted from the
+  date the task is done (after its visit), in the period it is counted
+  in. For ever: a plain interval of days or weeks (no second limit,
+  visits, season or excluded dates) repeats exactly from the second time
+  it is done, so the first is discounted on its own and the rest are the
+  geometric sum above (`method="closed form"`). Any other task (the first
+  Tuesday of the month, every 3 months, a task waiting for visits, two
+  limits) is summed date by date (`method="summed"`): a task is done at
+  most once a day, so the dates after day `T` are worth less than `cost ×
+  v^(T+1) / (1 - v)` with `v = 1.07^(-1 / 365.25)`, and the sum stops
+  where that bound is under `precision` (1e-9 by default) of what is
+  summed, reporting the bound. At 7% that is some 360 years of dates. The
+  first Tuesday of every month at $250 is worth **$44,350.51** (12 a
+  year, the first on 1 December).
+- **Decisions (defaults):**
+  - `discount` is the yearly effective rate, discounted to `start`.
+  - `eac` is the steady cost **a year** over the period (both dates
+    included) worth the present value, as the dated policies' `eac`; at a
+    discount of 0 it is the cost over the period's years.
+  - Tasks with no cost stay named in `no_cost`, and a note says the
+    present values leave them out; a task with no cost has no `npv`.
+  - **Refused, saying what to run:** a long-run value at `discount=0`
+    (the costs add up without end); a task on given dates, or done at
+    visits on given dates (they end: `due` to the last date is the whole
+    value); a limit by use (`Usage` follows a usage forecast, which
+    ends); a rate so low that the sum does not settle to `precision` by
+    the year 9999, where dates stop (under about 0.3% a year at 1e-9).
+  - A date far from a rule's anchor is now found without walking to it
+    from the anchor (`Recurrence._counted_from`): the same dates, in a
+    time that no longer grows with the distance.
+- **Checks:** `test_uc47_thirty_day_task_this_year_and_for_ever` (the
+  numbers above to the cent), `test_long_run_against_100000_dates`,
+  `test_a_pattern_for_ever_against_2000_years_of_dates` (the first
+  Tuesdays worked out without `Recurrence`),
+  `test_no_discount_leaves_results_as_they_were`,
+  `test_discount_of_zero_is_the_plain_total`,
+  `test_periods_present_values_add_up`,
+  `test_long_run_with_visits_and_overdue`,
+  `test_what_has_no_long_run_value_is_refused` and
+  `test_far_dates_are_the_anchors_own`.
 
 ## Duty plans and the date ↔ usage map
 
@@ -479,6 +556,101 @@ in `test_schedule_forecast.py`.
   `test_cost_by_month_is_exact_on_average`,
   `test_uc1_diagram_by_calendar_month_sums_to_the_year`.
 
+### UC-48: "What are the wear ring's expected failure costs worth today, month by month?"
+
+- **Status:** built: `failures_by_period(..., discount=, npv_tolerance=)`
+  (`FailuresByPeriod.expected_npv`, `npv`, `npv_precision`, `eac`).
+- **Who asks:** UC-38's planner, whose budget is in present values.
+- **What they know:** UC-38's ring and pump; 7% a year.
+- **The answer, by hand:** UC-38's months cost $105, $227, $217, $214,
+  $252, $247, $239, $252, $253, $252, $250, $236 and $244, $2,988 in
+  all. A month's cost falls somewhere inside it, so it is worth at most
+  its cost discounted from the month's start and at least from its end
+  (the months end 0.041, 0.126, 0.211, 0.287, 0.372, 0.455, 0.539,
+  0.622, 0.706, 0.791, 0.873, 0.958 and 1.040 years on): **between
+  $2,874.75 and $2,890.71**, so $2,882.73 give or take $7.98. Cut into
+  36 equal windows (10.6 days each, cut again at the months' ends), the
+  same bracket is **$2,882.77 give or take $2.47**; by month $104.40,
+  $226.18, $214.53, $210.04, $246.82, $239.75, $230.71, $242.25,
+  $241.48, $239.53, $236.52, $222.20 and $228.36. With 353 windows
+  (`npv_tolerance=1e-4`) it is $2,882.74 give or take $0.28. The
+  equivalent annual cost over the 1.04 years is $2,869.53.
+- **How it is solved:** an expected cost accrues as the part runs, so
+  discounting it needs the dates inside each period. The forecast is cut
+  into short windows of calendar time (equal ones, cut again at the
+  periods' ends), each window's end is turned into operating
+  time, and `cost_by_window` gives each window's expected cost (every
+  policy it takes, with no new renewal maths). The expected cost to date
+  never falls and the discount factor never rises, so discounting each
+  window's cost at its start and at its end brackets the true value
+  (`_discount.bracket`): the middle is given, and half the bracket is
+  `npv_precision`. Half a window's bracket is less than `ln(1 +
+  discount)` × half its length in years of its value, so the forecast's
+  years × `ln(1 + discount) / (2 × npv_tolerance)` windows are within
+  the tolerance, and that many are asked for, once. Windows with no
+  running add nothing. The middle is usually far closer than the bracket
+  says (its own error is second order in the window's length): the
+  bracket is what is certain.
+- **Decisions (defaults):**
+  - `npv_tolerance` is 1e-3 (ten cents in a hundred dollars), 34
+    windows a year at 7%: a year by month takes under a second, five
+    years under a policy about six. The bracket is first order in the
+    window's length, so each tenth of the tolerance takes ten times the
+    windows: 1e-4 is 340 a year (days), and 1e-6 would be 34,000 (a
+    quarter of an hour each), which `cost_by_window` does not work out
+    in a useful time. At most 2,000 windows are worked out; a forecast
+    that falls short of the tolerance says so in its notes, with what it
+    reached.
+  - The ranges (5th to 95th percentile) stay undiscounted, and the notes
+    say so: a discounted distribution of a part's cost is a later item.
+  - At `discount=0` the present values are the expected costs
+    themselves, with a precision of 0.
+  - A part with no cost has no present value (a note); a part whose
+    replacement takes time (run to failure with `NonRepairable.failures`)
+    is discounted the same way from `failures`' expected counts.
+  - A window only: the value of the part for ever on dates is not built
+    (see below).
+- **Checks:** `test_uc48_wear_ring_present_value_by_month` (the numbers
+  above, inside the hand bracket by month),
+  `test_constant_rate_in_calendar_time_against_the_closed_form` (rate ×
+  cost × the integral of the discount factor, inside the bracket),
+  `test_the_bracket_narrows_and_holds_a_simulation` (tolerances from 5e-3 to 1e-4;
+  400,000 seeded rings on the duty plan, within four standard errors
+  and the bracket), `test_nothing_accrues_while_idle`,
+  `test_a_policy_as_a_present_value`,
+  `test_a_part_with_no_cost_has_no_present_value`,
+  `test_a_forecast_short_of_the_tolerance_says_so`.
+
+### UC-49: "And the system's expected costs, month by month, as present values?"
+
+- **Status:** built: `events_by_period(..., cost=True, discount=)`
+  (`EventsByPeriod.expected_npv`, `npv`, `eac`).
+- **Who asks:** UC-39's planner.
+- **What they know:** UC-39's pump (a failure per 2,000 h on average,
+  repaired at once), $1,000 a repair; the months of 2027; 7% a year.
+- **The answer, by hand:** costs come at $0.50 an hour, so a span to `T`
+  hours is worth `0.5 × (1 - e^(-r T)) / r` with `r = ln(1.07) / 8,766`
+  an hour: January (744 h) **$370.93**, to the end of February (1,416 h)
+  $704.15, so February $333.21, and the year (8,760 h) **$4,235.21**
+  against $4,380 undiscounted. The equivalent annual cost is $4,383 a
+  year of 365.25 days: the cost rate itself, as it should be for costs
+  at a constant rate.
+- **How it is solved:** a diagram's clock is calendar time, so the
+  yearly rate is one continuous rate per unit of it (`ln(1 + discount)`
+  over the units in a year of 365.25 days), which
+  `RepairableRBD.expected_cost(t, discount_rate=)` takes: each period's
+  present value is its difference at the period's ends. Exact, as
+  `expected_cost` is, with each event discounted at its own time (a
+  block replacement at its instant, not the middle of a month).
+- **Decisions (defaults):** `discount=` needs `cost=True` (refused
+  otherwise, saying so); the range stays undiscounted (a diagram's
+  discounted spread is `npv_distribution`'s, in model time); an
+  acquisition cost, paid at the start, is not in the periods, as it is
+  not in `cost_by_window`'s.
+- **Checks:** `test_uc49_constant_rate_by_month_as_present_values`,
+  `test_events_present_value_is_expected_npvs_cost`,
+  `test_events_discount_needs_cost`.
+
 ### UC-40: "Replacing the part is cheap at the annual overhaul, the first Tuesday of November. Can the calendar policy use the real dates?"
 
 - **Status:** built: `Opportunity.from_recurrence(name, cost, rule,
@@ -536,6 +708,13 @@ in `test_schedule_forecast.py`.
 
 ### What is not built yet
 
+- **A part's expected failure costs for ever, on dates.**
+  `failures_by_period(discount=)` values a forecast's window. "The dated
+  window, then the discounted long run" (as `maintenance/_dated.py` does
+  for the policies on dates, with `discounted_run_to_failure` and
+  `age_replacement_value` where the usage keeps a steady pace) is not
+  joined to it yet; a task's long run is (`Task.long_run_value`).
+- **Discounted ranges.** The 5th to 95th percentiles stay undiscounted.
 - **Utilisation as whole runs lost.** `utilisation=0.9` counts each
   planned hour and start as 0.9, an expected value. The dates when 90%
   of runs go ahead (the nth run to go ahead follows a negative binomial)

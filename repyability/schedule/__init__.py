@@ -51,6 +51,7 @@ from repyability.schedule._recurrence import (
 from repyability.schedule._task import (
     Task,
     TaskDue,
+    TaskValue,
     WorkByPeriod,
     work_by_period,
 )
@@ -87,6 +88,7 @@ __all__ = [
     "Season",
     "Task",
     "TaskDue",
+    "TaskValue",
     "WorkByPeriod",
     "work_by_period",
     "events_by_period",

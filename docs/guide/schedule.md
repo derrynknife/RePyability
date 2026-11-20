@@ -213,6 +213,48 @@ work.hours  # (4.5, 10.0, 6.0, 6.0)
 work.cost  # (360.0, 960.0, 480.0, 480.0)
 ```
 
+## Present values: `discount=`
+
+Give a yearly discount rate and the forecasts return present values
+beside the plain totals. `discount=0.07` is 7% a year, the effective
+yearly rate (the convention of the dated replacement policies): an
+amount `y` years after the first date is worth `1 / 1.07 ** y` of
+itself, with a year of 365.25 days. Money is discounted to the
+forecast's first date, which is your "today". With no `discount`,
+nothing changes.
+
+A $250 task every 30 days from 20 November 2026, over its first year:
+
+```python
+grease = Task("grease bearings",
+              every=Recurrence.every(30, "days", "2026-11-20"), cost=250.0)
+year = grease.due("2026-11-20", "2027-11-19", discount=0.07)
+year.count  # -> 13
+year.cost  # -> 3250
+round(year.npv, 2)  # -> 3144.10
+```
+
+Each task is discounted from the date it is done (after its visit, if
+it waits for one). `eac` is the equivalent annual cost: the steady cost
+a year over the period that is worth the same. `work_by_period(...,
+discount=0.07)` gives each period's `npv`, with `total_npv` and `eac`.
+
+`long_run_value` is what the task is worth repeating for ever:
+
+```python
+value = grease.long_run_value("2026-11-20", 0.07)
+round(value.npv)  # -> 45112
+value.method  # 'closed form'
+```
+
+A plain interval of days or weeks is a geometric sum, `250 / (1 - 1.07
+** (-30 / 365.25))`. Any other task (the first Tuesday of the month, a
+task that waits for visits, two limits) is summed date by date until
+what is left cannot matter: `precision` is the most the dates left out
+could add, and `summed_to` the last date summed. It refuses, saying what
+to run, where there is no such value: at `discount=0`, for given dates
+(they end), and for a limit by use (its usage forecast ends).
+
 ## Duty plans: operating hours on dates
 
 A life fitted in operating hours, or a task every 2,000 running hours,
@@ -455,6 +497,21 @@ outcomes). Month by month the numbers are small, about 0.05 failures
 [round(float(c)) for c in months.expected_cost[:3]]  # [105, 227, 217]
 ```
 
+With `discount=`, each period also has its expected cost as a present
+value. An expected cost accrues as the part runs, so the forecast is cut
+into short windows and each window's cost is discounted at its start and
+at its end. The true value lies between the two: `npv` is the middle,
+and `npv_precision` is half the gap.
+
+```python
+worth = failures_by_period(ring, usage, "month", age=5200.0, discount=0.07)
+round(worth.npv)  # -> 2883
+worth.npv_precision < 0.001 * worth.npv  # True
+```
+
+`npv_tolerance` (0.001 by default) sets how short the windows are; a
+tenth of it takes ten times the windows. The ranges stay undiscounted.
+
 One part rarely fails in a given month, so the monthly figures become
 useful once you add them up over many positions. The expected values
 add up; the ranges do not, so `total` gives the whole forecast's own
@@ -494,7 +551,11 @@ round(float(by_month.events.system_failures[0]), 3)  # -> 0.372
 
 `events` holds `expected_events_by_window`'s answer, which is exact.
 `cost=True` adds `cost_by_window`: each period's mean cost is exact, and
-its range is simulated.
+its range is simulated. With `cost=True, discount=0.07` each period also
+has `expected_npv`, its expected cost as a present value, with `npv` and
+`eac`. This is exact: the diagram's clock is calendar time, so the
+yearly rate is one continuous rate on it, which
+`RepairableRBD.expected_cost(discount_rate=)` takes.
 
 ### Shuts on dates
 
