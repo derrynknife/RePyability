@@ -501,18 +501,23 @@ class RepairableRBD(RBD):
         increasing), ``"duration"`` (0 or more, shorter than the period or
         the gaps between the times), ``"scope"`` (a list of the diagram's
         nodes; None, the default, for the whole system), ``"cost"``
-        (charged at each shut) and ``"idle_ageing"`` (True, the default:
+        (charged at each shut), ``"idle_ageing"`` (True, the default:
         a block in scope not worked on keeps ageing; False: it stands
-        still until the shut ends). The work done at a shut is given on
-        the block: ``"preventive": {"shutdown": name}`` renews it at every
+        still until the shut ends) and ``"opportunistic"`` (``{node:
+        age}``, or one age for every block in scope under age
+        replacement: at each shut, such a block that is working and at
+        least that old is renewed as its own age replacement renews it,
+        at its cost and in its time, and its next replacement counts from
+        then; simulated, with the count renewed at each shut in
+        ``AvailabilityResult.outage_jobs``). The work done at a shut is given
+        on the block: ``"preventive": {"shutdown": name}`` renews it at every
         shut (with ``"older_than"``, only once that old; with ``"policy":
-        "condition"``, on its condition; with a ``"restoration"``,
-        partly), and ``"inspection": {"shutdown": name}`` tests it there;
-        either takes the shut's calendar and duration, and the block must
-        be in its scope. Shuts on a period are exact where the blocks fail
-        independently, and so are shuts at given times over a horizon
-        (they have no long run) where the blocks worked on in them are
-        renewed; the rest is simulated, in Python.
+        "condition"``, on its condition; with a ``"restoration"``, partly), and
+        ``"inspection": {"shutdown": name}`` tests it there; either takes the
+        shut's calendar and duration, and the block must be in its scope. Shuts
+        on a period are exact where the blocks fail independently, and so are
+        shuts at given times over a horizon (they have no long run) where the
+        blocks worked on in them are renewed; the rest is simulated, in Python.
     crew_cost_rate : float, optional
         What each repair crew costs per unit time, busy or not (its
         salary), by default 0.0 (not priced). The ``repair_crews`` crews
@@ -616,8 +621,8 @@ class RepairableRBD(RBD):
         ``"dormancy_factor"`` and ``"switching_probability"``.
     SHUTDOWN_KEYS : tuple[str, ...]
         The keys of a shutdown's spec: ``"period"``, ``"offset"``,
-        ``"times"``, ``"duration"``, ``"scope"``, ``"cost"`` and
-        ``"idle_ageing"``.
+        ``"times"``, ``"duration"``, ``"scope"``, ``"cost"``,
+        ``"idle_ageing"`` and ``"opportunistic"``.
 
     Raises
     ------

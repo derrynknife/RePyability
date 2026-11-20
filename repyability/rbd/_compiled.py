@@ -146,13 +146,18 @@ def _unsupported_level(
     if rbd._shutdowns and (
         not numba
         or any(
-            shut.duration > 0.0 or shut.cost or not shut.periodic
+            shut.duration > 0.0
+            or shut.cost
+            or not shut.periodic
+            or shut.opportunistic is not None
             for shut in rbd._shutdowns.values()
         )
     ):
         # numba's own loop runs the tasks bound to shuts on a period that
         # take no time and cost nothing (block replacement and tests with
-        # the shut's offset), which are those shuts entirely.
+        # the shut's offset), which are those shuts entirely; not the
+        # renewals a shut makes opportunistically, which the Python loop
+        # makes at its starts.
         return "shutdowns"
     if rbd._imperfect:
         return "imperfect repair"

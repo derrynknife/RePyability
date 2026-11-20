@@ -715,25 +715,68 @@ def _simulate_block(span: Tuple[int, int]) -> "_Tally":
 class _Shut:
     """A shutdown in a simulation (see ``_shutdowns``), the component of
     the events of its windows: a start (status False), which holds its
-    ``nodes`` off line, charges its ``cost`` and stands its ``paused``
-    nodes' own processes still, and an end ``duration`` later (status
-    True), which lets them go."""
+    ``nodes`` off line, charges its ``cost``, stands its ``paused``
+    nodes' own processes still and renews each of its ``opportunistic``
+    components (with its age) that is that old (see ``_outage_renewals``),
+    and an end ``duration`` later (status True), which lets them go.
+    ``places`` gives each start's place in a simulation's
+    ``outage_jobs``, where its renewals are counted."""
 
-    __slots__ = ("name", "nodes", "paused", "duration", "cost")
+    __slots__ = (
+        "name",
+        "nodes",
+        "paused",
+        "duration",
+        "cost",
+        "opportunistic",
+        "places",
+    )
 
-    def __init__(self, name, nodes, paused, duration: float, cost: float):
+    def __init__(
+        self,
+        name,
+        nodes,
+        paused,
+        duration: float,
+        cost: float,
+        opportunistic: tuple = (),
+        places: Optional[dict] = None,
+    ):
         self.name, self.nodes, self.paused = name, nodes, paused
         self.duration, self.cost = duration, cost
+        self.opportunistic, self.places = opportunistic, places or {}
+
+
+def outage_starts(rbd, t_simulation: float) -> List[Tuple[Hashable, float]]:
+    """The starts of the shutdowns that renew components opportunistically
+    in ``[0, t_simulation)``, as ``(name, time)``, shut by shut: the
+    outages whose renewals a simulation counts (``outage_jobs``)."""
+    return [
+        (shut.name, float(start))
+        for shut in rbd._shutdowns.values()
+        if rbd._outage_rules.get(shut.name)
+        for start in shut.starts(t_simulation)
+    ]
 
 
 def _shut_events(rbd, t_simulation: float, forced: set) -> list:
     """The events of the shutdowns' windows in ``[0, t_simulation)``: each
     start, and its end if it falls in the window, the nodes held at
-    ``forced`` left out (they are held whatever a shut does)."""
+    ``forced`` left out (they are held whatever a shut does). A shut in
+    no time that renews components opportunistically has its starts
+    alone, which hold nothing."""
     from repyability.rbd import _shutdowns
 
     out = []
-    for shut in _shutdowns.timed(rbd):
+    first = 0
+    for shut in rbd._shutdowns.values():
+        rules = tuple(
+            (node, age)
+            for node, age in rbd._outage_rules.get(shut.name, ())
+            if node not in forced
+        )
+        if not shut.duration > 0.0 and not rbd._outage_rules.get(shut.name):
+            continue
         nodes = tuple(
             node for node in _shutdowns.scope(rbd, shut) if node not in forced
         )
@@ -741,13 +784,22 @@ def _shut_events(rbd, t_simulation: float, forced: set) -> list:
             node
             for node in nodes
             if not shut.idle_ageing
-            and shut.name not in _shutdowns.bound_to(rbd, node)
+            and shut.name not in _shutdowns.worked_on(rbd, node)
         )
-        source = _Shut(shut.name, nodes, paused, shut.duration, shut.cost)
-        for start in shut.starts(t_simulation):
-            out.append(Event(float(start), source, False))
+        if not shut.duration > 0.0:
+            nodes = paused = ()
+        starts = [float(start) for start in shut.starts(t_simulation)]
+        places = {}
+        if rbd._outage_rules.get(shut.name):
+            places = {start: first + k for k, start in enumerate(starts)}
+            first += len(starts)
+        source = _Shut(
+            shut.name, nodes, paused, shut.duration, shut.cost, rules, places
+        )
+        for start in starts:
+            out.append(Event(start, source, False))
             end = float(start) + shut.duration
-            if end < t_simulation:
+            if shut.duration > 0.0 and end < t_simulation:
                 out.append(Event(end, source, True))
     return out
 
@@ -2147,8 +2199,9 @@ def _renewal(
         # Maintenance that takes time is a planned outage; in zero time
         # the unit is renewed in place, and stays up.
         event = Event(due, node, schedule.duration is None, True)
-    if node in rbd._early_members:
-        # Kept, should a stop of its group renew it early (see _stop).
+    if node in rbd._early_members or node in rbd._outage_members:
+        # Kept, should a stop of its group, or a shutdown, renew it early
+        # (see _stop and _outage_renewals).
         rbd._run_state._renewed_at[node] = start
         rbd._run_state._pending_event[node] = event
     return event
@@ -2254,6 +2307,39 @@ def _stop(rbd, group, t: float, trigger=None) -> List[Event]:
         renewal = Event(t, member, schedule.duration is None, True)
         rbd._run_state._early[id(renewal)] = renewal
         rbd._run_state._renewing.add(member)
+        out.append(renewal)
+    return out
+
+
+def _outage_renewals(rbd, rules: tuple, t: float) -> List[Event]:
+    """At the start of a shutdown at ``t``, the components of ``rules``
+    (each with its age) renewed opportunistically: each that is working
+    and at least that old (the time since it was put in), renewed now as
+    its age replacement would renew it, at its cost and in its time; the
+    failure or replacement it had ahead of it is cancelled, as at a stop
+    of a maintenance group (``_stop``). One whose own failure or
+    replacement is due at ``t``, or that is being renewed, keeps it.
+    Returns the renewals to queue."""
+    run = rbd._run_state
+    out: List[Event] = []
+    for member, age in rules:
+        if (
+            member not in run._renewed_at
+            or member in run._renewing
+            or not run.component_status[member]
+            or t - run._renewed_at[member] < age
+        ):
+            continue
+        pending = run._pending_event.get(member)
+        if pending is not None and pending.time <= t:
+            continue  # due now
+        run._pending_event.pop(member, None)
+        if pending is not None and pending.time < run.t_simulation:
+            run._cancelled[id(pending)] = pending
+        schedule = rbd._preventive[member]
+        renewal = Event(t, member, schedule.duration is None, True)
+        run._early[id(renewal)] = renewal
+        run._renewing.add(member)
         out.append(renewal)
     return out
 
@@ -2775,6 +2861,13 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     maintenance, member_group = rbd._maintenance, rbd._member_group
     cancelled, early = rbd._run_state._cancelled, rbd._run_state._early
     opportunistic = [0] * n
+    # The renewals made at each start of a shutdown that renews components
+    # opportunistically (see outage_starts).
+    outage_jobs = (
+        [0] * len(outage_starts(rbd, ctx.t_simulation))
+        if rbd._outage_members
+        else None
+    )
     failures = restorations = planned = 0
     changes: list = []
     deltas: list = []
@@ -2924,6 +3017,12 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
                     moved = _shifted(rbd, member, t, node.duration)
                     if moved is not None:
                         push(heap, (moved.time, moved))
+                if node.opportunistic:
+                    renewals = _outage_renewals(rbd, node.opportunistic, t)
+                    assert outage_jobs is not None  # it has rules
+                    outage_jobs[node.places[t]] += len(renewals)
+                    for renewal in renewals:
+                        push(heap, (renewal.time, renewal))
             if changed is not None and works(view) != up:
                 system_up, system_down, since = system_up_t, system_down_t, t
                 up = not up
@@ -3165,6 +3264,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     rec.capacity_changes = rec.capacity_time = rec.delivered = None
     rec.replacements = replaced
     rec.opportunistic = opportunistic
+    rec.outage_jobs = outage_jobs
     rec.history = (
         (at_start, times_of, planned_of, started_up, system_record)
         if history

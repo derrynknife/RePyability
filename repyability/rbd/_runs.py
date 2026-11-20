@@ -10,6 +10,7 @@ itself (``_run``, ``_replicate``) stays with the diagram. The methods of
 
 import hashlib
 import json
+import math
 from functools import partial
 from typing import (
     TYPE_CHECKING,
@@ -2397,9 +2398,10 @@ def _availability_result(
         antithetic=antithetic,
         opportunistic_renewals=(
             dict(zip(nodes, tally.opportunistic))
-            if diagram._maintenance
+            if diagram._maintenance or diagram._outage_members
             else None
         ),
+        outage_jobs=_outage_jobs(diagram, tally, t_simulation, N),
         control_variate=controls[0],
         conditional=conditional,
         shutdowns=int(
@@ -2469,3 +2471,32 @@ def cost(
     ).cost
     assert result is not None  # something is priced
     return result
+
+
+def _outage_jobs(rbd, tally, t_simulation: float, n: int):
+    """Each start of a shutdown that renews components opportunistically,
+    with the mean count renewed there per simulation and its 95% interval
+    (see ``AvailabilityResult.outage_jobs``); None without such shuts."""
+    if not rbd._outage_members:
+        return None
+    from repyability.rbd._event_loop import outage_starts
+
+    starts = outage_starts(rbd, t_simulation)
+    jobs = tally.outage_jobs or [0] * len(starts)
+    squares = tally.outage_squares or [0] * len(starts)
+    out = []
+    for (name, start), total, square in zip(starts, jobs, squares):
+        mean = total / n
+        variance = (square - n * mean * mean) / (n - 1) if n > 1 else 0.0
+        error = math.sqrt(max(variance, 0.0) / n)
+        out.append(
+            {
+                "shutdown": name,
+                "start": start,
+                "mean": mean,
+                "standard_error": error,
+                "lower": max(mean - 1.96 * error, 0.0),
+                "upper": mean + 1.96 * error,
+            }
+        )
+    return out

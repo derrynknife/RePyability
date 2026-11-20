@@ -853,6 +853,7 @@ class _Replication:
         "delivered",
         "replacements",
         "opportunistic",
+        "outage_jobs",
         "history",
     )
     uptime: float
@@ -874,6 +875,7 @@ class _Replication:
     delivered: Optional[float]
     replacements: List[int]
     opportunistic: List[int]
+    outage_jobs: Optional[List[int]]
     history: Optional[tuple]
 
 
@@ -980,6 +982,11 @@ class _Tally:
         self.replacements: Optional[List[List[int]]] = None
         # Per node: its early renewals at stops of its maintenance group.
         self.opportunistic = [0] * n
+        # Per start of a shutdown that renews components opportunistically
+        # (see _event_loop.outage_starts): the renewals made there, summed
+        # over the simulations, and their squares summed; None with none.
+        self.outage_jobs: Optional[List[int]] = None
+        self.outage_squares: Optional[List[int]] = None
         # The simulations' histories, when asked for (see
         # RepairableRBD.simulate_timelines): kept, in order, in place of
         # every total.
@@ -1038,6 +1045,22 @@ class _Tally:
         for c, count in enumerate(rec.opportunistic):
             if count:
                 self.opportunistic[c] += count
+        self._add_outage_jobs(
+            rec.outage_jobs, [c * c for c in rec.outage_jobs or ()]
+        )
+
+    def _add_outage_jobs(self, jobs, squares) -> None:
+        """Add renewals at the outages (see ``outage_jobs``), and their
+        squares."""
+        if jobs is None:
+            return
+        if self.outage_jobs is None:
+            self.outage_jobs = [0] * len(jobs)
+            self.outage_squares = [0] * len(jobs)
+        assert self.outage_squares is not None
+        for k, (count, square) in enumerate(zip(jobs, squares)):
+            self.outage_jobs[k] += count
+            self.outage_squares[k] += square
 
     def add_changes(self, times: np.ndarray, deltas: np.ndarray) -> None:
         """Add simulations' changes of state (times, and +1 or -1), as an
@@ -1321,6 +1344,7 @@ class _Tally:
                 totals[c] += count
         for c, count in enumerate(other.opportunistic):
             self.opportunistic[c] += count
+        self._add_outage_jobs(other.outage_jobs, other.outage_squares)
         if self.binned is not None:
             assert other.binned is not None  # chunks of one run
             self.binned += other.binned
@@ -1411,6 +1435,11 @@ class _Tally:
             ),
             "delivered": list(self.delivered),
             "opportunistic": list(self.opportunistic),
+            "outage_jobs": (
+                None
+                if self.outage_jobs is None
+                else [list(self.outage_jobs), list(self.outage_squares or ())]
+            ),
         }
 
     @classmethod
@@ -1475,6 +1504,11 @@ class _Tally:
             )
         tally.delivered = [float(v) for v in data["delivered"]]
         tally.opportunistic = [int(c) for c in data["opportunistic"]]
+        if data.get("outage_jobs") is not None:
+            jobs, squares = data["outage_jobs"]
+            tally._add_outage_jobs(
+                [int(c) for c in jobs], [int(c) for c in squares]
+            )
         return tally
 
     def criticality_counts(self) -> Tuple[dict, dict]:

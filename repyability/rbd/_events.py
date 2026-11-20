@@ -842,7 +842,8 @@ class _Shutdown(NamedTuple):
     lasts, ``duration``; the nodes it holds off line (``scope``, None for
     the whole system); its ``cost``, charged at each; and whether the
     blocks in its scope not worked on keep ageing through it
-    (``idle_ageing``) or stand still until it ends."""
+    (``idle_ageing``) or stand still until it ends; and the components
+    it renews if they are old enough (``opportunistic``)."""
 
     name: Any
     #: A float, or None at given times.
@@ -853,6 +854,10 @@ class _Shutdown(NamedTuple):
     scope: Optional[Tuple[Any, ...]]
     cost: float
     idle_ageing: bool
+    #: The components renewed at each start if old enough: ``{node:
+    #: age}``, a number for every component in the scope under age
+    #: replacement, or None (resolved by ``_shutdowns.check``).
+    opportunistic: Any = None
 
     @property
     def periodic(self) -> bool:
