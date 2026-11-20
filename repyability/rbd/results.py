@@ -4885,3 +4885,144 @@ class ModelParameters(_ResultMapping):
         out = super().to_dict()
         out["cls"] = getattr(self.cls, "name", str(self.cls))
         return out
+
+
+@dataclass
+class SimulatedSwitchTime(_ResultMapping):
+    """The best time to switch blocks of a system from one way of running
+    them to another, by simulation: returned by
+    [`RepairableRBD.best_switch_time`][repyability.RepairableRBD.best_switch_time].
+
+    In plain terms: the switching blocks run the first way until
+    ``switch_time`` and the second way after it, and the system earns the
+    first value rate per unit of time up before it and the second after.
+    Switching at 0 runs the second way from the start; switching at the
+    horizon never switches. Every candidate time is simulated from the
+    same seed, so the differences between them are much steadier than
+    the NPVs themselves; ``difference_interval`` says how sure the
+    best is better than either end.
+
+    Attributes
+    ----------
+    switch_time : float
+        The scanned switch time with the highest mean NPV, in ``[0,
+        horizon]``.
+    choice : str
+        ``"switch at once"``, ``"never switch"`` or ``"switch"`` (in
+        between).
+    npv : float
+        The mean NPV when switching at ``switch_time``.
+    never_switch_npv : float
+        The mean NPV of running the first way throughout.
+    switch_at_once_npv : float
+        The mean NPV of running the second way throughout.
+    gain : float
+        ``npv`` less the better of the two above (0 when an end is best).
+    samples : numpy.ndarray
+        Each run's NPV switching at ``switch_time``.
+    never_switch_samples : numpy.ndarray
+        Each run's NPV never switching (the same runs' random numbers).
+    switch_at_once_samples : numpy.ndarray
+        Each run's NPV switching at once.
+    times : list of float
+        Every switch time valued, in order: the scan from 0 to the
+        horizon and the finer one around its best.
+    npvs : list of float
+        The mean NPV at each of ``times``, to audit the answer (the NPV
+        need not have one peak).
+    horizon : float
+        The length of time valued.
+    discount_rate : float
+        The continuous discount rate per unit time.
+    value_rates : list of float
+        What the system earns per unit of time up before the switch, and
+        after.
+    n_simulations : int
+        The runs at each switch time.
+    seed : int
+        The seed every switch time's runs share.
+    engine : str
+        The engine that ran them.
+    """
+
+    switch_time: float
+    choice: str
+    npv: float
+    never_switch_npv: float
+    switch_at_once_npv: float
+    gain: float
+    samples: np.ndarray
+    never_switch_samples: np.ndarray
+    switch_at_once_samples: np.ndarray
+    times: List[float]
+    npvs: List[float]
+    horizon: float
+    discount_rate: float
+    value_rates: List[float]
+    n_simulations: int
+    seed: Any
+    engine: str
+
+    def difference_interval(
+        self, against: str = "never switch", confidence: float = 0.95
+    ) -> ConfidenceInterval:
+        """A confidence interval for how much switching at
+        ``switch_time`` beats ``against`` on average: the mean of the
+        runs' differences ``+/- z * std / sqrt(n)``, the runs paired by
+        their random numbers. The best time is picked from the same runs,
+        so the interval leans a little in its favour; give more
+        ``mc_samples`` to narrow it.
+
+        Parameters
+        ----------
+        against : str, optional
+            ``"never switch"`` (the default) or ``"switch at once"``.
+        confidence : float, optional
+            The confidence level, strictly between 0 and 1, by default
+            0.95.
+
+        Returns
+        -------
+        ConfidenceInterval
+            The mean difference, its bounds, standard error and the number
+            of runs.
+
+        Raises
+        ------
+        ValueError
+            If ``against`` or ``confidence`` is not as described.
+        """
+        from repyability.utils import checks
+
+        checks.one_of("against", against, ("never switch", "switch at once"))
+        if not 0.0 < confidence < 1.0:
+            raise ValueError("confidence must be between 0 and 1.")
+        other = (
+            self.never_switch_samples
+            if against == "never switch"
+            else self.switch_at_once_samples
+        )
+        difference = self.samples - other
+        estimate = float(difference.mean())
+        se = montecarlo.standard_error(difference, False)
+        z = montecarlo.z_value(confidence)
+        return ConfidenceInterval(
+            estimate=estimate,
+            lower=estimate - z * se,
+            upper=estimate + z * se,
+            confidence=confidence,
+            standard_error=se,
+            n_samples=int(difference.size),
+            method="simulated",
+        )
+
+    def __repr__(self) -> str:
+        # A summary (#235): the runs are in the samples.
+        return (
+            f"SimulatedSwitchTime(switch_time={self.switch_time:.6g}, "
+            f"choice={self.choice!r}, npv={self.npv:.6g}, "
+            f"never_switch_npv={self.never_switch_npv:.6g}, "
+            f"switch_at_once_npv={self.switch_at_once_npv:.6g}, "
+            f"n_simulations={self.n_simulations}, "
+            f"horizon={self.horizon:g})"
+        )

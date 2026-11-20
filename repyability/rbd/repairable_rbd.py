@@ -65,6 +65,7 @@ from repyability.rbd.results import (
     PlanVsActual,
     RateBreakdown,
     ReplacementCycle,
+    SimulatedSwitchTime,
     SimulationSamples,
     SparesDemand,
     SparesStock,
@@ -97,6 +98,7 @@ from repyability.rbd import (
     _runs,
     _shutdowns,
     _spec,
+    _switch_runs,
     _unplanned,
     _window_report,
     _windows,
@@ -4501,6 +4503,152 @@ class RepairableRBD(RBD):
             mc_samples=mc_samples,
             seed=seed,
             confidence=confidence,
+            engine=engine,
+            state=state,
+        )
+
+    def best_switch_time(
+        self,
+        covariates,
+        value_rates,
+        horizon,
+        *,
+        discount_rate: float = 0.0,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        scan: int = 11,
+        engine: str = "auto",
+        state=None,
+    ) -> SimulatedSwitchTime:
+        """The best time to switch blocks of the system from one way of
+        running them to another (a load, a speed, a temperature): the
+        switch time that maximises the simulated net present value of the
+        whole system. Simulated.
+
+        In plain terms: running harder can earn more but wears the
+        blocks out faster. Each block in ``covariates`` runs on a
+        covariate schedule (a regression life, see the guide's [load
+        schedule](../guide/condition-based.md#is-it-worth-running-hot)
+        section); it runs at its first row of covariates until the switch
+        and at its second after, and the system earns the first of
+        ``value_rates`` per unit of time up before the switch and the
+        second after. Switching at 0 runs the second way from the start,
+        and at the horizon never switches; the answer says which time is
+        best, and how sure it is better than each end
+        (``difference_interval``). For one unit the same question is
+        worked out numerically by
+        [`best_switch_time`][repyability.best_switch_time].
+
+        Each candidate switch time is the diagram with those schedules,
+        simulated and priced as
+        [`npv_distribution`][repyability.RepairableRBD.npv_distribution]
+        prices its runs, every candidate from the same seed (common
+        random numbers), so the differences between candidates are much
+        less noisy than their values. The NPV is scanned at ``scan``
+        times from 0 to the horizon and at 6 more between the best's
+        neighbours; the scan is returned to audit the answer, as the NPV
+        need not have one peak. The other blocks run as the diagram says.
+
+        Parameters
+        ----------
+        covariates : dict
+            For each block that switches, its two rows of covariates:
+            before the switch and after (two numbers for a model with one
+            covariate), e.g. ``{"pump": [[60.0], [85.0]]}``. Each must be a
+            block built on a covariate schedule (its spec's
+            ``"covariates"``), which this replaces.
+        value_rates : array_like
+            What the system earns per unit of time up before the switch,
+            and after, each at least 0.
+        horizon : float
+            The length of time to value, more than 0, in the component
+            models' unit.
+        discount_rate : float, optional
+            The continuous discount rate per unit time, as for
+            ``expected_npv``, by default 0.
+        mc_samples : int, optional
+            The runs at each switch time, by default 1,000.
+        seed : int, optional
+            Seeds the runs; every switch time's runs share it. By default
+            one is drawn, and kept in the result.
+        scan : int, optional
+            The switch times scanned from 0 to the horizon, ends included,
+            at least 3, by default 11.
+        engine : str, optional
+            ``"auto"`` (the default), ``"python"`` or ``"numba"``, as for
+            ``simulate_timelines``.
+        state : dict, optional
+            Start from the components' current states rather than new, as
+            for ``simulate_timelines``.
+
+        Returns
+        -------
+        SimulatedSwitchTime
+            The best switch time, its choice and mean NPV, the NPVs of
+            never switching and of switching at once, the runs of each,
+            and the scan.
+
+        Raises
+        ------
+        ValueError
+            If no block runs on a covariate schedule (as
+            ``routes.Refused``); if a block in ``covariates`` does not, or
+            its rows, ``value_rates``, ``horizon``, ``discount_rate``,
+            ``mc_samples``, ``scan`` or ``engine`` is invalid; or as for
+            ``npv_distribution``.
+        NotImplementedError
+            As for ``npv_distribution``.
+
+        Examples
+        --------
+        A pump whose life wears out (Weibull, under proportional hazards
+        on its load), replaced at 80 a failure, run hot (load 1.5, earning
+        1.5 an hour) or cool (load 1, earning 1) over 200 hours. Running
+        hot while it is new and then cool beats either way throughout:
+
+        >>> import numpy as np
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rng = np.random.default_rng(3)
+        >>> load = np.repeat([1.0, 2.0], 40)
+        >>> x = 100.0 * rng.weibull(3.0, load.size) / load**2
+        >>> model = surv.WeibullPH.fit(x, Z=load[:, None])
+        >>> rbd = RepairableRBD(
+        ...     [("s", "pump"), ("pump", "t")],
+        ...     {
+        ...         "pump": {
+        ...             "reliability": model,
+        ...             "repairability": surv.Exponential.from_params([1.0]),
+        ...             "replace_cost": 80.0,
+        ...             "covariates": surv.StepSchedule.from_changepoints(
+        ...                 [0.0], [[1.0]]
+        ...             ),
+        ...         }
+        ...     },
+        ... )
+        >>> best = rbd.best_switch_time(
+        ...     {"pump": [[1.5], [1.0]]}, [1.5, 1.0], 200.0,
+        ...     mc_samples=200, seed=1, scan=5,
+        ... )
+        >>> best.choice, round(best.switch_time, 1)
+        ('switch', 28.6)
+        >>> round(best.npv), round(best.switch_at_once_npv)
+        (52, 46)
+        >>> round(best.never_switch_npv)
+        -27
+        >>> gain = best.difference_interval("switch at once")
+        >>> round(gain.lower, 1), round(gain.upper, 1)
+        (2.2, 9.1)
+        """
+        return _switch_runs.best_switch_time(
+            self,
+            covariates,
+            value_rates,
+            horizon,
+            discount_rate=discount_rate,
+            mc_samples=mc_samples,
+            seed=seed,
+            scan=scan,
             engine=engine,
             state=state,
         )

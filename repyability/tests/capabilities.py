@@ -137,6 +137,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("npv_distribution",),
             ),
             (
+                "Best time to switch blocks' running (simulated NPV)",
+                ("best_switch_time",),
+            ),
+            (
                 "Two plans' net present values compared",
                 ("compare_npv",),
             ),

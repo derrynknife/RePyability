@@ -282,6 +282,9 @@ REPAIRABLE_CALLS = {
     "npv_distribution": lambda rbd: rbd.npv_distribution(
         200.0, discount_rate=0.01, value_rate=1.0, mc_samples=20, seed=1
     ),
+    "best_switch_time": lambda rbd: rbd.best_switch_time(
+        {"a": [[1.0], [2.0]]}, [1.0, 2.0], 200.0, mc_samples=20, seed=1, scan=3
+    ),
     "compare_npv": lambda rbd: rbd.compare_npv(
         rbd, 200.0, discount_rate=0.01, value_rate=1.0, mc_samples=20, seed=1
     ),

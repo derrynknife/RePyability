@@ -44,6 +44,8 @@
 
 ::: repyability.NPVDistribution
 
+::: repyability.SimulatedSwitchTime
+
 ::: repyability.NPVComparison
 
 ::: repyability.MaintenanceEffect
