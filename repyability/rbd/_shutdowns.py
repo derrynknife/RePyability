@@ -397,7 +397,7 @@ def bound_preventive(node, spec: dict, shutdowns: dict) -> Tuple[dict, dict]:
                 "it is older than older_than, or on its condition (a "
                 "threshold): give one or the other."
             )
-        if spec.get("restoration") is not None:
+        if spec.get("restoration") is not None or spec.get("restore_to"):
             raise ValueError(
                 f"Component {node!r}: older_than replaces the unit at a "
                 "shut by its age since new, which a restoration does not "

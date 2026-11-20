@@ -499,6 +499,8 @@ def _serialise_schedule(spec: dict) -> dict:
             "model": spec["restoration"]["model"],
             "q": float(spec["restoration"]["q"]),
         }
+    if spec.get("restore_to") is not None:
+        out["restore_to"] = float(spec["restore_to"])
     if spec.get("replace_every") is not None:
         out["replace_every"] = int(spec["replace_every"])
     cost = spec.get("replacement_cost")

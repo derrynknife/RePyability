@@ -12,6 +12,13 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: a task that leaves a part as if a given age (UC-58 of the
+  maintenance README): a `"preventive"` spec's `"restore_to"`, at a
+  shutdown or on the part's own calendar, sets its virtual age to that
+  age whatever it was, its next life drawn given it. Simulated, as a
+  Kijima `"restoration"` is (one or the other); `restore_to=0` is a
+  renewal, exact where renewals are. Saved with the diagram.
+
 - Added: value and prices over time in a net present value (UC-57 of
   the maintenance README). `expected_npv` takes `value_rate` as a
   `ValueSchedule(times, rates)` of steps in model time; `escalation=`

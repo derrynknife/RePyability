@@ -207,8 +207,11 @@ def _repairs_take_time(component) -> bool:
 def _restoration_phrase(rbd, node) -> str:
     """How a component's preventive maintenance restores it, in words."""
     restoration = rbd._restoring[node]
-    kind = "I" if restoration.kijima == "kijima1" else "II"
-    phrase = f"Kijima {kind}, q = {restoration.q:g}"
+    if restoration.kijima == "to_age":
+        phrase = f"to a virtual age of {restoration.q:g}"
+    else:
+        kind = "I" if restoration.kijima == "kijima1" else "II"
+        phrase = f"Kijima {kind}, q = {restoration.q:g}"
     if restoration.replace_every is not None:
         phrase += (
             f", replaced at task {restoration.replace_every} since it was "
