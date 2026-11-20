@@ -500,7 +500,9 @@ class RepairableRBD(RBD):
         partly), and ``"inspection": {"shutdown": name}`` tests it there;
         either takes the shut's calendar and duration, and the block must
         be in its scope. Shuts on a period are exact where the blocks fail
-        independently; the rest is simulated, in Python.
+        independently, and so are shuts at given times over a horizon
+        (they have no long run) where the blocks worked on in them are
+        renewed; the rest is simulated, in Python.
     crew_cost_rate : float, optional
         What each repair crew costs per unit time, busy or not (its
         salary), by default 0.0 (not priced). The ``repair_crews`` crews

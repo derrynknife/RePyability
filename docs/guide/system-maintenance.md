@@ -1194,11 +1194,61 @@ and carries on from where it was.
 | Key | Meaning |
 |---|---|
 | `period`, `offset` | Every `period`, the first at `offset` (0, the default, puts the first at `period`). |
-| `times` | Or the shuts' start times, increasing (simulated). |
+| `times` | Or the shuts' start times, increasing: outages at given times, valued over a horizon (they end, so there is no long run). |
 | `duration` | How long each shut lasts (0 for one that takes no time); shorter than the period or the gaps. |
 | `scope` | The nodes it holds off line (None, the default: the whole system). |
 | `cost` | Charged at each shut. |
 | `idle_ageing` | True (the default): idle blocks keep ageing; False: they stand still. |
+
+**Outages at given times.** A plan of outages is rarely on a period:
+give a shutdown its `times`. Several shutdowns, each with its own times,
+duration, scope and cost, make a list of different outages (their
+windows must not overlap). A block renewed at the outages
+(`"preventive": {"shutdown": name}`) is replaced at each if it is up,
+taking the outage's time, as under [replacement at given
+times](#replacement-at-given-times), and the blocks in scope are held
+off line for each window. The values over a horizon are worked out, not
+simulated: `point_availability`, `mission_availability`,
+`expected_events`, `expected_cost` and `expected_npv`, each outage's cost
+and each job's charged and discounted at the outage's start, and
+`maintenance_effect` over a window. The outages end, so the long-run
+methods refuse, saying to ask for a horizon or give a period. A job
+that restores a block only partly (a `"restoration"`), a block kept
+unless it is due (`"older_than"`, `"policy": "condition"`) and a test
+at outages at given times are simulated; the exact methods say so.
+
+```python
+def outages(times):
+    W, E = surv.Weibull.from_params, surv.Exponential.from_params
+    lives = {"pump": W([30000.0, 2.0]), "motor": W([60000.0, 1.5]),
+             "bearing": W([20000.0, 3.0])}
+    pm = {"pump": 3000.0, "motor": 2000.0}
+    blocks = {}
+    for name, life in lives.items():
+        blocks[name] = {"reliability": life, "repairability": E([1 / 24.0]),
+                        "repair_cost": 20000.0}
+        if name in pm:
+            blocks[name]["preventive"] = {"shutdown": "outage",
+                                          "cost": pm[name]}
+    return RepairableRBD(
+        [("in", "pump"), ("pump", "motor"), ("motor", "bearing"),
+         ("bearing", "out")],
+        blocks,
+        shutdowns={"outage": {"times": times, "duration": 72.0,
+                              "scope": ["pump", "motor"], "cost": 10000.0}},
+        downtime_cost_rate=500.0,
+    )
+
+four_years = 4 * 8760.0
+planned_outages = outages([3000.0, 12000.0, 26000.0])
+planned_outages.mission_availability(four_years)      # -> 0.99238
+worth = planned_outages.expected_npv(
+    four_years, discount_rate=np.log(1.08) / 8760.0, periods=4
+)
+worth.undiscounted_cost                               # -> 221291.9
+worth.cost                                            # -> 193053.7
+worth.cost_by_category["shutdown"]                    # -> 26697.2
+```
 
 A line of a pump, a motor and a bearing in series, shut 72 h a year at
 10,000 a shut and 500 an hour of lost production; each block has its PM
@@ -1343,7 +1393,7 @@ it saves.
   condition with a time to maintain, tests that take time, shuts on a
   period, nested RBDs. With planned outages and limited repair crews or
   common-cause groups (whose chains do not tell a block in planned work
-  from one in a repair), shuts at given times, or a partial restoration,
+  from one in a repair), or a partial restoration,
   a window is simulated: the plan and running to failure from one seed,
   on the same streams, so each simulation of the plan is paired with one
   without it, and `standard_errors` gives the paired errors of

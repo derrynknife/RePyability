@@ -588,10 +588,11 @@ spec = shutdown_spec(overhaul, "2026-11-14", "2029-12-31", duration=48.0, at="06
 spec["times"]  # [8478.0, 17382.0, 26118.0]
 ```
 
-`RepairableRBD(..., shutdowns={"overhaul": spec})` takes it. Its
-simulations (`cost()`, `availability()`) handle shuts at given times.
-The exact methods, and so `events_by_period`, take shuts on a period
-only, and refuse such a diagram with a message that says so.
+`RepairableRBD(..., shutdowns={"overhaul": spec})` takes it. Shuts at
+given times are valued over a horizon, exactly where the blocks worked
+on in them are renewed (`expected_npv`, `expected_cost`), and simulated
+(`cost()`, `availability()`); they end, so the long-run methods refuse
+such a diagram with a message that says so.
 
 ### Two clocks
 
