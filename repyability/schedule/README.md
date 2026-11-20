@@ -690,8 +690,8 @@ in `test_schedule_forecast.py`.
   meter reaches its reading), which `usage.model_time` puts on the part's
   clock. Between two of them the ring is a renewal process from new (from
   `age` before the first), so its expected failures to any time are a
-  sum of `NonRepairable.failures` over the stretches (exact, no new
-  renewal maths). Without the task they are `failures` from `age`. Each
+  sum of `NonRepairable.failures` over the stretches (its renewal
+  count, to about 1e-6; no new renewal maths). Without the task they are `failures` from `age`. Each
   side's failure cost is discounted as UC-48's (short windows, each at
   its start and end, the bracket's middle given and its half the
   precision); a planned replacement is discounted from its own instant.
@@ -725,6 +725,7 @@ in `test_schedule_forecast.py`.
   the task's own present value), `test_wear_out_against_a_simulation`
   (both plans simulated from a seed, within four standard errors),
   `test_periods_add_up`, `test_one_price`,
+  `test_what_is_not_a_replacement_is_refused`,
   `test_a_task_by_use_matches_block_replacement_in_model_time`.
 
 ### UC-40: "Replacing the part is cheap at the annual overhaul, the first Tuesday of November. Can the calendar policy use the real dates?"
@@ -790,6 +791,13 @@ in `test_schedule_forecast.py`.
   for the policies on dates, with `discounted_run_to_failure` and
   `age_replacement_value` where the usage keeps a steady pace) is not
   joined to it yet; a task's long run is (`Task.long_run_value`).
+- **The value of an inspection or a service.** `task_value` takes
+  `Replaces` only: a test that finds hidden failures, and a service
+  that changes the failure rate (whose model of the effect is still to
+  be chosen), are later use cases, refused with what to run.
+- **A task's value for ever.** `task_value` values the forecast's window;
+  the long run beyond it is not joined to it (as for the part's own
+  failure costs above).
 - **Discounted ranges.** The 5th to 95th percentiles stay undiscounted.
 - **Utilisation as whole runs lost.** `utilisation=0.9` counts each
   planned hour and start as 0.9, an expected value. The dates when 90%

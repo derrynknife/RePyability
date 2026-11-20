@@ -12,6 +12,29 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: what a scheduled replacement is worth against running to failure,
+  on real dates (UC-50 of `repyability/schedule/README.md`).
+  `task_value(task, Replaces(part), usage, *, age=0.0, unit=None,
+  discount=None, period="month", npv_tolerance=1e-3)` takes the task's
+  dates from `Task.due` (by the calendar, or by use when the meter reaches
+  its reading), fits a new part at each whatever its age (a failure in
+  between is replaced too and does not move the dates), and compares it
+  with the part run to failure from the same age over the same dates. It
+  returns `TaskValue`: by period and in total, the cost with the task,
+  without it, and `value` (without less with: positive when the task
+  pays), the task's own cost, the expected failures each way and those
+  avoided, with the undiscounted costs beside; with `discount=` the money
+  is a present value (each failure's cost discounted as
+  `failures_by_period` discounts it, to within `precision`; the task's
+  cost from when it is done) with each side's `eac`. The expected failures
+  are `NonRepairable.failures`' over the stretches between the task's
+  dates. The task's `cost` is the planned replacement's price, else the
+  part's `planned_cost`; two different prices are refused, naming both. A
+  new ring at every 6-monthly service on UC-38's pump saves $1,436.74 over
+  the year (0.549 failures avoided), $1,366 at 7% a year. `Replaces` is
+  the only kind of task valued so far: anything else is refused with what
+  to run.
+
 - Added: present values on the calendar forecasts
   (`repyability.schedule`; UC-47 to UC-49 of its README). `discount=` is
   the effective yearly rate (0.07 for 7% a year, a year of 365.25 days),
@@ -21,8 +44,8 @@ release between minors that only adds (0.19.1).
   equivalent annual cost; `work_by_period(..., discount=)` adds each
   period's `npv`, `total_npv` and `eac`. `Task.long_run_value(start,
   discount, precision=1e-9)` is what a task repeating for ever is worth,
-  returning a `LongRunValue`: a closed form for a plain interval of days or
-  weeks, otherwise the dates summed until a bound on what is left is
+  returning a `LongRunValue`: a closed form for a plain interval of days
+  or weeks, otherwise the dates summed until a bound on what is left is
   under `precision`; refused, saying what to run, at a discount of 0,
   for given dates and for a limit by use. $250 every 30 days at 7% is 13
   tasks and $3,144.10 in the first year, and $45,112 for ever.

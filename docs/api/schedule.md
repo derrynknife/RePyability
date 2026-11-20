@@ -58,3 +58,9 @@ tasks on dates and failures, events and work by calendar period (see the
 ::: repyability.schedule.EventsByPeriod
 
 ::: repyability.schedule.shutdown_spec
+
+::: repyability.schedule.task_value
+
+::: repyability.schedule.Replaces
+
+::: repyability.schedule.TaskValue
