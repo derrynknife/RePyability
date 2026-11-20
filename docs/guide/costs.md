@@ -481,6 +481,82 @@ bearing.age_replacement_value(493.0).eac                    # -> 0.003462
 bearing.age_replacement_value(493.0, discount_rate=seven).eac * 8760   # -> 30.3
 ```
 
+### Upgrades, retirement and salvage
+
+"Is the upgrade worth it?" and "run it to the end, or retire it now?" are
+questions a net present value answers. Three things say them:
+
+- **An upgrade** is on the component: `"upgrade": {"at": time,
+  "reliability": new_life, "cost": capital}`. From that time (in the
+  diagram's time from 0) its units have the new life: the unit in service
+  is replaced by one of it, in no time, and a unit in a repair then comes
+  back with it. The capital cost is charged at that time, whatever the
+  unit's state, under the category `"capital"`.
+- **`retire_at=`** on `expected_npv` retires the system before the
+  horizon: nothing is earned or spent after it, and the equivalent annual
+  cost is over the time to it.
+- **`salvage=`** credits what is left at the end (the retirement, or the
+  horizon), discounted from there: a number for the system, or a dict of
+  a number for each component; negative for a cost of disposal. The cash
+  flows show it under `"salvage"`, and the result's `salvage` is its
+  present value (`cost` stays the costs alone).
+
+```python
+import math
+import numpy as np
+import surpyval as surv
+from repyability import RepairableRBD
+
+def worn_pump(**more):
+    E = surv.Exponential.from_params
+    return RepairableRBD(
+        [("in", "pump"), ("pump", "out")],
+        {"pump": {"reliability": E([1 / 500.0]),
+                  "repairability": E([1 / 50.0]),
+                  "repair_cost": 2000.0, **more}},
+    )
+
+rate, horizon = math.log(1.08) / 8760.0, 8000.0
+kept = worn_pump().expected_npv(horizon, discount_rate=rate, value_rate=40.0)
+kept.npv                                         # -> 252977.9
+better = surv.Exponential.from_params([1 / 2000.0])
+upgraded = worn_pump(
+    upgrade={"at": 2000.0, "reliability": better, "cost": 30000.0}
+).expected_npv(horizon, discount_rate=rate, value_rate=40.0)
+upgraded.npv                                     # -> 253936.5
+upgraded.cost_by_category["capital"]             # -> 29477.5
+retired = worn_pump().expected_npv(
+    horizon, discount_rate=rate, value_rate=40.0,
+    retire_at=6000.0, salvage=8000.0,
+)
+retired.npv                                      # -> 199015.8
+retired.salvage                                  # -> 7589.2
+```
+
+A component's salvage may depend on the age of its unit in service: give
+a function of the age (taking an array of ages). Its expected value is
+worked out from the age of the unit in service at the end, for a plain
+component from new (one with maintenance, tests, an upgrade or a state at
+0 takes a number, and says so); a unit down then is credited nothing.
+
+```python
+by_age = worn_pump().expected_npv(
+    horizon, discount_rate=rate, value_rate=40.0,
+    salvage={"pump": lambda age: 8000.0 * np.exp(-age / 1000.0)},
+)
+by_age.undiscounted_salvage                      # -> 4848.5
+```
+
+An upgraded component's values over a horizon are worked out
+(`point_availability`, `expected_events`, `expected_cost`,
+`expected_npv`): its curve is followed to the upgrade with the old life
+and from it with the new, as a [replacement at a given
+time](system-maintenance.md#replacement-at-given-times) is. An upgrade
+ends the old life, so the long-run methods refuse, saying to ask for a
+horizon; and the simulations do not follow a change of life yet: they
+refuse too, naming the methods that work the values out. An upgraded
+component takes no maintenance or tests of its own yet.
+
 ### A plan against what happened
 
 Two years into a ten-year plan, the question changes: *how does what actually

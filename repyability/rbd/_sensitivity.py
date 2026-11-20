@@ -77,9 +77,17 @@ _MOVES_BREAKS = {
 _PLAN_TIME = "preventive.replace_at."
 
 
+#: The lever of an upgrade's time, which moves its curve's breaks too.
+_UPGRADE_TIME = "upgrade.at"
+
+
 def _moves_breaks(name: str) -> bool:
     """Whether the lever ``name`` moves its component's curve's breaks."""
-    return name in _MOVES_BREAKS or name.startswith(_PLAN_TIME)
+    return (
+        name in _MOVES_BREAKS
+        or name.startswith(_PLAN_TIME)
+        or name == _UPGRADE_TIME
+    )
 
 
 #: The range of a probability, a fraction or a share.
@@ -276,6 +284,17 @@ def _spec_levers(spec: dict) -> List[tuple]:
                 },
             ):
                 out.append((name, value, moved, False, bounds, scale))
+    upgrade = spec.get("upgrade")
+    if isinstance(upgrade, dict) and is_number(upgrade.get("at")):
+        # When the component is upgraded.
+
+        def moved_upgrade(v, upgrade=upgrade):
+            return {**spec, "upgrade": {**upgrade, "at": v}}
+
+        at = float(upgrade["at"])
+        out.append(
+            (_UPGRADE_TIME, at, moved_upgrade, False, (0.0, math.inf), at)
+        )
     standby = spec.get("standby")
     if isinstance(standby, dict):
         for option in ("dormancy_factor", "switching_probability"):

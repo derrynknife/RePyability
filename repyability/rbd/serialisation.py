@@ -421,6 +421,15 @@ def _serialise_component(value) -> dict:
         for key in ("preventive", "inspection"):
             if value.get(key) is not None:
                 out[key] = _serialise_schedule(value[key])
+        if value.get("upgrade") is not None:
+            # An upgrade: its time, the new life and the capital cost.
+            upgrade = value["upgrade"]
+            out["upgrade"] = {
+                "at": float(upgrade["at"]),
+                "reliability": serialise_model(upgrade["reliability"]),
+            }
+            if upgrade.get("cost"):
+                out["upgrade"]["cost"] = float(upgrade["cost"])
         if value.get("standby") is not None:
             # A standby group: numbers only.
             out["standby"] = {
@@ -554,6 +563,11 @@ def _deserialise_component(d: dict) -> Any:
         for key in ("preventive", "inspection"):
             if key in d:
                 out[key] = _deserialise_schedule(d[key])
+        if "upgrade" in d:
+            out["upgrade"] = {
+                **d["upgrade"],
+                "reliability": deserialise_model(d["upgrade"]["reliability"]),
+            }
         if "standby" in d:
             out["standby"] = dict(d["standby"])
         return out

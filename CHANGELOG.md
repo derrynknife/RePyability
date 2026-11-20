@@ -12,6 +12,27 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: mid-life upgrades, retirement and salvage in a net present
+  value (UC-52 of the maintenance README). A component spec takes
+  `"upgrade": {"at": time, "reliability": new_life, "cost": capital}`:
+  from that time its units have the new life (the unit in service is
+  replaced by one of it, in no time), and the capital cost is charged
+  then under a new cost category, `"capital"`. Its values over a horizon
+  are worked out (`point_availability`, `mission_availability`,
+  `expected_events`, `expected_cost`, `expected_npv`), from new or from
+  a state; an upgrade to the same life at no cost is a replacement at
+  that time. `expected_npv` takes `retire_at=` (nothing is earned or
+  spent after it; the equivalent annual cost is over the time to it) and
+  `salvage=` (a number for the system, or a dict by component, credited
+  at the retirement or the horizon and discounted from there; a
+  component's may be a function of the age of its unit in service, for a
+  plain component from new). `ExpectedNPV` gains `salvage`,
+  `undiscounted_salvage` and `retire_at`, and its cash flows the
+  categories `"capital"` and `"salvage"`. An upgraded diagram has no
+  long run and is not simulated yet: those methods refuse, saying what
+  to run. Every cost breakdown gains a `"capital"` entry of 0; without
+  an upgrade, a retirement or a salvage every value is as before.
+
 - Added: outages at given times, valued without simulation (UC-24 of the
   maintenance README). A diagram's `shutdowns` at `"times"` (each with
   its duration, scope and cost; several shutdowns for different
