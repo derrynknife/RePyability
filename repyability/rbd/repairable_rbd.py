@@ -1772,6 +1772,8 @@ class RepairableRBD(RBD):
         max_units: Union[int, Dict[Hashable, int], None] = None,
         method: str = "exact",
         discount_rate: float = 0.0,
+        objective: str = "cost",
+        value_rate: float = 0.0,
     ) -> TotalCostAllocation:
         """Choose the redundancy with the lowest total cost of ownership.
 
@@ -1818,6 +1820,23 @@ class RepairableRBD(RBD):
         ``method="greedy"`` adds or removes one copy at a time while that
         lowers the total: fast, but not guaranteed optimal.
 
+        Redundancy is a capital decision: the copies are bought now, and
+        what they save comes later. ``objective="npv"`` chooses the design
+        with the highest net present value over the horizon, the value
+        the system earns while it works (``value_rate`` per unit time)
+        less its total cost, each at ``discount_rate``; the result gives
+        the ``npv``, its split into ``value``, ``acquisition_cost`` and
+        ``running_cost``, and the ``eac``, the same as a steady cost per
+        unit time. ``objective="eac"`` chooses by that, which over one
+        horizon is the same design. A value earned while the system works
+        is a cost of its downtime, so the search is the total cost's
+        with an hour down costing ``downtime_cost_rate + value_rate``,
+        and with no value the design is the total cost's. The running
+        costs, the downtime and the value are the long-run rates over
+        the horizon's present value, as ``total_cost`` counts them,
+        which the result's ``basis`` says: a system new at the start is
+        up a little more often at first.
+
         Parameters
         ----------
         horizon : float
@@ -1859,20 +1878,31 @@ class RepairableRBD(RBD):
             The continuous discount rate per unit time of the component
             models, by default 0 (undiscounted), as for ``total_cost``: the
             design with the lowest present value is chosen.
+        objective : str, optional
+            What the design is chosen by: ``"cost"`` (the default), the
+            lowest total cost; ``"npv"``, the highest net present value;
+            or ``"eac"``, the lowest equivalent annual cost less the
+            value earned.
+        value_rate : float, optional
+            The value earned per unit time while the system works, for
+            ``"npv"`` and ``"eac"``, by default 0.
 
         Returns
         -------
         TotalCostAllocation
             The chosen ``units`` per node and train, with the design's
             ``total_cost``, ``acquisition_cost``, ``cost_rate`` and
-            ``availability`` (see
+            ``availability``, and for ``"npv"`` and ``"eac"`` its
+            ``npv``, ``eac``, ``value`` and ``running_cost`` (see
             [`TotalCostAllocation`][repyability.TotalCostAllocation]).
 
         Raises
         ------
         ValueError
             If ``horizon``, ``nodes``, ``trains``, ``min_availability``,
-            ``max_units``, ``method`` or ``discount_rate`` is invalid; if
+            ``max_units``, ``method``, ``discount_rate``, ``objective``
+            or ``value_rate`` is invalid (a ``value_rate`` needs
+            ``"npv"`` or ``"eac"``); if
             no component has an acquisition cost and neither ``nodes`` nor
             ``trains`` is given;
             if a node's or train's copies cost nothing and are not capped;
@@ -1922,6 +1952,23 @@ class RepairableRBD(RBD):
         >>> rbd.allocate_redundancy(8760.0).units
         {'pump': 1}
 
+        At 30% a year the second pump does not pay on the lost production
+        alone, but it does if each hour of pumping also earns 400:
+
+        >>> import math
+        >>> rate = math.log(1.30) / 8760
+        >>> rbd.allocate_redundancy(87600.0, discount_rate=rate).units
+        {'pump': 1}
+        >>> best = rbd.allocate_redundancy(
+        ...     87600.0, objective="npv", discount_rate=rate, value_rate=400.0
+        ... )
+        >>> best.units, round(best.npv), round(best.eac, 2)
+        ({'pump': 2}, 12314518, -397.67)
+        >>> round(best.value), round(best.acquisition_cost)
+        (12385481, 40000)
+        >>> round(best.running_cost)
+        30964
+
         A station needing two of three pump trains, each a pump and its
         motor, when an hour without pumping costs 2,000: is a fourth train
         worth it? Name one train, and its copies join the vote:
@@ -1967,6 +2014,8 @@ class RepairableRBD(RBD):
             max_units=max_units,
             method=method,
             discount_rate=discount_rate,
+            objective=objective,
+            value_rate=value_rate,
         )
 
     def availability_allocation(
@@ -2299,6 +2348,10 @@ class RepairableRBD(RBD):
         min_availability: Optional[float] = None,
         max_cost_rate: Optional[float] = None,
         assume_unlimited_crews: bool = False,
+        objective: str = "cost",
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        horizon=None,
     ) -> MaintenancePlan:
         """Choose the age-replacement intervals for the system as a whole.
 
@@ -2347,6 +2400,30 @@ class RepairableRBD(RBD):
         every repair started at once. Simulate that plan with the crews,
         ``with_intervals(plan).cost()``, to see what the waiting costs.
 
+        At a discount rate, spending later is worth something, so the
+        best intervals are a little longer than the cost rate's.
+        ``objective="eac"`` chooses them for the lowest equivalent annual
+        cost in the long run: the steady cost per unit time worth the
+        same, at ``discount_rate``, as running the diagram for ever from
+        new, less ``value_rate`` for the time it works. Each component's
+        own costs are discounted over its renewal cycle, exactly (Fox,
+        1966), as ``NonRepairable.optimal_replacement_policy`` discounts
+        one unit's; the cost of the system's downtime and the value it
+        earns are taken at its long-run availability, an approximation
+        that the plan's ``basis`` states. At a rate of 0 it is the cost
+        rate, and the plan the same. ``objective="npv"`` chooses them for
+        the highest expected net present value over ``horizon`` from new
+        (``expected_npv``), which follows the system's availability over
+        time. That takes each plan's curves over the horizon, so it is
+        much slower, and a plan's value over a horizon has a local best
+        wherever a replacement falls just inside or outside it: without
+        ``allowed`` the search is a local one from the long run's best
+        plan, and with ``allowed`` every combination is valued (replacing
+        like units at different ages, so that they are not all down
+        together, can be worth more from new). The targets are kept
+        either way: ``min_availability`` and ``max_cost_rate`` bound the
+        long-run values, and the objective is minimised within them.
+
         Parameters
         ----------
         nodes : Collection[Hashable], optional
@@ -2369,12 +2446,30 @@ class RepairableRBD(RBD):
             With limited ``repair_crews``, choose the intervals as if every
             repair started at once (the plan's cost rate and availability
             are then those without waiting), by default False: refused.
+        objective : str, optional
+            What the intervals minimise: ``"cost"`` (the default), the
+            long-run cost rate, or with ``max_cost_rate`` the
+            unavailability; ``"eac"``, the equivalent annual cost in the
+            long run at ``discount_rate``, less the value earned; or
+            ``"npv"``, less the expected net present value over
+            ``horizon``.
+        discount_rate : float, optional
+            The continuous discount rate per unit time of the models, for
+            ``"eac"`` and ``"npv"``, by default 0 (an annual rate ``i``
+            with models in hours is ``math.log(1 + i) / 8760``).
+        value_rate : float, optional
+            The value earned per unit time while the system works, for
+            ``"eac"`` and ``"npv"``, by default 0.
+        horizon : float, optional
+            The time ``"npv"`` values, from new.
 
         Returns
         -------
         MaintenancePlan
             The interval of each component in ``nodes`` (``inf`` for never),
-            and the system's cost rate and availability with them.
+            and the system's cost rate and availability with them; for
+            ``"eac"`` and ``"npv"``, the objective's value too
+            (``objective_value``) and what it is made of (``basis``).
 
         Raises
         ------
@@ -2387,7 +2482,12 @@ class RepairableRBD(RBD):
         NotImplementedError
             If the long-run values are not known exactly (see
             ``expected_cost_rate``), or a component can wait for a repair
-            crew and ``assume_unlimited_crews`` is not given.
+            crew and ``assume_unlimited_crews`` is not given; for
+            ``"eac"`` at a discount rate, if a priced component has no
+            renewal cycle of its own worked out here (a standby group,
+            block replacement, a common-cause group, a unit whose tests
+            or repairs take time, ...):
+            the message names ``objective="npv"``.
 
         Examples
         --------
@@ -2422,6 +2522,21 @@ class RepairableRBD(RBD):
 
         The pump alone in the line is replaced later than those with a
         standby: its replacements stop the plant too.
+
+        The plant earns 2000 an hour while it runs, so an hour down
+        loses 2500. At 10% a year, the intervals for the lowest
+        equivalent annual cost, net of what it earns:
+
+        >>> import math
+        >>> plan = plant.optimal_replacement_intervals(
+        ...     objective="eac",
+        ...     discount_rate=math.log(1.10) / 8760,
+        ...     value_rate=2000.0,
+        ... )
+        >>> {node: round(t) for node, t in plan.intervals.items()}
+        {'a': 621, 'b1': 517, 'b2': 517}
+        >>> round(plan.objective_value, 2)
+        -1940.55
         """
         _shutdowns.refuse(self, "optimal_replacement_intervals")
         return _intervals.optimal_replacement_intervals(
@@ -2431,6 +2546,10 @@ class RepairableRBD(RBD):
             min_availability=min_availability,
             max_cost_rate=max_cost_rate,
             assume_unlimited_crews=assume_unlimited_crews,
+            objective=objective,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            horizon=horizon,
         )
 
     def optimal_inspection_intervals(
@@ -2442,6 +2561,10 @@ class RepairableRBD(RBD):
         max_cost_rate: Optional[float] = None,
         assume_unlimited_crews: bool = False,
         offset_shares=None,
+        objective: str = "cost",
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        horizon=None,
     ) -> MaintenancePlan:
         """Choose the proof-test intervals of components with hidden
         failures, for the system as a whole.
@@ -2483,6 +2606,23 @@ class RepairableRBD(RBD):
         divide it, from ``allowed`` (which must) or, left out, from every
         one in range.
 
+        At a discount rate, the tests are paid for now and the failures
+        they find later. ``objective="eac"`` chooses the intervals for
+        the lowest equivalent annual cost in the long run at
+        ``discount_rate``, less ``value_rate`` for the time the system
+        works, and ``objective="npv"`` for the highest expected net
+        present value over ``horizon`` from new, as
+        ``optimal_replacement_intervals`` does (see it for what each is
+        made of, and what is approximate). A tested component starts
+        afresh at the test that finds it failed: its cycle is the tests
+        up to that one, each paid for when it is made, the failure when
+        it is found, and its own downtime from the failure to that test.
+        That is worked out for tests and repairs that take no time and
+        find every failure. The targets are kept: ``min_availability``
+        (the PFDavg limit) and ``max_cost_rate`` bound the long-run
+        values, and the objective is minimised within them. At a rate
+        of 0, ``"eac"`` is the cost rate, and the plan the same.
+
         Parameters
         ----------
         nodes : Collection[Hashable], optional
@@ -2513,13 +2653,30 @@ class RepairableRBD(RBD):
             one's tests stay from 0. Needs ``allowed``. By default each
             offset keeps its share of the interval. The plan's ``offsets``
             are the times they give (shares times the intervals).
+        objective : str, optional
+            What the intervals minimise: ``"cost"`` (the default), the
+            long-run cost rate, or with ``max_cost_rate`` the
+            unavailability; ``"eac"``, the equivalent annual cost in the
+            long run at ``discount_rate``, less the value earned; or
+            ``"npv"``, less the expected net present value over
+            ``horizon``.
+        discount_rate : float, optional
+            The continuous discount rate per unit time of the models, for
+            ``"eac"`` and ``"npv"``, by default 0.
+        value_rate : float, optional
+            The value earned per unit time while the system works, for
+            ``"eac"`` and ``"npv"``, by default 0.
+        horizon : float, optional
+            The time ``"npv"`` values, from new.
 
         Returns
         -------
         MaintenancePlan
             The interval of each component in ``nodes``, its ``offsets``
             (the time of its first test), and the system's cost rate and
-            availability (1 - PFDavg) with them.
+            availability (1 - PFDavg) with them; for ``"eac"`` and
+            ``"npv"``, the objective's value too (``objective_value``)
+            and what it is made of (``basis``).
 
         Raises
         ------
@@ -2538,7 +2695,11 @@ class RepairableRBD(RBD):
             If a component's hidden failures have no exact long-run values
             (see ``node_availability``), the intervals repeat together only
             after too many tests to average over, or a component can wait
-            for a repair crew and ``assume_unlimited_crews`` is not given.
+            for a repair crew and ``assume_unlimited_crews`` is not given;
+            for ``"eac"`` at a discount rate, if a priced component has no
+            renewal cycle of its own worked out here (tests or repairs
+            that take time, tests that can miss a failure, ...): the
+            message names ``objective="npv"``.
 
         Examples
         --------
@@ -2612,6 +2773,10 @@ class RepairableRBD(RBD):
             max_cost_rate=max_cost_rate,
             assume_unlimited_crews=assume_unlimited_crews,
             offset_shares=offset_shares,
+            objective=objective,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            horizon=horizon,
         )
 
     def with_intervals(self, intervals, offsets=None) -> "RepairableRBD":

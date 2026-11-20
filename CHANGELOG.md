@@ -29,7 +29,7 @@ release between minors that only adds (0.19.1).
   test at outages at given times stay simulated, and the exact methods
   say so.
 
-- Added: a component replaced at a list of times (UC-50 of the
+- Added: a component replaced at a list of times (UC-51 of the
   maintenance README). A `"preventive"` spec takes `"replace_at"`, the
   times in the diagram's time from 0 (positive, increasing), in place of
   an `"interval"`: block replacement at those times, the unit replaced at
@@ -51,6 +51,89 @@ release between minors that only adds (0.19.1).
   calendar through the block's duty. Without it every value is as
   before.
 
+- Added: redundancy chosen by net present value.
+  `RepairableRBD.allocate_redundancy(horizon, objective="npv",
+  discount_rate=, value_rate=)` chooses the copies with the highest net
+  present value over the horizon: what the system earns while it works
+  (`value_rate` per unit time, at its long-run availability) less the
+  copies bought at the start and the running costs, each over the
+  horizon's present value as `total_cost` counts them.
+  `objective="eac"` chooses by the equivalent annual cost less the value
+  earned, which over one horizon is the same design. The
+  `TotalCostAllocation` gains `objective`, `value_rate`, `npv`, `eac`,
+  `value`, `running_cost` (`npv = value - acquisition_cost -
+  running_cost`) and `basis`, which says what is approximate (a system
+  new at the start is up more often at first; `expected_npv` values a
+  design from new). A value earned is a cost of downtime, so the search
+  and its bounds are the total cost's with an hour down costing
+  `downtime_cost_rate + value_rate`: `min_availability`, `max_units`,
+  `trains`, common-cause groups and both methods work as before, and
+  with no value the design and its total cost are exactly the total
+  cost's. `objective="cost"`, the default, is unchanged; a `value_rate`
+  with it is refused, naming the objectives.
+
+- Added: test intervals chosen at a discount rate.
+  `RepairableRBD.optimal_inspection_intervals` takes the objectives of
+  `optimal_replacement_intervals`: `objective="eac"` (with
+  `discount_rate=` and `value_rate=`) for the lowest equivalent annual
+  cost in the long run, and `objective="npv"` with a `horizon` for the
+  highest `expected_npv`, with `allowed`, `offset_shares`,
+  `min_availability` (a PFDavg limit) and `max_cost_rate` as before. A
+  component with hidden failures, tested and repaired in no time by
+  tests that find every failure, is discounted over its own cycle, the
+  tests up to the one that finds it failed: each test when it is made,
+  the failure when it is found, its own downtime from the failure to
+  that test (for an exponential life a closed form, which the tests
+  check; the first cycle from the tests' offset). So such a component is
+  no longer refused by `optimal_replacement_intervals(objective="eac")`
+  either. Tests or repairs that take time, and tests that can miss a
+  failure, refuse `"eac"` at a discount rate and name `"npv"`. At a rate
+  of 0 the plan is the cost rate's.
+
+- Added: what a scheduled replacement is worth against running to failure,
+  on real dates (UC-50 of `repyability/schedule/README.md`).
+  `task_value(task, Replaces(part), usage, *, age=0.0, unit=None,
+  discount=None, period="month", npv_tolerance=1e-3)` takes the task's
+  dates from `Task.due` (by the calendar, or by use when the meter reaches
+  its reading), fits a new part at each whatever its age (a failure in
+  between is replaced too and does not move the dates), and compares it
+  with the part run to failure from the same age over the same dates. It
+  returns `TaskValue`: by period and in total, the cost with the task,
+  without it, and `value` (without less with: positive when the task
+  pays), the task's own cost, the expected failures each way and those
+  avoided, with the undiscounted costs beside; with `discount=` the money
+  is a present value (each failure's cost discounted as
+  `failures_by_period` discounts it, to within `precision`; the task's
+  cost from when it is done) with each side's `eac`. The expected failures
+  are `NonRepairable.failures`' over the stretches between the task's
+  dates. The task's `cost` is the planned replacement's price, else the
+  part's `planned_cost`; two different prices are refused, naming both. A
+  new ring at every 6-monthly service on UC-38's pump saves $1,436.74 over
+  the year (0.549 failures avoided), $1,366 at 7% a year. `Replaces` is
+  the only kind of task valued so far: anything else is refused with what
+  to run.
+- Added: replacement intervals chosen at a discount rate.
+  `RepairableRBD.optimal_replacement_intervals(objective="eac",
+  discount_rate=, value_rate=)` chooses the age-replacement intervals for
+  the lowest equivalent annual cost in the long run, less a value earned
+  per unit time while the system works: each component's own costs
+  discounted over its renewal cycle, exactly (Fox, 1966; one unit's plan
+  is `NonRepairable.optimal_replacement_policy(discount_rate=)`'s), the
+  cost of the system's downtime and the value at its long-run
+  availability, an approximation the plan states. `objective="npv"` with
+  a `horizon` chooses them for the highest `expected_npv` from new: every
+  combination of `allowed` valued, or a local search (without gradients)
+  from the long run's best plan; much slower, as each plan's curves are
+  followed over the horizon. `min_availability` and `max_cost_rate` are
+  kept with both. The `MaintenancePlan` says what was minimised
+  (`objective`, `discount_rate`, `value_rate`, `horizon`), what it came
+  to (`objective_value`) and what that is made of (`basis`). At a rate
+  of 0, `"eac"` is the cost rate: the same search and the same plan. A
+  priced component with no renewal cycle of its own worked out (a tested
+  unit, a standby group, block replacement, a common-cause group, ...)
+  refuses `"eac"` at a discount rate, naming `"npv"`. The default,
+  `objective="cost"`, is unchanged.
+
 - Added: present values on the calendar forecasts
   (`repyability.schedule`; UC-47 to UC-49 of its README). `discount=` is
   the effective yearly rate (0.07 for 7% a year, a year of 365.25 days),
@@ -60,8 +143,8 @@ release between minors that only adds (0.19.1).
   equivalent annual cost; `work_by_period(..., discount=)` adds each
   period's `npv`, `total_npv` and `eac`. `Task.long_run_value(start,
   discount, precision=1e-9)` is what a task repeating for ever is worth,
-  returning a `TaskValue`: a closed form for a plain interval of days or
-  weeks, otherwise the dates summed until a bound on what is left is
+  returning a `LongRunValue`: a closed form for a plain interval of days
+  or weeks, otherwise the dates summed until a bound on what is left is
   under `precision`; refused, saying what to run, at a discount of 0,
   for given dates and for a limit by use. $250 every 30 days at 7% is 13
   tasks and $3,144.10 in the first year, and $45,112 for ever.
@@ -289,6 +372,15 @@ release between minors that only adds (0.19.1).
   Undiscounted policies give the same numbers as before.
 - Changed: a site's `discount=` without `horizon=` was refused ("goes
   with horizon="); it now asks for the discounted long run.
+- Changed: a meshed diagram's decision diagram tries a third order of
+  its nodes, a greedy one that looks a node ahead, and keeps it where it
+  leaves the narrowest frontier (meshes a few nodes wide and random
+  meshed diagrams; grids keep the order they had). Where the order
+  changes the diagram is a little smaller or larger (1,700 small random
+  cores: 2% fewer steps in all), and its probabilities can differ in
+  their last bits. `scripts/bdd_benchmark.py` measures what the diagrams
+  cost: at the step limit the search holds some hundreds of megabytes at
+  most, so the steps, not the memory, are what stops a core.
 
 ## [0.19.1] - 2026-11-16
 

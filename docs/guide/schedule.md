@@ -8,7 +8,9 @@ calendar. This page covers the first part: **which dates a rule gives**
 map between dates and operating hours it gives (`UsageForecast`), which
 puts tasks counted in running hours on dates; and, through that map,
 **failures, events and shuts on the calendar** (`failures_by_period`,
-`events_by_period`, `shutdown_spec`, `Opportunity.from_recurrence`).
+`events_by_period`, `shutdown_spec`, `Opportunity.from_recurrence`),
+and what a replacement task is worth against not doing it
+(`task_value`).
 
 The module computes and stores nothing. You pass it dates, rules and what
 you know (when a task was last done); it never reads the clock. Dates are
@@ -527,6 +529,43 @@ from dated shuts (below). The part's `age` is its age when the forecast
 starts. The model's unit comes from its label (`unit="h"` on the
 surpyval model), or from `unit=`. With neither, it is taken as hours and
 the notes say so.
+
+### Is a replacement task worth it?
+
+A task's cost is only worth paying for what it prevents. `task_value`
+values a task against not doing it: the part's cost with the task, without
+it, and the difference, by period. Say every 6-monthly service fits a new
+wear ring for $600:
+
+```python
+from repyability.schedule import Recurrence, Replaces, Task, task_value
+
+new_ring = Task("new wear ring",
+                every=Recurrence.every(6, "months", "2026-12-01"), cost=600.0)
+worth = task_value(new_ring, Replaces(ring), usage, age=5200.0, discount=0.07)
+[str(d) for d in worth.dates]  # ['2026-12-01', '2027-06-01']
+round(worth.total["with_task"])  # -> 1517
+round(worth.total["without_task"])  # -> 2883
+round(worth.total["value"])  # -> 1366
+round(worth.total["failures_avoided"], 3)  # -> 0.549
+```
+
+`Replaces(ring)` says what the task does: it puts a new ring in every
+time it is done, whatever the ring's age. A failure in between is
+replaced too and does not move the service dates. Without the task, the
+ring runs to failure from the same age over the same dates (`with_words`
+and `without_words` say so). `value` is `without_task - with_task`, so a
+positive value means the task pays. Here it does: the ring is old, and
+the first service replaces it in two weeks. Each failure's cost is
+discounted as `failures_by_period` discounts it, and `precision` is how
+far the value can be from the true one; the task's own cost is
+discounted from the day it is done. With no `discount` the numbers are
+plain expected costs ($1,550.82 against $2,987.56).
+
+The task's `cost` is the planned ring's price. A task with no cost takes
+the part's `planned_cost`. If both are given and differ, the call is
+refused, naming the two numbers. A task by use (`every=Usage(2000,
+"hours")`) is done when the meter reaches its reading.
 
 ### A system, by month
 
