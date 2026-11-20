@@ -281,7 +281,7 @@ class TaskDue(_ScheduleResult):
 
 
 @dataclass(frozen=True)
-class TaskValue(_ScheduleResult):
+class LongRunValue(_ScheduleResult):
     """What a task repeating for ever is worth now: returned by
     ``Task.long_run_value``.
 
@@ -715,7 +715,7 @@ class Task:
 
     def long_run_value(
         self, start, discount, *, precision: float = 1e-9
-    ) -> TaskValue:
+    ) -> LongRunValue:
         """What the task is worth on ``start`` repeating for ever: the
         present value of its cost every time it is done from ``start``
         on, at a yearly discount rate.
@@ -742,7 +742,7 @@ class Task:
 
         Returns
         -------
-        TaskValue
+        LongRunValue
 
         Raises
         ------
@@ -815,7 +815,7 @@ class Task:
                 f"every day after it would add {left:.3g}, which this one "
                 "cannot exceed."
             )
-        return TaskValue(
+        return LongRunValue(
             task=self.name,
             start=start,
             discount=discount,
