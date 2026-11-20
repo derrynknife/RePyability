@@ -12,6 +12,28 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: replacement intervals chosen at a discount rate.
+  `RepairableRBD.optimal_replacement_intervals(objective="eac",
+  discount_rate=, value_rate=)` chooses the age-replacement intervals for
+  the lowest equivalent annual cost in the long run, less a value earned
+  per unit time while the system works: each component's own costs
+  discounted over its renewal cycle, exactly (Fox, 1966; one unit's plan
+  is `NonRepairable.optimal_replacement_policy(discount_rate=)`'s), the
+  cost of the system's downtime and the value at its long-run
+  availability, an approximation the plan states. `objective="npv"` with
+  a `horizon` chooses them for the highest `expected_npv` from new: every
+  combination of `allowed` valued, or a local search (without gradients)
+  from the long run's best plan; much slower, as each plan's curves are
+  followed over the horizon. `min_availability` and `max_cost_rate` are
+  kept with both. The `MaintenancePlan` says what was minimised
+  (`objective`, `discount_rate`, `value_rate`, `horizon`), what it came
+  to (`objective_value`) and what that is made of (`basis`). At a rate
+  of 0, `"eac"` is the cost rate: the same search and the same plan. A
+  priced component with no renewal cycle of its own worked out (a tested
+  unit, a standby group, block replacement, a common-cause group, ...)
+  refuses `"eac"` at a discount rate, naming `"npv"`. The default,
+  `objective="cost"`, is unchanged.
+
 - Added: present values on the calendar forecasts
   (`repyability.schedule`; UC-47 to UC-49 of its README). `discount=` is
   the effective yearly rate (0.07 for 7% a year, a year of 365.25 days),
