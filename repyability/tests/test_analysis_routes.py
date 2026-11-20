@@ -327,6 +327,16 @@ REPAIRABLE_CALLS = {
             uncertain(rbd), n_draws=2, seed=1
         )
     ),
+    "expected_npv_uncertainty": (
+        lambda rbd: rbd.expected_npv_uncertainty(
+            200.0,
+            uncertain(rbd),
+            discount_rate=0.01,
+            value_rate=1.0,
+            n_draws=2,
+            seed=1,
+        )
+    ),
     "uncertainty_importance": lambda rbd: rbd.uncertainty_importance(
         uncertainty=uncertain(rbd)
     ),

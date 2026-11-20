@@ -49,6 +49,7 @@ records and decides what "today" is.
 | UC-43 | A site's shuts on real dates (rules, one-offs, plain periods, a use on a meter) in one record, the best rule for a part there, worked out by a route that is always named and never chosen silently, given back as dates; the unit in service, its cost's spread, and a diagram's outages from the same record | **Built**: `Opportunities` of `Opportunity` on real dates (0.19's `Shutdowns` and `Shutdown`, deprecated), `optimal_opportunity_policy(site, ...)` returning a `ShutdownPolicy`, `Opportunities.route`, `opportunity_policy_cost(site, ...)`, `optimal_next_replacement(..., site=)`, `cost_distribution`/`cost_by_window(policy=)`, `Opportunities.on_diagram` |
 | UC-44 | The best replacement policy in the long run at a discount rate: age replacement, a calendar of shuts in model time and a site on real dates, by the least equivalent annual cost | **Built**: `discount_rate=` of `find_optimal_replacement`, `optimal_replacement_policy` and `optimal_opportunity_policy` (`discount_rate=` in model time, and `discount=` without a horizon on real dates) |
 | UC-45 | One record of a site's opportunities (stops and shuts) for every part, each part bringing its own prices (at an opportunity, on any other day, at a failure, and per opportunity) and the length of its job, so an opportunity too short for the job is not used; and the prices worked out from a replacement's cost and the plant's downtime | **Built**: `Opportunity`, `Opportunities`, `NonRepairable(opportunity_cost=, opportunity_costs=, job_duration=)`, the policy's `prices` (`OpportunityPrices`), `NonRepairable.opportunity_prices` |
+| UC-55 | How sure an NPV and a choice of intervals are: the NPV's change with the discount rate, its spread over the fitted models' uncertainty with each input's share, and how often the chosen replacement intervals stay the best | **Built**: `expected_npv(rate_sensitivity=True)`, `RepairableRBD.expected_npv_uncertainty`, `optimal_replacement_intervals(robust=True or "reoptimise")` |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -2045,6 +2046,72 @@ answers back into dates is Reliafy's too.)
   at its mean (`priced_at_mean`), so the spread is that of the events
   alone; the costs the histories do not record could come from the event
   loop's own records, which would change both engines.
+
+### UC-55: "The plan's NPV rests on a discount rate we argue about and on lives fitted to a few failures. How much does each move it, and would the intervals we chose still be the best?"
+
+- **Status:** built: `expected_npv(..., rate_sensitivity=True)`,
+  `RepairableRBD.expected_npv_uncertainty(horizon, uncertainty, ...)`
+  and `optimal_replacement_intervals(..., robust=True | "reoptimise",
+  uncertainty=, n_draws=, seed=)`.
+- **Who asks, and why:** an owner signing off a plan valued by UC-19 and
+  chosen by `optimal_replacement_intervals`. The finance team's rate is
+  a range, not a number, and the lives came from a few dozen failures:
+  a choice made on point estimates can be the wrong one once that is
+  counted, and they want to know how often, and what it would cost.
+- **What they know:** the diagram, its costs and value rate, the horizon
+  and the rate; which models are fitted (their covariance, or a Bayesian
+  posterior), or distributions over parameters given by hand.
+- **What they want back:** `d NPV / d r` with its error; an interval on
+  the NPV, which inputs make it wide, and what was held fixed; for a
+  choice of intervals, the share of plausible models under which it is
+  still the best and the expected regret where it is not.
+- **How it is solved:**
+  - *The rate (numerical):* the NPV is analytic in `r`, each amount at
+    `t` weighed by `exp(-r t)`. Its derivative is Richardson's
+    extrapolation of differences on steps `h = 0.01 / T` and `2h`
+    (`T` the time valued, so the steps follow the unit of time), central
+    where the rate stays at least 0 and one-sided from it otherwise; a
+    third of the two steps' difference is the stated error. Weighting
+    each cash flow by `-t exp(-r t)` through every integral would be
+    exact, but would add a second weighted path to each of the cost
+    integrals; four more valuations do it with the code that values the
+    plan.
+  - *The models (sampled):* the draws are those of
+    `expected_cost_rate_uncertainty` (`_repairable_uncertainty.draws`
+    and `build`), each draw valued by `expected_npv` exactly. The shares
+    are the delta method's, as `uncertainty_importance(method="delta")`
+    gives them: the NPV's derivatives in each drawn parameter (a central
+    difference of 1% of the lever, the step `parameter_sensitivity` takes
+    over time) against the parameters' covariance. Models no input draws
+    are listed as held fixed.
+  - *The choice (sampled):* under each draw, the choice and its
+    neighbours (each interval one step either way: the next allowed
+    interval, or a quarter longer or shorter in a continuous search) are
+    scored by the plan's own objective and target, all under the same
+    draw, so their differences are not blurred by draws they do not
+    share; the share in which the choice wins and its mean regret
+    follow. Choosing again under each draw (`"reoptimise"`) is offered,
+    slower; its share of draws with the same choice is given only for
+    allowed intervals, as a continuous search never lands on the same
+    point twice.
+- **Today:** `expected_npv` at two rates by hand gave a difference
+  quotient; the uncertainty methods gave the availability and the cost
+  rate, not the NPV; nothing scored a choice under other models.
+- **Checks:** `test_npv_uncertainty.py`: the rate sensitivity against a
+  closed form for an exponential pump at 8% a year, at 0 and just above
+  it (to 1e-6, inside the stated error), against a small change of rate,
+  and a salvage's part against `-T exp(-r T) S`; each draw's NPV against
+  the closed form at its drawn rate; the delta method's variance against
+  the closed form's derivative and the fit's `lambda^2 / n`, and the
+  draws' variance against it; seeded draws repeat; a choice built to flip
+  under one of two lives is the best in exactly the draws of the other,
+  with the regret the other life's own choice saves, and the same by
+  re-optimising.
+- **Learned / open questions:** the neighbours' regret is a lower bound
+  on the regret against each draw's own optimum; the two agree where the
+  optimum moves at most one step. The delta method's shares assume the
+  NPV close to linear over the spread: the draws' variance beside
+  `delta_variance` says whether it is.
 
 ### UC-22: "A pump's 6-monthly overhaul restores it only partly (a fitted Kijima restoration factor), and every third overhaul replaces it. What availability, failures and cost per year, against overhauls that renew it, and which overhaul interval is cheapest?"
 

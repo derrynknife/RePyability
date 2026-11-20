@@ -61,6 +61,7 @@ from repyability.rbd.results import (
     NodeActionRates,
     NPVComparison,
     NPVDistribution,
+    NPVUncertainty,
     PFDBreakdown,
     PlanVsActual,
     RateBreakdown,
@@ -2414,6 +2415,10 @@ class RepairableRBD(RBD):
         discount_rate: float = 0.0,
         value_rate: float = 0.0,
         horizon=None,
+        robust=False,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        n_draws: int = 200,
+        seed=None,
     ) -> MaintenancePlan:
         """Choose the age-replacement intervals for the system as a whole.
 
@@ -2486,6 +2491,20 @@ class RepairableRBD(RBD):
         either way: ``min_availability`` and ``max_cost_rate`` bound the
         long-run values, and the objective is minimised within them.
 
+        The intervals are the best for the models as fitted. With
+        ``robust``, the plan also says how robust that choice is to the
+        models' uncertainty (its ``robustness``, a ``PlanRobustness``):
+        the uncertain models are drawn ``n_draws`` times, as
+        ``mean_availability_uncertainty`` draws them, and under each draw
+        the choice is scored by the same objective against its
+        neighbours (each interval one step either way: the next of
+        ``allowed``, or a quarter longer or shorter), every plan under
+        the same draws; the share of draws in which it stays the best,
+        and the mean of what it loses where it does not (its regret),
+        follow. ``robust="reoptimise"`` chooses the intervals again under
+        each draw instead, which is slower. The models no draw changes
+        are listed in it as held fixed.
+
         Parameters
         ----------
         nodes : Collection[Hashable], optional
@@ -2524,6 +2543,19 @@ class RepairableRBD(RBD):
             ``"eac"`` and ``"npv"``, by default 0.
         horizon : float, optional
             The time ``"npv"`` values, from new.
+        robust : bool or str, optional
+            Say how robust the choice is to the models' uncertainty:
+            ``True`` against its neighbours under each draw,
+            ``"reoptimise"`` against each draw's own best intervals. By
+            default False.
+        uncertainty : dict, optional
+            With ``robust``, the uncertain inputs, as for
+            ``mean_availability_uncertainty``: by default every fitted
+            model.
+        n_draws : int, optional
+            With ``robust``, the number of draws, by default 200.
+        seed : int, optional
+            With ``robust``, the seed of the draws.
 
         Returns
         -------
@@ -2531,7 +2563,8 @@ class RepairableRBD(RBD):
             The interval of each component in ``nodes`` (``inf`` for never),
             and the system's cost rate and availability with them; for
             ``"eac"`` and ``"npv"``, the objective's value too
-            (``objective_value``) and what it is made of (``basis``).
+            (``objective_value``) and what it is made of (``basis``);
+            with ``robust``, its ``robustness``.
 
         Raises
         ------
@@ -2612,6 +2645,10 @@ class RepairableRBD(RBD):
             discount_rate=discount_rate,
             value_rate=value_rate,
             horizon=horizon,
+            robust=robust,
+            uncertainty=uncertainty,
+            n_draws=n_draws,
+            seed=seed,
         )
 
     def optimal_inspection_intervals(
@@ -4369,6 +4406,7 @@ class RepairableRBD(RBD):
         state=None,
         retire_at=None,
         salvage=None,
+        rate_sensitivity: bool = False,
     ) -> ExpectedNPV:
         """The expected net present value of running the system for
         ``horizon``, from new or from a state: what it earns while it
@@ -4448,6 +4486,14 @@ class RepairableRBD(RBD):
             service (taking an array of ages), for a plain component from
             new: its expected value over that age, a unit down then
             credited nothing. By default None.
+        rate_sensitivity : bool, optional
+            Also work out how the NPV moves with the discount rate,
+            ``d npv / d r`` (the result's ``rate_sensitivity``), with an
+            estimate of its error: by Richardson's extrapolation of
+            differences of the NPV on steps of the rate of ``0.01`` and
+            ``0.02`` over the time valued (central, or one-sided from a
+            rate below the larger step), four more valuations. By default
+            False.
 
         Returns
         -------
@@ -4499,6 +4545,16 @@ class RepairableRBD(RBD):
         9155
         >>> len(result.cash_flows)
         11
+
+        How much a point more on the annual rate would take off it:
+
+        >>> result = rbd.expected_npv(
+        ...     5 * 8760.0, discount_rate=r, value_rate=10.0,
+        ...     rate_sensitivity=True,
+        ... )
+        >>> step = math.log(1.09) / 8760 - r
+        >>> round(result.rate_sensitivity * step)
+        -7376
         """
         return _npv.expected_npv(
             self,
@@ -4512,6 +4568,7 @@ class RepairableRBD(RBD):
             state=state,
             retire_at=retire_at,
             salvage=salvage,
+            rate_sensitivity=rate_sensitivity,
         )
 
     def npv_distribution(
@@ -8591,6 +8648,141 @@ class RepairableRBD(RBD):
             n_draws=n_draws,
             seed=seed,
             sampling=sampling,
+        )
+
+    def expected_npv_uncertainty(
+        self,
+        horizon,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+        state=None,
+        retire_at=None,
+        salvage=None,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+        shares: bool = True,
+    ) -> NPVUncertainty:
+        """The expected net present value over plausible models of the
+        components: how unsure the NPV is because the fitted models are
+        estimates. Each draw gives the uncertain components plausible
+        models, as ``mean_availability_uncertainty`` draws them, and values
+        the plan exactly as
+        [`expected_npv`][repyability.RepairableRBD.expected_npv] does.
+
+        The models no input draws (a model given by hand, with no fit
+        behind it, or one left out of ``uncertainty``) are held as they
+        are in every draw, and listed in the result's ``held_fixed``: the
+        spread leaves out their uncertainty. Each input's share of the
+        NPV's variance is worked out by the delta method (the NPV's
+        derivatives in the input's parameters, by central differences of
+        1% of each, against their covariance), as
+        ``uncertainty_importance(method="delta")`` splits the other
+        quantities'.
+
+        Parameters
+        ----------
+        horizon : float
+            The length of time to value, as for ``expected_npv``.
+        uncertainty : dict, optional
+            The uncertain inputs, as for
+            ``mean_availability_uncertainty``. By default every fitted
+            model.
+        discount_rate : float, optional
+            As for ``expected_npv``.
+        value_rate : float, optional
+            As for ``expected_npv``.
+        working_nodes : Collection[Hashable], optional
+            As for ``expected_npv``.
+        broken_nodes : Collection[Hashable], optional
+            As for ``expected_npv``.
+        method : str, optional
+            As for ``expected_npv``.
+        state : dict or str, optional
+            As for ``expected_npv``.
+        retire_at : float, optional
+            As for ``expected_npv``.
+        salvage : float or dict, optional
+            As for ``expected_npv``.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seed for the draws.
+        sampling : str, optional
+            ``"random"`` (the default) or ``"sobol"``.
+        shares : bool, optional
+            Split the variance among the inputs (``variance_shares``), by
+            default True: two more valuations for each parameter drawn.
+
+        Returns
+        -------
+        NPVUncertainty
+            The NPV of every draw, the ``nominal`` NPV, the intervals
+            (``interval(level)``), each input's share of the variance and
+            the models held fixed.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``mean_availability_uncertainty`` and
+            ``expected_npv``.
+
+        Examples
+        --------
+        A pump whose life was fitted to 30 failures, earning 10 an hour
+        while it works, over 5 years at 8% a year:
+
+        >>> import math
+        >>> import numpy as np
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> life = surv.Weibull.fit(np.linspace(400.0, 1800.0, 30))
+        >>> rbd = RepairableRBD(
+        ...     [("s", "p"), ("p", "t")],
+        ...     {
+        ...         "p": {
+        ...             "reliability": life,
+        ...             "repairability": surv.Exponential.from_params([0.1]),
+        ...             "repair_cost": 500.0,
+        ...         }
+        ...     },
+        ... )
+        >>> result = rbd.expected_npv_uncertainty(
+        ...     5 * 8760.0,
+        ...     discount_rate=math.log(1.08) / 8760,
+        ...     value_rate=10.0,
+        ...     n_draws=50,
+        ...     seed=1,
+        ... )
+        >>> lower, upper = result.interval(0.9)
+        >>> round(result.nominal), round(lower), round(upper)
+        (344241, 342538, 345967)
+        >>> result.variance_shares
+        {'p': 1.0}
+        >>> result.held_fixed
+        [{'node': 'p', 'role': 'repairability'}]
+        """
+        return _repairable_uncertainty.expected_npv_uncertainty(
+            self,
+            horizon,
+            uncertainty,
+            n_draws=n_draws,
+            seed=seed,
+            sampling=sampling,
+            shares=shares,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            method=method,
+            state=state,
+            retire_at=retire_at,
+            salvage=salvage,
         )
 
     def uncertainty_importance(

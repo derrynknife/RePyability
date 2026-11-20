@@ -44,6 +44,7 @@ from typing import (
 import numpy as np
 
 from repyability.rbd.results import (
+    NPVUncertainty,
     UncertaintyImportance,
     UncertaintyResult,
 )
@@ -668,15 +669,20 @@ def _sensitivities(rbd, of: str, x, state, rel_step) -> dict:
     return rbd.parameter_sensitivity(**kwargs)
 
 
-def delta(rbd, of: str, x, state, inputs, groups, rel_step) -> list:
+def delta(
+    rbd, of: str, x, state, inputs, groups, rel_step, derivatives=None
+) -> list:
     """Each input's part of the quantity's variance by the delta method:
     ``g^T Sigma g`` over its uncertain roles, ``g`` the quantity's
     derivatives in a role's parameters (``parameter_sensitivity``'s levers,
     summed over a population's nodes: they move together) and ``Sigma``
-    their covariance (see ``uncertainty.varied_parameters``)."""
+    their covariance (see ``uncertainty.varied_parameters``); or, given,
+    ``derivatives`` of another quantity, as ``parameter_sensitivity``
+    gives them (by key, a mapping of lever names to derivatives)."""
     from ._model_utils import parametric_spec
 
-    derivatives = _sensitivities(rbd, of, x, state, rel_step)
+    if derivatives is None:
+        derivatives = _sensitivities(rbd, of, x, state, rel_step)
     size = int(np.size(x)) if x is not None else 1
 
     def gradient(keys, names) -> np.ndarray:
@@ -950,4 +956,159 @@ def uncertainty_importance(
         variance=shaped(variance),
         first_order={key: shaped(v) for key, v in first.items()},
         total={key: shaped(v) for key, v in total.items()},
+    )
+
+
+class _LeverDerivatives:
+    """The derivatives of ``quantity(diagram)`` in the levers of ``rbd``,
+    as ``parameter_sensitivity`` gives its own (``get(key)``, a mapping of
+    lever names to derivatives), each worked out when it is asked for, by
+    the central difference ``parameter_sensitivity`` takes on its
+    lever (``_sensitivity._difference``)."""
+
+    def __init__(self, rbd, quantity, rel_step: float):
+        from . import _sensitivity
+
+        self._rbd = rbd
+        self._quantity = quantity
+        self._rel_step = rel_step
+        self._levers: Dict[Any, Dict[str, Any]] = {}
+        for lever in _sensitivity._levers(rbd):
+            self._levers.setdefault(lever.key, {})[lever.name] = lever
+        self._base = quantity(rbd)
+
+    def get(self, key, default=None):
+        if key not in self._levers:
+            return default if default is not None else {}
+        return _OneKey(self, self._levers[key])
+
+    def derivative(self, lever) -> np.ndarray:
+        from . import _sensitivity
+
+        def at(value):
+            changed = _sensitivity._rebuilt(self._rbd, lever, value)
+            if changed is None:
+                return None
+            try:
+                return self._quantity(changed)
+            except (ValueError, NotImplementedError):
+                return None
+
+        return _sensitivity._difference(at, lever, self._rel_step, self._base)
+
+
+class _OneKey(Mapping):
+    """One key's levers, their derivatives worked out when read."""
+
+    def __init__(self, owner: _LeverDerivatives, levers: dict):
+        self._owner = owner
+        self._levers = levers
+        self._found: Dict[str, Any] = {}
+
+    def __getitem__(self, name):
+        if name not in self._found:
+            self._found[name] = self._owner.derivative(self._levers[name])
+        return self._found[name]
+
+    def __iter__(self):
+        return iter(self._levers)
+
+    def __len__(self):
+        return len(self._levers)
+
+
+def held_fixed(rbd, inputs: List[Source], groups) -> List[Dict[str, Any]]:
+    """The models every draw keeps as they are: each component's role
+    with a model that no input draws, and each common-cause group whose
+    model is not drawn (role ``"ccf"``, under its members)."""
+    drawn = {
+        (node, role)
+        for item in inputs
+        for node in item.members
+        for role in item.specs
+    }
+    out: List[Dict[str, Any]] = []
+    for node in rbd.components:
+        if _spec(rbd, node) is None:
+            continue
+        for role, model in _models(rbd, node).items():
+            if model is not None and (node, role) not in drawn:
+                out.append({"node": node, "role": role})
+    for i, group in enumerate(rbd.ccf_groups):
+        if i not in groups:
+            out.append({"node": tuple(group.members), "role": "ccf"})
+    return out
+
+
+#: The relative step of a model's parameter the NPV is differenced on for
+#: the delta method's shares: the NPV over a horizon is numerical, so a
+#: smaller step would difference its error (``parameter_sensitivity``'s
+#: step over time).
+NPV_STEP = 1e-2
+
+
+def expected_npv_uncertainty(
+    rbd,
+    horizon,
+    uncertainty: Optional[Dict[Hashable, Any]],
+    *,
+    n_draws: int,
+    seed,
+    sampling: str,
+    shares: bool,
+    **valued,
+) -> NPVUncertainty:
+    """See ``RepairableRBD.expected_npv_uncertainty``: ``valued``, the
+    arguments of ``expected_npv``."""
+
+    def npv(diagram) -> np.ndarray:
+        return np.array([diagram.expected_npv(horizon, **valued).npv])
+
+    if not isinstance(shares, (bool, np.bool_)):
+        raise TypeError(
+            "shares must be True or False (whether to split the NPV's "
+            f"variance among the inputs); got {shares!r}."
+        )
+    # The diagram's own value first: what it refuses, every draw would.
+    nominal = rbd.expected_npv(horizon, **valued)
+    inputs, groups = sources(rbd, uncertainty)
+    models, group_models = draws(rbd, inputs, groups, n_draws, seed, sampling)
+    values = np.array(
+        [
+            npv(build(rbd, inputs, models, group_models, i))[0]
+            for i in range(n_draws)
+        ]
+    )
+    keys = [item.key for item in inputs] + [
+        groups[i][0] for i in sorted(groups)
+    ]
+    split: Dict[Hashable, float] = {}
+    variance = None
+    if shares:
+        parts = delta(
+            rbd,
+            "expected_npv",
+            None,
+            None,
+            inputs,
+            groups,
+            NPV_STEP,
+            derivatives=_LeverDerivatives(rbd, npv, NPV_STEP),
+        )
+        variance = float(np.sum(parts))
+        split = {
+            key: (float(part[0]) / variance if variance > 0.0 else np.nan)
+            for key, part in zip(keys, parts)
+        }
+    return NPVUncertainty(
+        samples=values,
+        nominal=float(nominal.npv),
+        n_draws=n_draws,
+        band=band_of(rbd, inputs, groups),
+        horizon=float(nominal.horizon),
+        discount_rate=float(nominal.discount_rate),
+        value_rate=float(nominal.value_rate),
+        variance_shares=split,
+        delta_variance=variance,
+        held_fixed=held_fixed(rbd, inputs, groups),
     )

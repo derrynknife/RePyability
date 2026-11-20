@@ -48,6 +48,8 @@
 
 ::: repyability.NPVComparison
 
+::: repyability.NPVUncertainty
+
 ::: repyability.MaintenanceEffect
 
 ::: repyability.PlanVsActual
@@ -85,6 +87,8 @@
 ::: repyability.TotalCostAllocation
 
 ::: repyability.MaintenancePlan
+
+::: repyability.PlanRobustness
 
 ::: repyability.Lever
 

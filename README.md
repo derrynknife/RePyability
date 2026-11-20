@@ -239,6 +239,7 @@ Which analyses each model type has (the method; — where it has none):
 | Of the MTTF | `mean_uncertainty` | — | `mean_uncertainty` | `mean_uncertainty` | — |
 | Of the B-life | `bx_life_uncertainty` | — | — | — | — |
 | Of the cost rate | — | `expected_cost_rate_uncertainty` | — | — | — |
+| Of the net present value | — | `expected_npv_uncertainty` | — | — | — |
 | **Design and maintenance** | | | | | |
 | Reliability allocation | `simple_allocation` | `simple_allocation` | — | — | — |
 | Availability, MTTF and MTTR allocation | — | `availability_allocation` | — | — | — |
@@ -284,14 +285,14 @@ How each family of analyses is worked out on a diagram with each kind of node or
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | Any life and repair | E | E | N | E N | E N | N | S | E | – | N | – | S |
 | A fitted life | E | E | N | N | E N | N | S | E | – | N | – | S |
-| A fitted Crow-AMSAA process | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| A fitted Crow-AMSAA process | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | S; ✗ `mean_availability_uncertainty`, `expected_cost_rate_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A fitted G1, ARA or ARI process | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
-| A probability per demand | ✗ | ✗ | ✗ | ✗ `expected_npv` | ✗ | ✗ | ✗ `mean_availability_uncertainty` | ✗ | – | N | ✗ `capacity_distribution` | S |
+| A probability per demand | ✗ | ✗ | ✗ | ✗ `expected_npv` | ✗ | ✗ | ✗ `mean_availability_uncertainty`, `expected_npv_uncertainty` | ✗ | – | N | ✗ `capacity_distribution` | S |
 | A mixture life | E | E | N | E N | E N | N | S | E | – | N | – | S |
 | A fitted degradation process life | E | E | N | N | E N | N | S | E | – | N | – | S |
 | Operated part of the time (duty) | N | N | N | N | N | N | S | N | – | N | – | S |
 | Tasks counted in running hours (duty) | N | N | N | N | N | N | S | N | N | N | – | S |
-| A standby or load-sharing life, simulated | ✗ | ✗ | ✗ | ✗ `expected_npv` | ✗ | ✗ | ✗ `mean_availability_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| A standby or load-sharing life, simulated | ✗ | ✗ | ✗ | ✗ `expected_npv` | ✗ | ✗ | ✗ `mean_availability_uncertainty`, `expected_npv_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | k-out-of-n | E | E | N | N | E N | N | S | E | – | N | – | S |
 | A nested RBD | E | E | N | E N | E N | N | S | E | – | – | – | S |
 | A junction | E | E | N | E N | E N | N | S | E | – | N | – | S |
@@ -305,15 +306,15 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | Tests that take time | N | N | N | N | N | N | S | N | – | N | – | S |
 | Tests that can miss a failure | N | N | N | N | N | N | S | N | – | N | – | S |
 | Imperfect repair (Kijima) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
-| Minimal repair | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
-| Minimal repair, repairs that take time | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| Minimal repair | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | S; ✗ `mean_availability_uncertainty`, `expected_cost_rate_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
+| Minimal repair, repairs that take time | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | S; ✗ `mean_availability_uncertainty`, `expected_cost_rate_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Limited repair crews | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A standby group | E | E | N | E N | E N | N | S | E | – | ✗ | – | S |
 | A beta-factor group, revealed failures | E | E | N | N | E N | N | S | E | – | N | – | S |
 | A beta-factor group, tested | E | E | N | E N | E N | N | S | E | – | N | – | S |
 | An alpha-factor group, revealed failures | E | E | N | N | E N | N | S | E | – | N | – | S |
 | A group whose tests take time | N | N | N | N | N | N | S | N | – | N | – | S |
-| A structure too meshed to work out | ✗ | ✗ | ✗ | E; ✗ `expected_cost`, `expected_npv` | ✗ | ✗ | S; ✗ `mean_availability_uncertainty` | ✗ | – | N | – | S |
+| A structure too meshed to work out | ✗ | ✗ | ✗ | E; ✗ `expected_cost`, `expected_npv` | ✗ | ✗ | S; ✗ `mean_availability_uncertainty`, `expected_npv_uncertainty` | ✗ | – | N | – | S |
 
 </details>
 
