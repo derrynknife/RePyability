@@ -12,6 +12,13 @@ the histories do not record (``_pricing.unrecorded``: a standby group's
 units' failures, a test, a replacement that takes no time, a set-up) is
 not left out: the method refuses the diagram, naming it. Only the runs'
 present values are kept, not their histories.
+
+An ``AvailabilityContract`` adds, run by run, each period's penalty or
+bonus, from the share of the period the system was up in that run (its
+spans up, as for the value), paid at the period's end. ``compare_npv``
+prices two plans' runs from one seed: a component in the same place in
+both draws the same random numbers in both (the streams, as ``compare``
+has them), so each run's difference comes from how the plans differ.
 """
 
 import math
@@ -19,9 +26,16 @@ from typing import Any, Dict, Hashable, List, Optional, Tuple
 
 import numpy as np
 
-from repyability.rbd import _npv, _pricing, _requirements
+from repyability.rbd import _montecarlo as montecarlo
+from repyability.rbd import _npv, _pricing, _requirements, _streams
 from repyability.rbd._common import _discount_rate
-from repyability.rbd.results import NPVDistribution, _order_statistic
+from repyability.rbd.contracts import AvailabilityContract
+from repyability.rbd.results import (
+    ConfidenceInterval,
+    NPVComparison,
+    NPVDistribution,
+    _order_statistic,
+)
 from repyability.utils import checks
 
 #: Simulations priced at a time: only their present values are kept.
@@ -109,6 +123,27 @@ def route(rbd, timelines_route):
     )
 
 
+def compare_route(npv_route, rbd):
+    """``compare_npv``'s route, for this diagram against one like it:
+    ``npv_distribution``'s, the runs matched, unless its draws cannot
+    be."""
+    from repyability.rbd import routes as r
+
+    if npv_route.route == r.REFUSED:
+        return npv_route
+    why = r.refusal(lambda: _require_matched(rbd, "this plan", 1.0, None))
+    if why is not None:
+        return r.refused(why, tuple(_unmatched(rbd, 1.0, None) or ()))
+    return r.AnalysisRoute(
+        r.SIMULATED,
+        "Both plans' npv_distribution runs from one seed, a component in "
+        "the same place in both drawing the same random numbers (as for "
+        "compare), each run's difference priced.",
+        engine=npv_route.engine,
+        engine_reason=npv_route.engine_reason,
+    )
+
+
 def _share(value, name: str) -> float:
     number = checks.number_or_nan(value)
     if not (0.0 < number <= 1.0):
@@ -117,6 +152,55 @@ def _share(value, name: str) -> float:
             f"1; got {value!r}."
         )
     return number
+
+
+def _contract(contract) -> Optional[AvailabilityContract]:
+    if contract is None or isinstance(contract, AvailabilityContract):
+        return contract
+    if isinstance(contract, dict):
+        return AvailabilityContract.from_dict(contract)
+    raise TypeError(
+        "contract must be an AvailabilityContract (or its to_dict()), or "
+        f"None; got {type(contract).__name__}."
+    )
+
+
+def _settings(rbd, horizon, discount_rate, value_rate, contract, mc_samples):
+    """The checked settings both methods share."""
+    rate = _discount_rate(discount_rate)
+    horizon = _npv._number(horizon, "horizon", strict=True)
+    value_rate = _npv._number(value_rate, "value_rate", strict=False)
+    contract = _contract(contract)
+    ends = (
+        None if contract is None else np.array(contract.period_ends(horizon))
+    )
+    if not value_rate and contract is None:
+        _requirements._require_costs(rbd)
+    n = checks.whole_number(
+        10_000 if mc_samples is None else mc_samples, "mc_samples"
+    )
+    return rate, horizon, value_rate, contract, ends, n
+
+
+def _seed(seed):
+    seed = checks.seed(seed)
+    if seed is None:
+        # The run is made in parts, which share a seed: drawn here, and
+        # kept in the result to repeat the run.
+        seed = int(np.random.SeedSequence().generate_state(1)[0])
+    return seed
+
+
+def _up_by_period(system, ends: np.ndarray, size: int) -> np.ndarray:
+    """Each history's availability in each period ending at ``ends``: the
+    share of the period it was up, ``(size, periods)``."""
+    history, a, b = _pricing.spans(system, up=True)
+    starts = np.concatenate(([0.0], ends[:-1]))
+    out = np.zeros((size, ends.size))
+    for k, (lo, hi) in enumerate(zip(starts, ends)):
+        inside = np.clip(np.minimum(b, hi) - np.maximum(a, lo), 0.0, None)
+        out[:, k] = np.bincount(history, inside, minlength=size)
+    return out / (ends - starts)
 
 
 def npv_distribution(
@@ -131,13 +215,12 @@ def npv_distribution(
     tail: float,
     engine: str,
     state,
+    contract=None,
 ) -> NPVDistribution:
     """See ``RepairableRBD.npv_distribution``."""
-    rate = _discount_rate(discount_rate)
-    horizon = _npv._number(horizon, "horizon", strict=True)
-    value_rate = _npv._number(value_rate, "value_rate", strict=False)
-    if not value_rate:
-        _requirements._require_costs(rbd)
+    rate, horizon, value_rate, contract, ends, n = _settings(
+        rbd, horizon, discount_rate, value_rate, contract, mc_samples
+    )
     if hurdle is not None:
         hurdle = checks.number_or_nan(hurdle)
         if not math.isfinite(hurdle):
@@ -145,20 +228,46 @@ def npv_distribution(
                 f"hurdle must be a finite number; got {hurdle!r}."
             )
     tail = _share(tail, "tail")
-    n = checks.whole_number(
-        10_000 if mc_samples is None else mc_samples, "mc_samples"
-    )
     checks.one_of("engine", engine, ("auto", "python", "numba"))
-    seed = checks.seed(seed)
-    if seed is None:
-        # The run is made in parts, which share a seed: drawn here, and
-        # kept in the result to repeat the run.
-        seed = int(np.random.SeedSequence().generate_state(1)[0])
+    seed = _seed(seed)
     _require_priceable(rbd)
+    return _priced_runs(
+        rbd,
+        horizon,
+        rate,
+        value_rate,
+        contract,
+        ends,
+        n,
+        seed,
+        engine,
+        state,
+        hurdle,
+        tail,
+    )
 
+
+def _priced_runs(
+    rbd,
+    horizon: float,
+    rate: float,
+    value_rate: float,
+    contract: Optional[AvailabilityContract],
+    contract_ends: Optional[np.ndarray],
+    n: int,
+    seed: int,
+    engine: str,
+    state,
+    hurdle: Optional[float],
+    tail: float,
+) -> NPVDistribution:
+    """The ``n`` runs of ``seed``, priced (settings checked)."""
     ends = np.array([horizon])
     present: Dict[Tuple[str, Any], np.ndarray] = {}
     nominal: Dict[Tuple[str, Any], np.ndarray] = {}
+    available = (
+        None if contract_ends is None else np.zeros((n, contract_ends.size))
+    )
     used = None
     for first in range(0, n, _CHUNK):
         size = min(_CHUNK, n - first)
@@ -178,6 +287,11 @@ def npv_distribution(
         for key, (pv, plain) in ledger.totals().items():
             present.setdefault(key, np.zeros(n))[first : first + size] = pv
             nominal.setdefault(key, np.zeros(n))[first : first + size] = plain
+        if available is not None:
+            assert contract_ends is not None
+            available[first : first + size] = _up_by_period(
+                runs.system._data, contract_ends, size
+            )
 
     zero = np.zeros(n)
     values = present.pop(("value", None), zero)
@@ -202,7 +316,15 @@ def npv_distribution(
         plain_cost += float(nominal[(category, node)].mean())
         add(category, node, float(amounts.mean()))
 
-    samples = values - costs
+    paid = zero
+    plain_paid = 0.0
+    if contract is not None:
+        assert available is not None and contract_ends is not None
+        payments = contract.payoff(available)
+        paid = payments @ np.exp(-rate * contract_ends)
+        plain_paid = float(payments.sum(axis=1).mean())
+
+    samples = values - costs + paid
     ordered = np.sort(samples)
     worst = max(1, math.ceil(round(tail * n, 9)))
     priced_at_mean: List[Hashable] = [
@@ -221,7 +343,7 @@ def npv_distribution(
         mean=float(samples.mean()),
         value=float(values.mean()),
         cost=float(costs.mean()),
-        undiscounted_npv=plain_value_mean - plain_cost,
+        undiscounted_npv=plain_value_mean - plain_cost + plain_paid,
         undiscounted_value=plain_value_mean,
         undiscounted_cost=plain_cost,
         cost_by_category=by_category,
@@ -239,4 +361,136 @@ def npv_distribution(
         seed=seed,
         engine=used or engine,
         priced_at_mean=priced_at_mean,
+        contract=None if contract is None else contract.to_dict(),
+        contract_samples=None if contract is None else paid,
+        contract_payoff=float(paid.mean()) if contract is not None else 0.0,
+        undiscounted_contract_payoff=plain_paid,
+        period_ends=(
+            None
+            if contract_ends is None
+            else [float(e) for e in contract_ends]
+        ),
+        period_availability=available,
+    )
+
+
+def _unmatched(rbd, horizon: float, state) -> Optional[List[Hashable]]:
+    """The components of ``rbd`` whose draws do not all come from a
+    stream of their own (so cannot be matched with another plan's), or
+    None if every draw does."""
+    from repyability.rbd import _curves, _event_loop
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    states = _curves._simulation_states(rbd, state)
+    specs, complete = _event_loop._stream_specs(rbd, horizon, states=states)
+    if complete:
+        return None
+    named = []
+    for name, component in rbd.components.items():
+        if type(component) is RepairableRBD:
+            if not _event_loop._stream_specs(
+                component, horizon, (name,), {}, states.get(name)
+            )[1]:
+                named.append(name)
+            continue
+        own = [path for path, _ in specs if path[:1] == (name,)]
+        duration = _event_loop._duration_model(rbd, name)
+        if not own or (
+            duration is not None and ((name,), _streams.DURATION) not in specs
+        ):
+            named.append(name)
+    return named
+
+
+def _require_matched(rbd, which: str, horizon: float, state) -> None:
+    from repyability.rbd._runs import _UNSTREAMED
+
+    named = _unmatched(rbd, horizon, state)
+    if named is None:
+        return
+    whose = f" (components {', '.join(map(repr, named))})" if named else ""
+    raise NotImplementedError(
+        f"The runs of {which} cannot be matched with the other plan's"
+        f"{whose}: {_UNSTREAMED} Compare their npv_distribution results "
+        "run independently instead, or model those components with "
+        "surpyval parametric distributions."
+    )
+
+
+def compare_npv(
+    rbd,
+    other,
+    horizon,
+    *,
+    discount_rate: float,
+    value_rate: float,
+    contract,
+    mc_samples: Optional[int],
+    seed,
+    confidence: float,
+    engine: str,
+    state,
+) -> NPVComparison:
+    """See ``RepairableRBD.compare_npv``."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    if not isinstance(other, RepairableRBD):
+        raise TypeError(
+            "other must be a RepairableRBD, the plan to compare with; got "
+            f"{type(other).__name__}."
+        )
+    settings = [
+        _settings(d, horizon, discount_rate, value_rate, contract, mc_samples)
+        for d in (rbd, other)
+    ]
+    rate, horizon, value_rate, contract, ends, n = settings[0]
+    montecarlo.check_confidence(confidence)
+    checks.one_of("engine", engine, ("auto", "python", "numba"))
+    seed = _seed(seed)
+    for diagram, which in ((rbd, "this plan"), (other, "the other plan")):
+        _require_priceable(diagram)
+        _require_matched(diagram, which, horizon, state)
+    this, that = (
+        _priced_runs(
+            diagram,
+            horizon,
+            rate,
+            value_rate,
+            contract,
+            ends,
+            n,
+            seed,
+            engine,
+            state,
+            None,
+            0.1,
+        )
+        for diagram in (rbd, other)
+    )
+    differences = this.samples - that.samples
+    estimate = float(differences.mean())
+    se = montecarlo.standard_error(differences, False)
+    apart = math.sqrt(
+        montecarlo.standard_error(this.samples, False) ** 2
+        + montecarlo.standard_error(that.samples, False) ** 2
+    )
+    z = montecarlo.z_value(confidence)
+    return NPVComparison(
+        differences=differences,
+        mean=estimate,
+        interval=ConfidenceInterval(
+            estimate=estimate,
+            lower=estimate - z * se,
+            upper=estimate + z * se,
+            confidence=confidence,
+            standard_error=se,
+            n_samples=n,
+            method="simulated",
+        ),
+        probability_other_better=float(np.mean(differences < 0.0)),
+        independent_standard_error=apart,
+        this=this,
+        other=that,
+        n_simulations=n,
+        seed=seed,
     )

@@ -59,6 +59,7 @@ from repyability.rbd.results import (
     MaintenanceEffect,
     MaintenancePlan,
     NodeActionRates,
+    NPVComparison,
     NPVDistribution,
     PFDBreakdown,
     PlanVsActual,
@@ -4247,6 +4248,7 @@ class RepairableRBD(RBD):
         tail: float = 0.1,
         engine: str = "auto",
         state=None,
+        contract=None,
     ) -> NPVDistribution:
         """The net present value of each of many simulated runs of the
         system over ``horizon``, and their spread: percentiles, the chance
@@ -4305,6 +4307,12 @@ class RepairableRBD(RBD):
         state : dict, optional
             Start from the components' current states rather than new, as
             for ``simulate_timelines``. By default every component new.
+        contract : AvailabilityContract, optional
+            Terms that pay on the system's availability in each period
+            (or their ``to_dict()``): each run's penalty or bonus in each
+            period, from the share of the period the system was up in
+            that run, paid at the period's end and added to its NPV as a
+            category of its own (``contract_samples``). By default None.
 
         Returns
         -------
@@ -4365,6 +4373,136 @@ class RepairableRBD(RBD):
             seed=seed,
             hurdle=hurdle,
             tail=tail,
+            engine=engine,
+            state=state,
+            contract=contract,
+        )
+
+    def compare_npv(
+        self,
+        other: "RepairableRBD",
+        horizon,
+        *,
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        contract=None,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        confidence: float = 0.95,
+        engine: str = "auto",
+        state=None,
+    ) -> NPVComparison:
+        """How much more this plan is worth than ``other``, run by run:
+        both simulated on the same random numbers, the distribution of
+        the difference in their net present values. Simulated.
+
+        In plain terms: a choice between two plans (another maintenance
+        interval, a spare, a second pump) is about the difference, and
+        the difference is what this pins down. Both plans' runs are
+        [`npv_distribution`][repyability.RepairableRBD.npv_distribution]'s,
+        from one seed, and a component in the same place in both (the
+        same node name, and the same names down through nested RBDs)
+        draws the same random numbers in both, as for
+        [`compare`][repyability.RepairableRBD.compare]: the same
+        failures and repairs where it is modelled the same way, matching
+        ones where it is not. Each run's difference then comes from how
+        the plans differ rather than from chance, so its mean is known
+        far more precisely than either plan's NPV. Identical plans differ
+        by exactly 0 in every run.
+
+        Parameters
+        ----------
+        other : RepairableRBD
+            The plan to compare with.
+        horizon : float
+            The length of time to value, as for ``npv_distribution``.
+        discount_rate : float, optional
+            The continuous discount rate per unit time, by default 0.
+        value_rate : float, optional
+            What either system earns per unit time while it works, by
+            default 0.
+        contract : AvailabilityContract, optional
+            Terms that pay on availability, applied to both plans, as for
+            ``npv_distribution``. By default None.
+        mc_samples : int, optional
+            The number of runs of each plan, by default 10,000.
+        seed : int, optional
+            Seeds both plans' runs; by default one is drawn, and kept in
+            the result.
+        confidence : float, optional
+            The confidence level of the mean difference's interval, by
+            default 0.95.
+        engine : str, optional
+            ``"auto"`` (the default), ``"python"`` or ``"numba"``, as for
+            ``simulate_timelines``.
+        state : dict, optional
+            The components' states at the start, in both plans, as for
+            ``simulate_timelines``. By default every component new.
+
+        Returns
+        -------
+        NPVComparison
+            Each run's difference (this plan's NPV less the other's),
+            their mean with a confidence interval, the chance the other
+            plan is better, the standard error two independent runs would
+            have given, and both plans' ``NPVDistribution``.
+
+        Raises
+        ------
+        ValueError
+            If an argument is invalid, or as for ``npv_distribution``.
+        TypeError
+            If ``other`` is not a ``RepairableRBD``.
+        NotImplementedError
+            If a plan's runs cannot be priced from their histories (as for
+            ``npv_distribution``), or a plan's components draw numbers
+            that cannot be matched with the other's (a model sampled its
+            own way), naming them.
+
+        Examples
+        --------
+        A pump earning 10 an hour while it works, repaired in 10 hours on
+        average, against the same pump repaired in 5, over a year at 8%:
+
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> def pump(mttr):
+        ...     return RepairableRBD(
+        ...         [("s", "p"), ("p", "t")],
+        ...         {
+        ...             "p": {
+        ...                 "reliability": E([1e-3]),
+        ...                 "repairability": E([1 / mttr]),
+        ...                 "repair_cost": 500.0,
+        ...             }
+        ...         },
+        ...     )
+        >>> r = math.log(1.08) / 8760
+        >>> gain = pump(5.0).compare_npv(
+        ...     pump(10.0), 8760.0, discount_rate=r, value_rate=10.0,
+        ...     mc_samples=2000, seed=1,
+        ... )
+        >>> round(gain.mean), round(gain.interval.standard_error, 1)
+        (393, 4.9)
+
+        Two independent runs of the same size would have pinned it down
+        ten times less precisely:
+
+        >>> round(gain.independent_standard_error, 1)
+        52.7
+        """
+        return _npv_runs.compare_npv(
+            self,
+            other,
+            horizon,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            contract=contract,
+            mc_samples=mc_samples,
+            seed=seed,
+            confidence=confidence,
             engine=engine,
             state=state,
         )

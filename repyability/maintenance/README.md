@@ -37,7 +37,7 @@ records and decides what "today" is.
 | UC-19 | What a plan is worth over a horizon at a discount rate, and as a yearly cost | **Built**: `RepairableRBD.expected_npv`, `NonRepairable.age_replacement_value` |
 | UC-20 | One unit run on an operating schedule (covariates and value by stretch, in model time): the value earned, the failures' cost and the NPV, and the best time to switch from one way of running to another | **Built** (one unit, numerical): `operating_schedule_value`, `best_switch_time`; (a diagram, simulated): `RepairableRBD.best_switch_time` |
 | UC-21 | A plan against its outage log: expected and actual cash flows so far, the variance, and the plan re-valued from the states now | **Built**: `RepairableRBD.plan_vs_actual` |
-| UC-46 | The spread of a plan's net present value: each simulated run's NPV, its percentiles, the chance of missing a hurdle and the average of the worst runs | **Built** (part 1, no contract payoffs yet): `RepairableRBD.npv_distribution` |
+| UC-46 | The spread of a plan's net present value: each simulated run's NPV, its percentiles, the chance of missing a hurdle and the average of the worst runs | **Built**: `RepairableRBD.npv_distribution` (with `contract=`), `compare_npv` |
 | UC-22 | Overhauls that restore a unit only partly (a Kijima restoration factor), every Nth replacing it: availability, failures and cost per year against overhauls that renew it, and the cheapest interval | **Built**: a `"preventive"` spec's `"restoration"`, `"replace_every"` and `"replacement_cost"`, simulated (#398) |
 | UC-23 | The line is shut 3 days every 12 months, every block gets its PM then and the bearing is replaced if older than X: availability, the shut's share of the downtime and cost, failures between shuts, and whether a 9- or 18-month shut is cheaper | **Built**: `RepairableRBD(shutdowns=...)`, tasks bound with `"shutdown"` and `"older_than"`; exact and numerical |
 | UC-24 | Outages on a timeline: shuts at given times with a duration and a scope (renew some blocks, restore others), the plan's cost by window and its NPV | **Built in part**: the same `shutdowns` at `"times"`, simulated (`availability`, `cost`); the exact cost by window and NPV take shuts on a period only |
@@ -1984,10 +1984,9 @@ answers back into dates is Reliafy's too.)
 
 ### UC-46: "The expected NPV of these two plans is close. How bad could a run of each be, and how likely are we to miss our hurdle?"
 
-- **Status:** built, part 1: `RepairableRBD.npv_distribution(horizon,
-  discount_rate=, value_rate=, mc_samples=, seed=, hurdle=, tail=)`.
-  Contract payoffs (penalties and bonuses on a run's availability) are
-  part 2.
+- **Status:** built: `RepairableRBD.npv_distribution(horizon,
+  discount_rate=, value_rate=, mc_samples=, seed=, hurdle=, tail=,
+  contract=)` and `compare_npv(other, horizon, ...)`.
 - **Who asks, and why:** someone choosing between plans whose expected
   NPVs (UC-19) are close: the mean hides the risk, and a plan with a
   slightly lower mean and a much better worst case is often the one to
@@ -2015,13 +2014,30 @@ answers back into dates is Reliafy's too.)
 - **The answer:** each run's NPV, value and cost; the mean, its interval
   and the split of value and cost by category and component as in
   `ExpectedNPV`; P10, P50 and P90; the chance below the hurdle; the CVaR.
+- **Contracts and two plans (part 2):** an `AvailabilityContract` pays,
+  in each period, `bonus_per_point` for each percentage point of the
+  run's availability above `target` and charges `penalty_per_point` for
+  each below, at most `cap` either way, at the period's end; a period's
+  availability is the share of it covered by the system's up spans in
+  that run. `compare_npv` prices both plans' runs from one seed; each
+  component draws from its own named streams, so one in the same place
+  in both plans draws the same numbers (as `compare`), and each run's
+  difference comes from how the plans differ. A plan with a component
+  whose draws are not streamed is refused, naming it.
 - **Checks:** `test_npv_distribution.py`: the mean against `expected_npv`
   (an exponential pump, an age-replaced Weibull unit, a crew-limited
   pair); with no discounting, each run against the simulation's own cost
   (`cost().samples`) and uptime, also for crews with Weibull lives, which
   the exact methods refuse; the engines run for run; a run made in parts
   equal to one made whole; the percentiles, CVaR and a binomial interval
-  by hand.
+  by hand. `test_npv_contracts.py`: a target of 0 pays nothing; a
+  system that never fails paid in closed form (a capped bonus each
+  month); each run's payments against its own availability by period,
+  and the periods' uptime against the run's; identical plans differ by
+  exactly 0, with and without a contract; the difference's variance
+  below the sum of the plans' (about half the independent standard
+  error with a contract, whose thresholds pay on small differences in a
+  period's uptime the plans do not share).
 - **Learned / open questions:** a cost given as a distribution is charged
   at its mean (`priced_at_mean`), so the spread is that of the events
   alone; the costs the histories do not record could come from the event

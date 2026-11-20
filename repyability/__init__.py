@@ -97,6 +97,7 @@ from repyability.rbd._model_utils import model_parameters
 from repyability.rbd._streams import seed_entropy
 from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor, CCFGroup
 from repyability.rbd.chunks import SimulationChunk
+from repyability.rbd.contracts import AvailabilityContract
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
     PerfectReliability,
@@ -138,6 +139,7 @@ from repyability.rbd.results import (
     MaintenancePlan,
     ModelParameters,
     NodeActionRates,
+    NPVComparison,
     NPVDistribution,
     PFDBreakdown,
     PlanVsActual,
@@ -238,6 +240,8 @@ __all__ = [
     "ExpectedNPV",
     "NPVDistribution",
     "SimulatedSwitchTime",
+    "NPVComparison",
+    "AvailabilityContract",
     "MaintenanceEffect",
     "PlanVsActual",
     "EventsByWindow",

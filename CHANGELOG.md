@@ -29,6 +29,27 @@ release between minors that only adds (0.19.1).
   `analysis_routes()` lists it (simulated; refused when no block runs on
   a covariate schedule).
 
+- Added: contract payoffs and two plans compared in the simulated net
+  present value. `AvailabilityContract(periods, target,
+  penalty_per_point, bonus_per_point=0.0, cap=None)` states, as plain
+  data (`to_dict`/`from_dict`), a penalty for each percentage point of
+  availability below a target in each period and a bonus for each point
+  above it, at most `cap` a period either way. `npv_distribution(...,
+  contract=)` pays it run by run, from the share of each period the
+  system was up in that run, at the period's end; the result keeps it
+  apart (`contract_samples`, `contract_payoff`,
+  `undiscounted_contract_payoff`) with each run's availability by period
+  (`period_availability`, `period_ends`). `RepairableRBD.compare_npv(other,
+  horizon, ...)` prices both plans' runs from one seed, a component in the
+  same place in both drawing the same random numbers (as `compare` does),
+  and returns `NPVComparison`: each run's difference, their mean with a
+  confidence interval, the chance the other plan is better, the standard
+  error two independent runs would have had, and both plans'
+  `NPVDistribution`. Identical plans differ by exactly 0 in every run.
+  Components whose draws cannot be matched are refused by name.
+  `analysis_routes()` lists `compare_npv` (simulated). Results without a
+  contract are unchanged.
+
 - Added: the spread of a plan's net present value (UC-46 of the
   maintenance README). `RepairableRBD.npv_distribution(horizon, *,
   discount_rate=0, value_rate=0, mc_samples=10_000, seed=None,

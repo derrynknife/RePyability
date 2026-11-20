@@ -2256,7 +2256,8 @@ class NPVDistribution(_ResultMapping):
     value_rate : float
         The value earned per unit time while the system works.
     samples : numpy.ndarray
-        Each run's net present value: ``value_samples - cost_samples``.
+        Each run's net present value: ``value_samples - cost_samples``,
+        plus ``contract_samples`` with a contract.
     value_samples : numpy.ndarray
         Each run's present value earned while the system worked.
     cost_samples : numpy.ndarray
@@ -2279,9 +2280,12 @@ class NPVDistribution(_ResultMapping):
     cost_by_component : dict
         The runs' mean present cost of each costed component, with its
         acquisition cost.
-    p10, p50, p90 : float
-        The 10th, 50th and 90th percentiles of the runs' NPVs (see
-        ``percentile``).
+    p10 : float
+        The 10th percentile of the runs' NPVs (see ``percentile``).
+    p50 : float
+        Their median, the 50th percentile.
+    p90 : float
+        Their 90th percentile.
     hurdle : float or None
         The value the NPV is compared with, if given.
     probability_below_hurdle : float or None
@@ -2302,6 +2306,23 @@ class NPVDistribution(_ResultMapping):
         The components with a cost given as a distribution: each such
         cost is charged at its mean, so the spread is that of the events
         alone.
+    contract : dict or None
+        The ``AvailabilityContract``'s terms (its ``to_dict()``), if one
+        was given.
+    contract_samples : numpy.ndarray or None
+        Each run's present value of the contract's payments, a category
+        of its own: bonuses positive, penalties negative, each paid at
+        its period's end (None without a contract).
+    contract_payoff : float
+        The runs' mean present value of the contract's payments (0
+        without a contract).
+    undiscounted_contract_payoff : float
+        The runs' mean total of the contract's payments, undiscounted.
+    period_ends : list of float or None
+        The ends of the contract's periods.
+    period_availability : numpy.ndarray or None
+        Each run's availability in each of the contract's periods, one
+        row a run: the share of the period the system was up.
 
     Examples
     --------
@@ -2359,6 +2380,12 @@ class NPVDistribution(_ResultMapping):
     seed: Any
     engine: str
     priced_at_mean: List[Hashable]
+    contract: Optional[Dict[str, Any]] = None
+    contract_samples: Optional[np.ndarray] = None
+    contract_payoff: float = 0.0
+    undiscounted_contract_payoff: float = 0.0
+    period_ends: Optional[List[float]] = None
+    period_availability: Optional[np.ndarray] = None
 
     @property
     def std(self) -> float:
@@ -2514,11 +2541,71 @@ class NPVDistribution(_ResultMapping):
             parts.append(
                 f"probability_below_hurdle={self.probability_below_hurdle:.4g}"
             )
+        if self.contract is not None:
+            parts.append(f"contract_payoff={self.contract_payoff:.6g}")
         parts += [
             f"n_simulations={self.n_simulations}",
             f"horizon={self.horizon:g}",
         ]
         return f"NPVDistribution({', '.join(parts)})"
+
+
+@dataclass
+class NPVComparison(_ResultMapping):
+    """How much more one plan is worth than another, run by run, on the
+    same random numbers: returned by ``RepairableRBD.compare_npv``.
+
+    In plain terms: both plans are simulated with the same failures and
+    repairs wherever they share a component (the same random numbers),
+    so each run's difference comes from how the plans differ, not from
+    luck. The difference is then known far more precisely than either
+    plan's value: compare ``interval.standard_error`` with
+    ``independent_standard_error``, what two independent runs of the
+    same size would give.
+
+    Attributes
+    ----------
+    differences : numpy.ndarray
+        Each run's NPV of this plan less the other's.
+    mean : float
+        The mean difference: the estimate of the expected one.
+    interval : ConfidenceInterval
+        The mean difference with its standard error and normal
+        confidence interval (not clipped: it may be negative).
+    probability_other_better : float
+        The share of runs in which the other plan's NPV is higher.
+    independent_standard_error : float
+        The standard error the mean difference would have from two
+        independent runs of the same size: the two plans' own standard
+        errors combined.
+    this : NPVDistribution
+        This plan's runs.
+    other : NPVDistribution
+        The other plan's runs.
+    n_simulations : int
+        How many runs of each plan.
+    seed : int
+        The seed both plans' runs were made from.
+    """
+
+    differences: np.ndarray
+    mean: float
+    interval: ConfidenceInterval
+    probability_other_better: float
+    independent_standard_error: float
+    this: NPVDistribution
+    other: NPVDistribution
+    n_simulations: int
+    seed: Any
+
+    def __repr__(self) -> str:
+        # A summary (#235): the runs are in ``differences``.
+        return (
+            f"NPVComparison(mean={self.mean:.6g}, "
+            f"standard_error={self.interval.standard_error:.4g}, "
+            f"probability_other_better={self.probability_other_better:.4g}, "
+            f"n_simulations={self.n_simulations})"
+        )
 
 
 @dataclass

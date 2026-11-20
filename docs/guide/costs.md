@@ -377,6 +377,56 @@ runs.probability_below_hurdle  # -> 0.0268
 runs.cvar                      # -> 7404250.8   the worst tenth of the runs, on average
 ```
 
+**Contracts that pay on availability.** An availability contract charges a
+penalty for each point of availability below a target in each period, and
+may pay a bonus for each point above it: a threshold, which an expected value
+cannot price. `AvailabilityContract(periods, target, penalty_per_point,
+bonus_per_point=0, cap=None)` states the terms (a point is one percentage
+point; `cap` is the most a period can charge or pay), and
+`npv_distribution(..., contract=)` pays them run by run, from the share of
+each period the system was up in that run, at the period's end. The payments
+are kept apart (`contract_samples`, `contract_payoff`), with each run's
+availability by period (`period_availability`).
+
+**Comparing two plans.** A choice between plans is about the difference.
+`compare_npv(other, horizon, ...)` runs both plans from one seed, a component
+in the same place in both drawing the same random numbers (as `compare`
+does), so each run's difference comes from how the plans differ rather than
+from luck. Identical plans differ by exactly 0 in every run. Here a pump
+repaired in 5 hours on average against one repaired in 10, under monthly
+terms of 99%, over a year at 8%:
+
+```python
+import math
+import surpyval as surv
+from repyability import AvailabilityContract, RepairableRBD
+
+def pump(mttr):
+    return RepairableRBD(
+        [("s", "p"), ("p", "t")],
+        {"p": {"reliability": surv.Exponential.from_params([1e-3]),
+               "repairability": surv.Exponential.from_params([1 / mttr]),
+               "repair_cost": 500.0}},
+    )
+
+terms = AvailabilityContract(730.0, target=0.99, penalty_per_point=1000.0,
+                             bonus_per_point=100.0, cap=5000.0)
+r = math.log(1.08) / 8760
+runs = pump(10.0).npv_distribution(8760.0, discount_rate=r, value_rate=10.0,
+                                   mc_samples=2000, seed=1, contract=terms)
+runs.mean, runs.contract_payoff   # -> (73784, -5546)   penalties cost 5,546 on average
+gain = pump(5.0).compare_npv(pump(10.0), 8760.0, discount_rate=r,
+                             value_rate=10.0, contract=terms,
+                             mc_samples=2000, seed=1)
+gain.mean                         # -> 4767   the faster repair is worth this much more
+gain.interval.lower, gain.interval.upper    # -> (4656, 4879)
+gain.interval.standard_error, gain.independent_standard_error   # -> (56.9, 139.8)
+gain.probability_other_better     # -> 0.0005
+```
+
+Two independent runs of the same size would have pinned the difference down
+less than half as well (`independent_standard_error`).
+
 For one part replaced at an age or at a failure, over for ever,
 `NonRepairable.age_replacement_value(age, discount_rate=)` gives the net
 present value (Fox, 1966) and the equivalent annual cost in closed form. At a

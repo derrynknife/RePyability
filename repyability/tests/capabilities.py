@@ -140,6 +140,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 "Best time to switch blocks' running (simulated NPV)",
                 ("best_switch_time",),
             ),
+            (
+                "Two plans' net present values compared",
+                ("compare_npv",),
+            ),
             ("Cost in each of a run of windows", ("cost_by_window",)),
             ("Simulated cost (distribution)", ("cost",)),
             ("Total cost of ownership", ("total_cost",)),

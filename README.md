@@ -193,6 +193,7 @@ Which analyses each model type has (the method; — where it has none):
 | A plan against what happened | — | `plan_vs_actual` | — | — | — |
 | Simulated net present value (distribution) | — | `npv_distribution` | — | — | — |
 | Best time to switch blocks' running (simulated NPV) | — | `best_switch_time` | — | — | — |
+| Two plans' net present values compared | — | `compare_npv` | — | — | — |
 | Cost in each of a run of windows | — | `cost_by_window` | — | — | — |
 | Simulated cost (distribution) | — | `cost` | — | — | — |
 | Total cost of ownership | — | `total_cost` | — | — | — |
