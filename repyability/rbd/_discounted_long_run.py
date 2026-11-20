@@ -14,7 +14,12 @@ replacement at the age), the rate cancels::
     eac = (failed (c_f + d m_f) + kept (c_p + d m_p))
           / (M + failed m_f + kept m_p)
 
-which at rate 0 is the long-run cost rate (renewal reward). The system's
+which at rate 0 is the long-run cost rate (renewal reward).
+
+A component with hidden failures, tested and repaired in no time by tests
+that find every failure, starts afresh at the test that finds it failed:
+its cycle is the tests up to that one (``_tested_eac``), the first cycle
+from new with its tests from their offset. The system's
 own terms (the cost of its downtime, a value earned while it works) are
 taken at its long-run availability: an approximation, as a system new at
 0 is up more often at first, which ``basis`` says.
@@ -110,8 +115,11 @@ def require_discounted(rbd) -> None:
             refuse(f"the nested RBD {node!r}")
         if node in rbd._standby:
             refuse(f"the standby group {node!r}")
-        if node in rbd._inspection:
-            refuse(f"the tested component {node!r}")
+        if node in rbd._inspection and not _tested_cycle(rbd, node):
+            refuse(
+                f"the tested component {node!r}, whose tests or repairs "
+                "take time or can miss a failure,"
+            )
         if node in rbd._imperfect:
             refuse(f"component {node!r}, whose repairs are not perfect")
         if node in rbd._early_members:
@@ -122,12 +130,93 @@ def require_discounted(rbd) -> None:
         _requirements._require_times(rbd, node)
 
 
-def node_eac(rbd, node: Hashable, rate: float) -> float:
-    """A component's own equivalent annual cost at ``rate`` (see the
-    module docstring): its failures', its replacements' at an age and its
-    own downtime's."""
+def _tested_cycle(rbd, node) -> bool:
+    """Whether a component with hidden failures has the cycle
+    ``_tested_eac`` discounts: tested and repaired in no time, by tests
+    at an interval that find every failure."""
+    inspection = rbd._inspection[node]
+    return (
+        _requirements._tested_kind(rbd, node) in ("closed", "life")
+        and not inspection.partial
+        and inspection.times is None
+    )
+
+
+def _tested_eac(rbd, node: Hashable, rate: float) -> float:
+    """The equivalent annual cost at ``rate`` (more than 0) of a
+    component with hidden failures (see ``_tested_cycle``): ``rate``
+    times the present value of its costs for ever from new.
+
+    A cycle from a new unit is the tests at ``t_1 < t_2 < ...`` up to the
+    first after its failure at ``X``, which finds it and renews it:
+    every test of the cycle is paid for, the failure when it is found,
+    and the unit's own downtime from ``X`` to then. With ``p_k`` the
+    chance that test ``k`` finds it, a cycle's discount is ``phi = sum
+    exp(-r t_k) p_k`` and its cost ``K``; the first cycle's tests are
+    from the offset, and every later one's an interval apart from the
+    test that began it, so the present value is ``K_1 + phi_1 K / (1 -
+    phi)``."""
     from repyability.maintenance._options import _discounted_length, _reach
 
+    costs = rbd.costs.get(node, {})
+    component = rbd.components[node]
+    inspection = rbd._inspection[node]
+    interval = float(inspection.interval)
+    survival = component.reliability_function
+    reach = _reach(component, rate)
+    # A new unit's failure, discounted: 1 - r M, M its discounted life.
+    failure = 1.0 - rate * _discounted_length(component, 0.0, reach, rate)
+    per_failure = sum(
+        _mean_cost(costs[key])
+        for key in rbd.PER_FAILURE_COST_KEYS
+        if key in costs
+    )
+    per_test = _mean_cost(costs.get("inspection_cost", 0.0))
+    down = costs.get("downtime_cost", 0.0)
+
+    def cycle(first: float):
+        """A cycle's cost, its discount and one less its discount, its
+        tests from ``first``."""
+        count = max(int(math.ceil((reach - first) / interval)), 0) + 1
+        tests = first + interval * np.arange(count)
+        alive = np.clip(
+            np.ravel(
+                np.asarray(
+                    survival(np.concatenate(([0.0], tests))), dtype=float
+                )
+            ),
+            0.0,
+            1.0,
+        )
+        alive[0] = 1.0
+        found = alive[:-1] - alive[1:]
+        factor = np.exp(-rate * tests)
+        discount = float(factor @ found)
+        cost = (
+            per_test * float(factor @ alive[:-1])
+            + per_failure * discount
+            + down * (failure - discount) / rate
+        )
+        # What is left past the reach is discounted to nothing.
+        less = float(-np.expm1(-rate * tests) @ found) + float(alive[-1])
+        return cost, discount, less
+
+    cost, discount, less = cycle(interval)
+    if inspection.offset:
+        first_cost, first_discount, _ = cycle(float(inspection.offset))
+    else:
+        first_cost, first_discount = cost, discount
+    return rate * (first_cost + first_discount * cost / less)
+
+
+def node_eac(rbd, node: Hashable, rate: float) -> float:
+    """A component's own equivalent annual cost at ``rate`` (see the
+    module docstring): its failures', its replacements' at an age, its
+    tests' and its own downtime's."""
+    from repyability.maintenance._options import _discounted_length, _reach
+
+    if node in rbd._inspection:
+        return _tested_eac(rbd, node, rate)
     costs = rbd.costs.get(node, {})
     component = rbd.components[node]
     schedule = rbd._preventive.get(node)

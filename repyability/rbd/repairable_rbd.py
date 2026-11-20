@@ -2426,8 +2426,9 @@ class RepairableRBD(RBD):
             ``expected_cost_rate``), or a component can wait for a repair
             crew and ``assume_unlimited_crews`` is not given; for
             ``"eac"`` at a discount rate, if a priced component has no
-            renewal cycle of its own worked out here (a tested unit, a
-            standby group, block replacement, a common-cause group, ...):
+            renewal cycle of its own worked out here (a standby group,
+            block replacement, a common-cause group, a unit whose tests
+            or repairs take time, ...):
             the message names ``objective="npv"``.
 
         Examples
@@ -2502,6 +2503,10 @@ class RepairableRBD(RBD):
         max_cost_rate: Optional[float] = None,
         assume_unlimited_crews: bool = False,
         offset_shares=None,
+        objective: str = "cost",
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        horizon=None,
     ) -> MaintenancePlan:
         """Choose the proof-test intervals of components with hidden
         failures, for the system as a whole.
@@ -2543,6 +2548,23 @@ class RepairableRBD(RBD):
         divide it, from ``allowed`` (which must) or, left out, from every
         one in range.
 
+        At a discount rate, the tests are paid for now and the failures
+        they find later. ``objective="eac"`` chooses the intervals for
+        the lowest equivalent annual cost in the long run at
+        ``discount_rate``, less ``value_rate`` for the time the system
+        works, and ``objective="npv"`` for the highest expected net
+        present value over ``horizon`` from new, as
+        ``optimal_replacement_intervals`` does (see it for what each is
+        made of, and what is approximate). A tested component starts
+        afresh at the test that finds it failed: its cycle is the tests
+        up to that one, each paid for when it is made, the failure when
+        it is found, and its own downtime from the failure to that test.
+        That is worked out for tests and repairs that take no time and
+        find every failure. The targets are kept: ``min_availability``
+        (the PFDavg limit) and ``max_cost_rate`` bound the long-run
+        values, and the objective is minimised within them. At a rate
+        of 0, ``"eac"`` is the cost rate, and the plan the same.
+
         Parameters
         ----------
         nodes : Collection[Hashable], optional
@@ -2573,13 +2595,30 @@ class RepairableRBD(RBD):
             one's tests stay from 0. Needs ``allowed``. By default each
             offset keeps its share of the interval. The plan's ``offsets``
             are the times they give (shares times the intervals).
+        objective : str, optional
+            What the intervals minimise: ``"cost"`` (the default), the
+            long-run cost rate, or with ``max_cost_rate`` the
+            unavailability; ``"eac"``, the equivalent annual cost in the
+            long run at ``discount_rate``, less the value earned; or
+            ``"npv"``, less the expected net present value over
+            ``horizon``.
+        discount_rate : float, optional
+            The continuous discount rate per unit time of the models, for
+            ``"eac"`` and ``"npv"``, by default 0.
+        value_rate : float, optional
+            The value earned per unit time while the system works, for
+            ``"eac"`` and ``"npv"``, by default 0.
+        horizon : float, optional
+            The time ``"npv"`` values, from new.
 
         Returns
         -------
         MaintenancePlan
             The interval of each component in ``nodes``, its ``offsets``
             (the time of its first test), and the system's cost rate and
-            availability (1 - PFDavg) with them.
+            availability (1 - PFDavg) with them; for ``"eac"`` and
+            ``"npv"``, the objective's value too (``objective_value``)
+            and what it is made of (``basis``).
 
         Raises
         ------
@@ -2598,7 +2637,11 @@ class RepairableRBD(RBD):
             If a component's hidden failures have no exact long-run values
             (see ``node_availability``), the intervals repeat together only
             after too many tests to average over, or a component can wait
-            for a repair crew and ``assume_unlimited_crews`` is not given.
+            for a repair crew and ``assume_unlimited_crews`` is not given;
+            for ``"eac"`` at a discount rate, if a priced component has no
+            renewal cycle of its own worked out here (tests or repairs
+            that take time, tests that can miss a failure, ...): the
+            message names ``objective="npv"``.
 
         Examples
         --------
@@ -2672,6 +2715,10 @@ class RepairableRBD(RBD):
             max_cost_rate=max_cost_rate,
             assume_unlimited_crews=assume_unlimited_crews,
             offset_shares=offset_shares,
+            objective=objective,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            horizon=horizon,
         )
 
     def with_intervals(self, intervals, offsets=None) -> "RepairableRBD":
