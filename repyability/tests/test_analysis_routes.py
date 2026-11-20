@@ -1019,6 +1019,16 @@ def test_the_readme_says_what_is_simulated():
             (crew, "point_capacity", "numerical"),
             (crew, "availability_allocation", "refused"),
             (repairable["one repair crew"], "mean_availability", "refused"),
+            (
+                repairable["common cause, one repair crew"],
+                "mean_availability",
+                "exact",
+            ),
+            (
+                repairable["common cause, one repair crew"],
+                "point_availability",
+                "numerical",
+            ),
         ],
         "Standby groups (a duty unit and its spares, repaired)": [
             (group, "mean_availability", "exact"),

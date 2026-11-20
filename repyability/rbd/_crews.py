@@ -20,7 +20,7 @@ from typing import (
 import numpy as np
 
 from repyability.rbd import (
-    _ccf_groups,
+    _ccf_chain,
 )
 from repyability.rbd import _crew_chain as crew_chain
 from repyability.rbd import _long_run, _requirements
@@ -206,14 +206,65 @@ def _crew_chain_rates(rbd) -> Dict[Any, Tuple[float, float]]:
     return rates
 
 
+def _crew_causes(rbd, nodes) -> Tuple[Dict[Any, float], List[tuple]]:
+    """The causes of failure of the crews' chain's ``nodes`` with
+    common-cause groups (#251), as the simulation strikes them (see
+    ``_ccf_groups._shared_causes``): each node's own cause's rate (its
+    failure rate, outside the groups), and the shared causes, each ``(the
+    places in nodes of the members it strikes, in its order; its rate;
+    its group's place)``. A member not among ``nodes`` (held working, it
+    never fails, and held broken it is never repaired) is struck no more,
+    and the causes it shares still strike the others. Raise if the chain
+    does not take a group in: a cause that strikes more than
+    ``_crew_chain.MAX_STRUCK`` members, or a member repaired instantly."""
+    rates = _crew_chain_rates(rbd)
+    own = {node: rates[node][0] for node in nodes}
+    place = {node: k for k, node in enumerate(nodes)}
+    shared: List[tuple] = []
+    for g, group in enumerate(rbd.ccf_groups):
+        members = list(group.members)
+        where = f"common-cause group {members}"
+        for member in members:
+            if math.isinf(rates[member][1]):
+                _no_crew_chain(
+                    rbd,
+                    f"it takes no member of a common-cause group repaired "
+                    f"instantly, as member {member!r} of {where} is",
+                )
+        for struck, rate in _ccf_chain.causes(
+            group.model, members, rates[members[0]][0]
+        ):
+            if len(struck) == 1:
+                if members[struck[0]] in place:
+                    own[members[struck[0]]] = rate
+                continue
+            if len(struck) > crew_chain.MAX_STRUCK:
+                _no_crew_chain(
+                    rbd,
+                    "it takes shared causes that strike "
+                    f"{crew_chain.MAX_STRUCK} components, and {where} "
+                    f"({group.model!r}) has one that strikes "
+                    f"{len(struck)}: the simulation queues components "
+                    "struck at one instant in the order its event queue "
+                    "releases them, which is a rule only for two",
+                )
+            left = [members[i] for i in struck if members[i] in place]
+            if len(left) == 1:
+                own[left[0]] += rate
+            elif left:
+                shared.append((tuple(place[m] for m in left), rate, g))
+    return own, shared
+
+
 def _require_crew_chain(rbd) -> None:
     """Raise if the exact long-run values with limited repair crews
-    cannot be computed: the Markov chain does not take common-cause
-    groups in (#251, see ``_ccf_rates``), does not cover the components
-    (see ``_crew_chain_rates``), or nested RBDs' calendars fall together
-    (see ``_require_calendars``)."""
-    _ccf_groups._require_ccf_long_run(rbd)
-    _crew_chain_rates(rbd)
+    cannot be computed: the Markov chain does not cover the components
+    (see ``_crew_chain_rates``) or their common-cause groups (#251, see
+    ``_crew_causes``), or nested RBDs' calendars fall together (see
+    ``_require_calendars``)."""
+    rates = _crew_chain_rates(rbd)
+    if rbd.ccf_groups:
+        _crew_causes(rbd, list(rates))
     _requirements._require_calendars(rbd)
 
 
@@ -231,20 +282,32 @@ def _crew_chain(
     nodes = [node for node in rates if node not in forced]
     priorities = [rbd._priority.get(node, 0.0) for node in nodes]
     call_when = _call_when(rbd)
+    own = {node: rates[node][0] for node in nodes}
+    shared: List[tuple] = []
+    if rbd.ccf_groups:
+        own, shared = _crew_causes(rbd, nodes)
     key = (
         rbd.repair_crews,
         call_when,
-        tuple(zip(nodes, (rates[node] for node in nodes), priorities)),
+        tuple(
+            zip(
+                nodes,
+                ((own[node], rates[node][1]) for node in nodes),
+                priorities,
+            )
+        ),
+        tuple(shared),
     )
     cache = rbd._cache.kept("crew_chains")
     if key not in cache:
         cache[key] = crew_chain.solve(
             nodes,
-            [rates[node][0] for node in nodes],
+            [own[node] for node in nodes],
             [rates[node][1] for node in nodes],
             priorities,
             rbd.repair_crews,
             call_when,
+            shared,
         )
     return cache[key]
 
@@ -337,6 +400,8 @@ def _chain_outage_terms(
     )
     forced = set(working_nodes or ()) | set(broken_nodes or ())
     rates = _crew_chain_rates(rbd)
+    chain = _crew_chain(rbd, frozenset(forced))
+    own = _crew_causes(rbd, chain.nodes)[0] if rbd.ccf_groups else {}
     birnbaum = rbd._birnbaum_importance(
         availability, node_failures=unavailability
     )
@@ -347,7 +412,8 @@ def _chain_outage_terms(
             continue
         importance = np.asarray(birnbaum[node])
         if node in rates:
-            life = rates[node][0]
+            # (Its own cause's rate, in a common-cause group.)
+            life = own.get(node, rates[node][0])
             node_failures, node_planned = life * availability[node], 0.0
         else:
             node_failures, _, node_planned = _long_run._node_frequencies(
@@ -355,4 +421,12 @@ def _chain_outage_terms(
             )
         terms.append((node, float(weights @ (importance * node_failures))))
         planned += float(weights @ (importance * node_planned))
+    if rbd.ccf_groups:
+        # Each group's shared causes: a strike takes the system down
+        # where it is up, and down with the members struck down.
+        from repyability.rbd import _curves
+
+        struck = _curves._crew_strikes(rbd, chain, availability)
+        for g, group in enumerate(rbd.ccf_groups):
+            terms.append((tuple(group.members), float(weights @ struck[:, g])))
     return terms, planned

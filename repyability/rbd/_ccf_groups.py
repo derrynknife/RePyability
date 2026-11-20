@@ -62,10 +62,11 @@ def _ccf_rates(rbd, group) -> Tuple[float, Optional[float]]:
     where = f"Common-cause group {list(group.members)}"
     if rbd._crews_couple():
         raise NotImplementedError(
-            f"{where}: with limited repair crews, the crews' Markov "
-            "chain does not take common causes in, as yet. Estimate the "
-            "values by simulation, with availability() or cost(), which "
-            "take both."
+            f"{where}: with limited repair crews its members wait for "
+            "a crew with the other components, which the group's own "
+            "chain does not follow (the crews' Markov chain takes the "
+            "group in where it works the values out). Estimate the "
+            "values by simulation, with availability() or cost()."
         )
     rates = set()
     for member in group.members:
@@ -303,6 +304,13 @@ def _require_groups_simulated(rbd, states: Optional[dict] = None):
     for component in rbd.components.values():
         if isinstance(component, RepairableRBD):
             _require_groups_simulated(component)
+
+
+def _own_chains(rbd) -> bool:
+    """Whether the common-cause groups are worked out by chains of their
+    own: not with limited repair crews, whose chain takes the groups in
+    with the queue (#251, see ``_crews._crew_causes``)."""
+    return bool(rbd.ccf_groups) and not rbd._crews_couple()
 
 
 def _require_ccf_long_run(rbd) -> None:
@@ -820,8 +828,9 @@ def _ccf_fv_shares(
 
 def _require_ccf_frequencies(rbd) -> None:
     """Raise if the failure frequency with common-cause groups is not
-    worked out: where their long-run values are not."""
-    if rbd.ccf_groups:
+    worked out: where their long-run values are not (with limited repair
+    crews, their chain has the groups' frequencies)."""
+    if _own_chains(rbd):
         _require_ccf_long_run(rbd)
 
 

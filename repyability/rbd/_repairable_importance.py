@@ -162,10 +162,10 @@ def _failure_importance(
             window,
             state,
         )
-    if rbd.ccf_groups:
-        return _ccf_groups._ccf_long_run_measure(rbd, name, working, broken)
     if rbd._crews_couple():
         return _crew_held_importance(rbd, name, working, broken)
+    if rbd.ccf_groups:
+        return _ccf_groups._ccf_long_run_measure(rbd, name, working, broken)
     node_probabilities, node_failures, weights, _ = _importance_probabilities(
         rbd, working, broken
     )
@@ -287,7 +287,7 @@ def criticality_importance(
             window,
             state,
         )
-    if rbd.ccf_groups:
+    if _ccf_groups._own_chains(rbd):
         return _ccf_groups._ccf_long_run_measure(
             rbd, "criticality", working_nodes, broken_nodes, kind=kind
         )
@@ -331,7 +331,7 @@ def fussell_vesely(
             window,
             state,
         )
-    if rbd.ccf_groups:
+    if _ccf_groups._own_chains(rbd):
         return _ccf_groups._ccf_long_run_measure(
             rbd,
             "fussell_vesely",
@@ -474,7 +474,10 @@ def _crew_rates(
     independent components, and their jumps are split likewise."""
     nested = _curves._require_crew_over_time(rbd, frozenset(working | broken))
     chain = _crews._crew_chain(rbd, frozenset(working | broken))
-    size, count = len(chain.probabilities), len(chain.nodes)
+    # (A column for each component, then one for each common-cause
+    # group's shared causes: see _crew_chain.CrewChain.split.)
+    keys = _curves._cause_keys(rbd, chain)
+    size, count = len(chain.probabilities), len(keys)
     patterns = 2 ** len(nested)
     ups = [
         _curves._crew_vectors(
@@ -524,7 +527,7 @@ def _crew_rates(
         [available[node] for node in nested]
     )
     parts: Dict[Hashable, np.ndarray] = {}
-    for k, node in enumerate(chain.nodes):
+    for k, node in enumerate(keys):
         own = columns[:, patterns + k + count * np.arange(patterns)]
         parts[node] = np.sum(own * weights, axis=1)
     importance = importances(available, flat)
@@ -866,7 +869,7 @@ def joint_importance(
         for key, value in (("x", x), ("window", window), ("state", state))
         if value is not None
     }
-    if rbd.ccf_groups:
+    if _ccf_groups._own_chains(rbd):
         # Each pair conditioned on its states through the groups' chains
         # (#317, see ``RepairableRBD._ccf_measure``), as the other measures
         # are: refused where their chains do not cover the groups.

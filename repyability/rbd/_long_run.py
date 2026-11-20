@@ -103,7 +103,7 @@ def mean_unavailability(
     _shutdowns.require_exact(rbd)
     method = structure_method(method)
     working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
-    if rbd.ccf_groups:
+    if _ccf_groups._own_chains(rbd):
         # Each group conditioned on within its module (#218).
         _, weights, inputs = _ccf_groups._ccf_long_run(
             rbd, working_nodes, broken_nodes
@@ -243,16 +243,16 @@ def _long_run_route(rbd, groups: bool = True) -> "AnalysisRoute":
     shut = r.refusal(partial(_shutdowns.require_exact, rbd))
     if shut:
         return r.refused(shut)
+    if rbd._crews_couple():
+        # (Their chain takes the common-cause groups in, or refuses.)
+        return _crew_chain_route(rbd)
     chains = (
         r.refusal(partial(_ccf_groups._require_ccf_long_run, rbd))
         if groups
         else None
     )
     if chains:
-        # (Before the crews: the groups' chains do not take them in.)
         return r.refused(chains)
-    if rbd._crews_couple():
-        return _crew_chain_route(rbd)
     calendars = r.refusal(partial(_requirements._require_calendars, rbd))
     if calendars:
         return r.refused(calendars)
@@ -309,7 +309,14 @@ def _crew_chain_route(rbd) -> "AnalysisRoute":
         r.EXACT,
         "The long-run distribution of the Markov chain of the "
         "components' states and the repair queue, solved exactly, and "
-        "the system's values averaged over its states.",
+        "the system's values averaged over its states."
+        + (
+            " A common-cause group's shared causes strike in the chain: "
+            "the members up fail at once and join the queue in the "
+            "group's order."
+            if rbd.ccf_groups
+            else ""
+        ),
         nested,
         "long-run values",
     )
@@ -327,7 +334,7 @@ def mean_availability(
     # https://www.diva-portal.org/smash/get/diva2:986067/FULLTEXT01.pdf
     working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
 
-    if rbd.ccf_groups:
+    if _ccf_groups._own_chains(rbd):
         # Each group conditioned on within its module (#218).
         method = structure_method(method)
         _, weights, inputs = _ccf_groups._ccf_long_run(
@@ -1140,11 +1147,10 @@ def _long_run_probabilities(
     by every combination of their states (see ``_with_ccf_groups``,
     which ``what`` refuses where they are too many): for the capacity
     distribution, which takes the nodes' joint states."""
-    if rbd.ccf_groups:
-        # The groups' chains refuse the crews (see _ccf_rates).
-        _ccf_groups._require_ccf_long_run(rbd)
     if rbd._crews_couple():
         return _crews._chain_probabilities(rbd, working_nodes, broken_nodes)
+    if rbd.ccf_groups:
+        _ccf_groups._require_ccf_long_run(rbd)
     times, weights = _long_run_grid(rbd)
     probabilities = rbd._probabilities_with_overrides(
         _availabilities_at(rbd, times), working_nodes, broken_nodes
@@ -1377,10 +1383,10 @@ def _outage_terms(
     ``_chain_outage_terms``; with common-cause groups,
     ``_ccf_outage_terms``."""
     _shutdowns.require_exact(rbd)
-    if rbd.ccf_groups:
-        return _ccf_groups._ccf_outage_terms(rbd, working_nodes, broken_nodes)
     if rbd._crews_couple():
         return _crews._chain_outage_terms(rbd, working_nodes, broken_nodes)
+    if rbd.ccf_groups:
+        return _ccf_groups._ccf_outage_terms(rbd, working_nodes, broken_nodes)
     times, weights = _long_run_grid(rbd)
     availability = rbd._probabilities_with_overrides(
         _availabilities_at(rbd, times), working_nodes, broken_nodes
