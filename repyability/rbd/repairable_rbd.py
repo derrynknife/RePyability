@@ -1763,6 +1763,8 @@ class RepairableRBD(RBD):
         max_units: Union[int, Dict[Hashable, int], None] = None,
         method: str = "exact",
         discount_rate: float = 0.0,
+        objective: str = "cost",
+        value_rate: float = 0.0,
     ) -> TotalCostAllocation:
         """Choose the redundancy with the lowest total cost of ownership.
 
@@ -1809,6 +1811,23 @@ class RepairableRBD(RBD):
         ``method="greedy"`` adds or removes one copy at a time while that
         lowers the total: fast, but not guaranteed optimal.
 
+        Redundancy is a capital decision: the copies are bought now, and
+        what they save comes later. ``objective="npv"`` chooses the design
+        with the highest net present value over the horizon, the value
+        the system earns while it works (``value_rate`` per unit time)
+        less its total cost, each at ``discount_rate``; the result gives
+        the ``npv``, its split into ``value``, ``acquisition_cost`` and
+        ``running_cost``, and the ``eac``, the same as a steady cost per
+        unit time. ``objective="eac"`` chooses by that, which over one
+        horizon is the same design. A value earned while the system works
+        is a cost of its downtime, so the search is the total cost's
+        with an hour down costing ``downtime_cost_rate + value_rate``,
+        and with no value the design is the total cost's. The running
+        costs, the downtime and the value are the long-run rates over
+        the horizon's present value, as ``total_cost`` counts them,
+        which the result's ``basis`` says: a system new at the start is
+        up a little more often at first.
+
         Parameters
         ----------
         horizon : float
@@ -1850,20 +1869,31 @@ class RepairableRBD(RBD):
             The continuous discount rate per unit time of the component
             models, by default 0 (undiscounted), as for ``total_cost``: the
             design with the lowest present value is chosen.
+        objective : str, optional
+            What the design is chosen by: ``"cost"`` (the default), the
+            lowest total cost; ``"npv"``, the highest net present value;
+            or ``"eac"``, the lowest equivalent annual cost less the
+            value earned.
+        value_rate : float, optional
+            The value earned per unit time while the system works, for
+            ``"npv"`` and ``"eac"``, by default 0.
 
         Returns
         -------
         TotalCostAllocation
             The chosen ``units`` per node and train, with the design's
             ``total_cost``, ``acquisition_cost``, ``cost_rate`` and
-            ``availability`` (see
+            ``availability``, and for ``"npv"`` and ``"eac"`` its
+            ``npv``, ``eac``, ``value`` and ``running_cost`` (see
             [`TotalCostAllocation`][repyability.TotalCostAllocation]).
 
         Raises
         ------
         ValueError
             If ``horizon``, ``nodes``, ``trains``, ``min_availability``,
-            ``max_units``, ``method`` or ``discount_rate`` is invalid; if
+            ``max_units``, ``method``, ``discount_rate``, ``objective``
+            or ``value_rate`` is invalid (a ``value_rate`` needs
+            ``"npv"`` or ``"eac"``); if
             no component has an acquisition cost and neither ``nodes`` nor
             ``trains`` is given;
             if a node's or train's copies cost nothing and are not capped;
@@ -1913,6 +1943,23 @@ class RepairableRBD(RBD):
         >>> rbd.allocate_redundancy(8760.0).units
         {'pump': 1}
 
+        At 30% a year the second pump does not pay on the lost production
+        alone, but it does if each hour of pumping also earns 400:
+
+        >>> import math
+        >>> rate = math.log(1.30) / 8760
+        >>> rbd.allocate_redundancy(87600.0, discount_rate=rate).units
+        {'pump': 1}
+        >>> best = rbd.allocate_redundancy(
+        ...     87600.0, objective="npv", discount_rate=rate, value_rate=400.0
+        ... )
+        >>> best.units, round(best.npv), round(best.eac, 2)
+        ({'pump': 2}, 12314518, -397.67)
+        >>> round(best.value), round(best.acquisition_cost)
+        (12385481, 40000)
+        >>> round(best.running_cost)
+        30964
+
         A station needing two of three pump trains, each a pump and its
         motor, when an hour without pumping costs 2,000: is a fourth train
         worth it? Name one train, and its copies join the vote:
@@ -1958,6 +2005,8 @@ class RepairableRBD(RBD):
             max_units=max_units,
             method=method,
             discount_rate=discount_rate,
+            objective=objective,
+            value_rate=value_rate,
         )
 
     def availability_allocation(

@@ -2767,6 +2767,34 @@ class TotalCostAllocation(_ResultMapping):
     discount_rate : float
         The continuous discount rate the running costs were discounted at
         (0: undiscounted).
+    objective : str
+        What the design was chosen by: ``"cost"`` (the lowest total
+        cost), ``"npv"`` (the highest net present value) or ``"eac"``
+        (the lowest equivalent annual cost, less the value earned), the
+        last two with a ``value_rate``. Over one horizon ``"npv"`` and
+        ``"eac"`` choose the same design.
+    value_rate : float
+        The value earned per unit time while the system works that the
+        objective counted.
+    value : float or None
+        For ``"npv"`` and ``"eac"``, the present value of what the system
+        earns over the horizon: ``value_rate`` times its long-run
+        availability times the horizon's present value. None for
+        ``"cost"``, as are the four below.
+    running_cost : float or None
+        The present value of the running costs over the horizon, with
+        the cost of the system's downtime: ``total_cost -
+        acquisition_cost``.
+    npv : float or None
+        The net present value: ``value - total_cost``, the split being
+        ``value - acquisition_cost - running_cost``.
+    eac : float or None
+        The equivalent annual cost, less the value earned: the steady
+        amount per unit time over the horizon worth ``-npv`` (``-npv``
+        over the horizon's present value; ``nan`` over a horizon of 0).
+    basis : str or None
+        What the net present value is made of, in words, with what is
+        approximate in it.
 
     Examples
     --------
@@ -2804,6 +2832,13 @@ class TotalCostAllocation(_ResultMapping):
     method: str
     trains: Optional[Dict[Hashable, list]] = None
     discount_rate: float = 0.0
+    objective: str = "cost"
+    value_rate: float = 0.0
+    value: Optional[float] = None
+    running_cost: Optional[float] = None
+    npv: Optional[float] = None
+    eac: Optional[float] = None
+    basis: Optional[str] = None
 
 
 @dataclass

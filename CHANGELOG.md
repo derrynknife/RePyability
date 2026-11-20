@@ -12,6 +12,27 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: redundancy chosen by net present value.
+  `RepairableRBD.allocate_redundancy(horizon, objective="npv",
+  discount_rate=, value_rate=)` chooses the copies with the highest net
+  present value over the horizon: what the system earns while it works
+  (`value_rate` per unit time, at its long-run availability) less the
+  copies bought at the start and the running costs, each over the
+  horizon's present value as `total_cost` counts them.
+  `objective="eac"` chooses by the equivalent annual cost less the value
+  earned, which over one horizon is the same design. The
+  `TotalCostAllocation` gains `objective`, `value_rate`, `npv`, `eac`,
+  `value`, `running_cost` (`npv = value - acquisition_cost -
+  running_cost`) and `basis`, which says what is approximate (a system
+  new at the start is up more often at first; `expected_npv` values a
+  design from new). A value earned is a cost of downtime, so the search
+  and its bounds are the total cost's with an hour down costing
+  `downtime_cost_rate + value_rate`: `min_availability`, `max_units`,
+  `trains`, common-cause groups and both methods work as before, and
+  with no value the design and its total cost are exactly the total
+  cost's. `objective="cost"`, the default, is unchanged; a `value_rate`
+  with it is refused, naming the objectives.
+
 - Added: test intervals chosen at a discount rate.
   `RepairableRBD.optimal_inspection_intervals` takes the objectives of
   `optimal_replacement_intervals`: `objective="eac"` (with
