@@ -58,6 +58,8 @@ NOT_NODES = {
     "AlphaFactor",
     "AnalysisRoute",
     "AnalysisRoutes",
+    # A contract's terms on availability: an input to npv_distribution.
+    "AvailabilityContract",
     "BetaFactor",
     # A calendar of opportunities, priced (#319): a calendar policy's input.
     "Calendar",
@@ -72,6 +74,8 @@ NOT_NODES = {
     "Network",
     "NodeState",
     "Opportunity",
+    # Opportunities collected, in model time or on dates: a policy's input.
+    "Opportunities",
     "PhasedMission",
     "MissionPhase",
     "BlockSetting",

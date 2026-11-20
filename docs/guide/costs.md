@@ -493,7 +493,7 @@ import math
 import surpyval as surv
 from repyability import AvailabilityContract, RepairableRBD
 
-def pump(mttr):
+def pump_line(mttr):
     return RepairableRBD(
         [("s", "p"), ("p", "t")],
         {"p": {"reliability": surv.Exponential.from_params([1e-3]),
@@ -504,12 +504,12 @@ def pump(mttr):
 terms = AvailabilityContract(730.0, target=0.99, penalty_per_point=1000.0,
                              bonus_per_point=100.0, cap=5000.0)
 r = math.log(1.08) / 8760
-runs = pump(10.0).npv_distribution(8760.0, discount_rate=r, value_rate=10.0,
-                                   mc_samples=2000, seed=1, contract=terms)
+runs = pump_line(10.0).npv_distribution(8760.0, discount_rate=r, value_rate=10.0,
+                                        mc_samples=2000, seed=1, contract=terms)
 runs.mean, runs.contract_payoff   # -> (73784, -5546)   penalties cost 5,546 on average
-gain = pump(5.0).compare_npv(pump(10.0), 8760.0, discount_rate=r,
-                             value_rate=10.0, contract=terms,
-                             mc_samples=2000, seed=1)
+gain = pump_line(5.0).compare_npv(pump_line(10.0), 8760.0, discount_rate=r,
+                                  value_rate=10.0, contract=terms,
+                                  mc_samples=2000, seed=1)
 gain.mean                         # -> 4767   the faster repair is worth this much more
 gain.interval.lower, gain.interval.upper    # -> (4656, 4879)
 gain.interval.standard_error, gain.independent_standard_error   # -> (56.9, 139.8)

@@ -140,13 +140,25 @@ def test_constant_rate_task_only_costs(pump):
         service(), Replaces(part), pump, age=3000.0, discount=0.07
     )
     # Both sides are the closed form, the rate times the running hours,
-    # to NonRepairable.failures' own precision (its renewal count is
-    # worked out numerically, to about 1e-6 of it).
+    # to NonRepairable.failures' own precision. Its count is the first
+    # unit's failures, exact, plus the later units', exact at the points
+    # of a grid (to 1e-16) and linear between them, of step h at most a
+    # thousandth of the life's median (_curves._POINT_STEPS). The later
+    # units' count, rate t - (1 - exp(-rate t)), is convex with second
+    # derivative at most rate**2, so a count from 0 is over by at most
+    # (rate h)**2 / 8 = (ln 2 / 1000)**2 / 8 = 6.0e-8, whatever the rate
+    # (5.97e-8 is found), an absolute error. A period's count is a
+    # difference of two such counts on each stretch it overlaps: within
+    # `bound` without the task, and 2 * bound with it (a period holds
+    # at most one task date, so overlaps two stretches).
+    bound = (math.log(2.0) / 1000.0) ** 2 / 8.0
     closed = np.diff(pump.model_time(list(worth.ends)), prepend=0.0) / 5000
-    for side in (worth.failures_with, worth.failures_without):
-        np.testing.assert_allclose(side, closed, rtol=1e-5)
+    np.testing.assert_allclose(worth.failures_without, closed, atol=bound)
+    np.testing.assert_allclose(worth.failures_with, closed, atol=2 * bound)
+    # Each period's failure cost on the two sides then differs by at most
+    # 4800 * 3 * bound, discounted (a factor at most 1).
     np.testing.assert_allclose(
-        worth.value, -worth.task_cost, atol=1e-5 * 4800.0 * closed.sum()
+        worth.value, -worth.task_cost, atol=4800.0 * 3.0 * bound
     )
     assert worth.total["value"] < 0.0
     by_hand = 600.0 * (1.07 ** (-15 / 365.25) + 1.07 ** (-197 / 365.25))

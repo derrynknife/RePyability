@@ -337,6 +337,8 @@ def test_a_calendar_replacement_is_a_stop_of_its_group(shuts):
         "system_downtime": 0.0,
         "setup": 2 * 500.0,
         "shutdown": 0.0,
+        "crews": 0.0,
+        "capital": 0.0,
     }
 
 
