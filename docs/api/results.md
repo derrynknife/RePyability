@@ -44,6 +44,8 @@
 
 ::: repyability.NPVDistribution
 
+::: repyability.NPVComparison
+
 ::: repyability.MaintenanceEffect
 
 ::: repyability.PlanVsActual

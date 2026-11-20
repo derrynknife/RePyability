@@ -136,6 +136,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 "Simulated net present value (distribution)",
                 ("npv_distribution",),
             ),
+            (
+                "Two plans' net present values compared",
+                ("compare_npv",),
+            ),
             ("Cost in each of a run of windows", ("cost_by_window",)),
             ("Simulated cost (distribution)", ("cost",)),
             ("Total cost of ownership", ("total_cost",)),

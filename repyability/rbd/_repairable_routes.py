@@ -593,6 +593,7 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         )
     )
     out["npv_distribution"] = _npv_runs.route(rbd, out["simulate_timelines"])
+    out["compare_npv"] = _npv_runs.compare_route(out["npv_distribution"], rbd)
     engine, why = _runs._engine_choice(rbd, capacity=False)
     if unpriced:
         out["cost"] = r.refused(unpriced)
