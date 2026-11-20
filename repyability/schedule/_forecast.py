@@ -24,12 +24,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from repyability.utils.checks import is_number
 
+from . import _discount
 from ._meters import UNITS, Clock, clock, time_unit
 from ._recurrence import Recurrence, _period
 from ._usage import UsageForecast, _Plain
@@ -38,6 +39,13 @@ from ._usage import UsageForecast, _Plain
 #: 90% two-sided range.
 RANGE_LEVELS = (5.0, 95.0)
 RANGE_WORDS = "the 5th to 95th percentile (90% of outcomes, two-sided)"
+
+#: How close a part's present value is worked out by default: half the
+#: bracket around it, as a share of it.
+NPV_TOLERANCE = 1e-3
+#: The most windows a part's expected cost is asked for to get there.
+MAX_WINDOWS = 2000
+_YEAR_SECONDS = 3600.0 * _discount.HOURS_A_YEAR
 
 
 # ------------------------------------------------------------ helpers
@@ -109,6 +117,73 @@ def _period_edges(usage: UsageForecast, period: str):
     return found, seconds
 
 
+def _tolerance(value) -> float:
+    if not (is_number(value) and 0.0 < float(value) < 1.0):
+        raise ValueError(
+            "npv_tolerance must be a share of the present value, more "
+            f"than 0 and less than 1 (such as 1e-4); got {value!r}."
+        )
+    return float(value)
+
+
+def _accrued_npv(
+    usage: UsageForecast,
+    seconds: np.ndarray,
+    unit: str,
+    discount: float,
+    tolerance: float,
+    costs: Callable[[np.ndarray], np.ndarray],
+    notes: List[str],
+):
+    """The present value, in each period and in all, of a part's expected
+    cost, which accrues as it runs: ``(by period, total, precision)``.
+
+    ``costs(ends)`` is the expected cost in each of the consecutive
+    windows of operating time ending at ``ends`` (increasing, from 0).
+    The forecast is cut into short windows of calendar time (equal ones,
+    cut again at the periods' ends), each window's expected cost is
+    asked for, and discounted at the window's start and at its end: the
+    true value is between the two (``_discount.bracket``), so the middle
+    is reported and half the bracket is its precision. The windows are
+    short enough for that to be within ``tolerance`` of the value, unless
+    that takes more than ``MAX_WINDOWS``.
+    """
+    span = float(seconds[-1])
+    scale = usage._unit(unit)
+    base = usage._at_s("hours", usage._start_s)
+    # Half a window's bracket is under rate x half its length of its
+    # value, so windows this short are within the tolerance.
+    rate = _discount.continuous(discount)
+    wanted = int(np.ceil(span / _YEAR_SECONDS * rate / (2.0 * tolerance)))
+    count = min(max(wanted, 1), MAX_WINDOWS)
+    edges = np.unique(
+        np.concatenate([np.linspace(0.0, span, count + 1)[1:], seconds])
+    )
+    edges = edges[edges > 0.0]
+    model = (usage._at_s("hours", usage._start_s + edges) - base) / scale
+    model = np.maximum.accumulate(np.maximum(model, 0.0))
+    moving = np.diff(model, prepend=0.0) > 0.0
+    amounts = np.zeros(edges.size)
+    if moving.any():
+        amounts[moving] = np.maximum(costs(model[moving]), 0.0)
+    value, half = _discount.bracket(
+        discount,
+        amounts,
+        np.concatenate([[0.0], edges[:-1]]) / _YEAR_SECONDS,
+        edges / _YEAR_SECONDS,
+    )
+    total, precision = float(value.sum()), float(half.sum())
+    if precision > tolerance * total:
+        notes.append(
+            f"The present value is within {precision:.3g} of the true one "
+            f"({precision / total:.2g} of it), short of npv_tolerance="
+            f"{tolerance:g}: {MAX_WINDOWS} windows is the most worked out."
+        )
+    index = np.searchsorted(seconds, edges, side="left")
+    by_period = np.bincount(index, weights=value, minlength=seconds.size)
+    return by_period, total, precision
+
+
 def _instants(days, clock_: Clock, at) -> List[datetime]:
     """Each date at the clock time ``at`` (midnight by default), as a real
     instant at the site."""
@@ -176,6 +251,23 @@ class FailuresByPeriod(_Plain):
         What the ranges are, in words.
     notes : tuple of str
         What the forecast assumed.
+    discount : float or None
+        The yearly discount rate given; None when none was.
+    expected_npv : numpy.ndarray or None
+        With a discount: what each period's expected cost is worth at the
+        forecast's start, the cost discounted from when it is expected to
+        fall inside the period (``total`` then has ``"expected_npv"`` and
+        ``"npv_precision"`` too). The ranges are not discounted.
+    npv : float or None
+        The periods' ``expected_npv`` summed: the forecast's expected
+        cost as a present value.
+    npv_precision : float or None
+        How far the true ``npv`` can be from the one given: half the
+        bracket between discounting each short window's expected cost at
+        its start and at its end (0 at a discount of 0).
+    eac : float or None
+        The equivalent annual cost: the steady cost a year over the
+        forecast worth ``npv``.
     """
 
     period: str
@@ -199,6 +291,11 @@ class FailuresByPeriod(_Plain):
     total: Dict[str, Any]
     range: str
     notes: Tuple[str, ...]
+    discount: Optional[float] = None
+    expected_npv: Optional[np.ndarray] = None
+    npv: Optional[float] = None
+    npv_precision: Optional[float] = None
+    eac: Optional[float] = None
 
     def __repr__(self) -> str:
         cost = (
@@ -232,6 +329,8 @@ def failures_by_period(
     resets: Optional[bool] = None,
     since_renewal: Optional[float] = None,
     calendar=None,
+    discount: Optional[float] = None,
+    npv_tolerance: float = NPV_TOLERANCE,
 ) -> FailuresByPeriod:
     """A part's expected failures, their cost and its range in each
     calendar period, through the map between dates and operating time.
@@ -275,6 +374,22 @@ def failures_by_period(
         times count from the forecast's start
         ([`Opportunity.from_recurrence`][repyability.Opportunity.from_recurrence]
         lays dated shuts there).
+    discount : float, optional
+        A yearly discount rate (0.07 for 7% a year): the result then has
+        each period's ``expected_npv``, the expected cost as a present
+        value at the forecast's start, with ``npv``, ``npv_precision``
+        and ``eac``. An expected cost accrues as the part runs, so the
+        forecast is cut into short windows and each window's expected
+        cost is discounted at its start and at its end: the true value
+        lies between, the middle is given and half the bracket is
+        ``npv_precision``. The ranges stay undiscounted. By default None:
+        no present values.
+    npv_tolerance : float, optional
+        How close the present value is worked out: the windows are short
+        enough for ``npv_precision`` to be within this share of ``npv``
+        (at most 2,000 of them, which the notes say when it falls
+        short); by default 1e-3, ten cents in a hundred dollars. A tenth
+        of it takes ten times the windows.
 
     Returns
     -------
@@ -311,6 +426,8 @@ def failures_by_period(
     if not (is_number(age) and 0.0 <= float(age) < np.inf):
         raise ValueError(f"age must be a number, at least 0; got {age!r}.")
     age = float(age)
+    discount = _discount.yearly(discount)
+    npv_tolerance = _tolerance(npv_tolerance)
     found = usage.by_period(period)
     ends = np.atleast_1d(usage.model_time(list(found.ends), unit=unit))
     ends = np.maximum.accumulate(np.maximum(ends, 0.0))
@@ -421,6 +538,53 @@ def failures_by_period(
     )
     if low is not None:
         notes.append(f"Ranges are {RANGE_WORDS}.")
+    expected_npv = npv = npv_precision = eac = None
+    if discount is not None and cost is None:
+        notes.append(
+            "No present value: the part has no cost (give " "unplanned_cost=)."
+        )
+    elif discount is not None:
+        _, seconds = _period_edges(usage, period)
+        if discount == 0.0 or total_end <= 0.0:
+            expected_npv = np.array(cost, float)
+            npv, npv_precision = float(total["expected_cost"] or 0.0), 0.0
+        else:
+            if windows is not None:
+
+                def costs(model_ends: np.ndarray) -> np.ndarray:
+                    return part.cost_by_window(
+                        model_ends,
+                        every,
+                        resets=resets,
+                        age=age,
+                        since_renewal=since_renewal,
+                        calendar=calendar,
+                        levels=RANGE_LEVELS,
+                    ).mean
+
+            else:
+
+                def costs(model_ends: np.ndarray) -> np.ndarray:
+                    counts = part.failures(model_ends, age=age)
+                    return part.cu * np.diff(
+                        np.asarray(counts.expected_failures, float),
+                        prepend=0.0,
+                    )
+
+            expected_npv, npv, npv_precision = _accrued_npv(
+                usage, seconds, unit, discount, npv_tolerance, costs, notes
+            )
+        eac = _discount.equivalent_annual(
+            npv, discount, float(seconds[-1]) / _YEAR_SECONDS
+        )
+        total["expected_npv"] = npv
+        total["npv_precision"] = npv_precision
+        notes.append(
+            f"{_discount.words(discount, usage.start)} The expected cost "
+            "is discounted from when it is expected to fall, to within "
+            f"{npv_precision:.3g} in all"
+            + ("; the ranges are not discounted." if low is not None else ".")
+        )
     return FailuresByPeriod(
         period=period,
         starts=found.starts,
@@ -443,6 +607,11 @@ def failures_by_period(
         total=total,
         range=RANGE_WORDS,
         notes=tuple(notes),
+        discount=discount,
+        expected_npv=expected_npv,
+        npv=npv,
+        npv_precision=npv_precision,
+        eac=eac,
     )
 
 
@@ -475,6 +644,18 @@ class EventsByPeriod(_Plain):
     range : str or None
         What the cost range is, in words (None with no cost).
     notes : tuple of str
+    discount : float or None
+        The yearly discount rate given; None when none was.
+    expected_npv : numpy.ndarray or None
+        With a discount: what each period's expected cost is worth at the
+        forecast's start, each cost discounted from when it falls
+        ([`expected_cost`][repyability.RepairableRBD.expected_cost] with
+        its ``discount_rate``, exact). The range is not discounted.
+    npv : float or None
+        The periods' ``expected_npv`` summed.
+    eac : float or None
+        The equivalent annual cost: the steady cost a year over the
+        forecast worth ``npv``.
     """
 
     period: str
@@ -486,6 +667,10 @@ class EventsByPeriod(_Plain):
     cost: Any
     range: Optional[str]
     notes: Tuple[str, ...]
+    discount: Optional[float] = None
+    expected_npv: Optional[np.ndarray] = None
+    npv: Optional[float] = None
+    eac: Optional[float] = None
 
     def __repr__(self) -> str:
         return (
@@ -505,6 +690,7 @@ def events_by_period(
     cost: bool = False,
     mc_samples: Optional[int] = None,
     seed: Optional[int] = None,
+    discount: Optional[float] = None,
 ) -> EventsByPeriod:
     """A ``RepairableRBD``'s expected events, and on request its cost, in
     each calendar period.
@@ -540,6 +726,15 @@ def events_by_period(
         Also the cost by period (simulated range), by default False.
     mc_samples, seed : optional
         With ``cost=True``, the simulations, as for ``cost_by_window``.
+    discount : float, optional
+        With ``cost=True``, a yearly discount rate (0.07 for 7% a year):
+        the result then has each period's ``expected_npv``, its expected
+        cost as a present value at the forecast's start, with ``npv`` and
+        ``eac``. Exact: the diagram's clock is calendar time, so the
+        yearly rate is one continuous rate per unit of it, ``ln(1 +
+        discount)`` over the units in a year of 365.25 days, which
+        [`expected_cost`][repyability.RepairableRBD.expected_cost] takes
+        as its ``discount_rate``. By default None: no present values.
 
     Returns
     -------
@@ -567,6 +762,12 @@ def events_by_period(
     """
     usage = _usage(usage)
     notes: List[str] = []
+    discount = _discount.yearly(discount)
+    if discount is not None and not cost:
+        raise ValueError(
+            "discount= gives the cost as a present value: ask for the "
+            "cost too, with cost=True."
+        )
     unit = _resolve_unit(unit, _model_label(rbd), "diagram", notes)
     found, seconds = _period_edges(usage, period)
     ends = seconds / 3600.0 / UNITS[unit]
@@ -584,6 +785,24 @@ def events_by_period(
             f"Each period's mean cost is exact; its range ({RANGE_WORDS}) "
             "is simulated."
         )
+    expected_npv = npv = eac = None
+    if discount is not None:
+        present = rbd.expected_cost(
+            ends,
+            state=state,
+            discount_rate=_discount.per_unit(discount, UNITS[unit]),
+        )
+        running = np.atleast_1d(np.asarray(present.mean, float))
+        expected_npv = np.diff(running, prepend=0.0)
+        npv = float(running[-1])
+        eac = _discount.equivalent_annual(
+            npv, discount, float(seconds[-1]) / _YEAR_SECONDS
+        )
+        notes.append(
+            f"{_discount.words(discount, usage.start)} Each cost is "
+            "discounted from when it falls (exact); the range is not "
+            "discounted, and an acquisition cost is not in the periods."
+        )
     notes.append(
         "The diagram's clock is calendar time from the forecast's start; "
         "running hours reach it through the blocks' duty."
@@ -598,6 +817,10 @@ def events_by_period(
         cost=costs,
         range=None if costs is None else RANGE_WORDS,
         notes=tuple(notes),
+        discount=discount,
+        expected_npv=expected_npv,
+        npv=npv,
+        eac=eac,
     )
 
 

@@ -12,6 +12,30 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: present values on the calendar forecasts
+  (`repyability.schedule`; UC-47 to UC-49 of its README). `discount=` is
+  the effective yearly rate (0.07 for 7% a year, a year of 365.25 days),
+  as on the dated replacement policies, and money is discounted to the
+  forecast's first date. `Task.due(start, end, discount=)` adds `npv`
+  (each cost discounted from the date the task is done) and `eac`, the
+  equivalent annual cost; `work_by_period(..., discount=)` adds each
+  period's `npv`, `total_npv` and `eac`. `Task.long_run_value(start,
+  discount, precision=1e-9)` is what a task repeating for ever is worth,
+  returning a `TaskValue`: a closed form for a plain interval of days or
+  weeks, otherwise the dates summed until a bound on what is left is
+  under `precision`; refused, saying what to run, at a discount of 0,
+  for given dates and for a limit by use. $250 every 30 days at 7% is 13
+  tasks and $3,144.10 in the first year, and $45,112 for ever.
+  `failures_by_period(..., discount=, npv_tolerance=1e-3)` adds each
+  period's `expected_npv`, with `npv`, `npv_precision` and `eac`: the
+  expected cost of short windows discounted at each window's start and
+  end, which bracket the true value (the middle is given, half the
+  bracket is the precision); the ranges stay undiscounted.
+  `events_by_period(..., cost=True, discount=)` adds each period's
+  `expected_npv`, with `npv` and `eac`, exact
+  (`RepairableRBD.expected_cost` with its `discount_rate`). With no
+  `discount` every result is as before, with the new fields None.
+
 - Added: the best time to switch a whole diagram from one way of running
   to another (UC-20 of the maintenance README, which was built for one
   unit). `RepairableRBD.best_switch_time(covariates, value_rates,
@@ -169,6 +193,12 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- Changed: a `Recurrence` counted from an anchor (every so many days,
+  weeks, months or years) finds its dates far from the anchor without
+  walking to them from it. The dates are the same; a `Task.due` over
+  centuries, which took a time growing with the square of the dates,
+  now takes one in proportion (400 years of a 30-day task: 25 s to
+  0.1 s).
 - Changed (intentional, the numbers can differ):
   `Repairable.optimal_overhaul_replace_policy` searched only "overhaul
   every `T`, replace after `K` periods", and its best was often beaten
