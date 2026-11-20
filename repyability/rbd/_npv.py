@@ -11,7 +11,7 @@ from typing import Any, Collection, Dict, Hashable, List, Optional
 
 import numpy as np
 
-from repyability.rbd import _curves, _requirements, _windows
+from repyability.rbd import _curves, _requirements, _shutdowns, _windows
 from repyability.rbd._common import (
     _discount_rate,
     _present_horizon,
@@ -64,6 +64,124 @@ def _period_ends(periods, horizon: float) -> np.ndarray:
     return ends
 
 
+def _retirement(retire_at, horizon: float) -> float:
+    """When the plan ends: the horizon, or ``retire_at`` (checked: more
+    than 0 and no later than the horizon), the time the system is
+    retired at."""
+    if retire_at is None:
+        return horizon
+    stop = _number(retire_at, "retire_at", strict=True)
+    if math.isclose(stop, horizon, rel_tol=1e-12):
+        return horizon
+    if stop > horizon:
+        raise ValueError(
+            f"retire_at ({stop:g}) is past the horizon ({horizon:g}), "
+            "where the valuation ends anyway: leave it out, or value a "
+            "longer horizon."
+        )
+    return stop
+
+
+def _salvage(rbd, salvage, at: float, state, forced) -> Dict[Any, float]:
+    """The expected salvage credited at ``at`` (the retirement, or the
+    horizon), undiscounted, by component (None: the system's):
+    ``salvage`` checked, a number (the system's) or a dict of a number,
+    or a function of the age of the unit in service (see
+    ``_salvage_by_age``), for each component, and for None the
+    system's."""
+    if salvage is None:
+        return {}
+    given = salvage if isinstance(salvage, dict) else {None: salvage}
+    out: Dict[Any, float] = {}
+    for component, worth in given.items():
+        if component is not None and component not in rbd.components:
+            raise _requirements._not_a_component(rbd, component, "salvage")
+        whose = "the system" if component is None else f"{component!r}"
+        if callable(worth):
+            if component is None:
+                raise ValueError(
+                    "The system's salvage must be a number: a salvage by "
+                    "age is a component's, of the age of its unit in "
+                    "service ({component: function})."
+                )
+            out[component] = _salvage_by_age(
+                rbd, component, worth, at, state, forced
+            )
+            continue
+        number = checks.number_or_nan(worth)
+        if not math.isfinite(number):
+            raise ValueError(
+                f"The salvage of {whose} must be a finite number (what it "
+                "is worth at the end; negative for a cost of disposal), or "
+                "for a component a function of the age of its unit in "
+                f"service; got {worth!r}."
+            )
+        out[component] = number
+    return out
+
+
+#: The cells the time to the end is cut into for a salvage by age.
+_AGE_CELLS = 4000
+
+
+def _salvage_by_age(rbd, node, worth, at: float, state, forced) -> float:
+    """The expected salvage of a component at ``at``, ``worth(age)`` of
+    the unit in service then if it is up (a unit down then, in a repair,
+    is credited nothing): from the age of the unit in service, which is
+    the time since it was put in, at 0 (never failed since: ``R(at)``) or
+    at the end of a repair (the expected units put in over each cell of
+    the time, from the component's expected failures and its repair
+    time, each still up with probability ``R(age)``).
+
+    That is a plain unit's, from new: one with a schedule, tests,
+    imperfect repair, a group, crews to wait for or a state at 0 has no
+    such age here, and is refused, asking for a number."""
+    from repyability.rbd._block_replacement import _Duration
+    from repyability.rbd.non_repairable_rbd import NonRepairableRBD  # noqa
+
+    states = _curves._states(rbd, state, forced)
+    plain = (
+        _curves._plain_unit(rbd, node)
+        and type(rbd.components[node]).__name__ == "NonRepairable"
+        and node not in forced
+        and node not in (states or {})
+        and not rbd._crews_couple()
+        and not any(node in group.members for group in rbd.ccf_groups)
+        and not _shutdowns.holding(rbd, node)
+    )
+    if not plain:
+        raise NotImplementedError(
+            f"Component {node!r}: a salvage by age needs the age of the "
+            "unit in service at the end, which is worked out for a plain "
+            "component from new (no maintenance, upgrade, tests, "
+            "imperfect repair, standby, group, shutdown, crews to wait "
+            "for or state at 0): give its salvage as a number."
+        )
+    component = rbd.components[node]
+    curve = _curves._unit_curve(rbd, node, at, counts=True)
+    edges = np.linspace(0.0, at, _AGE_CELLS + 1)
+    middle = 0.5 * (edges[1:] + edges[:-1])
+    failing = np.diff(curve.events(edges)["failures"])
+    # The units put into service by each edge: those failed in each cell
+    # (at its middle) whose repair is over by then.
+    repair = _Duration(component.time_to_replace, "repair", node)
+    since = edges[:, None] - middle[None, :]
+    done = np.where(since > 0.0, repair.cdf(np.maximum(since, 0.0)), 0.0)
+    put_in = np.diff(done @ failing)
+    ages = np.concatenate(([at], at - middle))
+    weights = np.concatenate(([1.0], put_in))
+    alive = np.clip(
+        np.asarray(component.reliability.sf(ages), float), 0.0, 1.0
+    )
+    values = np.asarray(worth(ages), dtype=float)
+    if values.shape != ages.shape or not np.all(np.isfinite(values)):
+        raise ValueError(
+            f"The salvage of {node!r} by age must take an array of ages "
+            "and return a finite value for each."
+        )
+    return float(np.sum(values * alive * weights))
+
+
 def _uptime(rbd, ends, rate, working, broken, method, state) -> np.ndarray:
     """The integral from 0 to each of ``ends`` of ``exp(-rate t)`` times
     the system's point availability."""
@@ -90,17 +208,24 @@ def expected_npv(
     broken_nodes: Optional[Collection[Hashable]],
     method: str,
     state,
+    retire_at=None,
+    salvage=None,
 ) -> ExpectedNPV:
     """See ``RepairableRBD.expected_npv``."""
     rate = _discount_rate(discount_rate)
     horizon = _number(horizon, "horizon", strict=True)
     value_rate = _number(value_rate, "value_rate", strict=False)
-    ends = _period_ends(periods, horizon)
+    table_ends = _period_ends(periods, horizon)
+    # Retired before the horizon, nothing is earned or spent after: every
+    # value is worked out to the retirement, and stays there.
+    stop = _retirement(retire_at, horizon)
+    ends = np.minimum(table_ends, stop)
     if not value_rate:
         _requirements._require_costs(rbd)
     method = checks.structure_method(method)
     working, broken = rbd._held_nodes(working_nodes, broken_nodes)
-    starts = np.concatenate(([0.0], ends[:-1]))
+    starts = np.concatenate(([0.0], table_ends[:-1]))
+    credits = _salvage(rbd, salvage, stop, state, working | broken)
 
     present_cells: Dict[Any, Any] = {}
     nominal_cells: Dict[Any, Any] = {}
@@ -172,7 +297,7 @@ def expected_npv(
 
     def add(category, component, present, nominal) -> None:
         present, nominal = increments(present), increments(nominal)
-        sign = 1.0 if category == "value" else -1.0
+        sign = 1.0 if category in ("value", "salvage") else -1.0
         for k in range(len(ends)):
             if present[k] == 0.0 and nominal[k] == 0.0:
                 continue
@@ -180,14 +305,14 @@ def expected_npv(
                 {
                     "period": k + 1,
                     "start": float(starts[k]),
-                    "end": float(ends[k]),
+                    "end": float(table_ends[k]),
                     "category": category,
                     "component": component,
                     "present_value": sign * float(present[k]),
                     "undiscounted": sign * float(nominal[k]),
                 }
             )
-        if category != "value":
+        if category not in ("value", "salvage"):
             total = float(present.sum())
             cost_by_category[category] = (
                 cost_by_category.get(category, 0.0) + total
@@ -207,7 +332,17 @@ def expected_npv(
     for category, (present, nominal) in systems.items():
         add(category, None, present, nominal)
     add("value", None, up_present, up_nominal)
-    order = {name: i for i, name in enumerate(("acquisition",) + _CATEGORIES)}
+    # The salvage, credited at the retirement (or the horizon): in the
+    # period it falls in.
+    paid = table_ends >= stop
+    worth_now = math.exp(-rate * stop)
+    for component, amount in credits.items():
+        if amount:
+            add("salvage", component, worth_now * amount * paid, amount * paid)
+    order = {
+        name: i
+        for i, name in enumerate(("acquisition",) + _CATEGORIES + ("salvage",))
+    }
     rows.sort(
         key=lambda r: (
             r["period"],
@@ -220,23 +355,34 @@ def expected_npv(
     cost = float(sum(cost_by_category.values()))
     undiscounted_value = float(up_nominal[-1])
     undiscounted_cost = float(
-        -sum(r["undiscounted"] for r in rows if r["category"] != "value")
+        -sum(
+            r["undiscounted"]
+            for r in rows
+            if r["category"] not in ("value", "salvage")
+        )
     )
+    undiscounted_salvage = float(sum(credits.values()))
+    salvaged = worth_now * undiscounted_salvage
     result = ExpectedNPV(
         horizon=horizon,
         discount_rate=rate,
         value_rate=value_rate,
-        npv=value - cost,
+        npv=value - cost + salvaged,
         value=value,
         cost=cost,
         eac=0.0,
-        undiscounted_npv=undiscounted_value - undiscounted_cost,
+        undiscounted_npv=(
+            undiscounted_value - undiscounted_cost + undiscounted_salvage
+        ),
         undiscounted_value=undiscounted_value,
         undiscounted_cost=undiscounted_cost,
         cost_by_category=cost_by_category,
         cost_by_component=cost_by_component,
-        period_ends=[float(x) for x in ends],
+        period_ends=[float(x) for x in table_ends],
         cash_flows=rows,
+        salvage=salvaged,
+        undiscounted_salvage=undiscounted_salvage,
+        retire_at=None if retire_at is None else stop,
     )
     result.eac = cost / result.annuity_factor
     return result

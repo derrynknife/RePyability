@@ -1049,22 +1049,65 @@ def refuse(rbd, method: str) -> None:
 
 
 def require_exact(rbd) -> None:
-    """Raise if the exact methods cannot take the diagram's shutdowns:
-    at given times (they take shuts on a period), or with what ties the
-    blocks together (repair crews, common-cause groups, maintenance
-    groups), or a nested RBD with a calendar of its own beside them."""
+    """Raise if the exact long-run methods cannot take the diagram's
+    shutdowns: at given times (which end: no long run), or what the
+    values over time refuse too (``require_over_time``)."""
+    if not rbd._shutdowns:
+        return
+    given = [s.name for s in rbd._shutdowns.values() if not s.periodic]
+    if given:
+        raise NotImplementedError(
+            f"Shutdown {given[0]!r} is at given times, which end, so the "
+            "diagram has no long run with it: ask for its values over a "
+            "horizon (expected_npv(horizon), expected_cost(T), "
+            "mission_availability(T), point_availability(t)), or give the "
+            "shutdown a period for the long run."
+        )
+    require_over_time(rbd)
+
+
+def _given_times_refusal(rbd) -> Optional[str]:
+    """Why the values over time cannot take a task done at a shutdown at
+    given times, or None: they take a block renewed at each shut (a plan
+    of replacements at its times), not one inspected there (kept unless
+    due, or tested for a hidden failure), which they follow on a
+    period."""
+    for node in rbd.components:
+        schedule = rbd._preventive.get(node)
+        inspection = rbd._inspection.get(node)
+        for task, what in (
+            (schedule, "inspected at each shut and kept unless it is due"),
+            (inspection, "tested at each shut"),
+        ):
+            if task is None or task.shutdown is None or task.times is None:
+                continue
+            if task is schedule and schedule.policy == "block":
+                continue
+            return (
+                f"Component {node!r} is {what} of shutdown "
+                f"{task.shutdown!r}, which is at given times; the exact "
+                "methods follow such a block at shuts on a period (and a "
+                "block renewed at every shut at given times too). "
+                "Estimate its values by simulation, with availability() "
+                "or cost()."
+            )
+    return None
+
+
+def require_over_time(rbd) -> None:
+    """Raise if the exact values over time cannot take the diagram's
+    shutdowns: with what ties the blocks together (repair crews,
+    common-cause groups, maintenance groups), a nested RBD with a
+    calendar of its own beside them, or a block inspected or tested at
+    shuts at given times (see ``_given_times_refusal``)."""
     if not rbd._shutdowns:
         return
     from repyability.rbd import _crews, _long_run
     from repyability.rbd.repairable_rbd import RepairableRBD
 
-    given = [s.name for s in rbd._shutdowns.values() if not s.periodic]
+    given = _given_times_refusal(rbd)
     if given:
-        raise NotImplementedError(
-            f"Shutdown {given[0]!r} is at given times; the exact methods "
-            "take shutdowns on a period. Estimate its values by "
-            "simulation, with availability() or cost()."
-        )
+        raise NotImplementedError(given)
     tie = None
     if rbd._crews_couple() or _crews._crews_limited(rbd):
         tie = "repair crews"

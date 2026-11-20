@@ -802,6 +802,8 @@ _CATEGORIES = (
     # The repair crews' salaries: no engine charges them (they are the
     # same in every simulation), the tally does (``charge_crews``).
     "crews",
+    # An upgrade's capital cost, at its time: worked out, not simulated.
+    "capital",
 )
 
 

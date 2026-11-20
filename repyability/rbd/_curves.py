@@ -327,7 +327,7 @@ def _over_time(
     ``_crew_over_time``)."""
     from repyability.rbd import routes as r
 
-    refusal = r.refusal(partial(_shutdowns.require_exact, rbd))
+    refusal = r.refusal(partial(_shutdowns.require_over_time, rbd))
     if refusal:
         return r.refused(refusal)
     if rbd._crews_couple():
@@ -1946,7 +1946,8 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     level (``y0`` if new), which its first inspection reads."""
     component = rbd.components[node]
     schedule = rbd._preventive[node]
-    if schedule.plan is not None:
+    if schedule.times is not None and schedule.policy == "block":
+        # Its own plan's times, or a shutdown's given times.
         return _plan_curve(rbd, node, horizon, start)
     duration = schedule.duration
     stationary = start is not None and start.stationary
@@ -2036,8 +2037,9 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
 
 def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     """A component's point availability over ``[0, horizon]``, replaced
-    at the times of its plan (its ``"replace_at"``) if it is up at them
-    and after the last no more: followed stretch by stretch, each from
+    at the times of its plan (its ``"replace_at"``, or those of the
+    shutdown it is renewed at) if it is up at them and after the last no
+    more: followed stretch by stretch, each from
     one of the times to the next (see
     ``_block_replacement.plan_availability``). From new, the first
     stretch starts new at 0; from a state, the unit's own curve reaches
@@ -2052,7 +2054,14 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     schedule = rbd._preventive[node]
     duration = schedule.duration
     knots = np.empty(0) if duration is None else point_knots(duration)
-    times = np.asarray(schedule.plan, dtype=float)
+    times = np.asarray(schedule.times, dtype=float)
+    # A shut at 0 does not replace the unit, new or as its state says
+    # then: the simulation's tasks fall due after 0 (_Preventive.due).
+    times = times[times > 0.0]
+    if not times.size:
+        return _unit_curve(
+            rbd, node, horizon, counts=True, start=start, unscheduled=True
+        )
     edges = np.concatenate(([0.0], times))
     gaps = np.diff(edges)
     started = start is not None and not start.new
@@ -2070,13 +2079,23 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
             last *= 2.0
         lengths.append(last)
     models = (component.reliability, component.time_to_replace, duration)
+    # After an upgrade, the units put into service have its life.
+    upgrade = rbd._upgrades.get(node)
+    lives = None
+    if upgrade is not None:
+        lives = [
+            upgrade.life if begin >= upgrade.at else component.reliability
+            for begin in edges[: len(lengths)]
+        ]
 
     def curve(results, starts):
         return PlanCurve([BlockCurve(r, knots) for r in results], starts)
 
     if not started:
         return curve(
-            plan_availability(*models, lengths, node, last_like=like),
+            plan_availability(
+                *models, lengths, node, last_like=like, lives=lives
+            ),
             edges[: len(lengths)],
         )
     assert start is not None
@@ -2094,7 +2113,14 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     reached = BlockHead(
         length, float(head.at(np.array([length]))[0]), failures, down_sf
     )
-    results = plan_availability(*models, lengths[1:], node, reached, like)
+    results = plan_availability(
+        *models,
+        lengths[1:],
+        node,
+        reached,
+        like,
+        None if lives is None else lives[1:],
+    )
     tail = curve(results, edges[1 : len(lengths)] - length)  # noqa: E203
     return StartedBlockCurve(head, tail, length)
 

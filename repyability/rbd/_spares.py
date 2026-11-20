@@ -1966,6 +1966,13 @@ def _replacements(rbd, node, long_run: bool = False):
             f"{simulate}"
         )
     schedule = rbd._preventive.get(node)
+    if node in rbd._upgrades:
+        raise NotImplementedError(
+            f"Component {node!r} is upgraded at a time, from which its "
+            "units have another life, which its replacements are not "
+            "counted across yet: count its failures over a horizon with "
+            "expected_events(T)."
+        )
     if schedule is not None and schedule.plan is not None:
         raise NotImplementedError(
             f"Component {node!r} is replaced at the times of a plan "

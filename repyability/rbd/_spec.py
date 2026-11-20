@@ -37,6 +37,7 @@ from repyability.rbd._events import (
     _Preventive,
     _Restoration,
     _Standby,
+    _Upgrade,
 )
 from repyability.utils.checks import (
     is_number,
@@ -69,8 +70,12 @@ COMPONENT_SPEC_KEYS = (
         "replace_after",
         "duty",
         "covariates",
+        "upgrade",
     )
 )
+
+#: The keys of a component's ``"upgrade"`` spec.
+UPGRADE_KEYS = ("at", "reliability", "cost")
 
 #: The models of imperfect repair a spec's ``"repair"`` can name.
 REPAIR_MODELS = ("kijima1", "kijima2")
@@ -942,6 +947,70 @@ def _validate_level(node, spec: dict, policy: str, life) -> Optional[float]:
             f"{float(life.threshold):g}, got {spec['level']!r}."
         )
     return level
+
+
+def _validate_upgrade(node, spec: dict) -> _Upgrade:
+    """A component spec's ``"upgrade"``, validated: the time (in the
+    diagram's time from 0) from which its units have another life, that
+    life, and the capital cost charged then. An upgraded component is a
+    plain one: its schedule is the upgrade."""
+    from repyability.utils.checks import no_distribution
+
+    upgrade = spec["upgrade"]
+    if not isinstance(upgrade, dict):
+        raise ValueError(
+            f"Component {node!r}: upgrade must be a dict of "
+            f"{', '.join(UPGRADE_KEYS)}, got {upgrade!r}."
+        )
+    unknown = set(upgrade) - set(UPGRADE_KEYS)
+    if unknown:
+        raise ValueError(
+            f"Component {node!r}: unknown upgrade key(s) "
+            f"{sorted(map(str, unknown))}; it takes "
+            f"{', '.join(UPGRADE_KEYS)}."
+        )
+    for key, what in (
+        ("preventive", "a preventive task"),
+        ("inspection", "an inspection"),
+        ("standby", "standby units"),
+        ("repair", "an imperfect repair"),
+        ("replace_after", "an imperfect repair"),
+        ("group", "a maintenance group"),
+        ("duty", "a duty"),
+        ("covariates", "a covariate schedule"),
+    ):
+        if spec.get(key) is not None:
+            raise ValueError(
+                f"Component {node!r} has an upgrade and {what} ({key!r}), "
+                "which are not taken together yet: give it one or the "
+                "other."
+            )
+    for key in ("at", "reliability"):
+        if key not in upgrade:
+            raise ValueError(
+                f"Component {node!r}: an upgrade needs {key!r}: the time "
+                "from which its units have the new life (at), and that "
+                "life (reliability)."
+            )
+    at = number_or_nan(upgrade["at"])
+    if not (at > 0.0 and math.isfinite(at)):
+        raise ValueError(
+            f"Component {node!r}: the upgrade's time (at) must be a "
+            "positive, finite number, in the diagram's time from 0, got "
+            f"{upgrade['at']!r}."
+        )
+    life = upgrade["reliability"]
+    no_distribution(life, f"Component {node!r}: the upgrade's reliability")
+    if not (hasattr(life, "sf") and hasattr(life, "ff")):
+        raise ValueError(
+            f"Component {node!r}: the upgrade's reliability must be a "
+            "lifetime model (such as a fitted surpyval distribution), got "
+            f"{life!r}."
+        )
+    cost = 0.0
+    if upgrade.get("cost") is not None:
+        cost = _validate_cost(node, "the upgrade's cost", upgrade["cost"])
+    return _Upgrade(at, life, cost)
 
 
 def _validate_standby(node, spec: dict) -> _Standby:

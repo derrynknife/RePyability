@@ -129,7 +129,7 @@ def _system_at(
     over ``[0, horizon]``, as a function of the times; the curves whose
     bends its integral's pieces follow; and the crews' curve, where a
     component can wait for a crew (else None)."""
-    _shutdowns.require_exact(rbd)
+    _shutdowns.require_over_time(rbd)
     if rbd._crews_couple():
         crew = _curves._crew_curve(
             rbd, horizon, working_nodes, broken_nodes, method, states
@@ -349,7 +349,7 @@ def _window(
     ``causes``, the system failures each node (or common cause)
     causes."""
     method = structure_method(method)
-    _shutdowns.require_exact(rbd)
+    _shutdowns.require_over_time(rbd)
     windows = nonnegative_times(t)
     working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     forced = working | broken
@@ -564,6 +564,11 @@ def expected_cost(
                             _mean_cost(node_costs[key]) * events[kind],
                         )
                     )
+        if "capital_cost" in node_costs:
+            # An upgrade's capital cost, charged at its time whatever the
+            # unit's state.
+            paid = ends > rbd._upgrades[node].at
+            charges.append(("capital", node_costs["capital_cost"] * paid))
         rate = node_costs.get("downtime_cost", 0.0)
         if rate:
             down = (

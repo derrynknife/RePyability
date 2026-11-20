@@ -12,6 +12,44 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: mid-life upgrades, retirement and salvage in a net present
+  value (UC-52 of the maintenance README). A component spec takes
+  `"upgrade": {"at": time, "reliability": new_life, "cost": capital}`:
+  from that time its units have the new life (the unit in service is
+  replaced by one of it, in no time), and the capital cost is charged
+  then under a new cost category, `"capital"`. Its values over a horizon
+  are worked out (`point_availability`, `mission_availability`,
+  `expected_events`, `expected_cost`, `expected_npv`), from new or from
+  a state; an upgrade to the same life at no cost is a replacement at
+  that time. `expected_npv` takes `retire_at=` (nothing is earned or
+  spent after it; the equivalent annual cost is over the time to it) and
+  `salvage=` (a number for the system, or a dict by component, credited
+  at the retirement or the horizon and discounted from there; a
+  component's may be a function of the age of its unit in service, for a
+  plain component from new). `ExpectedNPV` gains `salvage`,
+  `undiscounted_salvage` and `retire_at`, and its cash flows the
+  categories `"capital"` and `"salvage"`. An upgraded diagram has no
+  long run and is not simulated yet: those methods refuse, saying what
+  to run. Every cost breakdown gains a `"capital"` entry of 0; without
+  an upgrade, a retirement or a salvage every value is as before.
+
+- Added: outages at given times, valued without simulation (UC-24 of the
+  maintenance README). A diagram's `shutdowns` at `"times"` (each with
+  its duration, scope and cost; several shutdowns for different
+  outages) were simulated only. Over a horizon they are now worked out
+  where every block worked on in them is renewed (`"preventive":
+  {"shutdown": name}`): `point_availability`, `mission_availability`,
+  `expected_events`, `expected_cost`, `expected_npv`,
+  `expected_events_by_window`, `compare`, `maintenance_effect` over a
+  window, and a run's default means. A renewed block is replaced at each
+  outage if it is up, taking the outage's time; the blocks in scope are
+  held off line in each window; each outage's cost and each job's is
+  charged and discounted at the outage's start. Outages at a period's
+  times give the shutdown on that period's values. A job that restores
+  part-way, a block kept unless due (`"older_than"`, on condition) and a
+  test at outages at given times stay simulated, and the exact methods
+  say so.
+
 - Added: a component replaced at a list of times (UC-51 of the
   maintenance README). A `"preventive"` spec takes `"replace_at"`, the
   times in the diagram's time from 0 (positive, increasing), in place of
@@ -386,6 +424,11 @@ release between minors that only adds (0.19.1).
   (exact by default, simulation on request).
 
 ### Changed
+
+- Changed: the long-run methods' refusal of shutdowns at given times now
+  says why and what to ask for (they end, so there is no long run: a
+  horizon, or a period), where it said that the exact methods take
+  shutdowns on a period.
 
 - Changed: a `Recurrence` counted from an anchor (every so many days,
   weeks, months or years) finds its dates far from the anchor without

@@ -2148,17 +2148,25 @@ class ExpectedNPV(_ResultMapping):
     period_ends : list
         Where each period of the cash-flow table ends, in the models'
         time: the last is the horizon.
+    salvage : float
+        The present value of the salvage credited at the end (the
+        retirement, or the horizon); 0 with none.
+    undiscounted_salvage : float
+        The salvage, not discounted.
+    retire_at : float or None
+        When the system is retired, before the horizon: nothing is earned
+        or spent after it. None if it runs to the horizon.
     cash_flows : list
         The cash-flow table: one dict per period, category and component
         with something in it, with ``period`` (from 1), ``start``, ``end``,
-        ``category`` (a cost category, or ``"value"``), ``component`` (None
-        for value, the system's downtime and a group's set-up),
-        ``present_value`` and ``undiscounted``, both signed: costs
-        negative, value positive. The ``present_value`` of all rows add up
+        ``category`` (a cost category, ``"value"`` or ``"salvage"``),
+        ``component`` (None for value, the system's salvage, its downtime
+        and a group's set-up),
+        ``present_value`` and ``undiscounted``, both signed: costs negative,
+        value and salvage positive. The ``present_value`` of all rows add up
         to ``npv``. Costs given by period and category are the exact
-        increments of the expected cost; the table is for applying your
-        own tax, depreciation and financial-year conventions outside the
-        package.
+        increments of the expected cost; the table is for applying your own
+        tax, depreciation and financial-year conventions outside the package.
 
     Examples
     --------
@@ -2204,22 +2212,27 @@ class ExpectedNPV(_ResultMapping):
     cost_by_component: Dict[Hashable, float]
     period_ends: List[float]
     cash_flows: List[Dict[str, Any]]
+    salvage: float = 0.0
+    undiscounted_salvage: float = 0.0
+    retire_at: Optional[float] = None
 
     @property
     def annuity_factor(self) -> float:
-        """What one unit of cost per unit time, steady over the horizon,
-        is worth now: ``(1 - exp(-r H)) / r`` for the ``discount_rate``
-        ``r`` and the ``horizon`` ``H``, and ``H`` with none.
+        """What one unit of cost per unit time, steady over the horizon
+        (to the retirement, with a ``retire_at``), is worth now:
+        ``(1 - exp(-r H)) / r`` for the ``discount_rate`` ``r`` and the
+        ``horizon`` ``H``, and ``H`` with none.
 
         Returns
         -------
         float
             The factor ``eac`` divides the cost by.
         """
+        length = self.horizon if self.retire_at is None else self.retire_at
         if not self.discount_rate:
-            return self.horizon
+            return length
         return float(
-            -np.expm1(-self.discount_rate * self.horizon) / self.discount_rate
+            -np.expm1(-self.discount_rate * length) / self.discount_rate
         )
 
 

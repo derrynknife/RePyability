@@ -698,6 +698,17 @@ class _Preventive(NamedTuple):
         return due if due > renewed else due + self.interval
 
 
+class _Upgrade(NamedTuple):
+    """A component's upgrade (its spec's ``"upgrade"``): at the time
+    ``at`` the unit in service is replaced, in no time, by one of the life
+    ``life``, as is every unit put into service after it, for the capital
+    cost ``cost``, charged then."""
+
+    at: float
+    life: Any
+    cost: float
+
+
 class _Imperfect(NamedTuple):
     """A component's imperfect repair (#109): ``kijima`` (``"kijima1"`` or
     ``"kijima2"``) and its restoration factor ``q`` (0 renews, 1 is minimal

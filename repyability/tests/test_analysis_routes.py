@@ -1129,6 +1129,16 @@ def test_the_readme_says_what_is_simulated():
                     "refused",
                 ),
                 ("shutdowns at given times, restoring", "cost", "simulated"),
+                (
+                    "outages at given times, renewing",
+                    "expected_npv",
+                    "numerical",
+                ),
+                (
+                    "outages at given times, renewing",
+                    "mean_availability",
+                    "refused",
+                ),
             )
         ],
         "Planned against unplanned downtime, and the failures a plan "
@@ -1157,6 +1167,11 @@ def test_the_readme_says_what_is_simulated():
                 repairable["shutdowns at given times, restoring"],
                 "maintenance_effect",
                 "simulated",
+            ),
+            (
+                repairable["outages at given times, renewing"],
+                "maintenance_effect",
+                "numerical",
             ),
         ],
         "Replacement on condition by a measured degradation level": [

@@ -700,6 +700,18 @@ def repairable_kinds():
                     repair_cost=5.0,
                 ),
             ),
+            # Upgraded at a time: its units have another life from then,
+            # at a capital cost (worked out over a horizon; not simulated).
+            "upgraded at a time": system(
+                unit(
+                    upgrade={
+                        "at": 250.0,
+                        "reliability": W([900, 2.0]),
+                        "cost": 50.0,
+                    },
+                    repair_cost=5.0,
+                ),
+            ),
             "block replacement, in no time": system(
                 unit(
                     repairability="instant",
@@ -1287,6 +1299,27 @@ def repairable_kinds():
                         "times": [150.0, 400.0, 700.0],
                         "duration": 8.0,
                         "scope": ["a"],
+                        "cost": 30.0,
+                    }
+                },
+            ),
+            # Outages at given times, each renewing a block: exact over
+            # a horizon (no long run).
+            "outages at given times, renewing": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={"shutdown": "outage", "cost": 2.0},
+                        repair_cost=5.0,
+                    ),
+                    "b": unit(),
+                    "c": unit(),
+                },
+                shutdowns={
+                    "outage": {
+                        "times": [150.0, 400.0, 700.0],
+                        "duration": 8.0,
+                        "scope": ["a", "c"],
                         "cost": 30.0,
                     }
                 },
