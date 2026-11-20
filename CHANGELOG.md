@@ -107,6 +107,22 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- Changed (intentional, the numbers can differ):
+  `Repairable.optimal_overhaul_replace_policy` searched only "overhaul
+  every `T`, replace after `K` periods", and its best was often beaten
+  by a plan it did not price. It now prices four plans and returns the
+  cheapest: overhaul and replace (`K` from 2 to `max_cycles`), overhaul
+  only (never replace; the age settles at `f T / (1 - f)`, `cycles` is
+  `inf`), replace only (`K = 1`) and a failure limit (replace at the
+  best `n`-th failure, at the replacement cost; new `max_failures`,
+  default 30). `OverhaulReplacePolicy` gains `plan`, `failure_count`,
+  `alternatives` (each plan's cost rate and settings), `saving` (against
+  the next best) and `cycles_limit_reached`; the old fields keep their
+  meaning. The documented example (overhaul every 177.7, replace every
+  second period, 0.1172 per unit time) now returns overhaul only, every
+  73.8, at 0.1129. A unit that does not wear out returns plan `"run to
+  failure"`, as before with `interval` `inf` and `cycles` 1.
+
 - Changed: `optimal_next_replacement` with a policy chosen at a discount
   (a `MaintenancePolicy` or `CalendarPolicy` with `discount_rate`, or a
   site's discounted `ShutdownPolicy` or horizon) now discounts its own

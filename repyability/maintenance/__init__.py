@@ -8,7 +8,7 @@ answers and how it is solved."""
 
 import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Mapping, Optional, Union
 
 from repyability.rbd.results import _ResultMapping
 
@@ -119,23 +119,44 @@ class OverhaulReplacePolicy(_ResultMapping):
 
     Returned by the ``optimal_overhaul_replace_policy()`` method of
     [`Repairable`][repyability.Repairable]: failures are repaired minimally,
-    the unit is overhauled every ``interval`` (an overhaul takes off part of
-    its age) and replaced by a new unit after ``cycles`` such periods. It is
-    an immutable (frozen) dataclass, read as a mapping too, with
-    ``to_dict()`` for JSON.
+    and the cheapest of four plans is kept: overhaul every ``interval``
+    (an overhaul takes off part of the unit's age) and replace by a new
+    unit after ``cycles`` such periods; overhaul only, never replacing;
+    replace only, with no overhauls; or replace at the
+    ``failure_count``-th failure. It is an immutable (frozen) dataclass,
+    read as a mapping too, with ``to_dict()`` for JSON.
 
     Attributes
     ----------
     interval : float
-        The time between overhauls, in the time units of the component's
-        model. ``inf`` when overhauling never pays.
-    cycles : int
+        The time between overhauls (between replacements for ``"replace
+        only"``), in the time units of the component's model. ``inf`` when
+        there is no planned overhaul or replacement (``"failure limit"``
+        and ``"run to failure"``).
+    cycles : int or float
         The number of periods of ``interval`` between replacements: the
         unit is overhauled ``cycles - 1`` times, and replaced at the end of
         the ``cycles``-th period. ``1`` means no overhaul: replace every
-        ``interval``.
+        ``interval``. ``inf`` for ``"overhaul only"``: never replace.
     cost_rate : float
         The long-run expected cost per unit time under the policy.
+    plan : str
+        The plan that won: ``"overhaul and replace"``, ``"overhaul
+        only"``, ``"replace only"``, ``"failure limit"``, or ``"run to
+        failure"`` when the unit does not wear out, so that nothing pays.
+    failure_count : int or None
+        For ``"failure limit"``, the failure at which the unit is replaced
+        (the earlier ones are repaired); otherwise None.
+    alternatives : dict
+        Each plan compared, by name, with its cost rate and its best
+        ``interval``, ``cycles`` or ``failure_count``.
+    saving : float
+        How much less the winner costs per unit time than the next best
+        plan; 0 when nothing else was compared.
+    cycles_limit_reached : bool
+        True when the best ``"overhaul and replace"`` plan used the most
+        periods searched (``max_cycles``): more might pay, and they tend
+        towards ``"overhaul only"``.
 
     Examples
     --------
@@ -146,13 +167,21 @@ class OverhaulReplacePolicy(_ResultMapping):
     >>> policy = unit.optimal_overhaul_replace_policy(
     ...     overhaul_factor=0.6, replacement_cost=20.0, max_cycles=5
     ... )
-    >>> policy.cycles, round(policy.interval, 1), round(policy.cost_rate, 4)
-    (2, 177.7, 0.1172)
+    >>> policy.plan, policy.cycles, round(policy.interval, 1)
+    ('overhaul only', inf, 73.8)
+    >>> sorted(policy.alternatives)  # doctest: +NORMALIZE_WHITESPACE
+    ['failure limit', 'overhaul and replace', 'overhaul only',
+     'replace only']
     """
 
     interval: float
-    cycles: int
+    cycles: Union[int, float]
     cost_rate: float
+    plan: str = "overhaul and replace"
+    failure_count: Optional[int] = None
+    alternatives: Optional[Mapping[str, Mapping[str, Any]]] = None
+    saving: float = 0.0
+    cycles_limit_reached: bool = False
 
 
 # After the policies, which the modules it imports may import from here.
