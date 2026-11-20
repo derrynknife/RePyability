@@ -178,9 +178,9 @@ search is a local one from the long run's best plan, and with `allowed`
 every combination is valued. The targets (`min_availability`,
 `max_cost_rate`) are kept with either objective: they bound the long-run
 values, and the objective is the best within them. A diagram with a priced
-component that has no renewal cycle of its own worked out (a tested unit, a
-standby group, block replacement, a common-cause group) refuses `"eac"` at a
-discount rate, and names `"npv"`.
+component that has no renewal cycle of its own worked out (a standby group,
+block replacement, a common-cause group, a unit whose tests or repairs take
+time) refuses `"eac"` at a discount rate, and names `"npv"`.
 
 With limited `repair_crews` a component can wait for a crew, and the exact
 long-run values the search uses no longer hold, so the choice is refused.
@@ -1063,6 +1063,27 @@ component, any interval can be chosen:
 
 ```python
 pump(100.0).optimal_inspection_intervals().intervals["p"]   # -> 285.5   the formula gives 283
+```
+
+The tests can be chosen at a discount rate too, with the objectives of the
+[age-replacement intervals](#choosing-the-intervals): `objective="eac"` for
+the lowest equivalent annual cost in the long run, less a `value_rate`
+earned while the system works, and `objective="npv"` for the highest
+expected net present value over a `horizon`. A tested unit starts afresh at
+the test that finds it failed, so its cycle is the tests up to that one:
+each is paid for when it is made, the failure when it is found, and the
+unit's own downtime from the failure to that test, each discounted to when
+it falls. That holds for tests and repairs that take no time and find every
+failure; any other tested unit refuses `"eac"` at a discount rate and names
+`"npv"`. Tests cost now and hidden failures cost later, so a discount rate
+puts the tests a little further apart:
+
+```python
+plan = pump(100.0).optimal_inspection_intervals(
+    objective="eac", discount_rate=1e-4
+)
+plan.intervals["p"]     # -> 286.9   against 285.5 undiscounted
+plan.objective_value    # -> 13.94   the equivalent annual cost, per hour
 ```
 
 For a safety function, `min_availability=1 - PFDavg target` gives the

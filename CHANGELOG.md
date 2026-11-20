@@ -12,6 +12,24 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: test intervals chosen at a discount rate.
+  `RepairableRBD.optimal_inspection_intervals` takes the objectives of
+  `optimal_replacement_intervals`: `objective="eac"` (with
+  `discount_rate=` and `value_rate=`) for the lowest equivalent annual
+  cost in the long run, and `objective="npv"` with a `horizon` for the
+  highest `expected_npv`, with `allowed`, `offset_shares`,
+  `min_availability` (a PFDavg limit) and `max_cost_rate` as before. A
+  component with hidden failures, tested and repaired in no time by
+  tests that find every failure, is discounted over its own cycle, the
+  tests up to the one that finds it failed: each test when it is made,
+  the failure when it is found, its own downtime from the failure to
+  that test (for an exponential life a closed form, which the tests
+  check; the first cycle from the tests' offset). So such a component is
+  no longer refused by `optimal_replacement_intervals(objective="eac")`
+  either. Tests or repairs that take time, and tests that can miss a
+  failure, refuse `"eac"` at a discount rate and name `"npv"`. At a rate
+  of 0 the plan is the cost rate's.
+
 - Added: what a scheduled replacement is worth against running to failure,
   on real dates (UC-50 of `repyability/schedule/README.md`).
   `task_value(task, Replaces(part), usage, *, age=0.0, unit=None,

@@ -10,6 +10,7 @@ names call these.
 import dataclasses
 import itertools
 import math
+from functools import partial
 from typing import (
     TYPE_CHECKING,
     Callable,
@@ -84,7 +85,11 @@ class _Goal:
             return cost - self.value_rate * availability
         own = 0.0
         for node in plan.costs:
-            key = (node, plan._preventive.get(node))
+            key = (
+                node,
+                plan._preventive.get(node),
+                plan._inspection.get(node),
+            )
             if key not in self._own:
                 self._own[key] = _discounted_long_run.node_eac(
                     plan, node, self.rate
@@ -811,6 +816,10 @@ def optimal_inspection_intervals(
     max_cost_rate: Optional[float],
     assume_unlimited_crews: bool,
     offset_shares,
+    objective: str,
+    discount_rate: float,
+    value_rate: float,
+    horizon,
 ) -> MaintenancePlan:
     """See ``RepairableRBD.optimal_inspection_intervals``."""
     chosen = _inspected(rbd, nodes)
@@ -827,18 +836,27 @@ def optimal_inspection_intervals(
             min_availability=min_availability,
             max_cost_rate=_less_salaries(max_cost_rate, salaries),
             offset_shares=offset_shares,
+            objective=objective,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            horizon=horizon,
         )
         return _with_salaries(plan, salaries)
+    goal = _goal(rbd, objective, discount_rate, value_rate, horizon)
     # Each failure rate per unit its interval is given in.
     rates = {
         node: _requirements._tested_scale(rbd, node) / _per_given(rbd, node)
         for node in chosen
     }
 
+    def planned(intervals: dict) -> "RepairableRBD":
+        return _with_intervals(rbd, inspection=intervals)
+
     def evaluate(intervals: dict) -> Tuple[float, float]:
-        plan = _with_intervals(rbd, inspection=intervals)
+        plan = planned(intervals)
         return plan.expected_cost_rate(), plan.mean_availability()
 
+    score = _scorer(goal, evaluate, planned)
     if offset_shares is not None:
         if allowed is None:
             raise ValueError(
@@ -853,6 +871,7 @@ def optimal_inspection_intervals(
             _allowed_shares(offset_shares, chosen),
             min_availability,
             max_cost_rate,
+            goal,
         )
     if allowed is None and rbd._inspection[chosen[0]].partial:
         _requirements._require_one_inspected(rbd)
@@ -866,6 +885,7 @@ def optimal_inspection_intervals(
             evaluate,
             min_availability,
             max_cost_rate,
+            score,
         )
     elif allowed is None:
         _requirements._require_one_inspected(rbd)
@@ -882,14 +902,28 @@ def optimal_inspection_intervals(
             np.array([math.log(0.1 / rate)]),
             np.array([math.log(1.0 / rate)]),
         ]
-        best = _choose_intervals(
+        searched = partial(
+            _choose_intervals,
             chosen,
             evaluate,
-            starts,
-            (low, high),
-            min_availability,
-            max_cost_rate,
+            bounds=(low, high),
+            min_availability=min_availability,
+            max_cost_rate=max_cost_rate,
         )
+        if goal is not None and goal.objective == "npv":
+            # A net present value takes its curves over the horizon at
+            # each interval: searched from the long run's best.
+            near = searched(
+                starts,
+                score=_scorer(_long_run_goal(rbd, goal), evaluate, planned),
+            )
+            best = searched(
+                [np.array([math.log(near[node])])],
+                score=score,
+                quadrature=True,
+            )
+        else:
+            best = searched(starts, score=score)
     else:
         best = _choose_from(
             chosen,
@@ -897,6 +931,7 @@ def optimal_inspection_intervals(
             evaluate,
             min_availability,
             max_cost_rate,
+            score,
         )
     cost, availability = evaluate(best)
     # The offsets the plan's tests keep: each its share of the interval.
@@ -906,10 +941,14 @@ def optimal_inspection_intervals(
         / rbd._inspection[node].interval
         for node in chosen
     }
-    return MaintenancePlan(
+    return _planned(
+        rbd,
         {node: float(best[node]) for node in chosen},
         cost,
         availability,
+        goal,
+        score,
+        best,
         offsets=offsets_kept,
     )
 
@@ -1060,6 +1099,7 @@ def _choose_tests(
     shares: dict,
     min_availability: Optional[float],
     max_cost_rate: Optional[float],
+    goal: Optional[_Goal] = None,
 ) -> MaintenancePlan:
     """``optimal_inspection_intervals`` with the offsets chosen too: each
     node's interval from ``intervals`` and its first test's share of it
@@ -1072,22 +1112,35 @@ def _choose_tests(
     options = {("interval", n): intervals[n] for n in chosen}
     options.update({("offset", n): shares[n] for n in chosen})
 
-    def evaluate(choice: dict) -> Tuple[float, float]:
-        plan = _with_intervals(
+    def planned(choice: dict) -> "RepairableRBD":
+        return _with_intervals(
             rbd,
             inspection={n: choice[("interval", n)] for n in chosen},
             offsets={n: choice[("offset", n)] for n in chosen},
         )
+
+    def evaluate(choice: dict) -> Tuple[float, float]:
+        plan = planned(choice)
         return plan.expected_cost_rate(), plan.mean_availability()
 
+    score = _scorer(goal, evaluate, planned)
     best = _choose_from(
-        list(options), options, evaluate, min_availability, max_cost_rate
+        list(options),
+        options,
+        evaluate,
+        min_availability,
+        max_cost_rate,
+        score,
     )
     cost, availability = evaluate(best)
-    return MaintenancePlan(
+    return _planned(
+        rbd,
         {n: float(best[("interval", n)]) for n in chosen},
         cost,
         availability,
+        goal,
+        score,
+        best,
         offsets={
             n: float(best[("offset", n)] * best[("interval", n)])
             for n in chosen
