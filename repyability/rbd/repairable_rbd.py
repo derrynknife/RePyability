@@ -506,6 +506,29 @@ class RepairableRBD(RBD):
         at a rate ``r``, ``n c (1 - exp(-r T)) / r``), and the long-run
         cost rate ``n c``. It needs ``repair_crews``: as many crews as are
         needed cannot be priced.
+    call_out : dict, optional
+        A call-out crew, one more crew that comes only when jobs wait, by
+        default None: ``{"when_waiting": k, "fee": f, "rate": c}``, with
+        ``k`` a whole number of jobs, 1 or more, and ``"fee"`` and
+        ``"rate"`` costs (0 if left out). The rule: when a job falls due,
+        finds every crew busy and is then the ``k``-th waiting, the
+        call-out crew comes at once and starts the waiting job the next
+        free crew would have taken. While it is engaged there is one crew
+        more, and a crew that finishes a job takes the next waiting one as
+        ever. It leaves at the first end of a job that leaves a crew with
+        no waiting job to take: the crews are alike, so the job the
+        call-out crew has then, if any, is finished by the crew that came
+        free. (It does not stay to finish its own job, and it is not sent
+        away while a job still waits.) It is one crew: jobs that wait
+        while it is engaged call no other. Each call-out costs ``f`` and
+        its time engaged ``c`` per unit time, under the category
+        ``"crews"``. With exponential lives and repairs the crews' Markov
+        chain has it exactly (the long-run values, those over time and the
+        discounted ones, as for ``repair_crews``); the simulations follow
+        the same rule, in Python. The same diagram without ``call_out``
+        gives what the contract is worth: the difference of the two costs
+        (or NPVs). It needs ``repair_crews``, and does nothing where no
+        job can wait.
 
 
     Attributes
@@ -530,6 +553,9 @@ class RepairableRBD(RBD):
         The number of repair crews (None: as many as are needed).
     crew_cost_rate : float
         What each repair crew costs per unit time (0.0: not priced).
+    call_out : dict or None
+        The call-out crew's ``"when_waiting"``, ``"fee"`` and ``"rate"``
+        (None: there is none).
     acquisition_costs : dict
         Node name -> the one-off cost of buying the unit, for the nodes that
         declare a non-zero ``"acquisition_cost"``.
@@ -607,7 +633,8 @@ class RepairableRBD(RBD):
         the input or output node or a node not in the diagram; if
         ``repair_crews`` is not a whole number of at least 1, a
         ``crew_cost_rate`` is not a finite, non-negative number or is
-        given without ``repair_crews``, or a
+        given without ``repair_crews``, a ``call_out`` is not such a dict
+        or is given without ``repair_crews``, or a
         ``"priority"`` is not a finite number; or if an ``"opportunity"``
         is not an age from 0 to an age policy's interval, is given to a
         component in no group, or a group's member has hidden failures or
@@ -739,6 +766,7 @@ class RepairableRBD(RBD):
         ccf_groups: Optional[Sequence[Any]] = None,
         shutdowns: Optional[dict[Any, dict]] = None,
         crew_cost_rate: float = 0.0,
+        call_out: Optional[dict] = None,
     ):
         _check_on_infeasible_rbd(on_infeasible_rbd)
         # Capture the constructor inputs verbatim (before any mutation) so the
@@ -805,6 +833,9 @@ class RepairableRBD(RBD):
                 else shutdowns or None
             ),
             "crew_cost_rate": crew_cost_rate,
+            "call_out": (
+                dict(call_out) if isinstance(call_out, dict) else call_out
+            ),
         }
         # Outages planned at given times, holding blocks off line (see
         # _shutdowns); their scopes are checked once the diagram is built.
@@ -824,6 +855,12 @@ class RepairableRBD(RBD):
         self.repair_crews = _validate_crews(repair_crews)
         self.crew_cost_rate = _spec._validate_crew_cost(
             crew_cost_rate, self.repair_crews
+        )
+        # A call-out crew (see _events._Crews): when it is called, its
+        # fee and its rate while engaged.
+        self._call_out = _spec._validate_call_out(call_out, self.repair_crews)
+        self.call_out = (
+            None if self._call_out is None else self._call_out._asdict()
         )
         # Each component's place in the queue for a crew (higher first).
         self._priority: dict[Any, float] = {}
@@ -1229,6 +1266,7 @@ class RepairableRBD(RBD):
             bool(self.costs)
             or bool(self.downtime_cost_rate)
             or bool(getattr(self, "crew_cost_rate", 0.0))
+            or _crews._call_out_priced(self)
             or any(
                 group.setup_cost
                 for group in getattr(self, "_maintenance", {}).values()
@@ -5118,6 +5156,10 @@ class RepairableRBD(RBD):
         ``_standby_long_run``), and the nodes stay independent."""
         if not _crews._crews_limited(self):
             return False
+        if _crews._call_when(self):
+            # A call-out crew ties the jobs together whoever owns them
+            # (a standby group's own chain does not count it).
+            return True
         owners = {
             key.node if isinstance(key, _Unit) else key
             for key in _crews._crew_served(self)

@@ -257,6 +257,12 @@ class _StandbyGroup:
             _Unit(self._node, unit), t, Event(ends, None, True)
         ):
             self._queue(ends, _UNIT_REPAIRED, unit)
+        elif crews.call_when:
+            from . import _event_loop
+
+            started = crews.call(t)
+            if started is not None:
+                _event_loop._crew_started(self._rbd, started)
 
     def crew_started(self, unit: int, ends: float) -> None:
         """A crew has started unit ``unit``'s repair late: it ends at
@@ -343,11 +349,33 @@ class _Crews:
     the highest priority, and of those the one that fell due first. The
     job's length was drawn when it fell due, so waiting shifts the
     component's restoration without changing its draws.
+
+    With a call-out crew (``call_when`` waiting jobs call it, a
+    ``RepairableRBD``'s ``call_out``): a job that makes that many wait
+    brings it, and it starts the first of them at once (``call``). While
+    it is engaged there is a crew more; it leaves at the first end of a
+    job that leaves a crew with no waiting job to take (``release``): the
+    crews are alike, so whichever job it has then is finished by the crew
+    that came free. ``calls`` counts its call-outs and ``engaged_time``
+    its time engaged, which ``close`` ends at the end of the window. The
+    crews' Markov chain copies this (``_crew_chain._enumerate``).
     """
 
-    __slots__ = ("free", "served", "holding", "waiting", "_order", "_rank")
+    __slots__ = (
+        "free",
+        "served",
+        "holding",
+        "waiting",
+        "_order",
+        "_rank",
+        "call_when",
+        "engaged",
+        "calls",
+        "engaged_time",
+        "_since",
+    )
 
-    def __init__(self, crews: int, served, priority: dict):
+    def __init__(self, crews: int, served, priority: dict, call_when: int = 0):
         self.free = crews
         self.served = frozenset(served)
         self.holding: set = set()
@@ -360,10 +388,16 @@ class _Crews:
             )
             for key in served
         }
+        self.call_when = call_when
+        self.engaged = False
+        self.calls = 0
+        self.engaged_time = 0.0
+        self._since = 0.0
 
     def request(self, node, due: float, done: "Event") -> Optional["Event"]:
         """``node``'s job, due at ``due`` and ending with ``done`` if a crew
-        starts it at once: ``done``, or None while the job waits."""
+        starts it at once: ``done``, or None while the job waits (with a
+        call-out crew, ``call`` then says whether it comes)."""
         if self.free:
             self.free -= 1
             self.holding.add(node)
@@ -373,14 +407,38 @@ class _Crews:
         self._order += 1
         return None
 
+    def call(self, t: float) -> Optional[Tuple[Any, float, "Event"]]:
+        """A job has had to wait at ``t``: if that makes ``call_when`` of
+        them and the call-out crew is not engaged, it comes and starts
+        the first (as ``release`` gives it); or None."""
+        if (
+            not self.call_when
+            or self.engaged
+            or len(self.waiting) < self.call_when
+        ):
+            return None
+        self.engaged = True
+        self.calls += 1
+        self._since = t
+        return self._start(t)
+
     def release(self, node, t: float) -> Optional[Tuple[Any, float, "Event"]]:
         """``node``'s job is done at ``t``: its crew starts the next waiting
         job, if any. That job's component, how long it waited, and the event
-        that now ends it; or None."""
+        that now ends it; or None, and the call-out crew, if engaged,
+        leaves in its place."""
         self.holding.discard(node)
-        if not self.waiting:
+        if self.waiting:
+            return self._start(t)
+        if self.engaged:
+            self.engaged = False
+            self.engaged_time += t - self._since
+        else:
             self.free += 1
-            return None
+        return None
+
+    def _start(self, t: float) -> Tuple[Any, float, "Event"]:
+        """A crew starts the first waiting job at ``t``."""
         _, due, _, waiting, done = heapq.heappop(self.waiting)
         self.holding.add(waiting)
         wait = t - due
@@ -392,6 +450,13 @@ class _Crews:
             done.inspection,
         )
         return waiting, wait, ends
+
+    def close(self, t: float) -> Tuple[int, float]:
+        """The call-out crew's call-outs and its time engaged by ``t``,
+        the end of the window."""
+        if self.engaged:
+            return self.calls, self.engaged_time + (t - self._since)
+        return self.calls, self.engaged_time
 
 
 class _Fixed:

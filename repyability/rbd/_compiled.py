@@ -136,6 +136,9 @@ def _unsupported_level(
         return "common-cause groups"
     if _crews._crews_limited(rbd) and not numba:
         return "repair crews"
+    if _crews._call_when(rbd):
+        # The Python loop's queue has the call-out crew's rule alone.
+        return "a call-out crew"
     if rbd._standby and not numba:
         return "standby groups"
     if rbd._maintenance:

@@ -12,6 +12,7 @@ from typing import (
     Any,
     Dict,
     Hashable,
+    NamedTuple,
     Optional,
     Tuple,
 )
@@ -41,6 +42,7 @@ from repyability.utils.checks import (
     is_number,
     number_or_nan,
     unfitted_distribution,
+    whole_number,
 )
 from repyability.utils.wrappers import outside_level
 
@@ -1086,6 +1088,53 @@ def _validate_crew_cost(value, crews: Optional[int]) -> float:
             "crews paid, or leave crew_cost_rate out."
         )
     return rate
+
+
+#: The keys of a ``call_out`` (see ``RepairableRBD``).
+CALL_OUT_KEYS = ("when_waiting", "fee", "rate")
+
+
+class _CallOut(NamedTuple):
+    """A call-out crew: how many waiting jobs call it, its fee each time
+    it comes and its cost per unit time while engaged."""
+
+    when_waiting: int
+    fee: float
+    rate: float
+
+
+def _validate_call_out(value, crews: Optional[int]) -> Optional[_CallOut]:
+    """``call_out``, validated: None, or a dict with ``"when_waiting"``
+    (a whole number of jobs, 1 or more) and optionally a ``"fee"`` and a
+    ``"rate"`` (finite, non-negative numbers), given with a number of
+    ``crews`` for jobs to wait for."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(
+            "call_out must be a dict with the keys "
+            f"{', '.join(map(repr, CALL_OUT_KEYS))}, or None; got {value!r}."
+        )
+    unknown = [key for key in value if key not in CALL_OUT_KEYS]
+    if unknown or "when_waiting" not in value:
+        raise ValueError(
+            "call_out takes 'when_waiting' (how many waiting jobs call the "
+            "crew) and optionally 'fee' and 'rate'; got the keys "
+            f"{sorted(map(str, value))}."
+        )
+    when = whole_number(value["when_waiting"], "call_out's 'when_waiting'")
+    fee = _validate_cost("<system>", "call_out's 'fee'", value.get("fee", 0.0))
+    rate = _validate_cost(
+        "<system>", "call_out's 'rate'", value.get("rate", 0.0)
+    )
+    if crews is None:
+        raise ValueError(
+            "call_out brings a crew more when jobs wait for the "
+            "repair_crews crews, but repair_crews is None: as many crews "
+            "as are needed, so that no job waits. Give repair_crews, or "
+            "leave call_out out."
+        )
+    return _CallOut(when, fee, rate)
 
 
 def _validate_component_cost(node, key: str, value):
