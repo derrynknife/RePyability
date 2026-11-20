@@ -221,7 +221,15 @@ def test_the_result_is_a_typed_mapping():
         "method",
         "trains",
         "discount_rate",
+        "objective",
+        "value_rate",
+        "value",
+        "running_cost",
+        "npv",
+        "eac",
+        "basis",
     }
+    assert best.objective == "cost" and best.npv is None
     assert best.trains is None  # none considered
     assert best.discount_rate == 0.0
     assert best.total_cost == pytest.approx(
