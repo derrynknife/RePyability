@@ -75,7 +75,7 @@ model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
 | UC-38 | The wear ring on the weekday pump: expected failures and cost by month, and the range | **Built**: `failures_by_period` |
 | UC-39 | A system's events by calendar month | **Built**: `events_by_period` |
 | UC-40 | Shuts on dates as opportunities on the part's clock | **Built**: `Opportunity.from_recurrence` |
-| UC-41 | The annual overhaul on the first Tuesday of November, as a diagram's shutdown | **Built**: `shutdown_spec` (simulated; the exact methods take shuts on a period) |
+| UC-41 | The annual overhaul on the first Tuesday of November, as a diagram's shutdown | **Built**: `shutdown_spec` (worked out over a horizon where the blocks worked on are renewed, and simulated; no long run) |
 | UC-43 | A site's shuts on real dates, one record for policies and diagrams | **Built** in `repyability.maintenance` (`Shutdowns`; its README's UC-43), laid on the part's clock through this module's rules, plans and forecasts |
 | UC-42 | Starts per operating hour for a life on two clocks | **Built**: `UsageForecast.life_at_usage` (needs surpyval 0.28) |
 
@@ -759,10 +759,11 @@ in `test_schedule_forecast.py`.
   Sydney the first is the same 8,478 h: both ends are in daylight saving.
 - **How it is solved:** as UC-40, on the diagram's clock (calendar
   time), as the shutdown's `"times"`.
-- **Not built:** the exact methods (`expected_events`, `expected_cost`,
-  and so `events_by_period`) take shuts on a period only; a diagram with
-  shuts at given times is simulated (`cost()`, `availability()`), and
-  `events_by_period` refuses it with the diagram's own message.
+- **Over a horizon:** `expected_events`, `expected_cost` and
+  `expected_npv` (and so `events_by_period`) take shuts at given times
+  where the blocks worked on in them are renewed; the simulations
+  (`cost()`, `availability()`) take any. They end, so the long-run
+  methods refuse such a diagram with a message that says so.
 - **Checks:** `test_uc41_shutdown_spec_on_dates`,
   `test_uc41_a_diagram_takes_the_dated_shuts` (two shuts in two years,
   $40,000, simulated).
@@ -806,10 +807,6 @@ in `test_schedule_forecast.py`.
 - **A duty that changes inside a `RepairableRBD`.** `schedule()` gives
   the duty as steps over calendar time, for that later work; today a
   block takes one average share, `duty()`.
-- **Shuts at given times in the exact methods.** `shutdown_spec` puts
-  dated shuts on a diagram, which the simulations take; the exact
-  `expected_events` and `expected_cost` (and so `events_by_period`) take
-  shuts on a period only.
 
 ## Candidates
 

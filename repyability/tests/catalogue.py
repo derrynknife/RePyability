@@ -1291,6 +1291,27 @@ def repairable_kinds():
                     }
                 },
             ),
+            # Outages at given times, each renewing a block: exact over
+            # a horizon (no long run).
+            "outages at given times, renewing": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={"shutdown": "outage", "cost": 2.0},
+                        repair_cost=5.0,
+                    ),
+                    "b": unit(),
+                    "c": unit(),
+                },
+                shutdowns={
+                    "outage": {
+                        "times": [150.0, 400.0, 700.0],
+                        "duration": 8.0,
+                        "scope": ["a", "c"],
+                        "cost": 30.0,
+                    }
+                },
+            ),
             "shutdown in no time": RepairableRBD(
                 EDGES,
                 {
