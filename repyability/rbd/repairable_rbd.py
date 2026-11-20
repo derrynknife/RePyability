@@ -4412,6 +4412,9 @@ class RepairableRBD(RBD):
         retire_at=None,
         salvage=None,
         rate_sensitivity: bool = False,
+        escalation: Optional[Dict[Hashable, float]] = None,
+        rates: str = "nominal",
+        inflation: Optional[float] = None,
     ) -> ExpectedNPV:
         """The expected net present value of running the system for
         ``horizon``, from new or from a state: what it earns while it
@@ -4456,9 +4459,11 @@ class RepairableRBD(RBD):
             models, as for ``total_cost``, by default 0 (undiscounted):
             for an annual rate ``i`` with models in hours,
             ``math.log(1 + i) / 8760``.
-        value_rate : float, optional
+        value_rate : float or ValueSchedule, optional
             What the system earns per unit time while it works, at least
-            0, by default 0 (costs alone). Constant in this version.
+            0, by default 0 (costs alone); or a
+            [`ValueSchedule`][repyability.ValueSchedule] of steps in
+            model time.
         periods : int or array-like, optional
             The periods of the cash-flow table: a number of equal periods
             across the horizon, or the increasing ends of the periods, the
@@ -4499,6 +4504,24 @@ class RepairableRBD(RBD):
             ``0.02`` over the time valued (central, or one-sided from a
             rate below the larger step), four more valuations. By default
             False.
+        escalation : dict, optional
+            A growth rate per unit time (continuous, of either sign) for
+            some streams, by cost category (``"repair"``, ``"replace"``,
+            ``"preventive"``, ``"inspection"``, ``"component_downtime"``,
+            ``"system_downtime"``, ``"setup"``, ``"shutdown"``,
+            ``"crews"``), by component (over its categories), or
+            ``"value"`` and ``"salvage"``: an amount at ``t`` is its price
+            today times ``exp(g t)``, so it is discounted at the rate less
+            its growth. The acquisition cost is paid at 0. By default
+            None: every price as it is.
+        rates : str, optional
+            ``"nominal"`` (the default) or ``"real"``: what
+            ``discount_rate`` and the growths are in.
+        inflation : float, optional
+            With ``rates="real"``, the continuous inflation per unit time:
+            every amount is made nominal (the rate and each stream's
+            growth take it too), which leaves the present values as they
+            are and makes the undiscounted ones nominal.
 
         Returns
         -------
@@ -4574,6 +4597,9 @@ class RepairableRBD(RBD):
             retire_at=retire_at,
             salvage=salvage,
             rate_sensitivity=rate_sensitivity,
+            escalation=escalation,
+            rates=rates,
+            inflation=inflation,
         )
 
     def npv_distribution(

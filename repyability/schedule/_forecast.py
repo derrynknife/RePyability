@@ -154,7 +154,7 @@ def _accrued_npv(
     # Half a window's bracket is under rate x half its length of its
     # value, so windows this short are within the tolerance.
     rate = _discount.continuous(discount)
-    wanted = int(np.ceil(span / _YEAR_SECONDS * rate / (2.0 * tolerance)))
+    wanted = int(np.ceil(span / _YEAR_SECONDS * abs(rate) / (2.0 * tolerance)))
     count = min(max(wanted, 1), MAX_WINDOWS)
     edges = np.unique(
         np.concatenate([np.linspace(0.0, span, count + 1)[1:], seconds])
@@ -330,6 +330,7 @@ def failures_by_period(
     since_renewal: Optional[float] = None,
     calendar=None,
     discount: Optional[float] = None,
+    escalation: Optional[float] = None,
     npv_tolerance: float = NPV_TOLERANCE,
 ) -> FailuresByPeriod:
     """A part's expected failures, their cost and its range in each
@@ -384,6 +385,12 @@ def failures_by_period(
         lies between, the middle is given and half the bracket is
         ``npv_precision``. The ranges stay undiscounted. By default None:
         no present values.
+    escalation : float, optional
+        With ``discount``, the effective yearly rate every cost
+        escalates at from its price today (0.03 for 3% a year): the
+        present values (and ``eac``) take each cost grown to when it
+        falls, at the net yearly rate ``(1 + discount) / (1 + escalation)
+        - 1``. By default None: today's prices.
     npv_tolerance : float, optional
         How close the present value is worked out: the windows are short
         enough for ``npv_precision`` to be within this share of ``npv``
@@ -427,6 +434,7 @@ def failures_by_period(
         raise ValueError(f"age must be a number, at least 0; got {age!r}.")
     age = float(age)
     discount = _discount.yearly(discount)
+    given, discount = discount, _discount.net(discount, escalation)
     npv_tolerance = _tolerance(npv_tolerance)
     found = usage.by_period(period)
     ends = np.atleast_1d(usage.model_time(list(found.ends), unit=unit))
@@ -580,9 +588,9 @@ def failures_by_period(
         total["expected_npv"] = npv
         total["npv_precision"] = npv_precision
         notes.append(
-            f"{_discount.words(discount, usage.start)} The expected cost "
-            "is discounted from when it is expected to fall, to within "
-            f"{npv_precision:.3g} in all"
+            f"{_discount.words(given, usage.start, escalation)} The "
+            "expected cost is discounted from when it is expected to "
+            f"fall, to within {npv_precision:.3g} in all"
             + ("; the ranges are not discounted." if low is not None else ".")
         )
     return FailuresByPeriod(
@@ -607,7 +615,7 @@ def failures_by_period(
         total=total,
         range=RANGE_WORDS,
         notes=tuple(notes),
-        discount=discount,
+        discount=given,
         expected_npv=expected_npv,
         npv=npv,
         npv_precision=npv_precision,
@@ -691,6 +699,7 @@ def events_by_period(
     mc_samples: Optional[int] = None,
     seed: Optional[int] = None,
     discount: Optional[float] = None,
+    escalation: Optional[float] = None,
 ) -> EventsByPeriod:
     """A ``RepairableRBD``'s expected events, and on request its cost, in
     each calendar period.
@@ -735,6 +744,12 @@ def events_by_period(
         discount)`` over the units in a year of 365.25 days, which
         [`expected_cost`][repyability.RepairableRBD.expected_cost] takes
         as its ``discount_rate``. By default None: no present values.
+    escalation : float, optional
+        With ``discount``, the effective yearly rate every cost
+        escalates at from its price today (0.03 for 3% a year): the
+        present values (and ``eac``) take each cost grown to when it
+        falls, at the net yearly rate ``(1 + discount) / (1 + escalation)
+        - 1``. By default None: today's prices.
 
     Returns
     -------
@@ -763,6 +778,7 @@ def events_by_period(
     usage = _usage(usage)
     notes: List[str] = []
     discount = _discount.yearly(discount)
+    given, discount = discount, _discount.net(discount, escalation)
     if discount is not None and not cost:
         raise ValueError(
             "discount= gives the cost as a present value: ask for the "
@@ -787,11 +803,17 @@ def events_by_period(
         )
     expected_npv = npv = eac = None
     if discount is not None:
-        present = rbd.expected_cost(
-            ends,
-            state=state,
-            discount_rate=_discount.per_unit(discount, UNITS[unit]),
-        )
+        rate = _discount.per_unit(discount, UNITS[unit])
+        if rate >= 0.0:
+            present = rbd.expected_cost(ends, state=state, discount_rate=rate)
+        else:
+            # Costs escalating faster than the discount: a rate below 0,
+            # valid over the forecast's window.
+            from repyability.rbd import _windows
+
+            present = _windows._discounted_cost(
+                rbd, ends, rate, None, None, "p", state, None
+            )
         running = np.atleast_1d(np.asarray(present.mean, float))
         expected_npv = np.diff(running, prepend=0.0)
         npv = float(running[-1])
@@ -799,7 +821,7 @@ def events_by_period(
             npv, discount, float(seconds[-1]) / _YEAR_SECONDS
         )
         notes.append(
-            f"{_discount.words(discount, usage.start)} Each cost is "
+            f"{_discount.words(given, usage.start, escalation)} Each cost is "
             "discounted from when it falls (exact); the range is not "
             "discounted, and an acquisition cost is not in the periods."
         )
@@ -817,7 +839,7 @@ def events_by_period(
         cost=costs,
         range=None if costs is None else RANGE_WORDS,
         notes=tuple(notes),
-        discount=discount,
+        discount=given,
         expected_npv=expected_npv,
         npv=npv,
         eac=eac,

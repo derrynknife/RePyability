@@ -67,6 +67,7 @@ model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
 | UC-49 | A system's expected costs by month, as present values | **Built**: `events_by_period(cost=True, discount=)` (exact) |
 | UC-50 | Is replacing the wear ring at every 6-monthly service worth it, at 7% a year? | **Built**: `task_value(task, Replaces(part), usage, discount=)` |
 | UC-54 | Is the 6-monthly trip test worth it, at 7% a year? | **Built**: `task_value` with `Finds(device, demand_rate=, consequence_cost=, repair_cost=)` |
+| UC-57 | The same present values with costs escalating at a yearly rate | **Built**: `escalation=` beside `discount=` (the maintenance README's UC-57; the costs by period stay at today's prices) |
 | UC-32 | A pump on weekday shifts: its hours by month, and its 2,000-hour service on dates | **Built**: `DutyPlan`, `UsageForecast` |
 | UC-33 | A concrete run: when is the 500-hour check due? | **Built**: `Runs`, a crossing's stops |
 | UC-34 | About 3 h a day, or 2 to 4: when are the 250-hour inspections? | **Built**: `Rate`, ranges |

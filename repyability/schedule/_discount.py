@@ -16,6 +16,10 @@ own unit of time takes it per unit (``per_unit``).
   ever.
 - ``bracket``: an expected cost that accrues inside windows, between
   discounting each window's at its start and at its end.
+- ``net``: the rate that discounts costs escalating at a yearly
+  ``escalation``: ``(1 + discount) / (1 + escalation) - 1`` (UC-57 of
+  the maintenance README), below 0 where they grow faster than the
+  discount.
 """
 
 from __future__ import annotations
@@ -45,6 +49,28 @@ def yearly(discount, *, required: bool = False) -> Optional[float]:
             f"0; got {discount!r}."
         )
     return float(discount)
+
+
+def net(discount, escalation) -> Optional[float]:
+    """The yearly rate the present values are taken at when every cost
+    escalates at the effective yearly ``escalation`` (0.03 for 3% a
+    year): an amount ``y`` years on is its price today times ``(1 +
+    escalation) ** y``, worth ``((1 + escalation) / (1 + discount)) **
+    y`` of that price now, which is ``(1 + net) ** -y``. ``discount`` as
+    ``yearly`` gave it; with no escalation, it."""
+    if escalation is None:
+        return discount
+    if discount is None:
+        raise ValueError(
+            "escalation= grows the costs in their present values: give a "
+            "discount= too (0 for none)."
+        )
+    if not (is_number(escalation) and -1.0 < float(escalation) < 10.0):
+        raise ValueError(
+            "escalation must be a yearly rate such as 0.03 (3% a year), "
+            f"more than -1; got {escalation!r}."
+        )
+    return (1.0 + discount) / (1.0 + float(escalation)) - 1.0
 
 
 def continuous(discount: float) -> float:
@@ -109,7 +135,9 @@ def bracket(
     amounts = np.asarray(amounts, float)
     high = amounts * factor(discount, starts)
     low = amounts * factor(discount, ends)
-    return 0.5 * (high + low), 0.5 * (high - low)
+    # (At a net rate below 0, costs escalating faster than the discount,
+    # the window's end is worth more than its start.)
+    return 0.5 * (high + low), 0.5 * np.abs(high - low)
 
 
 def percent(discount: float) -> str:
@@ -119,7 +147,19 @@ def percent(discount: float) -> str:
     return _percent(discount)
 
 
-def words(discount: float, start) -> str:
-    """The note every discounted result carries."""
+def words(discount: Optional[float], start, escalation=None) -> str:
+    """The note every discounted result carries (``discount`` given)."""
+    assert discount is not None
     day = start.date() if hasattr(start, "date") else start
-    return f"Discounted to {day} at {percent(discount)} a year."
+    out = f"Discounted to {day} at {percent(discount)} a year."
+    if escalation is not None:
+        overall_rate = net(discount, escalation)
+        assert overall_rate is not None
+        overall = percent(overall_rate)
+        out += (
+            f" The costs escalate at {percent(escalation)} a year from "
+            "their prices today: each present value is the cost grown to "
+            f"when it falls and discounted, a net {overall} a year; the "
+            "costs by period are at today's prices."
+        )
+    return out

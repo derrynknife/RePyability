@@ -921,7 +921,9 @@ def _model_solve(
 def _equivalent(npc: float, rate: float, length: float) -> float:
     """The steady cost a unit of time over ``length`` worth ``npc`` at the
     continuous ``rate`` (``npc / length`` at 0)."""
-    if rate > 0.0:
+    if rate > 0.0 or (rate < 0.0 and math.isfinite(length)):
+        # (Below 0, a net rate of costs that grow faster than the
+        # discount, over a finite length.)
         return rate * npc / -math.expm1(-rate * length)
     return npc / length
 

@@ -179,7 +179,7 @@ def _settings(rbd, horizon, discount_rate, value_rate, contract, mc_samples):
     """The checked settings both methods share."""
     rate = _discount_rate(discount_rate)
     horizon = _npv._number(horizon, "horizon", strict=True)
-    value_rate = _npv._number(value_rate, "value_rate", strict=False)
+    value_rate = _npv.steady_value(value_rate, "npv_distribution")
     contract = _contract(contract)
     ends = (
         None if contract is None else np.array(contract.period_ends(horizon))

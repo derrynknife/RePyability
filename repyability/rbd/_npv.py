@@ -18,7 +18,67 @@ from repyability.rbd._common import (
 )
 from repyability.rbd._tally import _CATEGORIES
 from repyability.rbd.results import ExpectedNPV
+from repyability.rbd.value_schedule import ValueSchedule, value_of
 from repyability.utils import checks
+
+#: The streams ``escalation`` names besides the cost categories and the
+#: components.
+_STREAMS = ("value", "salvage")
+
+
+def _escalation(rbd, escalation) -> Dict[Any, float]:
+    """``escalation`` checked: a dict of a growth rate (a continuous rate
+    per unit time, of either sign) by cost category, component,
+    ``"value"`` or ``"salvage"``."""
+    if escalation is None:
+        return {}
+    if not isinstance(escalation, dict):
+        raise ValueError(
+            "escalation must be a dict of a growth rate per unit time by "
+            "cost category, component, 'value' or 'salvage' (e.g. "
+            f"{{'repair': 0.03 / 8760}}); got {escalation!r}."
+        )
+    out: Dict[Any, float] = {}
+    for key, rate in escalation.items():
+        if not (
+            key in rbd.components or key in _CATEGORIES or key in _STREAMS
+        ):
+            raise ValueError(
+                f"escalation names {key!r}, which is no component, cost "
+                f"category ({', '.join(_CATEGORIES)}), 'value' or "
+                "'salvage'."
+            )
+        number = checks.number_or_nan(rate)
+        if not math.isfinite(number):
+            raise ValueError(
+                f"The escalation of {key!r} must be a finite growth rate "
+                "per unit time of the models (continuous; 3% a year with "
+                f"models in hours is math.log(1.03) / 8760); got {rate!r}."
+            )
+        out[key] = number
+    return out
+
+
+def _inflation(inflation, rates: str) -> float:
+    """The continuous inflation per unit time added to every rate: with
+    ``rates="real"``, ``inflation`` (0 when not given); refused with
+    ``"nominal"``, whose rates have it already."""
+    checks.one_of("rates", rates, ("nominal", "real"))
+    if inflation is None:
+        return 0.0
+    if rates == "nominal":
+        raise ValueError(
+            'inflation is for rates="real": nominal rates and growths '
+            'have it in them already. Give rates="real" with real '
+            "rates, or leave inflation out."
+        )
+    number = checks.number_or_nan(inflation)
+    if not math.isfinite(number):
+        raise ValueError(
+            "inflation must be a finite continuous rate per unit time of "
+            f"the models; got {inflation!r}."
+        )
+    return number
 
 
 def _number(value, name: str, strict: bool) -> float:
@@ -30,6 +90,18 @@ def _number(value, name: str, strict: bool) -> float:
             f"{name} must be a finite number, {what}; got {value!r}."
         )
     return number
+
+
+def steady_value(value_rate, method: str) -> float:
+    """A ``value_rate`` that must be one number (``method`` takes no
+    schedule yet), checked."""
+    if isinstance(value_rate, ValueSchedule):
+        raise ValueError(
+            f"{method} takes the value earned as one rate per unit time; "
+            "a ValueSchedule of steps is valued by expected_npv. Give "
+            "value_rate a number."
+        )
+    return _number(value_rate, "value_rate", strict=False)
 
 
 def _period_ends(periods, horizon: float) -> np.ndarray:
@@ -211,6 +283,9 @@ def expected_npv(
     retire_at=None,
     salvage=None,
     rate_sensitivity: bool = False,
+    escalation=None,
+    rates: str = "nominal",
+    inflation=None,
 ) -> ExpectedNPV:
     """See ``RepairableRBD.expected_npv``."""
     if not isinstance(rate_sensitivity, (bool, np.bool_)):
@@ -219,15 +294,31 @@ def expected_npv(
             f"the NPV's derivative in the discount rate); got "
             f"{rate_sensitivity!r}."
         )
-    rate = _discount_rate(discount_rate)
+    given_rate = _discount_rate(discount_rate)
     horizon = _number(horizon, "horizon", strict=True)
-    value_rate = _number(value_rate, "value_rate", strict=False)
+    value = value_of(value_rate)
+    schedule = value if isinstance(value, ValueSchedule) else None
+    growths = _escalation(rbd, escalation)
+    lift = _inflation(inflation, rates)
+    # In real terms with inflation, every amount is made nominal: the
+    # rate and every stream's growth take the inflation too, which
+    # leaves the present values as they are.
+    rate = given_rate + lift
+
+    def growth(*keys) -> float:
+        """The growth of a stream, by the first of ``keys`` named."""
+        for key in keys:
+            if key in growths:
+                return growths[key] + lift
+        return lift
+
+    earns = bool(value) if schedule is None else any(schedule.rates)
     table_ends = _period_ends(periods, horizon)
     # Retired before the horizon, nothing is earned or spent after: every
     # value is worked out to the retirement, and stays there.
     stop = _retirement(retire_at, horizon)
     ends = np.minimum(table_ends, stop)
-    if not value_rate:
+    if not earns:
         _requirements._require_costs(rbd)
     method = checks.structure_method(method)
     working, broken = rbd._held_nodes(working_nodes, broken_nodes)
@@ -237,53 +328,98 @@ def expected_npv(
     present_cells: Dict[Any, Any] = {}
     nominal_cells: Dict[Any, Any] = {}
     systems: Dict[str, Any] = {}
+    worth = 0.0 if schedule is not None else float(value)
+    value_growth = growth("value")
     with rbd._sharing_curves():
-        if value_rate:
-            up_present = value_rate * _uptime(
-                rbd, ends, rate, working, broken, method, state
+
+        def earned(effective: float) -> np.ndarray:
+            """The value earned to each end, each amount at ``t`` times
+            ``exp(-effective t)``: a steady rate's, or each step's."""
+            if schedule is None:
+                return worth * _uptime(
+                    rbd, ends, effective, working, broken, method, state
+                )
+            starts, stops, step_rates = schedule.steps(stop)
+            knots = np.unique(np.concatenate([ends, starts[1:]]))
+            found = dict(
+                zip(
+                    knots.tolist(),
+                    _uptime(
+                        rbd, knots, effective, working, broken, method, state
+                    ).tolist(),
+                )
             )
+            found[0.0] = 0.0
+            out = np.zeros(len(ends))
+            for a, b, step in zip(starts, stops, step_rates):
+                if step:
+                    upper = np.minimum(ends, b)
+                    lower = np.minimum(ends, a)
+                    out += step * np.array(
+                        [found[u] - found[w] for u, w in zip(upper, lower)]
+                    )
+            return out
+
+        if earns:
+            up_present = earned(rate - value_growth)
             up_nominal = (
-                value_rate
-                * _uptime(rbd, ends, 0.0, working, broken, method, state)
-                if rate
-                else up_present
+                earned(-value_growth) if rate or value_growth else up_present
             )
         else:
             up_present = up_nominal = np.zeros(len(ends))
         if rbd.has_costs:
             # The costs, cumulative at each period's end, by component
-            # and category; discounted at their exact times, and not.
-            got = _windows.expected_cost(
-                rbd,
-                ends,
-                working,
-                broken,
-                method,
-                state,
-                discount_rate=rate,
-                cells=present_cells,
-            )
-            if rate:
-                plain = _windows.expected_cost(
-                    rbd,
-                    ends,
-                    working,
-                    broken,
-                    method,
-                    state,
-                    discount_rate=0.0,
-                    cells=nominal_cells,
-                )
-            else:
-                plain, nominal_cells = got, present_cells
+            # and category; discounted at their exact times, and not:
+            # each at its stream's growth, worked out once for each rate
+            # less a growth (a growth above the rate is a rate below 0,
+            # valid over a horizon).
+            found_at: Dict[float, Any] = {}
+
+            def costs_at(effective: float):
+                if effective not in found_at:
+                    cells: Dict[Any, Any] = {}
+                    if effective >= 0.0:
+                        got = _windows.expected_cost(
+                            rbd,
+                            ends,
+                            working,
+                            broken,
+                            method,
+                            state,
+                            discount_rate=effective,
+                            cells=cells,
+                        )
+                    else:
+                        got = _windows._discounted_cost(
+                            rbd,
+                            ends,
+                            effective,
+                            working,
+                            broken,
+                            method,
+                            state,
+                            cells,
+                        )
+                    found_at[effective] = (got, cells)
+                return found_at[effective]
+
+            for node, category in costs_at(rate)[1]:
+                g = growth(node, category)
+                present_cells[(node, category)] = costs_at(rate - g)[1][
+                    (node, category)
+                ]
+                nominal_cells[(node, category)] = costs_at(-g)[1][
+                    (node, category)
+                ]
             # The system's downtime, a group's set-up, a shutdown's and
             # the repair crews' costs are no component's.
             for category in ("system_downtime", "setup", "shutdown", "crews"):
-                a = np.atleast_1d(got.by_category[category])
+                g = growth(category)
+                a = np.atleast_1d(costs_at(rate - g)[0].by_category[category])
                 if np.any(a):
                     systems[category] = (
                         a,
-                        np.atleast_1d(plain.by_category[category]),
+                        np.atleast_1d(costs_at(-g)[0].by_category[category]),
                     )
         elif rate:
             _present_horizon(
@@ -342,10 +478,17 @@ def expected_npv(
     # The salvage, credited at the retirement (or the horizon): in the
     # period it falls in.
     paid = table_ends >= stop
-    worth_now = math.exp(-rate * stop)
+    salvage_growth = growth("salvage")
+    worth_now = math.exp(-(rate - salvage_growth) * stop)
+    grown = math.exp(salvage_growth * stop) if salvage_growth else 1.0
     for component, amount in credits.items():
         if amount:
-            add("salvage", component, worth_now * amount * paid, amount * paid)
+            add(
+                "salvage",
+                component,
+                worth_now * amount * paid,
+                grown * amount * paid,
+            )
     order = {
         name: i
         for i, name in enumerate(("acquisition",) + _CATEGORIES + ("salvage",))
@@ -368,12 +511,12 @@ def expected_npv(
             if r["category"] not in ("value", "salvage")
         )
     )
-    undiscounted_salvage = float(sum(credits.values()))
-    salvaged = worth_now * undiscounted_salvage
+    undiscounted_salvage = grown * float(sum(credits.values()))
+    salvaged = worth_now * float(sum(credits.values()))
     result = ExpectedNPV(
         horizon=horizon,
-        discount_rate=rate,
-        value_rate=value_rate,
+        discount_rate=given_rate,
+        value_rate=worth if schedule is None else math.nan,
         npv=value - cost + salvaged,
         value=value,
         cost=cost,
@@ -390,6 +533,10 @@ def expected_npv(
         salvage=salvaged,
         undiscounted_salvage=undiscounted_salvage,
         retire_at=None if retire_at is None else stop,
+        rate_basis=rates,
+        inflation=None if inflation is None else lift,
+        escalation=dict(growths),
+        value_schedule=schedule,
     )
     result.eac = cost / result.annuity_factor
     if rate_sensitivity:
@@ -407,10 +554,13 @@ def expected_npv(
                 state=state,
                 retire_at=retire_at,
                 salvage=salvage,
+                escalation=escalation,
+                rates=rates,
+                inflation=inflation,
             ).npv
 
         result.rate_sensitivity, result.rate_sensitivity_error = (
-            _rate_derivative(npv_at, rate, result.npv, stop)
+            _rate_derivative(npv_at, given_rate, result.npv, stop)
         )
     return result
 
