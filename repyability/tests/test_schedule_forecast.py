@@ -432,10 +432,20 @@ def test_uc41_a_diagram_takes_the_dated_shuts(constant_pump):
     # two shuts in two years, $20,000 each
     spend = rbd.cost(17_520.0, mc_samples=200, seed=1)
     assert spend.by_category["shutdown"] == 40_000.0
-    # the exact methods take shuts on a period only, and say so
+    # the values over a horizon take shuts at given times: the pump
+    # fails every 2,000 h whatever the shuts, which are counted as they
+    # start
     usage = UsageForecast.calendar("2026-11-14", "2027-12-01")
-    with pytest.raises(NotImplementedError, match="given times"):
-        events_by_period(rbd, usage, unit="hours")
+    events = events_by_period(rbd, usage, unit="hours")
+    hours = float(events.model_ends[-1])
+    assert rbd.expected_events(hours).node_failures["pump"] == pytest.approx(
+        hours / 2000.0, rel=1e-6
+    )
+    assert rbd.expected_events(hours).shutdowns == 1
+    assert len(events.model_ends) == 13
+    # they end, so the long run refuses, and says what to ask for
+    with pytest.raises(NotImplementedError, match="given times, which end"):
+        rbd.mean_availability()
 
 
 # ---------------------------------------------- UC-42: two clocks' rate

@@ -24,6 +24,7 @@ Costs are optional keys of a component's dict, plus one system-level rate:
 | Component | `acquisition_cost` | Once, to buy the unit. A number. Not a running cost: see [the total cost of ownership](#the-total-cost-of-ownership). |
 | System | `downtime_cost_rate=` | Per unit time the *system* is down (lost production). A number. |
 | System | `crew_cost_rate=` | Per unit time per repair crew, busy or not (a salary), with `repair_crews=`. A number. See [paying the repair crews](#paying-the-repair-crews). |
+| System | `call_out=` | A call-out crew's `"fee"` per call-out and `"rate"` per unit time engaged, with `repair_crews=`. See [a call-out crew](#a-call-out-crew). |
 
 ```python
 import numpy as np
@@ -124,6 +125,56 @@ run:
 crewed(1).expected_cost(100.0).by_category["crews"]   # -> 2000.0
 crewed(1).expected_cost(100.0, discount_rate=0.05).by_category["crews"]   # -> 397.30
 ```
+
+### A call-out crew
+
+A contract crew that comes only when repairs queue is paid only then.
+`call_out={"when_waiting": k, "fee": f, "rate": c}` is one crew more: when
+a job falls due, finds every crew busy and is the `k`-th waiting, the
+call-out crew comes at once and starts the waiting job the next free crew
+would have taken. While it is engaged there is a crew more. It leaves at
+the first end of a job that leaves a crew with no waiting job to take
+(the crews are alike: the job it has then, if any, is finished by the crew
+that came free), and jobs that wait while it is engaged call no other.
+Each call-out costs `f` and its time engaged `c` per unit time, under
+`"crews"` with any salaries.
+
+With exponential lives and repairs the crews' Markov chain has the
+call-out crew exactly, in the long run, over time and discounted;
+otherwise the simulations follow the same rule (in Python). What a
+contract is worth is the difference from the same system without it:
+
+```python
+def on_call(call_out=None):
+    return RepairableRBD(
+        edges,
+        {
+            "A": unit(0.1, 1.0, repair_cost=200.0),
+            "B": unit(0.1, 1.0, repair_cost=200.0),
+            "C": unit(0.02, 0.5, repair_cost=500.0, replace_cost=1500.0),
+        },
+        downtime_cost_rate=1000.0,
+        repair_crews=1,
+        call_out=call_out,
+    )
+
+contract = {"when_waiting": 1, "fee": 300.0, "rate": 50.0}
+on_call().expected_cost_rate()           # -> 132.77
+on_call(contract).expected_cost_rate()   # -> 129.69   the contract pays
+
+states = on_call(contract).crew_states()
+float(states.probabilities @ states.call_out_rate)      # -> 0.0254   call-outs per unit time
+float(states.probabilities @ states.call_out_engaged)   # -> 0.0148   of the time engaged
+
+with_it = on_call(contract).expected_npv(100.0, discount_rate=0.05)
+without = on_call().expected_npv(100.0, discount_rate=0.05)
+with_it.npv - without.npv                # -> 37.74   the contract's value
+with_it.cost_by_category["crews"]        # -> 157.27  what it costs, discounted
+```
+
+`npv_distribution` prices simulated histories, which do not record the
+call-outs: it refuses a call-out crew with a fee or a rate, and `cost()`
+gives the spread of the undiscounted cost.
 
 A crew cost needs `repair_crews`: as many crews as are needed (the
 default) cannot be priced, and the constructor refuses it.

@@ -715,6 +715,8 @@ def rbd_to_dict(rbd: RBD) -> dict:
             out["repair_crews"] = int(args["repair_crews"])
         if getattr(rbd, "crew_cost_rate", 0.0):
             out["crew_cost_rate"] = rbd.crew_cost_rate
+        if getattr(rbd, "call_out", None) is not None:
+            out["call_out"] = dict(rbd.call_out)
         if args.get("maintenance_groups"):
             # Each group's options, by name (a name may not be a JSON key).
             out["maintenance_groups"] = [
@@ -802,6 +804,7 @@ def rbd_from_dict(d: dict) -> RBD:
             downtime_cost_rate=d.get("downtime_cost_rate", 0.0),
             repair_crews=d.get("repair_crews"),
             crew_cost_rate=d.get("crew_cost_rate", 0.0),
+            call_out=d.get("call_out"),
             maintenance_groups=groups or None,
             ccf_groups=_ccf_from_list(d.get("ccf_groups")),
             shutdowns=shutdowns or None,

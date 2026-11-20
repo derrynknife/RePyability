@@ -221,9 +221,19 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   checks it changes nothing.
 - **The repair crews' Markov chain (`repyability/rbd/_crew_chain.py`)
   copies the simulation's queue (`_events._Crews`)**: which waiting job a free crew
-  takes, and how instant jobs pass through. A change to one goes into the
-  other; `test_crew_chain.py` checks the chain's exact values against the
-  simulation. Likewise a standby group's chain (`_standby_chain.py`) copies
+  takes, and how instant jobs pass through, and when a call-out crew
+  (`call_out`) comes and goes: it is engaged exactly while a job more than
+  the crews is under repair, so the chain's state needs nothing more. A
+  change to one goes into the other; `test_crew_chain.py` and
+  `test_call_out_crew.py` check the chain's exact values against the
+  simulation. It takes common-cause groups in too (#251,
+  `_crews._crew_causes`): a shared cause's strike is its members' failures
+  one after another in the cause's order, each as a failure of its own
+  (`_crew_chain._enumerate`'s `failed`), which is the order
+  `_event_loop._strike` queues them in only for two members (the event
+  queue releases ties at one time by its heap's shape, so the chain
+  refuses causes of more, `MAX_STRUCK`); `test_crews_ccf.py` checks it
+  against the simulation. Likewise a standby group's chain (`_standby_chain.py`) copies
   `_events._StandbyGroup`'s rules (switching, spares, repairs), checked by
   `test_repairable_standby.py`.
 - **A phased mission's Markov chain (`repyability/rbd/_mission_chain.py`)

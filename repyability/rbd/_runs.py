@@ -1673,6 +1673,9 @@ def _modules_rbd(diagram, modules: list) -> "RepairableRBD":
         input_node=diagram.input_node,
         output_node=diagram.output_node,
         repair_crews=args["repair_crews"],
+        # (A call-out crew comes for the modules' jobs, the only ones the
+        # crews have: its costs are among the modules' own.)
+        call_out=args.get("call_out"),
         maintenance_groups=groups or None,
     )
 
@@ -1733,7 +1736,12 @@ def _crew_free(diagram) -> "RepairableRBD":
     # (With as many crews as are needed, none is paid: a conditional run
     # adds the crews' salaries itself.)
     return RepairableRBD(
-        **{**diagram._init_args, "repair_crews": None, "crew_cost_rate": 0.0}
+        **{
+            **diagram._init_args,
+            "repair_crews": None,
+            "crew_cost_rate": 0.0,
+            "call_out": None,
+        }
     )
 
 

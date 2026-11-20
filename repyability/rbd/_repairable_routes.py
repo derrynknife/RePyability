@@ -178,7 +178,7 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                     "The system's availability given each of the pair up "
                     "and down, a common-cause group's members conditioned "
                     "on their states through the groups' chains. "
-                    if rbd.ccf_groups
+                    if _ccf_groups._own_chains(rbd)
                     else "Each component's Birnbaum importance with the "
                     "other held up, less with it held down. "
                 )

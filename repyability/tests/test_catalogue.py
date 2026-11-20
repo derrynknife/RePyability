@@ -258,6 +258,8 @@ def repairable_kinds(rbd, components, options) -> set:
         found.add("downtime_cost_rate")
     if options.get("crew_cost_rate"):
         found.add("crew_cost_rate")
+    if options.get("call_out"):
+        found.add("call_out")
     if options.get("repair_crews") is not None:
         found.add("repair crews")
         if any(isinstance(c, RepairableRBD) for c in components.values()):
@@ -294,7 +296,7 @@ def required_repairable() -> set:
         | {"repairability 'instant'"}
         | {"a k-out-of-n vote", "capacities", "downtime_cost_rate"}
         | {"repair crews", "repair crews around a nested RepairableRBD"}
-        | {"crew_cost_rate"}
+        | {"crew_cost_rate", "call_out"}
         | {
             "BetaFactor common cause, probability basis",
             "MGL common cause, probability basis",

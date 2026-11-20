@@ -594,6 +594,10 @@ def expected_cost(
     if _crew_salaries(rbd):
         # The repair crews' salaries, paid from 0 whatever happens.
         categories["crews"] = _crew_salaries_to(rbd, ends)
+    if "call_out" in counts:
+        # A call-out crew's fees and its rate while engaged, from the
+        # crews' chain (see _curves._crew_window).
+        categories["crews"] = categories["crews"] + counts["call_out"]
     for name, spec in rbd._maintenance.items():
         if not spec.setup_cost:
             continue
@@ -671,8 +675,12 @@ def _discounted_cost(
         rows += [got.by_category[category] for category in _CATEGORIES]
         if salaries:
             # (Their present value is added in closed form below.)
-            rows[0] = rows[0] - got.by_category["crews"]
-            rows[1 + _CATEGORIES.index("crews")] = np.zeros_like(got.mean)
+            # (A call-out crew's costs, in the same category, vary with
+            # the time, and are discounted with the others.)
+            paid = _crew_salaries_to(rbd, np.append(times, horizon))
+            crews = 1 + _CATEGORIES.index("crews")
+            rows[0] = rows[0] - paid
+            rows[crews] = rows[crews] - paid
         rows += [got.by_component[node] for node in keys]
         if own is not None:
             rows += [
@@ -720,8 +728,9 @@ def _discounted_cost(
     mean = next(rows)
     categories = {category: next(rows) for category in _CATEGORIES}
     if salaries:
-        categories["crews"] = _crew_salaries_to(rbd, ends, rate)
-        mean = mean + categories["crews"]
+        paid = _crew_salaries_to(rbd, ends, rate)
+        categories["crews"] = categories["crews"] + paid
+        mean = mean + paid
     components = {node: next(rows) for node in keys}
     if cells is not None:
         cells.update({k: next(rows) for k in cell_keys})

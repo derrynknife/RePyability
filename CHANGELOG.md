@@ -179,6 +179,55 @@ release between minors that only adds (0.19.1).
   (`RepairableRBD.expected_cost` with its `discount_rate`). With no
   `discount` every result is as before, with the new fields None.
 
+- Added: common-cause groups in the repair crews' Markov chain. With
+  limited `repair_crews` and `ccf_groups` whose members have exponential
+  lives and repairs, the long-run values (`mean_availability`,
+  `node_availability`, `system_failure_frequency` and the times from it,
+  `expected_cost_rate`, `capacity_distribution`), the importance measures
+  and the values over time (`point_availability`,
+  `mission_availability`, `expected_events`, `expected_cost`,
+  `availability_rate`) are exact or numerical, where they refused: a
+  shared cause strikes at its rate and fails the members it names that
+  are up, which join the crews' queue one after another in the group's
+  order, as the simulation's do (the first named takes a free crew,
+  whatever the priorities, which order the jobs that wait). A member
+  fails on its own at its own cause's rate. The failures a shared cause
+  makes are reported under the tuple of the group's members, as without
+  crews (`barlow_proschan_importance`, `availability_rate`). A member
+  held working or broken is struck no more, and the causes it shares
+  still strike the others. The chain takes causes that strike two
+  members: a group of two, or a larger `AlphaFactor` or `MGL` group
+  whose causes of three or more have no share. A cause that strikes
+  three or more keeps refusing, naming the simulation, as the simulation
+  queues components struck at one instant in the order its event queue
+  releases them, which is the group's order only for two; so do members
+  repaired instantly or found by tests. No simulated result changes.
+
+- Added: a call-out crew. `RepairableRBD(..., repair_crews=n,
+  call_out={"when_waiting": k, "fee": f, "rate": c})` adds one crew that
+  comes only when jobs queue: when a job falls due, finds every crew busy
+  and is the `k`-th waiting, it comes at once and starts the waiting job
+  the next free crew would have taken; it leaves at the first end of a
+  job that leaves a crew with no waiting job to take (the crews are
+  alike, so the job it has then is finished by the crew that came free),
+  and jobs that wait while it is engaged call no other. Each call-out
+  costs `f` and its time engaged `c` per unit time, under the `"crews"`
+  category. With exponential lives and repairs the crews' Markov chain
+  has it exactly: the long-run values (`mean_availability`,
+  `expected_cost_rate`, the importance measures), those over time
+  (`point_availability`, `expected_events`, `expected_cost`), the
+  discounted ones (`expected_cost(discount_rate=)`, `expected_npv`) and
+  the first failure, so the difference from the same diagram without
+  `call_out` is what the contract is worth. `crew_states()` adds
+  `call_out_rate` and `call_out_engaged`, the rate of call-outs and
+  whether the crew is engaged in each state. The simulations follow the
+  same rule in the Python event loop (the compiled engine hands such a
+  diagram to it); `npv_distribution` and `compare_npv` refuse a priced
+  call-out crew, whose call-outs the histories do not record, naming
+  `expected_npv` and `cost()`. It needs `repair_crews`, does nothing
+  where no job can wait, and is saved when given. Without it every value
+  is as before.
+
 - Added: repair crews that cost something. `RepairableRBD(...,
   repair_crews=n, crew_cost_rate=c)` pays each of the `n` crews `c` per
   unit time, busy or not, so a crew more is a trade-off rather than free.

@@ -499,7 +499,8 @@ class _ModuleRun:
         by_category["system_downtime"] = float(
             np.mean(self.rbd.downtime_cost_rate * (self.T - self.uptimes()))
         )
-        by_category["crews"] = self.salaries
+        # (A call-out crew's costs are among the modules' own.)
+        by_category["crews"] = self.own_categories["crews"] / n + self.salaries
         by_component = {
             node: float(np.ravel(value)[0])
             for node, value in exact_cost.by_component.items()

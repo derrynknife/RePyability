@@ -440,11 +440,10 @@ def _require_crew_over_time(
     rbd, forced=frozenset(), kind: str = "availability"
 ) -> list:
     """Raise what the crews' chain over time refuses, in the order the
-    methods check it: common-cause groups, what the chain does not
-    cover (see ``_require_crew_chain``), and too many nested RBDs (see
-    ``_crew_nested``). Return the nested RBDs, less those in
-    ``forced``."""
-    _ccf_groups._require_ccf_long_run(rbd)
+    methods check it: what the chain does not cover, of the components
+    and their common-cause groups (see ``_require_crew_chain``), and too
+    many nested RBDs (see ``_crew_nested``). Return the nested RBDs, less
+    those in ``forced``."""
     _crews._require_crew_chain(rbd)
     return _crew_nested(rbd, forced)
 
@@ -1276,43 +1275,83 @@ def _crew_vectors(
 ) -> Tuple[np.ndarray, dict]:
     """Over the states of the crews' ``chain``, with the other nodes'
     probabilities ``values`` (arrays, one entry per state): whether the
-    system is up, and each node's Birnbaum importance."""
+    system is up, and each node's Birnbaum importance (with, under
+    ``_STRIKES``, the rate of the system's failures by each common-cause
+    group's shared causes, see ``_crew_strikes``)."""
     size = len(chain.probabilities)
     own = {
         node: chain.up[:, k].astype(float)
         for k, node in enumerate(chain.nodes)
     }
     own.update(values)
-    importance, works, fails, _, _ = rbd._importances(
-        _windows._filled(rbd, own, size, working_nodes, broken_nodes)
-    )
+    filled = _windows._filled(rbd, own, size, working_nodes, broken_nodes)
+    importance, works, fails, _, _ = rbd._importances(filled)
     up = works if structure_method(method) == "p" else 1.0 - fails
+    importance = {**importance, _STRIKES: _crew_strikes(rbd, chain, filled)}
     return np.asarray(up, dtype=float), importance
+
+
+class _Strikes:
+    """The key of the shared causes' part among a chain's importances
+    (equal to no node name)."""
+
+
+_STRIKES = _Strikes()
+
+
+def _crew_strikes(rbd, chain, filled: dict) -> np.ndarray:
+    """The rate of the system's failures by each common-cause group's
+    shared causes (columns) in each state of the crews' ``chain`` (#251),
+    the nodes up with the probabilities ``filled`` there: a cause strikes
+    at its rate, and takes the system down where it is up, and down with
+    the members it strikes down (as ``_ccf_groups._ccf_outage_terms`` has
+    it)."""
+    out = np.zeros((len(chain.probabilities), len(rbd.ccf_groups)))
+    if not rbd.ccf_groups:
+        return out
+    down = np.asarray(rbd._system_unreliability(filled), dtype=float)
+    zero = np.zeros(len(chain.probabilities))
+    for struck, rate, g in _crews._crew_causes(rbd, chain.nodes)[1]:
+        hit = {**filled, **{chain.nodes[k]: zero for k in struck}}
+        out[:, g] += rate * (
+            np.asarray(rbd._system_unreliability(hit), dtype=float) - down
+        )
+    return out
+
+
+def _crew_failing_each(rbd, chain, importance: dict) -> np.ndarray:
+    """The rate of the system's failures by each of the chain's
+    components (columns) in each of its states (#199): a component that
+    is up fails at its rate (its own cause's, in a common-cause group),
+    and takes the system down where it is critical (its Birnbaum
+    ``importance`` there, 1 or 0), as ``system_failure_frequency`` has
+    it; then by each common-cause group's shared causes (see
+    ``_crew_strikes``)."""
+    rates = _crews._crew_chain_rates(rbd)
+    own = _crews._crew_causes(rbd, chain.nodes)[0] if rbd.ccf_groups else {}
+    return np.column_stack(
+        [
+            importance[node] * chain.up[:, k] * own.get(node, rates[node][0])
+            for k, node in enumerate(chain.nodes)
+        ]
+        + [importance[_STRIKES]]
+    )
 
 
 def _crew_failing(rbd, chain, importance: dict) -> np.ndarray:
     """The rate of the system's failures in each state of the crews'
-    ``chain``: a component that is up fails at its rate, and takes the
-    system down where it is critical (its Birnbaum ``importance``
-    there, 1 or 0), as ``system_failure_frequency`` has it."""
-    rates = _crews._crew_chain_rates(rbd)
-    failing = np.zeros(len(chain.probabilities))
-    for k, node in enumerate(chain.nodes):
-        failing += importance[node] * chain.up[:, k] * rates[node][0]
-    return failing
+    ``chain``: by any of its components or shared causes (see
+    ``_crew_failing_each``)."""
+    return _crew_failing_each(rbd, chain, importance).sum(axis=1)
 
 
-def _crew_failing_each(rbd, chain, importance: dict) -> np.ndarray:
-    """``_crew_failing`` by component: the rate of the system's failures
-    by each of the chain's components (columns) in each of its states
-    (#199)."""
-    rates = _crews._crew_chain_rates(rbd)
-    return np.column_stack(
-        [
-            importance[node] * chain.up[:, k] * rates[node][0]
-            for k, node in enumerate(chain.nodes)
-        ]
-    )
+def _cause_keys(rbd, chain) -> list:
+    """Whose the columns of ``_crew_failing_each`` are: the chain's
+    components, then each common-cause group, as the tuple of its
+    members."""
+    return list(chain.nodes) + [
+        tuple(group.members) for group in rbd.ccf_groups
+    ]
 
 
 def _crew_each(rbd, chain, nested: list, working, broken, method: str) -> list:
@@ -1529,12 +1568,19 @@ def _crew_window(
     ``system_failure_frequency`` has it), and each component's down
     time and failures (at its rate while it is up), each a repair. No
     component has scheduled maintenance or tests, and none fails at the
-    same instant as another."""
+    same instant as another. A call-out crew that costs anything is
+    counted too (``"call_out"``: what it has cost by each end), from the
+    chain's last vector, the rate at which it costs in each state."""
     working, broken = set(working_nodes), set(broken_nodes)
     forced = working | broken
     nested = _require_crew_over_time(rbd, frozenset(forced), "window")
     chain = _crews._crew_chain(rbd, frozenset(forced))
     rates = _crews._crew_chain_rates(rbd)
+    called = (
+        [_crews._call_out_vector(rbd, chain)]
+        if _crews._call_out_priced(rbd)
+        else []
+    )
     if nested:
         # The nested RBDs, independent of the chain, counted as nodes,
         # with the system worked out over the chain (#162).
@@ -1552,10 +1598,14 @@ def _crew_window(
                 _crew_patterns(rbd, chain, nested, working, broken, method)
                 + [chain.up.astype(float)]
                 + each
+                + called
             ),
         )
         system = _chain_transient.CrewSystem(
-            uniformized, nested, chain.nodes, causes
+            uniformized,
+            nested,
+            chain.nodes,
+            _cause_keys(rbd, chain) if causes else (),
         )
         horizon = float(np.max(ends)) if len(ends) else 0.0
         curves = {
@@ -1584,6 +1634,10 @@ def _crew_window(
             curves[node] = _chain_transient.CrewNodeEvents(
                 uniformized, column + k, rates[node][0]
             )
+        if called:
+            totals["call_out"] = np.maximum(
+                uniformized.integrals(ends)[:, -1], 0.0
+            )
         return curves, totals
     up, importance = _crew_vectors(rbd, chain, {}, working, broken, method)
     failing = _crew_failing(rbd, chain, importance)
@@ -1593,7 +1647,7 @@ def _crew_window(
         chain.generator,
         _crew_start(rbd, chain, states),
         chain.probabilities,
-        np.column_stack([up, failing, chain.up.astype(float)] + each),
+        np.column_stack([up, failing, chain.up.astype(float)] + each + called),
     )
     totals = uniformized.integrals(ends)
     zero = np.zeros(len(ends))
@@ -1604,11 +1658,13 @@ def _crew_window(
         "downtime": {},
         "overlaps": {name: zero for name in groups or {}},
     }
+    if called:
+        counts["call_out"] = np.maximum(totals[:, -1], 0.0)
     if causes:
         base = 2 + len(chain.nodes)
         counts["caused"] = {
-            node: np.maximum(totals[:, base + k], 0.0)
-            for k, node in enumerate(chain.nodes)
+            key: np.maximum(totals[:, base + k], 0.0)
+            for k, key in enumerate(_cause_keys(rbd, chain))
         }
     curves = {}
     for k, node in enumerate(chain.nodes):

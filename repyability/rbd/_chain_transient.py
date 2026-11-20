@@ -317,22 +317,24 @@ class CrewSystem:
     len(nested)`` of them, see ``pattern_weights``), whether it is up in
     each state, then for each pattern the rate of its failures by the
     chain's components in each state, then whether each of the chain's
-    ``served`` components is up; with ``causes``, then for each pattern
-    the rate of its failures by each of them. The nested RBDs have
+    ``served`` components is up; with ``causes`` (their keys), then for
+    each pattern the rate of its failures by each of them. The nested
+    RBDs have
     crews of their own, so they are independent of the chain: at a time,
     the system is up with probability ``sum_m p(t) u_m w_m(t)``, ``w_m``
     the pattern's probability from their availabilities then, and a nested
     RBD's Birnbaum importance is the difference that it being up makes."""
 
     def __init__(
-        self, chain: Uniformized, nested: Sequence, served=(), causes=False
+        self, chain: Uniformized, nested: Sequence, served=(), causes=()
     ):
         self.chain = chain
         self.nested = list(nested)
         self.served = list(served)
         self.patterns = 2 ** len(self.nested)
-        #: The chain's components whose failures are counted apart.
-        self.cause_keys = list(self.served) if causes else []
+        #: Whose failures are counted apart (``causes``): the chain's
+        #: components, and its common-cause groups' shared causes.
+        self.cause_keys = list(causes)
         #: For the pieces of the integrals: the chain's knots and settling.
         self.curve = ChainCurve(chain)
 
@@ -392,7 +394,8 @@ class CrewSystem:
                 for node in self.nested
             ]
         )
-        base, count = 2 * self.patterns + len(self.served), len(self.served)
+        base = 2 * self.patterns + len(self.served)
+        count = len(self.cause_keys)
         return {
             node: np.maximum(
                 np.sum(
@@ -402,7 +405,7 @@ class CrewSystem:
                 ),
                 0.0,
             )
-            for k, node in enumerate(self.served)
+            for k, node in enumerate(self.cause_keys)
         }
 
 
