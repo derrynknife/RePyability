@@ -497,6 +497,15 @@ class RepairableRBD(RBD):
         either takes the shut's calendar and duration, and the block must
         be in its scope. Shuts on a period are exact where the blocks fail
         independently; the rest is simulated, in Python.
+    crew_cost_rate : float, optional
+        What each repair crew costs per unit time, busy or not (its
+        salary), by default 0.0 (not priced). The ``repair_crews`` crews
+        cost ``repair_crews * crew_cost_rate`` per unit time from 0, the
+        same in every simulation: every cost result has it under the
+        category ``"crews"`` (over a window ``T``, ``n c T``; discounted
+        at a rate ``r``, ``n c (1 - exp(-r T)) / r``), and the long-run
+        cost rate ``n c``. It needs ``repair_crews``: as many crews as are
+        needed cannot be priced.
 
 
     Attributes
@@ -519,6 +528,8 @@ class RepairableRBD(RBD):
         The capacities given, keyed by node name, as floats.
     repair_crews : int or None
         The number of repair crews (None: as many as are needed).
+    crew_cost_rate : float
+        What each repair crew costs per unit time (0.0: not priced).
     acquisition_costs : dict
         Node name -> the one-off cost of buying the unit, for the nodes that
         declare a non-zero ``"acquisition_cost"``.
@@ -594,7 +605,9 @@ class RepairableRBD(RBD):
         ``"ignore"``; if the diagram is invalid and ``on_infeasible_rbd``
         is ``"raise"``; if a capacity is not a positive number or is for
         the input or output node or a node not in the diagram; if
-        ``repair_crews`` is not a whole number of at least 1, or a
+        ``repair_crews`` is not a whole number of at least 1, a
+        ``crew_cost_rate`` is not a finite, non-negative number or is
+        given without ``repair_crews``, or a
         ``"priority"`` is not a finite number; or if an ``"opportunity"``
         is not an age from 0 to an age policy's interval, is given to a
         component in no group, or a group's member has hidden failures or
@@ -725,6 +738,7 @@ class RepairableRBD(RBD):
         maintenance_groups: Optional[dict[Any, dict]] = None,
         ccf_groups: Optional[Sequence[Any]] = None,
         shutdowns: Optional[dict[Any, dict]] = None,
+        crew_cost_rate: float = 0.0,
     ):
         _check_on_infeasible_rbd(on_infeasible_rbd)
         # Capture the constructor inputs verbatim (before any mutation) so the
@@ -790,6 +804,7 @@ class RepairableRBD(RBD):
                 if isinstance(shutdowns, dict) and shutdowns
                 else shutdowns or None
             ),
+            "crew_cost_rate": crew_cost_rate,
         }
         # Outages planned at given times, holding blocks off line (see
         # _shutdowns); their scopes are checked once the diagram is built.
@@ -807,6 +822,9 @@ class RepairableRBD(RBD):
         components = _covariate_schedule.on_schedules(components)
         components, self._operating_tasks = _on_duty(components)
         self.repair_crews = _validate_crews(repair_crews)
+        self.crew_cost_rate = _spec._validate_crew_cost(
+            crew_cost_rate, self.repair_crews
+        )
         # Each component's place in the queue for a crew (higher first).
         self._priority: dict[Any, float] = {}
         self.downtime_cost_rate = _spec._validate_cost(
@@ -1188,7 +1206,7 @@ class RepairableRBD(RBD):
         distribution always counts), is
         on a ``"calendar"`` policy (charged its calendar's prices), a
         maintenance group has a set-up cost, a shutdown has a cost, or
-        ``downtime_cost_rate`` is
+        ``downtime_cost_rate`` or ``crew_cost_rate`` is
         non-zero: whether running the system costs anything. Costs of 0
         price nothing, costs declared inside a nested ``RepairableRBD`` do
         not count (a nested diagram that carries any is warned of when
@@ -1210,6 +1228,7 @@ class RepairableRBD(RBD):
         return (
             bool(self.costs)
             or bool(self.downtime_cost_rate)
+            or bool(getattr(self, "crew_cost_rate", 0.0))
             or any(
                 group.setup_cost
                 for group in getattr(self, "_maintenance", {}).values()
@@ -1234,6 +1253,7 @@ class RepairableRBD(RBD):
                + sum_i nu_i * preventive_cost_i
                + sum_i inspection_cost_i / tau_i
                + sum_i (1 - A_i) * downtime_cost_i
+               + repair_crews * crew_cost_rate
         ```
 
         where ``A_sys`` is the system's long-run availability
@@ -1274,7 +1294,8 @@ class RepairableRBD(RBD):
         With limited ``repair_crews``, ``A_sys``, ``A_i`` and ``omega_i``
         come from the crews' Markov chain (see ``mean_availability``): a
         component waiting for a crew is down, and pays its downtime cost,
-        and it fails at its constant rate while it is up.
+        and it fails at its constant rate while it is up. The crews'
+        salaries (``crew_cost_rate`` each) are paid whatever happens.
 
         Every cost is optional and defaults to 0, so any subset can be
         priced; with nothing priced, not even an acquisition cost (see

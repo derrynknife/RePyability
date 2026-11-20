@@ -1,7 +1,8 @@
 """Small helpers the ``RepairableRBD`` modules share: the checks of a
 horizon and a discount rate, a model's mean, survival and cumulative
 distribution as arrays, a constant failure rate, the common period of
-inspection intervals, and the shapes results take.
+inspection intervals, the repair crews' salaries, and the shapes results
+take.
 """
 
 import functools
@@ -345,6 +346,25 @@ _DISCOUNT_TOLERANCE = 1e-8
 #: The most rounds of halving its pieces: a jump of the expected cost (a
 #: scheduled event's) is closed in on by a half each round.
 _DISCOUNT_ROUNDS = 60
+
+
+def _crew_salaries(rbd) -> float:
+    """The repair crews' salaries per unit time: ``repair_crews`` crews at
+    ``crew_cost_rate`` each, a cost of the system that does not depend on
+    what happens in it; 0.0 when the crews are not priced."""
+    rate = getattr(rbd, "crew_cost_rate", 0.0)
+    return float(rbd.repair_crews) * rate if rate else 0.0
+
+
+def _crew_salaries_to(rbd, ends, rate: float = 0.0) -> np.ndarray:
+    """The crews' salaries from 0 to each of ``ends``, discounted at
+    ``rate``: ``n c T``, or ``n c (1 - exp(-r T)) / r`` (see
+    ``_crew_salaries``)."""
+    ends = np.asarray(ends, dtype=float)
+    paid = _crew_salaries(rbd)
+    if not rate:
+        return paid * ends
+    return paid * -np.expm1(-rate * ends) / rate
 
 
 def _discount_pieces(ends: np.ndarray, horizon: float):

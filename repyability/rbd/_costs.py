@@ -19,6 +19,7 @@ import numpy as np
 
 from repyability.rbd import _crews, _long_run, _requirements, _shutdowns
 from repyability.rbd._common import (
+    _crew_salaries,
     _discount_rate,
     _horizons,
     _present_horizon,
@@ -45,8 +46,9 @@ def expected_cost_rate(
         _requirements._require_separate_setups(rbd)
 
     _shutdowns.require_exact(rbd)
-    # The shutdowns' own costs, at each shut.
-    rate = _shutdowns.cost_rate(rbd)
+    # The shutdowns' own costs, at each shut, and the repair crews'
+    # salaries, paid whatever happens.
+    rate = _shutdowns.cost_rate(rbd) + _crew_salaries(rbd)
 
     # Production lost while the *system* is down.
     if rbd.downtime_cost_rate:
