@@ -43,6 +43,7 @@ records and decides what "today" is.
 | UC-24 | Outages on a timeline: shuts at given times with a duration and a scope (renew some blocks, restore others), the plan's cost by window and its NPV | **Built**: the same `shutdowns` at `"times"`; over a horizon, exact or numerical where every job renews its block (`expected_npv`, `expected_cost`, `expected_events_by_window`), simulated where a job restores part-way; no long run |
 | UC-51 | A part replaced at a list of times in model time (8,000, 14,000 and 26,000 hours) rather than on one interval: its plan's availability, failures, cost and NPV over a horizon | **Built**: a `"preventive"` spec's `"replace_at"`; numerical over a horizon (`expected_npv`, `expected_cost`, `expected_events`, `mission_availability`, `point_availability`), simulated too; the long run refused |
 | UC-52 | Is a mid-life upgrade worth its capital cost, should the system be retired before the horizon, and what is it worth with a salvage value at the end? | **Built**: a component spec's `"upgrade"` (numerical over a horizon; not simulated), and `expected_npv(retire_at=, salvage=)` |
+| UC-53 | A protective device tested for a hidden failure at given times (not one interval), from its age, over a window: what each test finds, the time it is failed, the demands that meet it failed, and the plan's cost and present value; and the same never tested | **Built**: `failure_finding_window` (exact at the tests where only a test finds a failure, numerical where a demand shows it; to a stated precision) |
 | UC-25 | How much of the downtime and lost production is planned and how much is from failures, and how many failures the plan avoids against running to failure | **Built**: `RepairableRBD.maintenance_effect`, and the split in `ExpectedEvents`, `EventsByWindow`, `AvailabilityResult` and `CostResult`; exact where the blocks fail independently, simulated otherwise |
 | UC-26 | A pump run part of the time with its overhaul counted in running hours: availability and cost, and at another duty | **Built**: a `"preventive"` or `"inspection"` spec's `"basis": "operating"`, put on the calendar through the block's `"duty"` |
 | UC-43 | A site's shuts on real dates (rules, one-offs, plain periods, a use on a meter) in one record, the best rule for a part there, worked out by a route that is always named and never chosen silently, given back as dates; the unit in service, its cost's spread, and a diagram's outages from the same record | **Built**: `Opportunities` of `Opportunity` on real dates (0.19's `Shutdowns` and `Shutdown`, deprecated), `optimal_opportunity_policy(site, ...)` returning a `ShutdownPolicy`, `Opportunities.route`, `opportunity_policy_cost(site, ...)`, `optimal_next_replacement(..., site=)`, `cost_distribution`/`cost_by_window(policy=)`, `Opportunities.on_diagram` |
@@ -2580,6 +2581,99 @@ answers back into dates is Reliafy's too.)
   - A salvage by age is a plain component's from new; any other takes a
     number.
   - A retirement is the system's; a component's is not said yet.
+
+### UC-53: "The trip is tested at 6 and 12 months and then at 2 years, not on one interval. Over the next 3 years, what will each test find, how long is the trip failed, and what does the plan cost against never testing it?"
+
+- **Status:** built: `failure_finding_window(device, test_times, window,
+  age=, test_cost=, repair_cost=, demand_rate=, consequence_cost=,
+  discount_rate=, demands_reveal=True)` returning a
+  `FailureFindingWindow`.
+- **Who asks:** UC-18's engineer, whose tests are at times of their own
+  (dates laid on the device's clock, UC-54 of the schedule README), from
+  a device that is not new, over a budget's window, and who wants the
+  side "never tested" to set against it.
+- **What they know:** a trip failing hidden at a constant 0.1 a year,
+  working now; tests at 0.5, 1 and 2 years, $200 each; a failure repaired
+  as new for $1,500; a demand once in 2 years (0.5 a year), which costs
+  $50,000 if it meets the trip failed, and which shows the failure, so
+  the trip is repaired then.
+- **Today:** `failure_finding(device, tau, ...)` gives the long run of
+  one even interval from new, undiscounted, with a failure found only by
+  a test: no list of times, no window, no age, no "never tested" (its
+  unavailability is 1 in the long run), no discount.
+- **The answer, by hand:** between two tests the trip is a two-state
+  chain: working, it fails at 0.1; failed, a demand shows it at 0.5. From
+  a test (or the start) the chance it is failed after `s` years is `0.1 /
+  0.6 (1 - exp(-0.6 s))`. So the tests find it failed with chance
+  **0.0432** (after 0.5 years), **0.0432** and **0.0752** (after 1 year):
+  0.1616 failures found. The time failed is `0.1 / 0.6 (s - (1 - exp(-0.6
+  s)) / 0.6)` over each stretch (0.5, 0.5, 1 and 1 years): 0.01133 +
+  0.01133 + 0.04134 + 0.04134 = **0.10535 years** (a mean unavailability
+  of 0.0351), so 0.0527 demands meet it failed. Cost: 3 tests $600;
+  repairs $1,500 x (0.1616 + 0.0527) = $321.40; consequences $50,000 x
+  0.0527 = $2,633.75: **$3,555.15**. *Never tested:* one stretch of 3
+  years: failed for 0.26814 years (0.0894), 0.1341 demands on a failed
+  trip, $201.10 of repairs and $6,703.46 of consequences: **$6,904.57**.
+  The three tests save $3,349.
+- **How it is solved:** the device is working at an age since it was
+  last made new, or failed unseen. A test of a working device leaves its
+  age; one that finds it failed makes it new, in no time. `A(t)`, the
+  chance it is working, is the sum over the times it was made new of the
+  chance of that and of surviving since: `A(t) = R(age + t) / R(age) +
+  sum_k q_k R(t - t_k) + d integral_0^t U(s) R(t - s) ds`, `U = 1 - A`,
+  with `q_k = U(t_k)` just before test `k` (what it finds) and the last
+  term the devices a demand showed failed. Where only a test finds a
+  failure the last term is not there and `A` is exact at any time (a
+  table of the tests so far). With it, this is a Volterra equation of
+  the second kind, solved by the trapezoid rule on a grid of each stretch
+  between tests. The failed time (and its discounted integral) is the
+  trapezoid rule's on the same grid either way; the whole is worked out
+  on one grid and on one twice as fine, each number taken from the two
+  by Richardson's step, and the grid halved until the two agree to
+  `tolerance` (1e-6 of the failed time and of the failures found, by
+  default). Their difference, in money, is `precision`. A test and the
+  repair of what it finds are discounted from the test's time; the
+  demands' cost inside the integral.
+- **Decisions (defaults):**
+  - **A demand that meets the device failed shows the failure**, which is
+    repaired as new then, at `repair_cost` (`demands_reveal=True`). This
+    is what makes "never tested" a finite number. `demands_reveal=False`
+    is `failure_finding`'s convention: only a test finds a failure, and
+    every demand until then costs the consequence.
+  - Tests and repairs take no time, and a test never misses a failure,
+    as `failure_finding` has it.
+  - The device is working at the window's start (a test at time 0 only
+    costs). `test_times=()` is "never tested".
+  - Demands are a Poisson process at `demand_rate`, independent of the
+    device.
+  - `discount_rate` is per unit of the device's time, continuously
+    compounded, as `expected_npv`'s; dates and a yearly rate are the
+    schedule module's (UC-54).
+  - At most 2,000 tests in a window (the work grows with their square),
+    refused naming `failure_finding` for the long run.
+- **Checks** (`test_failure_finding_window.py`):
+  `test_uc53_trip_tested_at_uneven_times` (the numbers above),
+  `test_exponential_closed_form` (the two-state chain's closed form,
+  with and without demands revealing, with and without a discount, and
+  the curve), `test_even_tests_reproduce_the_long_run` (even tests, no
+  discount, only tests finding: `failure_finding`'s unavailability, cost
+  rate and failures found, for a constant rate on any whole number of
+  intervals and for a Weibull life over 400 mean lives),
+  `test_weibull_against_a_simulation` (a wearing device 4 old, tested at
+  uneven times and never, with and without demands revealing, within
+  four standard errors of a seeded simulation of the plan),
+  `test_never_tested_without_reveal_is_the_life_itself`,
+  `test_a_test_at_the_start_finds_nothing`,
+  `test_the_unit_of_time_does_not_matter`, `test_refusals`.
+- **Learned / left:** the precision given is the two grids' difference,
+  which is several times the error of the extrapolated numbers (1e-15
+  against 4e-7 of the cost for the trip above); a life with an infinite
+  density at 0 (a Weibull shape under 1) converges more slowly and takes
+  the finest grid. A test that can miss a failure, and tests and repairs
+  that take time (which `RepairableRBD`'s inspected blocks have, on a
+  period), are not here. The best times for the tests are not searched
+  for.
+
 
 ### UC-25: "How much of our downtime and lost production is planned and how much is from failures, and how many failures does the plan avoid each year against running to failure?"
 

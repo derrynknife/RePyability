@@ -11,19 +11,28 @@ caller, not saved on the ``Task`` (that record is the caller's):
 - ``Replaces(part)``: the task puts a new part in at every date it is
   done, whatever the part's age (block replacement on dates); without
   it, the part runs to failure.
+- ``Finds(device, demand_rate=, consequence_cost=)``: the task tests a
+  protective device for a hidden failure (UC-54) and has a failure it
+  finds repaired; without it, the device is never tested.
 
-Between two of the task's dates the part is a renewal process from new,
-so its expected failures to any time are a sum of
-``NonRepairable.failures`` over the stretches between the dates. Each
-side's failure cost is discounted as ``failures_by_period`` discounts it
-(``_forecast._accrued_npv``); a planned replacement from its own instant.
+Either way each side is a count of events that accrues with the part's
+operating time, each at one cost (a part's failures; the demands that
+meet a device failed), and costs at instants (the task's own; the
+repairs of what a test finds). With ``Replaces``, between two of the
+task's dates the part is a renewal process from new, so its expected
+failures to any time are a sum of ``NonRepairable.failures`` over the
+stretches between the dates. With ``Finds``, the device's chance of
+being failed over time is ``maintenance._finding_window``'s, with the
+tests at the task's times on the device's clock. Each side's accrued
+cost is discounted as ``failures_by_period`` discounts it
+(``_forecast._accrued_npv``); a cost at an instant from that instant.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -74,6 +83,65 @@ class Replaces:
     def describe(self) -> str:
         """What the task does, in words."""
         return "replaces the part with a new one"
+
+
+@dataclass(frozen=True)
+class Finds:
+    """What a task does: it tests ``device``, a protective device (a
+    relief valve, a trip, a standby pump's start), for a failure nobody
+    would otherwise see, and a failure it finds is repaired as new.
+    Plain data for [`task_value`][repyability.schedule.task_value].
+
+    Parameters
+    ----------
+    device : NonRepairable
+        The device, with its life (a failure is hidden) in the unit of
+        the usage forecast's model time. Its own costs are not used.
+    demand_rate : float
+        How often the protected event comes, per unit of the device's
+        time, at least 0.
+    consequence_cost : float
+        What a demand that meets the device failed costs, at least 0.
+    repair_cost : float, optional
+        What repairing a failure costs, found by a test or shown by a
+        demand; by default 0.
+    demands_reveal : bool, optional
+        Whether a demand that meets the device failed shows the failure,
+        which is repaired as new then (the default), with the task and
+        without it. False: only a test finds a failure, as
+        [`failure_finding`][repyability.failure_finding] has it.
+    """
+
+    device: Any
+    demand_rate: float = field(kw_only=True)
+    consequence_cost: float = field(kw_only=True)
+    repair_cost: float = field(default=0.0, kw_only=True)
+    demands_reveal: bool = field(default=True, kw_only=True)
+
+    def __post_init__(self) -> None:
+        from repyability.maintenance._decisions import (
+            _check_protective,
+            _number,
+        )
+        from repyability.non_repairable import NonRepairable
+
+        if not isinstance(self.device, NonRepairable):
+            raise TypeError(
+                "Finds takes the device the task tests, a NonRepairable; "
+                f"got {self.device!r}."
+            )
+        _check_protective(self.device)
+        for name in ("demand_rate", "consequence_cost", "repair_cost"):
+            _number(getattr(self, name), name)
+        if not isinstance(self.demands_reveal, bool):
+            raise ValueError(
+                "demands_reveal must be True or False; got "
+                f"{self.demands_reveal!r}."
+            )
+
+    def describe(self) -> str:
+        """What the task does, in words."""
+        return "tests the device for a hidden failure"
 
 
 @dataclass(frozen=True)
@@ -138,6 +206,20 @@ class TaskValue(_Plain):
         amount a year worth each.
     notes : tuple of str
         What was assumed.
+    found : numpy.ndarray or None
+        With ``Finds``: the expected failures the tests find in each
+        period (``total["found"]`` in all). None otherwise.
+    unavailability_with, unavailability_without : numpy.ndarray or None
+        With ``Finds``: the device's mean unavailability in each period
+        with the task and without it, the share of the period's
+        operating time it is failed (in a period it does not run, its
+        chance of being failed then); ``total`` has each over the whole
+        forecast. None otherwise.
+
+    With ``Finds``, "the part" is the device and a "failure" above is a
+    demand that meets it failed: ``failures_with``, ``failures_without``
+    and ``failures_avoided`` count those, and ``with_task`` is the
+    tests' cost, the repairs' and those demands'.
     """
 
     task: str
@@ -165,6 +247,9 @@ class TaskValue(_Plain):
     precision: float
     eac: Optional[Dict[str, float]]
     notes: Tuple[str, ...]
+    found: Optional[np.ndarray] = None
+    unavailability_with: Optional[np.ndarray] = None
+    unavailability_without: Optional[np.ndarray] = None
 
     def __repr__(self) -> str:
         money = "present value" if self.discount is not None else "cost"
@@ -260,6 +345,137 @@ def _renewals(part, age: float, times: np.ndarray):
     return expected
 
 
+@dataclass(frozen=True)
+class _Plan:
+    """The two sides of a task's value: each a count of events that
+    accrues with the part's operating time, at ``event_cost`` each, and,
+    with the task, its own cost and ``extra`` at instants."""
+
+    with_events: Callable[[np.ndarray], np.ndarray]
+    without_events: Callable[[np.ndarray], np.ndarray]
+    event_cost: float
+    extra_seconds: np.ndarray  # costs at instants besides the task's own
+    extra_amounts: np.ndarray
+    error: float  # how far the costs' total can be out, undiscounted
+    with_words: str
+    without_words: str
+    notes: Tuple[str, ...]
+    with_hidden: Any = None  # the device's hidden failures (Finds)
+    without_hidden: Any = None
+    found: Optional[np.ndarray] = None  # at each of extra_seconds
+
+
+def _replacing(part, price, failure_cost, age, unit, times, count) -> _Plan:
+    """``Replaces``: block replacement at ``times`` against running to
+    failure."""
+    return _Plan(
+        with_events=_renewals(part, age, times),
+        without_events=_renewals(part, age, np.array([])),
+        event_cost=failure_cost,
+        extra_seconds=np.array([]),
+        extra_amounts=np.array([]),
+        error=0.0,
+        with_words=(
+            f"With the task: the part replaced with a new one each time "
+            f"the task is done ({count} times in the forecast), at "
+            f"{price:g} whatever its age, and when it fails, at "
+            f"{failure_cost:g}; a failure does not move the task's dates."
+        ),
+        without_words=(
+            "Without the task: the part run to failure from the same age "
+            f"({age:g} {unit}) over the same dates, replaced only when it "
+            f"fails, at {failure_cost:g}."
+        ),
+        notes=(
+            "A calendar task is done at midnight of its date (or its "
+            "visit's), a task by use when the meter reaches its reading; "
+            "a planned replacement takes no time on the part's clock.",
+        ),
+    )
+
+
+def _testing(
+    does: Finds, price, age, unit, times, done_s, window, count
+) -> _Plan:
+    """``Finds``: the device tested at ``times`` against never tested."""
+    from repyability.maintenance._finding_window import _hidden
+
+    demand = float(does.demand_rate)
+    repair = float(does.repair_cost)
+    consequence = float(does.consequence_cost)
+    reveal = demand if does.demands_reveal else 0.0
+    each = consequence + (repair if reveal > 0.0 else 0.0)
+    # Tests at one time on the device's clock (it did not run between
+    # them) are one test of it: the first finds what there is to find.
+    tests, first = np.unique(np.minimum(times, window), return_index=True)
+    first = first[tests > 0.0]  # at 0 the device is working
+    tests = tests[tests > 0.0]
+    model = does.device.reliability
+    tested = _hidden(model, age, tests, window, reveal)
+    never = _hidden(model, age, np.array([]), window, reveal)
+    if does.demands_reveal:
+        shown = (
+            f", and shows the failure, repaired then at {repair:g}"
+            if demand > 0.0
+            else ""
+        )
+        left = (
+            "a failure stays until a demand meets it, which costs "
+            f"{consequence:g} and has it repaired at {repair:g}"
+        )
+    else:
+        shown = "; only a test finds a failure"
+        left = (
+            "a failure is never found, and every demand after it costs "
+            f"{consequence:g}"
+        )
+    return _Plan(
+        with_events=lambda ends: demand * tested.failed_time(ends),
+        without_events=lambda ends: demand * never.failed_time(ends),
+        event_cost=each,
+        extra_seconds=done_s[first],
+        extra_amounts=repair * tested.found,
+        error=(
+            each * demand * (tested.time_error + never.time_error)
+            + repair * tested.found_error
+        ),
+        with_words=(
+            f"With the task: the device tested each time the task is "
+            f"done ({count} times in the forecast), at {price:g} a test; "
+            f"a failure a test finds repaired as new at {repair:g}; a "
+            f"demand (at a rate of {demand:g}, in {unit}) that meets "
+            f"the device failed costs {consequence:g}{shown}."
+        ),
+        without_words=(
+            "Without the task: the device never tested, from the same "
+            f"age ({age:g} {unit}) over the same dates: {left}."
+        ),
+        notes=(
+            "The device is taken to be working at the forecast's start. "
+            "A calendar task is done at midnight of its date (or its "
+            "visit's), a task by use when the meter reaches its reading; "
+            "a test and a repair take no time, and a test never misses "
+            "a failure.",
+            "Demands come at random, at their rate per unit of the "
+            f"device's own time ({unit}), so only while it runs, and "
+            "independently of the device.",
+        ),
+        with_hidden=tested,
+        without_hidden=never,
+        found=tested.found,
+    )
+
+
+def _in_periods(ends: np.ndarray, hidden) -> np.ndarray:
+    """A device's mean unavailability in each period of operating time
+    ending at ``ends``: its chance of being failed then where the period
+    has none."""
+    failed = np.diff(hidden.failed_time(ends), prepend=0.0)
+    ran = np.diff(ends, prepend=0.0)
+    at = hidden.unavailability(ends)
+    return np.where(ran > 0.0, failed / np.where(ran > 0.0, ran, 1.0), at)
+
+
 def task_value(
     task,
     does,
@@ -290,17 +506,35 @@ def task_value(
     discounts it (to within ``precision``), and the task's own cost from
     when it is done.
 
+    ``Finds(device, demand_rate=, consequence_cost=, repair_cost=)``: the
+    task tests a protective device for a hidden failure at every date it
+    is done, at the task's ``cost`` a test, and a failure it finds is
+    repaired as new. Demands come at ``demand_rate`` per unit of the
+    device's time, and one that meets the device failed costs
+    ``consequence_cost`` (and, by default, shows the failure, which is
+    repaired then). Without the task the device is never tested. The
+    device's chance of being failed over time, with the tests at the
+    task's times on its clock, is
+    [`failure_finding_window`][repyability.failure_finding_window]'s
+    (numerical, its error in ``precision``); the demands' cost is
+    discounted as it accrues, and a test and the repair of what it finds
+    from when the task is done. The result's "failures" are then the
+    demands that meet the device failed, and it has the failures
+    ``found`` and the device's unavailability with and without the task.
+
     Parameters
     ----------
     task : Task
         The task, by the calendar or by use (``every=Usage(...)``). A
         calendar task is done at midnight of its date (or of its visit);
         a task by use when the meter reaches its reading.
-    does : Replaces
-        What the task does: ``Replaces(part)``, the part a
-        ``NonRepairable`` with an ``unplanned_cost``. Its
+    does : Replaces or Finds
+        What the task does. ``Replaces(part)``: the part a
+        ``NonRepairable`` with an ``unplanned_cost``; its
         ``planned_cost`` is the task's price where the task has no
-        ``cost``; given both, they must agree.
+        ``cost``, and given both, they must agree. ``Finds(device,
+        demand_rate=, consequence_cost=)``: the device a
+        ``NonRepairable``, the task's ``cost`` a test's.
     usage : UsageForecast
         The map between dates and the part's operating time
         ([`DutyPlan.forecast`][repyability.schedule.DutyPlan.forecast], or
@@ -308,6 +542,7 @@ def task_value(
         start is "now", and its span the window valued.
     age : float, optional
         The part's age at the forecast's start, in ``unit``; by default 0.
+        A device that is tested is taken to be working then.
     unit : str, optional
         The unit the part's life is in; by default the one its model's
         label names, else hours (with a note).
@@ -329,11 +564,15 @@ def task_value(
     Raises
     ------
     TypeError
-        ``task`` is not a ``Task``, or ``does`` is not a ``Replaces``.
+        ``task`` is not a ``Task``, or ``does`` is neither a
+        ``Replaces`` nor a ``Finds``.
     ValueError
         The part has no ``unplanned_cost``; the task and the part give
-        two prices for the planned replacement, or neither gives one;
-        or as ``Task.due`` and ``failures_by_period``.
+        two prices for the planned replacement, or neither gives one; a
+        task that tests has no ``cost``; or as ``Task.due`` and
+        ``failures_by_period``.
+    NotImplementedError
+        With ``Finds``: more than 2,000 tests in the forecast.
 
     Examples
     --------
@@ -368,16 +607,16 @@ def task_value(
     """
     if not isinstance(task, Task):
         raise TypeError(f"task must be a Task; got {task!r}.")
-    if not isinstance(does, Replaces):
+    if not isinstance(does, (Replaces, Finds)):
         raise TypeError(
             "does must say what the task does: Replaces(part) for a task "
-            "that puts a new part in. The value of an inspection or of a "
-            "service is not built yet: for a hidden failure's test, "
-            "repyability.maintenance.failure_finding gives the long-run "
-            "numbers in model time. Got " + repr(does) + "."
+            "that puts a new part in, or Finds(device, demand_rate=, "
+            "consequence_cost=) for a test of a hidden failure. The value "
+            "of a service that changes the failure rate is not built "
+            "yet. Got " + repr(does) + "."
         )
     usage = _usage(usage)
-    part = does.part
+    part = does.part if isinstance(does, Replaces) else does.device
     notes: List[str] = []
     unit = _resolve_unit(
         unit, _model_label(getattr(part, "reliability", None)), "life", notes
@@ -388,13 +627,21 @@ def task_value(
     discount = _discount.yearly(discount)
     npv_tolerance = _tolerance(npv_tolerance)
     failure_cost = getattr(part, "cu", None)
-    if failure_cost is None:
+    if isinstance(does, Replaces):
+        if failure_cost is None:
+            raise ValueError(
+                "The part has no unplanned_cost: without a failure's cost "
+                "the task saves nothing to set against its own. Give the "
+                "NonRepairable unplanned_cost=."
+            )
+        price = _price(task, part, notes)
+    elif task.cost is None:
         raise ValueError(
-            "The part has no unplanned_cost: without a failure's cost the "
-            "task saves nothing to set against its own. Give the "
-            "NonRepairable unplanned_cost=."
+            f"Task {task.name!r} has no cost: give the task's cost=, what "
+            "one test costs (0.0 if it is free)."
         )
-    price = _price(task, part, notes)
+    else:
+        price = float(task.cost)
 
     found, seconds = _period_edges(usage, period)
     n = seconds.size
@@ -408,19 +655,33 @@ def task_value(
     times = (usage._at_s("hours", clock_s) - base) / scale
     times = np.maximum(np.asarray(times, float).reshape(done_s.shape), 0.0)
 
-    with_failures = _renewals(part, age, times)
-    without_failures = _renewals(part, age, np.array([]))
-    fails_with = np.diff(with_failures(ends), prepend=0.0)
-    fails_without = np.diff(without_failures(ends), prepend=0.0)
-    in_period = np.minimum(
-        np.searchsorted(seconds, done_s, side="right"), n - 1
-    )
-    count = np.bincount(in_period, minlength=n).astype(float)
-    task_cost: np.ndarray = price * count
-    cost_with = failure_cost * fails_with + task_cost
-    cost_without = failure_cost * fails_without
+    if isinstance(does, Replaces):
+        plan = _replacing(
+            part, price, failure_cost, age, unit, times, len(dates)
+        )
+    else:
+        plan = _testing(
+            does, price, age, unit, times, done_s, float(ends[-1]), len(dates)
+        )
+    each = plan.event_cost
+    fails_with = np.diff(plan.with_events(ends), prepend=0.0)
+    fails_without = np.diff(plan.without_events(ends), prepend=0.0)
 
-    precision = 0.0
+    def by_period(at_seconds, amounts=None) -> np.ndarray:
+        index = np.minimum(
+            np.searchsorted(seconds, at_seconds, side="right"), n - 1
+        )
+        return np.bincount(index, weights=amounts, minlength=n).astype(float)
+
+    task_cost: np.ndarray = price * by_period(done_s)
+    cost_with = each * fails_with + task_cost
+    if plan.extra_seconds.size:
+        cost_with = cost_with + by_period(
+            plan.extra_seconds, plan.extra_amounts
+        )
+    cost_without = each * fails_without
+
+    precision = plan.error
     eac: Optional[Dict[str, float]] = None
     if discount is None or discount == 0.0 or ends[-1] <= 0.0:
         money_with, money_without = cost_with, cost_without
@@ -429,24 +690,27 @@ def task_value(
 
         def side(expected):
             def costs(model_ends: np.ndarray) -> np.ndarray:
-                return failure_cost * np.diff(
-                    expected(model_ends), prepend=0.0
-                )
+                return each * np.diff(expected(model_ends), prepend=0.0)
 
-            by_period, _, half = _accrued_npv(
+            accrued, _, half = _accrued_npv(
                 usage, seconds, unit, discount, npv_tolerance, costs, notes
             )
-            return by_period, half
+            return accrued, half
 
-        failures_with_pv, half_with = side(with_failures)
-        failures_without_pv, half_without = side(without_failures)
-        planned = price * _discount.factor(discount, done_s / _YEAR_SECONDS)
-        money_task = np.bincount(
-            in_period, weights=np.atleast_1d(planned), minlength=n
-        ).astype(float)
+        def at_instants(at_seconds, amounts) -> np.ndarray:
+            factors = _discount.factor(discount, at_seconds / _YEAR_SECONDS)
+            return by_period(at_seconds, np.atleast_1d(amounts * factors))
+
+        failures_with_pv, half_with = side(plan.with_events)
+        failures_without_pv, half_without = side(plan.without_events)
+        money_task = at_instants(done_s, price)
         money_with = failures_with_pv + money_task
+        if plan.extra_seconds.size:
+            money_with = money_with + at_instants(
+                plan.extra_seconds, plan.extra_amounts
+            )
         money_without = failures_without_pv
-        precision = half_with + half_without
+        precision = half_with + half_without + plan.error
     value = money_without - money_with
     if discount is not None:
         years = float(seconds[-1]) / _YEAR_SECONDS
@@ -460,26 +724,16 @@ def task_value(
                 ("value", value),
             )
         }
-    with_words = (
-        f"With the task: the part replaced with a new one each time the "
-        f"task is done ({len(dates)} times in the forecast), at {price:g} "
-        "whatever its age, and when it fails, at "
-        f"{failure_cost:g}; a failure does not move the task's dates."
-    )
-    without_words = (
-        "Without the task: the part run to failure from the same age "
-        f"({age:g} {unit}) over the same dates, replaced only when it "
-        f"fails, at {failure_cost:g}."
-    )
     notes.append(
         "Operating time comes from the duty plan "
         f"({usage.describe()}); the part's age is at the forecast's start."
     )
-    notes.append(
-        "A calendar task is done at midnight of its date (or its visit's), "
-        "a task by use when the meter reaches its reading; a planned "
-        "replacement takes no time on the part's clock."
-    )
+    notes.extend(plan.notes)
+    if plan.error > 0.0:
+        notes.append(
+            "The device's failed time is worked out on a grid, to within "
+            f"{plan.error:.3g} of the costs in all (in the precision)."
+        )
     if discount is not None:
         notes.append(
             f"{_discount.words(discount, usage.start)} A failure's expected "
@@ -499,11 +753,26 @@ def task_value(
         "failures_avoided": float(np.sum(fails_without - fails_with)),
         "count": len(dates),
     }
+    hidden: Dict[str, Optional[np.ndarray]] = {}
+    if plan.found is not None:
+        whole = np.array([ends[-1]])
+        hidden = {
+            "found": by_period(plan.extra_seconds, plan.found),
+            "unavailability_with": _in_periods(ends, plan.with_hidden),
+            "unavailability_without": _in_periods(ends, plan.without_hidden),
+        }
+        total["found"] = float(np.sum(plan.found))
+        total["unavailability_with"] = float(
+            _in_periods(whole, plan.with_hidden)[0]
+        )
+        total["unavailability_without"] = float(
+            _in_periods(whole, plan.without_hidden)[0]
+        )
     return TaskValue(
         task=task.name,
         does=does.describe(),
-        with_words=with_words,
-        without_words=without_words,
+        with_words=plan.with_words,
+        without_words=plan.without_words,
         period=period,
         starts=found.starts,
         ends=found.ends,
@@ -525,4 +794,5 @@ def task_value(
         precision=float(precision),
         eac=eac,
         notes=tuple(notes),
+        **hidden,
     )

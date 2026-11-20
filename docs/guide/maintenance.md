@@ -1040,7 +1040,7 @@ exact, in the part's time unit.
 
 ```python
 from repyability import (
-    NonRepairable, failure_finding, on_condition,
+    NonRepairable, failure_finding, failure_finding_window, on_condition,
     optimal_failure_finding_interval, run_to_failure, scheduled_replacement,
 )
 
@@ -1065,6 +1065,31 @@ optimal_failure_finding_interval(valve, target_unavailability=0.001).interval  #
 
 Without a target, `optimal_failure_finding_interval` takes the test, repair
 and consequence costs and the demand rate, and finds the cheapest interval.
+
+Those are long-run numbers for one even interval. `failure_finding_window`
+takes the tests at any times, a device that is not new, and a window: what
+each test finds, how long the device is failed, and what the plan costs,
+with a discount rate if you give one. An empty list of times is a device
+never tested.
+
+```python
+trip = NonRepairable(surv.Exponential.from_params([0.1]))   # per year
+prices = dict(demand_rate=0.5, repair_cost=1500.0, consequence_cost=50_000.0)
+tested = failure_finding_window(trip, [0.5, 1.0, 2.0], 3.0, test_cost=200.0, **prices)
+round(tested.mean_unavailability, 4)   # -> 0.0351
+round(tested.cost, 2)   # -> 3555.15
+never = failure_finding_window(trip, [], 3.0, **prices)
+round(never.cost, 2)   # -> 6904.57
+```
+
+Here a demand that meets the device failed costs the consequence and also
+shows the failure, which is repaired then (`demands_reveal=True`, the
+default). That is why "never tested" has a finite cost. With
+`demands_reveal=False` only a test finds a failure, as `failure_finding`
+has it, and even tests over a long window give its numbers. Where a demand
+shows a failure the answer is numerical, and `precision` says how close.
+For tests on real dates, see
+[Is a test of a hidden failure worth it?](schedule.md#is-a-test-of-a-hidden-failure-worth-it).
 
 **On condition** is for a failure that gives warning: the P-F interval is
 the time from the warning to the failure. Inspect every so often, finding the

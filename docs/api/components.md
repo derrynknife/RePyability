@@ -30,6 +30,8 @@
 
 ::: repyability.failure_finding
 
+::: repyability.failure_finding_window
+
 ::: repyability.optimal_failure_finding_interval
 
 ::: repyability.on_condition

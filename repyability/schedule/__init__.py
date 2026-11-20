@@ -25,7 +25,9 @@ ends.
   ``Opportunity.from_recurrence`` lays them on a part's model time.
 - ``task_value``: what a task is worth against not doing it (with
   ``Replaces(part)``: block replacement on its dates against running to
-  failure), by calendar period, as present values with a ``discount``.
+  failure; with ``Finds(device, ...)``: tests of a hidden failure on its
+  dates against never testing), by calendar period, as present values
+  with a ``discount``.
 
 ``README.md`` in this package records the use cases, the question each
 answers and how it is solved.
@@ -68,7 +70,12 @@ from repyability.schedule._usage import (
     UsageDue,
     UsageForecast,
 )
-from repyability.schedule._value import Replaces, TaskValue, task_value
+from repyability.schedule._value import (
+    Finds,
+    Replaces,
+    TaskValue,
+    task_value,
+)
 
 __all__ = [
     "Continuous",
@@ -93,6 +100,7 @@ __all__ = [
     "Task",
     "TaskDue",
     "LongRunValue",
+    "Finds",
     "Replaces",
     "TaskValue",
     "WorkByPeriod",
