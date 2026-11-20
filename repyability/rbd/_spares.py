@@ -1966,6 +1966,12 @@ def _replacements(rbd, node, long_run: bool = False):
             f"{simulate}"
         )
     schedule = rbd._preventive.get(node)
+    if schedule is not None and schedule.plan is not None:
+        raise NotImplementedError(
+            f"Component {node!r} is replaced at the times of a plan "
+            "(replace_at), not on a period, which its replacements are "
+            f"not counted for exactly yet: {simulate}"
+        )
     if schedule is not None and schedule.policy == "block":
         component = rbd.components[node]
         duration = schedule.duration

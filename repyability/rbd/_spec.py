@@ -40,6 +40,7 @@ from repyability.rbd._events import (
 from repyability.utils.checks import (
     is_number,
     number_or_nan,
+    real_array,
     unfitted_distribution,
 )
 from repyability.utils.wrappers import outside_level
@@ -89,6 +90,7 @@ PREVENTIVE_KEYS = (
     "shutdown",
     "older_than",
     "basis",
+    "replace_at",
 )
 
 #: The keys of a ``"preventive"`` spec that make its task restore the unit
@@ -738,12 +740,20 @@ def _validate_preventive(
     if spec.get("shutdown") is not None:
         from repyability.rbd import _shutdowns
 
+        if spec.get("replace_at") is not None:
+            raise ValueError(
+                f"Component {node!r}: its preventive task is done at "
+                f"shutdown {spec['shutdown']!r}, whose times apply, so it "
+                "takes no replace_at: give the times to the shutdown."
+            )
         spec, bound = _shutdowns.bound_preventive(node, spec, shutdowns or {})
     elif spec.get("older_than") is not None:
         raise ValueError(
             f"Component {node!r}: older_than replaces the unit at a "
             "shutdown if it is that old, so it needs a shutdown."
         )
+    if spec.get("replace_at") is not None:
+        spec, bound = _replaced_at(node, spec)
     policy = spec.get("policy", "age")
     if policy not in PREVENTIVE_POLICIES:
         raise ValueError(
@@ -849,6 +859,51 @@ def _validate_preventive(
         **bound,
     )
     return schedule, costs[0], costs[1]
+
+
+def _replaced_at(node, spec: dict) -> Tuple[dict, dict]:
+    """A ``"preventive"`` spec with a plan (its ``"replace_at"``: the
+    times, from 0, at which the unit is replaced if it is up, and after
+    the last no more), checked, as the block replacement it is: the spec
+    with that policy and an interval (the shortest gap between the times,
+    which only sizes the simulation's streams: the times place the
+    replacements), and the ``_Preventive``'s ``times``."""
+    given = spec["replace_at"]
+    policy = spec.get("policy", "block")
+    if policy != "block":
+        raise ValueError(
+            f"Component {node!r}: replace_at replaces the unit at each of "
+            "its times if it is up, which is the 'block' policy at given "
+            f"times, so its policy cannot be {policy!r}: leave the policy "
+            "out, or give that policy an interval and no replace_at."
+        )
+    if spec.get("interval") is not None:
+        raise ValueError(
+            f"Component {node!r}: give its preventive task an interval "
+            "(replaced every so often, for ever) or replace_at (replaced "
+            "at those times and no more), not both."
+        )
+    try:
+        times = np.atleast_1d(real_array(given, "replace_at"))
+    except (TypeError, ValueError):
+        times = np.array([math.nan])
+    if (
+        times.ndim != 1
+        or not times.size
+        or not np.all(np.isfinite(times))
+        or not times[0] > 0.0
+        or np.any(np.diff(times) <= 0.0)
+    ):
+        raise ValueError(
+            f"Component {node!r}: replace_at must be the times at which "
+            "the unit is replaced, in the diagram's time from 0: positive, "
+            f"finite and increasing, got {given!r}."
+        )
+    gaps = np.diff(np.concatenate(([0.0], times)))
+    view = {key: value for key, value in spec.items() if key != "replace_at"}
+    view["policy"] = policy
+    view["interval"] = float(gaps.min())
+    return view, {"times": tuple(float(t) for t in times)}
 
 
 def _validate_level(node, spec: dict, policy: str, life) -> Optional[float]:

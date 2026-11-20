@@ -195,11 +195,14 @@ def _unsupported_maintenance(
     rbd, plan: _streams.Plan, prefix: tuple = ()
 ) -> Optional[str]:
     """What in a run's preventive maintenance numba's loop cannot simulate:
-    replacement on condition or on a calendar policy, and a maintenance
+    replacement at the times of a plan (a ``"replace_at"``), on condition
+    or on a calendar policy, and a maintenance
     time whose draws cannot be
     streamed. (A component whose own draws cannot be is refused for that,
     and every drawn cost is streamed.)"""
     for node, schedule in rbd._preventive.items():
+        if schedule.plan is not None:
+            return "replacement at the times of a plan"
         if schedule.policy == "condition":
             return "replacement on condition"
         if schedule.policy == "calendar":

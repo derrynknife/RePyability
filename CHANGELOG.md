@@ -12,6 +12,28 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: a component replaced at a list of times (UC-50 of the
+  maintenance README). A `"preventive"` spec takes `"replace_at"`, the
+  times in the diagram's time from 0 (positive, increasing), in place of
+  an `"interval"`: block replacement at those times, the unit replaced at
+  each if it is up, with the task's `"cost"` and `"duration"`, and after
+  the last no more. Its values over a horizon are numerical, with no
+  simulation: `point_availability`, `mission_availability`,
+  `expected_events`, `expected_cost`, `expected_npv` (each replacement
+  counted and discounted at its exact time) and what is built on them
+  (`availability_rate`, `compare`, `maintenance_effect`,
+  `expected_events_by_window`, a run's default means), from new or from a
+  state (the times counted from now). Equally spaced times give block
+  replacement's values over the same horizon. The simulations replace at
+  the times (in Python; a compiled engine leaves a plan to it). Each
+  time is a lever, `preventive.replace_at.0`, ..., between its
+  neighbours. A plan ends, so the long-run methods refuse, saying to ask
+  for a horizon or give an interval; `spares_demand`, `spares_stock` and
+  `plan_vs_actual` refuse too, saying what to run instead. It is saved
+  by `to_dict`, and with `"basis": "operating"` its times go onto the
+  calendar through the block's duty. Without it every value is as
+  before.
+
 - Added: present values on the calendar forecasts
   (`repyability.schedule`; UC-47 to UC-49 of its README). `discount=` is
   the effective yearly rate (0.07 for 7% a year, a year of 365.25 days),

@@ -207,9 +207,13 @@ class RepairableRBD(RBD):
           (at time 0, or at the end of a repair or of the last preventive
           action), unless it fails first; under ``"block"`` at every
           multiple of ``interval``, whatever its age, unless it is down
-          then. Under ``"condition"`` it is inspected at every multiple of
-          ``interval`` while it is up, in no time, and replaced if it is
-          then more likely than ``"threshold"`` (a probability) to fail
+          then; or, with ``"replace_at"`` in place of the interval, at
+          each of those times (increasing, from 0 in the diagram's time)
+          and after the last no more: a plan, valued over a horizon (it
+          has no long run). Under ``"condition"`` it is inspected at
+          every multiple of ``interval`` while it is up, in no time, and
+          replaced if it is then more likely than ``"threshold"`` (a
+          probability) to fail
           before the next inspection, given its age ``a``:
           ``1 - R(a + interval) / R(a)``; or, for a life that is a
           degradation process, with ``"level"`` in place of
@@ -557,7 +561,8 @@ class RepairableRBD(RBD):
         ``"level"``, a ``"calendar"`` policy's ``"calendar"``, and a
         task's ``"restoration"``, ``"replace_every"`` and
         ``"replacement_cost"``, a task's ``"shutdown"`` and
-        ``"older_than"``, and its times' ``"basis"``.
+        ``"older_than"``, its times' ``"basis"``, and ``"replace_at"``,
+        the times of a plan in place of an ``"interval"``.
     GROUP_KEYS : tuple[str, ...]
         The keys of a maintenance group's options: ``"setup_cost"`` and
         ``"system_down"``.
@@ -587,7 +592,9 @@ class RepairableRBD(RBD):
         below 0); if a ``"preventive"`` spec is not a dict of its keys with
         a positive ``interval``, a ``policy`` of ``"age"``, ``"block"`` or
         ``"condition"`` and a ``duration`` that is a model or
-        ``"instant"``; if an ``"inspection"`` spec is not a dict of its
+        ``"instant"``, or its ``"replace_at"`` is not positive, finite,
+        increasing times under the ``"block"`` policy with no interval;
+        if an ``"inspection"`` spec is not a dict of its
         keys with a positive, finite ``interval``, a ``duration`` that
         is a model or ``"instant"``, an ``offset`` from 0 to less than the
         interval, a ``coverage`` from 0 to 1 and, with a coverage below 1,
