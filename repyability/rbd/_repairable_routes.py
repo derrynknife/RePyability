@@ -128,9 +128,17 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             )
         ),
     )
-    # The allocations assume independent components, which limited
-    # repair crews make them not; the common-cause groups' chains take
-    # theirs in.
+    # The allocations of targets assume independent components, which
+    # limited repair crews make them not (the redundancy allocation works
+    # each design out from the crews' chain); the common-cause groups'
+    # chains take theirs in.
+    redundancy = (
+        r.refusal(
+            partial(_repairable_allocation._require_crewed_redundancy, rbd)
+        )
+        if rbd._crews_couple()
+        else r.refusal(partial(_ccf_groups._require_ccf_long_run, rbd))
+    )
     allocation = r.refusal(
         partial(
             _crews._require_unlimited_crews,
@@ -375,11 +383,18 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         else ""
     )
     out["allocate_redundancy"] = (
-        r.refused(allocation)
-        if allocation
+        r.refused(redundancy)
+        if redundancy
         else from_long_run(
             r.EXACT,
             "A search over the exact long-run values of the candidates."
+            + (
+                " With limited repair crews each candidate's come from "
+                "the crews' Markov chain of its components and their "
+                "copies, which queue for the crews together."
+                if rbd._crews_couple()
+                else ""
+            )
             + (
                 " A common-cause group member's copies join its group, "
                 "whose chain takes them in: a BetaFactor group's (an MGL "
