@@ -12,6 +12,23 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: the best time to switch a whole diagram from one way of running
+  to another (UC-20 of the maintenance README, which was built for one
+  unit). `RepairableRBD.best_switch_time(covariates, value_rates,
+  horizon, *, discount_rate=0, mc_samples=1000, seed=None, scan=11,
+  engine="auto", state=None)` takes, for each block on a covariate
+  schedule that switches, its covariates before and after the switch,
+  and what the system earns per unit of time up before and after. Each
+  candidate switch time is the diagram with those schedules, simulated
+  from one seed (common random numbers) and priced as `npv_distribution`
+  prices its runs; the horizon is scanned and the best refined. It
+  returns `SimulatedSwitchTime`: the switch time and choice, the NPVs of
+  never switching and of switching at once, each one's runs, the scan,
+  and `difference_interval(against, confidence)` on the gain. For one
+  block it agrees with the numerical one-unit `best_switch_time`.
+  `analysis_routes()` lists it (simulated; refused when no block runs on
+  a covariate schedule).
+
 - Added: the spread of a plan's net present value (UC-46 of the
   maintenance README). `RepairableRBD.npv_distribution(horizon, *,
   discount_rate=0, value_rate=0, mc_samples=10_000, seed=None,

@@ -417,9 +417,13 @@ the answer agrees with its halving to `tolerance` (1e-6 by default; the
 switch search values each switch time to 1e-4). The result says how
 closely it did (`error`) and that it is numerical (`method`).
 
-- One unit only, for now: a whole diagram on a load schedule is not built
-  yet, as a `RepairableRBD` component cannot take a covariate-dependent
-  life.
+- For a whole diagram,
+  [`RepairableRBD.best_switch_time`][repyability.RepairableRBD.best_switch_time]
+  asks the same question by simulation: the blocks that switch run on
+  covariate schedules (a spec's `"covariates"`), each candidate switch
+  time is simulated from one seed so the candidates are compared on the
+  same runs, and `difference_interval("never switch")` or `("switch at
+  once")` says how sure the best is better than either end.
 - `age` is how long the unit in service at 0 has already run, at the first
   stretch's covariates.
 - A semiparametric (Cox) model is refused: it has no proper curve to renew.

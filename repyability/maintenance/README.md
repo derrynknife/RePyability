@@ -35,7 +35,7 @@ records and decides what "today" is.
 | UC-12 | When to replace this part next: now, at a scheduled outage, at a planned replacement, or at its failure? | **Built**: `NonRepairable.optimal_next_replacement` |
 | UC-13 | The long-run optimal replacement policy over a calendar of shuts with prices of their own | **Built**: `NonRepairable.optimal_opportunity_policy` (0.14's `optimal_calendar_policy`, deprecated), the prices on the part since UC-45 |
 | UC-19 | What a plan is worth over a horizon at a discount rate, and as a yearly cost | **Built**: `RepairableRBD.expected_npv`, `NonRepairable.age_replacement_value` |
-| UC-20 | One unit run on an operating schedule (covariates and value by stretch, in model time): the value earned, the failures' cost and the NPV, and the best time to switch from one way of running to another | **Built** (one unit): `operating_schedule_value`, `best_switch_time` |
+| UC-20 | One unit run on an operating schedule (covariates and value by stretch, in model time): the value earned, the failures' cost and the NPV, and the best time to switch from one way of running to another | **Built** (one unit, numerical): `operating_schedule_value`, `best_switch_time`; (a diagram, simulated): `RepairableRBD.best_switch_time` |
 | UC-21 | A plan against its outage log: expected and actual cash flows so far, the variance, and the plan re-valued from the states now | **Built**: `RepairableRBD.plan_vs_actual` |
 | UC-46 | The spread of a plan's net present value: each simulated run's NPV, its percentiles, the chance of missing a hurdle and the average of the worst runs | **Built** (part 1, no contract payoffs yet): `RepairableRBD.npv_distribution` |
 | UC-22 | Overhauls that restore a unit only partly (a Kijima restoration factor), every Nth replacing it: availability, failures and cost per year against overhauls that renew it, and the cheapest interval | **Built**: a `"preventive"` spec's `"restoration"`, `"replace_every"` and `"replacement_cost"`, simulated (#398) |
@@ -1856,9 +1856,13 @@ answers back into dates is Reliafy's too.)
 - **Status:** built for one unit: `operating_schedule_value(model, times,
   covariates, value_rates, horizon, failure_cost=, down_time=,
   discount_rate=, age=)` and `best_switch_time(model, covariates,
-  value_rates, horizon, ...)`. A whole diagram on an operating schedule is
-  not built: a `RepairableRBD` component cannot yet take a covariate-
-  dependent life.
+  value_rates, horizon, ...)`. Built for a diagram, simulated:
+  `RepairableRBD.best_switch_time(covariates, value_rates, horizon, *,
+  discount_rate=, mc_samples=, seed=, scan=, engine=, state=)`, whose
+  switching blocks run on covariate schedules (a spec's `"covariates"`);
+  each candidate switch time is the diagram with those schedules,
+  simulated from one seed (common random numbers) and priced as
+  `npv_distribution` prices its runs, the value split at the switch.
 - **Who asks, and why:** an operations manager who can raise output at
   the cost of faster wear, and wants to know whether the extra output
   pays for the extra failures, and when to change.
@@ -1913,11 +1917,19 @@ answers back into dates is Reliafy's too.)
   switch time against a fine scan, with an end best each way; results
   scaling with the unit of time from 1e-6 to 1e6 and with the
   covariate's unit; the refusals, JSON and `help()`.
+  `test_switch_time_diagram.py`: a one-block diagram against the one-unit
+  answer (its choice, each end's NPV within its interval, the gain over
+  switching at once within the interval on the difference); a block the
+  load does not touch in series, which leaves the switch time; seeded
+  searches repeat and their intervals narrow with the runs; the value
+  rates split at the switch against a closed form; the refusals.
 - **Learned / left:** each unit put in before the last change has its own
   life, so the work grows with the cells before it (one evaluation of the
   model along a path each); `best_switch_time` values each switch time to
-  a looser tolerance by default (1e-4) for that reason. Left: a diagram on
-  a schedule (covariate-dependent lives in a `RepairableRBD`), a schedule
+  a looser tolerance by default (1e-4) for that reason. A diagram's search
+  simulates each candidate; drawing a life along a schedule calls the
+  model's cumulative hazard a few times per draw, which is most of its
+  time. Left: a schedule
   that varies continuously (a `CovariatePath`), and value that depends on
   more than the stretch.
 
