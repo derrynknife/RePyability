@@ -877,6 +877,61 @@ class UncertaintyResult(_ResultMapping):
         )
 
 
+@dataclass(repr=False)
+class NPVUncertainty(UncertaintyResult):
+    """The spread of a plan's expected net present value over plausible
+    models of its components: returned by
+    ``RepairableRBD.expected_npv_uncertainty``.
+
+    Each draw gives the uncertain components plausible models (from a
+    fit's parameter covariance, a Bayesian fit's posterior, or the
+    distributions given) and values the plan exactly as ``expected_npv``
+    does. The spread is how unsure the NPV is because the models are
+    estimates, not how a run of the plan varies (``npv_distribution``).
+    ``interval(0.9)`` gives the 90% interval, as for every
+    ``UncertaintyResult``.
+
+    Attributes
+    ----------
+    samples : numpy.ndarray
+        The expected NPV of each draw.
+    nominal : float
+        The expected NPV with every component's own model.
+    n_draws : int
+        The number of draws.
+    band : str or None
+        What the band is: ``"confidence"``, ``"credible"``, ``"given"`` or
+        ``"mixed"`` (see ``UncertaintyResult``).
+    horizon : float
+        The length of time valued, as for ``expected_npv``.
+    discount_rate : float
+        The continuous discount rate per unit time it was valued at.
+    value_rate : float
+        The value earned per unit time while the system works.
+    variance_shares : dict
+        Each uncertain input's share of the NPV's variance by the delta
+        method (the NPV's derivatives in the input's parameters against
+        their covariance; summing to 1), by the input's key; empty with
+        ``shares=False``.
+    delta_variance : float or None
+        The NPV's variance by the delta method, which the shares divide:
+        near ``std ** 2`` where the NPV is close to linear in the
+        parameters over their spread. None with ``shares=False``.
+    held_fixed : list
+        The models every draw keeps as they are, each as ``{"node": ...,
+        "role": ...}`` (a role as ``parameter_sensitivity`` names it;
+        ``"ccf"`` for a common-cause group's model, under its members):
+        their uncertainty is not in the spread.
+    """
+
+    horizon: float = 0.0
+    discount_rate: float = 0.0
+    value_rate: float = 0.0
+    variance_shares: Dict[Hashable, float] = field(default_factory=dict)
+    delta_variance: Optional[float] = None
+    held_fixed: List[Dict[str, Any]] = field(default_factory=list)
+
+
 @dataclass
 class UpDownImportance(_ResultMapping):
     """An importance measure split by system state.
@@ -2156,6 +2211,17 @@ class ExpectedNPV(_ResultMapping):
     retire_at : float or None
         When the system is retired, before the horizon: nothing is earned
         or spent after it. None if it runs to the horizon.
+    rate_sensitivity : float or None
+        How the NPV moves with the continuous discount rate, ``d npv /
+        d r``, per unit of the rate per unit time (times a change of
+        rate, the NPV's change), from
+        ``expected_npv(rate_sensitivity=True)``; None otherwise. It is
+        negative where the value earned outweighs the costs, as a higher
+        rate shrinks the later earnings.
+    rate_sensitivity_error : float or None
+        An estimate of the error of ``rate_sensitivity``, from the
+        differences it is worked out from (see ``expected_npv``); None
+        with no ``rate_sensitivity``.
     cash_flows : list
         The cash-flow table: one dict per period, category and component
         with something in it, with ``period`` (from 1), ``start``, ``end``,
@@ -2215,6 +2281,8 @@ class ExpectedNPV(_ResultMapping):
     salvage: float = 0.0
     undiscounted_salvage: float = 0.0
     retire_at: Optional[float] = None
+    rate_sensitivity: Optional[float] = None
+    rate_sensitivity_error: Optional[float] = None
 
     @property
     def annuity_factor(self) -> float:
@@ -2934,6 +3002,10 @@ class MaintenancePlan(_ResultMapping):
     basis : str or None
         For ``"eac"`` and ``"npv"``, what ``objective_value`` is made
         of, in words, with what is approximate in it.
+    robustness : PlanRobustness or None
+        With ``optimal_replacement_intervals(robust=...)``, how often the
+        choice stays the best across draws of the uncertain models, and
+        what it loses where it does not; None otherwise.
     """
 
     intervals: Dict[Hashable, float]
@@ -2946,6 +3018,95 @@ class MaintenancePlan(_ResultMapping):
     horizon: Optional[float] = None
     objective_value: Optional[float] = None
     basis: Optional[str] = None
+    robustness: Optional["PlanRobustness"] = None
+
+
+@dataclass
+class PlanRobustness(_ResultMapping):
+    """How robust a choice of intervals is to the uncertainty of the
+    models it was made with: the ``robustness`` of a ``MaintenancePlan``
+    from ``RepairableRBD.optimal_replacement_intervals(robust=...)``.
+
+    Intervals chosen on fitted models are the best for those models. Each
+    draw gives the uncertain components plausible models (as
+    ``mean_availability_uncertainty`` draws them), and the choice is
+    scored again under them, by the plan's own objective, against other
+    plans: by default the ``candidates`` near it (each interval one step
+    either way: the next of ``allowed``, or a quarter longer or shorter
+    without), every candidate under the same draws; or, with
+    ``robust="reoptimise"``, against each draw's own best intervals,
+    chosen again (slower). The ``score`` is what the choice minimises: the
+    cost rate (or with a cost cap the unavailability), the equivalent
+    annual cost less the value earned, or for ``"npv"`` less the expected
+    NPV; a ``regret`` is in its units, how much worse the choice scores
+    than the best plan of the draw.
+
+    Attributes
+    ----------
+    method : str
+        ``"neighbours"`` or ``"reoptimise"``.
+    candidates : list
+        The plans compared, the choice first: each a dict of node to
+        interval. With ``"reoptimise"``, the choice alone.
+    scores : numpy.ndarray
+        Each draw's score of each candidate (a row each draw).
+    meets_target : numpy.ndarray
+        Whether each candidate meets the plan's target
+        (``min_availability`` or ``max_cost_rate``) in each draw: all
+        True with none.
+    regret : numpy.ndarray
+        Each draw's regret: the choice's score less the best score among
+        the plans that meet the target (NaN where none does; negative
+        where the choice misses the target but scores better).
+    share_best : float or None
+        The share of draws in which the choice is the best plan that
+        meets the target. With ``"reoptimise"``, the share in which each
+        draw's own best intervals are the choice: None without
+        ``allowed``, whose continuous search never lands on the same
+        intervals twice.
+    share_best_by_candidate : list
+        For ``"neighbours"``, the share of draws in which each candidate
+        is the best (ties to the earliest); empty with ``"reoptimise"``.
+    share_meets_target : float
+        The share of draws in which the choice meets the target.
+    expected_regret : float
+        The mean regret over the draws that have one.
+    draw_choices : list or None
+        With ``"reoptimise"``, each draw's own best intervals; None
+        otherwise.
+    n_draws : int
+        The number of draws.
+    band : str or None
+        What the draws are (see ``UncertaintyResult``): ``"confidence"``,
+        ``"credible"``, ``"given"`` or ``"mixed"``.
+    held_fixed : list
+        The models every draw keeps as they are, as for
+        ``NPVUncertainty``: their uncertainty is not counted.
+    """
+
+    method: str
+    candidates: List[Dict[Hashable, float]]
+    scores: np.ndarray
+    meets_target: np.ndarray
+    regret: np.ndarray
+    share_best: Optional[float]
+    share_best_by_candidate: List[float]
+    share_meets_target: float
+    expected_regret: float
+    draw_choices: Optional[List[Dict[Hashable, float]]]
+    n_draws: int
+    band: Optional[str]
+    held_fixed: List[Dict[str, Any]]
+
+    def __repr__(self) -> str:
+        best = "None" if self.share_best is None else f"{self.share_best:.3g}"
+        return (
+            f"PlanRobustness(method={self.method!r}, "
+            f"candidates={len(self.candidates)}, share_best={best}, "
+            f"expected_regret={self.expected_regret:.6g}, "
+            f"share_meets_target={self.share_meets_target:.3g}, "
+            f"n_draws={self.n_draws})"
+        )
 
 
 @dataclass

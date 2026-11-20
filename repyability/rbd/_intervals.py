@@ -30,6 +30,7 @@ from repyability.rbd._model_utils import (
 )
 from repyability.rbd.results import (
     MaintenancePlan,
+    PlanRobustness,
 )
 from repyability.rbd.routes import Refused
 from repyability.utils import checks
@@ -619,8 +620,13 @@ def optimal_replacement_intervals(
     discount_rate: float,
     value_rate: float,
     horizon,
+    robust=False,
+    uncertainty=None,
+    n_draws: int = 200,
+    seed=None,
 ) -> MaintenancePlan:
     """See ``RepairableRBD.optimal_replacement_intervals``."""
+    robust = _robust_method(robust)
     chosen = _maintained(rbd, nodes)
     min_availability, max_cost_rate = _interval_targets(
         rbd, min_availability, max_cost_rate
@@ -638,33 +644,14 @@ def optimal_replacement_intervals(
             discount_rate=discount_rate,
             value_rate=value_rate,
             horizon=horizon,
+            robust=robust,
+            uncertainty=uncertainty,
+            n_draws=n_draws,
+            seed=seed,
         )
         return _with_salaries(plan, salaries)
     goal = _goal(rbd, objective, discount_rate, value_rate, horizon)
-
-    def planned(intervals: dict) -> "RepairableRBD":
-        return _with_intervals(rbd, preventive=intervals)
-
-    def over_time(intervals: dict) -> "RepairableRBD":
-        """The plan for its curves from new: a component never replaced
-        has no schedule there."""
-        never = [node for node in intervals if math.isinf(intervals[node])]
-        if not never:
-            return planned(intervals)
-        return _with_intervals(
-            with_intervals(rbd, dict.fromkeys(never, math.inf), None),
-            preventive={
-                node: interval
-                for node, interval in intervals.items()
-                if node not in never
-            },
-        )
-
-    def evaluate(intervals: dict) -> Tuple[float, float]:
-        plan = planned(intervals)
-        return plan.expected_cost_rate(), plan.mean_availability()
-
-    score = _scorer(goal, evaluate, planned, over_time)
+    planned, evaluate, score = _replacement_scoring(rbd, goal)
     if allowed is not None:
         best = _choose_from(
             chosen,
@@ -697,7 +684,7 @@ def optimal_replacement_intervals(
             near,
         )
     cost, availability = evaluate(best)
-    return _planned(
+    plan = _planned(
         rbd,
         {node: float(best[node]) for node in chosen},
         cost,
@@ -705,6 +692,214 @@ def optimal_replacement_intervals(
         goal,
         score,
         best,
+    )
+    if not robust:
+        return plan
+    options = (
+        None
+        if allowed is None
+        else _allowed_intervals(allowed, chosen, never=True)
+    )
+
+    def again(diagram) -> dict:
+        """The draw's own best intervals."""
+        return dict(
+            optimal_replacement_intervals(
+                diagram,
+                chosen,
+                allowed=allowed,
+                min_availability=min_availability,
+                max_cost_rate=max_cost_rate,
+                assume_unlimited_crews=assume_unlimited_crews,
+                objective=objective,
+                discount_rate=discount_rate,
+                value_rate=value_rate,
+                horizon=horizon,
+            ).intervals
+        )
+
+    return dataclasses.replace(
+        plan,
+        robustness=_robustness(
+            rbd,
+            {node: float(best[node]) for node in chosen},
+            options,
+            (objective, discount_rate, value_rate, horizon),
+            (min_availability, max_cost_rate),
+            robust,
+            again,
+            uncertainty,
+            n_draws,
+            seed,
+        ),
+    )
+
+
+def _replacement_scoring(rbd, goal):
+    """For a choice of age-replacement intervals on ``rbd``: the plan
+    with given intervals (for the long run), its long-run cost rate and
+    availability, and the score of ``goal`` (None for the cost rate)."""
+
+    def planned(intervals: dict) -> "RepairableRBD":
+        return _with_intervals(rbd, preventive=intervals)
+
+    def over_time(intervals: dict) -> "RepairableRBD":
+        """The plan for its curves from new: a component never replaced
+        has no schedule there."""
+        never = [node for node in intervals if math.isinf(intervals[node])]
+        if not never:
+            return planned(intervals)
+        return _with_intervals(
+            with_intervals(rbd, dict.fromkeys(never, math.inf), None),
+            preventive={
+                node: interval
+                for node, interval in intervals.items()
+                if node not in never
+            },
+        )
+
+    def evaluate(intervals: dict) -> Tuple[float, float]:
+        plan = planned(intervals)
+        return plan.expected_cost_rate(), plan.mean_availability()
+
+    return planned, evaluate, _scorer(goal, evaluate, planned, over_time)
+
+
+#: How robust a choice is, by ``robust``'s values (see ``_robustness``).
+ROBUST = {
+    True: "neighbours",
+    "neighbours": "neighbours",
+    "reoptimise": "reoptimise",
+}
+
+#: How far a neighbour of a continuously searched interval is: this many
+#: times longer, or shorter.
+NEIGHBOUR_STEP = 1.25
+
+
+def _robust_method(robust):
+    """``robust`` checked: False, or the method's name."""
+    if robust is False or robust is None:
+        return False
+    if isinstance(robust, (bool, str)) and robust in ROBUST:
+        return ROBUST[robust]
+    raise ValueError(
+        "robust must be False, True (the choice against its neighbours "
+        'under each draw) or "reoptimise" (against each draw\'s own best '
+        f"intervals, slower); got {robust!r}."
+    )
+
+
+def _neighbours(best: dict, options: Optional[dict]) -> list:
+    """The choice and its neighbours: each interval one step either way,
+    the next of its ``options``, or ``NEIGHBOUR_STEP`` times longer or
+    shorter (an interval of never has none)."""
+    out = [dict(best)]
+    for node, interval in best.items():
+        if options is not None:
+            values = options[node]
+            k = values.index(interval)
+            moved = [values[j] for j in (k - 1, k + 1) if 0 <= j < len(values)]
+        elif math.isfinite(interval):
+            moved = [interval / NEIGHBOUR_STEP, interval * NEIGHBOUR_STEP]
+        else:
+            moved = []
+        out.extend({**best, node: value} for value in moved)
+    return out
+
+
+def _robustness(
+    rbd,
+    best: dict,
+    options: Optional[dict],
+    objective: tuple,
+    targets: tuple,
+    method: str,
+    again,
+    uncertainty,
+    n_draws: int,
+    seed,
+) -> PlanRobustness:
+    """How the choice ``best`` fares under draws of the uncertain models
+    (see ``PlanRobustness``): every candidate scored under each draw's
+    diagram by the choice's own objective and targets, with the same
+    draws for every candidate; or, with ``"reoptimise"``, against each
+    draw's own best intervals (``again(diagram)``)."""
+    from repyability.rbd import _repairable_uncertainty as drawn
+
+    min_availability, max_cost_rate = targets
+    inputs, groups = drawn.sources(rbd, uncertainty)
+    models, group_models = drawn.draws(rbd, inputs, groups, n_draws, seed)
+    candidates = (
+        [best] if method == "reoptimise" else _neighbours(best, options)
+    )
+    choices: Optional[list] = [] if method == "reoptimise" else None
+    scores = np.empty((n_draws, len(candidates)))
+    meets = np.empty((n_draws, len(candidates)), dtype=bool)
+    regret = np.empty(n_draws)
+    for i in range(n_draws):
+        diagram = drawn.build(rbd, inputs, models, group_models, i)
+        _, evaluate, score = _replacement_scoring(
+            diagram, _goal(diagram, *objective)
+        )
+
+        def scored(intervals: dict) -> Tuple[float, bool]:
+            cost, availability = evaluate(intervals)
+            ok = _meets(cost, availability, min_availability, max_cost_rate)
+            if score is not None:
+                return score(intervals), ok
+            return _objective(cost, availability, max_cost_rate), ok
+
+        for k, candidate in enumerate(candidates):
+            scores[i, k], meets[i, k] = scored(candidate)
+        if choices is not None:
+            try:
+                own = again(diagram)
+            except ValueError:
+                # No intervals meet the target under this draw.
+                own = None
+            choices.append(own)
+            regret[i] = (
+                np.nan if own is None else scores[i, 0] - scored(own)[0]
+            )
+        else:
+            feasible = np.where(meets[i], scores[i], np.inf)
+            low = float(feasible.min())
+            regret[i] = scores[i, 0] - low if math.isfinite(low) else np.nan
+    if choices is not None:
+        share_best = (
+            None
+            if options is None
+            else float(np.mean([own == best for own in choices]))
+        )
+        by_candidate: list = []
+    else:
+        feasible = np.where(meets, scores, np.inf)
+        winner = np.argmin(feasible, axis=1)
+        has = np.isfinite(feasible.min(axis=1))
+        by_candidate = [
+            float(np.mean(has & (winner == k))) for k in range(len(candidates))
+        ]
+        # The choice is best where nothing that meets the target scores
+        # lower: ties count for it.
+        share_best = float(
+            np.mean(meets[:, 0] & (scores[:, 0] <= feasible.min(axis=1)))
+        )
+    known = regret[np.isfinite(regret)]
+    return PlanRobustness(
+        method=method,
+        candidates=candidates,
+        scores=scores,
+        meets_target=meets,
+        regret=regret,
+        share_best=share_best,
+        share_best_by_candidate=by_candidate,
+        share_meets_target=float(np.mean(meets[:, 0])),
+        expected_regret=float(known.mean()) if known.size else float("nan"),
+        draw_choices=choices,
+        n_draws=n_draws,
+        band=drawn.band_of(rbd, inputs, groups),
+        held_fixed=drawn.held_fixed(rbd, inputs, groups),
     )
 
 

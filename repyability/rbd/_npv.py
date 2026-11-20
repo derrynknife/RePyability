@@ -210,8 +210,15 @@ def expected_npv(
     state,
     retire_at=None,
     salvage=None,
+    rate_sensitivity: bool = False,
 ) -> ExpectedNPV:
     """See ``RepairableRBD.expected_npv``."""
+    if not isinstance(rate_sensitivity, (bool, np.bool_)):
+        raise TypeError(
+            "rate_sensitivity must be True or False (whether to work out "
+            f"the NPV's derivative in the discount rate); got "
+            f"{rate_sensitivity!r}."
+        )
     rate = _discount_rate(discount_rate)
     horizon = _number(horizon, "horizon", strict=True)
     value_rate = _number(value_rate, "value_rate", strict=False)
@@ -385,4 +392,52 @@ def expected_npv(
         retire_at=None if retire_at is None else stop,
     )
     result.eac = cost / result.annuity_factor
+    if rate_sensitivity:
+
+        def npv_at(r: float) -> float:
+            return expected_npv(
+                rbd,
+                horizon,
+                discount_rate=r,
+                value_rate=value_rate,
+                periods=None,
+                working_nodes=working_nodes,
+                broken_nodes=broken_nodes,
+                method=method,
+                state=state,
+                retire_at=retire_at,
+                salvage=salvage,
+            ).npv
+
+        result.rate_sensitivity, result.rate_sensitivity_error = (
+            _rate_derivative(npv_at, rate, result.npv, stop)
+        )
     return result
+
+
+#: The step of the discount rate the NPV's derivative is differenced on,
+#: times the time valued: the rate's effect on an amount at ``t`` is
+#: through ``r t``, so the step is a share of ``1 / stop`` whatever the
+#: unit of time.
+_RATE_STEP = 1e-2
+
+
+def _rate_derivative(npv_at, rate: float, base: float, stop: float):
+    """The derivative of the NPV in the discount rate at ``rate``, and an
+    estimate of its error: Richardson's extrapolation of differences on
+    steps ``h`` and ``2 h`` (``h = _RATE_STEP / stop``), central where the
+    rate stays at least 0 and one-sided (second order) from ``rate``
+    otherwise; the error is a third of the two steps' difference, the
+    size of the smaller step's own error, which the extrapolation
+    removes the leading term of."""
+    h = _RATE_STEP / stop
+    if rate >= 2.0 * h:
+        up1, down1 = npv_at(rate + h), npv_at(rate - h)
+        up2, down2 = npv_at(rate + 2.0 * h), npv_at(rate - 2.0 * h)
+        fine = (up1 - down1) / (2.0 * h)
+        coarse = (up2 - down2) / (4.0 * h)
+    else:
+        f1, f2, f4 = (npv_at(rate + k * h) for k in (1.0, 2.0, 4.0))
+        fine = (-3.0 * base + 4.0 * f1 - f2) / (2.0 * h)
+        coarse = (-3.0 * base + 4.0 * f2 - f4) / (4.0 * h)
+    return (4.0 * fine - coarse) / 3.0, abs(fine - coarse) / 3.0

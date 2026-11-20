@@ -12,6 +12,21 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: how sure an NPV and a choice of intervals are (UC-55 of the
+  maintenance README). `expected_npv(rate_sensitivity=True)` gives the
+  NPV's derivative in the discount rate, with an estimate of its error
+  (`ExpectedNPV.rate_sensitivity` and `rate_sensitivity_error`).
+  `RepairableRBD.expected_npv_uncertainty(horizon, uncertainty, ...)`
+  values the plan over draws of the fitted models, as the other
+  uncertainty methods draw them, in an `NPVUncertainty`: each draw's
+  NPV, its intervals, each input's share of the variance (the delta
+  method) and the models held fixed. `optimal_replacement_intervals`
+  takes `robust=True` (the choice against its neighbours under each
+  draw) or `robust="reoptimise"` (against each draw's own best), with
+  `uncertainty=`, `n_draws=` and `seed=`, and gives the plan a
+  `PlanRobustness`: the share of draws in which the choice stays the
+  best, and its expected regret.
+
 - Added: what a test of a hidden failure is worth (UC-53 of the
   maintenance README and UC-54 of the schedule's).
   `failure_finding_window(device, test_times, window, age=, test_cost=,

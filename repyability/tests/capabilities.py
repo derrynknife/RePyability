@@ -278,6 +278,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("bx_life_uncertainty", "time_to_reliability_uncertainty"),
             ),
             ("Of the cost rate", ("expected_cost_rate_uncertainty",)),
+            (
+                "Of the net present value",
+                ("expected_npv_uncertainty",),
+            ),
         ],
     ),
     (
@@ -394,6 +398,7 @@ FAMILIES: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {
             (
                 "mean_availability_uncertainty",
                 "expected_cost_rate_uncertainty",
+                "expected_npv_uncertainty",
             ),
         ),
         (

@@ -815,6 +815,7 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         ("point_availability_uncertainty", "point_availability"),
         ("mission_availability_uncertainty", "mission_availability"),
         ("expected_cost_rate_uncertainty", "expected_cost_rate"),
+        ("expected_npv_uncertainty", "expected_npv"),
     ):
         own = out[method]
         out[name] = (
