@@ -255,6 +255,75 @@ year.system_planned_outages / year.n_simulations   # -> 11.95
 year.cost.by_category["preventive"]                # -> 11886.8   1000 each, expected
 ```
 
+### Replacement at given times
+
+A real plan is often a list of jobs at times rather than one interval:
+this pump is replaced at 8,000, 14,000 and 26,000 hours. Give the times as
+`"replace_at"`, in the diagram's time from 0, in place of an `"interval"`.
+It is block replacement at those times: the unit is replaced at each if it
+is up there (a replacement due while it is down is skipped), with the
+task's `"cost"` and `"duration"`, and after the last time it is replaced
+no more.
+
+```python
+import numpy as np
+import surpyval as surv
+from repyability import RepairableRBD
+
+hours = 8760.0
+planned = RepairableRBD(
+    [("in", "pump"), ("pump", "motor"), ("motor", "out")],
+    {
+        "pump": {
+            "reliability": surv.Weibull.from_params([12_000, 2.5]),
+            "repairability": surv.LogNormal.from_params([3.5, 0.6]),
+            "repair_cost": 9_000.0,
+            "preventive": {
+                "replace_at": [8_000.0, 14_000.0, 26_000.0],
+                "duration": surv.LogNormal.from_params([2.5, 0.3]),
+                "cost": 3_000.0,
+            },
+        },
+        "motor": {
+            "reliability": surv.Weibull.from_params([40_000, 1.5]),
+            "repairability": surv.LogNormal.from_params([4.0, 0.5]),
+            "repair_cost": 15_000.0,
+        },
+    },
+    downtime_cost_rate=400.0,
+)
+four_years = 4 * hours
+planned.mission_availability(four_years)                    # -> 0.99588
+planned.expected_events(four_years).node_preventive["pump"] # -> 2.990
+planned.expected_cost(four_years).mean                      # -> 91650.6
+worth = planned.expected_npv(
+    four_years, discount_rate=np.log(1.08) / hours, periods=4
+)
+worth.cost                                                  # -> 77679.1
+```
+
+The values over a horizon are worked out, not simulated
+(`point_availability`, `mission_availability`, `expected_events`,
+`expected_cost`, `expected_npv` and what is built on them): the unit is
+followed stretch by stretch, from one time of the plan to the next, each
+stretch starting with the replacement of the unit if it is up and the
+repairs still going on, as under block replacement on a period, and to the
+same precision. Each replacement is an event at its exact time, counted
+and discounted there. Equally spaced times give block replacement's
+values over the same horizon. From a state (`state=`), the times are
+counted from now, and the unit's own curve runs to the first of them.
+
+A plan ends, so a diagram with one has no long run: `mean_availability`,
+`expected_cost_rate` and the other long-run methods refuse, saying to ask
+for a horizon or to give the component an interval, as do the spares
+counts and `plan_vs_actual` (whose rest from today would count the times
+again), each saying what to run instead. The simulations replace at the
+times too (in Python: a compiled engine leaves a plan to it). Each time
+is a lever (`preventive.replace_at.0`, ...), between the times either
+side of it, so `parameter_sensitivity(window=...)` says what moving a
+replacement is worth. A stretch far shorter than the unit's repairs
+cannot be followed on its grid and refuses, pointing to the simulation.
+
 ### Replacement on a calendar policy
 
 A part whose replacement costs differently at different times (cheap in a

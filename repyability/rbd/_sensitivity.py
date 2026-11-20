@@ -72,6 +72,16 @@ _MOVES_BREAKS = {
 }
 
 
+#: The levers of a plan's times (``preventive.replace_at.0``, ...), which
+#: move its curve's breaks too.
+_PLAN_TIME = "preventive.replace_at."
+
+
+def _moves_breaks(name: str) -> bool:
+    """Whether the lever ``name`` moves its component's curve's breaks."""
+    return name in _MOVES_BREAKS or name.startswith(_PLAN_TIME)
+
+
 #: The range of a probability, a fraction or a share.
 _UNIT = (0.0, 1.0)
 
@@ -222,6 +232,27 @@ def _spec_levers(spec: dict) -> List[tuple]:
                     float(value),
                 )
             )
+        plan = options.get("replace_at") if key == "preventive" else None
+        if plan is not None:
+            # Each time of a plan, between the times either side of it.
+            times = [float(t) for t in np.atleast_1d(plan)]
+            edges = [0.0] + times + [math.inf]
+            for k, time in enumerate(times):
+
+                def moved_time(v, k=k, times=times, key=key, options=options):
+                    changed = times[:k] + [float(v)] + times[k + 1 :]  # noqa
+                    return {**spec, key: {**options, "replace_at": changed}}
+
+                out.append(
+                    (
+                        f"{_PLAN_TIME}{k}",
+                        time,
+                        moved_time,
+                        False,
+                        (edges[k], edges[k + 2]),
+                        time,
+                    )
+                )
         restoration = options.get("restoration")
         if isinstance(restoration, dict) and "q" in restoration:
             # The restoration factor of a task that restores partly.
@@ -1007,7 +1038,7 @@ def sensitivity(
                 quantity == "availability"
                 and alone is not None
                 and lever.node is not None
-                and (x is not None or lever.name not in _MOVES_BREAKS)
+                and (x is not None or not _moves_breaks(lever.name))
             ):
                 at = alone.at(lever)
                 change = _difference(at, lever, rel_step, at(lever.value))

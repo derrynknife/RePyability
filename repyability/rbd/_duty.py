@@ -148,5 +148,11 @@ def tasks_on_calendar(node, spec: dict, d):
                     # Not refused here if not a number: the task's own
                     # checks say what it must be.
                     task[name] = float(value) / d
+            plan = task.get("replace_at") if key == "preventive" else None
+            if plan is not None:
+                try:
+                    task["replace_at"] = [float(t) / d for t in plan]
+                except (TypeError, ValueError):
+                    pass  # not numbers: the task's own check says so
         out = {**out, key: task}
     return out, operating

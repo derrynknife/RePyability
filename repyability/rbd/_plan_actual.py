@@ -140,6 +140,21 @@ def _require_log_states(rbd, given=()) -> None:
             raise NotImplementedError(reason)
 
 
+def _require_no_plans(rbd) -> None:
+    """Raise if a component is replaced at the times of a plan, which
+    are counted from 0: the rest from today is valued on the same
+    diagram from today, where they would be counted again."""
+    planned = _requirements._planned(rbd)
+    if planned:
+        raise NotImplementedError(
+            f"Component {planned[0]!r} is replaced at the times of a plan "
+            "(replace_at), counted from 0, which the rest from today is "
+            "not valued with yet: value the plan with expected_npv, and "
+            "the rest on a diagram whose replace_at holds the times still "
+            "to come, counted from today, with expected_npv(state=)."
+        )
+
+
 def route(rbd, npv_route):
     """``plan_vs_actual``'s route: ``expected_npv``'s (it values the plan
     and the rest from today with it), unless a component's state now is
@@ -148,6 +163,9 @@ def route(rbd, npv_route):
 
     if npv_route.route == r.REFUSED:
         return npv_route
+    planned = r.refusal(lambda: _require_no_plans(rbd))
+    if planned:
+        return r.refused(planned)
     for node in rbd.components:
         reason = _log_state_refusal(rbd, node)
         if reason is not None:
@@ -428,6 +446,7 @@ def plan_vs_actual(
             method=method,
             state=start_state,
         )
+    _require_no_plans(rbd)
     given = dict(state or {})
     states, derived = _states_now(rbd, logs, now, given, start_state)
     so_far = int(np.searchsorted(ends, now, side="right"))

@@ -195,6 +195,8 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
         message = r.refusal(
             partial(_requirements._require_block_models, rbd, node)
         )
+        if not message and schedule.plan is not None:
+            message = r.refusal(partial(_requirements._require_no_plans, rbd))
         if message:
             return r.REFUSED, message
         if schedule.level is not None:
@@ -535,6 +537,8 @@ def _block_cycle(rbd, node):
     _requirements._require_full_restoration(rbd, node)
     component = rbd.components[node]
     schedule = rbd._preventive[node]
+    if schedule.plan is not None:
+        _requirements._require_no_plans(rbd)
     if schedule.level is not None:
         return level_model(rbd, node).cycle()
     cache = rbd._cache.kept("block_cycles")
