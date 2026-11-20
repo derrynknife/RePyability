@@ -21,7 +21,7 @@ release between minors that only adds (0.19.1).
   equivalent annual cost; `work_by_period(..., discount=)` adds each
   period's `npv`, `total_npv` and `eac`. `Task.long_run_value(start,
   discount, precision=1e-9)` is what a task repeating for ever is worth,
-  returning a `TaskValue`: a closed form for a plain interval of days or
+  returning a `LongRunValue`: a closed form for a plain interval of days or
   weeks, otherwise the dates summed until a bound on what is left is
   under `precision`; refused, saying what to run, at a discount of 0,
   for given dates and for a limit by use. $250 every 30 days at 7% is 13

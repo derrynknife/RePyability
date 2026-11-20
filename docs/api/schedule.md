@@ -15,7 +15,7 @@ tasks on dates and failures, events and work by calendar period (see the
 
 ::: repyability.schedule.TaskDue
 
-::: repyability.schedule.TaskValue
+::: repyability.schedule.LongRunValue
 
 ::: repyability.schedule.work_by_period
 
