@@ -351,6 +351,32 @@ npv.cash_flows[3]["category"]   # 'value'
 sum(row["present_value"] for row in npv.cash_flows)   # -> 7448539.5
 ```
 
+The average hides the risk: a plan with a slightly lower mean and a much
+better worst case is often the one to choose. `npv_distribution(horizon,
+discount_rate=, value_rate=, mc_samples=, seed=, hurdle=, tail=0.1)`
+simulates the runs themselves (the histories of `simulate_timelines`, by
+seed), prices each with the diagram's own costs at the times they fell, and
+gives each run's net present value (`samples`) and their spread: `p10`,
+`p50` and `p90`, the share of runs below a `hurdle`, and `cvar`, the mean of
+the worst `tail` of the runs. Its `mean` estimates `expected_npv`'s, within
+`mean_interval()`; `percentile_interval(q)` gives a percentile's confidence
+interval by the binomial method. It works where the exact methods refuse
+(crews with other lives, maintenance groups), as the simulation does. A
+cost charged at an event the histories do not record (a standby group's
+units' failures, tests, planned replacements that take no time, a set-up
+cost, a calendar policy's prices) is not left out: the method refuses the
+diagram, naming the cost. A cost given as a distribution is charged at its
+mean (`priced_at_mean`).
+
+```python
+runs = line.npv_distribution(87600.0, discount_rate=seven, value_rate=120.0,
+                             mc_samples=10_000, seed=1, hurdle=7.4e6)
+runs.mean                      # -> 7448443.9   expected_npv's 7448539.5, within mean_interval()
+runs.p10, runs.p90             # -> (7417097.8, 7478039.2)
+runs.probability_below_hurdle  # -> 0.0268
+runs.cvar                      # -> 7404250.8   the worst tenth of the runs, on average
+```
+
 For one part replaced at an age or at a failure, over for ever,
 `NonRepairable.age_replacement_value(age, discount_rate=)` gives the net
 present value (Fox, 1966) and the equivalent annual cost in closed form. At a

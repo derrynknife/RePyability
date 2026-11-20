@@ -279,6 +279,9 @@ REPAIRABLE_CALLS = {
     "plan_vs_actual": lambda rbd: rbd.plan_vs_actual(
         quiet_logs(rbd), 100.0, 200.0, discount_rate=0.01, value_rate=1.0
     ),
+    "npv_distribution": lambda rbd: rbd.npv_distribution(
+        200.0, discount_rate=0.01, value_rate=1.0, mc_samples=20, seed=1
+    ),
     "expected_events_by_window": lambda rbd: rbd.expected_events_by_window(
         width=100.0, count=2
     ),

@@ -2219,6 +2219,308 @@ class ExpectedNPV(_ResultMapping):
         )
 
 
+def _order_statistic(ordered: np.ndarray, p: float) -> float:
+    """The ``p`` quantile of the sorted values ``ordered``: the smallest
+    value with at least a share ``p`` of them at or below it (the
+    ``ceil(p n)``-th, at least the first)."""
+    k = max(1, math.ceil(round(p * ordered.size, 9)))
+    return float(ordered[k - 1])
+
+
+@dataclass
+class NPVDistribution(_ResultMapping):
+    """The net present value of each simulated run of a system over a
+    horizon, and their spread: returned by
+    ``RepairableRBD.npv_distribution``.
+
+    In plain terms: [`ExpectedNPV`][repyability.ExpectedNPV] is the
+    average over every way the failures could fall; this is how far one
+    run, the one you will live through, can fall from it. ``p10`` is the
+    value nine runs in ten beat, ``probability_below_hurdle`` the chance
+    of ending below a value you must reach, and ``cvar`` the average of
+    the worst ``tail`` of the runs: a plan with a slightly lower mean and
+    a much better worst case is often the one to choose.
+
+    Each run's NPV is its value earned while the system was up less every
+    cost it met, each discounted at the time it fell (``exp(-r t)``), the
+    acquisition costs paid at the start. ``mean`` estimates the expected
+    NPV, within ``mean_interval()``; the percentiles and ``cvar`` describe
+    the runs and do not shrink with more of them.
+
+    Attributes
+    ----------
+    horizon : float
+        The length of time valued, in the models' unit.
+    discount_rate : float
+        The continuous rate per unit time the amounts were discounted at.
+    value_rate : float
+        The value earned per unit time while the system works.
+    samples : numpy.ndarray
+        Each run's net present value: ``value_samples - cost_samples``.
+    value_samples : numpy.ndarray
+        Each run's present value earned while the system worked.
+    cost_samples : numpy.ndarray
+        Each run's present value of every cost, the acquisition included.
+    mean : float
+        The runs' mean NPV: the estimate of the expected NPV.
+    value : float
+        The runs' mean present value earned.
+    cost : float
+        The runs' mean present cost.
+    undiscounted_npv : float
+        The runs' mean NPV with no discounting.
+    undiscounted_value : float
+        The runs' mean value earned, undiscounted.
+    undiscounted_cost : float
+        The runs' mean cost, undiscounted, with the acquisition costs.
+    cost_by_category : dict
+        The runs' mean present cost in each category, as for
+        ``ExpectedNPV``.
+    cost_by_component : dict
+        The runs' mean present cost of each costed component, with its
+        acquisition cost.
+    p10, p50, p90 : float
+        The 10th, 50th and 90th percentiles of the runs' NPVs (see
+        ``percentile``).
+    hurdle : float or None
+        The value the NPV is compared with, if given.
+    probability_below_hurdle : float or None
+        The share of the runs whose NPV is below ``hurdle`` (None without
+        one).
+    tail : float
+        The share of the runs ``cvar`` averages.
+    cvar : float
+        The conditional value at risk: the mean NPV of the worst ``tail``
+        of the runs (the ``ceil(tail n)`` lowest).
+    n_simulations : int
+        How many runs.
+    seed : int
+        The seed of the runs (drawn when none was given), to repeat them.
+    engine : str
+        The engine that simulated them: ``"python"`` or ``"numba"``.
+    priced_at_mean : list
+        The components with a cost given as a distribution: each such
+        cost is charged at its mean, so the spread is that of the events
+        alone.
+
+    Examples
+    --------
+    A pump earning 10 per hour while it works, failing on average every
+    1000 hours, repaired in 10 at 500 per repair, bought for 20,000,
+    valued over 5 years of 8,760 hours at 8% a year:
+
+    >>> import math
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "p"), ("p", "t")],
+    ...     {
+    ...         "p": {
+    ...             "reliability": surv.Exponential.from_params([1e-3]),
+    ...             "repairability": surv.Exponential.from_params([0.1]),
+    ...             "repair_cost": 500.0,
+    ...             "acquisition_cost": 20000.0,
+    ...         }
+    ...     },
+    ... )
+    >>> r = math.log(1.08) / 8760  # per hour
+    >>> runs = rbd.npv_distribution(
+    ...     5 * 8760.0, discount_rate=r, value_rate=10.0, mc_samples=2000,
+    ...     seed=1, hurdle=320_000,
+    ... )
+    >>> round(runs.mean), round(runs.p10), round(runs.p90)
+    (322045, 317651, 326267)
+    >>> round(runs.probability_below_hurdle, 3), round(runs.cvar)
+    (0.268, 315980)
+    """
+
+    horizon: float
+    discount_rate: float
+    value_rate: float
+    samples: np.ndarray
+    value_samples: np.ndarray
+    cost_samples: np.ndarray
+    mean: float
+    value: float
+    cost: float
+    undiscounted_npv: float
+    undiscounted_value: float
+    undiscounted_cost: float
+    cost_by_category: Dict[str, float]
+    cost_by_component: Dict[Hashable, float]
+    p10: float
+    p50: float
+    p90: float
+    hurdle: Optional[float]
+    probability_below_hurdle: Optional[float]
+    tail: float
+    cvar: float
+    n_simulations: int
+    seed: Any
+    engine: str
+    priced_at_mean: List[Hashable]
+
+    @property
+    def std(self) -> float:
+        """The standard deviation of the runs' NPVs (nan for one run).
+
+        Returns
+        -------
+        float
+            How much one run's NPV varies.
+        """
+        if self.samples.size < 2:
+            return math.nan
+        return float(np.std(self.samples, ddof=1))
+
+    def mean_interval(self, confidence: float = 0.95) -> ConfidenceInterval:
+        """A confidence interval for the expected NPV: ``mean +/- z *
+        std / sqrt(n)``, by the central limit theorem, for the normal
+        quantile ``z`` of ``confidence``. It says how well the runs pin
+        the average down; for the range one run falls in, use
+        ``percentile``.
+
+        Parameters
+        ----------
+        confidence : float, optional
+            The confidence level, strictly between 0 and 1, by default 0.95.
+
+        Returns
+        -------
+        ConfidenceInterval
+            The mean, its bounds, standard error and the number of runs.
+
+        Raises
+        ------
+        ValueError
+            If ``confidence`` is not strictly between 0 and 1.
+        """
+        if not 0.0 < confidence < 1.0:
+            raise ValueError("confidence must be between 0 and 1.")
+        se = montecarlo.standard_error(self.samples, False)
+        z = montecarlo.z_value(confidence)
+        return ConfidenceInterval(
+            estimate=self.mean,
+            lower=self.mean - z * se,
+            upper=self.mean + z * se,
+            confidence=confidence,
+            standard_error=se,
+            n_samples=int(self.samples.size),
+            method="simulated",
+        )
+
+    def percentile(self, q: float) -> float:
+        """The ``q``-th percentile of the runs' NPVs: the lowest run's
+        NPV with at least ``q`` percent of the runs at or below it (an
+        order statistic, the ``ceil(q n / 100)``-th lowest, no
+        interpolation).
+
+        Parameters
+        ----------
+        q : float
+            The percentile, more than 0 and at most 100: ``q`` strictly
+            between 0 and 1 warns, as it is more likely a fraction meant.
+
+        Returns
+        -------
+        float
+            The NPV.
+
+        Raises
+        ------
+        ValueError
+            If ``q`` is not in ``(0, 100]``.
+        """
+        p = self._share(q)
+        return _order_statistic(np.sort(self.samples), p)
+
+    def percentile_interval(
+        self, q: float, confidence: float = 0.95
+    ) -> Tuple[float, float]:
+        """A confidence interval for the ``q``-th percentile of the NPV, by
+        the binomial method (distribution-free): order statistics ``l``
+        and ``u`` such that the percentile lies between them with at
+        least ``confidence``, as the number of runs below it is binomial.
+        A bound the runs are too few to give is ``-inf`` or ``inf``.
+
+        Parameters
+        ----------
+        q : float
+            The percentile, as for ``percentile``.
+        confidence : float, optional
+            The confidence level, strictly between 0 and 1, by default 0.95.
+
+        Returns
+        -------
+        tuple of float
+            The lower and upper bounds.
+
+        Raises
+        ------
+        ValueError
+            If ``q`` or ``confidence`` is out of range.
+        """
+        from scipy.stats import binom
+
+        p = self._share(q)
+        if not 0.0 < confidence < 1.0:
+            raise ValueError("confidence must be between 0 and 1.")
+        ordered = np.sort(self.samples)
+        n = ordered.size
+        alpha = 1.0 - confidence
+        low = int(binom.ppf(alpha / 2.0, n, p))
+        high = int(binom.ppf(1.0 - alpha / 2.0, n, p)) + 1
+        lower = float(ordered[low - 1]) if low >= 1 else -math.inf
+        upper = float(ordered[high - 1]) if high <= n else math.inf
+        return lower, upper
+
+    def probability_below(self, hurdle: float) -> float:
+        """The share of the runs whose NPV is below ``hurdle``.
+
+        Parameters
+        ----------
+        hurdle : float
+            The value to reach.
+
+        Returns
+        -------
+        float
+            The estimated chance of ending below it.
+        """
+        return float(np.mean(self.samples < float(hurdle)))
+
+    @staticmethod
+    def _share(q) -> float:
+        _on_percent_scale(q, "percentile")
+        q = float(q)
+        if not 0.0 < q <= 100.0:
+            raise ValueError(
+                "The percentile must be more than 0 and at most 100; got "
+                f"{q!r}."
+            )
+        return q / 100.0
+
+    def __repr__(self) -> str:
+        # A summary (#235): the runs are in ``samples``.
+        parts = [
+            f"mean={self.mean:.6g}",
+            f"p10={self.p10:.6g}",
+            f"p50={self.p50:.6g}",
+            f"p90={self.p90:.6g}",
+            f"cvar={self.cvar:.6g}",
+            f"tail={self.tail:g}",
+        ]
+        if self.hurdle is not None:
+            parts.append(
+                f"probability_below_hurdle={self.probability_below_hurdle:.4g}"
+            )
+        parts += [
+            f"n_simulations={self.n_simulations}",
+            f"horizon={self.horizon:g}",
+        ]
+        return f"NPVDistribution({', '.join(parts)})"
+
+
 @dataclass
 class ReliabilityRedundancyAllocation(_ResultMapping):
     """The component reliability and number of copies chosen for each

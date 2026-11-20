@@ -21,6 +21,7 @@ from repyability.rbd import (
     _first_failure,
     _intervals,
     _long_run,
+    _npv_runs,
     _plan_actual,
     _repairable_allocation,
     _repairable_capacity,
@@ -591,6 +592,7 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             engine_reason=why,
         )
     )
+    out["npv_distribution"] = _npv_runs.route(rbd, out["simulate_timelines"])
     engine, why = _runs._engine_choice(rbd, capacity=False)
     if unpriced:
         out["cost"] = r.refused(unpriced)
