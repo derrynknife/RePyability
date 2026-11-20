@@ -441,7 +441,10 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         else from_long_run(
             r.NUMERICAL,
             "An optimiser over the age-replacement intervals, with the "
-            "exact long-run values at each.",
+            'exact long-run values at each (objective="eac": each '
+            "component's renewal cycle discounted too, the system's "
+            'terms at its long-run availability; objective="npv": '
+            "expected_npv over the horizon at each).",
         )
     )
     refusal = (
@@ -473,7 +476,10 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         else from_long_run(
             r.NUMERICAL,
             "An optimiser over the inspection interval, with the exact "
-            "long-run values at each.",
+            'long-run values at each (objective="eac": each '
+            "component's renewal cycle discounted too, the system's "
+            'terms at its long-run availability; objective="npv": '
+            "expected_npv over the horizon at each).",
         )
     )
     # Spares: each component's replacements, counted as a renewal

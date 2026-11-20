@@ -142,6 +142,46 @@ they take the system down together its first years cost more than the
 plan's rate: `expected_cost` gives the cost from new, and from units of
 other ages (`state`) the cost of a staggered start.
 
+At a discount rate, money spent later is worth less now, so a replacement
+put off is worth something. `objective="eac"` chooses the intervals for the
+lowest equivalent annual cost in the long run: the steady cost per unit time
+worth the same, at `discount_rate` (a continuous rate per unit of the
+models' time), as running the diagram for ever from new, less `value_rate`
+for the time it works. Each component's own costs are discounted over its
+renewal cycle, exactly (Fox, 1966), as
+`NonRepairable.optimal_replacement_policy(discount_rate=)` discounts one
+unit's; the cost of the system's downtime and the value it earns are taken
+at its long-run availability, which the plan's `basis` says. At a rate of 0
+it is the cost rate, and the plan is the same:
+
+```python
+import math
+a_year = math.log(1.10) / 8760           # 10% a year, the models in hours
+plan = with_standby(1000).optimal_replacement_intervals(
+    objective="eac", discount_rate=a_year
+)
+plan.intervals["a"]     # -> 497.5   against 497.1 undiscounted
+plan.objective_value    # -> 6.972   the equivalent annual cost, per hour
+plan = with_standby(1000).optimal_replacement_intervals(
+    objective="eac", discount_rate=20 * a_year
+)
+plan.intervals["a"]     # -> 504.7   a rate 20 times as high
+```
+
+`objective="npv"` chooses them for the highest expected net present value
+over a `horizon` from new ([`expected_npv`][repyability.RepairableRBD.expected_npv]),
+which follows the system's availability over time, so nothing in it is
+approximate. It takes each plan's curves over the horizon, so it is much
+slower, and what a plan is worth over a horizon has a local best wherever a
+replacement falls just inside it or just outside: without `allowed` the
+search is a local one from the long run's best plan, and with `allowed`
+every combination is valued. The targets (`min_availability`,
+`max_cost_rate`) are kept with either objective: they bound the long-run
+values, and the objective is the best within them. A diagram with a priced
+component that has no renewal cycle of its own worked out (a standby group,
+block replacement, a common-cause group, a unit whose tests or repairs take
+time) refuses `"eac"` at a discount rate, and names `"npv"`.
+
 With limited `repair_crews` a component can wait for a crew, and the exact
 long-run values the search uses no longer hold, so the choice is refused.
 `assume_unlimited_crews=True` (#184) chooses the intervals as if every repair
@@ -1092,6 +1132,27 @@ component, any interval can be chosen:
 
 ```python
 pump(100.0).optimal_inspection_intervals().intervals["p"]   # -> 285.5   the formula gives 283
+```
+
+The tests can be chosen at a discount rate too, with the objectives of the
+[age-replacement intervals](#choosing-the-intervals): `objective="eac"` for
+the lowest equivalent annual cost in the long run, less a `value_rate`
+earned while the system works, and `objective="npv"` for the highest
+expected net present value over a `horizon`. A tested unit starts afresh at
+the test that finds it failed, so its cycle is the tests up to that one:
+each is paid for when it is made, the failure when it is found, and the
+unit's own downtime from the failure to that test, each discounted to when
+it falls. That holds for tests and repairs that take no time and find every
+failure; any other tested unit refuses `"eac"` at a discount rate and names
+`"npv"`. Tests cost now and hidden failures cost later, so a discount rate
+puts the tests a little further apart:
+
+```python
+plan = pump(100.0).optimal_inspection_intervals(
+    objective="eac", discount_rate=1e-4
+)
+plan.intervals["p"]     # -> 286.9   against 285.5 undiscounted
+plan.objective_value    # -> 13.94   the equivalent annual cost, per hour
 ```
 
 For a safety function, `min_availability=1 - PFDavg target` gives the

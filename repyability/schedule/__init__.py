@@ -23,6 +23,9 @@ ends.
   map (the existing model-time methods, labelled with dates);
   ``shutdown_spec`` puts shuts on dates on a diagram, and
   ``Opportunity.from_recurrence`` lays them on a part's model time.
+- ``task_value``: what a task is worth against not doing it (with
+  ``Replaces(part)``: block replacement on its dates against running to
+  failure), by calendar period, as present values with a ``discount``.
 
 ``README.md`` in this package records the use cases, the question each
 answers and how it is solved.
@@ -49,9 +52,9 @@ from repyability.schedule._recurrence import (
     Season,
 )
 from repyability.schedule._task import (
+    LongRunValue,
     Task,
     TaskDue,
-    TaskValue,
     WorkByPeriod,
     work_by_period,
 )
@@ -65,6 +68,7 @@ from repyability.schedule._usage import (
     UsageDue,
     UsageForecast,
 )
+from repyability.schedule._value import Replaces, TaskValue, task_value
 
 __all__ = [
     "Continuous",
@@ -88,10 +92,13 @@ __all__ = [
     "Season",
     "Task",
     "TaskDue",
+    "LongRunValue",
+    "Replaces",
     "TaskValue",
     "WorkByPeriod",
     "work_by_period",
     "events_by_period",
     "failures_by_period",
     "shutdown_spec",
+    "task_value",
 ]
