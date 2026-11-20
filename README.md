@@ -191,6 +191,7 @@ Which analyses each model type has (the method; — where it has none):
 | Expected cost in a window | — | `expected_cost` | — | — | — |
 | Expected net present value | — | `expected_npv` | — | — | — |
 | A plan against what happened | — | `plan_vs_actual` | — | — | — |
+| Simulated net present value (distribution) | — | `npv_distribution` | — | — | — |
 | Cost in each of a run of windows | — | `cost_by_window` | — | — | — |
 | Simulated cost (distribution) | — | `cost` | — | — | — |
 | Total cost of ownership | — | `total_cost` | — | — | — |

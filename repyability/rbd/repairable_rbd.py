@@ -59,6 +59,7 @@ from repyability.rbd.results import (
     MaintenanceEffect,
     MaintenancePlan,
     NodeActionRates,
+    NPVDistribution,
     PFDBreakdown,
     PlanVsActual,
     RateBreakdown,
@@ -85,6 +86,7 @@ from repyability.rbd import (
     _intervals,
     _long_run,
     _npv,
+    _npv_runs,
     _plan_actual,
     _repairable_allocation,
     _repairable_capacity,
@@ -4228,6 +4230,140 @@ class RepairableRBD(RBD):
             working_nodes=working_nodes,
             broken_nodes=broken_nodes,
             method=method,
+            state=state,
+        )
+
+    def npv_distribution(
+        self,
+        horizon,
+        *,
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        hurdle: Optional[float] = None,
+        tail: float = 0.1,
+        engine: str = "auto",
+        state=None,
+    ) -> NPVDistribution:
+        """The net present value of each of many simulated runs of the
+        system over ``horizon``, and their spread: percentiles, the chance
+        of ending below a hurdle, and the average of the worst runs
+        (CVaR). Simulated.
+
+        In plain terms:
+        [`expected_npv`][repyability.RepairableRBD.expected_npv] is the
+        average over every way the failures could fall, and hides
+        the risk; this simulates the runs themselves. Each run is a history
+        of [`simulate_timelines`][repyability.RepairableRBD.simulate_timelines]
+        (the same simulations, by seed), priced with the diagram's own
+        costs: each failure its repair and replace costs, each planned
+        outage its preventive cost, each component's and the system's
+        time down their downtime costs, each discounted at the time it
+        fell (``exp(-discount_rate * t)``), less the value earned while
+        the system was up, and the acquisition costs paid at the start.
+        The runs' mean estimates ``expected_npv``'s value, within its
+        confidence interval. It works for diagrams the exact methods
+        refuse (repair crews with other lives, maintenance groups,
+        scheduled covariates), as the simulation does.
+
+        A cost charged at an event the histories do not record (a
+        standby group's units' failures, tests and inspections, planned
+        replacements that take no time, a calendar policy's prices, a
+        maintenance group's set-up, a shutdown) is not left out: the
+        method refuses the diagram, naming it. A cost given as a
+        distribution is charged at its mean (``priced_at_mean``).
+
+        Parameters
+        ----------
+        horizon : float
+            The length of time to value, more than 0, in the component
+            models' unit.
+        discount_rate : float, optional
+            The continuous discount rate per unit time, as for
+            ``expected_npv``, by default 0.
+        value_rate : float, optional
+            What the system earns per unit time while it works, at least
+            0, by default 0 (costs alone).
+        mc_samples : int, optional
+            The number of runs, by default 10,000.
+        seed : int, optional
+            Seeds the runs, as for ``simulate_timelines``: the runs are
+            its simulations with this seed, on either engine. By default
+            one is drawn, and kept in the result.
+        hurdle : float, optional
+            A value the NPV must reach: the result gives the share of runs
+            below it. By default None.
+        tail : float, optional
+            The share of the worst runs ``cvar`` averages, more than 0 and
+            at most 1, by default 0.1.
+        engine : str, optional
+            ``"auto"`` (the default), ``"python"`` or ``"numba"``, as for
+            ``simulate_timelines``; the runs are the same on each.
+        state : dict, optional
+            Start from the components' current states rather than new, as
+            for ``simulate_timelines``. By default every component new.
+
+        Returns
+        -------
+        NPVDistribution
+            Each run's NPV, value and cost; the mean with
+            ``mean_interval()``, the value and cost split as in
+            ``ExpectedNPV``, ``p10``/``p50``/``p90`` (``percentile`` and
+            ``percentile_interval`` for others), the chance below the
+            hurdle and ``cvar``.
+
+        Raises
+        ------
+        ValueError
+            If ``horizon``, ``discount_rate``, ``value_rate``, ``hurdle``,
+            ``tail``, ``mc_samples`` or ``engine`` is invalid; if nothing
+            is priced and there is no ``value_rate`` (as
+            ``routes.Refused``); or as for ``simulate_timelines``.
+        NotImplementedError
+            If a cost is charged at events the histories do not record,
+            naming it; or as for ``simulate_timelines``.
+
+        Examples
+        --------
+        A pump earning 10 per hour while it works, repaired at 500 a
+        failure and bought for 20,000, over 5 years at 8% a year: the
+        spread around ``expected_npv``'s 321,975:
+
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "p"), ("p", "t")],
+        ...     {
+        ...         "p": {
+        ...             "reliability": surv.Exponential.from_params([1e-3]),
+        ...             "repairability": surv.Exponential.from_params([0.1]),
+        ...             "repair_cost": 500.0,
+        ...             "acquisition_cost": 20000.0,
+        ...         }
+        ...     },
+        ... )
+        >>> r = math.log(1.08) / 8760  # per hour
+        >>> runs = rbd.npv_distribution(
+        ...     5 * 8760.0, discount_rate=r, value_rate=10.0, mc_samples=2000,
+        ...     seed=1, hurdle=320_000,
+        ... )
+        >>> round(runs.mean), round(runs.p10), round(runs.p90)
+        (322045, 317651, 326267)
+        >>> round(runs.probability_below_hurdle, 3), round(runs.cvar)
+        (0.268, 315980)
+        """
+        return _npv_runs.npv_distribution(
+            self,
+            horizon,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            mc_samples=mc_samples,
+            seed=seed,
+            hurdle=hurdle,
+            tail=tail,
+            engine=engine,
             state=state,
         )
 

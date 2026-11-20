@@ -12,6 +12,30 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: the spread of a plan's net present value (UC-46 of the
+  maintenance README). `RepairableRBD.npv_distribution(horizon, *,
+  discount_rate=0, value_rate=0, mc_samples=10_000, seed=None,
+  hurdle=None, tail=0.1, engine="auto", state=None)` prices each history
+  of `simulate_timelines` (the same simulations, by seed, on either
+  engine) with the diagram's own costs, each discounted at the time it
+  fell, less the value earned while the system was up, the acquisition
+  costs paid at the start. It returns `NPVDistribution`: each run's NPV,
+  value and cost (`samples`, `value_samples`, `cost_samples`), the mean
+  with `mean_interval()`, the split of value and cost as in
+  `ExpectedNPV`, `p10`/`p50`/`p90` (`percentile(q)`, order statistics,
+  and `percentile_interval(q)`, binomial), `probability_below_hurdle`
+  (and `probability_below(x)`) and `cvar`, the mean of the worst `tail`
+  of the runs. Its mean agrees with `expected_npv` within its interval;
+  it also works for diagrams the exact methods refuse, such as crews
+  with other lives. A cost the histories do not record (a standby
+  group's units' failures, tests, planned replacements that take no
+  time, calendar prices, set-up costs, shutdowns, a partial
+  restoration's replacement) refuses the diagram, naming it; a cost
+  given as a distribution is charged at its mean (`priced_at_mean`).
+  `analysis_routes()` lists it (simulated). `plan_vs_actual` prices its
+  log with the same code, moved to a module of its own; its results are
+  unchanged.
+
 - Added: one record of opportunities for every part, the prices on the
   part (UC-45 of the maintenance README). `Opportunity` says when a stop
   or shut happens (a period or numeric dates in model time; a rule,
