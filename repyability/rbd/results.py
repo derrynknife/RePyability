@@ -3532,9 +3532,18 @@ class AvailabilityResult(_ResultMapping):
         availability's): ``delivered_fraction`` is then that exact value.
         None otherwise.
     opportunistic_renewals : dict, optional
-        With maintenance groups (see ``RepairableRBD``): each component's
-        early renewals at another's stop, summed over the simulations.
-        None without groups.
+        With maintenance groups, or shutdowns that renew components
+        opportunistically (see ``RepairableRBD``): each component's early
+        renewals at another's stop or at a shut, summed over the
+        simulations. None without either.
+    outage_jobs : list, optional
+        With shutdowns that renew components opportunistically: for each
+        start of such a shut in the window, in order, a dict of its
+        ``"shutdown"``, its ``"start"``, the ``"mean"`` number of
+        components renewed there per simulation, its ``"standard_error"``
+        and a 95% interval (``"lower"``, ``"upper"``: the mean less and
+        plus 1.96 standard errors, the lower no less than 0). None
+        otherwise.
     control_variate : ControlVariate, optional
         The exact twin the run was controlled by (see
         [`ControlVariate`][repyability.ControlVariate]): by default the
@@ -3626,6 +3635,7 @@ class AvailabilityResult(_ResultMapping):
     demand: Optional[float] = None
     delivered: Optional[np.ndarray] = None
     opportunistic_renewals: Optional[Dict[Hashable, int]] = None
+    outage_jobs: Optional[List[Dict[str, Any]]] = None
     control_variate: Optional[ControlVariate] = None
     conditional: Optional[ConditionalRun] = None
     delivered_control: Optional[ControlVariate] = None

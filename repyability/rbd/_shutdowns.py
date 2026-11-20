@@ -53,6 +53,7 @@ SHUTDOWN_KEYS = (
     "scope",
     "cost",
     "idle_ageing",
+    "opportunistic",
 )
 
 #: What a task bound to a shutdown takes from it, and so may not give.
@@ -144,8 +145,123 @@ def _validate_one(name, spec) -> _Shutdown:
                 "nodes it holds off line, or None for the whole system."
             )
     return _Shutdown(
-        name, period, offset, times, duration, scope, cost, bool(idle)
+        name,
+        period,
+        offset,
+        times,
+        duration,
+        scope,
+        cost,
+        bool(idle),
+        _opportunistic(name, spec.get("opportunistic")),
     )
+
+
+def _opportunistic(name, given):
+    """A shutdown's ``"opportunistic"`` checked: None, an age (for every
+    component in its scope under age replacement) or a dict of an age by
+    component; each age 0 or more (``inf``: never)."""
+    if given is None:
+        return None
+
+    def age(value, whose: str) -> float:
+        number = number_or_nan(value)
+        if not number >= 0.0:
+            raise ValueError(
+                f"Shutdown {name!r}: the opportunistic age of {whose} must "
+                "be a number, 0 or more (inf for never): a component at "
+                f"least that old is renewed at the shut; got {value!r}."
+            )
+        return number
+
+    if isinstance(given, dict):
+        if not given:
+            raise ValueError(
+                f"Shutdown {name!r}: opportunistic names no component; "
+                "give {component: age}, or an age for every component in "
+                "its scope under age replacement."
+            )
+        return tuple(
+            (node, age(value, f"component {node!r}"))
+            for node, value in given.items()
+        )
+    return age(given, "its components")
+
+
+def resolve_opportunistic(rbd, shut: _Shutdown) -> Tuple[tuple, ...]:
+    """The components ``shut`` renews if old enough, each with its age:
+    the dict given, or for an age every component in its scope under age
+    replacement, checked against the diagram (each in the scope, under
+    age replacement on its own calendar, renewed in full)."""
+    given = shut.opportunistic
+    if given is None:
+        return ()
+    if not isinstance(given, tuple):
+        rules = tuple(
+            (node, given)
+            for node in scope(rbd, shut)
+            if getattr(rbd._preventive.get(node), "policy", None) == "age"
+            and rbd._preventive[node].shutdown is None
+        )
+        if not rules:
+            raise ValueError(
+                f"Shutdown {shut.name!r} renews components opportunistically, "
+                "but no component in its scope is under age replacement: "
+                "give them a 'preventive' schedule with 'policy': 'age' "
+                "(whose cost and duration the renewal takes)."
+            )
+        return rules
+    for node, _ in given:
+        schedule = rbd._preventive.get(node)
+        if node not in rbd.components:
+            raise ValueError(
+                f"Shutdown {shut.name!r}: opportunistic names {node!r}, "
+                "which is not a component of the diagram."
+            )
+        if shut.scope is not None and node not in shut.scope:
+            raise ValueError(
+                f"Shutdown {shut.name!r} renews {node!r} opportunistically, "
+                f"so it must be in its scope {list(shut.scope)}."
+            )
+        if (
+            schedule is None
+            or schedule.policy != "age"
+            or schedule.shutdown is not None
+        ):
+            raise ValueError(
+                f"Shutdown {shut.name!r} renews {node!r} opportunistically, "
+                "as its own age replacement would, at its cost and in its "
+                "duration: give it a 'preventive' schedule with 'policy': "
+                "'age' of its own (one bound to a shutdown renews it there "
+                "already, with older_than)."
+            )
+        if node in rbd._restoring or node in rbd._standby:
+            what = (
+                "restored partly by its maintenance"
+                if node in rbd._restoring
+                else "a standby group"
+            )
+            raise ValueError(
+                f"Shutdown {shut.name!r} renews {node!r} opportunistically, "
+                f"which is {what}: the opportunistic renewal takes a plain "
+                "unit renewed in full."
+            )
+    return given
+
+
+def opportunistic_at(rbd, node) -> List[Hashable]:
+    """The shutdowns that renew a component if it is old enough."""
+    return [
+        name
+        for name, rules in getattr(rbd, "_outage_rules", {}).items()
+        if any(member == node for member, _ in rules)
+    ]
+
+
+def worked_on(rbd, node) -> List[Hashable]:
+    """The shutdowns a component is worked on at: its tasks bound to
+    them, and the ones that renew it if it is old enough."""
+    return bound_to(rbd, node) + opportunistic_at(rbd, node)
 
 
 def _calendar(name, spec: dict, duration: float):
@@ -400,6 +516,14 @@ def check(rbd) -> None:
                     f"Shutdown {shut.name!r}: its scope names {node!r}, "
                     f"which is {what}."
                 )
+    rbd._outage_rules = {
+        shut.name: resolve_opportunistic(rbd, shut)
+        for shut in rbd._shutdowns.values()
+        if shut.opportunistic is not None
+    }
+    rbd._outage_members = {
+        node for rules in rbd._outage_rules.values() for node, _ in rules
+    }
     for node in rbd.components:
         for name in bound_to(rbd, node):
             shut = rbd._shutdowns[name]
@@ -445,6 +569,8 @@ def _pause_refusal(rbd, node, shut: _Shutdown) -> Optional[str]:
         )
     schedule = rbd._preventive.get(node)
     inspection = rbd._inspection.get(node)
+    if shut.name in opportunistic_at(rbd, node):
+        return None  # worked on there, so not idle
     if schedule is not None and schedule.shutdown == shut.name:
         if schedule.policy == "condition":
             return (
@@ -506,7 +632,7 @@ def holding(rbd, node) -> List[Tuple[_Shutdown, bool]]:
     out = []
     for shut in rbd._shutdowns.values():
         if shut.duration > 0.0 and node in scope(rbd, shut):
-            paused = not shut.idle_ageing and shut.name not in bound_to(
+            paused = not shut.idle_ageing and shut.name not in worked_on(
                 rbd, node
             )
             out.append((shut, paused))
@@ -1108,6 +1234,20 @@ def require_over_time(rbd) -> None:
     given = _given_times_refusal(rbd)
     if given:
         raise NotImplementedError(given)
+    opportunistic = [
+        name
+        for name, rules in getattr(rbd, "_outage_rules", {}).items()
+        if any(math.isfinite(age) for _, age in rules)
+    ]
+    if opportunistic:
+        raise NotImplementedError(
+            f"Shutdown {opportunistic[0]!r} renews components "
+            "opportunistically, each one only if it is old enough then, "
+            "which ties its renewals to its age at each shut: the exact "
+            "methods do not follow that. Estimate its values by "
+            "simulation, with availability() or cost() (which count the "
+            "renewals made at each shut)."
+        )
     tie = None
     if rbd._crews_couple() or _crews._crews_limited(rbd):
         tie = "repair crews"

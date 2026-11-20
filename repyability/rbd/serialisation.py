@@ -755,6 +755,9 @@ def _shutdown_spec(spec: dict) -> dict:
             out[key] = None if value is None else list(value)
         elif key == "idle_ageing":
             out[key] = bool(value)
+        elif key == "opportunistic" and isinstance(value, dict):
+            # By component, as pairs (a name may not be a JSON key).
+            out[key] = [[node, float(age)] for node, age in value.items()]
         elif value is not None:
             out[key] = float(value)
     return out
@@ -791,7 +794,11 @@ def rbd_from_dict(d: dict) -> RBD:
                 key: (
                     [_node_name(n) for n in value]
                     if key == "scope" and value is not None
-                    else value
+                    else (
+                        {_node_name(n): age for n, age in value}
+                        if key == "opportunistic" and isinstance(value, list)
+                        else value
+                    )
                 )
                 for key, value in e.items()
                 if key != "shutdown"

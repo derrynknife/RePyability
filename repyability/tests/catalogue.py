@@ -1324,6 +1324,32 @@ def repairable_kinds():
                     }
                 },
             ),
+            # Outages at given times that renew a block under age
+            # replacement if it is old enough then (simulated).
+            "outages renewing opportunistically": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={
+                            "policy": "age",
+                            "interval": 300.0,
+                            "cost": 2.0,
+                        },
+                        repair_cost=5.0,
+                    ),
+                    "b": unit(),
+                    "c": unit(),
+                },
+                shutdowns={
+                    "outage": {
+                        "times": [150.0, 400.0, 700.0],
+                        "duration": 8.0,
+                        "scope": ["a", "b"],
+                        "cost": 30.0,
+                        "opportunistic": {"a": 100.0},
+                    }
+                },
+            ),
             "shutdown in no time": RepairableRBD(
                 EDGES,
                 {

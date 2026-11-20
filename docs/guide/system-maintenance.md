@@ -1260,6 +1260,7 @@ and carries on from where it was.
 | `scope` | The nodes it holds off line (None, the default: the whole system). |
 | `cost` | Charged at each shut. |
 | `idle_ageing` | True (the default): idle blocks keep ageing; False: they stand still. |
+| `opportunistic` | `{node: age}`, or one age for every block in scope under age replacement: at each shut, a block under its own age replacement that is working and at least that old is renewed then, at its replacement's cost and in its time (its next replacement counts from then). Simulated: the exact methods refuse it, and `availability()` gives the count renewed at each shut (`outage_jobs`). |
 
 **Outages at given times.** A plan of outages is rarely on a period:
 give a shutdown its `times`. Several shutdowns, each with its own times,

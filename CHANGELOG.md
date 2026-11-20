@@ -12,6 +12,19 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: opportunistic work at a planned outage (UC-56 of the
+  maintenance README). A shutdown takes `"opportunistic": {node: age}`
+  (or one age for every block in its scope under age replacement): at
+  each shut, such a block that is working and at least that old is
+  renewed as its own age replacement renews it, and its next
+  replacement counts from then. Simulated, in Python: `availability()`
+  gives the expected count renewed at each shut with a 95% interval
+  (`AvailabilityResult.outage_jobs`) and each block's total
+  (`opportunistic_renewals`); the renewals are charged as preventive
+  work. The exact methods refuse it, naming `availability()` and
+  `cost()`; an age of `inf` is the plan without the rule. Saved with
+  the diagram.
+
 - Added: how sure an NPV and a choice of intervals are (UC-55 of the
   maintenance README). `expected_npv(rate_sensitivity=True)` gives the
   NPV's derivative in the discount rate, with an estimate of its error

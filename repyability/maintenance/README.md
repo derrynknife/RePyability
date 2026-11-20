@@ -50,6 +50,7 @@ records and decides what "today" is.
 | UC-44 | The best replacement policy in the long run at a discount rate: age replacement, a calendar of shuts in model time and a site on real dates, by the least equivalent annual cost | **Built**: `discount_rate=` of `find_optimal_replacement`, `optimal_replacement_policy` and `optimal_opportunity_policy` (`discount_rate=` in model time, and `discount=` without a horizon on real dates) |
 | UC-45 | One record of a site's opportunities (stops and shuts) for every part, each part bringing its own prices (at an opportunity, on any other day, at a failure, and per opportunity) and the length of its job, so an opportunity too short for the job is not used; and the prices worked out from a replacement's cost and the plant's downtime | **Built**: `Opportunity`, `Opportunities`, `NonRepairable(opportunity_cost=, opportunity_costs=, job_duration=)`, the policy's `prices` (`OpportunityPrices`), `NonRepairable.opportunity_prices` |
 | UC-55 | How sure an NPV and a choice of intervals are: the NPV's change with the discount rate, its spread over the fitted models' uncertainty with each input's share, and how often the chosen replacement intervals stay the best | **Built**: `expected_npv(rate_sensitivity=True)`, `RepairableRBD.expected_npv_uncertainty`, `optimal_replacement_intervals(robust=True or "reoptimise")` |
+| UC-56 | At each planned outage, also replace the parts close enough to their own replacement, since the plant is down anyway: what the scope adds, by outage, and what the plan then costs | **Built** (simulated): a shutdown's `"opportunistic"`, the count by outage in `AvailabilityResult.outage_jobs`; the exact methods refuse, naming the simulation |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -2112,6 +2113,65 @@ answers back into dates is Reliafy's too.)
   optimum moves at most one step. The delta method's shares assume the
   NPV close to linear over the spread: the draws' variance beside
   `delta_variance` says whether it is.
+
+### UC-56: "We have outages planned at 800, 1,500 and 2,500 hours. The pump is replaced every 1,200 hours anyway; at an outage, we'd rather change it if it's past 500. How many pumps does each outage take, and what does that save?"
+
+- **Status:** built (simulated): a shutdown's `"opportunistic": {node:
+  age}` (or one age for every block in its scope under age
+  replacement).
+- **Who asks, and why:** the planner setting an outage's scope. The
+  plant is down anyway, so a part close to its own replacement is
+  changed then rather than on its own downtime later: that is how real
+  shutdown scopes are set, and it changes what the plan costs and is
+  worth.
+- **What they know:** the diagram; the part's own age replacement (its
+  interval, cost and duration); the outages (UC-24: times or a period, a
+  duration, a scope); for each part, the age past which it is changed at
+  an outage.
+- **What they want back:** for each outage, how many parts it is
+  expected to take, with a confidence interval; the plan's availability
+  and cost with the rule, against without it.
+- **How it is solved (simulated):** at each start of the shut, the
+  Python event loop renews each listed part that is working and at
+  least that old (its time since it was put in), as a stop of a
+  maintenance group renews a member early (`_event_loop._stop`): the
+  failure or replacement it had ahead is cancelled, the renewal takes
+  the part's own preventive cost and duration, and its next age
+  replacement counts from then. A part in such a shut's scope is worked
+  on there, so a shut that stands idle blocks still does not stand it
+  still. The runs count each outage's renewals (and their squares), so
+  `outage_jobs` gives each outage's mean count, standard error and 95%
+  interval; `opportunistic_renewals` gives each part's total, and the
+  renewals are charged as the part's preventive work. An age of `inf`
+  renews nothing, so the rule is then the plan without it, seed for
+  seed. A shut in no time with the rule is a moment that renews parts
+  and holds nothing.
+- **Exact routes:** refused: a part's renewal at an outage depends on
+  its age then, which ties its renewals to the outages' times in a way
+  the curves over time (each part's renewal process on its own
+  calendar) do not follow. The message names `availability()` and
+  `cost()`. numba's loop does not run it: `_compiled.unsupported` names
+  the shutdowns, and the Python loop runs them (as for any shut that
+  takes time, costs or falls at given times).
+- **Today:** `"older_than"` on a task bound to a shutdown renews a part
+  with no schedule of its own at a shut once that old; a part with its
+  own age replacement could not be renewed at an outage.
+- **Checks:** `test_outage_opportunistic.py`: an age of `inf` gives the
+  plan without the rule to the last bit (and the exact methods the same
+  value); with the age of the first outage's time, the count there is
+  the chance the part never failed, `R(800)`, within its interval, with
+  the binomial standard error; the counts by outage add up to the
+  part's renewals; the renewals cut the cost and are charged as
+  preventive work; a single age is the dict of every age-replaced part
+  in scope; chunks merged give the run's counts; saving; the refusals
+  and the checks of the rule. The catalogue's "outages renewing
+  opportunistically" runs every analysis against its route.
+- **Learned / open questions:** the renewals are charged in the
+  `"preventive"` category, as a group's opportunistic renewals are,
+  rather than a category of their own (which would widen every cost
+  table and both engines' arrays); their cost is the count times the
+  part's preventive cost. `npv_distribution` still refuses shutdowns,
+  whose holds and costs its histories do not record.
 
 ### UC-22: "A pump's 6-monthly overhaul restores it only partly (a fitted Kijima restoration factor), and every third overhaul replaces it. What availability, failures and cost per year, against overhauls that renew it, and which overhaul interval is cheapest?"
 
