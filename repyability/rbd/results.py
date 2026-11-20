@@ -2767,6 +2767,34 @@ class TotalCostAllocation(_ResultMapping):
     discount_rate : float
         The continuous discount rate the running costs were discounted at
         (0: undiscounted).
+    objective : str
+        What the design was chosen by: ``"cost"`` (the lowest total
+        cost), ``"npv"`` (the highest net present value) or ``"eac"``
+        (the lowest equivalent annual cost, less the value earned), the
+        last two with a ``value_rate``. Over one horizon ``"npv"`` and
+        ``"eac"`` choose the same design.
+    value_rate : float
+        The value earned per unit time while the system works that the
+        objective counted.
+    value : float or None
+        For ``"npv"`` and ``"eac"``, the present value of what the system
+        earns over the horizon: ``value_rate`` times its long-run
+        availability times the horizon's present value. None for
+        ``"cost"``, as are the four below.
+    running_cost : float or None
+        The present value of the running costs over the horizon, with
+        the cost of the system's downtime: ``total_cost -
+        acquisition_cost``.
+    npv : float or None
+        The net present value: ``value - total_cost``, the split being
+        ``value - acquisition_cost - running_cost``.
+    eac : float or None
+        The equivalent annual cost, less the value earned: the steady
+        amount per unit time over the horizon worth ``-npv`` (``-npv``
+        over the horizon's present value; ``nan`` over a horizon of 0).
+    basis : str or None
+        What the net present value is made of, in words, with what is
+        approximate in it.
 
     Examples
     --------
@@ -2804,6 +2832,13 @@ class TotalCostAllocation(_ResultMapping):
     method: str
     trains: Optional[Dict[Hashable, list]] = None
     discount_rate: float = 0.0
+    objective: str = "cost"
+    value_rate: float = 0.0
+    value: Optional[float] = None
+    running_cost: Optional[float] = None
+    npv: Optional[float] = None
+    eac: Optional[float] = None
+    basis: Optional[str] = None
 
 
 @dataclass
@@ -2862,12 +2897,40 @@ class MaintenancePlan(_ResultMapping):
         ``offset_shares``, or else each keeping its share of the interval,
         so that plans compare as they are. ``with_intervals`` takes
         them as they are. None for ``optimal_replacement_intervals``.
+    objective : str
+        What the intervals were chosen to minimise: ``"cost"`` (the
+        long-run cost rate, or with a cost cap the unavailability),
+        ``"eac"`` (the equivalent annual cost at ``discount_rate``, less
+        the value earned) or ``"npv"`` (less the expected net present
+        value over ``horizon``).
+    discount_rate : float
+        The continuous rate per unit time the objective was discounted
+        at (0: not discounted).
+    value_rate : float
+        The value earned per unit time while the system works that the
+        objective counted.
+    horizon : float or None
+        The horizon of ``"npv"``; None otherwise.
+    objective_value : float or None
+        What the objective comes to with those intervals: for ``"eac"``
+        the equivalent annual cost less the value earned, per unit time;
+        for ``"npv"`` the expected net present value. None for
+        ``"cost"``, whose value is ``cost_rate``.
+    basis : str or None
+        For ``"eac"`` and ``"npv"``, what ``objective_value`` is made
+        of, in words, with what is approximate in it.
     """
 
     intervals: Dict[Hashable, float]
     cost_rate: float
     availability: float
     offsets: Optional[Dict[Hashable, float]] = None
+    objective: str = "cost"
+    discount_rate: float = 0.0
+    value_rate: float = 0.0
+    horizon: Optional[float] = None
+    objective_value: Optional[float] = None
+    basis: Optional[str] = None
 
 
 @dataclass

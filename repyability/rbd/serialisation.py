@@ -448,6 +448,9 @@ def _serialise_schedule(spec: dict) -> dict:
         out["shutdown"] = spec["shutdown"]
         if spec.get("older_than") is not None:
             out["older_than"] = float(spec["older_than"])
+    elif spec.get("replace_at") is not None:
+        # Replaced at the times of a plan, in place of an interval.
+        out["replace_at"] = [float(t) for t in spec["replace_at"]]
     else:
         out["interval"] = float(spec["interval"])
     if spec.get("basis") is not None:

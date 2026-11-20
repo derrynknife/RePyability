@@ -142,6 +142,46 @@ they take the system down together its first years cost more than the
 plan's rate: `expected_cost` gives the cost from new, and from units of
 other ages (`state`) the cost of a staggered start.
 
+At a discount rate, money spent later is worth less now, so a replacement
+put off is worth something. `objective="eac"` chooses the intervals for the
+lowest equivalent annual cost in the long run: the steady cost per unit time
+worth the same, at `discount_rate` (a continuous rate per unit of the
+models' time), as running the diagram for ever from new, less `value_rate`
+for the time it works. Each component's own costs are discounted over its
+renewal cycle, exactly (Fox, 1966), as
+`NonRepairable.optimal_replacement_policy(discount_rate=)` discounts one
+unit's; the cost of the system's downtime and the value it earns are taken
+at its long-run availability, which the plan's `basis` says. At a rate of 0
+it is the cost rate, and the plan is the same:
+
+```python
+import math
+a_year = math.log(1.10) / 8760           # 10% a year, the models in hours
+plan = with_standby(1000).optimal_replacement_intervals(
+    objective="eac", discount_rate=a_year
+)
+plan.intervals["a"]     # -> 497.5   against 497.1 undiscounted
+plan.objective_value    # -> 6.972   the equivalent annual cost, per hour
+plan = with_standby(1000).optimal_replacement_intervals(
+    objective="eac", discount_rate=20 * a_year
+)
+plan.intervals["a"]     # -> 504.7   a rate 20 times as high
+```
+
+`objective="npv"` chooses them for the highest expected net present value
+over a `horizon` from new ([`expected_npv`][repyability.RepairableRBD.expected_npv]),
+which follows the system's availability over time, so nothing in it is
+approximate. It takes each plan's curves over the horizon, so it is much
+slower, and what a plan is worth over a horizon has a local best wherever a
+replacement falls just inside it or just outside: without `allowed` the
+search is a local one from the long run's best plan, and with `allowed`
+every combination is valued. The targets (`min_availability`,
+`max_cost_rate`) are kept with either objective: they bound the long-run
+values, and the objective is the best within them. A diagram with a priced
+component that has no renewal cycle of its own worked out (a standby group,
+block replacement, a common-cause group, a unit whose tests or repairs take
+time) refuses `"eac"` at a discount rate, and names `"npv"`.
+
 With limited `repair_crews` a component can wait for a crew, and the exact
 long-run values the search uses no longer hold, so the choice is refused.
 `assume_unlimited_crews=True` (#184) chooses the intervals as if every repair
@@ -214,6 +254,75 @@ year.system_failures / year.n_simulations          # -> 3.466
 year.system_planned_outages / year.n_simulations   # -> 11.95
 year.cost.by_category["preventive"]                # -> 11886.8   1000 each, expected
 ```
+
+### Replacement at given times
+
+A real plan is often a list of jobs at times rather than one interval:
+this pump is replaced at 8,000, 14,000 and 26,000 hours. Give the times as
+`"replace_at"`, in the diagram's time from 0, in place of an `"interval"`.
+It is block replacement at those times: the unit is replaced at each if it
+is up there (a replacement due while it is down is skipped), with the
+task's `"cost"` and `"duration"`, and after the last time it is replaced
+no more.
+
+```python
+import numpy as np
+import surpyval as surv
+from repyability import RepairableRBD
+
+hours = 8760.0
+planned = RepairableRBD(
+    [("in", "pump"), ("pump", "motor"), ("motor", "out")],
+    {
+        "pump": {
+            "reliability": surv.Weibull.from_params([12_000, 2.5]),
+            "repairability": surv.LogNormal.from_params([3.5, 0.6]),
+            "repair_cost": 9_000.0,
+            "preventive": {
+                "replace_at": [8_000.0, 14_000.0, 26_000.0],
+                "duration": surv.LogNormal.from_params([2.5, 0.3]),
+                "cost": 3_000.0,
+            },
+        },
+        "motor": {
+            "reliability": surv.Weibull.from_params([40_000, 1.5]),
+            "repairability": surv.LogNormal.from_params([4.0, 0.5]),
+            "repair_cost": 15_000.0,
+        },
+    },
+    downtime_cost_rate=400.0,
+)
+four_years = 4 * hours
+planned.mission_availability(four_years)                    # -> 0.99588
+planned.expected_events(four_years).node_preventive["pump"] # -> 2.990
+planned.expected_cost(four_years).mean                      # -> 91650.6
+worth = planned.expected_npv(
+    four_years, discount_rate=np.log(1.08) / hours, periods=4
+)
+worth.cost                                                  # -> 77679.1
+```
+
+The values over a horizon are worked out, not simulated
+(`point_availability`, `mission_availability`, `expected_events`,
+`expected_cost`, `expected_npv` and what is built on them): the unit is
+followed stretch by stretch, from one time of the plan to the next, each
+stretch starting with the replacement of the unit if it is up and the
+repairs still going on, as under block replacement on a period, and to the
+same precision. Each replacement is an event at its exact time, counted
+and discounted there. Equally spaced times give block replacement's
+values over the same horizon. From a state (`state=`), the times are
+counted from now, and the unit's own curve runs to the first of them.
+
+A plan ends, so a diagram with one has no long run: `mean_availability`,
+`expected_cost_rate` and the other long-run methods refuse, saying to ask
+for a horizon or to give the component an interval, as do the spares
+counts and `plan_vs_actual` (whose rest from today would count the times
+again), each saying what to run instead. The simulations replace at the
+times too (in Python: a compiled engine leaves a plan to it). Each time
+is a lever (`preventive.replace_at.0`, ...), between the times either
+side of it, so `parameter_sensitivity(window=...)` says what moving a
+replacement is worth. A stretch far shorter than the unit's repairs
+cannot be followed on its grid and refuses, pointing to the simulation.
 
 ### Replacement on a calendar policy
 
@@ -1023,6 +1132,27 @@ component, any interval can be chosen:
 
 ```python
 pump(100.0).optimal_inspection_intervals().intervals["p"]   # -> 285.5   the formula gives 283
+```
+
+The tests can be chosen at a discount rate too, with the objectives of the
+[age-replacement intervals](#choosing-the-intervals): `objective="eac"` for
+the lowest equivalent annual cost in the long run, less a `value_rate`
+earned while the system works, and `objective="npv"` for the highest
+expected net present value over a `horizon`. A tested unit starts afresh at
+the test that finds it failed, so its cycle is the tests up to that one:
+each is paid for when it is made, the failure when it is found, and the
+unit's own downtime from the failure to that test, each discounted to when
+it falls. That holds for tests and repairs that take no time and find every
+failure; any other tested unit refuses `"eac"` at a discount rate and names
+`"npv"`. Tests cost now and hidden failures cost later, so a discount rate
+puts the tests a little further apart:
+
+```python
+plan = pump(100.0).optimal_inspection_intervals(
+    objective="eac", discount_rate=1e-4
+)
+plan.intervals["p"]     # -> 286.9   against 285.5 undiscounted
+plan.objective_value    # -> 13.94   the equivalent annual cost, per hour
 ```
 
 For a safety function, `min_availability=1 - PFDavg target` gives the

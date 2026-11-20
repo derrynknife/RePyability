@@ -39,6 +39,7 @@ from repyability.rbd import (
 from repyability.rbd._block_replacement import (
     BlockHead,
     block_availability,
+    plan_availability,
 )
 from repyability.rbd._common import (
     _common_period,
@@ -74,6 +75,7 @@ from repyability.rbd._point_availability import (
     InspectionCurve,
     MinimalRepairCurve,
     PartialTestCurve,
+    PlanCurve,
     ShiftedCurve,
     StartedBlockCurve,
     SteadyCurve,
@@ -755,6 +757,7 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
     schedule = rbd._preventive.get(node)
     inspection = rbd._inspection.get(node)
     _shutdowns.check_state(rbd, node, state)
+    _requirements._check_plan_state(rbd, node, state)
     if state.virtual_age is not None and not _keeps_virtual_age(rbd, node):
         raise ValueError(
             f"Component {node!r} is not repaired imperfectly (it has no "
@@ -1901,6 +1904,8 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     level (``y0`` if new), which its first inspection reads."""
     component = rbd.components[node]
     schedule = rbd._preventive[node]
+    if schedule.plan is not None:
+        return _plan_curve(rbd, node, horizon, start)
     duration = schedule.duration
     stationary = start is not None and start.stationary
     knots = np.empty(0) if duration is None else point_knots(duration)
@@ -1985,6 +1990,71 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
         # before 0.
         since = schedule.interval - schedule.offset
     return ShiftedCurve(curve, curve.settle + since)
+
+
+def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
+    """A component's point availability over ``[0, horizon]``, replaced
+    at the times of its plan (its ``"replace_at"``) if it is up at them
+    and after the last no more: followed stretch by stretch, each from
+    one of the times to the next (see
+    ``_block_replacement.plan_availability``). From new, the first
+    stretch starts new at 0; from a state, the unit's own curve reaches
+    the first time and the plan is followed from there (as
+    ``_block_curve`` starts block replacement). The stretch after the last
+    time is as long as the longest of the others, doubled until it
+    reaches the horizon, so that nearby horizons are worked out on the
+    same grid, with that stretch's step."""
+    if not math.isfinite(horizon):
+        _requirements._require_no_plans(rbd)
+    component = rbd.components[node]
+    schedule = rbd._preventive[node]
+    duration = schedule.duration
+    knots = np.empty(0) if duration is None else point_knots(duration)
+    times = np.asarray(schedule.plan, dtype=float)
+    edges = np.concatenate(([0.0], times))
+    gaps = np.diff(edges)
+    started = start is not None and not start.new
+    # The stretches that start by the horizon (from a state, the one
+    # after the head at least).
+    used = max(
+        int(np.searchsorted(times, max(horizon, 0.0), side="right")),
+        1 if started else 0,
+    )
+    lengths = list(gaps[: used + 1])
+    like = None
+    if used == len(times):
+        like = last = float(gaps.max())
+        while last < horizon - times[-1]:
+            last *= 2.0
+        lengths.append(last)
+    models = (component.reliability, component.time_to_replace, duration)
+
+    def curve(results, starts):
+        return PlanCurve([BlockCurve(r, knots) for r in results], starts)
+
+    if not started:
+        return curve(
+            plan_availability(*models, lengths, node, last_like=like),
+            edges[: len(lengths)],
+        )
+    assert start is not None
+    length = float(times[0])
+    head = _unit_curve(
+        rbd, node, length, counts=True, start=start, unscheduled=True
+    )
+    down_sf = None
+    if not start.alive:
+        down_sf = _first_unit(rbd, node, start, None, (), None, None).down_sf
+
+    def failures(u):
+        return head.events(np.asarray(u, dtype=float))["failures"]
+
+    reached = BlockHead(
+        length, float(head.at(np.array([length]))[0]), failures, down_sf
+    )
+    results = plan_availability(*models, lengths[1:], node, reached, like)
+    tail = curve(results, edges[1 : len(lengths)] - length)  # noqa: E203
+    return StartedBlockCurve(head, tail, length)
 
 
 def _first_unit(

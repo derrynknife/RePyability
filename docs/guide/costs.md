@@ -644,6 +644,38 @@ hours. A third would save at most `100 · U² · (1 − U) = 0.0097` per hour,
 less than the 0.495 per hour its repairs cost, so it never pays, whatever it
 costs to buy.
 
+Redundancy is a capital decision: the copies are bought now and what they
+save comes later, so a `discount_rate` counts against them. And a plant
+that is down loses what it would have earned, not only what the outage
+costs. `objective="npv"` with a `value_rate` (what the system earns per
+unit time while it works) chooses the design with the highest net present
+value over the horizon, and gives the `npv`, its split into `value`,
+`acquisition_cost` and `running_cost`, and the `eac` (the same as a steady
+cost per unit time; `objective="eac"` chooses by it, which over one horizon
+is the same design):
+
+```python
+import math
+hard = math.log(1.30) / 8760      # 30% a year, the models in hours
+line.allocate_redundancy(87600.0, discount_rate=hard).units   # {'pump': 1}
+best = line.allocate_redundancy(
+    87600.0, objective="npv", discount_rate=hard, value_rate=400.0
+)
+best.units               # {'pump': 2}   an hour down now loses 500
+best.npv                 # -> 12314517.8   = value - acquisition_cost - running_cost
+best.value               # -> 12385481.5
+best.running_cost        # -> 30963.7
+best.eac                 # -> -397.67      per hour: it earns more than it costs
+```
+
+A value earned while the system works is a cost of its downtime, so the
+search is the same one, with an hour down costing `downtime_cost_rate +
+value_rate`; with no value it gives the total cost's design. The running
+costs, the downtime and the value are the long-run rates over the horizon's
+present value, as `total_cost` counts them (the result's `basis` says so);
+[`expected_npv`](#net-present-value) values a design from new,
+with its availability over time.
+
 The result is a [`TotalCostAllocation`][repyability.TotalCostAllocation]:
 `units`, `total_cost`, `acquisition_cost`, `cost_rate` (the running cost
 per unit time) and `availability` of the design, the `horizon` and the

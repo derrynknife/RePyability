@@ -659,11 +659,19 @@ class _Preventive(NamedTuple):
     #: which the unit is replaced there, in place of the ``threshold``;
     #: None for none.
     older_than: Optional[float] = None
-    #: At a shutdown's given times (sorted, from 0) rather than every
-    #: ``interval``: those times; None for a period.
+    #: At given times (sorted, from 0) rather than every ``interval``: a
+    #: shutdown's, or the component's own plan (``"replace_at"``); None
+    #: for a period.
     times: Optional[Tuple[float, ...]] = None
     #: The name of the shutdown the actions are done at; None for none.
     shutdown: Any = None
+
+    @property
+    def plan(self) -> Optional[Tuple[float, ...]]:
+        """The component's own list of replacement times
+        (``"replace_at"``), after the last of which it is replaced no
+        more; None on a period, or at a shutdown's times."""
+        return self.times if self.shutdown is None else None
 
     def due(self, renewed: float) -> float:
         """When the next preventive action (under ``"condition"``, the next

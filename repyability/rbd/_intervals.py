@@ -10,6 +10,7 @@ names call these.
 import dataclasses
 import itertools
 import math
+from functools import partial
 from typing import (
     TYPE_CHECKING,
     Callable,
@@ -22,8 +23,8 @@ from typing import (
 import numpy as np
 from scipy.optimize import minimize
 
-from repyability.rbd import _crews, _requirements
-from repyability.rbd._common import _crew_salaries
+from repyability.rbd import _crews, _discounted_long_run, _requirements
+from repyability.rbd._common import _crew_salaries, _discount_rate
 from repyability.rbd._model_utils import (
     failure_time_scale,
 )
@@ -31,6 +32,7 @@ from repyability.rbd.results import (
     MaintenancePlan,
 )
 from repyability.rbd.routes import Refused
+from repyability.utils import checks
 
 if TYPE_CHECKING:
     from repyability.rbd.repairable_rbd import RepairableRBD
@@ -55,6 +57,152 @@ def _objective(cost: float, availability: float, max_cost_rate) -> float:
     return 1.0 - availability if max_cost_rate is not None else cost
 
 
+#: What an interval choice can minimise.
+OBJECTIVES = ("cost", "eac", "npv")
+
+
+class _Goal:
+    """What an interval choice minimises in place of the long-run cost
+    rate (``objective`` ``"eac"`` or ``"npv"``): the equivalent annual
+    cost at a discount rate, less the value earned, or less the expected
+    net present value over a horizon. A lower ``score`` is better."""
+
+    def __init__(
+        self, objective: str, rate: float, value_rate: float, horizon
+    ):
+        self.objective = objective
+        self.rate = rate
+        self.value_rate = value_rate
+        self.horizon = horizon
+        #: Each component's own equivalent annual cost, by its schedule.
+        self._own: dict = {}
+
+    def eac(self, plan, cost: float, availability: float) -> float:
+        """``plan``'s equivalent annual cost less the value it earns,
+        from its long-run ``cost`` rate and ``availability``: at rate 0,
+        those themselves."""
+        if self.rate == 0.0:
+            return cost - self.value_rate * availability
+        own = 0.0
+        for node in plan.costs:
+            key = (
+                node,
+                plan._preventive.get(node),
+                plan._inspection.get(node),
+            )
+            if key not in self._own:
+                self._own[key] = _discounted_long_run.node_eac(
+                    plan, node, self.rate
+                )
+            own += self._own[key]
+        return own + _discounted_long_run.system_terms(
+            plan, availability, self.value_rate
+        )
+
+    def less_npv(self, plan) -> float:
+        """Less ``plan``'s expected net present value over the horizon."""
+        return -plan.expected_npv(
+            self.horizon,
+            discount_rate=self.rate,
+            value_rate=self.value_rate,
+        ).npv
+
+    def achieved(self, score: float, salaries: float = 0.0) -> float:
+        """The objective's value at a ``score``: the equivalent annual
+        cost, or the net present value; with the repair crews'
+        ``salaries`` per unit time, left out of the score, paid."""
+        if self.objective == "npv":
+            span = (
+                -math.expm1(-self.rate * self.horizon) / self.rate
+                if self.rate
+                else self.horizon
+            )
+            return -score - salaries * span
+        return score + salaries
+
+    def basis(self, rbd) -> str:
+        """What the value achieved is made of, and what is approximate
+        in it: said on the plan."""
+        if self.objective == "npv":
+            return (
+                "The expected net present value over the horizon, from "
+                "new: expected_npv."
+            )
+        return _discounted_long_run.basis(rbd, self.rate, self.value_rate)
+
+
+def _goal(rbd, objective, discount_rate, value_rate, horizon):
+    """The checked goal of an interval choice (see ``_Goal``); None for
+    the long-run cost rate, ``"cost"``."""
+    checks.one_of("objective", objective, OBJECTIVES)
+    rate = _discount_rate(discount_rate)
+    worth = checks.number_or_nan(value_rate)
+    if not (math.isfinite(worth) and worth >= 0.0):
+        raise ValueError(
+            "value_rate must be a finite number, at least 0 (the value "
+            f"earned per unit time while the system works); got "
+            f"{value_rate!r}."
+        )
+    if objective == "cost":
+        given = [
+            name
+            for name, value in (
+                ("discount_rate", rate),
+                ("value_rate", worth),
+                ("horizon", horizon),
+            )
+            if value
+        ]
+        if given:
+            raise ValueError(
+                f"{' and '.join(given)} need{'s' if len(given) == 1 else ''}"
+                ' an objective that takes them: objective="eac" (the '
+                'equivalent annual cost in the long run) or objective="npv"'
+                " (the expected net present value over a horizon)."
+            )
+        return None
+    if objective == "npv":
+        length = checks.number_or_nan(horizon) if horizon is not None else 0.0
+        if not (math.isfinite(length) and length > 0.0):
+            raise ValueError(
+                'objective="npv" is over a horizon: give horizon, a '
+                f"finite time more than 0; got {horizon!r}."
+            )
+        return _Goal(objective, rate, worth, float(length))
+    if horizon is not None:
+        raise ValueError(
+            'objective="eac" is the long run, with no horizon: leave '
+            'horizon out, or give objective="npv" for the net present '
+            "value over it."
+        )
+    if rate:
+        _discounted_long_run.require_discounted(rbd)
+    return _Goal(objective, rate, worth, None)
+
+
+def _long_run_goal(rbd, goal: _Goal) -> Optional[_Goal]:
+    """The long-run goal nearest to a net present value's: the
+    equivalent annual cost at its rates where the diagram has one worked
+    out, else the cost rate (None)."""
+    try:
+        return _goal(rbd, "eac", goal.rate, goal.value_rate, None)
+    except NotImplementedError:
+        return None
+
+
+def _scorer(goal: Optional[_Goal], evaluate, planned, over_time=None):
+    """What an interval choice minimises for ``goal``, as a function of
+    the intervals (None for the cost rate): ``planned(intervals)`` gives
+    the diagram with them for the long run, ``over_time(intervals)`` for
+    its curves from new (the same by default)."""
+    if goal is None:
+        return None
+    if goal.objective == "npv":
+        build = planned if over_time is None else over_time
+        return lambda intervals: goal.less_npv(build(intervals))
+    return lambda intervals: goal.eac(planned(intervals), *evaluate(intervals))
+
+
 def _meets(cost, availability, min_availability, max_cost_rate) -> bool:
     """Whether long-run values meet an interval choice's target."""
     if min_availability is not None and availability < min_availability:
@@ -71,17 +219,26 @@ def _choose_intervals(
     bounds: Tuple[np.ndarray, np.ndarray],
     min_availability: Optional[float],
     max_cost_rate: Optional[float],
+    score=None,
+    quadrature: bool = False,
 ) -> dict:
     """The intervals (by node) that minimise the cost rate, or, with a cost
     cap, the unavailability, subject to the target: SLSQP over the
     logarithms of the intervals from each of ``starts``, keeping the best
     that meets the target. ``evaluate(intervals)`` gives their exact
-    ``(cost rate, availability)``. A ValueError if no intervals in
-    ``bounds`` meet the target, giving the best they can do."""
+    ``(cost rate, availability)``. With ``score`` (see ``_scorer``), they
+    minimise ``score(intervals)`` instead, subject to the same target;
+    one worked out by ``quadrature`` (a net present value over a
+    horizon, known to about 1e-8 of itself and with a kink wherever a
+    replacement falls on the horizon) is searched without its gradient
+    (COBYLA), from steps of a tenth of an interval down to 1e-4 of it.
+    A ValueError if no intervals in ``bounds`` meet the target, giving
+    the best they can do."""
     low, high = bounds
     box = list(zip(low, high))
     options = {"ftol": 1e-10, "maxiter": 200, "eps": 1e-6}
     cache: dict = {}
+    scores: dict = {}
 
     def point(x) -> tuple:
         """``x`` rounded: the intervals evaluated, and returned."""
@@ -106,6 +263,22 @@ def _choose_intervals(
     def cost(x):
         return values(x)[0] / rate0
 
+    def scored(x) -> float:
+        """What is minimised at ``x``, unscaled."""
+        if score is None:
+            return _objective(*values(x), max_cost_rate)
+        key = point(x)
+        if key not in scores:
+            scores[key] = score(
+                {node: math.exp(xi) for node, xi in zip(nodes, key)}
+            )
+        return scores[key]
+
+    score0 = max(abs(scored(high)), 1e-300) if score is not None else 1.0
+
+    def given(x):
+        return scored(x) / score0
+
     if max_cost_rate is not None:
         objective = unavailable
 
@@ -123,6 +296,8 @@ def _choose_intervals(
                 1.0 - min_availability
             )
 
+    if score is not None:
+        objective = given
     constrained = min_availability is not None or max_cost_rate is not None
     if constrained and not any(
         _meets(*values(start), min_availability, max_cost_rate)
@@ -154,22 +329,38 @@ def _choose_intervals(
             )
         starts = [reach] + list(starts)
     best, best_value = None, math.inf
+    limits = [{"type": "ineq", "fun": slack}] if constrained else []
     for start in starts:
-        found = minimize(
-            objective,
-            start,
-            method="SLSQP",
-            bounds=box,
-            constraints=(
-                [{"type": "ineq", "fun": slack}] if constrained else []
-            ),
-            options=options,
-        )
+        if quadrature:
+            inside = [
+                {"type": "ineq", "fun": lambda x, i=i: x[i] - low[i]}
+                for i in range(len(nodes))
+            ] + [
+                {"type": "ineq", "fun": lambda x, i=i: high[i] - x[i]}
+                for i in range(len(nodes))
+            ]
+            found = minimize(
+                objective,
+                start,
+                method="COBYLA",
+                constraints=limits + inside,
+                options={"rhobeg": 0.1, "tol": 1e-4, "maxiter": 200},
+            )
+            found.x = np.clip(found.x, low, high)
+        else:
+            found = minimize(
+                objective,
+                start,
+                method="SLSQP",
+                bounds=box,
+                constraints=limits,
+                options=options,
+            )
         for x in (found.x, start):
             rate, availability = values(x)
             if not _meets(rate, availability, min_availability, max_cost_rate):
                 continue
-            value = _objective(rate, availability, max_cost_rate)
+            value = scored(x)
             if value < best_value:
                 best, best_value = np.asarray(x, dtype=float), value
     assert best is not None  # the start that meets the target is kept
@@ -226,6 +417,7 @@ def _choose_divisor(
     evaluate,
     min_availability: Optional[float],
     max_cost_rate: Optional[float],
+    score=None,
 ) -> dict:
     """The interval of a component whose tests can miss a failure (#221),
     from those that divide its full tests' interval ``full`` (``full /
@@ -239,7 +431,7 @@ def _choose_divisor(
     def best_of(ks) -> int:
         options = {node: tuple(full / k for k in ks)}
         chosen = _choose_from(
-            [node], options, evaluate, min_availability, max_cost_rate
+            [node], options, evaluate, min_availability, max_cost_rate, score
         )
         return int(round(full / chosen[node]))
 
@@ -260,6 +452,7 @@ def _choose_from(
     evaluate,
     min_availability: Optional[float],
     max_cost_rate: Optional[float],
+    score=None,
 ) -> dict:
     """The intervals, each from its node's ``options``, that minimise the
     cost rate, or with a cost cap the unavailability, subject to the target:
@@ -267,8 +460,10 @@ def _choose_from(
     interval changed at a time, from several starts) otherwise. Of plans
     that cost the same, the most available is chosen (and of those as
     available, the cheapest): tests' offsets change no cost. Of plans as
-    good (``_AS_GOOD``), the first tried is kept. A ValueError if none
-    meets the target, giving the best any does."""
+    good (``_AS_GOOD``), the first tried is kept. With ``score`` (see
+    ``_scorer``), the lowest ``score(intervals)`` is chosen first, of the
+    plans that meet the target. A ValueError if none meets the target,
+    giving the best any does."""
 
     def merit(intervals: dict) -> tuple:
         """(How far from the target, the objective, the other one), each
@@ -283,6 +478,9 @@ def _choose_from(
         else:
             short = (0.0, 1.0)
         down = (1.0 - availability, 1.0)
+        if score is not None:
+            scored = score(intervals)
+            return short, (scored, abs(scored)), (cost, priced), down
         if max_cost_rate is None:
             return short, (cost, priced), down
         return short, down, (cost, priced)
@@ -417,6 +615,10 @@ def optimal_replacement_intervals(
     min_availability: Optional[float],
     max_cost_rate: Optional[float],
     assume_unlimited_crews: bool,
+    objective: str,
+    discount_rate: float,
+    value_rate: float,
+    horizon,
 ) -> MaintenancePlan:
     """See ``RepairableRBD.optimal_replacement_intervals``."""
     chosen = _maintained(rbd, nodes)
@@ -432,13 +634,37 @@ def optimal_replacement_intervals(
             allowed=allowed,
             min_availability=min_availability,
             max_cost_rate=_less_salaries(max_cost_rate, salaries),
+            objective=objective,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            horizon=horizon,
         )
         return _with_salaries(plan, salaries)
+    goal = _goal(rbd, objective, discount_rate, value_rate, horizon)
+
+    def planned(intervals: dict) -> "RepairableRBD":
+        return _with_intervals(rbd, preventive=intervals)
+
+    def over_time(intervals: dict) -> "RepairableRBD":
+        """The plan for its curves from new: a component never replaced
+        has no schedule there."""
+        never = [node for node in intervals if math.isinf(intervals[node])]
+        if not never:
+            return planned(intervals)
+        return _with_intervals(
+            with_intervals(rbd, dict.fromkeys(never, math.inf), None),
+            preventive={
+                node: interval
+                for node, interval in intervals.items()
+                if node not in never
+            },
+        )
 
     def evaluate(intervals: dict) -> Tuple[float, float]:
-        plan = _with_intervals(rbd, preventive=intervals)
+        plan = planned(intervals)
         return plan.expected_cost_rate(), plan.mean_availability()
 
+    score = _scorer(goal, evaluate, planned, over_time)
     if allowed is not None:
         best = _choose_from(
             chosen,
@@ -446,14 +672,60 @@ def optimal_replacement_intervals(
             evaluate,
             min_availability,
             max_cost_rate,
+            score,
         )
     else:
+        near = None
+        if goal is not None and goal.objective == "npv":
+            # A net present value takes its curves over the horizon at
+            # each plan: searched from the long run's best plan.
+            near = _searched_replacements(
+                rbd,
+                chosen,
+                evaluate,
+                min_availability,
+                max_cost_rate,
+                _scorer(_long_run_goal(rbd, goal), evaluate, planned),
+            )
         best = _searched_replacements(
-            rbd, chosen, evaluate, min_availability, max_cost_rate
+            rbd,
+            chosen,
+            evaluate,
+            min_availability,
+            max_cost_rate,
+            score,
+            near,
         )
     cost, availability = evaluate(best)
+    return _planned(
+        rbd,
+        {node: float(best[node]) for node in chosen},
+        cost,
+        availability,
+        goal,
+        score,
+        best,
+    )
+
+
+def _planned(
+    rbd, intervals, cost, availability, goal, score, best, offsets=None
+) -> MaintenancePlan:
+    """The plan of an interval choice, with what its ``goal`` (if any)
+    comes to at the choice ``best``."""
+    if goal is None:
+        return MaintenancePlan(intervals, cost, availability, offsets=offsets)
     return MaintenancePlan(
-        {node: float(best[node]) for node in chosen}, cost, availability
+        intervals,
+        cost,
+        availability,
+        offsets=offsets,
+        objective=goal.objective,
+        discount_rate=goal.rate,
+        value_rate=goal.value_rate,
+        horizon=goal.horizon,
+        objective_value=goal.achieved(score(best)),
+        basis=goal.basis(rbd),
     )
 
 
@@ -463,12 +735,16 @@ def _searched_replacements(
     evaluate: Callable[[dict], Tuple[float, float]],
     min_availability: Optional[float],
     max_cost_rate: Optional[float],
+    score=None,
+    near: Optional[dict] = None,
 ) -> dict:
     """The age-replacement intervals of ``chosen`` that
     ``optimal_replacement_intervals`` gives without ``allowed``: by a
     gradient search over their logarithms, each from a thousandth to a
     thousand times its component's mean life, one at the top of its
-    range compared with never replacing it."""
+    range compared with never replacing it. With ``near`` (intervals),
+    the search is from those alone, for a ``score`` worked out by
+    quadrature."""
     scale = {}
     for node in chosen:
         life = failure_time_scale(rbd.components[node].reliability)
@@ -492,6 +768,17 @@ def _searched_replacements(
         np.array([math.log(0.3 * scale[n]) for n in chosen]),
         high.copy(),
     ]
+    if near is not None:
+        starts = [
+            np.clip(
+                [
+                    math.log(near[n]) if math.isfinite(near[n]) else h
+                    for n, h in zip(chosen, high)
+                ],
+                low,
+                high,
+            )
+        ]
     best = _choose_intervals(
         chosen,
         evaluate,
@@ -499,7 +786,15 @@ def _searched_replacements(
         (low, high),
         min_availability,
         max_cost_rate,
+        score,
+        quadrature=near is not None,
     )
+
+    def scored(intervals: dict) -> float:
+        if score is not None:
+            return score(intervals)
+        return _objective(*evaluate(intervals), max_cost_rate)
+
     # An interval at the top of its range may be better never used.
     for i, node in enumerate(chosen):
         if best[node] >= 0.99 * math.exp(high[i]):
@@ -507,9 +802,7 @@ def _searched_replacements(
             cost, availability = evaluate(never)
             if _meets(
                 cost, availability, min_availability, max_cost_rate
-            ) and _objective(cost, availability, max_cost_rate) <= _objective(
-                *evaluate(best), max_cost_rate
-            ):
+            ) and scored(never) <= scored(best):
                 best = never
     return best
 
@@ -523,6 +816,10 @@ def optimal_inspection_intervals(
     max_cost_rate: Optional[float],
     assume_unlimited_crews: bool,
     offset_shares,
+    objective: str,
+    discount_rate: float,
+    value_rate: float,
+    horizon,
 ) -> MaintenancePlan:
     """See ``RepairableRBD.optimal_inspection_intervals``."""
     chosen = _inspected(rbd, nodes)
@@ -539,18 +836,27 @@ def optimal_inspection_intervals(
             min_availability=min_availability,
             max_cost_rate=_less_salaries(max_cost_rate, salaries),
             offset_shares=offset_shares,
+            objective=objective,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            horizon=horizon,
         )
         return _with_salaries(plan, salaries)
+    goal = _goal(rbd, objective, discount_rate, value_rate, horizon)
     # Each failure rate per unit its interval is given in.
     rates = {
         node: _requirements._tested_scale(rbd, node) / _per_given(rbd, node)
         for node in chosen
     }
 
+    def planned(intervals: dict) -> "RepairableRBD":
+        return _with_intervals(rbd, inspection=intervals)
+
     def evaluate(intervals: dict) -> Tuple[float, float]:
-        plan = _with_intervals(rbd, inspection=intervals)
+        plan = planned(intervals)
         return plan.expected_cost_rate(), plan.mean_availability()
 
+    score = _scorer(goal, evaluate, planned)
     if offset_shares is not None:
         if allowed is None:
             raise ValueError(
@@ -565,6 +871,7 @@ def optimal_inspection_intervals(
             _allowed_shares(offset_shares, chosen),
             min_availability,
             max_cost_rate,
+            goal,
         )
     if allowed is None and rbd._inspection[chosen[0]].partial:
         _requirements._require_one_inspected(rbd)
@@ -578,6 +885,7 @@ def optimal_inspection_intervals(
             evaluate,
             min_availability,
             max_cost_rate,
+            score,
         )
     elif allowed is None:
         _requirements._require_one_inspected(rbd)
@@ -594,14 +902,28 @@ def optimal_inspection_intervals(
             np.array([math.log(0.1 / rate)]),
             np.array([math.log(1.0 / rate)]),
         ]
-        best = _choose_intervals(
+        searched = partial(
+            _choose_intervals,
             chosen,
             evaluate,
-            starts,
-            (low, high),
-            min_availability,
-            max_cost_rate,
+            bounds=(low, high),
+            min_availability=min_availability,
+            max_cost_rate=max_cost_rate,
         )
+        if goal is not None and goal.objective == "npv":
+            # A net present value takes its curves over the horizon at
+            # each interval: searched from the long run's best.
+            near = searched(
+                starts,
+                score=_scorer(_long_run_goal(rbd, goal), evaluate, planned),
+            )
+            best = searched(
+                [np.array([math.log(near[node])])],
+                score=score,
+                quadrature=True,
+            )
+        else:
+            best = searched(starts, score=score)
     else:
         best = _choose_from(
             chosen,
@@ -609,6 +931,7 @@ def optimal_inspection_intervals(
             evaluate,
             min_availability,
             max_cost_rate,
+            score,
         )
     cost, availability = evaluate(best)
     # The offsets the plan's tests keep: each its share of the interval.
@@ -618,10 +941,14 @@ def optimal_inspection_intervals(
         / rbd._inspection[node].interval
         for node in chosen
     }
-    return MaintenancePlan(
+    return _planned(
+        rbd,
         {node: float(best[node]) for node in chosen},
         cost,
         availability,
+        goal,
+        score,
+        best,
         offsets=offsets_kept,
     )
 
@@ -689,7 +1016,18 @@ def _with_salaries(plan: MaintenancePlan, salaries: float) -> MaintenancePlan:
     """``plan``, chosen without the crews' ``salaries``, with them."""
     if not salaries:
         return plan
-    return dataclasses.replace(plan, cost_rate=plan.cost_rate + salaries)
+    achieved = plan.objective_value
+    if achieved is not None:
+        # Its score again, with the salaries paid.
+        goal = _Goal(
+            plan.objective, plan.discount_rate, plan.value_rate, plan.horizon
+        )
+        achieved = goal.achieved(
+            -achieved if plan.objective == "npv" else achieved, salaries
+        )
+    return dataclasses.replace(
+        plan, cost_rate=plan.cost_rate + salaries, objective_value=achieved
+    )
 
 
 def with_intervals(rbd, intervals, offsets) -> "RepairableRBD":
@@ -766,6 +1104,7 @@ def _choose_tests(
     shares: dict,
     min_availability: Optional[float],
     max_cost_rate: Optional[float],
+    goal: Optional[_Goal] = None,
 ) -> MaintenancePlan:
     """``optimal_inspection_intervals`` with the offsets chosen too: each
     node's interval from ``intervals`` and its first test's share of it
@@ -778,22 +1117,35 @@ def _choose_tests(
     options = {("interval", n): intervals[n] for n in chosen}
     options.update({("offset", n): shares[n] for n in chosen})
 
-    def evaluate(choice: dict) -> Tuple[float, float]:
-        plan = _with_intervals(
+    def planned(choice: dict) -> "RepairableRBD":
+        return _with_intervals(
             rbd,
             inspection={n: choice[("interval", n)] for n in chosen},
             offsets={n: choice[("offset", n)] for n in chosen},
         )
+
+    def evaluate(choice: dict) -> Tuple[float, float]:
+        plan = planned(choice)
         return plan.expected_cost_rate(), plan.mean_availability()
 
+    score = _scorer(goal, evaluate, planned)
     best = _choose_from(
-        list(options), options, evaluate, min_availability, max_cost_rate
+        list(options),
+        options,
+        evaluate,
+        min_availability,
+        max_cost_rate,
+        score,
     )
     cost, availability = evaluate(best)
-    return MaintenancePlan(
+    return _planned(
+        rbd,
         {n: float(best[("interval", n)]) for n in chosen},
         cost,
         availability,
+        goal,
+        score,
+        best,
         offsets={
             n: float(best[("offset", n)] * best[("interval", n)])
             for n in chosen

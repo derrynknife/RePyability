@@ -464,6 +464,53 @@ def _on_a_clock(rbd, node) -> bool:
     return bool(np.ravel(survives)[0] >= 1.0)
 
 
+def _planned(rbd) -> list:
+    """The components replaced at the times of a plan (a
+    ``"replace_at"``)."""
+    return [
+        node
+        for node, schedule in rbd._preventive.items()
+        if schedule.plan is not None
+    ]
+
+
+def _require_no_plans(rbd) -> None:
+    """Raise if a component is replaced at the times of a plan, which
+    ends: the diagram has then no long run (nor a long-run state)."""
+    planned = _planned(rbd)
+    if planned:
+        raise NotImplementedError(
+            f"Component {planned[0]!r} is replaced at the times of a plan "
+            "(replace_at), which ends, so the diagram has no long run "
+            "with it: ask for its values over a horizon "
+            "(expected_npv(horizon), expected_cost(T), "
+            "mission_availability(T), point_availability(t)), or give the "
+            "component an interval, block replacement for ever, for the "
+            "long run."
+        )
+
+
+def _check_plan_state(rbd, node, state) -> None:
+    """Refuse a state that a component replaced at the times of a plan
+    cannot be given: a ``since_scheduled`` (its plan's times, from now,
+    place its replacements) and the long-run state (it has none)."""
+    schedule = rbd._preventive.get(node)
+    if schedule is None or schedule.plan is None:
+        return
+    if state.stationary:
+        raise ValueError(
+            f"Component {node!r} is replaced at the times of a plan "
+            "(replace_at), which ends, so it has no long-run state: give "
+            "its age now (NodeState(age=...)), or leave it out (new)."
+        )
+    if state.since_scheduled is not None:
+        raise ValueError(
+            f"Component {node!r} is replaced at the times of its plan "
+            "(replace_at), counted from now, which place its "
+            "replacements: leave its since_scheduled out."
+        )
+
+
 def _require_block_models(rbd, node) -> None:
     """Raise unless the exact block-replacement values cover the
     component's models (the checks ``block_cycle`` makes first); replaced

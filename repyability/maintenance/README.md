@@ -41,6 +41,7 @@ records and decides what "today" is.
 | UC-22 | Overhauls that restore a unit only partly (a Kijima restoration factor), every Nth replacing it: availability, failures and cost per year against overhauls that renew it, and the cheapest interval | **Built**: a `"preventive"` spec's `"restoration"`, `"replace_every"` and `"replacement_cost"`, simulated (#398) |
 | UC-23 | The line is shut 3 days every 12 months, every block gets its PM then and the bearing is replaced if older than X: availability, the shut's share of the downtime and cost, failures between shuts, and whether a 9- or 18-month shut is cheaper | **Built**: `RepairableRBD(shutdowns=...)`, tasks bound with `"shutdown"` and `"older_than"`; exact and numerical |
 | UC-24 | Outages on a timeline: shuts at given times with a duration and a scope (renew some blocks, restore others), the plan's cost by window and its NPV | **Built in part**: the same `shutdowns` at `"times"`, simulated (`availability`, `cost`); the exact cost by window and NPV take shuts on a period only |
+| UC-51 | A part replaced at a list of times in model time (8,000, 14,000 and 26,000 hours) rather than on one interval: its plan's availability, failures, cost and NPV over a horizon | **Built**: a `"preventive"` spec's `"replace_at"`; numerical over a horizon (`expected_npv`, `expected_cost`, `expected_events`, `mission_availability`, `point_availability`), simulated too; the long run refused |
 | UC-25 | How much of the downtime and lost production is planned and how much is from failures, and how many failures the plan avoids against running to failure | **Built**: `RepairableRBD.maintenance_effect`, and the split in `ExpectedEvents`, `EventsByWindow`, `AvailabilityResult` and `CostResult`; exact where the blocks fail independently, simulated otherwise |
 | UC-26 | A pump run part of the time with its overhaul counted in running hours: availability and cost, and at another duty | **Built**: a `"preventive"` or `"inspection"` spec's `"basis": "operating"`, put on the calendar through the block's `"duty"` |
 | UC-43 | A site's shuts on real dates (rules, one-offs, plain periods, a use on a meter) in one record, the best rule for a part there, worked out by a route that is always named and never chosen silently, given back as dates; the unit in service, its cost's spread, and a diagram's outages from the same record | **Built**: `Opportunities` of `Opportunity` on real dates (0.19's `Shutdowns` and `Shutdown`, deprecated), `optimal_opportunity_policy(site, ...)` returning a `ShutdownPolicy`, `Opportunities.route`, `opportunity_policy_cost(site, ...)`, `optimal_next_replacement(..., site=)`, `cost_distribution`/`cost_by_window(policy=)`, `Opportunities.on_diagram` |
@@ -2433,6 +2434,69 @@ answers back into dates is Reliafy's too.)
     where nothing settles before the last shut; not done here.
   - `cost_by_window` and `expected_npv` could take the simulated mean
     where the exact one refuses, as `cost_by_window` does for its spread.
+
+### UC-51: "The pump is replaced at 8,000, 14,000 and 26,000 hours, not on one interval. What will that plan cost over four years, what is it worth at 8%, and how available is the line?"
+
+- **Status:** built: a `"preventive"` spec's `"replace_at"`, valued over
+  a horizon by `expected_npv`, `expected_cost`, `expected_events`,
+  `mission_availability` and `point_availability`, with no simulation.
+- **Who asks, and why:** a planner whose jobs are a list of times (the
+  outages there are, the budget's years), not one interval; every later
+  question about a plan on a timeline (outages with a scope, upgrades,
+  re-planning from today) starts from this one.
+- **What they know:** a line of a pump (Weibull life, 12,000 h and shape
+  2.5; repairs lognormal, 9,000 each) and a motor (Weibull 40,000 h and
+  1.5; 15,000 each), 400 an hour while the line is down; the pump
+  replaced at 8,000, 14,000 and 26,000 h if it is up, at 3,000 and about
+  12 hours each.
+- **What they want back:** the cost in each year and its present value,
+  the replacements and failures to expect, and the availability.
+- **How it is solved:** numerically, as block replacement is, which it is
+  at any list of times: the unit is followed stretch by stretch, from
+  one time to the next, each on a grid of its own length
+  (`_block_replacement.plan_availability`), the repairs and replacements
+  still going on at a time carried onto the next stretch's grid; each
+  replacement is an event at its exact time, counted and discounted
+  there. After the last time the unit is replaced no more. From a state
+  the times are counted from now.
+- **Today (by hand, before it was built):** only by simulation (the
+  times given to a shutdown of no length, the pump's task bound to it),
+  or, for equal gaps, block replacement on a period. As built (its own
+  simulation, `cost(4 * 8760, mc_samples=4000, seed=1,
+  control_variate=False)`, gives 91,867 ± 657):
+
+  ```python
+  plan = line({"replace_at": [8_000.0, 14_000.0, 26_000.0],
+               "duration": LN([2.5, 0.3]), "cost": 3_000.0})
+  value = plan.expected_npv(4 * 8760.0, discount_rate=np.log(1.08) / 8760.0,
+                            periods=4)
+  value.undiscounted_cost, value.cost   # 91,650.6 and 77,679.1
+  # by year: 19,886, 20,116, 32,597, 19,052
+  plan.expected_events(4 * 8760.0)      # pump: 1.586 failures, 2.990 replacements
+  plan.mission_availability(4 * 8760.0) # 0.99588
+  ```
+
+  Block replacement every 8,000 h costs 78,144.8 at the same rate.
+- **Checks:** `test_replace_at.py`: equally spaced times against block
+  replacement on that period (to 1e-10); an exponential unit against its
+  two-state chain between replacements that take a fixed time, and a
+  Weibull unit that fails once at most, in closed form; replacements
+  discounted at their times; uneven stretches against grids four times
+  as fine; the simulation, from new and from a state; the refusals.
+- **Learned / open questions:**
+  - A plan ends, so there is no long run to ask for: the long-run
+    methods refuse and say to ask for a horizon.
+  - The stretch after the last time is as long as the horizon needs, on
+    the other stretches' step, up to 80,000 steps: a horizon tens of
+    times the plan's longest gap past its last time is followed more
+    coarsely.
+  - A stretch far shorter than the repairs cannot be followed on its
+    grid (as a block interval cannot) and refuses.
+  - `plan_vs_actual` values the rest from today on the same diagram,
+    where a plan's times would be counted again: refused for now; the
+    rest is `expected_npv(state=)` on a diagram with the times still to
+    come.
+  - The compiled engine leaves a plan to the Python loop.
 
 ### UC-25: "How much of our downtime and lost production is planned and how much is from failures, and how many failures does the plan avoid each year against running to failure?"
 

@@ -688,6 +688,18 @@ def repairable_kinds():
             "block replacement": system(
                 unit(preventive={"interval": 300.0, "policy": "block"})
             ),
+            # Replaced at the times of a plan, and after the last no more
+            # (block replacement at any list of times).
+            "replaced at given times": system(
+                unit(
+                    preventive={
+                        "replace_at": [150.0, 400.0, 700.0],
+                        "duration": W([4, 2]),
+                        "cost": 20.0,
+                    },
+                    repair_cost=5.0,
+                ),
+            ),
             "block replacement, in no time": system(
                 unit(
                     repairability="instant",
