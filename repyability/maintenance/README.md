@@ -34,7 +34,7 @@ records and decides what "today" is.
 | UC-17 | The risk added when a visit is missed and its work waits | **Built**: `NonRepairable.cost_of_missed_visit` (and `delay_effect`) |
 | UC-12 | When to replace this part next: now, at a scheduled outage, at a planned replacement, or at its failure? | **Built**: `NonRepairable.optimal_next_replacement` |
 | UC-13 | The long-run optimal replacement policy over a calendar of shuts with prices of their own | **Built**: `NonRepairable.optimal_opportunity_policy` (0.14's `optimal_calendar_policy`, deprecated), the prices on the part since UC-45 |
-| UC-19 | What a plan is worth over a horizon at a discount rate, and as a yearly cost | **Built**: `RepairableRBD.expected_npv`, `NonRepairable.age_replacement_value` |
+| UC-19 | What a plan is worth over a horizon at a discount rate, and as a yearly cost | **Built**: `RepairableRBD.expected_npv`, `NonRepairable.age_replacement_value` (value over time and escalation: UC-57) |
 | UC-20 | One unit run on an operating schedule (covariates and value by stretch, in model time): the value earned, the failures' cost and the NPV, and the best time to switch from one way of running to another | **Built** (one unit, numerical): `operating_schedule_value`, `best_switch_time`; (a diagram, simulated): `RepairableRBD.best_switch_time` |
 | UC-21 | A plan against its outage log: expected and actual cash flows so far, the variance, and the plan re-valued from the states now | **Built**: `RepairableRBD.plan_vs_actual` |
 | UC-46 | The spread of a plan's net present value: each simulated run's NPV, its percentiles, the chance of missing a hurdle and the average of the worst runs | **Built**: `RepairableRBD.npv_distribution` (with `contract=`), `compare_npv` |
@@ -51,6 +51,7 @@ records and decides what "today" is.
 | UC-45 | One record of a site's opportunities (stops and shuts) for every part, each part bringing its own prices (at an opportunity, on any other day, at a failure, and per opportunity) and the length of its job, so an opportunity too short for the job is not used; and the prices worked out from a replacement's cost and the plant's downtime | **Built**: `Opportunity`, `Opportunities`, `NonRepairable(opportunity_cost=, opportunity_costs=, job_duration=)`, the policy's `prices` (`OpportunityPrices`), `NonRepairable.opportunity_prices` |
 | UC-55 | How sure an NPV and a choice of intervals are: the NPV's change with the discount rate, its spread over the fitted models' uncertainty with each input's share, and how often the chosen replacement intervals stay the best | **Built**: `expected_npv(rate_sensitivity=True)`, `RepairableRBD.expected_npv_uncertainty`, `optimal_replacement_intervals(robust=True or "reoptimise")` |
 | UC-56 | At each planned outage, also replace the parts close enough to their own replacement, since the plant is down anyway: what the scope adds, by outage, and what the plan then costs | **Built** (simulated): a shutdown's `"opportunistic"`, the count by outage in `AvailabilityResult.outage_jobs`; the exact methods refuse, naming the simulation |
+| UC-57 | What a plan is worth when the price it earns steps up, its costs escalate at their own rates, and the rate is real or nominal; and the same escalation on dates | **Built**: `expected_npv(value_rate=ValueSchedule(...), escalation=, rates=, inflation=)`; `escalation=` beside `discount=` in `repyability.schedule` |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -2172,6 +2173,79 @@ answers back into dates is Reliafy's too.)
   table and both engines' arrays); their cost is the count times the
   part's preventive cost. `npv_distribution` still refuses shutdowns,
   whose holds and costs its histories do not record.
+
+### UC-57: "Our selling price steps up next year, labour rises 4% a year and parts 2%, and finance quotes a real rate of 5% with 3% inflation. What is the plan worth, and does it matter whether we work in real or nominal money?"
+
+- **Status:** built: `expected_npv(..., value_rate=ValueSchedule(times,
+  rates), escalation={stream: g}, rates="nominal" | "real",
+  inflation=)`; on dates, `escalation=` beside `discount=` in
+  `repyability.schedule` (`Task.due`, `Task.long_run_value`,
+  `work_by_period`, `failures_by_period`, `events_by_period`,
+  `task_value`).
+- **Who asks, and why:** the analyst valuing a plan over ten years. A
+  constant price and constant costs (UC-19) overstate a plan whose
+  costs rise faster than what it earns, and a rate quoted in real terms
+  applied to nominal prices (or the other way round) is the commonest
+  error in an NPV.
+- **What they know:** the diagram, its costs (`repair_cost`, ...,
+  `downtime_cost_rate`, the lost production) and what it earns while it
+  works (`value_rate`), each in today's money; how each stream grows; the
+  rate and whether it is real or nominal, and inflation.
+- **What they want back:** the NPV, its cash-flow table with every
+  stream grown (nominal, or real), and the basis stated on the result.
+- **How it is solved (as exact as `expected_npv` is):**
+  - *What the plant earns:* `value_rate` is a number or a
+    `ValueSchedule(times, rates)`, steps in model time (plain data, so a
+    valuation can be saved and made again; a function of time is
+    refused). A step `v` on `[a, b)` with growth `g` adds `v * integral
+    exp(-(r - g) t) A(t) dt`, the uptime integral `expected_npv` already
+    takes at the rate `r - g`, differenced at the steps' ends.
+  - *Escalation:* each stream (a cost category: `repair`, `replace`,
+    `preventive`, `inspection`, `component_downtime`, `system_downtime`,
+    `setup`, `shutdown`, `crews`; a component, which takes precedence
+    over its categories; `"value"`; `"salvage"`) takes a continuous
+    growth `g`: an amount at `t` is its price times `exp(g t)`, so its
+    present value is the cost discounted at `r - g`, worked out once for
+    each distinct `r - g` by the existing discounted cost
+    (`_windows.expected_cost`, or `_windows._discounted_cost` for a
+    rate below 0, which is valid over a horizon); the undiscounted
+    column is at `-g`. The downtime cost rate and the value rate are the
+    streams `system_downtime`/`component_downtime` and `value`: no
+    second notion of either. The acquisition is paid at 0 and does not
+    grow.
+  - *Real or nominal:* `rates="nominal"` (the default) takes the rate
+    and growths as given. `rates="real"` takes them in real terms; with
+    `inflation=i`, every amount is made nominal (the rate `r + i`, every
+    stream's growth `g + i`, a stream with none `i`), which leaves every
+    present value as it is and makes the undiscounted columns nominal.
+    The result states `rate_basis`, `inflation`, `escalation` and
+    `value_schedule`, and its `discount_rate` is the rate given, so the
+    equivalent annual cost is the level annuity in the basis given: a
+    level real annuity with real rates.
+  - *On dates:* `escalation=` is an effective yearly rate (0.03 for 3% a
+    year) beside the yearly `discount=`: a cost `y` years after the start
+    is worth `((1 + e) / (1 + d)) ** y` of its price today, so every
+    present value (and the equivalent annual cost) is taken at the net
+    yearly rate `(1 + d) / (1 + e) - 1`, which may be below 0 over a
+    window; for ever (`Task.long_run_value`) it must be above 0. The
+    expected costs by period stay in today's prices, as the note says.
+- **Today:** a constant `value_rate` and no growth; a schedule had to be
+  valued as runs over sub-horizons and added up by hand.
+- **Checks:** `test_npv_escalation.py`: an exponential unit with a
+  value growing at `g` against the closed form; a schedule of two steps
+  against the sum of the steps valued apart; a stream's escalation
+  against the cost discounted at `r - g`, also with `g > r`; the
+  real/nominal identity (every stream lifted by inflation leaves the NPV
+  unchanged); no growth and a number for the value give every field
+  unchanged to the last bit; a component's growth taking precedence over
+  its category's; a salvage grown at its own rate; the refusals. On
+  dates (the same file): a task's present value with
+  escalation against the factor worked by hand, `events_by_period`
+  against `expected_npv` with the matching continuous rates, and for
+  ever refused when the escalation reaches the rate.
+- **Learned / open questions:** `plan_vs_actual` and `npv_distribution`
+  take a constant value and no growth yet (they refuse a schedule or
+  escalation, naming `expected_npv`).
 
 ### UC-22: "A pump's 6-monthly overhaul restores it only partly (a fitted Kijima restoration factor), and every third overhaul replaces it. What availability, failures and cost per year, against overhauls that renew it, and which overhaul interval is cheapest?"
 

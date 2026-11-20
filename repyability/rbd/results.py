@@ -2173,7 +2173,8 @@ class ExpectedNPV(_ResultMapping):
         The continuous rate per unit time the amounts were discounted at
         (0: not discounted).
     value_rate : float
-        The value earned per unit time while the system works.
+        The value earned per unit time while the system works (NaN with
+        a ``value_schedule``).
     npv : float
         The expected net present value: ``value - cost``.
     value : float
@@ -2183,7 +2184,9 @@ class ExpectedNPV(_ResultMapping):
         acquisition cost (paid at the start).
     eac : float
         The equivalent annual cost: ``cost`` divided by the
-        ``annuity_factor``, per unit of the models' time.
+        ``annuity_factor``, per unit of the models' time: the level
+        annuity at ``discount_rate`` worth the costs, so with real rates a
+        level real annuity.
     undiscounted_npv : float
         The same sum with no discounting.
     undiscounted_value : float
@@ -2222,6 +2225,21 @@ class ExpectedNPV(_ResultMapping):
         An estimate of the error of ``rate_sensitivity``, from the
         differences it is worked out from (see ``expected_npv``); None
         with no ``rate_sensitivity``.
+    rate_basis : str
+        ``"nominal"`` or ``"real"``: what ``discount_rate`` and the
+        growths are in. With ``"real"`` and an ``inflation``, the
+        undiscounted amounts are nominal (grown by it too); the present
+        values are the same either way.
+    inflation : float or None
+        The continuous inflation per unit time real rates were made
+        nominal with; None when not given.
+    escalation : dict
+        Each stream's growth per unit time, as given (a cost category, a
+        component, ``"value"`` or ``"salvage"``): an amount at ``t`` is
+        its price times ``exp(g t)``. Empty with none.
+    value_schedule : ValueSchedule or None
+        The value earned as steps, when given one (``value_rate`` is
+        then NaN); None for a single rate.
     cash_flows : list
         The cash-flow table: one dict per period, category and component
         with something in it, with ``period`` (from 1), ``start``, ``end``,
@@ -2283,6 +2301,10 @@ class ExpectedNPV(_ResultMapping):
     retire_at: Optional[float] = None
     rate_sensitivity: Optional[float] = None
     rate_sensitivity_error: Optional[float] = None
+    rate_basis: str = "nominal"
+    inflation: Optional[float] = None
+    escalation: Dict[Hashable, float] = field(default_factory=dict)
+    value_schedule: Any = None
 
     @property
     def annuity_factor(self) -> float:

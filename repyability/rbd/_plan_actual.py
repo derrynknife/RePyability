@@ -430,7 +430,7 @@ def plan_vs_actual(
             f"now ({now:g}) is past the horizon ({horizon:g}): the plan "
             "ends before today."
         )
-    value_rate = _npv._number(value_rate, "value_rate", strict=False)
+    value_rate = _npv.steady_value(value_rate, "plan_vs_actual")
     for name, given in (("state", state), ("start_state", start_state)):
         if given is not None and not isinstance(given, Mapping):
             raise TypeError(

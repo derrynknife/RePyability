@@ -12,6 +12,23 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: value and prices over time in a net present value (UC-57 of
+  the maintenance README). `expected_npv` takes `value_rate` as a
+  `ValueSchedule(times, rates)` of steps in model time; `escalation=`
+  a growth rate per unit time for any cost category, component,
+  `"value"` or `"salvage"` (an amount at `t` is its price times
+  `exp(g t)`; a growth above the discount rate is valid over a
+  horizon); and `rates="real"` with `inflation=` to value in real terms
+  (every amount made nominal, which leaves the present values as they
+  are). `ExpectedNPV` states `rate_basis`, `inflation`, `escalation`
+  and `value_schedule`; with no schedule or growth every value is as
+  before. On dates, `Task.due`, `Task.long_run_value`,
+  `work_by_period`, `failures_by_period`, `events_by_period` and
+  `task_value` take `escalation=` (a yearly rate) beside `discount=`:
+  the present values take each cost grown to when it falls.
+  `npv_distribution` and `plan_vs_actual` refuse a `ValueSchedule`,
+  naming `expected_npv`.
+
 - Added: opportunistic work at a planned outage (UC-56 of the
   maintenance README). A shutdown takes `"opportunistic": {node: age}`
   (or one age for every block in its scope under age replacement): at

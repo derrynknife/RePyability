@@ -561,7 +561,9 @@ class Task:
             text += f"; done at the visits ({self.visits.describe()})"
         return text
 
-    def due(self, start, end, usage=None, *, discount=None) -> TaskDue:
+    def due(
+        self, start, end, usage=None, *, discount=None, escalation=None
+    ) -> TaskDue:
         """When the task falls due from ``start`` to ``end``, **both
         included**, assuming each time is done on its due date (or at its
         visit).
@@ -580,6 +582,12 @@ class Task:
             has ``npv``, the costs' present value on ``start``, each
             discounted from the date it is done, and ``eac``. By default
             None: no present value.
+        escalation : float, optional
+            With ``discount``, the effective yearly rate every cost
+            escalates at from its price today (0.03 for 3% a year): the
+            present values (and ``eac``) take each cost grown to when it
+            falls, at the net yearly rate ``(1 + discount) / (1 + escalation)
+            - 1``. By default None: today's prices.
 
         Returns
         -------
@@ -600,15 +608,21 @@ class Task:
         >>> year.count, year.cost, round(year.npv, 2)
         (13, 3250.0, 3144.1)
         """
-        return self._due(start, end, {"usage": usage}, discount)
+        return self._due(start, end, {"usage": usage}, discount, escalation)
 
     def _due(
-        self, start, end, context: Dict[str, Any], discount=None
+        self,
+        start,
+        end,
+        context: Dict[str, Any],
+        discount=None,
+        escalation=None,
     ) -> TaskDue:
         """``due`` with what the limits need (a later release's usage
         forecast) in ``context``."""
         start, end = _period(start, end)
         discount = _discount.yearly(discount)
+        given, discount = discount, _discount.net(discount, escalation)
         kinds = self._limits()
         limits = [limit.bind(self, start, end, context) for limit in kinds]
         last = None if self.last_done is None else _midnight(self.last_done)
@@ -689,7 +703,7 @@ class Task:
                 eac = _discount.equivalent_annual(
                     npv, discount, _years(start, end)
                 )
-                notes.append(_discount.words(discount, start))
+                notes.append(_discount.words(given, start, escalation))
         return TaskDue(
             task=self.name,
             start=start,
@@ -708,13 +722,13 @@ class Task:
             moments=tuple(moments),
             readings=tuple(readings),
             stops_after=tuple(stops),
-            discount=discount,
+            discount=given,
             npv=npv,
             eac=eac,
         )
 
     def long_run_value(
-        self, start, discount, *, precision: float = 1e-9
+        self, start, discount, *, precision: float = 1e-9, escalation=None
     ) -> LongRunValue:
         """What the task is worth on ``start`` repeating for ever: the
         present value of its cost every time it is done from ``start``
@@ -736,6 +750,11 @@ class Task:
             it count (an overdue task is done on it).
         discount : float
             The yearly discount rate, more than 0 (0.07 for 7% a year).
+        escalation : float, optional
+            The effective yearly rate the cost escalates at from its price
+            today (0.03 for 3% a year), below ``discount``: the value is
+            taken at the net yearly rate ``(1 + discount) / (1 +
+            escalation) - 1``. By default None: today's price.
         precision : float, optional
             For a task that is summed: the most the dates left out may
             add, as a share of the value; by default 1e-9.
@@ -771,6 +790,16 @@ class Task:
         start = _date(start, "start")
         discount = _discount.yearly(discount, required=True)
         assert discount is not None
+        given, discount = discount, _discount.net(discount, escalation)
+        assert discount is not None
+        if escalation is not None and not discount > 0.0:
+            raise ValueError(
+                f"The cost escalates at {_discount.percent(escalation)} a "
+                f"year, no slower than the discount of "
+                f"{_discount.percent(given)}: repeating for ever, it is "
+                "worth without end. Ask for a period's value with "
+                "due(start, end, discount=, escalation=)."
+            )
         if not (_is_number(precision) and 0.0 < float(precision) < 1.0):
             raise ValueError(
                 "precision must be a share of the value, more than 0 and "
@@ -778,7 +807,7 @@ class Task:
             )
         self._check_for_ever(start, discount)
         assert self.cost is not None
-        notes = [_discount.words(discount, start)]
+        notes = [_discount.words(given, start, escalation)]
         gap = self._plain_gap()
         to: Optional[date] = None
         count: Optional[int] = None
@@ -818,7 +847,7 @@ class Task:
         return LongRunValue(
             task=self.name,
             start=start,
-            discount=discount,
+            discount=given,
             npv=npv,
             eac=_discount.equivalent_annual(npv, discount, math.inf),
             method=method,
@@ -1051,7 +1080,14 @@ def _periods(start: date, end: date, period: str):
 
 
 def work_by_period(
-    tasks: Sequence[Task], period, start, end, usage=None, *, discount=None
+    tasks: Sequence[Task],
+    period,
+    start,
+    end,
+    usage=None,
+    *,
+    discount=None,
+    escalation=None,
 ) -> WorkByPeriod:
     """The work tasks need in each calendar period from ``start`` to
     ``end`` (both included): how many are done, their hours and cost,
@@ -1074,6 +1110,12 @@ def work_by_period(
         each period's ``npv`` (its costs' present value on ``start``, each
         task discounted from the date it is done), ``total_npv`` and
         ``eac``. By default None: no present values.
+    escalation : float, optional
+        With ``discount``, the effective yearly rate every cost
+        escalates at from its price today (0.03 for 3% a year): the
+        present values (and ``eac``) take each cost grown to when it
+        falls, at the net yearly rate ``(1 + discount) / (1 + escalation)
+        - 1``. By default None: today's prices.
 
     Returns
     -------
@@ -1102,6 +1144,7 @@ def work_by_period(
         )
     start, end = _period(start, end)
     discount = _discount.yearly(discount)
+    given, discount = discount, _discount.net(discount, escalation)
     spans = _periods(start, end, period)
     firsts = [a for a, _ in spans]
     n = len(spans)
@@ -1134,7 +1177,7 @@ def work_by_period(
         eac = _discount.equivalent_annual(
             total_npv, discount, _years(start, end)
         )
-        notes.append(_discount.words(discount, start))
+        notes.append(_discount.words(given, start, escalation))
         missing = [t.name for t in tasks if t.cost is None]
         if missing:
             notes.append(
@@ -1154,7 +1197,7 @@ def work_by_period(
         ),
         no_hours=tuple(t.name for t in tasks if t.duration is None),
         no_cost=tuple(t.name for t in tasks if t.cost is None),
-        discount=discount,
+        discount=given,
         npv=npv,
         total_npv=total_npv,
         eac=eac,

@@ -484,6 +484,7 @@ def task_value(
     age: float = 0.0,
     unit: Optional[str] = None,
     discount: Optional[float] = None,
+    escalation: Optional[float] = None,
     period: str = "month",
     npv_tolerance: float = NPV_TOLERANCE,
 ) -> TaskValue:
@@ -550,6 +551,12 @@ def task_value(
         A yearly discount rate (0.07 for 7% a year): money is then a
         present value at the forecast's start. By default None: plain
         expected costs.
+    escalation : float, optional
+        With ``discount``, the effective yearly rate every cost
+        escalates at from its price today (0.03 for 3% a year): the
+        present values (and ``eac``) take each cost grown to when it
+        falls, at the net yearly rate ``(1 + discount) / (1 + escalation)
+        - 1``. By default None: today's prices.
     period : str, optional
         ``"day"``, ``"week"``, ``"month"`` (the default), ``"quarter"`` or
         ``"year"``.
@@ -625,6 +632,7 @@ def task_value(
         raise ValueError(f"age must be a number, at least 0; got {age!r}.")
     age = float(age)
     discount = _discount.yearly(discount)
+    given, discount = discount, _discount.net(discount, escalation)
     npv_tolerance = _tolerance(npv_tolerance)
     failure_cost = getattr(part, "cu", None)
     if isinstance(does, Replaces):
@@ -736,7 +744,8 @@ def task_value(
         )
     if discount is not None:
         notes.append(
-            f"{_discount.words(discount, usage.start)} A failure's expected "
+            f"{_discount.words(given, usage.start, escalation)} A failure's "
+            "expected "
             "cost is discounted from when it is expected to fall, each "
             f"side to within its bracket ({precision:.3g} on the value in "
             "all); the task's cost from when it is done."
@@ -780,7 +789,7 @@ def task_value(
         age=age,
         dates=tuple(dates),
         model_times=times,
-        discount=discount,
+        discount=given,
         with_task=np.asarray(money_with, float),
         without_task=np.asarray(money_without, float),
         value=np.asarray(value, float),
