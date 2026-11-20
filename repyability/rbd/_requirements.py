@@ -474,9 +474,39 @@ def _planned(rbd) -> list:
     ]
 
 
+def _upgraded(rbd) -> str:
+    """The first upgraded component, in words, for a refusal."""
+    node, upgrade = next(iter(rbd._upgrades.items()))
+    return f"Component {node!r} is upgraded at {upgrade.at:g}"
+
+
+def _require_upgrades_simulated(rbd) -> None:
+    """Raise if a component is upgraded: the simulations draw each
+    component's lives from one model, and do not follow a change of it
+    yet."""
+    if rbd._upgrades:
+        raise NotImplementedError(
+            f"{_upgraded(rbd)} (its units have another life from then), "
+            "which the simulations do not follow yet: its expected "
+            "values over a horizon are worked out, with expected_npv, "
+            "expected_cost, expected_events, mission_availability and "
+            "point_availability."
+        )
+
+
 def _require_no_plans(rbd) -> None:
     """Raise if a component is replaced at the times of a plan, which
-    ends: the diagram has then no long run (nor a long-run state)."""
+    ends, or upgraded at a time: the diagram has then no long run (nor a
+    long-run state)."""
+    if rbd._upgrades:
+        raise NotImplementedError(
+            f"{_upgraded(rbd)} (its units have another life from then), "
+            "so the diagram has no long run with it: ask for its values "
+            "over a horizon (expected_npv(horizon), expected_cost(T), "
+            "mission_availability(T), point_availability(t)), or, for "
+            "the long run, give the component the life it has after the "
+            "upgrade."
+        )
     planned = _planned(rbd)
     if planned:
         raise NotImplementedError(
@@ -497,17 +527,22 @@ def _check_plan_state(rbd, node, state) -> None:
     schedule = rbd._preventive.get(node)
     if schedule is None or schedule.plan is None:
         return
+    what = "is replaced at the times of a plan (replace_at), which ends"
+    whose = "is replaced at the times of its plan (replace_at)"
+    places = "which place its replacements"
+    if node in rbd._upgrades:
+        what = "is upgraded at a time"
+        whose = "is upgraded at the time of its upgrade (at)"
+        places = "which places it"
     if state.stationary:
         raise ValueError(
-            f"Component {node!r} is replaced at the times of a plan "
-            "(replace_at), which ends, so it has no long-run state: give "
+            f"Component {node!r} {what}, so it has no long-run state: give "
             "its age now (NodeState(age=...)), or leave it out (new)."
         )
     if state.since_scheduled is not None:
         raise ValueError(
-            f"Component {node!r} is replaced at the times of its plan "
-            "(replace_at), counted from now, which place its "
-            "replacements: leave its since_scheduled out."
+            f"Component {node!r} {whose}, counted from now, {places}: "
+            "leave its since_scheduled out."
         )
 
 

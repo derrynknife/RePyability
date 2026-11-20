@@ -144,6 +144,14 @@ def _require_no_plans(rbd) -> None:
     """Raise if a component is replaced at the times of a plan, which
     are counted from 0: the rest from today is valued on the same
     diagram from today, where they would be counted again."""
+    if rbd._upgrades:
+        raise NotImplementedError(
+            f"{_requirements._upgraded(rbd)}, counted from 0, which the "
+            "rest from today is not valued with yet: value the plan with "
+            "expected_npv, and the rest on a diagram whose upgrade is at "
+            "the time still to come, counted from today (or, once it is "
+            "past, with the new life), with expected_npv(state=)."
+        )
     planned = _requirements._planned(rbd)
     if planned:
         raise NotImplementedError(

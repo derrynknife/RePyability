@@ -700,6 +700,18 @@ def repairable_kinds():
                     repair_cost=5.0,
                 ),
             ),
+            # Upgraded at a time: its units have another life from then,
+            # at a capital cost (worked out over a horizon; not simulated).
+            "upgraded at a time": system(
+                unit(
+                    upgrade={
+                        "at": 250.0,
+                        "reliability": W([900, 2.0]),
+                        "cost": 50.0,
+                    },
+                    repair_cost=5.0,
+                ),
+            ),
             "block replacement, in no time": system(
                 unit(
                     repairability="instant",

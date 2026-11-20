@@ -337,6 +337,15 @@ class RepairableRBD(RBD):
           ``with_intervals`` and the interval choices, which take and
           give them in operating time. The life must be a surpyval
           parametric distribution of a time.
+          ``"upgrade"`` gives the component another life from a time: a
+          dict of ``"at"`` (the time, in the diagram's time from 0),
+          ``"reliability"`` (the life its units have from then: the unit
+          in service is replaced by one of it, in no time) and ``"cost"``
+          (the capital cost, charged then under ``"capital"``). Its
+          values over a horizon are worked out; the long run and the
+          simulations refuse it, and it takes no maintenance or tests of
+          its own yet (see the guide's "Upgrades, retirement and
+          salvage").
           ``"covariates"``, a surpyval ``StepSchedule``, runs a block
           whose ``"reliability"`` is a fitted surpyval regression model
           (proportional or additive hazards, accelerated failure time or
@@ -896,6 +905,8 @@ class RepairableRBD(RBD):
         # Components their preventive maintenance restores only partly, by
         # node (see _ImperfectComponent).
         self._restoring: dict[Any, _Restoration] = {}
+        # Components upgraded at a time, by node (see _spec._Upgrade).
+        self._upgrades: dict[Any, Any] = {}
         # The base class checks the names given components against the
         # edges; a component for a name in no edge is not part of the
         # diagram (the structure check reports it).
@@ -991,6 +1002,16 @@ class RepairableRBD(RBD):
                         # A replacement in place of a task with a cost is
                         # priced, even at 0.
                         node_costs["replacement_cost"] = replacing
+                if component.get("upgrade") is not None:
+                    upgrade = _spec._validate_upgrade(name, component)
+                    self._upgrades[name] = upgrade
+                    # Its schedule: replaced at the upgrade's time, by a
+                    # unit of the new life (see _curves._plan_curve).
+                    self._preventive[name] = _Preventive(
+                        upgrade.at, "block", None, times=(upgrade.at,)
+                    )
+                    if upgrade.cost:
+                        node_costs["capital_cost"] = upgrade.cost
                 if component.get("acquisition_cost") is not None:
                     acquisition = _spec._validate_cost(
                         name, "acquisition_cost", component["acquisition_cost"]
@@ -4343,6 +4364,8 @@ class RepairableRBD(RBD):
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
         state=None,
+        retire_at=None,
+        salvage=None,
     ) -> ExpectedNPV:
         """The expected net present value of running the system for
         ``horizon``, from new or from a state: what it earns while it
@@ -4408,6 +4431,20 @@ class RepairableRBD(RBD):
             Start from the components' current states rather than new, as
             for ``expected_cost``. By default None: every component new at
             0.
+        retire_at : float, optional
+            Retire the system at this time, more than 0 and no later than
+            the horizon: nothing is earned or spent after it, and the
+            equivalent annual cost is over the time to it. By default
+            None: it runs to the horizon.
+        salvage : float or dict, optional
+            What is left is worth at the end (the retirement, or the
+            horizon), credited then and discounted from there: a number
+            for the system, or a dict of a number for each component (and
+            for None, the system); negative for a cost of disposal. A
+            component's may be a function of the age of its unit in
+            service (taking an array of ages), for a plain component from
+            new: its expected value over that age, a unit down then
+            credited nothing. By default None.
 
         Returns
         -------
@@ -4421,10 +4458,13 @@ class RepairableRBD(RBD):
         ValueError
             If ``horizon``, ``discount_rate``, ``value_rate`` or
             ``periods`` is invalid; if nothing is priced and there is no
-            ``value_rate`` (as ``routes.Refused``); or as for
-            ``expected_cost``.
+            ``value_rate`` (as ``routes.Refused``); if ``retire_at`` is
+            past the horizon or a ``salvage`` is not a finite number or a
+            function of age; or as for ``expected_cost``.
         NotImplementedError
-            As for ``point_availability`` and ``expected_cost``.
+            As for ``point_availability`` and ``expected_cost``; for a
+            salvage by age of a component that is not a plain one from
+            new.
 
         Examples
         --------
@@ -4467,6 +4507,8 @@ class RepairableRBD(RBD):
             broken_nodes=broken_nodes,
             method=method,
             state=state,
+            retire_at=retire_at,
+            salvage=salvage,
         )
 
     def npv_distribution(

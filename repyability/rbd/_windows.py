@@ -564,6 +564,11 @@ def expected_cost(
                             _mean_cost(node_costs[key]) * events[kind],
                         )
                     )
+        if "capital_cost" in node_costs:
+            # An upgrade's capital cost, charged at its time whatever the
+            # unit's state.
+            paid = ends > rbd._upgrades[node].at
+            charges.append(("capital", node_costs["capital_cost"] * paid))
         rate = node_costs.get("downtime_cost", 0.0)
         if rate:
             down = (

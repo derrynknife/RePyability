@@ -272,6 +272,8 @@ def _require_groups_simulated(rbd, states: Optional[dict] = None):
     ``_past_strikes``."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
+    # (What no simulation takes, common-cause groups or not.)
+    _requirements._require_upgrades_simulated(rbd)
     for group in rbd.ccf_groups:
         where = f"Common-cause group {list(group.members)}"
         for member in group.members:

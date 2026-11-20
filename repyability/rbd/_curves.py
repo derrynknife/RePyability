@@ -2079,13 +2079,23 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
             last *= 2.0
         lengths.append(last)
     models = (component.reliability, component.time_to_replace, duration)
+    # After an upgrade, the units put into service have its life.
+    upgrade = rbd._upgrades.get(node)
+    lives = None
+    if upgrade is not None:
+        lives = [
+            upgrade.life if begin >= upgrade.at else component.reliability
+            for begin in edges[: len(lengths)]
+        ]
 
     def curve(results, starts):
         return PlanCurve([BlockCurve(r, knots) for r in results], starts)
 
     if not started:
         return curve(
-            plan_availability(*models, lengths, node, last_like=like),
+            plan_availability(
+                *models, lengths, node, last_like=like, lives=lives
+            ),
             edges[: len(lengths)],
         )
     assert start is not None
@@ -2103,7 +2113,14 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     reached = BlockHead(
         length, float(head.at(np.array([length]))[0]), failures, down_sf
     )
-    results = plan_availability(*models, lengths[1:], node, reached, like)
+    results = plan_availability(
+        *models,
+        lengths[1:],
+        node,
+        reached,
+        like,
+        None if lives is None else lives[1:],
+    )
     tail = curve(results, edges[1 : len(lengths)] - length)  # noqa: E203
     return StartedBlockCurve(head, tail, length)
 
