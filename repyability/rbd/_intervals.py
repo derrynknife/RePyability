@@ -990,7 +990,12 @@ def _unlimited_crews(rbd) -> "RepairableRBD":
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     return RepairableRBD(
-        **{**rbd._init_args, "repair_crews": None, "crew_cost_rate": 0.0}
+        **{
+            **rbd._init_args,
+            "repair_crews": None,
+            "crew_cost_rate": 0.0,
+            "call_out": None,
+        }
     )
 
 

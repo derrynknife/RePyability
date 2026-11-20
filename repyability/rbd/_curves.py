@@ -1529,12 +1529,19 @@ def _crew_window(
     ``system_failure_frequency`` has it), and each component's down
     time and failures (at its rate while it is up), each a repair. No
     component has scheduled maintenance or tests, and none fails at the
-    same instant as another."""
+    same instant as another. A call-out crew that costs anything is
+    counted too (``"call_out"``: what it has cost by each end), from the
+    chain's last vector, the rate at which it costs in each state."""
     working, broken = set(working_nodes), set(broken_nodes)
     forced = working | broken
     nested = _require_crew_over_time(rbd, frozenset(forced), "window")
     chain = _crews._crew_chain(rbd, frozenset(forced))
     rates = _crews._crew_chain_rates(rbd)
+    called = (
+        [_crews._call_out_vector(rbd, chain)]
+        if _crews._call_out_priced(rbd)
+        else []
+    )
     if nested:
         # The nested RBDs, independent of the chain, counted as nodes,
         # with the system worked out over the chain (#162).
@@ -1552,6 +1559,7 @@ def _crew_window(
                 _crew_patterns(rbd, chain, nested, working, broken, method)
                 + [chain.up.astype(float)]
                 + each
+                + called
             ),
         )
         system = _chain_transient.CrewSystem(
@@ -1584,6 +1592,10 @@ def _crew_window(
             curves[node] = _chain_transient.CrewNodeEvents(
                 uniformized, column + k, rates[node][0]
             )
+        if called:
+            totals["call_out"] = np.maximum(
+                uniformized.integrals(ends)[:, -1], 0.0
+            )
         return curves, totals
     up, importance = _crew_vectors(rbd, chain, {}, working, broken, method)
     failing = _crew_failing(rbd, chain, importance)
@@ -1593,7 +1605,7 @@ def _crew_window(
         chain.generator,
         _crew_start(rbd, chain, states),
         chain.probabilities,
-        np.column_stack([up, failing, chain.up.astype(float)] + each),
+        np.column_stack([up, failing, chain.up.astype(float)] + each + called),
     )
     totals = uniformized.integrals(ends)
     zero = np.zeros(len(ends))
@@ -1604,6 +1616,8 @@ def _crew_window(
         "downtime": {},
         "overlaps": {name: zero for name in groups or {}},
     }
+    if called:
+        counts["call_out"] = np.maximum(totals[:, -1], 0.0)
     if causes:
         base = 2 + len(chain.nodes)
         counts["caused"] = {

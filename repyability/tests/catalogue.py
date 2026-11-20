@@ -1402,6 +1402,22 @@ def repairable_kinds():
                 downtime_cost_rate=5.0,
                 capacity={"a": 5.0, "b": 5.0, "c": 10.0},
             ),
+            # One crew, and a call-out crew once two jobs wait.
+            "a call-out crew": RepairableRBD(
+                EDGES,
+                {
+                    node: {
+                        "reliability": E([0.002]),
+                        "repairability": E([0.05]),
+                        "priority": priority,
+                        "repair_cost": 3.0,
+                    }
+                    for node, priority in zip("abc", (1, 0, 0))
+                },
+                repair_crews=1,
+                call_out={"when_waiting": 2, "fee": 40.0, "rate": 6.0},
+                downtime_cost_rate=5.0,
+            ),
         }
     )
     return out

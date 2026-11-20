@@ -4588,6 +4588,15 @@ class CrewStates(_ResultMapping):
         (it has crews of its own); 1 for the input and output nodes.
     probabilities : numpy.ndarray
         Each state's long-run probability, adding up to 1.
+    call_out_rate : numpy.ndarray or None
+        With a call-out crew (``call_out``), the rate at which it is
+        called in each state: ``probabilities @ call_out_rate`` is its
+        call-outs per unit time in the long run. Zeros without one (None
+        for a result made without it).
+    call_out_engaged : numpy.ndarray or None
+        1 in the states the call-out crew is engaged in, else 0:
+        ``probabilities @ call_out_engaged`` is the fraction of the time
+        it is engaged.
 
     Examples
     --------
@@ -4602,6 +4611,8 @@ class CrewStates(_ResultMapping):
 
     node_availability: Dict[Hashable, np.ndarray]
     probabilities: np.ndarray
+    call_out_rate: Optional[np.ndarray] = None
+    call_out_engaged: Optional[np.ndarray] = None
 
     def __repr__(self) -> str:
         # A summary (#235): the states' values are in the fields.

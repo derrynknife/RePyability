@@ -834,6 +834,11 @@ birth-death chain, and the system is down when all three are.)
 - **What the crews cost.** `crew_cost_rate=` pays each crew per unit time,
   busy or not, in every cost result under `"crews"` (see
   [paying the repair crews](costs.md#paying-the-repair-crews)).
+- **A call-out crew.** `call_out={"when_waiting": k, "fee": f, "rate": c}`
+  is one crew more that comes when a job is the `k`-th waiting and leaves
+  at the first end of a job that leaves a crew with none to take, at a fee
+  each time and a rate while engaged; the chain below and the simulations
+  have it (see [a call-out crew](costs.md#a-call-out-crew)).
 - **Exact long-run values.** With fewer crews than components, components
   wait for each other, so they no longer fail and recover independently.
   When the components the crews work on all have exponential lives and

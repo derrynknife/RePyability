@@ -913,6 +913,10 @@ class _ShardRunner:
 _ACTION_COST_KEYS = ("preventive_cost", "inspection_cost", "replacement_cost")
 
 
+#: The place of the repair crews' costs among the categories.
+_CREWS = _CATEGORIES.index("crews")
+
+
 def _validate_crews(crews) -> Optional[int]:
     """``repair_crews``, validated: a whole number of crews, at least 1, or
     None for as many as are needed."""
@@ -1711,7 +1715,12 @@ def _start_queue(
     # may need one (with enough, no job ever waits).
     crews = rbd.repair_crews
     rbd._run_state._crews = (
-        _Crews(crews, _crews._crew_served(rbd), rbd._priority)
+        _Crews(
+            crews,
+            _crews._crew_served(rbd),
+            rbd._priority,
+            _crews._call_when(rbd),
+        )
         if crews is not None and _crews._crews_limited(rbd)
         else None
     )
@@ -1997,7 +2006,16 @@ def _crew_follow_up(rbd, event: Event, next_event: Event) -> Optional[Event]:
                 _crew_started(rbd, started)
         return next_event
     if next_event.status:
-        return crews.request(node, event.time, next_event)
+        ends = crews.request(node, event.time, next_event)
+        if ends is None and crews.call_when:
+            # The job waits: the call-out crew may come for the first
+            # waiting job (this one, perhaps, which then never waited).
+            started = crews.call(event.time)
+            if started is not None and started[0] == node:
+                return started[2]
+            if started is not None:
+                _crew_started(rbd, started)
+        return ends
     return next_event
 
 
@@ -3127,6 +3145,12 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         charge = rbd.downtime_cost_rate * (t_simulation - system_up)
         rep_cost += charge
         by_category[5] += charge
+        if crews is not None and crews.call_when:
+            # The call-out crew: its fee each time it came, and its rate
+            # while it was engaged (see _Crews).
+            charge = _crews._call_out_charge(rbd, *crews.close(t_simulation))
+            rep_cost += charge
+            by_category[_CREWS] += charge
 
     rec = _Replication()
     rec.uptime = system_up
