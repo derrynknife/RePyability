@@ -1074,6 +1074,20 @@ def _validate_cost(node, key: str, value) -> float:
     return cost
 
 
+def _validate_crew_cost(value, crews: Optional[int]) -> float:
+    """``crew_cost_rate``, validated: a finite, non-negative number, and
+    above 0 only with a number of ``crews`` to pay."""
+    rate = _validate_cost("<system>", "crew_cost_rate", value)
+    if rate and crews is None:
+        raise ValueError(
+            f"crew_cost_rate ({rate:g}) prices each repair crew per unit "
+            "time, but repair_crews is None: as many crews as are needed, "
+            "which cannot be priced. Give repair_crews, the number of "
+            "crews paid, or leave crew_cost_rate out."
+        )
+    return rate
+
+
 def _validate_component_cost(node, key: str, value):
     """Validate a per-component cost: a number (coerced to float) or, for
     the per-action costs, a distribution of the cost -- anything with

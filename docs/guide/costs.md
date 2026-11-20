@@ -23,6 +23,7 @@ Costs are optional keys of a component's dict, plus one system-level rate:
 | Component | `downtime_cost` | Per unit time *this component* is down, even if the system is up (a degraded-mode or per-leg penalty). A number. |
 | Component | `acquisition_cost` | Once, to buy the unit. A number. Not a running cost: see [the total cost of ownership](#the-total-cost-of-ownership). |
 | System | `downtime_cost_rate=` | Per unit time the *system* is down (lost production). A number. |
+| System | `crew_cost_rate=` | Per unit time per repair crew, busy or not (a salary), with `repair_crews=`. A number. See [paying the repair crews](#paying-the-repair-crews). |
 
 ```python
 import numpy as np
@@ -86,6 +87,46 @@ With nothing priced, not even an [acquisition cost](#the-total-cost-of-ownership
 `expected_cost_rate`, `total_cost`, `expected_cost` and `cost` refuse (a
 `routes.Refused`, a `ValueError`), as every analysis refuses a diagram with
 nothing it works on.
+
+### Paying the repair crews
+
+With [limited repair crews](repairable.md#repair-crews), a crew more
+shortens the queue for repairs, but it is paid whether it works or not.
+`crew_cost_rate=` prices each of the `repair_crews` crews per unit time:
+the crews cost `repair_crews · crew_cost_rate` per unit time from the
+start, whatever happens, and every cost result shows it under the
+category `"crews"`. Here a second crew saves less lost production than
+its salary:
+
+```python
+def crewed(crews):
+    return RepairableRBD(
+        edges,
+        {
+            "A": unit(0.1, 1.0, repair_cost=200.0),
+            "B": unit(0.1, 1.0, repair_cost=200.0),
+            "C": unit(0.02, 0.5, repair_cost=500.0, replace_cost=1500.0),
+        },
+        downtime_cost_rate=1000.0,
+        repair_crews=crews,
+        crew_cost_rate=20.0,
+    )
+
+crewed(1).expected_cost_rate()   # -> 152.77   20.0 of it the crew's
+crewed(2).expected_cost_rate()   # -> 161.33
+```
+
+Over a window `T` the crews cost `n c T`, and discounted at a rate `r`,
+`n c (1 − exp(−r T)) / r`; a simulation adds the same amount to every
+run:
+
+```python
+crewed(1).expected_cost(100.0).by_category["crews"]   # -> 2000.0
+crewed(1).expected_cost(100.0, discount_rate=0.05).by_category["crews"]   # -> 397.30
+```
+
+A crew cost needs `repair_crews`: as many crews as are needed (the
+default) cannot be priced, and the constructor refuses it.
 
 ## The simulated cost distribution
 

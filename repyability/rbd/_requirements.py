@@ -91,7 +91,8 @@ def _require_costs(rbd) -> None:
             "Nothing is priced: give the components a repair_cost, "
             "replace_cost, downtime_cost or acquisition_cost, their "
             "maintenance or tests a cost, a maintenance group a "
-            "setup_cost, or the system a downtime_cost_rate."
+            "setup_cost, the system a downtime_cost_rate, or its repair "
+            "crews a crew_cost_rate."
         )
 
 

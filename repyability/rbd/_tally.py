@@ -33,6 +33,7 @@ from repyability.rbd import (
     _timeline_runs,
     _windows,
 )
+from repyability.rbd._common import _crew_salaries
 from repyability.rbd._exact import (
     ExactSum,
     add_columns,
@@ -187,6 +188,9 @@ class _ModuleRun:
         T = simulation_window(t_simulation)
         self.rbd = rbd
         self.T = T
+        # The crews' salaries over the window, the same in every
+        # simulation: the system's, not the modules' or the other nodes'.
+        self.salaries = _crew_salaries(rbd) * T
         self.working, self.broken, self.method = working, broken, method
         self.antithetic, self.n_jobs = antithetic, n_jobs
         states = _curves._simulation_states(rbd, state, working | broken)
@@ -320,13 +324,15 @@ class _ModuleRun:
                 if self.priced
                 else None
             )
+        # (The diagram worked out given the modules may have no crews to
+        # pay: their salaries are added on their own.)
         self.others = (
             0.0
             if self.exact_cost is None
             else math.fsum(
                 float(np.ravel(value)[0])
                 for key, value in self.exact_cost.by_category.items()
-                if key != "system_downtime"
+                if key not in ("system_downtime", "crews")
             )
         )
         self.x = _conditional.grid(
@@ -465,13 +471,14 @@ class _ModuleRun:
 
     def costs(self) -> np.ndarray:
         """Each simulation's expected cost given its modules: their own
-        costs, the other nodes' expected costs, and the system's expected
-        down time's."""
-        return (
+        costs, the other nodes' expected costs, the system's expected
+        down time's and the crews' salaries."""
+        costs = (
             np.concatenate(self.own_costs)
             + self.others
             + self.rbd.downtime_cost_rate * (self.T - self.uptimes())
         )
+        return costs + self.salaries if self.salaries else costs
 
     def breakdown(self) -> _Breakdown:
         """The expected cost of a window given the modules' histories (the
@@ -484,7 +491,7 @@ class _ModuleRun:
             key: self.own_categories[key] / n
             + (
                 0.0
-                if key == "system_downtime"
+                if key in ("system_downtime", "crews")
                 else float(np.ravel(exact_cost.by_category.get(key, 0.0))[0])
             )
             for key in _CATEGORIES
@@ -492,6 +499,7 @@ class _ModuleRun:
         by_category["system_downtime"] = float(
             np.mean(self.rbd.downtime_cost_rate * (self.T - self.uptimes()))
         )
+        by_category["crews"] = self.salaries
         by_component = {
             node: float(np.ravel(value)[0])
             for node, value in exact_cost.by_component.items()
@@ -790,6 +798,9 @@ _CATEGORIES = (
     # Appended: the categories' places index the engines'
     # arrays and seeded costs, so a new one goes at the end.
     "shutdown",
+    # The repair crews' salaries: no engine charges them (they are the
+    # same in every simulation), the tally does (``charge_crews``).
+    "crews",
 )
 
 
@@ -1194,6 +1205,17 @@ class _Tally:
             ],
             table,
         )
+
+    def charge_crews(self, count: int, amount: float) -> None:
+        """Charge each of the last ``count`` simulations ``amount``, the
+        repair crews' salaries over the window (see ``_crew_salaries``),
+        which are the same in every simulation, under ``"crews"``."""
+        if not (amount and count):
+            return
+        samples = self.cost_samples
+        first = len(samples) - count
+        samples[first:] = [cost + amount for cost in samples[first:]]
+        self.cost_by_category["crews"].add(np.full(count, amount))
 
     def state_changes(self) -> Tuple[np.ndarray, np.ndarray]:
         """Every time a simulated system changed state (``-0.0`` made

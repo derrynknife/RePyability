@@ -1730,7 +1730,11 @@ def _crew_free(diagram) -> "RepairableRBD":
 
     if not _crews._crews_limited(diagram):
         return diagram
-    return RepairableRBD(**{**diagram._init_args, "repair_crews": None})
+    # (With as many crews as are needed, none is paid: a conditional run
+    # adds the crews' salaries itself.)
+    return RepairableRBD(
+        **{**diagram._init_args, "repair_crews": None, "crew_cost_rate": 0.0}
+    )
 
 
 def _conditional_given(

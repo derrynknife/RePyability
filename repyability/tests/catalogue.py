@@ -1048,6 +1048,11 @@ def repairable_kinds():
                 unit(priority=1), repair_crews=1, downtime_cost_rate=5.0
             ),
             "enough repair crews": system(unit(), repair_crews=3),
+            "paid repair crews": system(
+                unit(priority=1, repair_cost=2.0),
+                repair_crews=1,
+                crew_cost_rate=0.5,
+            ),
             "too meshed": too_meshed(
                 lambda: RepairableRBD(
                     BRIDGE, {n: unit(repair_cost=2.0) for n in "abcde"}

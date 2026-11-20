@@ -831,6 +831,9 @@ birth-death chain, and the system is down when all three are.)
   for no time: it waits only when every crew is busy.
 - **Nested RBDs** have crews of their own: a nested `RepairableRBD`'s
   components are repaired by its `repair_crews`, not by its parent's.
+- **What the crews cost.** `crew_cost_rate=` pays each crew per unit time,
+  busy or not, in every cost result under `"crews"` (see
+  [paying the repair crews](costs.md#paying-the-repair-crews)).
 - **Exact long-run values.** With fewer crews than components, components
   wait for each other, so they no longer fail and recover independently.
   When the components the crews work on all have exponential lives and
