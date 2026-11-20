@@ -268,6 +268,15 @@ release between minors that only adds (0.19.1).
   Undiscounted policies give the same numbers as before.
 - Changed: a site's `discount=` without `horizon=` was refused ("goes
   with horizon="); it now asks for the discounted long run.
+- Changed: a meshed diagram's decision diagram tries a third order of
+  its nodes, a greedy one that looks a node ahead, and keeps it where it
+  leaves the narrowest frontier (meshes a few nodes wide and random
+  meshed diagrams; grids keep the order they had). Where the order
+  changes the diagram is a little smaller or larger (1,700 small random
+  cores: 2% fewer steps in all), and its probabilities can differ in
+  their last bits. `scripts/bdd_benchmark.py` measures what the diagrams
+  cost: at the step limit the search holds some hundreds of megabytes at
+  most, so the steps, not the memory, are what stops a core.
 
 ## [0.19.1] - 2026-11-16
 

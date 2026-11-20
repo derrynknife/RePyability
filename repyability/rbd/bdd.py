@@ -35,6 +35,7 @@ unchanged.
 
 from typing import (
     Any,
+    Callable,
     Dict,
     Hashable,
     Iterable,
@@ -57,7 +58,10 @@ FAIL, WORK = 0, 1
 #: about five seconds (a meshed diagram of 60 nodes and 345 edges takes
 #: ten million). A core that needs more is too meshed to work out
 #: exactly, and is simulated (see ``modular.GraphStructure``). Raise it to
-#: try harder.
+#: try harder. The search keeps every state it has met, a few hundred
+#: bytes each as Python: at this limit some hundreds of thousands of them,
+#: 250 MB at most on the diagrams of ``scripts/bdd_benchmark.py``, so the
+#: steps stop a core before its memory does.
 STEP_LIMIT = 25_000_000
 
 
@@ -85,14 +89,18 @@ def order(
 ) -> List[int]:
     """A topological order of ``vertices`` that keeps the frontier narrow.
 
-    Two orders are tried: a greedy one, which at each step takes the ready
-    vertex (every predecessor decided) that leaves the smallest frontier,
-    and the breadth-first one. The one whose frontiers would give the
-    smaller diagram (the sum over the steps of two to the frontier's size)
-    is kept."""
+    Three orders are tried (``CANDIDATES``): a greedy one, which at each
+    step takes the ready vertex (every predecessor decided) that leaves
+    the smallest frontier; the breadth-first one; and a greedy one that
+    looks a vertex ahead, taking the ready vertex that leaves the smallest
+    frontier after the best vertex to follow it. The one whose frontiers
+    would give the smallest diagram (the sum over the steps of two to the
+    frontier's size) is kept."""
     vertices = sorted(vertices)
-    candidates = [_greedy(vertices, pred, succ, source, sink)]
-    candidates.append(_breadth_first(vertices, pred, succ, source))
+    candidates = [
+        candidate(vertices, pred, succ, source, sink)
+        for candidate in CANDIDATES.values()
+    ]
     return min(candidates, key=lambda o: _cost(o, pred, succ, source, sink))
 
 
@@ -126,7 +134,7 @@ def _cost(sequence, pred, succ, source, sink) -> float:
     )
 
 
-def _breadth_first(vertices, pred, succ, source) -> List[int]:
+def _breadth_first(vertices, pred, succ, source, sink=None) -> List[int]:
     waiting = {v: sum(1 for u in pred[v] if u != source) for v in vertices}
     ready = [v for v in vertices if waiting[v] == 0]
     out: List[int] = []
@@ -143,7 +151,12 @@ def _breadth_first(vertices, pred, succ, source) -> List[int]:
     return out
 
 
-def _greedy(vertices, pred, succ, source, sink) -> List[int]:
+def _greedy(
+    vertices, pred, succ, source, sink, ahead: bool = False
+) -> List[int]:
+    """The order that takes, at each step, the ready vertex that leaves
+    the smallest frontier; with ``ahead``, the smallest after the best
+    vertex to follow it."""
     waiting = {v: sum(1 for u in pred[v] if u != source) for v in vertices}
     # How many successors each vertex still feeds that are undecided (the
     # output stays undecided to the end).
@@ -153,28 +166,60 @@ def _greedy(vertices, pred, succ, source, sink) -> List[int]:
     }
     to_sink = {u for u in [source, *vertices] if sink in succ.get(u, ())}
     ready = {v for v in vertices if waiting[v] == 0}
-    out: List[int] = []
-    while ready:
 
-        def score(v: int) -> tuple:
-            # The frontier's change: v joins it (it feeds something), and
-            # each predecessor whose last undecided successor v is leaves.
-            closes = sum(
-                1 for u in pred[v] if feeding[u] == 1 and u not in to_sink
-            )
-            return (1 - closes, v)
+    def change(v: int) -> int:
+        # The frontier's change: v joins it (it feeds something), and
+        # each predecessor whose last undecided successor v is leaves.
+        closes = sum(
+            1 for u in pred[v] if feeding[u] == 1 and u not in to_sink
+        )
+        return 1 - closes
 
-        v = min(ready, key=score)
-        ready.discard(v)
-        out.append(v)
+    def decide(v: int, step: int) -> None:
+        # Decide v (step 1), or take the decision back (step -1).
         for u in pred[v]:
-            feeding[u] -= 1
+            feeding[u] -= step
         for w in succ.get(v, ()):
             if w in waiting:
-                waiting[w] -= 1
+                waiting[w] -= step
                 if waiting[w] == 0:
                     ready.add(w)
+                else:
+                    ready.discard(w)
+
+    def score(v: int) -> tuple:
+        first = change(v)
+        if not ahead:
+            return (first, v)
+        ready.discard(v)
+        decide(v, 1)
+        then = min((change(w) for w in ready), default=0)
+        decide(v, -1)
+        ready.add(v)
+        return (first + then, first, v)
+
+    out: List[int] = []
+    while ready:
+        # A list of them: looking ahead takes vertices from the set and
+        # puts them back.
+        v = min(sorted(ready), key=score)
+        ready.discard(v)
+        out.append(v)
+        decide(v, 1)
     return out
+
+
+def _look_ahead(vertices, pred, succ, source, sink) -> List[int]:
+    return _greedy(vertices, pred, succ, source, sink, ahead=True)
+
+
+#: The orders ``order`` chooses from, by name; of equal costs it keeps
+#: the earlier one.
+CANDIDATES: Dict[str, Callable[..., List[int]]] = {
+    "greedy": _greedy,
+    "breadth first": _breadth_first,
+    "look ahead": _look_ahead,
+}
 
 
 def build(
