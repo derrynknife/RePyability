@@ -879,8 +879,10 @@ birth-death chain, and the system is down when all three are.)
   they are the independent ones.
 - **What is simulated.** Other lives or repair times, scheduled maintenance
   and inspections, and larger chains make the exact values refuse, with the
-  reason. The allocations assume independent components, so they refuse
-  whenever a job can wait. The simulations (`availability`, `cost`,
+  reason. The allocations of availability targets assume independent
+  components, so they refuse whenever a job can wait;
+  `allocate_redundancy` works each design out from the chain, its copies
+  queueing with the rest (see [Costs](costs.md#buying-redundancy)). The simulations (`availability`, `cost`,
   `compare`) follow the queue whatever the components, in Python. With at
   least as many crews as components, nothing waits, and every result is as
   without crews.

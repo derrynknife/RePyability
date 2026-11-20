@@ -141,6 +141,28 @@ release between minors that only adds (0.19.1).
   (`RepairableRBD.expected_cost` with its `discount_rate`). With no
   `discount` every result is as before, with the new fields None.
 
+- Added: redundancy allocation with limited repair crews.
+  `allocate_redundancy` on a diagram whose components can wait for a
+  repair crew (exponential lives and repairs) no longer refuses: a copy
+  is one more job for the crews, so each design is worked out whole, from
+  the crews' Markov chain of its components and their copies (a call-out
+  crew and the crews' salaries counted), which counts how many of a
+  component's alike copies are up rather than telling them apart, so a
+  design with several copies stays small. The search keeps to the two
+  bounds that still hold with crews (no design is down less than with a
+  crew for every job; every copy is bought): `method="exact"` starts
+  from the greedy design and solves the designs that could still beat
+  it, the most promising first; `"greedy"` takes single steps. The
+  result's `basis` says the designs came from the crews' chain. A design
+  the search needs whose chain has more than 15,000 states is refused by
+  name, as are whole trains, common-cause groups, maintenance groups and
+  shutdowns with crews, each naming `compare()`; a node whose copies
+  cost nothing to buy needs a `max_units`. The number of crews is not
+  chosen by the search. `availability_allocation` and
+  `mttf_mttr_allocation` still refuse with crews, now naming
+  `allocate_redundancy`. With a crew for every component the results
+  are as before.
+
 - Added: common-cause groups in the repair crews' Markov chain. With
   limited `repair_crews` and `ccf_groups` whose members have exponential
   lives and repairs, the long-run values (`mean_availability`,

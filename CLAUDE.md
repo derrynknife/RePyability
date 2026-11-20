@@ -233,7 +233,14 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   `_event_loop._strike` queues them in only for two members (the event
   queue releases ties at one time by its heap's shape, so the chain
   refuses causes of more, `MAX_STRUCK`); `test_crews_ccf.py` checks it
-  against the simulation. Likewise a standby group's chain (`_standby_chain.py`) copies
+  against the simulation. The chain can count a component's alike copies
+  (`copies`: a state says how many are under repair and waiting, not
+  which), for the redundancy allocation with crews
+  (`_crew_allocation.py`, each design worked out whole from its chain,
+  the search bounded by the unavailability with a crew for every job and
+  the copies' prices); `test_crew_allocation.py` checks the counted chain
+  against the chain of every copy, and each design against the diagram
+  with its copies drawn out. Likewise a standby group's chain (`_standby_chain.py`) copies
   `_events._StandbyGroup`'s rules (switching, spares, repairs), checked by
   `test_repairable_standby.py`.
 - **A phased mission's Markov chain (`repyability/rbd/_mission_chain.py`)

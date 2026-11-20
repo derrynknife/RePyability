@@ -712,9 +712,29 @@ system's availability is theirs times the rest's, and a dynamic program over
 the nodes finds the optimum for any number of them; on other structures a
 branch and bound over the designs does, which suits a handful of nodes.
 
-The model and its limits: copies are active and repaired independently of
-each other (as many repair crews as failed copies), and fail independently
-unless the component is in a common-cause group: then its copies join the
+With limited [repair crews](repairable.md#repair-crews) a copy is one more
+job that can wait for a crew: it can keep a crew from another component,
+and a copy more can even leave the system down more. Each design is then
+worked out whole, from the crews' Markov chain of its components and their
+copies (exponential lives and repairs; a call-out crew and the crews'
+salaries are counted), the chain counting how many of a component's alike
+copies are up rather than telling them apart. The search keeps to what
+still holds: no design is down less than with a crew for every job, and
+every copy is bought. `"exact"` starts from the greedy design and solves
+the chains of the designs that could still beat it by those two, the most
+promising first; the result's `basis` says the designs came from the
+crews' chain. A design it needs whose chain is too large (15,000 states)
+is refused by name: bound the copies with `max_units`, or compare designs
+with `compare()`. With crews, whole trains, common-cause groups,
+maintenance groups and shutdowns are refused, and a node whose copies
+cost nothing to buy needs a `max_units`. (The number of crews is not
+chosen: compare the allocations for each. And with at least as many crews
+as components, where no job waits, the copies are taken to have crews
+too, as without `repair_crews`.)
+
+Otherwise the model and its limits: copies are active and repaired
+independently of each other (as many repair crews as failed copies), and
+fail independently unless the component is in a common-cause group: then its copies join the
 group, a `BetaFactor` group's shared cause failing them all (see [repairable
 systems](common-cause.md#repairable-systems); an `MGL` group's member is
 refused). Copies of a component with hidden failures are inspected together. A nested

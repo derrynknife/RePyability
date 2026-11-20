@@ -1948,11 +1948,14 @@ class RepairableRBD(RBD):
             If a component is under block replacement with models its exact
             values do not cover (see ``node_availability``), or has hidden
             failures its numerical values do not cover (see
-            ``mean_availability``): its long-run values are not known. Or if
-            a component can wait for a repair crew (see ``repair_crews``):
-            the search assumes that none does. Or if a common-cause group's
-            chain does not cover it (see ``ccf_groups``), a member given
-            copies is in an ``MGL`` or ``AlphaFactor`` group (its
+            ``mean_availability``): its long-run values are not known. Or,
+            where a component can wait for a repair crew (see
+            ``repair_crews``): if the crews' Markov chain does not cover
+            the diagram, it has common-cause groups, maintenance groups
+            or shutdowns, ``trains`` are given, or the search needs a
+            design whose chain has too many states. Or if a common-cause
+            group's chain does not cover it (see ``ccf_groups``), a member
+            given copies is in an ``MGL`` or ``AlphaFactor`` group (its
             parameters are for its group's size), or a train holds a
             member.
 

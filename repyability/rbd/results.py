@@ -2794,7 +2794,9 @@ class TotalCostAllocation(_ResultMapping):
         over the horizon's present value; ``nan`` over a horizon of 0).
     basis : str or None
         What the net present value is made of, in words, with what is
-        approximate in it.
+        approximate in it; and, with limited repair crews, that each
+        design's values come from the crews' Markov chain (under any
+        objective).
 
     Examples
     --------

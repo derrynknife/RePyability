@@ -343,8 +343,8 @@ def test_a_chain_too_large_to_solve_is_refused():
 
 
 def test_what_assumes_independent_components_is_refused():
-    # The allocations; the importance measures and the values over time
-    # come from the chain (#146: see test_chains_over_time.py).
+    # The allocations of targets; the importance measures and the values
+    # over time come from the chain (#146: see test_chains_over_time.py).
     rbd = units(3, 0.1, 0.5, 1, acquisition_cost=1.0)
     report = rbd.analysis_routes()
     for name in (
@@ -363,11 +363,14 @@ def test_what_assumes_independent_components_is_refused():
     for name, call in {
         "availability_allocation": lambda: rbd.availability_allocation(0.99),
         "mttf_mttr_allocation": lambda: rbd.mttf_mttr_allocation(0.99),
-        "allocate_redundancy": lambda: rbd.allocate_redundancy(100.0),
     }.items():
         with pytest.raises(NotImplementedError, match="allocations") as error:
             call()
         assert report[name].reason == str(error.value)
+    # The redundancy allocation works each design out from the chain
+    # (see test_crew_allocation.py).
+    assert report["allocate_redundancy"].route == r.EXACT
+    assert rbd.allocate_redundancy(100.0, max_units=2).units
     assert report["mean_availability"].route == r.EXACT
     assert report["expected_cost_rate"].route == r.EXACT
 

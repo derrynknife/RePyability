@@ -1017,6 +1017,7 @@ def test_the_readme_says_what_is_simulated():
             (crew, "point_availability", "numerical"),
             (crew, "expected_cost", "numerical"),
             (crew, "point_capacity", "numerical"),
+            (crew, "allocate_redundancy", "exact"),
             (crew, "availability_allocation", "refused"),
             (repairable["one repair crew"], "mean_availability", "refused"),
             (
