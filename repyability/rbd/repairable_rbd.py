@@ -4629,6 +4629,9 @@ class RepairableRBD(RBD):
         engine: str = "auto",
         state=None,
         contract=None,
+        escalation=None,
+        rates: str = "nominal",
+        inflation=None,
     ) -> NPVDistribution:
         """The net present value of each of many simulated runs of the
         system over ``horizon``, and their spread: percentiles, the chance
@@ -4670,9 +4673,12 @@ class RepairableRBD(RBD):
         discount_rate : float, optional
             The continuous discount rate per unit time, as for
             ``expected_npv``, by default 0.
-        value_rate : float, optional
+        value_rate : float or ValueSchedule, optional
             What the system earns per unit time while it works, at least
-            0, by default 0 (costs alone).
+            0, by default 0 (costs alone); or a
+            [`ValueSchedule`][repyability.ValueSchedule] of steps in
+            model time, each up span earning each step's rate over its
+            part of it.
         mc_samples : int, optional
             The number of runs, by default 10,000.
         seed : int, optional
@@ -4697,6 +4703,17 @@ class RepairableRBD(RBD):
             period, from the share of the period the system was up in
             that run, paid at the period's end and added to its NPV as a
             category of its own (``contract_samples``). By default None.
+        escalation : dict, optional
+            A growth rate per unit time for some streams, by cost
+            category, component, ``"value"`` (or ``"salvage"``), as for
+            ``expected_npv``: an amount at ``t`` is its price times
+            ``exp(g t)``. By default None.
+        rates : str, optional
+            ``"nominal"`` (the default) or ``"real"``, as for
+            ``expected_npv``.
+        inflation : float, optional
+            With ``rates="real"``, the continuous inflation per unit time,
+            as for ``expected_npv``.
 
         Returns
         -------
@@ -4760,6 +4777,9 @@ class RepairableRBD(RBD):
             engine=engine,
             state=state,
             contract=contract,
+            escalation=escalation,
+            rates=rates,
+            inflation=inflation,
         )
 
     def compare_npv(
@@ -4775,6 +4795,9 @@ class RepairableRBD(RBD):
         confidence: float = 0.95,
         engine: str = "auto",
         state=None,
+        escalation=None,
+        rates: str = "nominal",
+        inflation=None,
     ) -> NPVComparison:
         """How much more this plan is worth than ``other``, run by run:
         both simulated on the same random numbers, the distribution of
@@ -4802,9 +4825,10 @@ class RepairableRBD(RBD):
             The length of time to value, as for ``npv_distribution``.
         discount_rate : float, optional
             The continuous discount rate per unit time, by default 0.
-        value_rate : float, optional
-            What either system earns per unit time while it works, by
-            default 0.
+        value_rate : float or ValueSchedule, optional
+            What either system earns per unit time while it works (a
+            number or a [`ValueSchedule`][repyability.ValueSchedule]),
+            by default 0.
         contract : AvailabilityContract, optional
             Terms that pay on availability, applied to both plans, as for
             ``npv_distribution``. By default None.
@@ -4822,6 +4846,17 @@ class RepairableRBD(RBD):
         state : dict, optional
             The components' states at the start, in both plans, as for
             ``simulate_timelines``. By default every component new.
+        escalation : dict, optional
+            A growth rate per unit time for some streams, by cost
+            category, component, ``"value"`` (or ``"salvage"``), as for
+            ``expected_npv``: an amount at ``t`` is its price times
+            ``exp(g t)``. By default None.
+        rates : str, optional
+            ``"nominal"`` (the default) or ``"real"``, as for
+            ``expected_npv``.
+        inflation : float, optional
+            With ``rates="real"``, the continuous inflation per unit time,
+            as for ``expected_npv``.
 
         Returns
         -------
@@ -4889,6 +4924,9 @@ class RepairableRBD(RBD):
             confidence=confidence,
             engine=engine,
             state=state,
+            escalation=escalation,
+            rates=rates,
+            inflation=inflation,
         )
 
     def best_switch_time(
@@ -4903,6 +4941,9 @@ class RepairableRBD(RBD):
         scan: int = 11,
         engine: str = "auto",
         state=None,
+        escalation=None,
+        rates: str = "nominal",
+        inflation=None,
     ) -> SimulatedSwitchTime:
         """The best time to switch blocks of the system from one way of
         running them to another (a load, a speed, a temperature): the
@@ -4964,6 +5005,17 @@ class RepairableRBD(RBD):
         state : dict, optional
             Start from the components' current states rather than new, as
             for ``simulate_timelines``.
+        escalation : dict, optional
+            A growth rate per unit time for some streams, by cost
+            category, component, ``"value"`` (or ``"salvage"``), as for
+            ``expected_npv``: an amount at ``t`` is its price times
+            ``exp(g t)``. By default None.
+        rates : str, optional
+            ``"nominal"`` (the default) or ``"real"``, as for
+            ``expected_npv``.
+        inflation : float, optional
+            With ``rates="real"``, the continuous inflation per unit time,
+            as for ``expected_npv``.
 
         Returns
         -------
@@ -5035,6 +5087,9 @@ class RepairableRBD(RBD):
             scan=scan,
             engine=engine,
             state=state,
+            escalation=escalation,
+            rates=rates,
+            inflation=inflation,
         )
 
     def plan_vs_actual(
@@ -5049,6 +5104,9 @@ class RepairableRBD(RBD):
         method: str = "p",
         state=None,
         start_state=None,
+        escalation=None,
+        rates: str = "nominal",
+        inflation=None,
     ) -> PlanVsActual:
         """A plan against what happened: the plan's expected cash flows so
         far beside those the outage log implies, where the two differ, and
@@ -5090,9 +5148,10 @@ class RepairableRBD(RBD):
         discount_rate : float, optional
             The continuous discount rate per unit time, as for
             ``expected_npv``, by default 0.
-        value_rate : float, optional
-            What the system earns per unit time while it works, by
-            default 0.
+        value_rate : float or ValueSchedule, optional
+            What the system earns per unit time while it works (a number
+            or a [`ValueSchedule`][repyability.ValueSchedule] of steps on
+            the plan's clock), by default 0.
         periods : int or array-like, optional
             The periods of the tables over the whole horizon, as for
             ``expected_npv``; a period that ``now`` falls in is split in
@@ -5108,6 +5167,17 @@ class RepairableRBD(RBD):
         start_state : dict, optional
             The components' states at the start of the plan, as for
             ``expected_npv``'s ``state``. By default every component new.
+        escalation : dict, optional
+            A growth rate per unit time for some streams, by cost
+            category, component, ``"value"`` (or ``"salvage"``), as for
+            ``expected_npv``: an amount at ``t`` is its price times
+            ``exp(g t)``. By default None.
+        rates : str, optional
+            ``"nominal"`` (the default) or ``"real"``, as for
+            ``expected_npv``.
+        inflation : float, optional
+            With ``rates="real"``, the continuous inflation per unit time,
+            as for ``expected_npv``.
 
         Returns
         -------
@@ -5166,6 +5236,9 @@ class RepairableRBD(RBD):
             method=method,
             state=state,
             start_state=start_state,
+            escalation=escalation,
+            rates=rates,
+            inflation=inflation,
         )
 
     @contextmanager

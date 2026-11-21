@@ -92,16 +92,70 @@ def _number(value, name: str, strict: bool) -> float:
     return number
 
 
-def steady_value(value_rate, method: str) -> float:
-    """A ``value_rate`` that must be one number (``method`` takes no
-    schedule yet), checked."""
-    if isinstance(value_rate, ValueSchedule):
-        raise ValueError(
-            f"{method} takes the value earned as one rate per unit time; "
-            "a ValueSchedule of steps is valued by expected_npv. Give "
-            "value_rate a number."
+class Money:
+    """How amounts are valued, checked from the arguments the NPV methods
+    share: the rate given (``given_rate``) and the one amounts are
+    discounted at (``rate``, with the inflation of real rates), the value
+    earned (a number, ``worth``, or a ``schedule``), each stream's growth
+    (``growth``), and whether anything is earned (``earns``).
+
+    In real terms with inflation every amount is made nominal: the rate
+    and every stream's growth take the inflation too, which leaves the
+    present values as they are."""
+
+    def __init__(
+        self,
+        rbd,
+        discount_rate,
+        value_rate,
+        escalation=None,
+        rates: str = "nominal",
+        inflation=None,
+    ):
+        self.given_rate = _discount_rate(discount_rate)
+        value = value_of(value_rate)
+        self.schedule: Optional[ValueSchedule] = (
+            value if isinstance(value, ValueSchedule) else None
         )
-    return _number(value_rate, "value_rate", strict=False)
+        self.worth = 0.0 if self.schedule is not None else float(value)
+        self.escalation = _escalation(rbd, escalation)
+        self.basis = rates
+        self.lift = _inflation(inflation, rates)
+        self.inflation = None if inflation is None else self.lift
+        self.rate = self.given_rate + self.lift
+        self.earns = (
+            bool(self.worth)
+            if self.schedule is None
+            else any(self.schedule.rates)
+        )
+
+    def growth(self, *keys) -> float:
+        """The growth of a stream, by the first of ``keys`` named."""
+        for key in keys:
+            if key in self.escalation:
+                return self.escalation[key] + self.lift
+        return self.lift
+
+    def steps(self, stop: float):
+        """The value earned as steps before ``stop``: their starts, ends
+        and rates (one step of ``worth`` for a single rate)."""
+        if self.schedule is None:
+            return np.array([0.0]), np.array([stop]), np.array([self.worth])
+        return self.schedule.steps(stop)
+
+    @property
+    def value_rate(self) -> float:
+        """The single rate earned (NaN with a schedule)."""
+        return self.worth if self.schedule is None else math.nan
+
+    def stated(self) -> Dict[str, Any]:
+        """The basis a result states."""
+        return dict(
+            rate_basis=self.basis,
+            inflation=self.inflation,
+            escalation=dict(self.escalation),
+            value_schedule=self.schedule,
+        )
 
 
 def _period_ends(periods, horizon: float) -> np.ndarray:
@@ -294,25 +348,10 @@ def expected_npv(
             f"the NPV's derivative in the discount rate); got "
             f"{rate_sensitivity!r}."
         )
-    given_rate = _discount_rate(discount_rate)
+    money = Money(rbd, discount_rate, value_rate, escalation, rates, inflation)
     horizon = _number(horizon, "horizon", strict=True)
-    value = value_of(value_rate)
-    schedule = value if isinstance(value, ValueSchedule) else None
-    growths = _escalation(rbd, escalation)
-    lift = _inflation(inflation, rates)
-    # In real terms with inflation, every amount is made nominal: the
-    # rate and every stream's growth take the inflation too, which
-    # leaves the present values as they are.
-    rate = given_rate + lift
-
-    def growth(*keys) -> float:
-        """The growth of a stream, by the first of ``keys`` named."""
-        for key in keys:
-            if key in growths:
-                return growths[key] + lift
-        return lift
-
-    earns = bool(value) if schedule is None else any(schedule.rates)
+    given_rate, rate, schedule = money.given_rate, money.rate, money.schedule
+    growth, earns = money.growth, money.earns
     table_ends = _period_ends(periods, horizon)
     # Retired before the horizon, nothing is earned or spent after: every
     # value is worked out to the retirement, and stays there.
@@ -328,7 +367,7 @@ def expected_npv(
     present_cells: Dict[Any, Any] = {}
     nominal_cells: Dict[Any, Any] = {}
     systems: Dict[str, Any] = {}
-    worth = 0.0 if schedule is not None else float(value)
+    worth = money.worth
     value_growth = growth("value")
     with rbd._sharing_curves():
 
@@ -516,7 +555,7 @@ def expected_npv(
     result = ExpectedNPV(
         horizon=horizon,
         discount_rate=given_rate,
-        value_rate=worth if schedule is None else math.nan,
+        value_rate=money.value_rate,
         npv=value - cost + salvaged,
         value=value,
         cost=cost,
@@ -533,10 +572,7 @@ def expected_npv(
         salvage=salvaged,
         undiscounted_salvage=undiscounted_salvage,
         retire_at=None if retire_at is None else stop,
-        rate_basis=rates,
-        inflation=None if inflation is None else lift,
-        escalation=dict(growths),
-        value_schedule=schedule,
+        **money.stated(),
     )
     result.eac = cost / result.annuity_factor
     if rate_sensitivity:

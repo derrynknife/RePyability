@@ -12,6 +12,20 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: a value schedule and escalation in the simulated NPV and in
+  a plan against what happened (UC-57 of the maintenance README, part
+  2). `npv_distribution`, `compare_npv` and `plan_vs_actual` take
+  `value_rate` as a `ValueSchedule` and `escalation=`, `rates=` and
+  `inflation=` as `expected_npv` does; `best_switch_time` takes
+  `escalation=`, `rates=` and `inflation=`. Each cost in a run or a log
+  is charged at its price grown to when it fell, each up span earns
+  each step's rate over its part of it, grown, and each is discounted
+  exactly. `plan_vs_actual` values the plan with `expected_npv` on the
+  same arguments, and the rest from now with the schedule's steps from
+  then, each stream grown to now. The results state the basis
+  (`rate_basis`, `inflation`, `escalation`, `value_schedule`). With a
+  number and no growth every value is unchanged.
+
 - Added: the NPV spread of a diagram with shutdowns (UC-61 of the
   maintenance README). `npv_distribution`, `compare_npv` and
   `best_switch_time` price the runs of a diagram with shutdowns, where

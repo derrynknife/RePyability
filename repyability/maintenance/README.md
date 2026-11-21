@@ -2245,9 +2245,35 @@ answers back into dates is Reliafy's too.)
   escalation against the factor worked by hand, `events_by_period`
   against `expected_npv` with the matching continuous rates, and for
   ever refused when the escalation reaches the rate.
-- **Learned / open questions:** `plan_vs_actual` and `npv_distribution`
-  take a constant value and no growth yet (they refuse a schedule or
-  escalation, naming `expected_npv`).
+- **The spread and the log (part 2):** `npv_distribution`,
+  `compare_npv` and `plan_vs_actual` take the same `value_rate`,
+  `escalation`, `rates` and `inflation` (and `best_switch_time` the
+  last three, its value being its two rates). A run or a log is priced
+  as UC-46 and UC-21 price it (`rbd/_pricing.py`), each amount at `t`
+  its price times `exp(g t)` for its stream, so discounted at `r - g`:
+  an event `p exp(-(r - g) t)`, a rate over a span `v * integral
+  exp(-(r - g) t) dt` in closed form, and an up span cut at each step of
+  the schedule, each piece at its step's rate. A contract's payments
+  grow only with the inflation of real rates. `plan_vs_actual`'s plan is
+  `expected_npv` with the same arguments; the rest from now is valued on
+  its own clock with the schedule's steps from now (the step in force
+  then from 0), and each of its rows grown to now (`exp(g now)`) and
+  discounted to the start (`exp(-r now)`), so a stream's present value
+  is `exp(-(r - g) now)` of the rest's. Checks in
+  `test_npv_value_runs.py`: each run's value and cost against a
+  reference written out from its history (to 1e-12); the runs' mean
+  against `expected_npv` with the same schedule and growths (4,000
+  runs, a 99.99% interval); one step and no growth equal to the rate
+  alone to the last bit; inflation leaving the present values (1e-12)
+  and lifting the undiscounted; two plans with an escalation that names
+  a component of only one; a pump that all but never fails, whose rest
+  from now is the plan after now row by row (1e-6), and whose log is
+  priced by hand; so far plus the rest averaging to the plan with a
+  step inside the rest (the tower property, 60 histories); the switch
+  time's present values unchanged by inflation; a JSON request.
+- **Learned / open questions:** a contract's payments are no stream of
+  `escalation` (they grow with inflation alone): terms that index them
+  would be a contract's own option.
 
 ### UC-58: "At the outage the pump is overhauled, and leaves as if 3,000 hours old whatever it was before. What does that do to the plan?"
 
