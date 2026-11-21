@@ -683,6 +683,19 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- Changed: one definition of the discounted equivalent annual cost of
+  age replacement, `maintenance._options.cycle_eac` (Fox, 1966, with
+  every category of a unit's own: its failures' and planned
+  replacements' prices, and its downtime over repairs and planned work
+  that take time). `NonRepairable`'s discounted optimum and run to
+  failure and a diagram component's EAC (`objective="eac"`) both take
+  it. Nothing changes in value: the old two computed the same
+  arithmetic, which the shared one keeps.
+
+- Changed: `value_plan` takes a unit's plan (`UnitPlan.to_dict()`) as
+  its `"diagram"`, valued as its one-node diagram (`npv-1.json` says
+  so).
+
 - Changed: a task counted in operating time on a block with no
   `"duty"` is no longer refused: the diagram's clock is then the
   block's operating time (as a share of 1), until an analysis's

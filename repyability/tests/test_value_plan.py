@@ -234,3 +234,28 @@ def test_the_schema_ships_with_the_package():
     from repyability.rbd._contract import ANALYSES
 
     assert tuple(analyses) == ANALYSES
+
+
+def test_a_unit_s_plan_is_valued_as_its_one_node_diagram():
+    import surpyval as surv
+
+    from repyability.maintenance import AgePolicy, Prices, UnitPlan
+
+    plan = UnitPlan(
+        surv.Weibull.from_params([400.0, 2.0]),
+        surv.Exponential.from_params([0.5]),
+        tasks=(AgePolicy(interval=250.0, cost=2.0),),
+        prices=Prices(repair=5.0, acquisition=20.0),
+        salvage=3.0,
+    )
+    inputs = {"horizon": 300.0, "discount_rate": 1e-3, "periods": 3}
+    answer = answered(
+        {
+            "schema": 1,
+            "diagram": plan.to_dict(),
+            "analysis": "expected_npv",
+            "inputs": inputs,
+        }
+    )
+    expected = plan.expected_npv(300.0, discount_rate=1e-3, periods=3)
+    assert answer["result"]["npv"] == expected.npv
