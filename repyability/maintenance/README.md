@@ -53,6 +53,7 @@ records and decides what "today" is.
 | UC-56 | At each planned outage, also replace the parts close enough to their own replacement, since the plant is down anyway: what the scope adds, by outage, and what the plan then costs | **Built** (simulated): a shutdown's `"opportunistic"`, the count by outage in `AvailabilityResult.outage_jobs`; the exact methods refuse, naming the simulation |
 | UC-57 | What a plan is worth when the price it earns steps up, its costs escalate at their own rates, and the rate is real or nominal; and the same escalation on dates | **Built**: `expected_npv(value_rate=ValueSchedule(...), escalation=, rates=, inflation=)`; `escalation=` beside `discount=` in `repyability.schedule` |
 | UC-58 | An outage's overhaul that leaves a part as if a given age, not by a Kijima factor | **Built** (simulated): a `"preventive"` spec's `"restore_to"`; `restore_to=0` is a renewal (exact where renewals are) |
+| UC-59 | A part renewed at a short stop every month and again at the long yearly overhaul, each renewal as long as its shut | **Built**: a `"preventive"` spec's `"shutdown"` as a list of shutdowns, exact over a horizon |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -2285,6 +2286,74 @@ answers back into dates is Reliafy's too.)
   runs every analysis against its route.
 - **Learned / open questions:** an age that is a function of the age at
   the outage was left out; Kijima II is the proportional one.
+
+### UC-59: "A stop every month renews the bearing; a long overhaul every year renews the pump and the bearing. What is the plan worth over two years, and how available is the line?"
+
+- **Status:** built: a `"preventive"` spec's `"shutdown"` given as a
+  list of the diagram's shutdowns, valued over a horizon by
+  `point_availability`, `mission_availability`, `expected_events`,
+  `expected_cost`, `expected_npv` and the windows, with no simulation.
+- **Who asks, and why:** the planner of a line with more than one kind
+  of outage (a short stop on a period, a long overhaul, outages at given
+  times), where a part is renewed at each and the renewal takes as long
+  as the outage it is done in. A task naming one shutdown could not say
+  this.
+- **What they know:** a line of a pump (Weibull 20,000 h and 2.5,
+  repairs lognormal, 6,000 each, renewed only at the overhaul for 2,500)
+  and a bearing (repairs exponential, 12 h mean, 1,500 each, renewed at
+  both for 200); 400 an hour down; a stop every 730 h for 4 h (300 each)
+  and an overhaul every 8,760 h from 365 for 48 h (5,000 each).
+- **What they want back:** the plan's cost and value over two years at
+  8% a year, the failures and renewals to expect, and the availability.
+- **How it is solved:** numerically, as a plan of replacements is
+  (UC-51): the part's renewal times are its shutdowns' starts merged, up
+  to the first after the horizon, and the part is followed stretch by
+  stretch between them (`_block_replacement.plan_availability`), each
+  stretch's grid taking the length of the renewal that starts it (its
+  own shut's) and the shutdowns' windows holding it off line
+  (`MaskedCurve`). The simulation (Python only) renews it at the first
+  start of any of its shutdowns, for that shut's length
+  (`_Preventive.due`, `duration_at`). The renewals repeat on no interval
+  of the part's own, so the long-run methods refuse and name the values
+  over a horizon; a long-run state, or a state in a renewal (whose shut
+  and time left are unknown), is refused. Two of the shutdowns may not
+  start at one time (which renewal is done there would not be said),
+  and a task kept unless due or restoring part-way is at one shutdown.
+- **Today (by hand, before it was built):** only by simulation, the
+  bearing drawn as a block renewed at each of two shuts not being
+  something a task could say. By hand for an exponential bearing alone
+  (rate 1/3,000, repair rate 1/12), its two-state chain between
+  renewals of their own lengths (4 h, 48 h) gives its availability at
+  1,000 h and 9,200 h as 0.996016 and 0.996423; the built curve gives the
+  same to 1e-6. The line, as built:
+
+  ```python
+  plan = line(bearing_life)   # the diagram above
+  value = plan.expected_npv(2 * 8760.0, discount_rate=np.log(1.08) / 8760.0)
+  # exponential bearing (mean 3,000 h): 141,458 undiscounted, 132,815
+  #   discounted; availability 0.98508; bearing failures 5.75, renewals 24.90
+  # Weibull bearing (3,000 h, 2.0): 113,611 and 106,994; availability
+  #   0.98810; bearing failures 1.31, renewals 24.96
+  ```
+
+  The simulation (`cost(2 * 8760, mc_samples=4000, seed=1,
+  control_variate=False, conditional=False)`) gives 141,834 ± 318 and
+  113,493 ± 175.
+- **Checks:** `test_shutdowns_several.py`: a list of one shutdown its
+  shutdown's values to 1e-10 (on a period and at given times); two
+  shutdowns of one length one shutdown at the merged times, to 1e-10; an
+  exponential block against its chain between renewals of two lengths
+  written out by hand; the simulation from new, from an age and from a
+  repair going on, 20,000 seeded runs within four standard errors; the
+  refusals; saving. The catalogue's "a block renewed at several
+  shutdowns" runs every analysis against its route.
+- **Learned / open questions:**
+  - A block kept unless due, or tested, at shutdowns at given times is
+    still simulated: its recursion keeps the units by age on a grid of
+    one step from one inspection to the next, which stretches of
+    different lengths do not share.
+  - The same block drawn as two blocks in series is a different system
+    (each renewed at only its own shut), not this one.
 
 ### UC-22: "A pump's 6-monthly overhaul restores it only partly (a fitted Kijima restoration factor), and every third overhaul replaces it. What availability, failures and cost per year, against overhauls that renew it, and which overhaul interval is cheapest?"
 

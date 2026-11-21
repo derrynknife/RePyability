@@ -664,7 +664,14 @@ class _Preventive(NamedTuple):
     #: for a period.
     times: Optional[Tuple[float, ...]] = None
     #: The name of the shutdown the actions are done at; None for none.
+    #: At several shutdowns, their names (a tuple), with ``shuts``.
     shutdown: Any = None
+    #: At several shutdowns (block replacement at each of their starts):
+    #: each ``_Shutdown`` with the model of the time its renewal takes
+    #: there (its own duration; None for none). ``interval`` is then the
+    #: shortest of theirs and ``duration`` the longest, which only size
+    #: the simulation's streams; None at one shutdown or none.
+    shuts: Optional[Tuple[Tuple[Any, Any], ...]] = None
 
     @property
     def plan(self) -> Optional[Tuple[float, ...]]:
@@ -681,6 +688,9 @@ class _Preventive(NamedTuple):
             return renewed + self.interval
         if self.policy == "calendar":
             return self.calendar._next_planned(renewed, renewed)[0]
+        if self.shuts is not None:
+            # The first start of any of its shutdowns after ``renewed``.
+            return min(shut.due(renewed) for shut, _ in self.shuts)
         if self.times is not None:
             return _next_time(self.times, renewed)
         if self.offset or self.shutdown is not None:
@@ -696,6 +706,18 @@ class _Preventive(NamedTuple):
         # there).
         due = float(np.floor(renewed / self.interval) + 1.0) * self.interval
         return due if due > renewed else due + self.interval
+
+    def duration_at(self, t: float):
+        """The model of the time the preventive action due at ``t`` takes
+        (None for none): at several shutdowns, that of the one starting
+        at ``t``; else ``duration``."""
+        if self.shuts is None:
+            return self.duration
+        before = float(np.nextafter(t, -np.inf))
+        for shut, model in self.shuts:
+            if shut.due(before) == t:
+                return model
+        return self.duration
 
 
 class _Upgrade(NamedTuple):

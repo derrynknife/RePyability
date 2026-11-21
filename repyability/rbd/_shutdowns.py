@@ -373,7 +373,23 @@ def bound_preventive(node, spec: dict, shutdowns: dict) -> Tuple[dict, dict]:
     as the schedule it is: the spec with the shut's interval, the policy
     and its fixed duration (for ``_spec._validate_preventive``), and the
     ``_Preventive``'s fields the shut gives (its offset or times, the
-    shut's name and an ``"older_than"``)."""
+    shut's name and an ``"older_than"``). A list of shutdowns' names
+    (see ``_bound_to_several``) renews the unit at each of theirs."""
+    names = spec["shutdown"]
+    try:
+        one_name = names in shutdowns  # a tuple may name one shutdown
+    except TypeError:
+        one_name = False
+    if not one_name and isinstance(names, (list, tuple)):
+        names = list(dict.fromkeys(names))
+        if len(names) > 1:
+            return _bound_to_several(node, spec, names, shutdowns)
+        if not names:
+            raise ValueError(
+                f"Component {node!r}: its preventive names no shutdown; "
+                "give one shutdown's name, or a list of them."
+            )
+        spec = {**spec, "shutdown": names[0]}
     shut = _named(node, spec["shutdown"], shutdowns, "preventive")
     _refuse_given(node, spec, "preventive", shut)
     policy = spec.get("policy", "block")
@@ -422,6 +438,78 @@ def bound_preventive(node, spec: dict, shutdowns: dict) -> Tuple[dict, dict]:
         "times": shut.times,
         "shutdown": shut.name,
     }
+
+
+def _bound_to_several(
+    node, spec: dict, names: list, shutdowns: dict
+) -> Tuple[dict, dict]:
+    """A ``"preventive"`` spec bound to several shutdowns: block
+    replacement at every start of each, each renewal taking its own
+    shut's length (``_Preventive.shuts``). The unit is renewed in full
+    there: a task kept unless due, or restoring part-way, is at one
+    shutdown. Two of the shutdowns may not start at one time."""
+    shuts = [_named(node, name, shutdowns, "preventive") for name in names]
+    for shut in shuts:
+        _refuse_given(node, spec, "preventive", shut)
+    listed = ", ".join(repr(name) for name in names)
+    policy = spec.get("policy", "block")
+    given = [
+        key
+        for key in ("older_than", "threshold", "restoration", "restore_to")
+        if spec.get(key) is not None
+    ]
+    if given or policy != "block":
+        what = given[0] if given else f"policy {policy!r}"
+        raise ValueError(
+            f"Component {node!r} is renewed at several shutdowns "
+            f"({listed}), at every start of each (the 'block' policy); "
+            f"{what} is taken at one shutdown: give one shutdown, or "
+            "leave it out."
+        )
+    for i, a in enumerate(shuts):
+        for b in shuts[i + 1 :]:  # noqa: E203
+            shared = _shared_start(a, b)
+            if shared is not None:
+                raise ValueError(
+                    f"Component {node!r} is renewed at shutdowns {a.name!r} "
+                    f"and {b.name!r}, which both start at {shared:g}: "
+                    "which one's renewal is done there is not said. Move "
+                    "one (its offset or times), or make them one shutdown."
+                )
+    view = {
+        key: value
+        for key, value in spec.items()
+        if key not in ("shutdown", "older_than")
+    }
+    view["policy"] = "block"
+    view["interval"] = min(_interval(shut) for shut in shuts)
+    view["duration"] = _fixed(max(shut.duration for shut in shuts))
+    return view, {
+        "shutdown": tuple(names),
+        "shuts": tuple((shut, _fixed(shut.duration)) for shut in shuts),
+    }
+
+
+def _shared_start(a: _Shutdown, b: _Shutdown) -> Optional[float]:
+    """The first time two shutdowns both start at (to rounding), or None:
+    over a common period of theirs, or their given times."""
+    if a.periodic and b.periodic:
+        try:
+            period = _common_period([a.period, b.period])
+        except NotImplementedError:
+            return None  # periods with no common one never meet exactly
+        stop = period + max(a.offset, b.offset) + 1.0
+    else:
+        given = [s for s in (a, b) if not s.periodic]
+        stop = max(float(s.times[-1]) for s in given) + 1.0  # type: ignore
+    a_starts, b_starts = a.starts(stop), b.starts(stop)
+    if not a_starts.size or not b_starts.size:
+        return None
+    scale = max(float(a_starts.max()), float(b_starts.max()), 1.0)
+    close = np.abs(a_starts[:, None] - b_starts[None, :]) <= 1e-12 * scale
+    if not close.any():
+        return None
+    return float(a_starts[np.flatnonzero(close.any(axis=1))[0]])
 
 
 def bound_inspection(node, spec: dict, shutdowns: dict) -> Tuple[dict, dict]:
@@ -571,7 +659,7 @@ def _pause_refusal(rbd, node, shut: _Shutdown) -> Optional[str]:
     inspection = rbd._inspection.get(node)
     if shut.name in opportunistic_at(rbd, node):
         return None  # worked on there, so not idle
-    if schedule is not None and schedule.shutdown == shut.name:
+    if schedule is not None and shut.name in _task_shuts(schedule):
         if schedule.policy == "condition":
             return (
                 f"{lead} is inspected there and kept unless it is due "
@@ -606,14 +694,21 @@ def _pause_refusal(rbd, node, shut: _Shutdown) -> Optional[str]:
 # -- what a diagram's shutdowns do to its nodes -------------------------------
 
 
+def _task_shuts(task) -> Tuple[Hashable, ...]:
+    """The shutdowns a task (a ``_Preventive`` or ``_Inspection``) is
+    done at: none, one, or several."""
+    name = getattr(task, "shutdown", None)
+    if getattr(task, "shuts", None) is not None:
+        return tuple(name)  # type: ignore[arg-type]
+    return () if name is None else (name,)
+
+
 def bound_to(rbd, node) -> List[Hashable]:
     """The shutdowns a component is worked on at (its maintenance or
     tests bound to them)."""
-    out = []
+    out: List[Hashable] = []
     for schedule in (rbd._preventive.get(node), rbd._inspection.get(node)):
-        name = getattr(schedule, "shutdown", None)
-        if name is not None:
-            out.append(name)
+        out.extend(_task_shuts(schedule))
     return out
 
 
@@ -1174,6 +1269,33 @@ def refuse(rbd, method: str) -> None:
     require_none(rbd, f"{method}()")
 
 
+def several_at(rbd, node) -> str:
+    """The shutdowns a component is renewed at, in words, if several
+    (see ``_bound_to_several``); else the empty string."""
+    schedule = rbd._preventive.get(node)
+    if getattr(schedule, "shuts", None) is None:
+        return ""
+    return ", ".join(repr(name) for name in schedule.shutdown)
+
+
+def require_no_several(rbd) -> None:
+    """Raise if a component is renewed at several shutdowns, which the
+    long-run methods do not follow (its renewals repeat on no one
+    interval of its own)."""
+    for node in rbd.components:
+        several = several_at(rbd, node)
+        if several:
+            raise NotImplementedError(
+                f"Component {node!r} is renewed at several shutdowns "
+                f"({several}), whose renewals the long-run methods do not "
+                "follow: ask for its values over a horizon "
+                "(expected_npv(horizon), expected_cost(T), "
+                "mission_availability(T), point_availability(t)), or "
+                "estimate the long run by simulation over a long horizon, "
+                "with availability() or cost()."
+            )
+
+
 def require_exact(rbd) -> None:
     """Raise if the exact long-run methods cannot take the diagram's
     shutdowns: at given times (which end: no long run), or what the
@@ -1189,6 +1311,7 @@ def require_exact(rbd) -> None:
             "mission_availability(T), point_availability(t)), or give the "
             "shutdown a period for the long run."
         )
+    require_no_several(rbd)
     require_over_time(rbd)
 
 
@@ -1280,6 +1403,21 @@ def require_over_time(rbd) -> None:
 def check_state(rbd, node, state) -> None:
     """Refuse a state that places the calendar of a task bound to a
     shutdown: the shut's calendar places it (given relative to now)."""
+    several = several_at(rbd, node)
+    if several and state.stationary:
+        raise ValueError(
+            f"Component {node!r} is renewed at several shutdowns "
+            f"({several}), whose renewals the long run does not follow, so "
+            "it has no long-run state: give its age now "
+            "(NodeState(age=...)), or leave it out (new)."
+        )
+    if several and state.maintenance:
+        raise ValueError(
+            f"Component {node!r} is renewed at several shutdowns "
+            f"({several}), each taking its own time, so which renewal it "
+            "is in now, and what is left of it, is not known: give it up "
+            "(NodeState(age=...)) or in a repair (NodeState(alive=False))."
+        )
     if bound_to(rbd, node) and state.since_scheduled is not None:
         raise ValueError(
             f"Component {node!r} is worked on at shutdown "

@@ -604,6 +604,7 @@ def plan_availability(
     head: Optional[BlockHead] = None,
     last_like: Optional[float] = None,
     lives: Optional[list] = None,
+    durations: Optional[list] = None,
 ) -> list:
     """The point availability of a component replaced at the times of a
     plan (if it is up at them), stretch by stretch: a ``BlockAvailability``
@@ -633,6 +634,10 @@ def plan_availability(
         Each stretch's life, where the units put into service in it have
         another than ``life`` (after an upgrade); by default ``life`` in
         every stretch.
+    durations : list, optional
+        The time the replacement that starts each stretch takes, where
+        they differ (a unit renewed at several shutdowns, each of its own
+        length); by default ``duration`` for every stretch.
 
     Returns
     -------
@@ -645,8 +650,13 @@ def plan_availability(
     """
     if lives is None:
         lives = [life] * len(lengths)
+    if durations is None:
+        durations = [duration] * len(lengths)
     made: dict = {}
-    keys = [(length, id(own)) for length, own in zip(lengths, lives)]
+    keys = [
+        (length, id(own), id(taken))
+        for length, own, taken in zip(lengths, lives, durations)
+    ]
     for k, (length, own) in enumerate(zip(lengths, lives)):
         if keys[k] in made:
             continue
@@ -654,7 +664,9 @@ def plan_availability(
         if last_like is not None and k == len(lengths) - 1:
             wanted = _steps(own, last_like) * length / last_like
             steps = int(np.clip(np.ceil(wanted), _MIN_STEPS, _MAX_LAST_STEPS))
-        made[keys[k]] = _grid(own, repair, duration, length, node, steps=steps)
+        made[keys[k]] = _grid(
+            own, repair, durations[k], length, node, steps=steps
+        )
     fresh = head is None
     out = []
     following = _followed((made[key] for key in keys), head)

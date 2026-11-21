@@ -510,6 +510,9 @@ def _require_no_plans(rbd) -> None:
             "the long run, give the component the life it has after the "
             "upgrade."
         )
+    from ._shutdowns import require_no_several
+
+    require_no_several(rbd)
     planned = _planned(rbd)
     if planned:
         raise NotImplementedError(

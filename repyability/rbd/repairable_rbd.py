@@ -517,7 +517,9 @@ class RepairableRBD(RBD):
         ``AvailabilityResult.outage_jobs``). The work done at a shut is given
         on the block: ``"preventive": {"shutdown": name}`` renews it at every
         shut (with ``"older_than"``, only once that old; with ``"policy":
-        "condition"``, on its condition; with a ``"restoration"``, partly), and
+        "condition"``, on its condition; with a ``"restoration"``, partly;
+        given a list of names, at every start of each, each renewal taking
+        its own shut's length, over a horizon only), and
         ``"inspection": {"shutdown": name}`` tests it there; either takes the
         shut's calendar and duration, and the block must be in its scope. Shuts
         on a period are exact where the blocks fail independently, and so are
