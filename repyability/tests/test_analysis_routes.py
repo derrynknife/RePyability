@@ -111,6 +111,7 @@ NONREPAIRABLE_CALLS = {
     "cs": lambda rbd: rbd.cs(X, 10.0),
     "time_to_reliability": lambda rbd: rbd.time_to_reliability(0.5),
     "bx_life": lambda rbd: rbd.bx_life(10),
+    "qf": lambda rbd: rbd.qf(0.5),
     "remaining_life": lambda rbd: rbd.remaining_life(0.5, state={}),
     "mean_residual_life": lambda rbd: rbd.mean_residual_life(state={}),
     "sf_given_state": lambda rbd: rbd.sf_given_state(X, state={}),
@@ -1001,6 +1002,10 @@ def test_the_readme_says_what_is_simulated():
             (repairable["too meshed"], "point_availability", "refused"),
         ],
         "Common-cause groups in a repairable diagram": [
+            (repairable["shocks, revealed"], "availability", "simulated"),
+            (repairable["shocks, revealed"], "mean_availability", "refused"),
+            (repairable["shocks, tested"], "availability", "simulated"),
+            (repairable["shocks, tested"], "point_availability", "refused"),
             (timed_group, "mean_availability", "numerical"),
             (timed_group, "birnbaum_importance", "numerical"),
             (timed_group, "point_availability", "numerical"),

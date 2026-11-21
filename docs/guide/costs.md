@@ -26,6 +26,21 @@ Costs are optional keys of a component's dict, plus one system-level rate:
 | System | `crew_cost_rate=` | Per unit time per repair crew, busy or not (a salary), with `repair_crews=`. A number. See [paying the repair crews](#paying-the-repair-crews). |
 | System | `call_out=` | A call-out crew's `"fee"` per call-out and `"rate"` per unit time engaged, with `repair_crews=`. See [a call-out crew](#a-call-out-crew). |
 
+Which cost is charged when, for a component:
+
+| When | Charged |
+|---|---|
+| It fails (a replacement or repair on failure) | `repair_cost` and `replace_cost`; for a component repaired imperfectly, `replace_cost` only when it is replaced. |
+| A planned replacement (a `"preventive"` task) | The task's `"cost"`, not `replace_cost`. |
+| An inspection of a `"condition"` policy | The task's `"inspection_cost"`. |
+| A test of an `"inspection"` spec (hidden failures) | That spec's `"cost"`; a failure it finds is then charged `repair_cost` and `replace_cost`. |
+| While it is down, for any reason | `downtime_cost` per unit time, and `downtime_cost_rate=` while the system is down too. |
+
+So a $4,000 planned replacement taking 8 hours is
+`"preventive": {"policy": "age", "interval": ..., "cost": 4000.0, "duration": 8.0}`
+(a number is a fixed time; a model of the time is given the same way), not
+`replace_cost`, which a failure is charged.
+
 ```python
 import numpy as np
 import surpyval as surv

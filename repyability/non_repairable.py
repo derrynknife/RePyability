@@ -302,7 +302,8 @@ class NonRepairable:
         elif by_functions(reliability):
             # Any other surpyval model with a life's functions (#93): a
             # Royston-Parmar fit, a regression at a unit's covariates
-            # (regression.at(Z)), a destructive degradation model. Its
+            # (regression.at(Z)), a destructive degradation model; or a
+            # NonRepairableRBD, a subassembly replaced whole. Its
             # survival is a smooth curve, as a distribution's.
             self.model_parameterization = "parametric"
             self.reliability_function = reliability.sf
@@ -340,7 +341,8 @@ class NonRepairable:
                 "mean: a distribution, a MixtureModel, a Bayesian fit, a "
                 "Royston-Parmar fit, a regression at one unit's covariates "
                 "with regression.at(Z), a degradation process), a surpyval "
-                "non-parametric estimate or a StandbyModel; got a "
+                "non-parametric estimate, a StandbyModel or a "
+                "NonRepairableRBD (a subassembly replaced whole); got a "
                 f"{type(reliability).__name__}" + _why_not(reliability)
             )
 

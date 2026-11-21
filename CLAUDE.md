@@ -286,6 +286,18 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   (`_Counted`) rather than tell them apart, which holds for a
   `BetaFactor`'s one shared cause: `test_ccf_allocations.py` checks them
   against the chain of every copy.
+- **A `Shocks` group's causes are the simulation's shared causes at
+  rates of their own** (`_ccf_groups._shared_causes`, from
+  `Shocks.causes`): every set of members a shock can fail, a single
+  member's too, each a `_Cause` on the cause streams, while a member's
+  own life is its own model's (`_own_rate` is None). A cause names its
+  members in the group's order, which is the order `_event_loop._strike`
+  fails them in: that is the rule for members struck at one instant. No
+  chain copies them: `_ccf_rates` refuses the group for every exact
+  method. A `NonRepairableRBD` writes the same causes into its structure
+  (`shocks.written_shocks`) and is from then on the diagram written out;
+  it saves the diagram as given (`_given_args`). `test_shock_nodes.py`
+  and `test_repairable_shocks.py` check both.
 - **A common-cause group's chain with tests and repairs that take time
   (`_ccf_chain._Timed`, #220) copies the simulation's inspections** too
   (`_event_loop._inspected_follow_up`, `_event_loop._inspected_next`, `_event_loop._strike`): a working member
@@ -477,7 +489,14 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   public function of the classes that simulate (an `RBD` subclass gets it
   from `RBD.__init_subclass__`); a new class whose methods take
   `mc_samples` gets `@refuse_removed_names`. A seed goes through
-  `checks.seed` where it is taken.
+  `checks.seed` where it is taken. `n_draws` is kept, deliberately, for
+  the number of draws of uncertain models' parameters (the
+  `*_uncertainty` methods, `uncertainty_importance`,
+  `optimal_replacement_intervals`), each draw worked out without
+  simulating it: a method that takes `n_draws` but not `mc_samples`
+  refuses `mc_samples=` (and the removed names), naming `n_draws`, through
+  the same wrapper (a class with such methods gets `@refuse_removed_names`
+  too).
 - **Inputs are checked where they are given (#233)**: numbers through
   `checks.is_number`/`number_or_nan` (not `bool`, not text), times through
   `checks.real_array`, a choice of option through `checks.one_of`, and

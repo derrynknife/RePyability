@@ -365,6 +365,7 @@ def _levers(rbd) -> List[_Lever]:
     of its components, then its common-cause groups and its repair
     crews."""
     from .ccf import CCFGroup
+    from .ccf import parameter_bounds as ccf_parameter_bounds
     from .ccf import parameters as ccf_parameters
     from .ccf import with_parameters as with_ccf_parameters
 
@@ -481,7 +482,7 @@ def _levers(rbd) -> List[_Lever]:
                     False,
                     build_ccf,
                     None,
-                    _UNIT,
+                    ccf_parameter_bounds(group.model, letter),
                     value,
                 )
             )

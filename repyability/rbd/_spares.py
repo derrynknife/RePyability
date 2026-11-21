@@ -1950,6 +1950,7 @@ def _replacements(rbd, node, long_run: bool = False):
         "spares_demand(method='simulate')."
     )
     _requirements._require_reliabilities(rbd, node)
+    _requirements._require_own_failures(rbd, node, simulate)
     if node in rbd._standby:
         raise NotImplementedError(
             f"Component {node!r} is a standby group, whose units' "

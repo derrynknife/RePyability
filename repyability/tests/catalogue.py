@@ -706,6 +706,16 @@ def repairable_kinds():
                     prices=Prices(repair=2.0, downtime=1.0),
                 )
             ),
+            # A life that is a diagram: a subassembly (a series pair)
+            # replaced whole at its failure, taken by its functions.
+            "a life that is a diagram": system(
+                unit(
+                    reliability=NonRepairableRBD(
+                        [("s", "x"), ("x", "y"), ("y", "t")],
+                        {"x": W([400.0, 2.0]), "y": W([400.0, 2.0])},
+                    )
+                )
+            ),
             # A plan valued alone, with its own money: its salvage, its
             # prices' growth and its retirement (UC-65 of the maintenance
             # README), the one node of its diagram.
@@ -1219,6 +1229,46 @@ def repairable_kinds():
                 ccf_groups=[
                     CCFGroup(["a", "b", "d"], AlphaFactor([0.95, 0.04, 0.01]))
                 ],
+            ),
+            "shocks, revealed": RepairableRBD(
+                EDGES,
+                {
+                    "a": {
+                        "reliability": W([400.0, 1.5]),
+                        "repairability": E([0.5]),
+                    },
+                    "b": {
+                        "reliability": W([300.0, 2.0]),
+                        "repairability": W([3.0, 2.0]),
+                    },
+                    "c": {
+                        "reliability": E([0.002]),
+                        "repairability": E([0.5]),
+                    },
+                },
+                ccf_groups=[CCFGroup(["a", "b"], Shocks(1e-3, 0.5, 2e-4))],
+            ),
+            "shocks, tested": RepairableRBD(
+                EDGES,
+                {
+                    **{
+                        node: {
+                            "reliability": W([600.0, 1.5]),
+                            "repairability": "instant",
+                            "inspection": {
+                                "interval": 100.0,
+                                "coverage": 0.8,
+                                "full_test": 300.0,
+                            },
+                        }
+                        for node in "ab"
+                    },
+                    "c": {
+                        "reliability": E([0.002]),
+                        "repairability": E([0.5]),
+                    },
+                },
+                ccf_groups=[CCFGroup(["a", "b"], Shocks(1e-3, 0.5))],
             ),
             "common cause, Weibull": system(
                 unit(), ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))]

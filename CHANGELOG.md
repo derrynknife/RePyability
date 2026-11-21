@@ -12,6 +12,32 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: a `RepairableRBD` takes `Shocks(rate, p, lethal_rate)` as a
+  common-cause group's model, for members of any lives, which need not
+  be alike. Shocks come at a rate of their own and each fails each
+  member with probability `p`; a strike fails the members it names that
+  are up, in the group's order, each then repaired on its own, and a
+  tested member's failure waits for its test. The simulations run it (in
+  Python; the compiled engine hands a diagram with groups over, as
+  before), and every exact and numerical method refuses, naming the
+  simulation, as do a member's own long-run availability
+  (`node_availability`) and its exact spares (`spares_demand`,
+  `spares_stock`), which its own life no longer gives;
+  `spares_demand(method="simulate")` counts them. For exponential
+  members a seeded run is the equivalent rate-split group's, strike for
+  strike, as the shocks' causes take the shared causes' streams; no
+  existing seeded result changes. Scheduled maintenance, imperfect
+  repair or a maintenance group on a member, and a tested member started
+  from a state, are refused by name. The group's `rate`, `p` and
+  `lethal_rate` are levers (`ccf_rate`, `ccf_p`, `ccf_lethal_rate`).
+
+- Added: a `NonRepairableRBD` as a unit's life (UC-66 of the
+  maintenance README): a subassembly replaced whole at its failure,
+  taken wherever a life is (`UnitPlan`, a spec's `"reliability"`,
+  `NonRepairable`) by its functions, exact where the routes are and
+  simulated from the streams as any model's draws. `NonRepairableRBD.qf`
+  inverts its `ff` to near machine precision in both tails.
+
 - Added: a unit's plan valued alone (UC-65 of the maintenance README).
   `UnitPlan` has `expected_npv`, `cash_flows`, `npv_distribution`,
   `plan_vs_actual`, `expected_cost`, `expected_cost_rate`,
@@ -695,6 +721,30 @@ release between minors that only adds (0.19.1).
 - Changed: `value_plan` takes a unit's plan (`UnitPlan.to_dict()`) as
   its `"diagram"`, valued as its one-node diagram (`npv-1.json` says
   so).
+
+- Changed: a preventive or inspection task's `"duration"` may be a
+  plain number, a fixed time (surpyval's `ExactEventTime`), where it had
+  to be a model or `'instant'`; 0 is `'instant'`. A negative or
+  non-finite number is refused, naming the task.
+- Changed: the `*_uncertainty` methods (and `uncertainty_importance` and
+  `optimal_replacement_intervals`) keep `n_draws`, the number of draws of
+  the uncertain models' parameters, each worked out without simulating
+  it; given `mc_samples=` (which counts simulations) or a name 0.12
+  removed, they refuse it naming `n_draws`, where Python said only that
+  the keyword was unexpected. `FaultTree` refuses the removed names as
+  the diagrams do.
+- Changed: a session's first diagram no longer imports surpyval's joint
+  and degradation models (with its regression code and pandas) to check
+  whether a node is one; the first build took about 2 s, later ones
+  about 1 ms, and now the first takes about 0.05 s.
+- Changed: `BetaFactor`'s docstring says first which `basis` to use
+  (`"probability"`, the default, for a mission or proof-test interval;
+  `"rate"` for a whole life), and the warning past `Q = 0.1` names the
+  default basis it is about.
+- Changed (docs): the costs guide has a table of which cost is charged
+  when, and the component spec says `replace_cost` is the replacement on
+  failure, a planned replacement being charged its `"preventive"` task's
+  `"cost"`.
 
 - Changed: a task counted in operating time on a block with no
   `"duty"` is no longer refused: the diagram's clock is then the

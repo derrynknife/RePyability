@@ -279,3 +279,67 @@ def test_a_component_is_stocked_on_one_shelf():
         )
     pooled = rbd.spares_demand(300.0, parts={"p": ["a", "b"]})["p"]
     assert pooled.members == ("a", "b")
+
+
+# -- a task's duration as a plain number (a fixed time) -----------------------
+
+
+def _maintained(task, duration):
+    spec = {"interval": 400.0, "cost": 50.0, "duration": duration}
+    if task == "preventive":
+        spec["policy"] = "age"
+    return RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {
+            "a": {
+                "reliability": W([1000.0, 2.0]),
+                "repairability": E([1 / 24]),
+                task: spec,
+            }
+        },
+    )
+
+
+@pytest.mark.parametrize("task", ["preventive", "inspection"])
+def test_a_number_is_a_fixed_duration(task):
+    number = _maintained(task, 8.0)
+    exact = _maintained(task, surv.ExactEventTime.from_params([8.0]))
+    assert number.mean_availability() == exact.mean_availability()
+    times = np.array([100.0, 404.0, 900.0])
+    assert np.array_equal(
+        number.point_availability(times), exact.point_availability(times)
+    )
+    seeded = dict(mc_samples=200, seed=3)
+    assert np.array_equal(
+        number.availability(1000.0, **seeded).availability,
+        exact.availability(1000.0, **seeded).availability,
+    )
+    # 0 is a task done in no time, as 'instant'
+    assert (
+        _maintained(task, 0).mean_availability()
+        == _maintained(task, "instant").mean_availability()
+    )
+
+
+@pytest.mark.parametrize("task", ["preventive", "inspection"])
+@pytest.mark.parametrize("bad", [-1.0, float("nan"), float("inf"), True, "8"])
+def test_a_duration_that_is_no_time_is_refused(task, bad):
+    with pytest.raises(ValueError, match=f"the {task} duration must be"):
+        _maintained(task, bad)
+
+
+def test_an_uncertainty_method_refuses_mc_samples_naming_n_draws():
+    rbd = NonRepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {
+            "a": surv.Weibull.fit(
+                surv.Weibull.random(30, 10, 2, random_state=1)
+            )
+        },
+    )
+    for name in ("mc_samples", "N"):
+        with pytest.raises(TypeError, match="it takes n_draws="):
+            rbd.sf_uncertainty(5.0, **{name: 10})
+        with pytest.raises(TypeError, match="it takes n_draws="):
+            rbd.mean_uncertainty(**{name: 10})
+    assert rbd.sf_uncertainty(5.0, n_draws=20, seed=1).samples.shape == (20,)

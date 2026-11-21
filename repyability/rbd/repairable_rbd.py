@@ -196,7 +196,11 @@ class RepairableRBD(RBD):
           the component still fails, and any repair or replace cost is
           charged, but it is never down), plus optional costs.
           ``"repair_cost"`` and ``"replace_cost"`` are charged at every
-          failure of the component: each is a number, or a distribution of
+          failure of the component (``"replace_cost"`` is the replacement
+          on failure; a planned replacement is charged the
+          ``"preventive"`` task's ``"cost"`` instead, and the guide's
+          costs page has a table of which cost is charged when): each is
+          a number, or a distribution of
           the cost (anything with ``qf`` and ``mean``, such as a fitted
           surpyval model) drawn afresh at each failure. ``"downtime_cost"``
           is a number charged per unit time the component is down, whether
@@ -227,7 +231,9 @@ class RepairableRBD(RBD):
           condition). Each inspection is charged
           ``"inspection_cost"``, a number or a distribution drawn afresh
           each time. The replacement takes a time drawn from ``"duration"``, a
-          time-to-maintain model, during which the unit is down (a planned
+          time-to-maintain model or a number (a fixed time, such as 8 for
+          eight hours with models in hours), during which the unit is down
+          (a planned
           outage); ``"instant"`` (the default) takes no time, renewing the
           unit in place. Each replacement is charged ``"cost"``, a number
           or a distribution drawn afresh each time. The unit comes back as
@@ -292,7 +298,8 @@ class RepairableRBD(RBD):
           stays hidden until a full test, every ``"full_test"`` (required
           with a coverage below 1, a whole multiple of the interval, from
           the offset), which finds every failure. The test takes a time
-          drawn from ``"duration"``, a time-to-test model, during which the
+          drawn from ``"duration"``, a time-to-test model or a number (a
+          fixed time), during which the
           component is off-line (a planned outage) and does not age;
           ``"instant"`` (the default) takes no time. A failure found by a
           test is repaired once the test is done, and the repair and
