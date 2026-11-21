@@ -12,6 +12,36 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: `shock_nodes(edges, nodes, members, rate, p, lethal_rate)`,
+  shocks that fail each member they reach with a probability (the
+  binomial failure rate model), for a `NonRepairableRBD` whose members
+  have any lives, each its own, at their own ages. Shocks at a constant
+  rate that fail each of `m` members independently with probability `p`
+  are an independent cause for each set of members, at rate `rate p^j
+  (1 - p)^(m - j)` for a set of `j`; the function writes each into the
+  diagram as an exponential node after every member it fails (one
+  component in several places), so every analysis takes them as it
+  takes any repeated node: the reliability, MTTF, B-lives and importance
+  exactly, given each member's age too, and the simulations. For
+  exponential members the values are the alpha-factor group's by rate
+  (to 1e-12). In the guide: "Common causes with wear-out lives and
+  ages".
+
+- Added: common causes for members that wear out and have aged. The
+  condition-based methods (`sf_given_state`, `remaining_life`,
+  `mean_residual_life`, `importances_given_state`) take a common-cause
+  group that splits the failure rate (`basis="rate"`) when its members
+  are given one state (alive, at one age): each cause takes its share of
+  the members' hazard from that age on, whatever their life. They
+  refused every group before. Members in different states, a failed
+  member and a group splitting a probability are refused, saying what to
+  do. A new guide page, "Common causes with wear-out lives and ages",
+  shows it beside the model for members of different ages: a shock at
+  its own rate that fails every member it reaches, drawn as an
+  exponential node in series with them (a repeated node where they sit
+  in different branches), with the Weibull and exponential closed forms
+  of the split as checks.
+
 - Added: the NPV spread of a diagram with shutdowns (UC-61 of the
   maintenance README). `npv_distribution`, `compare_npv` and
   `best_switch_time` price the runs of a diagram with shutdowns, where

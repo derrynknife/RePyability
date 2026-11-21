@@ -213,6 +213,8 @@ reliability:
   the group;
 - while `Q` is small it agrees with the probability split to first order,
   so over a mission or a proof-test interval the two give about the same.
+- members that have run for a while, all to one age, are taken at that
+  age ([wear-out lives and ages](common-cause-ages.md)).
 
 ```python
 pair_rate = NonRepairableRBD(
@@ -375,7 +377,7 @@ group's.
 | `sf_uncertainty`, `time_to_reliability_uncertainty`, `bx_life_uncertainty`, `mean_uncertainty` | Each draw worked out with the groups; the members drawn together, and the group's model too if it is given. `mean_uncertainty` refuses a group splitting a probability, as `mean` does. |
 | `allocate_redundancy`, `redundancy_front` | A member's copies join its group: a `BetaFactor` group's, active copies of the member's own model. Copies of an `MGL` or `AlphaFactor` group's member, and options or cold spares for a member, raise `NotImplementedError`. |
 | `allocate_reliability_redundancy` | Includes the groups; a member in `uses` raises `NotImplementedError` (its reliability is the group's). |
-| The condition-based methods (`sf_given_state`, `remaining_life`, `importances_given_state`) | Raise `NotImplementedError`: they would need members of different ages. |
+| The condition-based methods (`sf_given_state`, `remaining_life`, `mean_residual_life`, `importances_given_state`) | Include a group splitting the rate whose members are given one state (alive, at one age): each cause takes its share of the members' hazard from that age. Raise `NotImplementedError` for members in different states, and for a group splitting a probability. See [wear-out lives and ages](common-cause-ages.md), which also draws a shock that fails members of different ages as a node in series. |
 | `working_nodes` / `broken_nodes` naming a group member | Raises `NotImplementedError`. |
 
 ```python

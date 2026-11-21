@@ -957,8 +957,15 @@ def test_the_readme_says_what_is_simulated():
             (nonrepairable["nested"], "sf", "refused"),
             (nonrepairable["nested"], "random", "simulated"),
         ],
-        "Common-cause groups: analyses given ages, and the MTTF of a group "
-        "splitting a failure probability": [
+        "Common-cause groups: analyses given ages for members of different "
+        "ages or a group splitting a failure probability, and the MTTF of "
+        "such a group": [
+            (nonrepairable["common cause by rate"], "sf_given_state", "exact"),
+            (
+                nonrepairable["common cause by rate"],
+                "remaining_life",
+                "numerical",
+            ),
             (ccf, "sf", "exact"),
             (ccf, "birnbaum_importance", "exact"),
             (ccf, "fussell_vesely", "exact"),

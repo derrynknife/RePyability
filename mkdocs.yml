@@ -104,6 +104,7 @@ nav:
       - Condition-based evaluation: guide/condition-based.md
       - Redundancy models: guide/redundancy-models.md
       - Common-cause failures: guide/common-cause.md
+      - Common causes with wear-out lives and ages: guide/common-cause-ages.md
       - Repairable systems: guide/repairable.md
       - System capacity: guide/capacity.md
       - Costs: guide/costs.md
