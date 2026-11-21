@@ -537,8 +537,9 @@ def test_what_the_exact_values_do_not_take_at_given_times_says_so():
     message = (
         "Component 'a' is tested at each shut of shutdown 'line', which is "
         "at given times; the exact methods follow such a block at shuts on "
-        "a period (and a block renewed at every shut at given times too). "
-        "Estimate its values by simulation, with availability() or cost()."
+        "a period (and a block renewed, or kept unless it is due, at every "
+        "shut at given times too). Estimate its values by simulation, with "
+        "availability() or cost()."
     )
     with pytest.raises(NotImplementedError) as error:
         tested.mission_availability(300.0)
@@ -551,8 +552,9 @@ def test_what_the_exact_values_do_not_take_at_given_times_says_so():
         },
         shutdown=calendar,
     )
-    with pytest.raises(NotImplementedError, match="kept unless it is due"):
-        kept.mission_availability(300.0)
+    # A block kept unless it is due there is worked out stretch by
+    # stretch (see test_kept_at_given_times.py).
+    assert 0.0 < kept.mission_availability(300.0) < 1.0
     # A job that restores part-way is simulated.
     restored = one(
         {

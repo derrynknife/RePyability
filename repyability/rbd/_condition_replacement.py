@@ -59,6 +59,7 @@ from ._block_replacement import (
     _grid,
     _head_start,
     _masses,
+    _onto,
     _values,
 )
 from ._model_utils import model_mean
@@ -451,71 +452,61 @@ def _head_ages(head: ConditionHead, g, ages: _Ages) -> np.ndarray:
     return up * (wanted / total)
 
 
-def condition_availability(
-    life,
-    repair,
-    duration,
-    interval: float,
-    threshold: float,
-    horizon: float,
-    node=None,
-    head: Optional[ConditionHead] = None,
-    older_than: Optional[float] = None,
-) -> BlockAvailability:
-    """The point availability of a component replaced on condition, new at
-    0 (or after ``head``), over ``[0, horizon]`` or until it repeats from
-    one inspection interval to the next (see the module docstring).
+def _regrid(lo: int, masses: np.ndarray, h: float, onto: float):
+    """Masses on the age grid of step ``h`` (from age index ``lo``) put
+    onto the grid of step ``onto``: each split between the two nearest
+    ages of the new grid, so that the total and the mean age are kept."""
+    if not masses.size or onto == h:
+        return lo, masses
+    x = (lo + np.arange(masses.size)) * (h / onto)
+    below = np.floor(x).astype(np.int64)
+    upper = x - below
+    first = int(below[0])
+    out = np.zeros(int(below[-1]) - first + 2)
+    np.add.at(out, below - first, masses * (1.0 - upper))
+    np.add.at(out, below - first + 1, masses * upper)
+    return first, out
 
-    Parameters
-    ----------
-    life, repair, duration, interval, threshold, node
-        As for ``condition_cycle``.
-    horizon : float
-        The last time the availability is needed at (from the first
-        inspection, after a ``head``); ``inf`` to follow it until it
-        settles (into its long-run cycle).
-    head : ConditionHead, optional
-        How the unit reaches its first inspection, started from a state;
-        by default None: new at 0.
-    older_than : float, optional
-        As for ``condition_cycle``.
 
-    Returns
-    -------
-    BlockAvailability
-        With ``inspected``, the probability that the unit is up at each
-        interval's starting inspection; ``replaced``, that the inspection
-        replaces it.
+class _Stretch(NamedTuple):
+    """An interval from one inspection to the next: its grid, and the
+    ages (on that grid's step) its starting inspection judges with."""
 
-    Raises
-    ------
-    NotImplementedError
-        As ``condition_cycle`` does, or if the availability has not settled
-        into repeating within the intervals the grid can keep.
-    """
+    grid: object
+    ages: _Ages
+
+
+def _followed(stretches, head: Optional[ConditionHead], life):
+    """A unit replaced on condition followed from one inspection to the
+    next (see ``condition_availability``), each interval on its own
+    ``_Stretch``: the same again and again on a period, one for each
+    stretch between given times. Yields each interval's grid, the smooth
+    part of the availability on it, the probability replaced at its
+    start, its expected failures by each grid point and the probability
+    up at its starting inspection."""
     from scipy.signal import fftconvolve
 
-    g = _grid(life, repair, duration, interval, node, starts=True)
-    assert g.renewals is not None and g.done is not None  # starts=True
-    steps, h, T = g.steps, g.h, g.interval
-    ages = _Ages(life, h, T, threshold, older_than)
-    ages.cover(steps)
-    most = max(3, _MAX_VALUES // (steps + 1))
-    count = (
-        int(np.floor(horizon / T)) + 1 if np.isfinite(horizon) else most + 1
-    )
-    renewals = np.diff(g.renewals)
-    put_in = np.zeros(steps + 1)
-    put_in[0] = 1.0
-    put_in[:-1] += 0.5 * renewals
-    put_in[1:] += 0.5 * renewals
-    ending = np.diff(g.done)
-    start_P = g.replace.cdf(g.rho)
-    start_C = g.rho - g.replace.in_progress(g.rho)
-    down = 1.0 - g.A
     sf = life.sf
+    made: dict = {}
 
-    def inspect(lo_up: int, by_age: np.ndarray, first):
+    def of(g):
+        """What a grid's intervals take, worked out once for each."""
+        if id(g) not in made:
+            renewals = np.diff(g.renewals)
+            put_in = np.zeros(g.steps + 1)
+            put_in[0] = 1.0
+            put_in[:-1] += 0.5 * renewals
+            put_in[1:] += 0.5 * renewals
+            made[id(g)] = (
+                put_in,
+                np.diff(g.done),
+                g.replace.cdf(g.rho),
+                g.rho - g.replace.in_progress(g.rho),
+                1.0 - g.A,
+            )
+        return made[id(g)]
+
+    def inspect(ages: _Ages, lo_up: int, by_age: np.ndarray, first):
         """The inspection: the units up at it by age on the grid (from
         ``lo_up``), and the first unit at its exact age; those old enough
         are replaced. Returns the probability replaced, inspected, the
@@ -538,33 +529,49 @@ def condition_availability(
                 first = None
         return replaced, inspected, lo, aged, first
 
-    def starts_after(cells: np.ndarray) -> np.ndarray:
-        """The CDF, on ``g.rho``, of the units put into service after the
-        repairs of the failures in each cell of an interval."""
-        started = np.zeros(g.length + 1)
-        started[1:] = fftconvolve(cells / h, ending)[: g.length]
-        return np.clip(started, 0.0, None)
+    previous = None
+    for stretch in stretches:
+        g, ages = stretch.grid, stretch.ages
+        steps, h, T = g.steps, g.h, g.interval
+        put_in, ending, start_P, start_C, down = of(g)
 
-    if head is None:
-        # The first interval: put into service new at 0, no inspection.
-        P = np.ones(g.length + 1)
-        C = g.rho.copy()
-        other = np.zeros(g.length + 1)
-        replaced, inspected = 1.0, 0.0
-        lo, aged, first = 0, np.empty(0), None
-    else:
-        other, C, _ = _head_start(head, g)  # type: ignore[arg-type]
-        replaced, inspected, lo, aged, first = inspect(
-            0, _head_ages(head, g, ages), head.first
-        )
-        P = other + replaced * start_P
-        C = C + replaced * start_C
-    rows: list = []
-    probabilities: list = []
-    failing: list = []
-    looked: list = []
-    settled = False
-    for k in range(count):
+        def starts_after(cells: np.ndarray) -> np.ndarray:
+            """The CDF, on ``g.rho``, of the units put into service after
+            the repairs of the failures in each cell of an interval."""
+            started = np.zeros(g.length + 1)
+            started[1:] = fftconvolve(cells / h, ending)[: g.length]
+            return np.clip(started, 0.0, None)
+
+        if previous is None:
+            if head is None:
+                # The first interval: put into service new at 0, no
+                # inspection.
+                P = np.ones(g.length + 1)
+                C = g.rho.copy()
+                other = np.zeros(g.length + 1)
+                replaced, inspected = 1.0, 0.0
+                lo, aged, first = 0, np.empty(0), None
+            else:
+                other, C, _ = _head_start(head, g)  # type: ignore
+                replaced, inspected, lo, aged, first = inspect(
+                    ages, 0, _head_ages(head, g, ages), head.first
+                )
+                P = other + replaced * start_P
+                C = C + replaced * start_C
+        else:
+            # The inspection that ends the last interval, judged on this
+            # one's grid of ages.
+            last, lo_up, by_age, after, carried = previous
+            if last is not g:
+                lo_up, by_age = _regrid(lo_up, by_age, last.h, h)
+                other, C = _onto(*carried, last, g)
+            else:
+                other, C = carried
+            replaced, inspected, lo, aged, first = inspect(
+                ages, lo_up, by_age, after
+            )
+            P = other + replaced * start_P
+            C = C + replaced * start_C
         kept_up = np.zeros(steps + 1)
         kept_cells = np.zeros(steps)
         survivors = np.empty(0)
@@ -614,8 +621,80 @@ def condition_availability(
         row = other[: steps + 1] - fftconvolve(w, down)[: steps + 1] + kept_up
         density = np.diff(fftconvolve(w, g.N)[: steps + 1]) / h
         failures = np.concatenate([[0.0], np.cumsum(density * h + kept_cells)])
+        yield g, row, replaced, failures, inspected
+        # The units up at the inspection that ends the interval, by age:
+        # those put into service in it, as old as the time since, and those
+        # kept, an interval older.
+        fresh = fftconvolve(w, put_in)[: steps + 1] * ages.R[steps::-1]
+        total, wanted = float(fresh.sum()), float(w @ g.A[::-1])
+        if total > 0.0:
+            fresh *= wanted / total
+        lo_up, by_age = _merge(0, fresh[::-1], lo + steps, survivors)
+        other, C, _ = _carry(P, C, density, g)
+        previous = (g, lo_up, by_age, after, (other, C))
+
+
+def condition_availability(
+    life,
+    repair,
+    duration,
+    interval: float,
+    threshold: float,
+    horizon: float,
+    node=None,
+    head: Optional[ConditionHead] = None,
+    older_than: Optional[float] = None,
+) -> BlockAvailability:
+    """The point availability of a component replaced on condition, new at
+    0 (or after ``head``), over ``[0, horizon]`` or until it repeats from
+    one inspection interval to the next (see the module docstring).
+
+    Parameters
+    ----------
+    life, repair, duration, interval, threshold, node
+        As for ``condition_cycle``.
+    horizon : float
+        The last time the availability is needed at (from the first
+        inspection, after a ``head``); ``inf`` to follow it until it
+        settles (into its long-run cycle).
+    head : ConditionHead, optional
+        How the unit reaches its first inspection, started from a state;
+        by default None: new at 0.
+    older_than : float, optional
+        As for ``condition_cycle``.
+
+    Returns
+    -------
+    BlockAvailability
+        With ``inspected``, the probability that the unit is up at each
+        interval's starting inspection; ``replaced``, that the inspection
+        replaces it.
+
+    Raises
+    ------
+    NotImplementedError
+        As ``condition_cycle`` does, or if the availability has not settled
+        into repeating within the intervals the grid can keep.
+    """
+    g = _grid(life, repair, duration, interval, node, starts=True)
+    assert g.renewals is not None and g.done is not None  # starts=True
+    steps, T = g.steps, g.interval
+    ages = _Ages(life, g.h, T, threshold, older_than)
+    ages.cover(steps)
+    most = max(3, _MAX_VALUES // (steps + 1))
+    count = (
+        int(np.floor(horizon / T)) + 1 if np.isfinite(horizon) else most + 1
+    )
+    stretch = _Stretch(g, ages)
+    rows: list = []
+    probabilities: list = []
+    failing: list = []
+    looked: list = []
+    settled = False
+    following = _followed((stretch for _ in range(count)), head, life)
+    for _, row, replaced, failures, inspected in following:
         if (
-            k >= 2
+            len(rows) >= 2
             and abs(replaced - probabilities[-1]) < _SETTLED
             and abs(inspected - looked[-1]) < _SETTLED
             and np.max(np.abs(row - rows[-1])) < _SETTLED
@@ -634,18 +713,6 @@ def condition_availability(
         probabilities.append(replaced)
         failing.append(failures)
         looked.append(inspected)
-        # The units up at the inspection that ends the interval, by age:
-        # those put into service in it, as old as the time since, and those
-        # kept, an interval older.
-        fresh = fftconvolve(w, put_in)[: steps + 1] * ages.R[steps::-1]
-        total, wanted = float(fresh.sum()), float(w @ g.A[::-1])
-        if total > 0.0:
-            fresh *= wanted / total
-        lo_up, by_age = _merge(0, fresh[::-1], lo + steps, survivors)
-        other, C, _ = _carry(P, C, density, g)
-        replaced, inspected, lo, aged, first = inspect(lo_up, by_age, after)
-        P = other + replaced * start_P
-        C = C + replaced * start_C
     return BlockAvailability(
         T,
         g.grid,
@@ -657,3 +724,92 @@ def condition_availability(
         head is None,
         np.array(looked),
     )
+
+
+def condition_plan_availability(
+    life,
+    repair,
+    duration,
+    lengths,
+    threshold: float,
+    node=None,
+    head: Optional[ConditionHead] = None,
+    older_than: Optional[float] = None,
+    last_like: Optional[float] = None,
+) -> list:
+    """The point availability of a component inspected at the times of a
+    plan (a shutdown's given times) and replaced there on condition,
+    stretch by stretch: a ``BlockAvailability`` of one interval for each
+    of ``lengths``, the times from one inspection (or 0, or the end of a
+    ``head``) to the next.
+
+    The unit is followed as ``condition_availability`` follows it, each
+    stretch on a grid of its own length (stretches of one length share
+    theirs, so that equal stretches are inspection on that period). What
+    is carried from one stretch into the next is put onto the next one's
+    grid: the repairs and replacements still going on (``_onto``), and the
+    units the inspection kept, by age, each age's mass split between the
+    two nearest ages of the new grid (``_regrid``). An inspection judges a
+    unit by the time to the next one (the stretch it starts), or, at the
+    last, by none to come: a unit is then more likely than any threshold
+    below 1 to fail before it, as the simulation has it.
+
+    Parameters
+    ----------
+    life, repair, duration, threshold, node, head, older_than
+        As for ``condition_availability``.
+    lengths : sequence of float
+        Each stretch's length, positive.
+    last_like : float, optional
+        For a last stretch that ends at no time of the plan: the length of
+        a stretch whose grid's step it takes (see
+        ``_block_replacement.plan_availability``); its inspection at the
+        start is the plan's last.
+
+    Returns
+    -------
+    list of BlockAvailability
+    """
+    from ._block_replacement import _MAX_LAST_STEPS, _MIN_STEPS, _steps
+
+    count = len(lengths)
+    open_end = last_like is not None
+    made: dict = {}
+    stretches = []
+    for k, length in enumerate(lengths):
+        steps = None
+        if last_like is not None and k == count - 1:
+            wanted = _steps(life, last_like) * length / last_like
+            steps = int(np.clip(np.ceil(wanted), _MIN_STEPS, _MAX_LAST_STEPS))
+        # The time its starting inspection looks ahead to: none at the
+        # plan's last.
+        ahead = np.inf if open_end and k == count - 1 else float(length)
+        key = (float(length), steps, ahead)
+        if key not in made:
+            g = _grid(
+                life, repair, duration, length, node, starts=True, steps=steps
+            )
+            ages = _Ages(life, g.h, ahead, threshold, older_than)
+            ages.cover(g.steps)
+            made[key] = _Stretch(g, ages)
+        stretches.append(made[key])
+    out = []
+    fresh = head is None
+    for g, row, replaced, failures, inspected in _followed(
+        stretches, head, life
+    ):
+        out.append(
+            BlockAvailability(
+                g.interval,
+                g.grid,
+                row[None, :],
+                np.array([replaced]),
+                g.replace,
+                False,
+                failures[None, :],
+                fresh,
+                np.array([inspected]),
+            )
+        )
+        fresh = False
+    return out
