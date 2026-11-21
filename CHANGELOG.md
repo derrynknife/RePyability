@@ -28,6 +28,33 @@ release between minors that only adds (0.19.1).
   group's `rate`, `p` and `lethal_rate` are levers (`ccf_rate`, `ccf_p`,
   `ccf_lethal_rate`).
 
+- Added: `UnitPlan`, one unit's maintenance plan (UC-63 of the
+  maintenance README): its life and repair models, its tasks (`AgePolicy`,
+  `BlockPolicy`, `ConditionPolicy`, `CalendarReplacement`, `AtShutdown`,
+  `Inspection`, `Upgrade`, with a `Restoration` for a task that restores
+  partly), its imperfect repairs (`ImperfectRepair`) and its `Prices`,
+  each task in its own clock, as frozen plain data that saves
+  (`to_dict`, `from_dict`). A `RepairableRBD` node takes a plan as it
+  takes the spec dict, which is the plan's shorthand
+  (`UnitPlan.from_spec`, `plan.spec()`); `RepairableRBD.plans` reads
+  each spec node back as a plan. A node given a plan is the node given
+  its spec: no result changes. (The name `MaintenancePlan` stays the
+  result of choosing intervals.)
+
+- Added: a value schedule and escalation in the simulated NPV and in
+  a plan against what happened (UC-57 of the maintenance README, part
+  2). `npv_distribution`, `compare_npv` and `plan_vs_actual` take
+  `value_rate` as a `ValueSchedule` and `escalation=`, `rates=` and
+  `inflation=` as `expected_npv` does; `best_switch_time` takes
+  `escalation=`, `rates=` and `inflation=`. Each cost in a run or a log
+  is charged at its price grown to when it fell, each up span earns
+  each step's rate over its part of it, grown, and each is discounted
+  exactly. `plan_vs_actual` values the plan with `expected_npv` on the
+  same arguments, and the rest from now with the schedule's steps from
+  then, each stream grown to now. The results state the basis
+  (`rate_basis`, `inflation`, `escalation`, `value_schedule`). With a
+  number and no growth every value is unchanged.
+
 - Added: `Shocks(rate, p, lethal_rate)`, shocks at a rate of their own
   as a common-cause group's model: `CCFGroup(members, Shocks(...))`. A
   `NonRepairableRBD` writes the group's causes into its structure as

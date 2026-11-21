@@ -449,7 +449,7 @@ def priced(rbd, sim, ends, rate, value_rate):
     for i in range(n):
         logs = {node: sim.components[node][i] for node in rbd.components}
         for r in _plan_actual._priced_log(
-            rbd, logs, ends, rate, value_rate, set()
+            rbd, logs, ends, _npv.Money(rbd, rate, value_rate), set()
         ):
             key = (r["period"], r["category"], r["component"])
             out.setdefault(key, np.zeros(n))[i] = r["present_value"]
@@ -557,7 +557,7 @@ def test_so_far_and_the_rest_from_each_state_average_to_the_plan(make, n):
             so_far[i] = sum(
                 r["present_value"]
                 for r in _plan_actual._priced_log(
-                    rbd, logs, ends[:1], rate, value, set()
+                    rbd, logs, ends[:1], _npv.Money(rbd, rate, value), set()
                 )
             )
             states, _ = _plan_actual._states_now(rbd, logs, now, {}, None)

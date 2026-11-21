@@ -25,7 +25,6 @@ from typing import Any, Dict, Hashable, List, Optional, Tuple
 import numpy as np
 
 from repyability.rbd import _npv, _npv_runs, _requirements
-from repyability.rbd._common import _discount_rate
 from repyability.rbd.results import SimulatedSwitchTime
 from repyability.utils import checks
 
@@ -135,10 +134,11 @@ def _twin(rbd, rows: Dict[Hashable, np.ndarray], switch, horizon):
     return RepairableRBD(**{**rbd._init_args, "components": components})
 
 
-def _runs(twin, horizon, switch, rates, rate, n, seed, engine, state):
+def _runs(twin, horizon, switch, rates, money, n, seed, engine, state):
     """Each run's NPV, value and cost (present values) of ``twin`` over
     ``horizon``, the value at ``rates[0]`` until ``switch`` and
-    ``rates[1]`` after; and the engine that ran them."""
+    ``rates[1]`` after (``money`` valuing 1 per unit time up, its growth
+    and rate); and the engine that ran them."""
     _npv_runs._require_priceable(twin)
     ends = np.array([min(switch, horizon), horizon])
     value = np.zeros(n)
@@ -147,7 +147,7 @@ def _runs(twin, horizon, switch, rates, rate, n, seed, engine, state):
     for first in range(0, n, _CHUNK):
         size = min(_CHUNK, n - first)
         ledger, runs = _npv_runs.priced_chunk(
-            twin, horizon, ends, rate, 1.0, size, seed, engine, first, state
+            twin, horizon, ends, money, size, seed, engine, first, state
         )
         used = used or runs.engine
         part = slice(first, first + size)
@@ -172,26 +172,32 @@ def best_switch_time(
     scan: int,
     engine: str,
     state,
+    escalation=None,
+    rates: str = "nominal",
+    inflation=None,
 ) -> SimulatedSwitchTime:
     """See ``RepairableRBD.best_switch_time``."""
+    rates_basis = rates
     _require_scheduled(rbd)
     _npv_runs._require_priceable(rbd)
     rows = _rows(rbd, covariates)
-    rates = np.atleast_1d(checks.real_array(value_rates, "value_rates"))
+    earned = np.atleast_1d(checks.real_array(value_rates, "value_rates"))
     if (
-        rates.shape != (2,)
-        or not np.all(np.isfinite(rates))
-        or np.any(rates < 0.0)
+        earned.shape != (2,)
+        or not np.all(np.isfinite(earned))
+        or np.any(earned < 0.0)
     ):
         raise ValueError(
             "value_rates must be two finite numbers, at least 0: what the "
             "system earns per unit of time up before the switch, and "
             f"after; got {value_rates!r}."
         )
-    rates = rates.astype(float)
-    if not np.any(rates):
+    earned = earned.astype(float)
+    if not np.any(earned):
         _requirements._require_costs(rbd)
-    rate = _discount_rate(discount_rate)
+    money = _npv.Money(
+        rbd, discount_rate, 1.0, escalation, rates_basis, inflation
+    )
     H = _npv._number(horizon, "horizon", strict=True)
     n = checks.whole_number(
         1_000 if mc_samples is None else mc_samples, "mc_samples"
@@ -210,7 +216,7 @@ def best_switch_time(
         if s not in valued:
             twin = _twin(rbd, rows, s, H)
             samples, _, _, used = _runs(
-                twin, H, s, rates, rate, n, seed, engine, state
+                twin, H, s, earned, money, n, seed, engine, state
             )
             valued[s] = (samples, used)
         return valued[s][0]
@@ -246,9 +252,12 @@ def best_switch_time(
         times=[float(s) for s in times],
         npvs=npvs,
         horizon=H,
-        discount_rate=rate,
-        value_rates=[float(v) for v in rates],
+        discount_rate=money.given_rate,
+        value_rates=[float(v) for v in earned],
         n_simulations=n,
         seed=seed,
         engine=valued[best_s][1] or engine,
+        rate_basis=money.basis,
+        inflation=money.inflation,
+        escalation=dict(money.escalation),
     )

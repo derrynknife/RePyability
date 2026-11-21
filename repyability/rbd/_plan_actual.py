@@ -36,10 +36,10 @@ from typing import Any, Dict, Hashable, List, Optional, Tuple
 import numpy as np
 
 from repyability.rbd import _npv, _pricing, _requirements
-from repyability.rbd._common import _discount_rate
 from repyability.rbd._model_utils import is_fixed_probability
 from repyability.rbd.node_state import NodeState
 from repyability.rbd.results import ExpectedNPV, PlanVsActual
+from repyability.value.value_schedule import ValueSchedule
 
 
 def _log_state_refusal(rbd, node) -> Optional[str]:
@@ -301,24 +301,21 @@ def _states_now(rbd, logs, now, given, start_state) -> Tuple[dict, list]:
 # -- pricing a log ----------------------------------------------------------
 
 
-def _priced_log(
-    rbd, logs, ends: np.ndarray, rate: float, value_rate: float, skip
-) -> List[dict]:
+def _priced_log(rbd, logs, ends: np.ndarray, money, skip) -> List[dict]:
     """The cash flows the logs imply over ``[0, ends[-1]]``, by period,
     category and component, priced with the diagram's costs (a cost drawn
     from a distribution at its mean) at the times they fell, but for the
-    cells in ``skip``, ``{(category, component)}`` (see ``_pricing``)."""
+    cells in ``skip``, ``{(category, component)}``, valued by ``money``
+    (an ``_npv.Money``, see ``_pricing``)."""
     from repyability.timelines import _system_timeline
 
     system = (
         _system_timeline(rbd, logs)._data
-        if rbd.downtime_cost_rate or value_rate
+        if rbd.downtime_cost_rate or money.earns
         else None
     )
     data = {node: logs[node]._data for node in rbd.costs}
-    return _pricing.priced(
-        rbd, data, system, ends, rate, value_rate, skip
-    ).rows()
+    return _pricing.priced(rbd, data, system, ends, money, skip).rows()
 
 
 # -- the analysis -----------------------------------------------------------
@@ -406,6 +403,29 @@ def _total(rows, key: str = "present_value") -> float:
     return float(sum(r[key] for r in rows))
 
 
+def _from(value_rate, now: float):
+    """The value earned from ``now`` on its own clock: a schedule's steps
+    from then (the step in force at ``now`` from 0), or the rate."""
+    if not isinstance(value_rate, ValueSchedule):
+        return value_rate
+    times = np.asarray(value_rate.times)
+    later = times > now
+    first = int(np.flatnonzero(~later)[-1])
+    return ValueSchedule(
+        np.concatenate(([0.0], times[later] - now)),
+        np.concatenate(
+            ([value_rate.rates[first]], np.asarray(value_rate.rates)[later])
+        ),
+    )
+
+
+def _row_growth(money, category: str, component) -> float:
+    """The growth of a cash-flow row's stream (see ``_npv.Money``)."""
+    if component is None or category in ("value", "salvage"):
+        return money.growth(category)
+    return money.growth(component, category)
+
+
 def plan_vs_actual(
     rbd,
     timelines,
@@ -413,14 +433,25 @@ def plan_vs_actual(
     horizon,
     *,
     discount_rate: float,
-    value_rate: float,
+    value_rate,
     periods,
     method: str,
     state,
     start_state,
+    escalation=None,
+    rates: str = "nominal",
+    inflation=None,
 ) -> PlanVsActual:
     """See ``RepairableRBD.plan_vs_actual``."""
-    rate = _discount_rate(discount_rate)
+    money = _npv.Money(
+        rbd, discount_rate, value_rate, escalation, rates, inflation
+    )
+    valued = dict(
+        discount_rate=money.given_rate,
+        escalation=escalation,
+        rates=rates,
+        inflation=inflation,
+    )
     now = _npv._number(now, "now", strict=True)
     horizon = _npv._number(horizon, "horizon", strict=True)
     if math.isclose(now, horizon, rel_tol=1e-12):
@@ -430,7 +461,6 @@ def plan_vs_actual(
             f"now ({now:g}) is past the horizon ({horizon:g}): the plan "
             "ends before today."
         )
-    value_rate = _npv.steady_value(value_rate, "plan_vs_actual")
     for name, given in (("state", state), ("start_state", start_state)):
         if given is not None and not isinstance(given, Mapping):
             raise TypeError(
@@ -446,8 +476,8 @@ def plan_vs_actual(
         plan = _npv.expected_npv(
             rbd,
             horizon,
-            discount_rate=rate,
             value_rate=value_rate,
+            **valued,
             periods=ends,
             working_nodes=None,
             broken_nodes=None,
@@ -467,8 +497,8 @@ def plan_vs_actual(
                 _npv.expected_npv(
                     rbd,
                     horizon - now,
-                    discount_rate=rate,
-                    value_rate=value_rate,
+                    value_rate=_from(value_rate, now),
+                    **valued,
                     periods=rest_ends,
                     working_nodes=None,
                     broken_nodes=None,
@@ -484,13 +514,15 @@ def plan_vs_actual(
         r for r in before if (r["category"], r["component"]) not in skip
     ]
     as_planned = [r for r in before if (r["category"], r["component"]) in skip]
-    actual = _priced_log(rbd, logs, ends[:so_far], rate, value_rate, skip)
+    actual = _priced_log(rbd, logs, ends[:so_far], money, skip)
     variance = _variance(actual, expected)
 
-    back = math.exp(-rate * now)
     rest_rows = []
     if rest is not None:
         for r in rest.cash_flows:
+            # The rest's amounts are from now: each stream grown to now
+            # and discounted back to the start.
+            g = _row_growth(money, r["category"], r["component"])
             rest_rows.append(
                 _pricing.row(
                     r["period"] + so_far,
@@ -498,8 +530,8 @@ def plan_vs_actual(
                     r["end"] + now,
                     r["category"],
                     r["component"],
-                    r["present_value"] * back,
-                    r["undiscounted"],
+                    r["present_value"] * math.exp(-(money.rate - g) * now),
+                    r["undiscounted"] * math.exp(g * now),
                 )
             )
     by_category: Dict[str, float] = {}
@@ -520,8 +552,8 @@ def plan_vs_actual(
     return PlanVsActual(
         now=now,
         horizon=horizon,
-        discount_rate=rate,
-        value_rate=value_rate,
+        discount_rate=money.given_rate,
+        value_rate=money.value_rate,
         plan_npv=plan.npv,
         revalued_npv=revalued,
         change=revalued - plan.npv,
@@ -550,4 +582,5 @@ def plan_vs_actual(
         derived_states=derived,
         plan=plan,
         rest=rest,
+        **money.stated(),
     )
