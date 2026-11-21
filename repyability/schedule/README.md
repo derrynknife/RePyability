@@ -45,9 +45,12 @@ model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
   (`repyability.maintenance`): an amount `y` years after the date it is
   discounted to is worth `(1 + discount)^(-y)`, a year being 365.25
   days; the continuous rate a year is `ln(1 + discount)`. Money is
-  discounted to the forecast's first date (the caller's "today"). The
-  helpers are in `_discount.py`, which every present value here goes
-  through. With no `discount` nothing is discounted and every result is
+  discounted to the forecast's first date (the caller's "today"). Every
+  present value here goes through `_discount.py`, whose arithmetic is
+  the money module's (`repyability.value`): the one convention of
+  RePyability, continuous discounting at a rate per unit of the clock
+  the money falls on, with a yearly rate converted to it there and
+  nowhere else. With no `discount` nothing is discounted and every result is
   as it was.
 
 ## The use cases, by number
