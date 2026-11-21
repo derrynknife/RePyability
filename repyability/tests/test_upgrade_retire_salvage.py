@@ -191,19 +191,20 @@ NO_LONG_RUN = (
     "Component 'a' is upgraded at 300 (its units have another life from "
     "then), so the diagram has no long run with it: ask for its values "
     "over a horizon (expected_npv(horizon), expected_cost(T), "
-    "mission_availability(T), point_availability(t)), or, for the long "
-    "run, give the component the life it has after the upgrade."
+    "mission_availability(T), point_availability(t)); the long-run "
+    "methods (mean_availability(), expected_cost_rate() and the others) "
+    "give the long run once upgraded."
 )
 
 
 def test_what_an_upgrade_is_not_taken_with_says_what_to_run():
     rbd = one(
         upgrade={"at": 300.0, "reliability": E([1e-3]), "cost": 1.0},
+        repair_cost=1.0,
     )
     routes = rbd.analysis_routes()
     for call, name, message in (
-        (lambda: rbd.mean_availability(), "mean_availability", NO_LONG_RUN),
-        (lambda: rbd.expected_cost_rate(), "expected_cost_rate", NO_LONG_RUN),
+        (lambda: rbd.total_cost(100.0), "total_cost", NO_LONG_RUN),
     ):
         with pytest.raises(NotImplementedError) as error:
             call()

@@ -492,9 +492,9 @@ def _require_no_plans(rbd) -> None:
             f"{_upgraded(rbd)} (its units have another life from then), "
             "so the diagram has no long run with it: ask for its values "
             "over a horizon (expected_npv(horizon), expected_cost(T), "
-            "mission_availability(T), point_availability(t)), or, for "
-            "the long run, give the component the life it has after the "
-            "upgrade."
+            "mission_availability(T), point_availability(t)); the "
+            "long-run methods (mean_availability(), expected_cost_rate() "
+            "and the others) give the long run once upgraded."
         )
     from ._shutdowns import require_no_several
 

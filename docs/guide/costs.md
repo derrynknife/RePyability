@@ -605,9 +605,12 @@ An upgraded component's values over a horizon are worked out
 (`point_availability`, `expected_events`, `expected_cost`,
 `expected_npv`): its curve is followed to the upgrade with the old life
 and from it with the new, as a [replacement at a given
-time](system-maintenance.md#replacement-at-given-times) is. An upgrade
-ends the old life, so the long-run methods refuse, saying to ask for a
-horizon. The simulations follow it too (`availability`, `cost`,
+time](system-maintenance.md#replacement-at-given-times) is. Once
+upgraded, the component has the new life for ever, so the long-run
+methods (`mean_availability`, `expected_cost_rate`, the importance
+measures by default, ...) give the long run once upgraded: the values
+of the diagram built with the new life, the time before the upgrade
+ignored (`total_cost`, over a horizon from 0, refuses). The simulations follow it too (`availability`, `cost`,
 `npv_distribution`, `compare_npv`, in Python): a life that starts at or
 after the upgrade's time is drawn from the new model, from the same
 random number the old one would have used, and the capital cost is

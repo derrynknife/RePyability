@@ -229,6 +229,10 @@ def total_cost(
 ) -> Union[float, np.ndarray]:
     """See ``RepairableRBD.total_cost``."""
     _requirements._require_costs(rbd)
+    if rbd._upgrades:
+        # Its long-run rate is the one once upgraded, which the horizon
+        # from 0 (and the upgrade's capital cost) is not.
+        _requirements._require_no_plans(rbd)
     rate = _discount_rate(discount_rate)
     present = _present_horizon(
         _horizons(horizon, rate), rate, partial(_requirements._mean_lives, rbd)

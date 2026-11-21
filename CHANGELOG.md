@@ -12,6 +12,16 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: the long run of a diagram with an upgrade (UC-64 of the
+  maintenance README): `mean_availability`, `expected_cost_rate`,
+  `node_availability`, the importance measures (by default, in the long
+  run), `replacement_cycle` and the other long-run methods give the
+  values once upgraded, those of the diagram built with each upgraded
+  component's new life (its block replacement kept, the time before the
+  upgrade and its capital cost ignored), where they refused. Asked over
+  time, the measures follow the upgrade as before; `total_cost` still
+  refuses, its horizon starting before the upgrade.
+
 - Added: `UnitPlan`, one unit's maintenance plan (UC-63 of the
   maintenance README): its life and repair models, its tasks (`AgePolicy`,
   `BlockPolicy`, `ConditionPolicy`, `CalendarReplacement`, `AtShutdown`,

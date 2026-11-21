@@ -191,4 +191,4 @@ def test_its_calendar_is_counted_from_now():
             500.0, state={"a": NodeState(age=10.0, since_scheduled=10.0)}
         )
     with pytest.raises(NotImplementedError, match="no long run"):
-        rbd.mean_availability()
+        rbd.total_cost(500.0)
