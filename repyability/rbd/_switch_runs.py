@@ -70,9 +70,6 @@ def route(rbd, npv_route):
         return r.refused(_NONE)
     if npv_route.route == r.REFUSED:
         return npv_route
-    own = r.refusal(lambda: _npv.refuse_own_end(rbd))
-    if own is not None:
-        return r.refused(own, tuple(rbd._valuation))
     return r.AnalysisRoute(
         r.SIMULATED,
         "The diagram simulated with each candidate switch time on its "
@@ -207,6 +204,10 @@ def best_switch_time(
         inflation,
     )
     H = _npv._number(horizon, "horizon", strict=True)
+    # The runs end at a plan's own retirement, and every run of every
+    # candidate credits its own salvage, as npv_distribution's do.
+    stop, salvage, nominal_salvage, retired = _npv.own_end(rbd, H, money)
+    H = stop
     n = checks.whole_number(
         1_000 if mc_samples is None else mc_samples, "mc_samples"
     )
@@ -225,7 +226,7 @@ def best_switch_time(
             samples, _, _, used = _runs(
                 twin, H, s, earned, money, n, seed, engine, state
             )
-            valued[s] = (samples, used)
+            valued[s] = (samples + salvage, used)
         return valued[s][0]
 
     grid = np.linspace(0.0, H, count)
@@ -267,4 +268,7 @@ def best_switch_time(
         rate_basis=money.basis,
         inflation=money.inflation,
         escalation=dict(money.escalation),
+        salvage=salvage,
+        undiscounted_salvage=nominal_salvage,
+        retire_at=stop if retired else None,
     )

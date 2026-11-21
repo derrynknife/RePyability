@@ -2518,9 +2518,14 @@ only where it is the diagram's only unit; in a diagram of several it is
 refused, saying to give the valuation's `retire_at`. The valuations of
 runs (`npv_distribution`, `compare_npv`) end at a plan's retirement and
 credit every run its salvage at the end (a number; a salvage by age is
-refused), as `expected_npv` does; those of switch times and logs
-(`best_switch_time`, `plan_vs_actual`) take a plan's escalation and
-refuse its salvage and retirement, naming them.
+refused), as `expected_npv` does, and so do `best_switch_time` (every
+candidate credited alike, the candidates up to the retirement) and a
+service's `task_value` (each side's runs to the plan's retirement, its
+salvage in the period it falls in, no service after it).
+`plan_vs_actual` values the plan and the rest from today to the
+retirement, the salvage credited there as `expected_npv` credits it
+(by age, from the unit's state today); a log past the retirement is
+refused.
 
 **The hand-worked answer, today.** The diagram of the one pump,
 `RepairableRBD([("s", "p"), ("p", "t")], {"p": spec})`, valued by
@@ -2550,9 +2555,9 @@ retirement, plus the salvage `expected_npv` credits
 what a plan alone needed was a name for its one-node diagram and the
 unit's money on the plan. The simulated runs then took a salvage given
 as a number and a retirement; a salvage by age in the runs (each run's
-unit in service), a salvage and retirement in `best_switch_time` and
-`plan_vs_actual`, and one unit's retirement within a system, are left
-for later.
+unit in service) and one unit's retirement within a system are left
+for later; the switch times, logs and services' values took the plan's
+own end next (`test_npv_runs_own_end.py`).
 
 ### UC-59: "A stop every month renews the bearing; a long overhaul every year renews the pump and the bearing. What is the plan worth over two years, and how available is the line?"
 

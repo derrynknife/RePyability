@@ -171,9 +171,6 @@ def route(rbd, npv_route):
 
     if npv_route.route == r.REFUSED:
         return npv_route
-    own = r.refusal(lambda: _npv.refuse_own_end(rbd))
-    if own is not None:
-        return r.refused(own, tuple(rbd._valuation))
     planned = r.refusal(lambda: _require_no_plans(rbd))
     if planned:
         return r.refused(planned)
@@ -446,7 +443,6 @@ def plan_vs_actual(
     inflation=None,
 ) -> PlanVsActual:
     """See ``RepairableRBD.plan_vs_actual``."""
-    _npv.refuse_own_end(rbd, "plan_vs_actual")
     escalation = _npv.own_escalation(rbd, escalation)
     money = _npv.Money(
         rbd, discount_rate, value_rate, escalation, rates, inflation
@@ -466,6 +462,20 @@ def plan_vs_actual(
             f"now ({now:g}) is past the horizon ({horizon:g}): the plan "
             "ends before today."
         )
+    # A plan's own retirement ends it (and the rest from now) there, with
+    # its salvage credited at that end, as expected_npv credits it.
+    retire_at = _npv.own_terms(rbd, horizon, None, None, None)[2]
+    if retire_at is not None:
+        if now > retire_at and not math.isclose(
+            now, retire_at, rel_tol=1e-12
+        ):
+            raise ValueError(
+                f"now ({now:g}) is past the retirement on the plan "
+                f"({retire_at:g}): the plan ends before today. Compare the "
+                "log with a plan to a later retire_at, or without one."
+            )
+        horizon = float(retire_at)
+        now = min(now, horizon)
     for name, given in (("state", state), ("start_state", start_state)):
         if given is not None and not isinstance(given, Mapping):
             raise TypeError(
