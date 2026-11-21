@@ -887,15 +887,9 @@ def _validate_preventive(
                 f"{within}, got {opportunity!r}."
             )
         opportunity = float(opportunity)
-    duration = spec.get("duration", "instant")
-    if isinstance(duration, str) and duration == "instant":
-        duration = None
-    elif not hasattr(duration, "random"):
-        raise ValueError(
-            f"Component {node!r}: the preventive duration must be a "
-            "time-to-maintain model (such as a fitted surpyval "
-            f"distribution) or 'instant', got {duration!r}."
-        )
+    duration = _duration(
+        node, "preventive", "time-to-maintain", spec.get("duration")
+    )
     costs = []
     for key, name in (
         ("cost", "preventive_cost"),
@@ -1190,15 +1184,9 @@ def _validate_inspection(
             f"positive, finite number, got {spec['interval']!r}. (A "
             "hidden failure is found only by an inspection.)"
         )
-    duration = spec.get("duration", "instant")
-    if isinstance(duration, str) and duration == "instant":
-        duration = None
-    elif not hasattr(duration, "random"):
-        raise ValueError(
-            f"Component {node!r}: the inspection duration must be a "
-            "time-to-test model (such as a fitted surpyval distribution) "
-            f"or 'instant', got {duration!r}."
-        )
+    duration = _duration(
+        node, "inspection", "time-to-test", spec.get("duration")
+    )
     cost = spec.get("cost")
     if cost is not None:
         cost = _validate_component_cost(node, "inspection_cost", cost)
@@ -1251,6 +1239,38 @@ def _validate_inspection(
         interval, duration, offset, coverage, full_test, **bound
     )
     return schedule, cost
+
+
+def _duration(node, task: str, model: str, duration):
+    """A preventive or inspection task's ``duration``: ``None`` for
+    ``'instant'`` (the default) or 0, a fixed time for a number (a point
+    mass, surpyval's ``ExactEventTime``), else a model of the time."""
+    if duration is None or (
+        isinstance(duration, str) and duration == "instant"
+    ):
+        return None
+    if isinstance(duration, (int, float, np.number)) and not isinstance(
+        duration, (bool, np.bool_)
+    ):
+        value = float(duration)
+        if not (math.isfinite(value) and value >= 0.0):
+            raise ValueError(
+                f"Component {node!r}: the {task} duration must be a time "
+                f"0 or more (a fixed time in the models' unit), a {model} "
+                f"model, or 'instant'; got {duration!r}."
+            )
+        if value == 0.0:
+            return None
+        from surpyval import ExactEventTime
+
+        return ExactEventTime.from_params([value])
+    if not hasattr(duration, "random"):
+        raise ValueError(
+            f"Component {node!r}: the {task} duration must be a {model} "
+            "model (such as a fitted surpyval distribution), a fixed time "
+            f"(a number), or 'instant', got {duration!r}."
+        )
+    return duration
 
 
 def _validate_cost(node, key: str, value) -> float:

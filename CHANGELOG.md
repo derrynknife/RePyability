@@ -657,6 +657,30 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- Changed: a preventive or inspection task's `"duration"` may be a
+  plain number, a fixed time (surpyval's `ExactEventTime`), where it had
+  to be a model or `'instant'`; 0 is `'instant'`. A negative or
+  non-finite number is refused, naming the task.
+- Changed: the `*_uncertainty` methods (and `uncertainty_importance` and
+  `optimal_replacement_intervals`) keep `n_draws`, the number of draws of
+  the uncertain models' parameters, each worked out without simulating
+  it; given `mc_samples=` (which counts simulations) or a name 0.12
+  removed, they refuse it naming `n_draws`, where Python said only that
+  the keyword was unexpected. `FaultTree` refuses the removed names as
+  the diagrams do.
+- Changed: a session's first diagram no longer imports surpyval's joint
+  and degradation models (with its regression code and pandas) to check
+  whether a node is one; the first build took about 2 s, later ones
+  about 1 ms, and now the first takes about 0.05 s.
+- Changed: `BetaFactor`'s docstring says first which `basis` to use
+  (`"probability"`, the default, for a mission or proof-test interval;
+  `"rate"` for a whole life), and the warning past `Q = 0.1` names the
+  default basis it is about.
+- Changed (docs): the costs guide has a table of which cost is charged
+  when, and the component spec says `replace_cost` is the replacement on
+  failure, a planned replacement being charged its `"preventive"` task's
+  `"cost"`.
+
 - Changed: a task counted in operating time on a block with no
   `"duty"` is no longer refused: the diagram's clock is then the
   block's operating time (as a share of 1), until an analysis's
