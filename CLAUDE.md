@@ -43,6 +43,33 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   level, and the probabilities a forecast is made of (expected failures
   and costs over a window from a state, and their distribution).
 
+- **Maintenance and money are layered.** Each question has one home,
+  and the layers above call the ones below rather than repeat them:
+  - `repyability.value`: money. Discounting (one convention, continuous
+    at a rate per unit of the clock the money falls on; a yearly rate
+    converted in one place), escalation and real rates,
+    `ValueSchedule`, the cost categories and the cash-flow table.
+  - `repyability.maintenance`: a unit's plan and the single part's
+    maths. `UnitPlan` (its life, repairs, tasks, `Prices`, and its own
+    `salvage`, `escalation` and `retire_at`; a spec dict is its
+    shorthand), the policies, and `NonRepairable`'s methods. The
+    age-replacement EAC has one definition (`_options.cycle_eac`),
+    which a diagram's component takes too. A plan is valued alone
+    through its one-node diagram (`UnitPlan.diagram()`): there is no
+    second single-unit route.
+  - `repyability.schedule`: the calendar. Rules, duty plans and
+    `CalendarContext`, which gives an analysis its calendar and each
+    unit its duty plan. The duty plan belongs to the analysis, not to
+    the plan or the diagram.
+  - `RepairableRBD`: only what belongs to the system. Its structure,
+    system downtime and value, crews, spares, the site's shutdowns and
+    common-cause groups. A node takes a `UnitPlan` (or its spec), and a
+    life can be any model with a life's functions, a `NonRepairableRBD`
+    included.
+
+  What is still duplicated is listed in the maintenance README's
+  "Layers" section, so that it goes rather than spreads.
+
 - **Model behaviour belongs in surpyval too.** When a surpyval model
   misbehaves (its draws, means, densities or save format), raise an issue in
   derrynknife/surpyval rather than only working around it here. Keep any
