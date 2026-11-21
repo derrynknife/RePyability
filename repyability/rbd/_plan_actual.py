@@ -171,6 +171,9 @@ def route(rbd, npv_route):
 
     if npv_route.route == r.REFUSED:
         return npv_route
+    own = r.refusal(lambda: _npv.refuse_own_end(rbd))
+    if own is not None:
+        return r.refused(own, tuple(rbd._valuation))
     planned = r.refusal(lambda: _require_no_plans(rbd))
     if planned:
         return r.refused(planned)
@@ -443,6 +446,8 @@ def plan_vs_actual(
     inflation=None,
 ) -> PlanVsActual:
     """See ``RepairableRBD.plan_vs_actual``."""
+    _npv.refuse_own_end(rbd, "plan_vs_actual")
+    escalation = _npv.own_escalation(rbd, escalation)
     money = _npv.Money(
         rbd, discount_rate, value_rate, escalation, rates, inflation
     )

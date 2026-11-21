@@ -706,6 +706,18 @@ def repairable_kinds():
                     prices=Prices(repair=2.0, downtime=1.0),
                 )
             ),
+            # A plan valued alone, with its own money: its salvage, its
+            # prices' growth and its retirement (UC-65 of the maintenance
+            # README), the one node of its diagram.
+            "a plan valued alone": UnitPlan(
+                life,
+                repair,
+                tasks=(AgePolicy(interval=300.0, cost=4.0),),
+                prices=Prices(repair=2.0, downtime=1.0),
+                salvage=3.0,
+                escalation=1e-3,
+                retire_at=250.0,
+            ).diagram(),
             # Replaced at the times of a plan, and after the last no more
             # (block replacement at any list of times).
             "replaced at given times": system(

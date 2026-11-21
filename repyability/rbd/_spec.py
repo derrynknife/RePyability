@@ -71,8 +71,15 @@ COMPONENT_SPEC_KEYS = (
         "duty",
         "covariates",
         "upgrade",
+        "salvage",
+        "escalation",
+        "retire_at",
     )
 )
+
+#: The keys of a component's own money, taken by a valuation
+#: (``expected_npv``) as its arguments of the same names for the node.
+VALUATION_KEYS = ("salvage", "escalation", "retire_at")
 
 #: The keys of a component's ``"upgrade"`` spec.
 UPGRADE_KEYS = ("at", "reliability", "cost")
@@ -1252,6 +1259,47 @@ def _validate_inspection(
         interval, duration, offset, coverage, full_test, **bound
     )
     return schedule, cost
+
+
+def _validate_valuation(node, spec: dict) -> Dict[str, Any]:
+    """A component's own money (``VALUATION_KEYS``), checked: a salvage a
+    finite number or a function of age, an escalation a finite growth
+    rate, a retirement a time more than 0."""
+    out: Dict[str, Any] = {}
+    salvage = spec.get("salvage")
+    if salvage is not None:
+        if not callable(salvage):
+            number = number_or_nan(salvage)
+            if not math.isfinite(number):
+                raise ValueError(
+                    f"The salvage of component {node!r} must be a finite "
+                    "number (what the unit is worth at the end; negative "
+                    "for a cost of disposal) or a function of its age; got "
+                    f"{salvage!r}."
+                )
+            salvage = number
+        out["salvage"] = salvage
+    escalation = spec.get("escalation")
+    if escalation is not None:
+        number = number_or_nan(escalation)
+        if not math.isfinite(number):
+            raise ValueError(
+                f"The escalation of component {node!r} must be a finite "
+                "growth rate per unit time of the models (continuous; 3% "
+                "a year with models in hours is math.log(1.03) / 8760); "
+                f"got {escalation!r}."
+            )
+        out["escalation"] = number
+    retire_at = spec.get("retire_at")
+    if retire_at is not None:
+        number = number_or_nan(retire_at)
+        if not (math.isfinite(number) and number > 0.0):
+            raise ValueError(
+                f"The retire_at of component {node!r} must be a time more "
+                f"than 0 (when the unit is retired); got {retire_at!r}."
+            )
+        out["retire_at"] = number
+    return out
 
 
 def _validate_cost(node, key: str, value) -> float:
