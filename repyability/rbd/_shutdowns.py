@@ -1317,29 +1317,26 @@ def require_exact(rbd) -> None:
 
 def _given_times_refusal(rbd) -> Optional[str]:
     """Why the values over time cannot take a task done at a shutdown at
-    given times, or None: they take a block renewed at each shut (a plan
-    of replacements at its times), not one inspected there (kept unless
-    due, or tested for a hidden failure), which they follow on a
-    period."""
+    given times, or None: they take a block renewed at each shut, or
+    inspected there and kept unless due (stretch by stretch between its
+    times), not one tested there for a hidden failure, which they follow
+    on a period."""
     for node in rbd.components:
-        schedule = rbd._preventive.get(node)
         inspection = rbd._inspection.get(node)
-        for task, what in (
-            (schedule, "inspected at each shut and kept unless it is due"),
-            (inspection, "tested at each shut"),
+        if (
+            inspection is None
+            or inspection.shutdown is None
+            or inspection.times is None
         ):
-            if task is None or task.shutdown is None or task.times is None:
-                continue
-            if task is schedule and schedule.policy == "block":
-                continue
-            return (
-                f"Component {node!r} is {what} of shutdown "
-                f"{task.shutdown!r}, which is at given times; the exact "
-                "methods follow such a block at shuts on a period (and a "
-                "block renewed at every shut at given times too). "
-                "Estimate its values by simulation, with availability() "
-                "or cost()."
-            )
+            continue
+        return (
+            f"Component {node!r} is tested at each shut of shutdown "
+            f"{inspection.shutdown!r}, which is at given times; the exact "
+            "methods follow such a block at shuts on a period (and a "
+            "block renewed, or kept unless it is due, at every shut at "
+            "given times too). Estimate its values by simulation, with "
+            "availability() or cost()."
+        )
     return None
 
 

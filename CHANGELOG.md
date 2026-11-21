@@ -12,6 +12,17 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: a block kept unless it is due (`"older_than"`, or on
+  condition with a threshold) at a shutdown's given times, valued
+  without simulation. Over a horizon, `point_availability`,
+  `mission_availability`, `expected_events`, `expected_cost`,
+  `expected_npv` and the windows follow the condition recursion stretch
+  by stretch, from new or from a state; the units kept at an outage are
+  moved onto the next stretch's grid of ages keeping their mass and mean
+  age. Equally spaced times give the shutdown on that period's values.
+  A block tested at given times stays simulated, and the exact methods
+  say so.
+
 - Added: a value schedule and escalation in the simulated NPV and in
   a plan against what happened (UC-57 of the maintenance README, part
   2). `npv_distribution`, `compare_npv` and `plan_vs_actual` take

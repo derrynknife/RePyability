@@ -2863,8 +2863,14 @@ a task is worth stopping.
     outages of different lengths or scopes (two shutdowns) is not said
     yet. Nor is a restoration to a given virtual age: a job restores by
     a Kijima factor (UC-22).
-  - A block kept unless it is due (`"older_than"`, on condition) or
-    tested at outages at given times is simulated: its recursion is on
+  - A block kept unless it is due (`"older_than"`, on condition) at
+    outages at given times is numerical too: its recursion runs stretch
+    by stretch, the kept units' ages moved onto each stretch's grid
+    keeping their mass and mean age. Equally spaced times give the
+    period's values (within 1.1e-8), a threshold of 0 renewing at every
+    outage, and an age past the horizon no task, to the grid's
+    first-order error (2.2e-7 at 2,000 steps a stretch, halving as the
+    steps double). One tested at them is simulated: its recursion is on
     a period.
   - `cost_by_window` and `expected_npv` could take the simulated mean
     where the exact one refuses, as `cost_by_window` does for its spread.
