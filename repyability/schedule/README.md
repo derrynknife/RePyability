@@ -21,6 +21,24 @@ moved out with the calendar side in October 2026, and return here under
 their own numbers with the answers recorded for them. The use cases in
 model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
 
+## Layers
+
+This module is the calendar layer (`CLAUDE.md`, Architecture). It turns
+dates into model time and back, and it says what each unit's duty is.
+It leaves money to `repyability.value`, a unit's plan to
+`repyability.maintenance` and the system to `RepairableRBD`:
+
+| Question | Where | Use cases |
+|---|---|---|
+| Which dates does a rule give? | `Recurrence` (its `dates`) | UC-2, UC-3, UC-4 |
+| How many operating hours by when? | `DutyPlan`, `UsageForecast` | UC-10 |
+| The calendar an analysis runs on, and each unit's duty plan | `CalendarContext` (taken by `events_by_period` and by `UnitPlan`'s methods as `calendar=`) | UC-64 |
+| A part's failures and costs by month | `failures_by_period` (a `NonRepairable`), or `UnitPlan.failures_by_period` (the diagram's engine) | UC-48 |
+| A system's events and costs by month | `events_by_period` (a `RepairableRBD`) | UC-39, UC-64 |
+
+The duty plan belongs to the analysis: the same diagram or plan runs on
+another site's calendar with other plans.
+
 ## Conventions
 
 - **Dates are whole local dates** (a `datetime.date`, or ISO text such as

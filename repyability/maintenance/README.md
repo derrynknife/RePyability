@@ -22,6 +22,27 @@ plan (UC-19, UC-21, UC-44, UC-46, UC-57 and the others with a
 `discount_rate`) and the calendar's in `repyability/schedule/README.md`
 all go through it.
 
+## Layers
+
+Which module answers which question (the layering in `CLAUDE.md`,
+Architecture):
+
+| Question | Where | Use cases |
+|---|---|---|
+| What is an amount at a time worth now; how do prices grow; what is the cash-flow table? | `repyability.value` | UC-19, UC-57 |
+| What is one unit's plan (life, repairs, tasks, prices, salvage, growth, retirement)? | `repyability.maintenance.UnitPlan` | UC-63 |
+| What is that plan worth alone, its cash flows, spread, plan against actual, long-run cost and best interval? | `UnitPlan`'s methods, each through its one-node diagram | UC-65 |
+| A single part's policies (age, block, calendar, opportunities, next replacement, slack, layered visits) | `NonRepairable` and the functions of this package | UC-5 to UC-18, UC-44, UC-45 |
+| The discounted cost per year of age replacement | `_options.cycle_eac`, one definition for a part and a diagram's component | UC-44 |
+| A unit whose life is a subassembly | a `NonRepairableRBD` as the life | UC-66 |
+| What happens on dates: rules, duty plans, each unit's plan on the calendar | `repyability.schedule` (its README) | UC-10, UC-39, UC-64 there |
+| What belongs to the system: structure, system downtime and value, crews, spares, site shutdowns, common-cause groups | `RepairableRBD` | UC-21, UC-23, UC-46, UC-59 |
+
+Not yet single:
+- a site's shutdowns are both the diagram's `shutdowns=` dicts and `Opportunities`/`ShutdownPolicy`;
+- the calendar's present values (`failures_by_period`) still bracket their discounting where the diagram's are exact;
+- a nested `RepairableRBD`'s costs are not counted in its parent.
+
 ## The use cases, by number
 
 | # | The question here, in model time | State |
@@ -2448,9 +2469,9 @@ shutdowns instead).
 **What was learned.** The spec's keys already were a unit's plan; what
 the plan adds is a name for each task and its clock, and one place a
 unit's maintenance is written down. Salvage, a unit's own escalation and
-retirement are still the analyses' arguments (`expected_npv(salvage=,
-retire_at=, escalation=)`), not the plan's: they join it when a plan is
-valued alone.
+retirement were the analyses' arguments (`expected_npv(salvage=,
+retire_at=, escalation=)`); they joined the plan when a plan was valued
+alone (UC-65).
 
 ### UC-65: "What is this pump's plan worth alone over eight years at 7%, and its cash flows by year?"
 
