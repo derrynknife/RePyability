@@ -195,12 +195,10 @@ def _settings(rbd, horizon, money, contract, mc_samples):
 
 
 def _seed(seed):
-    seed = checks.seed(seed)
-    if seed is None:
-        # The run is made in parts, which share a seed: drawn here, and
-        # kept in the result to repeat the run.
-        seed = int(np.random.SeedSequence().generate_state(1)[0])
-    return seed
+    # The run is made in parts, which share a seed: drawn here (from
+    # numpy's global RNG) if not given, and kept in the result to repeat
+    # the run.
+    return _streams.shared_seed(checks.seed(seed))
 
 
 def priced_chunk(

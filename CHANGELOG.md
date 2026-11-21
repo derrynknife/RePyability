@@ -740,6 +740,14 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- Changed: every result made of several runs on one seed draws that seed
+  the same way when given none: from numpy's global RNG, so
+  `np.random.seed` makes the call repeatable, as it already did for
+  `cost_by_window` and a single run. This covers `npv_distribution`,
+  `compare_npv`, `least_spend_for_downtime`, `best_switch_time`,
+  `RepairOrReplace.unit_decision(s)` with uncertainty and `value_plan`
+  requests, which drew it from the operating system's entropy. Seeded
+  results are unchanged.
 - Changed: one definition of the discounted equivalent annual cost of
   age replacement, `maintenance._options.cycle_eac` (Fox, 1966, with
   every category of a unit's own: its failures' and planned

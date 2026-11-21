@@ -31,6 +31,7 @@ from scipy import stats
 from scipy.optimize import brentq, minimize_scalar
 from scipy.special import roots_hermitenorm, roots_legendre
 
+from repyability.rbd._streams import shared_seed
 from repyability.rbd.results import _ResultMapping
 from repyability.utils import checks
 from repyability.utils.deprecation import refuse_removed_names
@@ -1222,7 +1223,9 @@ class RepairOrReplace:
         mc_samples : int, optional
             The number of parameter draws for the bands, default 500.
         seed : int, optional
-            Seeds the draws, for reproducible bands.
+            Seeds the draws, for reproducible bands. By default one is
+            drawn from numpy's global RNG (``np.random.seed`` makes it
+            repeatable).
 
         Returns
         -------
@@ -1261,10 +1264,11 @@ class RepairOrReplace:
             _DEFAULT_DRAWS if mc_samples is None else mc_samples, "mc_samples"
         )
         seed = checks.seed(seed)
-        if uncertainty and seed is None:
+        if uncertainty:
             # One seed for the unit's draws and the fleet's, so that they
-            # are the same draws.
-            seed = int(np.random.default_rng().integers(2**32))
+            # are the same draws (drawn from numpy's global RNG if not
+            # given).
+            seed = shared_seed(seed)
         failed = bool(just_failed)
         rule, g, _, fleet_age, _, fleet_k, _, notes = self._best(kmax)
         engine = self._engine
@@ -1361,7 +1365,9 @@ class RepairOrReplace:
         mc_samples : int, optional
             The number of parameter draws for the bands, default 500.
         seed : int, optional
-            Seeds the draws; every unit's bands use the same draws.
+            Seeds the draws; every unit's bands use the same draws. By
+            default one is drawn from numpy's global RNG
+            (``np.random.seed`` makes it repeatable).
 
         Returns
         -------
@@ -1398,8 +1404,8 @@ class RepairOrReplace:
                 "ages must be a mapping of each unit's age by its name, got "
                 f"{type(ages).__name__}."
             )
-        if seed is None and uncertainty:
-            seed = int(np.random.default_rng().integers(2**32))
+        if uncertainty:
+            seed = shared_seed(seed)
         return {
             name: self.unit_decision(
                 age,
