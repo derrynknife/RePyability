@@ -42,7 +42,7 @@ records and decides what "today" is.
 | UC-23 | The line is shut 3 days every 12 months, every block gets its PM then and the bearing is replaced if older than X: availability, the shut's share of the downtime and cost, failures between shuts, and whether a 9- or 18-month shut is cheaper | **Built**: `RepairableRBD(shutdowns=...)`, tasks bound with `"shutdown"` and `"older_than"`; exact and numerical |
 | UC-24 | Outages on a timeline: shuts at given times with a duration and a scope (renew some blocks, restore others), the plan's cost by window and its NPV | **Built**: the same `shutdowns` at `"times"`; over a horizon, exact or numerical where every job renews its block (`expected_npv`, `expected_cost`, `expected_events_by_window`), simulated where a job restores part-way; no long run |
 | UC-51 | A part replaced at a list of times in model time (8,000, 14,000 and 26,000 hours) rather than on one interval: its plan's availability, failures, cost and NPV over a horizon | **Built**: a `"preventive"` spec's `"replace_at"`; numerical over a horizon (`expected_npv`, `expected_cost`, `expected_events`, `mission_availability`, `point_availability`), simulated too; the long run refused |
-| UC-52 | Is a mid-life upgrade worth its capital cost, should the system be retired before the horizon, and what is it worth with a salvage value at the end? | **Built**: a component spec's `"upgrade"` (numerical over a horizon; not simulated), and `expected_npv(retire_at=, salvage=)` |
+| UC-52 | Is a mid-life upgrade worth its capital cost, should the system be retired before the horizon, and what is it worth with a salvage value at the end? | **Built**: a component spec's `"upgrade"` (numerical over a horizon, and simulated: `npv_distribution`, `compare_npv`), and `expected_npv(retire_at=, salvage=)` |
 | UC-53 | A protective device tested for a hidden failure at given times (not one interval), from its age, over a window: what each test finds, the time it is failed, the demands that meet it failed, and the plan's cost and present value; and the same never tested | **Built**: `failure_finding_window` (exact at the tests where only a test finds a failure, numerical where a demand shows it; to a stated precision) |
 | UC-25 | How much of the downtime and lost production is planned and how much is from failures, and how many failures the plan avoids against running to failure | **Built**: `RepairableRBD.maintenance_effect`, and the split in `ExpectedEvents`, `EventsByWindow`, `AvailabilityResult` and `CostResult`; exact where the blocks fail independently, simulated otherwise |
 | UC-26 | A pump run part of the time with its overhaul counted in running hours: availability and cost, and at another duty | **Built**: a `"preventive"` or `"inspection"` spec's `"basis": "operating"`, put on the calendar through the block's `"duty"` |
@@ -2881,10 +2881,17 @@ answers back into dates is Reliafy's too.)
   valuation); a constant salvage, `value * exp(-r T)`; a salvage by age
   of a memoryless unit against its age's closed form.
 - **Learned / open questions:**
-  - The simulations draw each component's lives from one model: an
-    upgraded diagram is not simulated yet (`availability`, `cost`,
-    `npv_distribution` refuse, naming the methods that work its values
-    out), so its NPV has no spread yet.
+  - Simulated too (`availability`, `cost`, `npv_distribution`,
+    `compare_npv`, in Python): a life that starts at or after the
+    upgrade's time is the upgrade's, turned from the same uniform of the
+    component's `FAILURE` stream as the old life would have been
+    (`_event_loop._UpgradedComponent`), so an upgrade to the same life is
+    a replacement at its time draw for draw, and `compare_npv` against
+    keeping the old pump matches the runs. The capital cost is charged
+    at its time in every run that reaches it. For the pump above,
+    `compare_npv(kept, 8000, mc_samples=10000, seed=1)` gives the
+    upgrade 864 ± 107 more (958.6 exact), better in 51% of the runs; its
+    own runs' NPV has p10 240,386 and p90 266,604.
   - An upgraded component takes no maintenance or tests of its own yet,
     and the long run, the spares counts and `plan_vs_actual` refuse it.
   - A salvage by age is a plain component's from new; any other takes a

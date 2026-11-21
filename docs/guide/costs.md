@@ -604,8 +604,12 @@ An upgraded component's values over a horizon are worked out
 and from it with the new, as a [replacement at a given
 time](system-maintenance.md#replacement-at-given-times) is. An upgrade
 ends the old life, so the long-run methods refuse, saying to ask for a
-horizon; and the simulations do not follow a change of life yet: they
-refuse too, naming the methods that work the values out. An upgraded
+horizon. The simulations follow it too (`availability`, `cost`,
+`npv_distribution`, `compare_npv`, in Python): a life that starts at or
+after the upgrade's time is drawn from the new model, from the same
+random number the old one would have used, and the capital cost is
+charged at its time. So `compare_npv` against keeping the old component
+gives the upgrade's worth run by run, with its spread. An upgraded
 component takes no maintenance or tests of its own yet.
 
 ### A plan against what happened

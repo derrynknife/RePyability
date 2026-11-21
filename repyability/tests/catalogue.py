@@ -701,7 +701,7 @@ def repairable_kinds():
                 ),
             ),
             # Upgraded at a time: its units have another life from then,
-            # at a capital cost (worked out over a horizon; not simulated).
+            # at a capital cost (worked out over a horizon, and simulated).
             "upgraded at a time": system(
                 unit(
                     upgrade={

@@ -132,6 +132,10 @@ def _unsupported_level(
     if rbd._too_meshed() is not None:
         # Its structure is the graph itself (modular.GraphStructure).
         return "a structure too meshed to work out"
+    if rbd._upgrades:
+        # A unit's life changes at the upgrade (the Python loop's
+        # _UpgradedComponent).
+        return "an upgrade"
     if rbd.ccf_groups:
         return "common-cause groups"
     if _crews._crews_limited(rbd) and not numba:

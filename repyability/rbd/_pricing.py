@@ -303,6 +303,14 @@ def priced(
             None,
         )
         ledger.spans(*spans(system, up=True), value_rate, "value", None)
+    for node, upgrade in getattr(rbd, "_upgrades", {}).items():
+        # An upgrade's capital cost, at its time, in every history.
+        if upgrade.cost and ("capital", node) not in skip:
+            at = np.full(size, upgrade.at)
+            keep = at < ledger.ends[-1]
+            ledger.events(
+                np.arange(size)[keep], at[keep], upgrade.cost, "capital", node
+            )
     # The repair crews' salaries, the same in every history.
     ledger.spans(
         np.arange(size),

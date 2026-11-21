@@ -483,20 +483,6 @@ def _upgraded(rbd) -> str:
     return f"Component {node!r} is upgraded at {upgrade.at:g}"
 
 
-def _require_upgrades_simulated(rbd) -> None:
-    """Raise if a component is upgraded: the simulations draw each
-    component's lives from one model, and do not follow a change of it
-    yet."""
-    if rbd._upgrades:
-        raise NotImplementedError(
-            f"{_upgraded(rbd)} (its units have another life from then), "
-            "which the simulations do not follow yet: its expected "
-            "values over a horizon are worked out, with expected_npv, "
-            "expected_cost, expected_events, mission_availability and "
-            "point_availability."
-        )
-
-
 def _require_no_plans(rbd) -> None:
     """Raise if a component is replaced at the times of a plan, which
     ends, or upgraded at a time: the diagram has then no long run (nor a
