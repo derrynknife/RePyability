@@ -358,12 +358,15 @@ def _validate_process(node, spec: dict):
 
 
 def _kijima_factor(
-    node, given, what: str, at_one: str, also: str = ""
+    node, given, what: str, at_one: str, also: str = "", harmful=False
 ) -> Tuple[str, float]:
     """A Kijima ``(model, q)`` given as a dict of a ``"model"`` and its
-    restoration factor ``"q"`` in [0, 1], checked: ``what`` names it
-    ("repair", "the preventive restoration"), ``at_one`` says what
-    ``q = 1`` is, and ``also`` what else it may be given as."""
+    restoration factor ``"q"``, checked: ``what`` names it ("repair",
+    "the preventive restoration"), ``at_one`` says what ``q = 1`` is,
+    and ``also`` what else it may be given as. ``q`` is in [0, 1], or,
+    with ``harmful`` (a preventive task's restoration), any finite number
+    from 0: above 1, a task that leaves the unit older than it was
+    (harmful or invasive maintenance)."""
     if (
         not isinstance(given, dict)
         or set(given) != {"model", "q"}
@@ -375,15 +378,22 @@ def _kijima_factor(
             f"and its restoration factor 'q'{also}, got {given!r}."
         )
     q = given["q"]
-    if (
-        isinstance(q, bool)
-        or not isinstance(q, (int, float, np.number))
-        or not 0.0 <= float(q) <= 1.0
-    ):
+    number = not isinstance(q, bool) and isinstance(q, (int, float, np.number))
+    most = math.inf if harmful else 1.0
+    if not (number and 0.0 <= float(q) <= most and math.isfinite(float(q))):
+        if harmful:
+            raise ValueError(
+                f"Component {node!r}: the restoration factor q must be "
+                f"a finite number, 0 or more (0 renews the unit, 1 "
+                f"{at_one}, above 1 leaves it older: harmful "
+                f"maintenance), got {q!r}."
+            )
         raise ValueError(
             f"Component {node!r}: the restoration factor q must be "
             f"a number in [0, 1] (0 renews the unit, 1 {at_one}), "
-            f"got {q!r}."
+            f"got {q!r}. Only a preventive task's restoration may be "
+            "above 1 (harmful maintenance): a repair cannot leave a unit "
+            "older than it was."
         )
     return given["model"], float(q)
 
@@ -460,6 +470,7 @@ def _validate_restoration(
             "the preventive restoration",
             "leaves it as old as it was",
             ", or a fitted surpyval GeneralizedRenewal (Kijima I or II)",
+            harmful=True,
         )
     if every is not None:
         if (
