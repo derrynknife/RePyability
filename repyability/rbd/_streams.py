@@ -261,6 +261,19 @@ def entropy_of(seed) -> int:
     return int(np.random.RandomState(seed).randint(0, 2**62, dtype=np.int64))
 
 
+def shared_seed(seed):
+    """The seed for a result made of several runs that must draw the same
+    random numbers (the runs to each window's end, cut from one set of
+    histories): ``seed`` itself, or, if None, one drawn from numpy's
+    global RNG as an unseeded run draws its entropy (seed it for a
+    reproducible one). Each run is then the seeded run of that seed, so
+    an unseeded result is a seeded one of a seed drawn at random, where
+    runs left unseeded each drew their own histories."""
+    if check_seed(seed) is None:
+        return int(np.random.randint(0, 2**32, dtype=np.int64))
+    return seed
+
+
 def seed_entropy(seed: Optional[int] = None) -> int:
     """The entropy a [`RepairableRBD`][repyability.RepairableRBD] run's
     random streams are seeded from, given its seed.
