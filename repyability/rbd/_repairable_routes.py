@@ -36,6 +36,7 @@ from repyability.rbd import (
     _unplanned,
 )
 from repyability.rbd._bayesian_life import PosteriorPredictive
+from repyability.rbd._covariate_schedule import on_clock
 from repyability.rbd._runs import (  # noqa: E402,F401
     _UNSTREAMED,
     failure_criticality_index_per_component_failures,
@@ -763,7 +764,15 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
     # A run of windows: the exact values over time (the window's own
     # route), and for the cost its spread simulated from one seeded run.
     out["expected_events_by_window"] = out["expected_events"]
-    if out["expected_cost"].route not in (r.EXACT, r.NUMERICAL):
+    if on_clock(rbd) and out["cost"].route == r.SIMULATED:
+        out["cost_by_window"] = dataclasses.replace(
+            out["cost"],
+            reason="A life on the diagram's clock has no exact values: each "
+            "window's mean and spread come from the simulations cost runs, "
+            "one seeded set of histories cut at every window's end.",
+            twin="",
+        )
+    elif out["expected_cost"].route not in (r.EXACT, r.NUMERICAL):
         out["cost_by_window"] = out["expected_cost"]
     elif out["cost"].route == r.REFUSED:
         out["cost_by_window"] = out["cost"]

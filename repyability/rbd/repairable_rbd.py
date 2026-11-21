@@ -343,8 +343,17 @@ class RepairableRBD(RBD):
           ``"full_test"``) go onto the clock divided by ``d``. The spec
           keeps them as given, for saving, the levers,
           ``with_intervals`` and the interval choices, which take and
-          give them in operating time. The life must be a surpyval
-          parametric distribution of a time.
+          give them in operating time. The life must be a model that
+          rescales its time (surpyval's ``rescale_time``; with surpyval
+          0.28, a parametric distribution of a time). With no duty, a
+          task in operating time counts the diagram's clock. ``"duty"``
+          may instead be a plan that changes over time, a
+          ``schedule.DutySchedule`` (``UsageForecast.schedule()``): each
+          unit's life is drawn in operating time and put on the clock
+          through the plan from when it is put into service, and a
+          preventive task in operating time falls when the plan reaches
+          it; only the simulations take such a block (see
+          ``schedule.CalendarContext``).
           ``"upgrade"`` gives the component another life from a time: a
           dict of ``"at"`` (the time, in the diagram's time from 0),
           ``"reliability"`` (the life its units have from then: the unit
@@ -903,7 +912,7 @@ class RepairableRBD(RBD):
         # _covariate_schedule); the spec as given keeps the regression
         # model and the schedule, for saving and drawing.
         components = _covariate_schedule.on_schedules(components)
-        components, self._operating_tasks = _on_duty(components)
+        components, self._operating_tasks, clocks = _on_duty(components)
         self.repair_crews = _validate_crews(repair_crews)
         self.crew_cost_rate = _spec._validate_crew_cost(
             crew_cost_rate, self.repair_crews
@@ -989,6 +998,9 @@ class RepairableRBD(RBD):
                     )
                     if cost is not None:
                         node_costs["preventive_cost"] = cost
+                    if name in clocks:
+                        # Counted in operating time on a plan that changes.
+                        schedule = schedule._replace(clock=clocks[name])
                     if (
                         np.isfinite(schedule.interval)
                         or schedule.policy == "calendar"

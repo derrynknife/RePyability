@@ -385,11 +385,16 @@ def test_saving_keeps_the_running_hours_and_the_basis():
 # -- what is refused ---------------------------------------------------------
 
 
-def test_a_task_in_running_hours_needs_a_duty():
+def test_a_task_in_running_hours_with_no_duty_runs_on_the_clock():
+    # The duty plan belongs to the analysis (schedule.CalendarContext):
+    # with none, the diagram's clock is the block's operating time.
     spec = pump(interval=EVERY)
     del spec["duty"]
-    with pytest.raises(ValueError, match="give the block's duty, the share"):
-        RepairableRBD(ONE, {"p": spec})
+    alone = RepairableRBD(ONE, {"p": spec})
+    full = RepairableRBD(ONE, {"p": {**spec, "duty": 1.0}})
+    assert alone._preventive["p"] == full._preventive["p"]
+    assert alone._preventive["p"].interval == EVERY
+    assert alone.mean_availability() == full.mean_availability()
 
 
 def test_a_calendar_policy_is_not_counted_in_running_hours():

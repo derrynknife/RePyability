@@ -39,6 +39,7 @@ from repyability import (
 from repyability.maintenance import AgePolicy, Prices, UnitPlan
 from repyability.rbd import bdd, modular
 from repyability.rbd._usage import has_at_usage
+from repyability.schedule import DutySchedule
 from repyability.tests.test_performance_equivalence import (
     binomial_first,
     instrument_air,
@@ -1057,6 +1058,22 @@ def repairable_kinds():
                     preventive={
                         "interval": 75.0,
                         "basis": "operating",
+                        "cost": 2.0,
+                    },
+                    replace_cost=10.0,
+                )
+            ),
+            # A duty plan that changes over time: lives and tasks in
+            # operating time put on the calendar through it (simulated).
+            "on a duty plan that changes, maintained by running hours": system(
+                unit(
+                    duty=DutySchedule(
+                        "hours", (0.0, 40.0, 100.0), (1.0, 0.0, 0.5)
+                    ),
+                    preventive={
+                        "interval": 75.0,
+                        "basis": "operating",
+                        "duration": E([2.0]),
                         "cost": 2.0,
                     },
                     replace_cost=10.0,
