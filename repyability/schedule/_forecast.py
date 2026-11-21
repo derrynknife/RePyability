@@ -172,6 +172,13 @@ def _accrued_npv(
         accrued, ends, rate, _discount_pieces(ends, float(ends[-1])), tolerance
     )
     by_period = np.diff(present[0], prepend=0.0)
+    # A period with no running accrues nothing: exactly 0, not what its
+    # ends' values leave over in rounding.
+    running = np.diff(
+        usage._at_s("hours", usage._start_s + np.asarray(seconds, float)),
+        prepend=base,
+    )
+    by_period[running <= 0.0] = 0.0
     total = float(present[0, -1])
     if precision > tolerance * abs(total):
         notes.append(
