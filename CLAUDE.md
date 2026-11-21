@@ -635,6 +635,18 @@ What remains (each checked against surpyval 0.28 on 15 Nov 2026):
   scale. Take surpyval's ranges once the minimum surpyval says them.
   (0.27 keeps them private, such as a regression's `_parameter_bounds`.)
 
+- **A share of a model's hazard** (no surpyval issue known yet: a hazard
+  ratio as a model option, with `isf`). A common-cause group splitting
+  the failure rate gives each cause a share `c` of its members' hazard,
+  survival `R(t)^c`, which no surpyval 0.28 model is. `ccf._hazard` and
+  `ccf._rate_causes` work it out from the members' own model as
+  `exp(-c H)` and `-expm1(-c H)` (`H` from whichever of `ff` and `sf`
+  keeps its digits), and `NonRepairableRBD._group_sampler` draws it
+  through the members' quantile function at `-expm1(-e)`, `e` the first
+  of the causes' exponential times. Build each cause's life with
+  surpyval's hazard ratio (`from_params(..., hr=c)`) once the minimum
+  surpyval has it.
+
 - **A joint frailty model's own integration in `RepairOrReplace`**
   (`maintenance/_repair_or_replace.py`). surpyval 0.27's
   `JointFrailtyModel.mcf` fell towards 0 far past the write-off ages;
