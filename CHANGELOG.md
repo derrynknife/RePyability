@@ -12,6 +12,21 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: `shock_nodes(edges, nodes, members, rate, p, lethal_rate)`,
+  shocks that fail each member they reach with a probability (the
+  binomial failure rate model), for a `NonRepairableRBD` whose members
+  have any lives, each its own, at their own ages. Shocks at a constant
+  rate that fail each of `m` members independently with probability `p`
+  are an independent cause for each set of members, at rate `rate p^j
+  (1 - p)^(m - j)` for a set of `j`; the function writes each into the
+  diagram as an exponential node after every member it fails (one
+  component in several places), so every analysis takes them as it
+  takes any repeated node: the reliability, MTTF, B-lives and importance
+  exactly, given each member's age too, and the simulations. For
+  exponential members the values are the alpha-factor group's by rate
+  (to 1e-12). In the guide: "Common causes with wear-out lives and
+  ages".
+
 - Added: common causes for members that wear out and have aged. The
   condition-based methods (`sf_given_state`, `remaining_life`,
   `mean_residual_life`, `importances_given_state`) take a common-cause

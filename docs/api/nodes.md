@@ -44,6 +44,8 @@ models provided here (see [Building an RBD](../guide/building.md) and
 
 ::: repyability.AlphaFactor
 
+::: repyability.shock_nodes
+
 ## Condition-based evaluation
 
 ::: repyability.NodeState
