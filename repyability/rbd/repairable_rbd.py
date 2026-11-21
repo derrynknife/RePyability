@@ -4740,8 +4740,11 @@ class RepairableRBD(RBD):
         A shutdown's cost is charged at each of its starts; a component
         it holds off line is not charged for the hold, and what happens
         to it in the shut (a failure, an opportunistic renewal) is
-        charged as anywhere else. The runs' mean estimates
-        ``expected_npv``'s value, within its confidence interval. It
+        charged as anywhere else. A plan's own ``"retire_at"`` ends the
+        runs there, and its own ``"salvage"`` (a number) is credited to
+        every run at the end, as ``expected_npv`` credits them. The
+        runs' mean estimates ``expected_npv``'s value, within its
+        confidence interval. It
         works for diagrams the exact methods refuse (repair crews with
         other lives, maintenance groups, scheduled covariates,
         opportunistic renewals at shutdowns), as the simulation does.
@@ -4822,7 +4825,9 @@ class RepairableRBD(RBD):
             ``routes.Refused``); or as for ``simulate_timelines``.
         NotImplementedError
             If a cost is charged at events the histories do not record,
-            naming it; or as for ``simulate_timelines``.
+            naming it; if a component has a salvage by age (of its unit
+            in service), or one of several components retires; or as for
+            ``simulate_timelines``.
 
         Examples
         --------
