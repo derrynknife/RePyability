@@ -108,6 +108,10 @@
 
 ::: repyability.run_shard
 
+::: repyability.value_plan
+
+::: repyability.npv_schema
+
 ::: repyability.MaintenancePolicy
 
 ::: repyability.FailureLimitPolicy

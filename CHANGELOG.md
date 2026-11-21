@@ -12,6 +12,18 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: `value_plan(spec)`, an NPV question asked and answered as JSON
+  documents. The request names a diagram (`to_dict()`), the analysis
+  (`expected_npv`, `expected_npv_uncertainty`, `npv_distribution`,
+  `compare_npv`, `plan_vs_actual`) and its inputs by name in plain data
+  (states, timelines, a `ValueSchedule`, escalation, real rates,
+  salvage, retirement); the answer is strict JSON with the request, the
+  units, the route and the result, or the refusal and every NPV
+  analysis's route. Valuing the echoed request gives the same answer (a
+  seed is drawn and recorded for a seeded analysis given none).
+  `npv_schema()` gives the documents' JSON Schema
+  (`repyability/schemas/npv-1.json`).
+
 - Added: block replacement on an upgraded component (UC-60 of the
   maintenance README). A component with an `"upgrade"` may have a
   `"preventive"` of `"policy": "block"` on its own interval: it is
