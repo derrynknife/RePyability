@@ -86,6 +86,8 @@ dev = [
     "pytest-cov>=5.0",
     "coverage>=7.0",
     "pre-commit>=3.0",
+    # The schema of value_plan's documents is checked against its answers.
+    "jsonschema>=4.0",
 ]
 docs = [
     # MkDocs 2.0 removes the plugin system with no migration path (per the
@@ -130,6 +132,7 @@ include = ["repyability*"]
 "repyability.tests" = ["*.json"]
 "repyability.maintenance" = ["README.md", "CALENDAR_DECISIONS.md"]
 "repyability.schedule" = ["README.md"]
+"repyability.schemas" = ["*.json"]
 
 # For Black pre-commit hook
 [tool.black]

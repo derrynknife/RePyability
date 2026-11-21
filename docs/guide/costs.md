@@ -705,6 +705,32 @@ was used and what was read off the logs. A component missing from the logs
 is refused, never taken to have run without failing; one that never went
 down has `Timeline([], end=now)`.
 
+### One call, as JSON
+
+An agent or a service asks an NPV question as one JSON document and gets
+one back: `value_plan` takes the diagram as `to_dict()` saves it, the
+analysis (`expected_npv`, `expected_npv_uncertainty`, `npv_distribution`,
+`compare_npv` with the `"other"` plan, or `plan_vs_actual`) and its
+inputs by name, in plain data, and answers with the request it answers,
+the units, the route and the result's `to_dict()`, or the refusal and
+what to run instead. The request is the record: valuing it again gives
+the same answer (a seeded analysis given no seed has one written in).
+`npv_schema()` gives the JSON Schema of both documents.
+
+```python
+from repyability import value_plan
+
+answer = value_plan({
+    "schema": 1,
+    "diagram": worn_pump().to_dict(),
+    "analysis": "expected_npv",
+    "inputs": {"horizon": horizon, "discount_rate": rate,
+               "value_rate": 40.0},
+})
+answer["route"]["route"]                         # -> 'exact'
+value_plan(answer["request"]) == answer          # -> True
+```
+
 ### Buying redundancy
 
 A redundant copy is bought once and then runs: it fails, is repaired and

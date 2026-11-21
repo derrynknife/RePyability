@@ -89,6 +89,7 @@ from repyability.maintenance import (
 from repyability.network import Network
 from repyability.non_repairable import NonRepairable
 from repyability.rbd._bayesian_life import PosteriorPredictive
+from repyability.rbd._contract import value_plan
 from repyability.rbd._mission_results import (
     MissionDrivers,
     MissionPhaseSummary,
@@ -174,6 +175,7 @@ from repyability.repairable import (
     Repairable,
     minimal_repair_time_to_nth_failure,
 )
+from repyability.schemas import npv_schema
 from repyability.stress_strength import (
     stress_strength,
     stress_strength_over_time,
@@ -331,6 +333,8 @@ __all__ = [
     "TimelineSimulation",
     "SimulationChunk",
     "run_shard",
+    "value_plan",
+    "npv_schema",
     "seed_entropy",
     "model_parameters",
 ]
