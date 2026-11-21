@@ -1347,6 +1347,32 @@ def repairable_kinds():
                     }
                 },
             ),
+            # A block renewed at two shutdowns, a short stop on a period
+            # and longer outages at given times, each renewal taking its
+            # own shut's length: exact over a horizon (no long run).
+            "a block renewed at several shutdowns": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={
+                            "shutdown": ["stop", "outage"],
+                            "cost": 2.0,
+                        },
+                        repair_cost=5.0,
+                    ),
+                    "b": unit(),
+                    "c": unit(),
+                },
+                shutdowns={
+                    "stop": {"period": 100.0, "duration": 1.0, "scope": ["a"]},
+                    "outage": {
+                        "times": [250.0, 640.0],
+                        "duration": 12.0,
+                        "scope": ["a", "c"],
+                        "cost": 30.0,
+                    },
+                },
+            ),
             # Outages at given times that renew a block under age
             # replacement if it is old enough then (simulated).
             "outages renewing opportunistically": RepairableRBD(

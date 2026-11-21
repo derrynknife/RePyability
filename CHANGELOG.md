@@ -12,6 +12,17 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: a part renewed at several shutdowns (UC-59 of the maintenance
+  README). A `"preventive"` spec's `"shutdown"` takes a list of the
+  diagram's shutdowns: the part is renewed at every start of each, each
+  renewal taking its own shut's length. Exact over a horizon
+  (`point_availability`, `mission_availability`, `expected_events`,
+  `expected_cost`, `expected_npv`, the windows), followed stretch by
+  stretch between the merged starts; simulated in Python. The long-run
+  methods and a long-run or in-maintenance state refuse it, and two of
+  its shutdowns may not start together. A list of one name is that
+  shutdown. Saved with the diagram.
+
 - Added: a task that leaves a part as if a given age (UC-58 of the
   maintenance README): a `"preventive"` spec's `"restore_to"`, at a
   shutdown or on the part's own calendar, sets its virtual age to that

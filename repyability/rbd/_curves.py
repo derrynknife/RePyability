@@ -296,6 +296,13 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
             "followed from one shut to the next on a grid, the units kept "
             "by age",
         )
+    if calendar and schedule.shuts is not None:  # type: ignore
+        return (
+            r.NUMERICAL,
+            "block replacement at the starts of several shutdowns: "
+            "followed from one start to the next on a grid, each renewal "
+            "taking its own shut's length",
+        )
     if calendar and schedule.policy == "condition":  # type: ignore
         return (
             r.NUMERICAL,
@@ -1946,8 +1953,11 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     level (``y0`` if new), which its first inspection reads."""
     component = rbd.components[node]
     schedule = rbd._preventive[node]
-    if schedule.times is not None and schedule.policy == "block":
-        # Its own plan's times, or a shutdown's given times.
+    if schedule.policy == "block" and (
+        schedule.times is not None or schedule.shuts is not None
+    ):
+        # Its own plan's times, a shutdown's given times, or the starts of
+        # several shutdowns.
         return _plan_curve(rbd, node, horizon, start)
     duration = schedule.duration
     stationary = start is not None and start.stationary
@@ -2053,10 +2063,10 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     component = rbd.components[node]
     schedule = rbd._preventive[node]
     duration = schedule.duration
-    knots = np.empty(0) if duration is None else point_knots(duration)
-    times = np.asarray(schedule.times, dtype=float)
+    times, taken = _plan_times(schedule, horizon)
     # A shut at 0 does not replace the unit, new or as its state says
     # then: the simulation's tasks fall due after 0 (_Preventive.due).
+    taken = [d for t, d in zip(times, taken) if t > 0.0]
     times = times[times > 0.0]
     if not times.size:
         return _unit_curve(
@@ -2088,13 +2098,28 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
             for begin in edges[: len(lengths)]
         ]
 
+    # The time each stretch's replacement takes, where they differ (the
+    # first's, from new, starts no replacement: it shares the next one's
+    # grid).
+    durations = None
+    if schedule.shuts is not None:
+        durations = ([taken[0]] + taken)[: len(lengths)]
+
     def curve(results, starts):
-        return PlanCurve([BlockCurve(r, knots) for r in results], starts)
+        return PlanCurve(
+            [BlockCurve(r, _knots(r.replace.model)) for r in results],
+            starts,
+        )
 
     if not started:
         return curve(
             plan_availability(
-                *models, lengths, node, last_like=like, lives=lives
+                *models,
+                lengths,
+                node,
+                last_like=like,
+                lives=lives,
+                durations=durations,
             ),
             edges[: len(lengths)],
         )
@@ -2120,9 +2145,36 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
         reached,
         like,
         None if lives is None else lives[1:],
+        None if durations is None else durations[1:],
     )
     tail = curve(results, edges[1 : len(lengths)] - length)  # noqa: E203
     return StartedBlockCurve(head, tail, length)
+
+
+def _knots(duration) -> np.ndarray:
+    """The knots of a replacement's time (none for none)."""
+    return np.empty(0) if duration is None else point_knots(duration)
+
+
+def _plan_times(schedule, horizon: float):
+    """The times a component replaced at given times is replaced at,
+    and the model of the time each takes: its plan's (or a shutdown's)
+    times, each its ``duration``; at several shutdowns (``shuts``), the
+    starts of each in order up to the first after ``horizon`` (enough for
+    the stretches that cover it), each its own shut's."""
+    if schedule.shuts is None:
+        times = np.asarray(schedule.times, dtype=float)
+        return times, [schedule.duration] * len(times)
+    stop = max(horizon, 0.0)
+    starts, models = [], []
+    for shut, model in schedule.shuts:
+        # Up to and including its first start after the horizon.
+        own = shut.starts(np.nextafter(shut.due(stop), np.inf))
+        starts.append(own)
+        models.extend([model] * len(own))
+    times = np.concatenate(starts)
+    order = np.argsort(times, kind="stable")
+    return times[order], [models[i] for i in order]
 
 
 def _first_unit(

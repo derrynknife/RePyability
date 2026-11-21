@@ -2119,6 +2119,10 @@ def _maintained_follow_up(
             source.reset()
         if not event.status:
             # Down for maintenance: back, as new, once it is done.
+            if schedule.shuts is not None:
+                # At several shutdowns: the length of the one starting now.
+                fixed = schedule.duration_at(t)
+                return Event(t + float(fixed.params[0]), node, True, True)
             if isinstance(source, _StreamedComponent):
                 duration = source.maintenance_time()
             else:
@@ -2200,7 +2204,7 @@ def _renewal(
     else:
         # Maintenance that takes time is a planned outage; in zero time
         # the unit is renewed in place, and stays up.
-        event = Event(due, node, schedule.duration is None, True)
+        event = Event(due, node, schedule.duration_at(due) is None, True)
     if node in rbd._early_members or node in rbd._outage_members:
         # Kept, should a stop of its group, or a shutdown, renew it early
         # (see _stop and _outage_renewals).
