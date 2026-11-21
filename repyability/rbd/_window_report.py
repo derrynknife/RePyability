@@ -137,13 +137,21 @@ def cost_by_window(
         raise ValueError(
             f"levels must be percentiles, 0 to 100; got {levels!r}."
         )
-    exact = rbd.expected_cost(
-        stops,
-        working_nodes=working_nodes,
-        broken_nodes=broken_nodes,
-        method=method,
-        state=state,
-    ).mean
+    from ._covariate_schedule import on_clock
+
+    # A life on the diagram's clock has no exact values: the means are
+    # then the simulations' own.
+    exact = (
+        None
+        if on_clock(rbd)
+        else rbd.expected_cost(
+            stops,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            method=method,
+            state=state,
+        ).mean
+    )
     cumulative = []
     for stop in stops:
         run = rbd.cost(
@@ -167,7 +175,7 @@ def cost_by_window(
     return CostByWindow(
         starts=np.concatenate(([0.0], stops[:-1])),
         ends=stops,
-        mean=_between(exact),
+        mean=samples.mean(axis=1) if exact is None else _between(exact),
         simulated_mean=samples.mean(axis=1),
         standard_error=samples.std(axis=1, ddof=1) / math.sqrt(n),
         samples=samples,
