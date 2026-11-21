@@ -12,6 +12,18 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: an upgraded component is simulated (UC-52 of the maintenance
+  README). `availability`, `cost`, `simulate_timelines`,
+  `npv_distribution` and `compare_npv` take a component's `"upgrade"`:
+  a life that starts at or after the upgrade's time is the upgrade's,
+  drawn from the same random number the old life would have taken, so
+  an upgrade to the same life at no cost is a replacement at its time,
+  run for run, and `compare_npv` against keeping the old life matches
+  the runs. The capital cost is charged at its time in every run that
+  reaches it. In Python (the compiled engine leaves an upgrade to it);
+  the long run, the spares counts and `plan_vs_actual` still refuse.
+  Seeded results of diagrams without an upgrade are unchanged.
+
 - Added: a part renewed at several shutdowns (UC-59 of the maintenance
   README). A `"preventive"` spec's `"shutdown"` takes a list of the
   diagram's shutdowns: the part is renewed at every start of each, each

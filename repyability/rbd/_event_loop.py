@@ -570,10 +570,68 @@ class _ScheduledComponent(_ImperfectComponent):
         return self._unit.reliability.life_left(self.now, self.age, u)
 
 
+class _UpgradedComponent(_StreamedComponent):
+    """Stands in during a simulation for an upgraded component (a spec's
+    ``"upgrade"``, see ``_spec._Upgrade``): as ``_StreamedComponent``,
+    but each life is a uniform of its ``FAILURE`` stream turned into a
+    time by the life in service when it starts (the time ``now`` the loop
+    sets before each draw, ``_clock``): the component's own before the
+    upgrade's time ``at``, the upgrade's from it. So an upgrade to the
+    same life is a plain replacement at ``at``, draw for draw. The unit
+    up at ``at`` is replaced then by the component's schedule, and one in
+    a repair is back with the new life once it is repaired. Without
+    streams, each life is drawn by its model from numpy's global RNG."""
+
+    __slots__ = ("now", "_at", "_lives")
+
+    def __init__(self, uniforms, repair, lives, at: float, start=None):
+        super().__init__(uniforms, repair, start=start)
+        self.now = 0.0
+        self._at = at
+        #: The two lives' quantile functions (with streams), or their
+        #: models' draws (without).
+        self._lives = lives
+
+    def next_event(self):
+        if not self._fails_next:
+            return super().next_event()
+        self._fails_next = False
+        life = self._lives[self.now >= self._at]
+        if self._failure is None:
+            return life.draw(), False
+        u = np.array([self._failure.draw()])
+        return float(np.asarray(life(u), dtype=float)[0]), False
+
+
+def _upgraded(rbd, node, run=None, path: tuple = ()) -> _UpgradedComponent:
+    """The stand-in of upgraded component ``node`` (see
+    ``_UpgradedComponent``): its draws from its streams in ``run``, at
+    ``path``, where it has them, else from its models and numpy's global
+    RNG."""
+    component, upgrade = rbd.components[node], rbd._upgrades[node]
+    models = (component.reliability, upgrade.life)
+    uniforms = repair = start = None
+    if run is not None:
+        uniforms = run.stream(path, _streams.FAILURE)
+        repair = run.stream(path, _streams.REPAIR)
+        start = run.stream(path, _streams.START)
+    if uniforms is None or repair is None:
+        return _UpgradedComponent(
+            None,
+            _ModelDraws(component.time_to_replace),
+            tuple(_ModelDraws(model) for model in models),
+            upgrade.at,
+            start,
+        )
+    lives = tuple(stream_sampler(model) for model in models)
+    return _UpgradedComponent(uniforms, repair, lives, upgrade.at, start)
+
+
 def _clock(source, t: float) -> None:
-    """Tell a component on a covariate schedule that its next draw is
-    made at ``t`` (a life starting then); nothing for any other."""
-    if source.__class__ is _ScheduledComponent:
+    """Tell a component on a covariate schedule, or an upgraded one, that
+    its next draw is made at ``t`` (a life starting then); nothing for
+    any other."""
+    if source.__class__ in (_ScheduledComponent, _UpgradedComponent):
         source.now = t
 
 
@@ -969,6 +1027,7 @@ _ACTION_COST_KEYS = ("preventive_cost", "inspection_cost", "replacement_cost")
 
 #: The place of the repair crews' costs among the categories.
 _CREWS = _CATEGORIES.index("crews")
+_CAPITAL = _CATEGORIES.index("capital")
 
 
 def _validate_crews(crews) -> Optional[int]:
@@ -1173,6 +1232,12 @@ def _stream_specs(
             if scheduled(component) is not None:
                 # Uniforms, which its stand-in inverts along the schedule.
                 failure = _uniforms
+            upgrade = rbd._upgrades.get(name)
+            if upgrade is not None:
+                # Uniforms, which its stand-in turns into lives by the
+                # life in service (see _UpgradedComponent).
+                old_and_new = (failure, stream_sampler(upgrade.life))
+                failure = None if None in old_and_new else _uniforms
             repair = stream_sampler(component.time_to_replace)
         if failure is None or repair is None:
             complete = False
@@ -1370,6 +1435,10 @@ def _streamed_components(
                     component, run, prefix + (name,), arrangement
                 )
             )
+            if name in rbd._upgrades:
+                made[id(component)] = _upgraded(
+                    rbd, name, run, prefix + (name,)
+                )
             own = _ccf_groups._own_rate(rbd, name)
             if own is not None and made[id(component)] is component:
                 # Not streamed: its own cause's life all the same.
@@ -2238,6 +2307,7 @@ def _own_sources(rbd, states: Optional[dict] = None) -> dict:
         and not starting
         and not rbd.ccf_groups
         and not timed
+        and not rbd._upgrades
     ):
         return rbd.components
     sources = dict(rbd.components)
@@ -2263,9 +2333,15 @@ def _own_sources(rbd, states: Optional[dict] = None) -> dict:
             model=_duration_model(rbd, node),
             restoration=rbd._restoring.get(node),
         )
+    for node in rbd._upgrades:
+        sources[node] = _upgraded(rbd, node)
     for node in starting:
-        if node in timed or _ccf_groups._own_rate(rbd, node) is not None:
-            continue  # its schedule's, or its own cause's, draws above
+        if (
+            node in timed
+            or node in rbd._upgrades
+            or _ccf_groups._own_rate(rbd, node) is not None
+        ):
+            continue  # its schedule's, upgrade's or own cause's draws
         component = rbd.components[node]
         sources[node] = _StreamedComponent(
             _ModelDraws(component.reliability),
@@ -3250,6 +3326,13 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         charge = rbd.downtime_cost_rate * (t_simulation - system_up)
         rep_cost += charge
         by_category[5] += charge
+        for node, upgrade in rbd._upgrades.items():
+            # An upgrade's capital cost, at its time, in every simulation
+            # that reaches it.
+            if upgrade.cost and upgrade.at < t_simulation:
+                rep_cost += upgrade.cost
+                by_category[_CAPITAL] += upgrade.cost
+                by_node[node] += upgrade.cost
         if crews is not None and crews.call_when:
             # The call-out crew: its fee each time it came, and its rate
             # while it was engaged (see _Crews).

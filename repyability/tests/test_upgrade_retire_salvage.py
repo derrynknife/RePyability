@@ -194,12 +194,6 @@ NO_LONG_RUN = (
     "mission_availability(T), point_availability(t)), or, for the long "
     "run, give the component the life it has after the upgrade."
 )
-NOT_SIMULATED = (
-    "Component 'a' is upgraded at 300 (its units have another life from "
-    "then), which the simulations do not follow yet: its expected values "
-    "over a horizon are worked out, with expected_npv, expected_cost, "
-    "expected_events, mission_availability and point_availability."
-)
 
 
 def test_what_an_upgrade_is_not_taken_with_says_what_to_run():
@@ -210,18 +204,6 @@ def test_what_an_upgrade_is_not_taken_with_says_what_to_run():
     for call, name, message in (
         (lambda: rbd.mean_availability(), "mean_availability", NO_LONG_RUN),
         (lambda: rbd.expected_cost_rate(), "expected_cost_rate", NO_LONG_RUN),
-        (
-            lambda: rbd.availability(100.0, mc_samples=10, seed=1),
-            "availability",
-            NOT_SIMULATED,
-        ),
-        (
-            lambda: rbd.npv_distribution(
-                100.0, discount_rate=0.0, value_rate=1.0, mc_samples=10, seed=1
-            ),
-            "npv_distribution",
-            NOT_SIMULATED,
-        ),
     ):
         with pytest.raises(NotImplementedError) as error:
             call()
@@ -232,6 +214,8 @@ def test_what_an_upgrade_is_not_taken_with_says_what_to_run():
         )
     for name in ("point_availability", "expected_cost", "expected_npv"):
         assert routes[name].route == "numerical"
+    for name in ("availability", "cost", "npv_distribution", "compare_npv"):
+        assert routes[name].route == "simulated"
     with pytest.raises(NotImplementedError, match="expected_events"):
         rbd.spares_demand(100.0)
 
