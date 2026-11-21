@@ -1282,6 +1282,29 @@ and carries on from where it was.
 | `idle_ageing` | True (the default): idle blocks keep ageing; False: they stand still. |
 | `opportunistic` | `{node: age}`, or one age for every block in scope under age replacement: at each shut, a block under its own age replacement that is working and at least that old is renewed then, at its replacement's cost and in its time (its next replacement counts from then). Simulated: the exact methods refuse it, and `availability()` gives the count renewed at each shut (`outage_jobs`). |
 
+**The site's record.** The shuts are the same stops a part's policy
+uses, so they can be given as the site's
+[`Opportunities`](maintenance.md) in model time: each `Opportunity` is
+a shutdown of its name (`period` and `offset`, or `dates` as numbers;
+its `duration`, None taking no time; `takes_down` the nodes it holds
+off line; `idle_ageing` and `opportunistic` as above), and the record's
+`shut_costs` gives each kind's cost. An opportunity's times run both
+ways from its offset, so on the diagram's clock the first is the first
+after 0 (a shut at 0 itself is not taken, as a task due at 0 is not).
+The diagram is then the one the dicts make, value for value and run for
+run, and saves as them. Shuts on real dates are put on the diagram's
+clock with `Opportunities.on_diagram(start, end)`.
+
+```python
+from repyability import Opportunities, Opportunity, RepairableRBD
+
+site = Opportunities(
+    [Opportunity("overhaul", period=8760.0, duration=72.0)],
+    shut_costs={"overhaul": 5000.0},
+)
+line = RepairableRBD(edges, components, shutdowns=site)
+```
+
 **Outages at given times.** A plan of outages is rarely on a period:
 give a shutdown its `times`. Several shutdowns, each with its own times,
 duration, scope and cost, make a list of different outages (their

@@ -12,6 +12,19 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: `RepairableRBD(shutdowns=)` takes the site's `Opportunities`
+  in model time, so a site's shuts are one record for its parts'
+  policies and its diagram: each `Opportunity` is a shutdown of its name
+  (its period and offset or its dates, its duration, None taking no
+  time, `takes_down` as the scope), with the new
+  `Opportunity(idle_ageing=, opportunistic=)` and
+  `Opportunities(shut_costs=)` (the site's own cost of each shut, not a
+  part's price) for what only a diagram uses. The dict form stays as its
+  shorthand: the record gives the diagram its dicts make, with the same
+  values and seeded runs, and saves as them. Shuts on real dates go
+  through `Opportunities.on_diagram`, and a `ShutdownPolicy` is refused,
+  naming the record to give. Saved opportunities without the new options
+  are read as before.
 - Added: `RepairableRBD.least_spend_for_downtime(horizon, limit, ...)`
   and `UnitPlan.least_spend_for_downtime` (UC-68 of the maintenance
   README): the least spend that keeps a bad run's downtime (hours, or

@@ -532,11 +532,18 @@ class RepairableRBD(RBD):
         group's chain followed from every member up. The simulations draw
         each cause as a Poisson process, failing the members it names that
         are up; they need exponential lives alone.
-    shutdowns : dict, optional
+    shutdowns : Opportunities or dict, optional
         Outages planned on a period or at given times that hold the whole
         system, or a named set of its nodes, off line for a fixed time
         (see [Shutdowns](../guide/system-maintenance.md#shutdowns)), by
-        default none: a name and a spec for each, of ``"period"`` and
+        default none: the site's
+        [`Opportunities`][repyability.Opportunities] in model time (each
+        opportunity a shutdown of its name, its ``takes_down`` the scope,
+        its ``idle_ageing`` and ``opportunistic`` as below, a duration of
+        None taking no time, and the record's ``shut_costs`` each shut's
+        cost; on real dates, ``Opportunities.on_diagram`` puts them on
+        the diagram's clock), or, as its shorthand, a name and a spec for
+        each, of ``"period"`` and
         ``"offset"`` (the first shut's start, in ``[0, period)``; 0 puts
         the first at ``period``) or ``"times"`` (the shuts' starts,
         increasing), ``"duration"`` (0 or more, shorter than the period or
@@ -832,7 +839,7 @@ class RepairableRBD(RBD):
         repair_crews: Optional[int] = None,
         maintenance_groups: Optional[dict[Any, dict]] = None,
         ccf_groups: Optional[Sequence[Any]] = None,
-        shutdowns: Optional[dict[Any, dict]] = None,
+        shutdowns: Any = None,
         crew_cost_rate: float = 0.0,
         call_out: Optional[dict] = None,
     ):
@@ -893,6 +900,9 @@ class RepairableRBD(RBD):
             for name, component in components.items()
         }
         ccf_groups = as_groups(ccf_groups) or None
+        # An Opportunities record is read as the dicts it stands for, which
+        # the diagram then keeps and saves.
+        shutdowns = _shutdowns.as_specs(shutdowns)
         self._init_args = {
             "edges": [tuple(e) for e in edges],
             "components": dict(components),
