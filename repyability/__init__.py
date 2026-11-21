@@ -169,6 +169,7 @@ from repyability.rbd.results import (
 )
 from repyability.rbd.routes import AnalysisRoute, AnalysisRoutes
 from repyability.rbd.shards import run_shard
+from repyability.rbd.shocks import shock_nodes
 from repyability.rbd.standby_node import StandbyModel
 from repyability.rbd.value_schedule import ValueSchedule
 from repyability.repairable import (
@@ -216,6 +217,7 @@ __all__ = [
     "MGL",
     "AlphaFactor",
     "CCFGroup",
+    "shock_nodes",
     "minimal_repair_time_to_nth_failure",
     "ComponentOption",
     # Stress-strength interference
