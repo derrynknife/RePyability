@@ -199,6 +199,15 @@ CASES = {
         dict(policy="block", interval=400.0, q=0.5, kijima="kijima1"),
         dict(duration=40.0, repair=50.0),
     ),
+    # Harmful maintenance: a task that leaves the unit older (q > 1).
+    "block, Kijima II, harmful": (
+        dict(policy="block", interval=400.0, q=1.1, kijima="kijima2"),
+        {},
+    ),
+    "age, Kijima I, harmful": (
+        dict(policy="age", interval=300.0, q=1.2, kijima="kijima1"),
+        dict(duration=40.0, repair=50.0),
+    ),
     "on condition, Kijima I": (
         dict(policy="condition", interval=100.0, q=0.3, kijima="kijima1"),
         dict(threshold=0.1),
@@ -455,6 +464,12 @@ def test_the_compiled_engines_hand_it_to_python():
     reason = "partial restoration by preventive maintenance"
     assert _compiled.unsupported(rbd, plan, None) == reason
     assert _compiled.unsupported(rbd, plan, None, numba=True) == reason
+    harmful = unit(
+        {"interval": 400.0, "restoration": {"model": "kijima2", "q": 1.1}}
+    )
+    plan, _ = _event_loop._stream_plan(harmful, 100.0, 1, False)
+    assert _compiled.unsupported(harmful, plan, None) == reason
+    assert _compiled.unsupported(harmful, plan, None, numba=True) == reason
 
 
 def test_a_task_that_restores_uses_no_spare():
@@ -549,11 +564,13 @@ def test_its_restoration_factor_is_a_lever():
     (lever,) = [
         x for x in rbd.levers() if x.name == "preventive.restoration.q"
     ]
-    assert (lever.value, lever.bounds) == (0.3, (0.0, 1.0))
+    assert (lever.value, lever.bounds) == (0.3, (0.0, math.inf))
     moved = rbd.with_levers({lever: 0.8})
     assert moved._restoring["a"].q == 0.8
-    with pytest.raises(ValueError, match="between 0 and 1"):
-        rbd.with_levers({lever: 1.5})
+    # Above 1 is harmful maintenance, a value the spec takes.
+    assert rbd.with_levers({lever: 1.5})._restoring["a"].q == 1.5
+    with pytest.raises(ValueError, match="preventive.restoration.q"):
+        rbd.with_levers({lever: -0.5})
 
 
 @pytest.mark.parametrize(
@@ -564,8 +581,15 @@ def test_its_restoration_factor_is_a_lever():
             "restoration must be a dict of a 'model'.*GeneralizedRenewal",
         ),
         (
-            {"interval": 400.0, "restoration": {"model": "kijima1", "q": 2}},
-            "q must be a number in \\[0, 1\\].*as old as it was",
+            {"interval": 400.0, "restoration": {"model": "kijima1", "q": -1}},
+            "q must be a finite number, 0 or more.*as old as it was.*harmful",
+        ),
+        (
+            {
+                "interval": 400.0,
+                "restoration": {"model": "kijima2", "q": math.inf},
+            },
+            "q must be a finite number, 0 or more",
         ),
         (
             {"interval": 400.0, "replace_every": 3},
@@ -732,3 +756,104 @@ def test_a_run_conditioned_on_its_module_agrees_with_a_plain_one():
         abs(conditioned.mean_availability - plain.mean_availability)
         <= Z * error
     )
+
+
+# Harmful maintenance (q > 1): a task that leaves the unit older than it
+# was. Weibull(1000, 2.5) served every 250 h in no time, repairs instant.
+SERVICE = 250.0
+
+
+def harmful(q, model, **more):
+    return unit(
+        {
+            "interval": SERVICE,
+            "policy": "block",
+            "restoration": {"model": model, "q": q},
+        },
+        **more,
+    )
+
+
+def survives_tasks(q, model, until=1000.0):
+    """The chance of no failure by ``until`` with tasks every ``SERVICE``,
+    from Kijima's definition: each piece adds ``H(v + x) - H(v)``."""
+
+    def H(x):
+        return (x / ALPHA) ** BETA
+
+    v, t, total = 0.0, 0.0, 0.0
+    while t < until:
+        x = min(SERVICE, until - t)
+        total += H(v + x) - H(v)
+        v = q * (v + x) if model == "kijima2" else v + q * x
+        t += x
+    return math.exp(-total)
+
+
+def test_harmful_tasks_against_the_closed_form():
+    # The hand-worked values of UC-62.
+    assert survives_tasks(1.1, "kijima2") == pytest.approx(0.295142, abs=5e-7)
+    assert survives_tasks(1.1, "kijima1") == pytest.approx(0.326487, abs=5e-7)
+    # q = 1 is the unit with no service: exp(-H(1000)) = exp(-1).
+    for model in ("kijima1", "kijima2"):
+        assert survives_tasks(1.0, model) == pytest.approx(
+            math.exp(-1.0), rel=1e-14
+        )
+    n = 4000
+    for model in ("kijima1", "kijima2"):
+        run = harmful(1.1, model, repair_cost=1.0).cost(
+            1000.0, mc_samples=n, seed=21, control_variate=False
+        )
+        p = survives_tasks(1.1, model)
+        error = math.sqrt(p * (1.0 - p) / n)
+        assert abs(np.mean(run.samples == 0.0) - p) <= Z * error
+
+
+def test_at_one_kijima_one_and_two_are_the_same_runs():
+    # v + 1 x and 1 (v + x) are the same number, so the runs agree to the
+    # bit; and they are the failures of no service (the renewal function).
+    runs = [
+        harmful(1.0, model, repair_cost=1.0).cost(
+            3000.0, mc_samples=2000, seed=8, control_variate=False
+        )
+        for model in ("kijima1", "kijima2")
+    ]
+    assert np.array_equal(runs[0].samples, runs[1].samples)
+
+
+@pytest.mark.parametrize("model", ["kijima1", "kijima2"])
+def test_failures_and_cost_rise_with_q_above_one(model):
+    n = 4000
+    failures, costs = [], []
+    for q in (1.0, 1.1, 1.2):
+        run = harmful(q, model, repair_cost=1.0).cost(
+            3000.0, mc_samples=n, seed=8, control_variate=False
+        )
+        failures.append(run)
+        costs.append(
+            harmful(q, model, repair_cost=400.0)
+            .cost(3000.0, mc_samples=n, seed=8, control_variate=False)
+            .mean
+        )
+    for lower, higher in zip(failures, failures[1:]):
+        error = math.sqrt(
+            lower.samples.var(ddof=1) / n + higher.samples.var(ddof=1) / n
+        )
+        assert higher.mean - lower.mean > Z * error
+    assert costs[0] < costs[1] < costs[2]
+
+
+def test_a_repair_keeps_its_factor_in_zero_to_one():
+    with pytest.raises(
+        ValueError, match="Only a preventive task's restoration may be above 1"
+    ):
+        RepairableRBD(
+            EDGES,
+            {
+                "a": {
+                    "reliability": LIFE,
+                    "repairability": "instant",
+                    "repair": {"model": "kijima1", "q": 1.1},
+                }
+            },
+        )

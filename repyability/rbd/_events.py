@@ -762,8 +762,9 @@ class _Restoration(NamedTuple):
     """A component's preventive maintenance that restores it only partly
     (a ``"preventive"`` spec's ``"restoration"``): ``kijima``
     (``"kijima1"`` or ``"kijima2"``) and its restoration factor ``q`` (0
-    as new, 1 as bad as old), or ``"to_age"`` and the virtual age ``q``
-    every task leaves the unit at (``"restore_to"``); and the task,
+    as new, 1 as bad as old, above 1 older than it was), or
+    ``"to_age"`` and the virtual age ``q`` every task leaves the unit at
+    (``"restore_to"``); and the task,
     counting from the unit's last renewal, that replaces it as new
     instead (``"replace_every"``; None for never)."""
 

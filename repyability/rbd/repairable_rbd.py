@@ -241,7 +241,9 @@ class RepairableRBD(RBD):
           partly, by Kijima's virtual-age models, under the ``"age"``,
           ``"block"`` and ``"condition"`` policies: a dict of a
           ``"model"``, ``"kijima1"`` or ``"kijima2"``, and a restoration
-          factor ``"q"`` in [0, 1] (as ``"repair"`` takes them), or a
+          factor ``"q"`` of 0 or more (``"repair"`` takes it in [0,
+          1]; above 1, each task leaves the unit older than it was,
+          harmful or invasive maintenance), or a
           fitted surpyval ``GeneralizedRenewal``, whose Kijima model and
           restoration factor are taken. A task after the unit has
           operated ``x`` since its last action (a repair, a task, or put
