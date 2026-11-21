@@ -49,6 +49,7 @@ from repyability.rbd.results import (
     ControlVariate,
     CostResult,
 )
+from repyability.value._categories import CATEGORIES as _CATEGORIES
 
 if TYPE_CHECKING:
     from repyability.rbd.repairable_rbd import RepairableRBD
@@ -785,26 +786,6 @@ def _shard_bytes(template: dict, start: int, stop: int) -> bytes:
     """A shard (see ``RepairableRBD.shards``): the run's ``template`` with
     the range of its simulations, as JSON."""
     return json.dumps({**template, "start": start, "stop": stop}).encode()
-
-
-#: The cost categories, in the order ``CostResult.by_category`` lists them.
-_CATEGORIES = (
-    "repair",
-    "replace",
-    "preventive",
-    "inspection",
-    "component_downtime",
-    "system_downtime",
-    "setup",
-    # Appended: the categories' places index the engines'
-    # arrays and seeded costs, so a new one goes at the end.
-    "shutdown",
-    # The repair crews' salaries: no engine charges them (they are the
-    # same in every simulation), the tally does (``charge_crews``).
-    "crews",
-    # An upgrade's capital cost, at its time: worked out, not simulated.
-    "capital",
-)
 
 
 # The category of a repair's own cost (all an imperfect repair is charged).

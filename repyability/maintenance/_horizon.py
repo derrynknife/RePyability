@@ -37,15 +37,12 @@ from repyability.maintenance._shutdowns import (
     _Layout,
     _money,
 )
+from repyability.value._rates import continuous as _rate
+from repyability.value._rates import equivalent as _equivalent
 
 #: The horizon is moved on by at least this many years to see which
 #: decisions depend on where it ends.
 LATER_YEARS = 5.0
-
-
-def _rate(discount: float) -> float:
-    """A yearly discount rate as a continuous one."""
-    return math.log1p(float(discount))
 
 
 def _grid_setup(layout: _Layout, end: float):
@@ -916,16 +913,6 @@ def _model_solve(
         grid, ages, failure, n, beta, rule
     )
     return v, first, kinds, costs, upper, grid, ages, n
-
-
-def _equivalent(npc: float, rate: float, length: float) -> float:
-    """The steady cost a unit of time over ``length`` worth ``npc`` at the
-    continuous ``rate`` (``npc / length`` at 0)."""
-    if rate > 0.0 or (rate < 0.0 and math.isfinite(length)):
-        # (Below 0, a net rate of costs that grow faster than the
-        # discount, over a finite length.)
-        return rate * npc / -math.expm1(-rate * length)
-    return npc / length
 
 
 def model_horizon_policy(
