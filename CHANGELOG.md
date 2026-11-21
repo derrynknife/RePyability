@@ -12,6 +12,16 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: maintenance that does harm (UC-62 of the maintenance README).
+  A `"preventive"` spec's `"restoration"` takes a restoration factor `q`
+  above 1, a task that leaves the unit older than it was (Kijima II with
+  `q = 1.1` takes the virtual age to `1.1 (v + x)`), where it was held
+  to [0, 1]; the lever `preventive.restoration.q` ranges from 0 up. A
+  repair's `q` stays in [0, 1], and its refusal now says only a task's
+  may be above 1. `q = 1` gives the failures of no service; with
+  `compare_npv` against the plan without the task, a plan shows whether
+  a task is worth stopping. Simulated as any restoration (in Python).
+
 - Added: `shock_nodes(edges, nodes, members, rate, p, lethal_rate)`,
   shocks that fail each member they reach with a probability (the
   binomial failure rate model), for a `NonRepairableRBD` whose members

@@ -271,7 +271,15 @@ def _spec_levers(spec: dict) -> List[tuple]:
 
             q = float(restoration["q"])
             out.append(
-                (f"{key}.restoration.q", q, moved_restoration, False, _UNIT, q)
+                (
+                    f"{key}.restoration.q",
+                    q,
+                    moved_restoration,
+                    False,
+                    # Above 1, a task that ages the unit (harmful).
+                    (0.0, math.inf),
+                    q,
+                )
             )
         duration = options.get("duration")
         if duration is not None and not isinstance(duration, str):

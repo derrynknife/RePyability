@@ -724,10 +724,30 @@ interval is chosen by simulating each, with one seed:
   state, the simulations take its `virtual_age` at its last action and
   its `age` since (and `since_scheduled` on a calendar), but not with
   `replace_every`, whose count a state does not give. `q` is a lever
-  (`preventive.restoration.q`, from 0 to 1).
+  (`preventive.restoration.q`, from 0 up).
 - Not taken with a `"calendar"` policy (worked out for a unit renewed at
   each replacement), a `"level"` (a degradation level is not a virtual
   age), or an `"opportunity"`.
+
+#### Maintenance that does harm
+
+A task can leave a unit *older* than it was: a seal reseated, a bearing
+taken apart and put back, a service that disturbs what was running well.
+A preventive `"restoration"` takes a `q` above 1 for that, and Kijima's
+models read as before: under Kijima II, `q = 1.1` makes the virtual age
+`1.1 (v + x)`; under Kijima I it adds `1.1 x`, more than the time run.
+`q = 1` is a service that changes nothing, and gives the failures of no
+service at all. Only a task's `q` may be above 1: a repair's stays in
+`[0, 1]`.
+
+This is how harmful or invasive maintenance is modelled, from a factor
+fitted to the unit's history (surpyval's `GeneralizedRenewal` can find
+one above 1) or stated as an assumption. Its failures and cost rise with
+`q`, and [`compare_npv`][repyability.RepairableRBD.compare_npv] of the
+plan against the same plan without the task shows whether the task is
+worth stopping: in UC-62 of the maintenance use cases, a 250-hour
+service with Kijima II `q = 1.1` is worth about -919 over a year at 7%
+against no service, where one with `q = 0.5` is worth about +1,529.
 
 ## Hidden failures and inspection
 
