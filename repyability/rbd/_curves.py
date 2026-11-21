@@ -51,6 +51,7 @@ from repyability.rbd._common import (
 from repyability.rbd._condition_replacement import (
     ConditionHead,
     condition_availability,
+    condition_plan_availability,
 )
 from repyability.rbd._covariate_schedule import scheduled
 from repyability.rbd._hidden_life import (
@@ -1953,13 +1954,17 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     level (``y0`` if new), which its first inspection reads."""
     component = rbd.components[node]
     schedule = rbd._preventive[node]
-    if schedule.policy == "block" and (
-        schedule.times is not None
-        or schedule.shuts is not None
-        or schedule.upgrade_at is not None
-    ):
-        # Its own plan's times, a shutdown's given times, or the starts of
-        # several shutdowns.
+    if (
+        schedule.policy == "block"
+        and (
+            schedule.times is not None
+            or schedule.shuts is not None
+            or schedule.upgrade_at is not None
+        )
+    ) or (schedule.policy == "condition" and schedule.times is not None):
+        # Its own plan's times, a shutdown's given times (renewed there,
+        # or inspected and kept unless due), or the starts of several
+        # shutdowns.
         return _plan_curve(rbd, node, horizon, start)
     duration = schedule.duration
     stationary = start is not None and start.stationary
@@ -2113,18 +2118,30 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
             starts,
         )
 
-    if not started:
-        return curve(
-            plan_availability(
+    def followed(lengths, head=None):
+        if schedule.policy == "condition":
+            # Inspected at each time and kept unless due.
+            return condition_plan_availability(
                 *models,
                 lengths,
+                float(schedule.threshold),
                 node,
+                head,
+                older_than=schedule.older_than,
                 last_like=like,
-                lives=lives,
-                durations=durations,
-            ),
-            edges[: len(lengths)],
+            )
+        return plan_availability(
+            *models,
+            lengths,
+            node,
+            head,
+            like,
+            None if lives is None else lives[-len(lengths) :],  # noqa
+            None if durations is None else durations[-len(lengths) :],  # noqa
         )
+
+    if not started:
+        return curve(followed(lengths), edges[: len(lengths)])
     assert start is not None
     length = float(times[0])
     head = _unit_curve(
@@ -2137,18 +2154,20 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     def failures(u):
         return head.events(np.asarray(u, dtype=float))["failures"]
 
-    reached = BlockHead(
-        length, float(head.at(np.array([length]))[0]), failures, down_sf
-    )
-    results = plan_availability(
-        *models,
-        lengths[1:],
-        node,
-        reached,
-        like,
-        None if lives is None else lives[1:],
-        None if durations is None else durations[1:],
-    )
+    up = float(head.at(np.array([length]))[0])
+    reached: Any
+    if schedule.policy == "condition":
+        first = None
+        if start.alive:
+            # The unit in service now, if unfailed by the first
+            # inspection, and its age there.
+            ages = float(start.age) + np.array([0.0, length])
+            alive = _sf_values(component.reliability.sf, ages)
+            first = (float(alive[1] / alive[0]), float(ages[1]))
+        reached = ConditionHead(length, up, failures, down_sf, first)
+    else:
+        reached = BlockHead(length, up, failures, down_sf)
+    results = followed(lengths[1:], reached)
     tail = curve(results, edges[1 : len(lengths)] - length)  # noqa: E203
     return StartedBlockCurve(head, tail, length)
 
