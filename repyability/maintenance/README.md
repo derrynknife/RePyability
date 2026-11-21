@@ -66,6 +66,7 @@ all go through it.
 | UC-65 | One pump's plan valued alone: its NPV over eight years at 7%, its cash flows by year, its spread, its plan against what happened, its long-run cost and best interval; with its salvage, its prices' growth and its retirement on the plan | **Built**: `UnitPlan.expected_npv`, `cash_flows`, `npv_distribution`, `plan_vs_actual`, `expected_cost`, `expected_cost_rate`, `events_by_period`, `failures_by_period`, `optimal_replacement_interval`, `optimal_inspection_interval` and `analysis_routes`, each its one-node diagram's (`UnitPlan.diagram`), on a `CalendarContext` if given; `UnitPlan(salvage=, escalation=, retire_at=)` and the spec keys of the same names |
 | UC-59 | A part renewed at a short stop every month and again at the long yearly overhaul, each renewal as long as its shut | **Built**: a `"preventive"` spec's `"shutdown"` as a list of shutdowns, exact over a horizon |
 | UC-60 | A part upgraded in year 3 and block-replaced before and after, the new model on the same interval | **Built**: an `"upgrade"` with a `"preventive"` block policy, numerical over a horizon and simulated |
+| UC-64 | What a part costs per year once upgraded: the long run of the diagram with the new life, the time before the upgrade ignored | **Built**: the long-run methods of a diagram with an `"upgrade"` give the values of the diagram after it |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -3007,8 +3008,14 @@ system, are left for later.
     outages of different lengths or scopes (two shutdowns) is not said
     yet. Nor is a restoration to a given virtual age: a job restores by
     a Kijima factor (UC-22).
-  - A block kept unless it is due (`"older_than"`, on condition) or
-    tested at outages at given times is simulated: its recursion is on
+  - A block kept unless it is due (`"older_than"`, on condition) at
+    outages at given times is numerical too: its recursion runs stretch
+    by stretch, the kept units' ages moved onto each stretch's grid
+    keeping their mass and mean age. Equally spaced times give the
+    period's values (within 1.1e-8), a threshold of 0 renewing at every
+    outage, and an age past the horizon no task, to the grid's
+    first-order error (2.2e-7 at 2,000 steps a stretch, halving as the
+    steps double). One tested at them is simulated: its recursion is on
     a period.
   - `cost_by_window` and `expected_npv` could take the simulated mean
     where the exact one refuses, as `cost_by_window` does for its spread.
@@ -3175,6 +3182,34 @@ system, are left for later.
   part, its long run after the upgrade, its spares and `plan_vs_actual`,
   and retiring a single part (`retire_at={node: t}`) are left for a
   later use case.
+
+### UC-64: "Once the pump is upgraded, what does it cost per year?"
+
+- **Status:** built: the long-run methods of a diagram with an
+  `"upgrade"` (`mean_availability`, `expected_cost_rate`, the importance
+  measures by default, `replacement_cycle`, ...) give the long run once
+  upgraded.
+- **Who asks, what they know, what they want back:** the planner of
+  UC-60, who has the upgrade over a horizon and wants the steady state
+  after it: the availability and cost rate the plant settles to with
+  the new model, to set a budget per year.
+- **How it is solved:** after its upgrade a component has the new life
+  for ever, so the long run is that of the diagram built with the new
+  life (its block replacement kept), the time before the upgrade and
+  its capital cost ignored. The long-run methods are asked of that
+  diagram, which the diagram builds once. Asked over time (`x`,
+  `window` or `state`), the measures follow the upgrade as before.
+  `total_cost(horizon)`, the long-run rate times a horizon from 0,
+  stays refused: the horizon starts before the upgrade.
+- **Today (by hand, before it was built):** the long run was refused;
+  the second diagram, built by hand with the new life, gave it.
+- **Checks:** `test_upgrade_long_run.py`: each long-run method equals
+  the diagram built with the new life (to 1e-12), with and without
+  block replacement; a memoryless unit's `mu / (lambda' + mu)`; the
+  routes say so; values over time still follow the upgrade.
+- **Learned / open questions:** age replacement and tests on an
+  upgraded part, its spares counts and `plan_vs_actual` across the
+  upgrade, and retiring a single part are still open.
 
 ### UC-61: "Our plan has two outages a year that cost 300 each, and at each we renew the pump if it is past 500 hours. The expected NPV is fine; how bad could a run be?"
 

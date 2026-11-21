@@ -936,4 +936,18 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
     # What the plan does (planned against unplanned, failures avoided):
     # from the routes above, the plan's and running to failure's.
     out["maintenance_effect"] = _unplanned.effect_route(rbd, out)
+    if rbd._upgrades:
+        # The long run is the diagram's after its upgrades: its methods
+        # are asked of it (see _long_run.follows_upgrades).
+        after = _long_run.after_upgrades(rbd).analysis_routes()
+        for name in _long_run.ROUTED_AFTER_UPGRADES:
+            route = after[name]
+            if route.route != r.REFUSED:
+                route = dataclasses.replace(
+                    route,
+                    reason="The long run once upgraded (each upgraded "
+                    "component with its new life, the time before its "
+                    f"upgrade ignored): {route.reason}",
+                )
+            out[name] = route
     return r.AnalysisRoutes(sorted(out.items()))

@@ -28,6 +28,27 @@ release between minors that only adds (0.19.1).
   retirement in `npv_distribution`, `compare_npv`, `best_switch_time`
   and `plan_vs_actual`, are refused, saying what to use.
 
+- Added: the long run of a diagram with an upgrade (UC-64 of the
+  maintenance README): `mean_availability`, `expected_cost_rate`,
+  `node_availability`, the importance measures (by default, in the long
+  run), `replacement_cycle` and the other long-run methods give the
+  values once upgraded, those of the diagram built with each upgraded
+  component's new life (its block replacement kept, the time before the
+  upgrade and its capital cost ignored), where they refused. Asked over
+  time, the measures follow the upgrade as before; `total_cost` still
+  refuses, its horizon starting before the upgrade.
+
+- Added: a block kept unless it is due (`"older_than"`, or on
+  condition with a threshold) at a shutdown's given times, valued
+  without simulation. Over a horizon, `point_availability`,
+  `mission_availability`, `expected_events`, `expected_cost`,
+  `expected_npv` and the windows follow the condition recursion stretch
+  by stretch, from new or from a state; the units kept at an outage are
+  moved onto the next stretch's grid of ages keeping their mass and mean
+  age. Equally spaced times give the shutdown on that period's values.
+  A block tested at given times stays simulated, and the exact methods
+  say so.
+
 - Added: each unit's own duty plan on the calendar (UC-64 of the
   schedule README). A block's `"duty"` takes a `DutySchedule` (the
   shares of the time it runs over the diagram's clock, from
@@ -738,6 +759,29 @@ release between minors that only adds (0.19.1).
   their last bits. `scripts/bdd_benchmark.py` measures what the diagrams
   cost: at the step limit the search holds some hundreds of megabytes at
   most, so the steps, not the memory, are what stops a core.
+- Changed: `events_by_period`'s and `failures_by_period`'s notes, their
+  docstrings and the schedule guide say that with `discount=` the
+  costs by period (`cost`'s mean and range, `expected_cost`) stay
+  undiscounted, the present values being `expected_npv` and `npv`; the
+  note read as if `cost` were discounted. The values are unchanged.
+- Changed: `RepairableRBD`'s docstring and the costs guide say that a
+  component's `"downtime_cost"` and the system's `downtime_cost_rate`
+  add up (an hour a series component is down costs both), so lost
+  output is priced in one of them. No behaviour changes.
+
+### Fixed
+
+- Fixed: `RepairableRBD.cost_by_window` (and `events_by_period` with
+  `cost=True`) without a seed gave windows that cost less than nothing
+  in some simulations (on one diagram some 3,700 of 26,000, down to
+  -309,000). A window's cost is a simulation's cost to its end less its
+  cost to its start, which needs every end's run to draw the same
+  histories; a seeded call did, but an unseeded one let each run draw
+  its own. An unseeded call now draws one seed (from numpy's global
+  random number generator) for all its runs, so it is the seeded call
+  of that seed: never below 0, and the windows add to one run. Seeded
+  results are unchanged. `events_by_period` likewise seeds its
+  histories, costs and simulated present values once.
 
 ## [0.19.1] - 2026-11-16
 

@@ -244,3 +244,105 @@ def test_the_same_seed_gives_the_same_answer():
     a = bearing().cost_by_window(width=100.0, count=3, mc_samples=200, seed=5)
     b = bearing().cost_by_window(width=100.0, count=3, mc_samples=200, seed=5)
     np.testing.assert_array_equal(a.samples, b.samples)
+
+
+def compressor_and_filters():
+    """A compressor feeding two filters in parallel, each run two thirds
+    of the time, with lost output priced: a user's case, whose unseeded
+    windows cost less than nothing in some simulations."""
+    sigma = 0.5
+    comp = {
+        "reliability": W([6000.0, 2.5]),
+        "repairability": surv.LogNormal.from_params(
+            [np.log(24.0) - sigma**2 / 2, sigma]
+        ),
+        "repair_cost": 15000.0,
+        "duty": 2 / 3,
+    }
+    filt = {
+        "reliability": E([1 / 4000.0]),
+        "repairability": E([1 / 12.0]),
+        "duty": 2 / 3,
+    }
+    return RepairableRBD(
+        [("s", "c"), ("c", "fA"), ("c", "fB"), ("fA", "t"), ("fB", "t")],
+        {"c": comp, "fA": dict(filt), "fB": dict(filt)},
+        downtime_cost_rate=2000.0,
+    )
+
+
+def unseeded(call, k):
+    """``call()`` with numpy's global RNG seeded with ``k`` (restored
+    after), and the seed an unseeded call draws from it."""
+    from repyability.rbd._streams import shared_seed
+
+    kept = np.random.get_state()
+    try:
+        np.random.seed(k)
+        drawn = shared_seed(None)
+        np.random.seed(k)
+        return call(), drawn
+    finally:
+        np.random.set_state(kept)
+
+
+def test_an_unseeded_call_cuts_one_set_of_histories():
+    # Each window's run drew its own histories when no seed was given, so
+    # a window's cost (a run to its end less a run to its start) was
+    # often below 0: about 3,700 of 26,000 here, the least -309,000.
+    rbd = compressor_and_filters()
+    ends = [216.0, 960.0, 1704.0, 2376.0, 3120.0, 3840.0]
+    out, drawn = unseeded(lambda: rbd.cost_by_window(ends, mc_samples=500), 11)
+    assert out.samples.min() >= 0.0
+    # The seeded call of the seed drawn: the same histories.
+    seeded = rbd.cost_by_window(ends, mc_samples=500, seed=drawn)
+    np.testing.assert_array_equal(out.samples, seeded.samples)
+    run = rbd.cost(
+        ends[-1],
+        mc_samples=500,
+        seed=drawn,
+        control_variate=False,
+        conditional=False,
+    )
+    np.testing.assert_allclose(out.samples.sum(axis=0), run.samples)
+
+
+def test_an_unseeded_forecast_is_a_seeded_one():
+    from repyability.schedule import (
+        CalendarContext,
+        DutyPlan,
+        Shifts,
+        UsageForecast,
+        events_by_period,
+    )
+
+    frame = UsageForecast.calendar("2027-01-01", "2027-04-01")
+    shifts = DutyPlan(Shifts("Mon-Fri", "06:00", "22:00")).forecast(
+        "2027-01-01", "2027-04-01"
+    )
+    spec = {
+        "reliability": W([300.0, 2.0]),
+        "repairability": E([0.125]),
+        "repair_cost": 100.0,
+    }
+    rbd = RepairableRBD([("s", "a"), ("a", "t")], {"a": spec})
+
+    def months(seed=None):
+        return events_by_period(
+            rbd,
+            CalendarContext(frame, {"a": shifts}),
+            cost=True,
+            discount=0.07,
+            mc_samples=300,
+            seed=seed,
+        )
+
+    out, drawn = unseeded(months, 4)
+    assert out.cost.samples.min() >= 0.0
+    assert np.all(out.expected_npv >= 0.0)
+    seeded = months(drawn)
+    np.testing.assert_array_equal(out.cost.samples, seeded.cost.samples)
+    np.testing.assert_array_equal(out.expected_npv, seeded.expected_npv)
+    np.testing.assert_array_equal(
+        out.events.node_failures["a"], seeded.events.node_failures["a"]
+    )
