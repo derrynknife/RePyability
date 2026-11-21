@@ -363,9 +363,10 @@ class RepairableRBD(RBD):
           ``"reliability"`` (the life its units have from then: the unit
           in service is replaced by one of it, in no time) and ``"cost"``
           (the capital cost, charged then under ``"capital"``). Its
-          values over a horizon are worked out; the long run and the
-          simulations refuse it, and it takes no maintenance or tests of
-          its own yet (see the guide's "Upgrades, retirement and
+          values over a horizon are worked out, and the long-run methods
+          give the long run once upgraded (the diagram with the new
+          life); it takes no maintenance or tests of its own but block
+          replacement yet (see the guide's "Upgrades, retirement and
           salvage").
           ``"covariates"``, a surpyval ``StepSchedule``, runs a block
           whose ``"reliability"`` is a fitted surpyval regression model
@@ -1378,6 +1379,7 @@ class RepairableRBD(RBD):
             )
         )
 
+    @_long_run.follows_upgrades
     def expected_cost_rate(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -2152,6 +2154,7 @@ class RepairableRBD(RBD):
             value_rate=value_rate,
         )
 
+    @_long_run.follows_upgrades
     def availability_allocation(
         self,
         target: float,
@@ -2286,6 +2289,7 @@ class RepairableRBD(RBD):
             feasibility=feasibility,
         )
 
+    @_long_run.follows_upgrades
     def mttf_mttr_allocation(
         self,
         target: float,
@@ -3075,6 +3079,7 @@ class RepairableRBD(RBD):
             state=state,
         )
 
+    @_long_run.follows_upgrades
     def mean_unavailability(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -3213,6 +3218,7 @@ class RepairableRBD(RBD):
         """
         return _repairable_routes.analysis_routes(self)
 
+    @_long_run.follows_upgrades
     def mean_availability(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -5312,6 +5318,7 @@ class RepairableRBD(RBD):
         finally:
             self._curve_memo = None
 
+    @_long_run.follows_upgrades
     def capacity_distribution(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -6968,6 +6975,7 @@ class RepairableRBD(RBD):
             conditional=conditional,
         )
 
+    @_long_run.follows_upgrades
     def node_availability(self) -> dict[Hashable, float]:
         """Returns each node's long-run (steady-state) availability.
 
@@ -7045,6 +7053,7 @@ class RepairableRBD(RBD):
         """
         return _long_run.node_availability(self)
 
+    @_long_run.follows_upgrades
     def node_action_rates(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -7217,6 +7226,7 @@ class RepairableRBD(RBD):
         _shutdowns.refuse(self, "crew_states")
         return _crews.crew_states(self, working_nodes, broken_nodes)
 
+    @_long_run.follows_upgrades
     def replacement_cycle(self, node: Hashable) -> ReplacementCycle:
         """The renewal cycle of a component under block replacement or
         replaced on condition, in the long run.
@@ -7361,6 +7371,7 @@ class RepairableRBD(RBD):
             entropy=entropy,
         )
 
+    @_long_run.follows_upgrades
     def system_failure_frequency(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -7445,6 +7456,7 @@ class RepairableRBD(RBD):
             self, working_nodes=working_nodes, broken_nodes=broken_nodes
         )
 
+    @_long_run.follows_upgrades
     def mean_time_between_failures(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -7505,6 +7517,7 @@ class RepairableRBD(RBD):
             self, working_nodes=working_nodes, broken_nodes=broken_nodes
         )
 
+    @_long_run.follows_upgrades
     def mean_up_time(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -7565,6 +7578,7 @@ class RepairableRBD(RBD):
             self, working_nodes=working_nodes, broken_nodes=broken_nodes
         )
 
+    @_long_run.follows_upgrades
     def mean_down_time(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -7626,6 +7640,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def birnbaum_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -7751,6 +7766,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def improvement_potential(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -7843,6 +7859,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def risk_achievement_worth(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -7941,6 +7958,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def risk_reduction_worth(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -8037,6 +8055,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def criticality_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -8163,6 +8182,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def fussell_vesely(
         self,
         fv_type: str = "c",
@@ -8539,6 +8559,7 @@ class RepairableRBD(RBD):
         """
         return _sensitivity.with_levers(self, values)
 
+    @_long_run.follows_upgrades
     def mean_availability_uncertainty(
         self,
         uncertainty: Optional[Dict[Hashable, Any]] = None,
@@ -8781,6 +8802,7 @@ class RepairableRBD(RBD):
             state=state,
         )
 
+    @_long_run.follows_upgrades
     def expected_cost_rate_uncertainty(
         self,
         uncertainty: Optional[Dict[Hashable, Any]] = None,
@@ -8961,6 +8983,7 @@ class RepairableRBD(RBD):
             salvage=salvage,
         )
 
+    @_long_run.follows_upgrades
     def uncertainty_importance(
         self,
         x=None,
@@ -9091,6 +9114,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def differential_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -9373,6 +9397,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first("window")
+    @_long_run.follows_upgrades
     def barlow_proschan_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -9468,6 +9493,7 @@ class RepairableRBD(RBD):
             state=state,
         )
 
+    @_long_run.follows_upgrades
     def pfd_breakdown(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -9559,6 +9585,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def joint_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,

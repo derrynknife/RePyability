@@ -12,6 +12,16 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: the long run of a diagram with an upgrade (UC-64 of the
+  maintenance README): `mean_availability`, `expected_cost_rate`,
+  `node_availability`, the importance measures (by default, in the long
+  run), `replacement_cycle` and the other long-run methods give the
+  values once upgraded, those of the diagram built with each upgraded
+  component's new life (its block replacement kept, the time before the
+  upgrade and its capital cost ignored), where they refused. Asked over
+  time, the measures follow the upgrade as before; `total_cost` still
+  refuses, its horizon starting before the upgrade.
+
 - Added: a block kept unless it is due (`"older_than"`, or on
   condition with a threshold) at a shutdown's given times, valued
   without simulation. Over a horizon, `point_availability`,
