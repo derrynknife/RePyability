@@ -32,12 +32,11 @@ from repyability.rbd import (
     _unplanned,
 )
 from repyability.rbd._common import (
-    _DISCOUNT_ROUNDS,
-    _DISCOUNT_TOLERANCE,
     _crew_salaries,
     _crew_salaries_to,
     _discount_pieces,
     _discount_rate,
+    _discounted_accrual,
     _horizons,
     _matched,
     _present_horizon,
@@ -58,8 +57,6 @@ from repyability.utils.checks import (
     nonnegative_times,
     structure_method,
 )
-
-from ._mean_lifetime import _G7_W, _GK_W, _GK_X
 
 if TYPE_CHECKING:
     pass
@@ -688,42 +685,10 @@ def _discounted_cost(
             ]
         return np.vstack([np.ravel(row)[:-1] for row in rows])
 
-    def rules(a: np.ndarray, b: np.ndarray):
-        """The pieces' integrals of ``exp(-r s) C(s)`` by the Kronrod
-        rule, as rows, and the mean's error, against the Gauss rule."""
-        half = 0.5 * (b - a)
-        x = (0.5 * (a + b))[:, None] + half[:, None] * _GK_X
-        g = np.exp(-rate * x) * values(x.ravel()).reshape(-1, *x.shape)
-        kronrod = (g @ _GK_W) * half
-        return kronrod, np.abs(kronrod[0] - (g[0] @ _G7_W) * half)
-
     with rbd._sharing_curves():
-        at_ends = values(ends)
-        a, b = _discount_pieces(ends, horizon)
-        pieces, error = rules(a, b)
-        for _ in range(_DISCOUNT_ROUNDS):
-            budget = _DISCOUNT_TOLERANCE * abs(float(pieces[0].sum()))
-            if error.sum() <= budget:
-                break
-            # Halve the pieces over their share of the error allowed.
-            split = error > budget / error.size
-            middle = 0.5 * (a + b)[split]
-            halves, errors = rules(
-                np.concatenate([a[split], middle]),
-                np.concatenate([middle, b[split]]),
-            )
-            a = np.concatenate([a[~split], a[split], middle])
-            b = np.concatenate([b[~split], middle, b[split]])
-            pieces = np.concatenate([pieces[:, ~split], halves], axis=1)
-            error = np.concatenate([error[~split], errors])
-    order = np.argsort(b, kind="stable")
-    running = np.concatenate(
-        [np.zeros((len(at_ends), 1)), np.cumsum(pieces[:, order], axis=1)],
-        axis=1,
-    )
-    # Every window is a piece's end: the pieces up to it are within it.
-    upto = np.searchsorted(b[order], ends, side="right")
-    present = np.exp(-rate * ends) * at_ends + rate * running[:, upto]
+        present, _ = _discounted_accrual(
+            values, ends, rate, _discount_pieces(ends, horizon)
+        )
     rows = iter(present)
     mean = next(rows)
     categories = {category: next(rows) for category in _CATEGORIES}

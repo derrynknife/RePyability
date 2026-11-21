@@ -36,7 +36,6 @@ def test_each_helper_has_one_definition():
         "years_from",
         "equivalent_annual",
         "perpetuity",
-        "bracket",
         "DAYS_A_YEAR",
         "HOURS_A_YEAR",
     ):
