@@ -30,6 +30,66 @@ def _escalation(rbd, escalation) -> Dict[Any, float]:
     return _money.escalation(rbd.components, escalation)
 
 
+def own_terms(rbd, horizon: float, salvage, escalation, retire_at):
+    """``salvage``, ``escalation`` and ``retire_at`` with the components'
+    own (their spec's or plan's ``"salvage"``, ``"escalation"`` and
+    ``"retire_at"``) added where the arguments leave them out: a salvage
+    or growth given for a node in the arguments is the node's. A unit's
+    retirement before the horizon retires the diagram when it is its only
+    component; in a diagram of several it is refused."""
+    own = getattr(rbd, "_valuation", {})
+    if not own:
+        return salvage, escalation, retire_at
+    salvages = {n: v["salvage"] for n, v in own.items() if "salvage" in v}
+    if salvages:
+        if salvage is None:
+            salvage = salvages
+        elif isinstance(salvage, dict):
+            salvage = {**salvages, **salvage}
+        else:
+            salvage = {None: salvage, **salvages}
+    growths = {n: v["escalation"] for n, v in own.items() if "escalation" in v}
+    if growths and (escalation is None or isinstance(escalation, dict)):
+        escalation = {**growths, **(escalation or {})}
+    retiring = {n: v["retire_at"] for n, v in own.items() if "retire_at" in v}
+    if retiring and retire_at is None:
+        node, at = next(iter(retiring.items()))
+        if len(rbd.components) > 1:
+            raise NotImplementedError(
+                f"Component {node!r} retires at {at:g}, and retiring one "
+                "unit of a diagram of several is not built: give the "
+                "valuation's retire_at to retire the whole system, or "
+                "value the unit's plan alone (UnitPlan.expected_npv)."
+            )
+        if at < horizon:
+            retire_at = at
+    return salvage, escalation, retire_at
+
+
+def own_escalation(rbd, escalation):
+    """``escalation`` with each component's own growth added where it
+    names none for the component (see ``own_terms``)."""
+    return own_terms(rbd, math.inf, None, escalation, None)[1]
+
+
+def refuse_own_end(rbd, method: str = "") -> None:
+    """Refuse a valuation that credits no salvage and runs to its horizon
+    (``npv_distribution``, ``compare_npv``, ``best_switch_time``,
+    ``plan_vs_actual``) for a diagram whose components carry their own
+    salvage or retirement, which it would leave out."""
+    for node, own in getattr(rbd, "_valuation", {}).items():
+        for key in ("salvage", "retire_at"):
+            if key in own:
+                raise NotImplementedError(
+                    f"Component {node!r} has its own {key!r}, which the "
+                    "valuations of simulated runs and of logs "
+                    "(npv_distribution, compare_npv, best_switch_time, "
+                    "plan_vs_actual) do not take yet: expected_npv "
+                    f"credits it. Value a plan without its {key!r} here "
+                    "(and its worth at the end with expected_npv)."
+                )
+
+
 def _number(value, name: str, strict: bool) -> float:
     number = checks.number_or_nan(value)
     low = number > 0.0 if strict else number >= 0.0
@@ -294,8 +354,11 @@ def expected_npv(
             f"the NPV's derivative in the discount rate); got "
             f"{rate_sensitivity!r}."
         )
-    money = Money(rbd, discount_rate, value_rate, escalation, rates, inflation)
     horizon = _number(horizon, "horizon", strict=True)
+    salvage, escalation, retire_at = own_terms(
+        rbd, horizon, salvage, escalation, retire_at
+    )
+    money = Money(rbd, discount_rate, value_rate, escalation, rates, inflation)
     given_rate, rate, schedule = money.given_rate, money.rate, money.schedule
     growth, earns = money.growth, money.earns
     table_ends = _period_ends(periods, horizon)

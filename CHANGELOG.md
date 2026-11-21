@@ -12,6 +12,22 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: a unit's plan valued alone (UC-65 of the maintenance README).
+  `UnitPlan` has `expected_npv`, `cash_flows`, `npv_distribution`,
+  `plan_vs_actual`, `expected_cost`, `expected_cost_rate`,
+  `events_by_period`, `failures_by_period`,
+  `optimal_replacement_interval`, `optimal_inspection_interval` and
+  `analysis_routes`, each the method of its one-node diagram
+  (`UnitPlan.diagram()`, the node `"unit"`), on a
+  `schedule.CalendarContext` given as `calendar=`. A plan holds the
+  unit's own money: `salvage` (a number or a function of age),
+  `escalation` (a growth rate for its prices) and `retire_at`, which are
+  also component spec keys; `expected_npv` takes them as its arguments
+  of the same names for the node (the arguments still work, and win).
+  A unit's retirement in a diagram of several, and a unit's salvage or
+  retirement in `npv_distribution`, `compare_npv`, `best_switch_time`
+  and `plan_vs_actual`, are refused, saying what to use.
+
 - Added: each unit's own duty plan on the calendar (UC-64 of the
   schedule README). A block's `"duty"` takes a `DutySchedule` (the
   shares of the time it runs over the diagram's clock, from

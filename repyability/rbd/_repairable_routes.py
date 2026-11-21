@@ -6,6 +6,7 @@ checks it against the methods on every catalogue diagram.
 """
 
 import dataclasses
+import math
 from functools import partial
 from typing import (
     Dict,
@@ -21,6 +22,7 @@ from repyability.rbd import (
     _first_failure,
     _intervals,
     _long_run,
+    _npv,
     _npv_runs,
     _plan_actual,
     _repairable_allocation,
@@ -373,6 +375,11 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         )
     else:
         out["expected_npv"] = uptime
+    retiring = r.refusal(
+        lambda: _npv.own_terms(rbd, math.inf, None, None, None)
+    )
+    if retiring is not None:
+        out["expected_npv"] = r.refused(retiring, tuple(rbd._valuation))
     out["plan_vs_actual"] = _plan_actual.route(rbd, out["expected_npv"])
     # A group's members' MTTF and MTTR are their group's: the
     # availability allocations hold them, and a member's copies join its

@@ -109,6 +109,7 @@ def refusal(rbd) -> Optional[Tuple[str, Tuple[Hashable, ...]]]:
 
 
 def _require_priceable(rbd) -> None:
+    _npv.refuse_own_end(rbd)
     found = refusal(rbd)
     if found is not None:
         raise NotImplementedError(found[0])
@@ -121,6 +122,9 @@ def route(rbd, timelines_route):
 
     if timelines_route.route == r.REFUSED:
         return timelines_route
+    own = r.refusal(lambda: _npv.refuse_own_end(rbd))
+    if own is not None:
+        return r.refused(own, tuple(rbd._valuation))
     found = refusal(rbd)
     if found is not None:
         return r.refused(*found)
@@ -286,6 +290,8 @@ def npv_distribution(
     inflation=None,
 ) -> NPVDistribution:
     """See ``RepairableRBD.npv_distribution``."""
+    _npv.refuse_own_end(rbd, "npv_distribution")
+    escalation = _npv.own_escalation(rbd, escalation)
     money = _npv.Money(
         rbd, discount_rate, value_rate, escalation, rates, inflation
     )
@@ -530,12 +536,14 @@ def compare_npv(
         )
     # Each plan's own: an escalation may name a component of either plan,
     # which the other leaves out.
+    for d in (rbd, other):
+        _npv.refuse_own_end(d, "compare_npv")
     monies = [
         _npv.Money(
             d,
             discount_rate,
             value_rate,
-            _own(escalation, d, o),
+            _npv.own_escalation(d, _own(escalation, d, o)),
             rates,
             inflation,
         )
