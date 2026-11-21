@@ -968,6 +968,104 @@ LETTERS = (
 )
 
 
+class Shocks(_Model):
+    """Shocks from outside a group, at a rate of their own.
+
+    Shocks arrive at ``rate``, whatever the members' ages, and each fails
+    each member of the group independently with probability ``p`` (the
+    binomial failure rate model); shocks of a second kind, at
+    ``lethal_rate``, fail every member. Unlike the other models, which
+    split the failures the members' own model describes, the shocks are
+    added to them: each member keeps its own life, of any kind, for its
+    other failures, and the members need not be alike.
+
+    By thinning, the shocks are an independent cause for each set of
+    members: the cause that fails exactly a set of ``j`` of the ``m``
+    members strikes at rate ``rate * p**j * (1 - p)**(m - j)`` (plus
+    ``lethal_rate`` for the set of all of them).
+
+    A [`NonRepairableRBD`][repyability.NonRepairableRBD] writes each
+    cause into its structure as an exponential component after every
+    member it fails, exactly as
+    [`shock_nodes`][repyability.shock_nodes] does, so every analysis
+    takes the shocks, given each member's own age too, and the causes are
+    named among its nodes.
+
+    Parameters
+    ----------
+    rate : float
+        Shocks per unit of time; 0 or more.
+    p : float, optional
+        The probability that a shock fails a member, in (0, 1]; by
+        default 1 (every shock fails every member).
+    lethal_rate : float, optional
+        Shocks per unit of time that fail every member; by default 0.
+
+    Raises
+    ------
+    ValueError
+        If a rate is negative or not a number, both rates are 0, or
+        ``p`` is not in (0, 1].
+
+    Examples
+    --------
+    >>> from repyability import CCFGroup, Shocks
+    >>> CCFGroup(["p1", "p2"], Shocks(rate=2e-5, p=0.6))
+    CCFGroup(members=['p1', 'p2'], model=Shocks(rate=2e-05, p=0.6))
+    """
+
+    basis = "shocks"
+
+    def __init__(self, rate: float, p: float = 1.0, lethal_rate: float = 0.0):
+        from .shocks import checked
+
+        self.rate, self.p, self.lethal_rate = checked(rate, p, lethal_rate)
+        if self.rate == 0.0 and self.lethal_rate == 0.0:
+            raise ValueError(
+                "Shocks needs a rate above 0 (rate, or lethal_rate): with "
+                "both 0 no shock ever comes."
+            )
+
+    def required_group_size(self) -> Any:
+        """Any group of two or more (up to ``shocks.MAX_MEMBERS``)."""
+        return None
+
+    def causes(self, members) -> List[Tuple[tuple, float]]:
+        """The independent causes the shocks are, by thinning.
+
+        Parameters
+        ----------
+        members : sequence of hashable
+            The group's members, in its order.
+
+        Returns
+        -------
+        list of (tuple, float)
+            Each cause, as the members it fails (in the group's order)
+            and the rate it strikes at: every set of members a shock can
+            fail exactly, smaller sets first; those of rate 0 left out.
+        """
+        from .shocks import causes
+
+        return causes(tuple(members), self.rate, self.p, self.lethal_rate)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Shocks) and (
+            other.rate,
+            other.p,
+            other.lethal_rate,
+        ) == (self.rate, self.p, self.lethal_rate)
+
+    def __hash__(self) -> int:
+        return hash(("Shocks", self.rate, self.p, self.lethal_rate))
+
+    def __repr__(self) -> str:
+        lethal = (
+            f", lethal_rate={self.lethal_rate}" if self.lethal_rate else ""
+        )
+        return f"Shocks(rate={self.rate}, p={self.p}{lethal})"
+
+
 def parameters(model) -> Dict[str, float]:
     """A common-cause model's parameters by name: a ``BetaFactor``'s
     ``beta``, an ``MGL`` model's letters (``beta``, ``gamma``, ``delta``,
@@ -1132,7 +1230,8 @@ class CCFGroup:
             )
         if not isinstance(model, _Model):
             raise ValueError(
-                "CCFGroup model must be a BetaFactor, MGL or AlphaFactor, "
+                "CCFGroup model must be a BetaFactor, MGL, AlphaFactor or "
+                "Shocks, "
                 f"got {model!r}."
             )
         required = model.required_group_size()
@@ -1181,6 +1280,13 @@ def checked_groups(groups, check_member, saved, unlike, noun="Node") -> list:
             raise ValueError(
                 "ccf_groups must contain CCFGroup instances, got "
                 f"{type(group).__name__}."
+            )
+        if isinstance(group.model, Shocks):
+            raise ValueError(
+                f"{group!r}: shocks at a rate of their own are taken by a "
+                "NonRepairableRBD, which writes their causes into its "
+                "structure, not here. For a shock that fails every "
+                "member, add an event or a node in series with them."
             )
         for member in group.members:
             check_member(member, group)

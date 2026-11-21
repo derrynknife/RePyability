@@ -587,7 +587,9 @@ def test_alpha_factor_validation():
     assert AlphaFactor(ALPHAS).required_group_size() == 3
     with pytest.raises(ValueError, match="members"):
         CCFGroup(["a", "b"], AlphaFactor(ALPHAS))
-    with pytest.raises(ValueError, match="BetaFactor, MGL or AlphaFactor"):
+    with pytest.raises(
+        ValueError, match="BetaFactor, MGL, AlphaFactor or Shocks"
+    ):
         CCFGroup(["a", "b"], "alpha")
 
 
