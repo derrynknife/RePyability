@@ -1001,6 +1001,10 @@ def test_the_readme_says_what_is_simulated():
             (repairable["too meshed"], "point_availability", "refused"),
         ],
         "Common-cause groups in a repairable diagram": [
+            (repairable["shocks, revealed"], "availability", "simulated"),
+            (repairable["shocks, revealed"], "mean_availability", "refused"),
+            (repairable["shocks, tested"], "availability", "simulated"),
+            (repairable["shocks, tested"], "point_availability", "refused"),
             (timed_group, "mean_availability", "numerical"),
             (timed_group, "birnbaum_importance", "numerical"),
             (timed_group, "point_availability", "numerical"),

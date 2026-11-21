@@ -244,6 +244,7 @@ def _validate_ccf_groups(rbd, ccf_groups) -> list:
             "must be identical components, with the same life and "
             "repair models."
         ),
+        shocks=True,
     )
 
 
