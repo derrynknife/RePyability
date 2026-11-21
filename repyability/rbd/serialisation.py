@@ -628,7 +628,7 @@ def _capacity_from_list(capacity_list):
 
 
 def _ccf_to_list(ccf_groups):
-    from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor
+    from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor, Shocks
 
     if not ccf_groups:
         return None
@@ -644,6 +644,19 @@ def _ccf_to_list(ccf_groups):
                 "alphas": list(group.model.alphas),
                 "testing": group.model.testing,
             }
+        elif isinstance(group.model, Shocks):
+            out.append(
+                {
+                    "members": list(group.members),
+                    "model": {
+                        "kind": "shocks",
+                        "rate": group.model.rate,
+                        "p": group.model.p,
+                        "lethal_rate": group.model.lethal_rate,
+                    },
+                }
+            )
+            continue
         else:
             raise NotImplementedError(
                 f"Cannot serialise CCF model {type(group.model).__name__}."
@@ -659,7 +672,13 @@ def _ccf_to_list(ccf_groups):
 
 
 def _ccf_from_list(ccf_list):
-    from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor, CCFGroup
+    from repyability.rbd.ccf import (
+        MGL,
+        AlphaFactor,
+        BetaFactor,
+        CCFGroup,
+        Shocks,
+    )
 
     if not ccf_list:
         return None
@@ -668,8 +687,14 @@ def _ccf_from_list(ccf_list):
         model_dict = entry["model"]
         kind = model_dict["kind"]
         basis = model_dict.get("basis", "probability")
-        if kind == "beta_factor":
-            model: object = BetaFactor(model_dict["beta"], basis=basis)
+        if kind == "shocks":
+            model: object = Shocks(
+                model_dict["rate"],
+                model_dict["p"],
+                model_dict["lethal_rate"],
+            )
+        elif kind == "beta_factor":
+            model = BetaFactor(model_dict["beta"], basis=basis)
         elif kind == "mgl":
             model = MGL(
                 *model_dict["letters"],
@@ -692,7 +717,9 @@ def _ccf_from_list(ccf_list):
 
 def rbd_to_dict(rbd: RBD) -> dict:
     """Serialise an RBD (NonRepairableRBD or RepairableRBD) to a dict."""
-    args = rbd._init_args
+    # As given: a diagram with shock groups keeps them, not the causes
+    # it wrote into its structure.
+    args = getattr(rbd, "_given_args", rbd._init_args)
     out = {
         "repyability_version": __version__,
         "type": type(rbd).__name__,

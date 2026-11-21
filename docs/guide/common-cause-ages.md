@@ -141,6 +141,28 @@ each cause, `("shock", the members it fails, the member it follows)`, and a
 member's own entry is that of its own failures. Give each process of a
 diagram a name of its own (`name=`).
 
+The same shocks can be given as a group's model,
+[`Shocks`][repyability.Shocks], which the diagram writes into its structure
+exactly as `shock_nodes` does (the same nodes and the same values, to the
+last bit) and saves as given:
+
+```python
+from repyability import Shocks
+
+grouped = NonRepairableRBD(
+    parallel, {"p1": pump, "p2": pump},
+    ccf_groups=[CCFGroup(["p1", "p2"], Shocks(rate=2e-5, p=0.6))],
+)
+grouped.sf_given_state(2000, ages) == partial.sf_given_state(2000, ages)   # True
+list(grouped.nodes) == list(partial.nodes)                                 # True
+grouped.to_dict()["ccf_groups"][0]["model"]["kind"]                        # 'shocks'
+```
+
+Unlike the other models, which split the failures the members' own model
+describes, `Shocks` adds failures to it, so the members need not be alike.
+The first group's causes are named `"shock"`; with several, `"shock 1"`,
+`"shock 2"`, ... in the groups' order.
+
 For members with exponential lives this is an
 [alpha-factor](common-cause.md#the-three-models) group by rate: a member
 fails at its own rate plus `rate · p`, and the cause of each set of `j` is
