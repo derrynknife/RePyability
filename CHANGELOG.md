@@ -12,6 +12,20 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: `schedule.task_value` values a service (UC-67 of the schedule
+  README) with `Services(plan, effect=)`. By default a service has no
+  effect on the life: it is an accepted cost, and its value is minus its
+  cost's present value, exactly, with the notes saying so. A benefit
+  comes only from a stated effect: a `maintenance.Restoration` (a Kijima
+  factor from 0, as new at 0 under Kijima II and no effect at 1; a
+  virtual age; a fitted process) or a `schedule.Condition` (a regression
+  life fitted with a serviced-or-overdue covariate, as a covariate
+  schedule from the service's dates). With an effect, the plan's one-node
+  diagram is simulated with the service on its dates and without it on
+  the same random numbers, each run priced with the plan's prices by
+  period; `TaskValue` gains `method`, `value_lower`, `value_upper`,
+  `confidence`, `n_simulations` and `seed`. `task_value` takes
+  `mc_samples=`, `seed=` and `confidence=`. No existing result changes.
 - Added: a `RepairableRBD` takes `Shocks(rate, p, lethal_rate)` as a
   common-cause group's model, for members of any lives, which need not
   be alike. Shocks come at a rate of their own and each fails each

@@ -49,6 +49,7 @@ from ._forecast import (
     _tolerance,
     _usage,
 )
+from ._service import Condition, Services, simulated  # noqa: F401
 from ._task import Task
 from ._usage import _Plain
 
@@ -215,6 +216,22 @@ class TaskValue(_Plain):
         operating time it is failed (in a period it does not run, its
         chance of being failed then); ``total`` has each over the whole
         forecast. None otherwise.
+    method : str
+        ``"exact"``, or ``"simulated"`` for a service with an effect.
+    value_lower, value_upper : numpy.ndarray or None
+        Simulated: each period's value's two-sided interval at
+        ``confidence`` (``total`` has ``value_lower`` and ``value_upper``
+        over the whole forecast). None when exact.
+    confidence, n_simulations, seed : float, int, int or None
+        Simulated: the interval's level, the runs and their seed (to
+        repeat them). None when exact.
+
+    With ``Services`` and no effect, the unit's own costs are the same
+    with and without the service and are left out of both sides:
+    ``with_task`` is the service's cost, ``without_task`` 0, and the
+    failures are NaN (not worked out), none avoided. With an effect,
+    each side is the unit's own costs (its plan's prices) in the
+    simulated runs, ``with_task`` adding the service's cost.
 
     With ``Finds``, "the part" is the device and a "failure" above is a
     demand that meets it failed: ``failures_with``, ``failures_without``
@@ -250,6 +267,12 @@ class TaskValue(_Plain):
     found: Optional[np.ndarray] = None
     unavailability_with: Optional[np.ndarray] = None
     unavailability_without: Optional[np.ndarray] = None
+    method: str = "exact"
+    value_lower: Optional[np.ndarray] = None
+    value_upper: Optional[np.ndarray] = None
+    confidence: Optional[float] = None
+    n_simulations: Optional[int] = None
+    seed: Optional[int] = None
 
     def __repr__(self) -> str:
         money = "present value" if self.discount is not None else "cost"
@@ -476,6 +499,116 @@ def _in_periods(ends: np.ndarray, hidden) -> np.ndarray:
     return np.where(ran > 0.0, failed / np.where(ran > 0.0, ran, 1.0), at)
 
 
+def _servicing(
+    does: Services,
+    price: float,
+    usage,
+    unit: str,
+    age: float,
+    times: np.ndarray,
+    done_s: np.ndarray,
+    seconds: np.ndarray,
+    discount: Optional[float],
+    mc_samples: Optional[int],
+    seed,
+    confidence: float,
+    count: int,
+) -> Tuple[_Plan, Any]:
+    """``Services``: the words and notes of a service's two sides, and,
+    with an effect, its simulated runs (``_service.simulated``); None
+    for a service with no effect, which is valued exactly."""
+    from repyability.value._rates import per_unit
+
+    from ._usage import UNITS
+
+    words = (
+        f"With the task: the unit serviced each time the task is done "
+        f"({count} times in the forecast), at {price:g} a time"
+    )
+    common = (
+        "A calendar task is done at midnight of its date (or its visit's), "
+        "a task by use when the meter reaches its reading; a service "
+        "takes no time."
+    )
+    if does.no_effect:
+        why = (
+            "a factor of 1 leaves the unit as old as it was"
+            if does.effect is not None
+            else "no effect was given"
+        )
+        return (
+            _Plan(
+                with_events=np.zeros_like,
+                without_events=np.zeros_like,
+                event_cost=0.0,
+                extra_seconds=np.array([]),
+                extra_amounts=np.array([]),
+                error=0.0,
+                with_words=(
+                    f"{words}, with no effect on its life ({why}): the "
+                    "service is an accepted cost. The unit's own costs are "
+                    "the same with and without it, and are left out of "
+                    "both sides."
+                ),
+                without_words=(
+                    "Without the task: the unit as it is; its own costs, "
+                    "the same as with the task, left out."
+                ),
+                notes=(
+                    common,
+                    "The service's effect on the life was taken as none: "
+                    "its value is minus its own cost. State an effect "
+                    "(a maintenance.Restoration, or a schedule.Condition) "
+                    "to credit it with a benefit.",
+                ),
+            ),
+            None,
+        )
+    hours = UNITS[unit]
+    clock = done_s / 3600.0 / hours
+    ends = seconds / 3600.0 / hours
+    rate = 0.0 if not discount else per_unit(discount, hours)
+    sim = simulated(
+        does,
+        usage,
+        unit,
+        age,
+        clock,
+        ends,
+        rate,
+        mc_samples,
+        seed,
+        confidence,
+    )
+    return (
+        _Plan(
+            with_events=np.zeros_like,
+            without_events=np.zeros_like,
+            event_cost=0.0,
+            extra_seconds=np.array([]),
+            extra_amounts=np.array([]),
+            error=0.0,
+            with_words=(
+                f"{words}, {does.describe()[len('services the unit, '):]}; "
+                "the unit's failures, repairs and downtime at its plan's "
+                "prices."
+            ),
+            without_words=(
+                "Without the task: the same plan from the same age "
+                f"({age:g} {unit}) over the same dates, never serviced."
+            ),
+            notes=(
+                common,
+                f"Simulated: {sim.n} runs of each side from seed "
+                f"{sim.seed}, on the same random numbers (the unit draws "
+                "the same failures until a service changes them); the "
+                f"value's interval is two-sided at {confidence:g}.",
+            ),
+        ),
+        sim,
+    )
+
+
 def task_value(
     task,
     does,
@@ -487,6 +620,9 @@ def task_value(
     escalation: Optional[float] = None,
     period: str = "month",
     npv_tolerance: float = NPV_TOLERANCE,
+    mc_samples: Optional[int] = None,
+    seed: Optional[int] = None,
+    confidence: float = 0.9,
 ) -> TaskValue:
     """What a scheduled task is worth against not doing it, by calendar
     period and in all: the part's cost with the task, without it, and the
@@ -523,19 +659,30 @@ def task_value(
     demands that meet the device failed, and it has the failures
     ``found`` and the device's unavailability with and without the task.
 
+    ``Services(plan, effect=)``: the task services the unit without
+    replacing it. With no effect (the default) the service is an accepted
+    cost: its value is minus its cost's present value, exactly. With an
+    effect (a ``maintenance.Restoration``, or a fitted
+    [`Condition`][repyability.schedule.Condition]) the plan's one-node
+    diagram is simulated with the service at its dated times and without
+    it, from one seed (common random numbers), each run priced with the
+    plan's prices by period; the value is the mean difference, with its
+    interval (``value_lower``, ``value_upper``).
+
     Parameters
     ----------
     task : Task
         The task, by the calendar or by use (``every=Usage(...)``). A
         calendar task is done at midnight of its date (or of its visit);
         a task by use when the meter reaches its reading.
-    does : Replaces or Finds
+    does : Replaces, Finds or Services
         What the task does. ``Replaces(part)``: the part a
         ``NonRepairable`` with an ``unplanned_cost``; its
         ``planned_cost`` is the task's price where the task has no
         ``cost``, and given both, they must agree. ``Finds(device,
         demand_rate=, consequence_cost=)``: the device a
         ``NonRepairable``, the task's ``cost`` a test's.
+        ``Services(plan, effect=)``: the task's ``cost`` a service's.
     usage : UsageForecast
         The map between dates and the part's operating time
         ([`DutyPlan.forecast`][repyability.schedule.DutyPlan.forecast], or
@@ -563,6 +710,15 @@ def task_value(
     npv_tolerance : float, optional
         How close each side's failure cost is discounted, as for
         ``failures_by_period``; by default 1e-3.
+    mc_samples : int, optional
+        For a service with an effect: the runs of each side, by default
+        4,000.
+    seed : int, optional
+        For a service with an effect: seeds the runs; by default one is
+        drawn, and kept in the result.
+    confidence : float, optional
+        For a service with an effect: the level of the value's two-sided
+        interval, by default 0.9.
 
     Returns
     -------
@@ -614,28 +770,39 @@ def task_value(
     """
     if not isinstance(task, Task):
         raise TypeError(f"task must be a Task; got {task!r}.")
-    if not isinstance(does, (Replaces, Finds)):
+    if not isinstance(does, (Replaces, Finds, Services)):
         raise TypeError(
             "does must say what the task does: Replaces(part) for a task "
-            "that puts a new part in, or Finds(device, demand_rate=, "
-            "consequence_cost=) for a test of a hidden failure. The value "
-            "of a service that changes the failure rate is not built "
-            "yet. Got " + repr(does) + "."
+            "that puts a new part in, Finds(device, demand_rate=, "
+            "consequence_cost=) for a test of a hidden failure, or "
+            "Services(plan, effect=) for a service. Got " + repr(does) + "."
         )
     usage = _usage(usage)
-    part = does.part if isinstance(does, Replaces) else does.device
     notes: List[str] = []
-    unit = _resolve_unit(
-        unit, _model_label(getattr(part, "reliability", None)), "life", notes
-    )
+    if isinstance(does, Services):
+        life = None if does.plan is None else does.plan.life
+        if isinstance(does.effect, Condition):
+            life = does.effect.life
+        label = _model_label(life)
+    else:
+        part = does.part if isinstance(does, Replaces) else does.device
+        label = _model_label(getattr(part, "reliability", None))
+    unit = _resolve_unit(unit, label, "life", notes)
     if not (is_number(age) and 0.0 <= float(age) < np.inf):
         raise ValueError(f"age must be a number, at least 0; got {age!r}.")
     age = float(age)
     discount = _discount.yearly(discount)
     given, discount = discount, _discount.net(discount, escalation)
     npv_tolerance = _tolerance(npv_tolerance)
-    failure_cost = getattr(part, "cu", None)
-    if isinstance(does, Replaces):
+    if isinstance(does, Services):
+        if task.cost is None:
+            raise ValueError(
+                f"Task {task.name!r} has no cost: give the task's cost=, "
+                "what one service costs (0.0 if it is free)."
+            )
+        price = float(task.cost)
+    elif isinstance(does, Replaces):
+        failure_cost = getattr(part, "cu", None)
         if failure_cost is None:
             raise ValueError(
                 "The part has no unplanned_cost: without a failure's cost "
@@ -663,62 +830,106 @@ def task_value(
     times = (usage._at_s("hours", clock_s) - base) / scale
     times = np.maximum(np.asarray(times, float).reshape(done_s.shape), 0.0)
 
-    if isinstance(does, Replaces):
-        plan = _replacing(
-            part, price, failure_cost, age, unit, times, len(dates)
-        )
-    else:
-        plan = _testing(
-            does, price, age, unit, times, done_s, float(ends[-1]), len(dates)
-        )
-    each = plan.event_cost
-    fails_with = np.diff(plan.with_events(ends), prepend=0.0)
-    fails_without = np.diff(plan.without_events(ends), prepend=0.0)
-
     def by_period(at_seconds, amounts=None) -> np.ndarray:
         index = np.minimum(
             np.searchsorted(seconds, at_seconds, side="right"), n - 1
         )
         return np.bincount(index, weights=amounts, minlength=n).astype(float)
 
-    task_cost: np.ndarray = price * by_period(done_s)
-    cost_with = each * fails_with + task_cost
-    if plan.extra_seconds.size:
-        cost_with = cost_with + by_period(
-            plan.extra_seconds, plan.extra_amounts
-        )
-    cost_without = each * fails_without
-
-    precision = plan.error
     eac: Optional[Dict[str, float]] = None
-    if discount is None or discount == 0.0 or ends[-1] <= 0.0:
-        money_with, money_without = cost_with, cost_without
-        money_task = task_cost
+    sim: Optional[Any] = None
+    task_cost: np.ndarray = price * by_period(done_s)
+    if isinstance(does, Services):
+        plan, sim = _servicing(
+            does,
+            price,
+            usage,
+            unit,
+            age,
+            times,
+            done_s,
+            seconds,
+            discount,
+            mc_samples,
+            seed,
+            confidence,
+            len(dates),
+        )
+        precision = 0.0
+        if discount is None or discount == 0.0:
+            money_task = task_cost
+        else:
+            factors = _discount.factor(discount, done_s / _YEAR_SECONDS)
+            money_task = by_period(done_s, np.atleast_1d(price * factors))
+        if sim is None:
+            fails_with = np.full(n, np.nan)
+            fails_without = np.full(n, np.nan)
+            cost_with, cost_without = task_cost, np.zeros(n)
+            money_with, money_without = money_task, np.zeros(n)
+        else:
+            fails_with, fails_without = sim.failures_with, sim.failures_without
+            cost_with = sim.with_cost + task_cost
+            cost_without = sim.without_cost
+            money_with = sim.with_money + money_task
+            money_without = sim.without_money
     else:
-
-        def side(expected):
-            def costs(model_ends: np.ndarray) -> np.ndarray:
-                return each * np.diff(expected(model_ends), prepend=0.0)
-
-            accrued, _, half = _accrued_npv(
-                usage, seconds, unit, discount, npv_tolerance, costs, notes
+        if isinstance(does, Replaces):
+            plan = _replacing(
+                part, price, failure_cost, age, unit, times, len(dates)
             )
-            return accrued, half
+        else:
+            plan = _testing(
+                does,
+                price,
+                age,
+                unit,
+                times,
+                done_s,
+                float(ends[-1]),
+                len(dates),
+            )
+        each = plan.event_cost
+        fails_with = np.diff(plan.with_events(ends), prepend=0.0)
+        fails_without = np.diff(plan.without_events(ends), prepend=0.0)
 
-        def at_instants(at_seconds, amounts) -> np.ndarray:
-            factors = _discount.factor(discount, at_seconds / _YEAR_SECONDS)
-            return by_period(at_seconds, np.atleast_1d(amounts * factors))
-
-        failures_with_pv, half_with = side(plan.with_events)
-        failures_without_pv, half_without = side(plan.without_events)
-        money_task = at_instants(done_s, price)
-        money_with = failures_with_pv + money_task
+        cost_with = each * fails_with + task_cost
         if plan.extra_seconds.size:
-            money_with = money_with + at_instants(
+            cost_with = cost_with + by_period(
                 plan.extra_seconds, plan.extra_amounts
             )
-        money_without = failures_without_pv
-        precision = half_with + half_without + plan.error
+        cost_without = each * fails_without
+
+        precision = plan.error
+        if discount is None or discount == 0.0 or ends[-1] <= 0.0:
+            money_with, money_without = cost_with, cost_without
+            money_task = task_cost
+        else:
+
+            def side(expected):
+                def costs(model_ends: np.ndarray) -> np.ndarray:
+                    return each * np.diff(expected(model_ends), prepend=0.0)
+
+                accrued, _, half = _accrued_npv(
+                    usage, seconds, unit, discount, npv_tolerance, costs, notes
+                )
+                return accrued, half
+
+            def at_instants(at_seconds, amounts) -> np.ndarray:
+                factors = _discount.factor(
+                    discount, at_seconds / _YEAR_SECONDS
+                )
+                return by_period(at_seconds, np.atleast_1d(amounts * factors))
+
+            failures_with_pv, half_with = side(plan.with_events)
+            failures_without_pv, half_without = side(plan.without_events)
+            money_task = at_instants(done_s, price)
+            money_with = failures_with_pv + money_task
+            if plan.extra_seconds.size:
+                money_with = money_with + at_instants(
+                    plan.extra_seconds, plan.extra_amounts
+                )
+            money_without = failures_without_pv
+            precision = half_with + half_without + plan.error
     value = money_without - money_with
     if discount is not None:
         years = float(seconds[-1]) / _YEAR_SECONDS
@@ -742,7 +953,17 @@ def task_value(
             "The device's failed time is worked out on a grid, to within "
             f"{plan.error:.3g} of the costs in all (in the precision)."
         )
-    if discount is not None:
+    if discount is not None and isinstance(does, Services):
+        notes.append(
+            f"{_discount.words(given, usage.start, escalation)} The "
+            "service's cost is discounted from when it is done"
+            + (
+                "; each run's costs from when they fell."
+                if sim is not None
+                else "."
+            )
+        )
+    elif discount is not None:
         notes.append(
             f"{_discount.words(given, usage.start, escalation)} A failure's "
             "expected "
@@ -750,6 +971,9 @@ def task_value(
             f"side to within its bracket ({precision:.3g} on the value in "
             "all); the task's cost from when it is done."
         )
+    avoided = fails_without - fails_with
+    if sim is None and isinstance(does, Services):
+        avoided = np.zeros(n)  # no effect: none avoided
     total = {
         "with_task": float(np.sum(money_with)),
         "without_task": float(np.sum(money_without)),
@@ -759,10 +983,21 @@ def task_value(
         "cost_without": float(np.sum(cost_without)),
         "failures_with": float(np.sum(fails_with)),
         "failures_without": float(np.sum(fails_without)),
-        "failures_avoided": float(np.sum(fails_without - fails_with)),
+        "failures_avoided": float(np.sum(avoided)),
         "count": len(dates),
     }
-    hidden: Dict[str, Optional[np.ndarray]] = {}
+    hidden: Dict[str, Any] = {}
+    if sim is not None:
+        total["value_lower"] = sim.total_lower - total["task_cost"]
+        total["value_upper"] = sim.total_upper - total["task_cost"]
+        hidden = {
+            "method": "simulated",
+            "value_lower": sim.lower - money_task,
+            "value_upper": sim.upper - money_task,
+            "confidence": float(confidence),
+            "n_simulations": sim.n,
+            "seed": sim.seed,
+        }
     if plan.found is not None:
         whole = np.array([ends[-1]])
         hidden = {
@@ -798,7 +1033,7 @@ def task_value(
         cost_without=cost_without,
         failures_with=fails_with,
         failures_without=fails_without,
-        failures_avoided=fails_without - fails_with,
+        failures_avoided=avoided,
         total=total,
         precision=float(precision),
         eac=eac,

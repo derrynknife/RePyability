@@ -619,6 +619,56 @@ the device is taken to be working when the forecast starts. The task's
 solution. In model time, with the tests at any list of times,
 `failure_finding_window` gives the same numbers.
 
+### Is a service worth it?
+
+A service (lubricate, adjust, clean, overhaul) neither replaces the unit
+nor tests it, and what it does to the failure rate is not known from the
+task. By default `task_value` takes it as having **no effect**: the
+service is an accepted cost, and its value is minus its cost's present
+value, worked out exactly. Say a gearbox, 4,000 h old and running around
+the clock, is serviced every 3 months for $800:
+
+```python
+from repyability.maintenance import Prices, Restoration, UnitPlan
+from repyability.schedule import Services
+
+gearbox = UnitPlan(surv.Weibull.from_params([8760.0, 3.0]), "instant",
+                   prices=Prices(repair=12000.0))
+service = Task("gearbox service",
+               every=Recurrence.every(3, "months", "2027-04-01"), cost=800.0)
+year = UsageForecast.calendar("2027-01-01", "2028-01-01")
+cost_only = task_value(service, Services(gearbox), year, age=4000.0,
+                       discount=0.07)
+round(cost_only.total["value"], 2)  # -> -2320.95
+```
+
+A benefit is credited only when you state what a service does. If the
+fit of the gearbox's history (surpyval's `GeneralizedRenewal`) says each
+service leaves 60% of its virtual age, give that restoration:
+
+```python
+fitted = task_value(service, Services(gearbox, Restoration(q=0.6)), year,
+                    age=4000.0, discount=0.07, mc_samples=1000, seed=4)
+fitted.method  # -> 'simulated'
+round(fitted.total["value"], -1)  # -> 3660.0
+round(fitted.total["value_lower"], -1)  # -> 3240.0
+round(fitted.total["value_upper"], -1)  # -> 4080.0
+```
+
+The effect is the plan's own task effect, a `Restoration` (Kijima I or
+II: 0 as new under Kijima II, 1 no effect, which is then valued exactly
+as the default, above 1 a service that does harm; or a virtual age to
+restore to, or a fitted process). A `Condition(life, fresh=, stale=,
+lasts=)` instead takes a regression life fitted with a "serviced or
+overdue" covariate, at `fresh` for `lasts` after each service. With an
+effect, the plan's one-node diagram is simulated with the service on its
+dates and without it, from one seed, so both see the same failures until
+a service changes them; each run is priced with the plan's prices, by
+period. `value_lower` and `value_upper` are the value's 90% interval
+(`confidence=`), by period and in `total`. The plan must hold no
+preventive task of its own. A virtual age on a duty plan that changes
+over time is not followed yet: give the unit's duty as one share.
+
 ### A system, by month
 
 A `RepairableRBD` runs on calendar time: its blocks' `"duty"` puts

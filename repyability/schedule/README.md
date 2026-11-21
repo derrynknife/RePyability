@@ -88,6 +88,7 @@ another site's calendar with other plans.
 | UC-49 | A system's expected costs by month, as present values | **Built**: `events_by_period(cost=True, discount=)` (exact) |
 | UC-50 | Is replacing the wear ring at every 6-monthly service worth it, at 7% a year? | **Built**: `task_value(task, Replaces(part), usage, discount=)` |
 | UC-54 | Is the 6-monthly trip test worth it, at 7% a year? | **Built**: `task_value` with `Finds(device, demand_rate=, consequence_cost=, repair_cost=)` |
+| UC-67 | The gearbox is serviced every 3 months: what is the service worth at 7%, with no effect on its life (the default), as new, or with the fit's restoration factor? | **Built**: `task_value` with `Services(plan, effect=)`: no effect exact; a `Restoration`, or a fitted `Condition`, simulated on common random numbers with a 90% interval |
 | UC-57 | The same present values with costs escalating at a yearly rate | **Built**: `escalation=` beside `discount=` (the maintenance README's UC-57; the costs by period stay at today's prices) |
 | UC-32 | A pump on weekday shifts: its hours by month, and its 2,000-hour service on dates | **Built**: `DutyPlan`, `UsageForecast` |
 | UC-33 | A concrete run: when is the 500-hour check due? | **Built**: `Runs`, a crossing's stops |
@@ -734,8 +735,7 @@ in `test_schedule_forecast.py`.
   - A planned replacement takes no time on the part's clock (its
     `time_to_replace` is a failure's, which `failures` counts).
   - Only a replacement is valued here (`Replaces`); a test of a hidden
-    failure is UC-54's (`Finds`), and what a service does is a later
-    use case, refused saying so.
+    failure is UC-54's (`Finds`), and a service UC-67's (`Services`).
   - The `calendar=` of `cost_by_window` is an optimised policy's
     thresholds, so it does not say "replace at every date, whatever the
     age"; `every=` says it only for even gaps in model time, which
@@ -833,6 +833,106 @@ in `test_schedule_forecast.py`.
   `test_the_value_follows_the_prices` (rising with the consequence,
   falling with the test's cost, zero at the break-even price),
   `test_periods_add_up`, `test_refusals`.
+
+### UC-67: "The gearbox is serviced every 3 months, and the fit says a service takes off 40% of its age. What is the service worth at 7%?"
+
+- **Status:** built: `task_value(task, Services(plan, effect=), usage,
+  age=, discount=, period=, mc_samples=, seed=, confidence=)` returning
+  a `TaskValue` whose `method` says `"exact"` or `"simulated"`.
+- **Who asks:** UC-50's planner, about a task that neither replaces
+  nor tests: a service (lubricate, adjust, clean, overhaul). Most of a
+  plan's recurring tasks are services, and what a service does to the
+  failure rate is not known from the task.
+- **What they know:** the gearbox's plan (`UnitPlan`): its life
+  (Weibull, scale 8,760 h, shape 3), each failure repaired as new in no
+  time at 12,000; it runs around the clock (`UsageForecast.calendar`),
+  4,000 h old on 1 January 2027; the service every 3 months from 1 April
+  (`Recurrence.every(3, "months", "2027-04-01")`), 800 each; a year, to
+  1 January 2028; 7% a year. What a service does, if they say: the fit
+  of the gearbox's history (surpyval's `GeneralizedRenewal`) gives a
+  Kijima II factor of 0.6 (a service leaves 60% of its virtual age).
+- **What they want back:** the service's value against not doing it,
+  by quarter and in all, and how sure that is.
+- **Decisions (the owner's, 21 Nov 2026):**
+  - **By default a service has no effect on the life**: it is an
+    accepted cost. RePyability never invents a benefit. Its value is
+    then minus the present value of its own cost, exactly, and the
+    answer says the effect was taken as none.
+  - A benefit is credited only through an effect the caller states:
+    a **restoration factor** (`maintenance.Restoration`, Kijima I or
+    II, the factor from 0 up: 0 is as new under Kijima II, 1 no effect,
+    above 1 a service that does harm, UC-62), a virtual age to restore
+    to, a fitted surpyval process, or a **fitted condition**
+    (`Condition(life, fresh=, stale=, lasts=)`: a regression life fitted
+    with a "serviced or overdue" covariate, at `fresh` for `lasts` after
+    each service and at `stale` otherwise, as a covariate schedule on
+    the diagram's clock, UC-41's `ScheduledLife`).
+- **The answer, by hand:** the services are on 1 April, 1 July and 1
+  October, 2,160, 4,344 and 6,552 h from the start (the forecast is
+  8,760 h). Their present value is 800 × (1.07^(-90/365.25) +
+  1.07^(-181/365.25) + 1.07^(-273/365.25)) = 786.77 + 773.62 + 760.55 =
+  **2,320.95** (2,400 undiscounted).
+  - *No effect (the default):* the value is **-2,320.95** (-786.77,
+    -773.62 and -760.55 in the second, third and fourth quarters, 0 in
+    the first), exactly. A factor of 1 (Kijima I or II) leaves the
+    gearbox as old as it was, which is the same statement: -2,320.95,
+    exactly.
+  - *As new (Kijima II, factor 0):* each service renews the gearbox,
+    and a failure in between is renewed too, so the plan is UC-50's
+    block replacement on the dates: from `NonRepairable.failures`, 0.271
+    failures with the service against 1.149 without (renewal from 4,000
+    h), 0.878 avoided, a value of **8,135.54** undiscounted (with
+    5,652.28 against without 13,787.83) and **7,794.48** at 7% (within
+    15.81, UC-50's bracket).
+  - *Factor 0.6:* no closed form: the simulation's value lies between
+    the two (checked: the value falls as the factor rises).
+- **How it is solved:** the service's dates come from `Task.due` and
+  are laid on the diagram's clock (real time from the forecast's start,
+  in the plan's unit), as UC-50's are. With no effect, the value is the
+  task's cost at each instant, discounted through `repyability.value`,
+  and nothing else is worked out: the unit's own costs are the same with
+  and without the service and are left out of both sides. With an
+  effect, the plan's one-node diagram (`UnitPlan.diagram`, on a
+  `CalendarContext` giving the node its duty) runs twice from one seed:
+  with the service as a task of no duration at the dated times
+  (`BlockPolicy(times=, restoration=)`, or the covariate schedule its
+  dates give) and without it. The node is named alike in both, so it
+  draws the same random numbers in both (`compare_npv`'s common random
+  numbers) and each run's difference comes from the service. Each run's
+  history is priced with the plan's own prices by
+  `_npv_runs.priced_chunk` (the money module's `Ledger`), by calendar
+  period, discounted at the yearly rate per unit of the diagram's
+  clock; the service's own cost is the exact one of the default, added
+  to the with side. The value by period and in all is the mean
+  difference, with a two-sided interval (90% by default) from the runs'
+  spread.
+- **Decisions (defaults):**
+  - A service takes no time, as UC-50's replacement and UC-54's test.
+  - A service due at the forecast's start is done then: its effect is
+    the start's (the gearbox's age taken as having had no action since
+    new, so a Kijima factor `q` leaves `q × age`).
+  - The plan holds no preventive task of its own (it holds one at most,
+    which the service would be); a plan that does is refused, saying to
+    value the service on the plan without it.
+  - 4,000 runs by default; a seed is drawn and kept when none is given.
+  - What the engine does not follow is refused with its own reason: a
+    virtual age on a duty plan that changes over time, a covariate
+    schedule with a duty, a state with imperfect repair.
+- **Checks** (`test_schedule_services.py`): the default against the hand
+  numbers to the cent; factor 1 equal to the default exactly; as new
+  (factor 0) against UC-50's `Replaces` values within four standard
+  errors (bound fixed before the run); as new with minimal repairs
+  from new against the overhaul's closed form, the failures with
+  services every `T` being `H(T)` a stretch; seeded runs repeat; the
+  interval narrows with more runs; the value falls as the factor rises
+  (0, 0.6, 1.2); an exponential life gains nothing at any factor (the
+  interval holds minus the task's cost); a fitted condition's value
+  follows its covariate's effect; refusals.
+- **Learned:** valuing a service needed no new engine: a dated task
+  with a restoration was already a plan's task, and the runs' pricing
+  already the money module's. The default of no effect is the honest
+  one: it states that the service is a cost until someone says what it
+  does.
 
 ### UC-40: "Replacing the part is cheap at the annual overhaul, the first Tuesday of November. Can the calendar policy use the real dates?"
 
@@ -952,10 +1052,12 @@ in `test_schedule_forecast.py`.
   for the policies on dates, with `discounted_run_to_failure` and
   `age_replacement_value` where the usage keeps a steady pace) is not
   joined to it yet; a task's long run is (`Task.long_run_value`).
-- **The value of a service.** `task_value` takes `Replaces` and
-  `Finds`: a service that changes the failure rate (whose model of the
-  effect is still to be chosen) is a later use case, refused saying so.
-  A test that can miss a failure or that takes the device off line, and
+- **A service on what the engine does not follow yet.** UC-67's
+  simulated effects keep the engine's limits: a virtual age is not
+  followed on a duty plan that changes, nor from a state with imperfect
+  repairs; a covariate of the time since the service (a ramp, not a
+  step) is not a schedule the engine takes.
+- A test that can miss a failure or that takes the device off line, and
   an inspection that finds a warning before the failure (on condition),
   are not valued on dates yet either.
 - **A task's value for ever.** `task_value` values the forecast's window;

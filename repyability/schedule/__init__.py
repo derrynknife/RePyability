@@ -26,8 +26,10 @@ ends.
 - ``task_value``: what a task is worth against not doing it (with
   ``Replaces(part)``: block replacement on its dates against running to
   failure; with ``Finds(device, ...)``: tests of a hidden failure on its
-  dates against never testing), by calendar period, as present values
-  with a ``discount``.
+  dates against never testing; with ``Services(plan, effect=)``: a
+  service, by default an accepted cost with no effect on the life, or
+  with a stated ``Restoration`` or fitted ``Condition``, simulated), by
+  calendar period, as present values with a ``discount``.
 
 ``README.md`` in this package records the use cases, the question each
 answers and how it is solved.
@@ -72,8 +74,10 @@ from repyability.schedule._usage import (
     UsageForecast,
 )
 from repyability.schedule._value import (
+    Condition,
     Finds,
     Replaces,
+    Services,
     TaskValue,
     task_value,
 )
@@ -102,8 +106,10 @@ __all__ = [
     "Task",
     "TaskDue",
     "LongRunValue",
+    "Condition",
     "Finds",
     "Replaces",
+    "Services",
     "TaskValue",
     "WorkByPeriod",
     "work_by_period",
