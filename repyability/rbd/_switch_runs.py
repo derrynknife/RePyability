@@ -24,7 +24,7 @@ from typing import Any, Dict, Hashable, List, Optional, Tuple
 
 import numpy as np
 
-from repyability.rbd import _npv, _npv_runs, _pricing, _requirements
+from repyability.rbd import _npv, _npv_runs, _requirements
 from repyability.rbd._common import _discount_rate
 from repyability.rbd.results import SimulatedSwitchTime
 from repyability.utils import checks
@@ -146,19 +146,10 @@ def _runs(twin, horizon, switch, rates, rate, n, seed, engine, state):
     used = None
     for first in range(0, n, _CHUNK):
         size = min(_CHUNK, n - first)
-        runs = twin.simulate_timelines(
-            horizon,
-            mc_samples=size,
-            seed=seed,
-            engine=engine,
-            start=first,
-            state=state,
+        ledger, runs = _npv_runs.priced_chunk(
+            twin, horizon, ends, rate, 1.0, size, seed, engine, first, state
         )
         used = used or runs.engine
-        logs = {node: runs.components[node]._data for node in twin.costs}
-        ledger = _pricing.priced(
-            twin, logs, runs.system._data, ends, rate, 1.0, (), size
-        )
         part = slice(first, first + size)
         for (k, category, _), (present, _) in ledger.cells.items():
             if category == "value":

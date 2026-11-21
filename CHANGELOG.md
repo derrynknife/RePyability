@@ -12,6 +12,16 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: the NPV spread of a diagram with shutdowns (UC-61 of the
+  maintenance README). `npv_distribution`, `compare_npv` and
+  `best_switch_time` price the runs of a diagram with shutdowns, where
+  they refused it: each shut's cost at each of its starts, discounted
+  exactly; a component held off line by a shut not charged for the
+  hold; and a failure in the shut, or a renewal made in it (an
+  opportunistic renewal, a task at the shut), charged as anywhere else.
+  The Python loop's histories mark each hold and record the changes a
+  hold hid (for pricing; `simulate_timelines`' timelines are unchanged).
+
 - Added: `value_plan(spec)`, an NPV question asked and answered as JSON
   documents. The request names a diagram (`to_dict()`), the analysis
   (`expected_npv`, `expected_npv_uncertainty`, `npv_distribution`,
@@ -542,6 +552,12 @@ release between minors that only adds (0.19.1).
   (exact by default, simulation on request).
 
 ### Changed
+
+- Changed (intentional, the numbers can differ): a shutdown that takes
+  no time and has a cost is charged at each of its starts by
+  `availability()` and `cost()` (and so `npv_distribution`), as
+  `expected_cost` and `expected_npv` charge it; the simulation charged
+  it nothing. Its other values and seeded draws are unchanged.
 
 - Changed: the long-run methods' refusal of shutdowns at given times now
   says why and what to ask for (they end, so there is no long run: a
