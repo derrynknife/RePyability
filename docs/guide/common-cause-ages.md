@@ -262,9 +262,11 @@ exponential.mean()     # -> 14736.8
 
 - **A share of the hazard for members of different ages**: there is no one
   hazard to share. Model the cause as a shock.
-- **Repairable diagrams.** A node in series is down, and repaired, as one
-  component: the diagram is down for the shock's own repair time, where a
-  shared cause leaves each member failed, to be found and repaired on its
-  own. A [`RepairableRBD`][repyability.RepairableRBD] takes common-cause
-  [groups](common-cause.md#repairable-systems) of members with exponential
-  lives.
+- **Repairable diagrams, exactly.** A node in series is down, and
+  repaired, as one component, where a shock leaves each member it failed
+  to be repaired on its own. Give a
+  [`RepairableRBD`][repyability.RepairableRBD] the shocks as a group's
+  model, `CCFGroup(members, Shocks(...))`: it
+  [simulates them](common-cause.md#shocks-at-a-rate-of-their-own), for
+  members of any lives, and its exact methods refuse, naming the
+  simulation.

@@ -12,6 +12,25 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: a `RepairableRBD` takes `Shocks(rate, p, lethal_rate)` as a
+  common-cause group's model, for members of any lives, which need not
+  be alike. Shocks come at a rate of their own and each fails each
+  member with probability `p`; a strike fails the members it names that
+  are up, in the group's order, each then repaired on its own, and a
+  tested member's failure waits for its test. The simulations run it (in
+  Python; the compiled engine hands a diagram with groups over, as
+  before), and every exact and numerical method refuses, naming the
+  simulation, as do a member's own long-run availability
+  (`node_availability`) and its exact spares (`spares_demand`,
+  `spares_stock`), which its own life no longer gives;
+  `spares_demand(method="simulate")` counts them. For exponential
+  members a seeded run is the equivalent rate-split group's, strike for
+  strike, as the shocks' causes take the shared causes' streams; no
+  existing seeded result changes. Scheduled maintenance, imperfect
+  repair or a maintenance group on a member, and a tested member started
+  from a state, are refused by name. The group's `rate`, `p` and
+  `lethal_rate` are levers (`ccf_rate`, `ccf_p`, `ccf_lethal_rate`).
+
 - Added: a `NonRepairableRBD` as a unit's life (UC-66 of the
   maintenance README): a subassembly replaced whole at its failure,
   taken wherever a life is (`UnitPlan`, a spec's `"reliability"`,
