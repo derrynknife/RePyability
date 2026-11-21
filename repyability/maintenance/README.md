@@ -2517,9 +2517,11 @@ given for the node taking precedence (a system's salvage, a number, is
 added to the units' own). A unit retiring is the system's retirement
 only where it is the diagram's only unit; in a diagram of several it is
 refused, saying to give the valuation's `retire_at`. The valuations of
-runs and logs (`npv_distribution`, `compare_npv`, `best_switch_time`,
-`plan_vs_actual`) take a plan's escalation and refuse its salvage and
-retirement, naming them, as they take neither as arguments.
+runs (`npv_distribution`, `compare_npv`) end at a plan's retirement and
+credit every run its salvage at the end (a number; a salvage by age is
+refused), as `expected_npv` does; those of switch times and logs
+(`best_switch_time`, `plan_vs_actual`) take a plan's escalation and
+refuse its salvage and retirement, naming them.
 
 **The hand-worked answer, today.** The diagram of the one pump,
 `RepairableRBD([("s", "p"), ("p", "t")], {"p": spec})`, valued by
@@ -2539,14 +2541,19 @@ equal its diagram on that calendar; the plan's salvage (a number and by
 age), escalation and retirement equal the arguments for the node, the
 arguments win, a retirement past the horizon is the horizon, a unit's
 retirement in a diagram of several is refused, the runs refuse a
-salvage, and the terms save and load; the exact NPV is the mean of
+salvage by age, and the terms save and load; each run of a plan with a
+salvage or retirement is the run of the plan without, to the
+retirement, plus the salvage `expected_npv` credits
+(`test_npv_runs_own_end.py`); the exact NPV is the mean of
 4,000 seeded runs within four standard errors.
 
 **What was learned.** The diagram is already the single unit's engine;
 what a plan alone needed was a name for its one-node diagram and the
-unit's money on the plan. A salvage and a retirement in the simulated
-runs and in `plan_vs_actual`, and one unit's retirement within a
-system, are left for later.
+unit's money on the plan. The simulated runs then took a salvage given
+as a number and a retirement; a salvage by age in the runs (each run's
+unit in service), a salvage and retirement in `best_switch_time` and
+`plan_vs_actual`, and one unit's retirement within a system, are left
+for later.
 
 ### UC-59: "A stop every month renews the bearing; a long overhaul every year renews the pump and the bearing. What is the plan worth over two years, and how available is the line?"
 

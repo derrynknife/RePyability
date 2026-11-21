@@ -2443,6 +2443,15 @@ class NPVDistribution(_ResultMapping):
     value_schedule : ValueSchedule or None
         The value earned as steps, when given one (``value_rate`` is
         then NaN); None for a single rate.
+    salvage : float
+        The present value of the salvage the components' plans credit at
+        the end (their own ``"salvage"``, as a number), the same in every
+        run and in ``samples``; 0 with none.
+    undiscounted_salvage : float
+        That salvage, not discounted.
+    retire_at : float or None
+        When a plan's own ``"retire_at"`` ended the runs before the
+        horizon (``horizon`` is then that time); None otherwise.
 
     Examples
     --------
@@ -2510,6 +2519,9 @@ class NPVDistribution(_ResultMapping):
     inflation: Optional[float] = None
     escalation: Dict[Hashable, float] = field(default_factory=dict)
     value_schedule: Any = None
+    salvage: float = 0.0
+    undiscounted_salvage: float = 0.0
+    retire_at: Optional[float] = None
 
     @property
     def std(self) -> float:

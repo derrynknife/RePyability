@@ -108,8 +108,12 @@ def refusal(rbd) -> Optional[Tuple[str, Tuple[Hashable, ...]]]:
     return None
 
 
-def _require_priceable(rbd) -> None:
-    _npv.refuse_own_end(rbd)
+def _require_priceable(rbd, own_end: bool = False) -> None:
+    """Refuse a diagram whose runs cannot be priced; ``own_end``: the
+    valuation credits the components' own salvage and retirement
+    (``_npv.own_end``), else it refuses them."""
+    if not own_end:
+        _npv.refuse_own_end(rbd)
     found = refusal(rbd)
     if found is not None:
         raise NotImplementedError(found[0])
@@ -122,7 +126,9 @@ def route(rbd, timelines_route):
 
     if timelines_route.route == r.REFUSED:
         return timelines_route
-    own = r.refusal(lambda: _npv.refuse_own_end(rbd))
+    own = r.refusal(
+        lambda: _npv.own_end(rbd, math.inf, _npv.Money(rbd, 0.0, 0.0))
+    )
     if own is not None:
         return r.refused(own, tuple(rbd._valuation))
     found = refusal(rbd)
@@ -288,7 +294,6 @@ def npv_distribution(
     inflation=None,
 ) -> NPVDistribution:
     """See ``RepairableRBD.npv_distribution``."""
-    _npv.refuse_own_end(rbd, "npv_distribution")
     escalation = _npv.own_escalation(rbd, escalation)
     money = _npv.Money(
         rbd, discount_rate, value_rate, escalation, rates, inflation
@@ -296,6 +301,12 @@ def npv_distribution(
     horizon, contract, ends, n = _settings(
         rbd, horizon, money, contract, mc_samples
     )
+    # The runs end at a retirement, and every run credits the salvage.
+    end = _npv.own_end(rbd, horizon, money)
+    if end[0] < horizon:
+        horizon, contract, ends, n = _settings(
+            rbd, end[0], money, contract, mc_samples
+        )
     if hurdle is not None:
         hurdle = checks.number_or_nan(hurdle)
         if not math.isfinite(hurdle):
@@ -305,7 +316,7 @@ def npv_distribution(
     tail = _share(tail, "tail")
     checks.one_of("engine", engine, ("auto", "python", "numba"))
     seed = _seed(seed)
-    _require_priceable(rbd)
+    _require_priceable(rbd, own_end=True)
     return _priced_runs(
         rbd,
         horizon,
@@ -318,6 +329,7 @@ def npv_distribution(
         state,
         hurdle,
         tail,
+        end,
     )
 
 
@@ -333,8 +345,13 @@ def _priced_runs(
     state,
     hurdle: Optional[float],
     tail: float,
+    end=None,
 ) -> NPVDistribution:
-    """The ``n`` runs of ``seed``, priced (settings checked)."""
+    """The ``n`` runs of ``seed``, priced (settings checked); ``end``,
+    ``_npv.own_end``'s, credits each run the salvage."""
+    salvage, plain_salvage, retired = (
+        (0.0, 0.0, False) if end is None else (end[1], end[2], end[3])
+    )
     ends = np.array([horizon])
     present: Dict[Tuple[str, Any], np.ndarray] = {}
     nominal: Dict[Tuple[str, Any], np.ndarray] = {}
@@ -402,7 +419,7 @@ def _priced_runs(
             else payments.sum(axis=1).mean()
         )
 
-    samples = values - costs + paid
+    samples = values - costs + paid + salvage
     ordered = np.sort(samples)
     worst = max(1, math.ceil(round(tail * n, 9)))
     priced_at_mean: List[Hashable] = [
@@ -421,7 +438,9 @@ def _priced_runs(
         mean=float(samples.mean()),
         value=float(values.mean()),
         cost=float(costs.mean()),
-        undiscounted_npv=plain_value_mean - plain_cost + plain_paid,
+        undiscounted_npv=(
+            plain_value_mean - plain_cost + plain_paid + plain_salvage
+        ),
         undiscounted_value=plain_value_mean,
         undiscounted_cost=plain_cost,
         cost_by_category=by_category,
@@ -449,6 +468,9 @@ def _priced_runs(
             else [float(e) for e in contract_ends]
         ),
         period_availability=available,
+        salvage=salvage,
+        undiscounted_salvage=plain_salvage,
+        retire_at=horizon if retired else None,
         **money.stated(),
     )
 
@@ -534,8 +556,6 @@ def compare_npv(
         )
     # Each plan's own: an escalation may name a component of either plan,
     # which the other leaves out.
-    for d in (rbd, other):
-        _npv.refuse_own_end(d, "compare_npv")
     monies = [
         _npv.Money(
             d,
@@ -551,28 +571,42 @@ def compare_npv(
         _settings(d, horizon, money, contract, mc_samples)
         for d, money in zip((rbd, other), monies)
     ]
-    horizon, contract, ends, n = settings[0]
+    # Each plan's runs end at its own retirement, crediting its salvage.
+    ends_of = [
+        _npv.own_end(d, s[0], money)
+        for d, s, money in zip((rbd, other), settings, monies)
+    ]
+    settings = [
+        _settings(d, end[0], money, contract, mc_samples) if end[3] else s
+        for d, s, money, end in zip((rbd, other), settings, monies, ends_of)
+    ]
+    n = settings[0][3]
     montecarlo.check_confidence(confidence)
     checks.one_of("engine", engine, ("auto", "python", "numba"))
     seed = _seed(seed)
-    for diagram, which in ((rbd, "this plan"), (other, "the other plan")):
-        _require_priceable(diagram)
-        _require_matched(diagram, which, horizon, state)
+    for diagram, which, s in zip(
+        (rbd, other), ("this plan", "the other plan"), settings
+    ):
+        _require_priceable(diagram, own_end=True)
+        _require_matched(diagram, which, s[0], state)
     this, that = (
         _priced_runs(
             diagram,
-            horizon,
+            s[0],
             money,
-            contract,
-            ends,
+            s[1],
+            s[2],
             n,
             seed,
             engine,
             state,
             None,
             0.1,
+            end,
         )
-        for diagram, money in zip((rbd, other), monies)
+        for diagram, money, s, end in zip(
+            (rbd, other), monies, settings, ends_of
+        )
     )
     differences = this.samples - that.samples
     estimate = float(differences.mean())

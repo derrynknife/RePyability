@@ -12,6 +12,15 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: `npv_distribution` and `compare_npv` take a unit's own
+  `retire_at` and `salvage` (a `UnitPlan`'s, or a component spec's),
+  which they refused: the runs end at the retirement, and each run is
+  credited the salvage at the end, discounted as `expected_npv`
+  discounts it (`NPVDistribution.salvage`, `undiscounted_salvage` and
+  `retire_at`). A salvage by age of the unit in service, and one unit
+  of several retiring, are still refused, saying what to give;
+  `best_switch_time`, `plan_vs_actual` and `task_value` still refuse a
+  unit's own salvage or retirement. Results without them are unchanged.
 - Added: `RepairableRBD.least_spend_for_downtime(horizon, limit, ...)`
   and `UnitPlan.least_spend_for_downtime` (UC-68 of the maintenance
   README): the least spend that keeps a bad run's downtime (hours, or

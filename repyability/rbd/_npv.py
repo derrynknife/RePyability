@@ -74,20 +74,48 @@ def own_escalation(rbd, escalation):
 
 def refuse_own_end(rbd, method: str = "") -> None:
     """Refuse a valuation that credits no salvage and runs to its horizon
-    (``npv_distribution``, ``compare_npv``, ``best_switch_time``,
-    ``plan_vs_actual``) for a diagram whose components carry their own
-    salvage or retirement, which it would leave out."""
+    (``best_switch_time``, ``plan_vs_actual``, a service's value) for a
+    diagram whose components carry their own salvage or retirement,
+    which it would leave out."""
     for node, own in getattr(rbd, "_valuation", {}).items():
         for key in ("salvage", "retire_at"):
             if key in own:
                 raise NotImplementedError(
                     f"Component {node!r} has its own {key!r}, which the "
-                    "valuations of simulated runs and of logs "
-                    "(npv_distribution, compare_npv, best_switch_time, "
-                    "plan_vs_actual) do not take yet: expected_npv "
-                    f"credits it. Value a plan without its {key!r} here "
+                    "valuations of switch times and of logs "
+                    "(best_switch_time, plan_vs_actual, task_value) do "
+                    "not take yet: expected_npv and npv_distribution "
+                    f"credit it. Value a plan without its {key!r} here "
                     "(and its worth at the end with expected_npv)."
                 )
+
+
+def own_end(rbd, horizon: float, money):
+    """Where a valuation of runs ends, and what it credits there, from
+    the components' own ``"retire_at"`` and ``"salvage"`` (see
+    ``own_terms``): ``(stop, present, nominal, retired)``, the runs' end
+    (the retirement, or the horizon), the salvage credited then,
+    discounted and not, and whether the plan retires before the
+    horizon. Every run credits the same: a salvage given as a
+    number is worth that whatever happened. A salvage by age, which
+    depends on each run's unit in service, is refused."""
+    salvage, _, retire_at = own_terms(rbd, horizon, None, None, None)
+    stop = _retirement(retire_at, horizon)
+    given = salvage if isinstance(salvage, dict) else {}
+    for node, worth in given.items():
+        if callable(worth):
+            raise NotImplementedError(
+                f"Component {node!r} has a salvage by age, which the "
+                "valuations of simulated runs (npv_distribution, "
+                "compare_npv) do not take yet: give it as a number, or "
+                "value its worth at the end with expected_npv."
+            )
+    credits = _salvage(rbd, salvage, stop, None, set())
+    total = float(sum(credits.values()))
+    growth = money.growth("salvage")
+    present = math.exp(-(money.rate - growth) * stop) * total
+    nominal = (math.exp(growth * stop) if growth else 1.0) * total
+    return stop, present, nominal, stop < horizon
 
 
 def _number(value, name: str, strict: bool) -> float:

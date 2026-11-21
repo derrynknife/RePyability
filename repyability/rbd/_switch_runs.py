@@ -70,6 +70,9 @@ def route(rbd, npv_route):
         return r.refused(_NONE)
     if npv_route.route == r.REFUSED:
         return npv_route
+    own = r.refusal(lambda: _npv.refuse_own_end(rbd))
+    if own is not None:
+        return r.refused(own, tuple(rbd._valuation))
     return r.AnalysisRoute(
         r.SIMULATED,
         "The diagram simulated with each candidate switch time on its "

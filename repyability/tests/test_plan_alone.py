@@ -316,16 +316,17 @@ def test_one_unit_retiring_in_a_diagram_of_several_is_refused():
     rbd.expected_npv(HORIZON, retire_at=100.0)
 
 
-def test_the_valuations_of_runs_and_logs_refuse_what_they_leave_out():
+def test_the_valuations_of_logs_refuse_what_they_leave_out():
     plan = with_money(salvage=7.0)
     message = "has its own 'salvage'"
-    with pytest.raises(NotImplementedError, match=message):
-        plan.npv_distribution(HORIZON, mc_samples=10, seed=1)
     log = Timeline.from_outages([(50.0, 52.0)], 100.0)
     with pytest.raises(NotImplementedError, match=message):
         plan.plan_vs_actual(log, 100.0, HORIZON)
-    for name in ("npv_distribution", "plan_vs_actual"):
-        assert plan.analysis_routes()[name].route == routes.REFUSED
+    assert plan.analysis_routes()["plan_vs_actual"].route == routes.REFUSED
+    # The runs credit it (test_npv_runs_own_end.py).
+    assert plan.analysis_routes()["npv_distribution"].route == (
+        routes.SIMULATED
+    )
     # Its own escalation the runs take, as the argument.
     grown = with_money(escalation=2e-4)
     runs = dict(discount_rate=RATE, mc_samples=50, seed=4)
