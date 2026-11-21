@@ -343,8 +343,17 @@ class RepairableRBD(RBD):
           ``"full_test"``) go onto the clock divided by ``d``. The spec
           keeps them as given, for saving, the levers,
           ``with_intervals`` and the interval choices, which take and
-          give them in operating time. The life must be a surpyval
-          parametric distribution of a time.
+          give them in operating time. The life must be a model that
+          rescales its time (surpyval's ``rescale_time``; with surpyval
+          0.28, a parametric distribution of a time). With no duty, a
+          task in operating time counts the diagram's clock. ``"duty"``
+          may instead be a plan that changes over time, a
+          ``schedule.DutySchedule`` (``UsageForecast.schedule()``): each
+          unit's life is drawn in operating time and put on the clock
+          through the plan from when it is put into service, and a
+          preventive task in operating time falls when the plan reaches
+          it; only the simulations take such a block (see
+          ``schedule.CalendarContext``).
           ``"upgrade"`` gives the component another life from a time: a
           dict of ``"at"`` (the time, in the diagram's time from 0),
           ``"reliability"`` (the life its units have from then: the unit
