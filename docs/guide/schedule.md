@@ -500,10 +500,10 @@ outcomes). Month by month the numbers are small, about 0.05 failures
 ```
 
 With `discount=`, each period also has its expected cost as a present
-value. An expected cost accrues as the part runs, so the forecast is cut
-into short windows and each window's cost is discounted at its start and
-at its end. The true value lies between the two: `npv` is the middle,
-and `npv_precision` is half the gap.
+value. An expected cost accrues as the part runs, and each part of it is
+discounted from when it is expected to fall: an integral over the
+forecast, worked out until its error estimate, `npv_precision`, is
+small.
 
 ```python
 worth = failures_by_period(ring, usage, "month", age=5200.0, discount=0.07)
@@ -511,8 +511,8 @@ round(worth.npv)  # -> 2883
 worth.npv_precision < 0.001 * worth.npv  # True
 ```
 
-`npv_tolerance` (0.001 by default) sets how short the windows are; a
-tenth of it takes ten times the windows. `expected_cost` and the ranges
+`npv_tolerance` (0.001 by default) sets how small `npv_precision` must
+be, as a share of `npv`. `expected_cost` and the ranges
 stay undiscounted: the present values are `expected_npv` and `npv`.
 
 One part rarely fails in a given month, so the monthly figures become

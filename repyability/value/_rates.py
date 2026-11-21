@@ -18,8 +18,6 @@ days. The conversion between the two is made here, and nowhere else.
 - ``present_horizon``, ``horizons``: a unit cost rate over horizons.
 - ``equivalent``, ``equivalent_annual``: the steady cost worth a present
   value; ``perpetuity``: an amount every gap for ever.
-- ``bracket``: an expected cost inside windows, between discounting it at
-  each window's start and end.
 - ``net``: the yearly rate of costs that escalate at a yearly rate.
 """
 
@@ -28,7 +26,7 @@ from __future__ import annotations
 import math
 import warnings
 from datetime import date
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional
 
 import numpy as np
 
@@ -222,23 +220,3 @@ def perpetuity(discount: float, first_years: float, gap_years: float) -> float:
     with ``v = 1 / (1 + discount)``."""
     rate = continuous(discount)
     return math.exp(-rate * first_years) / -math.expm1(-rate * gap_years)
-
-
-def bracket(
-    discount: float, amounts, starts, ends
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Present values of expected costs that accrue inside windows.
-
-    ``amounts[i]`` (at least 0) falls somewhere from ``starts[i]`` to
-    ``ends[i]`` (years on). Discounted at its window's start it is worth
-    the most it can be, and at its end the least, so the true present
-    value of each lies between the two. Returns each window's middle of
-    the two and half their difference: the value, and how far the true
-    one can be from it.
-    """
-    amounts = np.asarray(amounts, float)
-    high = amounts * factor(discount, starts)
-    low = amounts * factor(discount, ends)
-    # (At a net rate below 0, costs escalating faster than the discount,
-    # the window's end is worth more than its start.)
-    return 0.5 * (high + low), 0.5 * np.abs(high - low)
