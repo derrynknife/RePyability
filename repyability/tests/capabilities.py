@@ -55,7 +55,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ),
             (
                 "B-life, time to a reliability",
-                ("bx_life", "time_to_reliability"),
+                ("bx_life", "time_to_reliability", "qf"),
             ),
             ("Given the system's age", ("cs",)),
             ("Given the components' ages or states", ("sf_given_state",)),

@@ -5307,7 +5307,7 @@ class NonRepairableRBD(RBD):
         )
         fixed = r.refusal(self._require_time_varying)
         give(
-            ("time_to_reliability", "bx_life"),
+            ("time_to_reliability", "bx_life", "qf"),
             (
                 r.refused(fixed)
                 if fixed
@@ -7098,6 +7098,61 @@ class NonRepairableRBD(RBD):
         return self._invert_reliability(
             lambda t: float(self.sf(t, **kwargs)), target, upper_bound
         )
+
+    def qf(self, p, **kwargs):
+        """The time by which a share ``p`` of systems have failed: the
+        inverse of [`ff`][repyability.NonRepairableRBD.ff], for each ``p``
+        in [0, 1], so a diagram can be a unit's life.
+
+        Each time is found to near machine precision in both tails: a
+        share up to a half solves ``ff(t) = p`` and a larger one ``sf(t) =
+        1 - p``, each on the logarithms of time and probability, by false
+        position kept to a bracket (the Illinois rule) from a bracket
+        doubled out from the median. A share no more than the chance of
+        having failed at 0 gives 0, and 1 gives ``inf``.
+
+        Parameters
+        ----------
+        p : float or array_like
+            The shares failed, each in [0, 1].
+        **kwargs
+            Keyword arguments of ``sf`` (``working_nodes``,
+            ``broken_nodes``, ``method``).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            A time for each share (a float for a single one).
+
+        Examples
+        --------
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> pair = NonRepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {n: surv.Exponential.from_params([0.01]) for n in "ab"},
+        ... )
+        >>> t = pair.qf(0.25)  # (1 - exp(-0.01 t))**2 = 0.25
+        >>> round(t, 6), round(-100 * math.log(1 - 0.5), 6)
+        (69.314718, 69.314718)
+        """
+        self._require_time_varying()
+        given = np.asarray(p, dtype=float)
+        shares = np.atleast_1d(given).ravel()
+        if not np.all((shares >= 0.0) & (shares <= 1.0)):
+            raise ValueError(
+                "qf takes shares failed in [0, 1] (a probability of "
+                f"failing by the time); got {p!r}."
+            )
+        out = np.empty_like(shares)
+        at_start = float(self.ff(0.0, **kwargs))
+        out[shares <= at_start] = 0.0
+        out[shares == 1.0] = np.inf
+        todo = (shares > at_start) & (shares < 1.0)
+        if np.any(todo):
+            out[todo] = _invert_life(self, shares[todo], kwargs)
+        return float(out[0]) if given.ndim == 0 else out.reshape(given.shape)
 
     def _invert_reliability(
         self,
@@ -9025,3 +9080,73 @@ class NonRepairableRBD(RBD):
         return life_end(
             lambda t: self._sf_and_ff(t, working_nodes, broken_nodes)[0], knots
         )
+
+
+def _invert_life(rbd, shares: np.ndarray, kwargs: dict) -> np.ndarray:
+    """The times at which ``rbd`` has failed with probability ``shares``
+    (each strictly between its chance at 0 and 1), for ``qf``: on the
+    lower half ``log ff(t) = log p`` and on the upper ``log sf(t) =
+    log(1 - p)``, in ``log t``, by false position with the Illinois rule
+    from a bracket doubled out from the median life."""
+    lower = shares <= 0.5
+    target = np.where(lower, np.log(shares), np.log1p(-shares))
+
+    def gap(log_t: np.ndarray) -> np.ndarray:
+        """Increasing in ``log t``, 0 at the time sought."""
+        t = np.exp(log_t)
+        with np.errstate(divide="ignore"):
+            low = np.log(np.asarray(rbd.ff(t, **kwargs), dtype=float))
+            high = np.log(np.asarray(rbd.sf(t, **kwargs), dtype=float))
+        return np.where(lower, low - target, target - high)
+
+    median = float(rbd.time_to_reliability(0.5, **kwargs))
+    lo = np.full(shares.shape, math.log(median))
+    hi = lo.copy()
+    g_lo, g_hi = gap(lo), gap(hi)
+    for _ in range(2000):
+        down = g_lo > 0.0
+        up = g_hi < 0.0
+        if not (np.any(down) or np.any(up)):
+            break
+        lo[down] -= math.log(2.0)
+        hi[up] += math.log(2.0)
+        g_lo = np.where(down, gap(lo), g_lo)
+        g_hi = np.where(up, gap(hi), g_hi)
+    else:
+        raise ValueError(
+            "qf found no time with the share failed asked for (the "
+            "diagram's reliability does not fall that far)."
+        )
+    # The lower end may still have g_lo == 0 or the upper g_hi == 0.
+    side = np.zeros(shares.shape, dtype=int)
+    tiny = 4.0 * np.finfo(float).eps
+    for _ in range(200):
+        open_ = (hi - lo > tiny * np.maximum(1.0, np.abs(hi))) & (
+            g_lo != 0.0
+        ) & (g_hi != 0.0)
+        if not np.any(open_):
+            break
+        with np.errstate(invalid="ignore", divide="ignore"):
+            x = hi - g_hi * (hi - lo) / (g_hi - g_lo)
+        x = np.where(
+            np.isfinite(x) & (x > lo) & (x < hi), x, 0.5 * (lo + hi)
+        )
+        x = np.where(open_, x, lo)
+        g = gap(x)
+        above = open_ & (g > 0.0)
+        below = open_ & (g < 0.0)
+        hit = open_ & (g == 0.0)
+        hi = np.where(above, x, hi)
+        lo = np.where(below, x, lo)
+        # Illinois: halve the end kept twice running.
+        g_lo = np.where(below, g, np.where(above & (side == 1), g_lo / 2, g_lo))
+        g_hi = np.where(above, g, np.where(below & (side == -1), g_hi / 2, g_hi))
+        side = np.where(above, 1, np.where(below, -1, side))
+        lo = np.where(hit, x, lo)
+        hi = np.where(hit, x, hi)
+        g_lo = np.where(hit, 0.0, g_lo)
+    found = np.where(
+        g_lo == 0.0, lo, np.where(g_hi == 0.0, hi, 0.5 * (lo + hi))
+    )
+    return np.exp(found)
+

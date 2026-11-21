@@ -66,6 +66,7 @@ all go through it.
 | UC-65 | One pump's plan valued alone: its NPV over eight years at 7%, its cash flows by year, its spread, its plan against what happened, its long-run cost and best interval; with its salvage, its prices' growth and its retirement on the plan | **Built**: `UnitPlan.expected_npv`, `cash_flows`, `npv_distribution`, `plan_vs_actual`, `expected_cost`, `expected_cost_rate`, `events_by_period`, `failures_by_period`, `optimal_replacement_interval`, `optimal_inspection_interval` and `analysis_routes`, each its one-node diagram's (`UnitPlan.diagram`), on a `CalendarContext` if given; `UnitPlan(salvage=, escalation=, retire_at=)` and the spec keys of the same names |
 | UC-59 | A part renewed at a short stop every month and again at the long yearly overhaul, each renewal as long as its shut | **Built**: a `"preventive"` spec's `"shutdown"` as a list of shutdowns, exact over a horizon |
 | UC-60 | A part upgraded in year 3 and block-replaced before and after, the new model on the same interval | **Built**: an `"upgrade"` with a `"preventive"` block policy, numerical over a horizon and simulated |
+| UC-66 | A pump whose seal is a redundant pair, replaced whole when both have failed: its life is a diagram | **Built**: a `NonRepairableRBD` as a life wherever a life is taken (`UnitPlan`, a spec's `"reliability"`, `NonRepairable`), by its functions; `NonRepairableRBD.qf` inverts its `ff` to near machine precision |
 | UC-64 | What a part costs per year once upgraded: the long run of the diagram with the new life, the time before the upgrade ignored | **Built**: the long-run methods of a diagram with an `"upgrade"` give the values of the diagram after it |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
@@ -3182,6 +3183,47 @@ system, are left for later.
   part, its long run after the upgrade, its spares and `plan_vs_actual`,
   and retiring a single part (`retire_at={node: t}`) are left for a
   later use case.
+
+### UC-66: "Our pump's seals are a redundant pair, and the cartridge is replaced whole once both have failed. What is its plan worth?"
+
+**Who asks.** The planner of UC-65, whose unit is a subassembly: a
+seal cartridge with two seals in parallel, each with its own fitted
+life, replaced as one part when it fails.
+
+**What they know.** Each seal's life (exponential, 0.01 a day); the
+cartridge's repair (exponential, mean 2 days) and prices.
+
+**What they want back.** The plan's values with the cartridge's life
+being the diagram of its seals, worked out exactly where the diagram's
+functions allow and simulated otherwise, as for any life.
+
+**How it is solved.** A `NonRepairableRBD` whose reliability changes
+with time is taken by its functions, as any surpyval model with a
+life's functions is (`_model_utils.by_functions`, `is_diagram_life`):
+its `sf`, `ff`, `df`, `hf`, `Hf` and `mean` are the diagram's own, and
+`qf` (new) inverts `ff` for a share up to a half and `sf` above, on
+logarithms, by false position kept to a bracket, so a draw is seeded
+from the streams as a model's is. So `UnitPlan(life=diagram)`, a spec's
+`"reliability"` and `NonRepairable(diagram)` take it, saving takes it,
+and every route treats it as a smooth life.
+
+**The hand-worked answer.** The pair's life is `(1 - exp(-0.01 t))^2`
+failed, a mean of `1/0.01 + 1/0.02 = 150` days, so repaired in a mean
+of 2 days the cartridge is up `150 / 152 = 0.98684` of the time, which
+`UnitPlan(pair, repair).diagram().mean_availability()` gives.
+
+**Checks.** `test_diagram_life.py`: the parallel pair's `qf` against
+its closed form, and a series pair of Weibulls of shape 2 against the
+one Weibull it is, each to 1e-13 over shares from 1e-14 to 1 - 1e-9; a
+unit whose life is the series pair against the unit of that one
+Weibull, exact (long run, over time, NPV) and simulated (seeded
+availability and NPV runs), to 1e-12; the parallel pair's availability
+against `150 / 152`; a diagram taken by `NonRepairable` and a spec,
+saved and loaded. A catalogue kind holds a diagram as a life.
+
+**What was learned.** Nothing but the quantile was missing: a diagram
+already had a life's functions. A nested `RepairableRBD`'s costs
+counted in its parent are left for later.
 
 ### UC-64: "Once the pump is upgraded, what does it cost per year?"
 
