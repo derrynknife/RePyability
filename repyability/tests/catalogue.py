@@ -706,6 +706,16 @@ def repairable_kinds():
                     prices=Prices(repair=2.0, downtime=1.0),
                 )
             ),
+            # A life that is a diagram: a subassembly (a series pair)
+            # replaced whole at its failure, taken by its functions.
+            "a life that is a diagram": system(
+                unit(
+                    reliability=NonRepairableRBD(
+                        [("s", "x"), ("x", "y"), ("y", "t")],
+                        {"x": W([400.0, 2.0]), "y": W([400.0, 2.0])},
+                    )
+                )
+            ),
             # A plan valued alone, with its own money: its salvage, its
             # prices' growth and its retirement (UC-65 of the maintenance
             # README), the one node of its diagram.

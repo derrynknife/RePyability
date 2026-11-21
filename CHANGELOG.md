@@ -12,6 +12,13 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: a `NonRepairableRBD` as a unit's life (UC-66 of the
+  maintenance README): a subassembly replaced whole at its failure,
+  taken wherever a life is (`UnitPlan`, a spec's `"reliability"`,
+  `NonRepairable`) by its functions, exact where the routes are and
+  simulated from the streams as any model's draws. `NonRepairableRBD.qf`
+  inverts its `ff` to near machine precision in both tails.
+
 - Added: a unit's plan valued alone (UC-65 of the maintenance README).
   `UnitPlan` has `expected_npv`, `cash_flows`, `npv_distribution`,
   `plan_vs_actual`, `expected_cost`, `expected_cost_rate`,
