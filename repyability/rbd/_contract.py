@@ -15,7 +15,7 @@ import inspect
 import math
 from typing import Any, Callable, Dict, Hashable, NoReturn, Tuple
 
-import numpy as np
+from repyability.rbd import _streams
 
 #: The version of the request and answer documents.
 SCHEMA = 1
@@ -222,9 +222,7 @@ def _checked(spec) -> dict:
         _fail("inputs must be an object of the analysis's inputs by name.")
     request = {**spec, "inputs": dict(inputs)}
     if analysis in _SEEDED and request["inputs"].get("seed") is None:
-        request["inputs"]["seed"] = int(
-            np.random.SeedSequence().generate_state(1)[0]
-        )
+        request["inputs"]["seed"] = _streams.shared_seed(None)
     return request
 
 

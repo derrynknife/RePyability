@@ -4762,7 +4762,8 @@ class RepairableRBD(RBD):
         seed : int, optional
             Seeds the runs, as for ``simulate_timelines``: the runs are
             its simulations with this seed, on either engine. By default
-            one is drawn, and kept in the result.
+            one is drawn from numpy's global RNG (``np.random.seed`` makes
+            it repeatable), and kept in the result.
         hurdle : float, optional
             A value the NPV must reach: the result gives the share of runs
             below it. By default None.
@@ -4913,8 +4914,9 @@ class RepairableRBD(RBD):
         mc_samples : int, optional
             The number of runs of each plan, by default 10,000.
         seed : int, optional
-            Seeds both plans' runs; by default one is drawn, and kept in
-            the result.
+            Seeds both plans' runs; by default one is drawn from numpy's
+            global RNG (``np.random.seed`` makes it repeatable), and kept
+            in the result.
         confidence : float, optional
             The confidence level of the mean difference's interval, by
             default 0.95.
@@ -5083,7 +5085,9 @@ class RepairableRBD(RBD):
         mc_samples : int, optional
             Each design's runs, by default 2,000.
         seed : int, optional
-            Seeds every design's runs; by default one is drawn, and kept.
+            Seeds every design's runs; by default one is drawn from
+            numpy's global RNG (``np.random.seed`` makes it repeatable),
+            and kept.
         engine : str, optional
             ``"auto"``, ``"python"`` or ``"numba"``, as for
             ``availability``.
@@ -5208,7 +5212,8 @@ class RepairableRBD(RBD):
             The runs at each switch time, by default 1,000.
         seed : int, optional
             Seeds the runs; every switch time's runs share it. By default
-            one is drawn, and kept in the result.
+            one is drawn from numpy's global RNG (``np.random.seed`` makes
+            it repeatable), and kept in the result.
         scan : int, optional
             The switch times scanned from 0 to the horizon, ends included,
             at least 3, by default 11.

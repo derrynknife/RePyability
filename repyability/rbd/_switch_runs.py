@@ -24,7 +24,7 @@ from typing import Any, Dict, Hashable, List, Optional, Tuple
 
 import numpy as np
 
-from repyability.rbd import _npv, _npv_runs, _requirements
+from repyability.rbd import _npv, _npv_runs, _requirements, _streams
 from repyability.rbd.results import SimulatedSwitchTime
 from repyability.utils import checks
 
@@ -209,11 +209,10 @@ def best_switch_time(
     )
     count = checks.whole_number(scan, "scan", minimum=3)
     checks.one_of("engine", engine, ("auto", "python", "numba"))
-    seed = checks.seed(seed)
-    if seed is None:
-        # Every candidate shares a seed (common random numbers): drawn
-        # here, and kept in the result to repeat the search.
-        seed = int(np.random.SeedSequence().generate_state(1)[0])
+    # Every candidate shares a seed (common random numbers): drawn here
+    # (from numpy's global RNG) if not given, and kept in the result to
+    # repeat the search.
+    seed = _streams.shared_seed(checks.seed(seed))
 
     valued: Dict[float, Tuple[np.ndarray, Any]] = {}
 
