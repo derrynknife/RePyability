@@ -12,6 +12,19 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: `UnitPlan`, one unit's maintenance plan (UC-63 of the
+  maintenance README): its life and repair models, its tasks (`AgePolicy`,
+  `BlockPolicy`, `ConditionPolicy`, `CalendarReplacement`, `AtShutdown`,
+  `Inspection`, `Upgrade`, with a `Restoration` for a task that restores
+  partly), its imperfect repairs (`ImperfectRepair`) and its `Prices`,
+  each task in its own clock, as frozen plain data that saves
+  (`to_dict`, `from_dict`). A `RepairableRBD` node takes a plan as it
+  takes the spec dict, which is the plan's shorthand
+  (`UnitPlan.from_spec`, `plan.spec()`); `RepairableRBD.plans` reads
+  each spec node back as a plan. A node given a plan is the node given
+  its spec: no result changes. (The name `MaintenancePlan` stays the
+  result of choosing intervals.)
+
 - Added: maintenance that does harm (UC-62 of the maintenance README).
   A `"preventive"` spec's `"restoration"` takes a restoration factor `q`
   above 1, a task that leaves the unit older than it was (Kijima II with

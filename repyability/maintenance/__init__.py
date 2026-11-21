@@ -228,6 +228,19 @@ from repyability.maintenance._options import (  # noqa: E402
     ReplacementComparison,
     SlackEffect,
 )
+from repyability.maintenance._plan import (  # noqa: E402
+    AgePolicy,
+    AtShutdown,
+    BlockPolicy,
+    CalendarReplacement,
+    ConditionPolicy,
+    ImperfectRepair,
+    Inspection,
+    Prices,
+    Restoration,
+    UnitPlan,
+    Upgrade,
+)
 from repyability.maintenance._repair_or_replace import (  # noqa: E402
     RepairOrReplace,
     RepairOrReplacePolicy,
