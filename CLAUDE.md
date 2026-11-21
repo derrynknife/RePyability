@@ -126,6 +126,17 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   a call binds costs reference counting that numba cannot prune in a
   function this size, and passing the run's tuples to a function per
   simulation cost several times the loop (measured in #206).
+- **A life on the diagram's clock is the Python loop's alone**
+  (`_covariate_schedule.ClockLife`: a covariate schedule's
+  `ScheduledLife`, and a duty plan that changes over time,
+  `_duty.PlannedLife`): what is left of a unit's life depends on when it
+  is put into service (`life_left(t0, age, u)`, the loop's
+  `_ScheduledComponent`), so the exact methods refuse it and
+  `_compiled.unsupported` hands it to Python. A task counted in
+  operating time on such a plan carries it as its `_Preventive.clock`
+  (due in operating time, mapped back through the plan's inverse). The
+  engine always runs on calendar time; an analysis's
+  `schedule.CalendarContext` gives each unit its plan.
 - **Simulations take turns across threads (#216).** The event loop keeps
   a run's state on the diagram (`_run_state`, an `_events._Run`) and draws that cannot be
   streamed come from numpy's global RNG, so a run holds
@@ -632,13 +643,14 @@ What remains (each checked against surpyval 0.28 on 15 Nov 2026):
   condition on survival, which for a Wiener path keeps the units that
   crossed and came back, so it is not this.)
 
-- **Rescaling a model's time for a duty cycle.** surpyval has no
-  rescaling (#845 gave models only a unit label). A spec's `"duty"` puts a
-  life in operating time on the calendar, `R(d t)`, by `_duty._SCALED`, one rule per surpyval distribution (a new
-  one needs its rule there, which `test_units` checks against `R(d t)`).
-  Take surpyval's rescaling once the minimum surpyval has it. (0.28's
-  `EquivalenceModel.at_usage` turns a two-clock life into one clock at a
-  usage rate; it does not rescale a model's time.)
+- **Rescaling a model's time for a duty cycle** (surpyval 0.28 only).
+  A spec's `"duty"` puts a life in operating time on the calendar, `R(d
+  t)`, by the model's own `rescale_time(d)` (surpyval's release after
+  0.28). With 0.28, which has none, `_duty._SCALED` moves each surpyval
+  distribution's parameters (a rule per distribution, which `test_units`
+  checks against `R(d t)` with `rescale_time` hidden). Drop `_SCALED`,
+  and `on_calendar`'s fallback, once the minimum surpyval has
+  `rescale_time`.
 - **Parameter ranges for drawing fits other than distributions** (no
   surpyval issue yet). surpyval gives no range per parameter for a
   regression, a degradation or repairable-unit process or a mixture, so

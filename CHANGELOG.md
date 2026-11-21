@@ -28,6 +28,45 @@ release between minors that only adds (0.19.1).
   group's `rate`, `p` and `lethal_rate` are levers (`ccf_rate`, `ccf_p`,
   `ccf_lethal_rate`).
 
+- Added: the long run of a diagram with an upgrade (UC-64 of the
+  maintenance README): `mean_availability`, `expected_cost_rate`,
+  `node_availability`, the importance measures (by default, in the long
+  run), `replacement_cycle` and the other long-run methods give the
+  values once upgraded, those of the diagram built with each upgraded
+  component's new life (its block replacement kept, the time before the
+  upgrade and its capital cost ignored), where they refused. Asked over
+  time, the measures follow the upgrade as before; `total_cost` still
+  refuses, its horizon starting before the upgrade.
+
+- Added: a block kept unless it is due (`"older_than"`, or on
+  condition with a threshold) at a shutdown's given times, valued
+  without simulation. Over a horizon, `point_availability`,
+  `mission_availability`, `expected_events`, `expected_cost`,
+  `expected_npv` and the windows follow the condition recursion stretch
+  by stretch, from new or from a state; the units kept at an outage are
+  moved onto the next stretch's grid of ages keeping their mass and mean
+  age. Equally spaced times give the shutdown on that period's values.
+  A block tested at given times stays simulated, and the exact methods
+  say so.
+
+- Added: each unit's own duty plan on the calendar (UC-64 of the
+  schedule README). A block's `"duty"` takes a `DutySchedule` (the
+  shares of the time it runs over the diagram's clock, from
+  `UsageForecast.schedule()`) as well as one share: its life is drawn in
+  operating hours and put on the calendar through the plan (a unit put
+  in at `t0` fails when the plan has run its life on from `t0`), and a
+  `"preventive"` task counted in operating time (`"basis":
+  "operating"`) falls when the plan reaches it. Such a block is
+  simulated (the Python engine; the exact methods refuse it, saying
+  why), and `cost_by_window` then takes each window's mean from the
+  simulations, as it does for a covariate schedule.
+  `schedule.CalendarContext(usage, duty={node: forecast or share},
+  unit=)` is the calendar an analysis runs on: `events_by_period` takes
+  it, giving each unit its plan (counting the events in the
+  simulations' histories, and discounting each simulated cost from when
+  it falls, where a plan changes), and `rule_times` gives a recurrence
+  rule's dates on the diagram's clock for a task's `"replace_at"`.
+
 - Added: `UnitPlan`, one unit's maintenance plan (UC-63 of the
   maintenance README): its life and repair models, its tasks (`AgePolicy`,
   `BlockPolicy`, `ConditionPolicy`, `CalendarReplacement`, `AtShutdown`,
@@ -644,6 +683,20 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- Changed: a task counted in operating time on a block with no
+  `"duty"` is no longer refused: the diagram's clock is then the
+  block's operating time (as a share of 1), until an analysis's
+  calendar gives the block its plan. Nothing that ran before changes.
+
+- Changed: a block's `"duty"` (and a life at a usage rate) moves its
+  life onto the calendar by the model's own `rescale_time` where
+  surpyval has it (its release after 0.28), so any model that rescales
+  itself takes a duty, a mixture among them. Values move in the last
+  bits where surpyval's arithmetic differs from RePyability's own (a
+  scale times `1 / d` rather than over `d`): exact window counts by
+  some 6e-15 relative on the diagrams checked. With surpyval 0.28
+  nothing changes.
+
 - Changed: money has one home, `repyability.value`: discounting (one
   convention, continuous at a rate per unit time, with a yearly rate
   converted to it in one place), escalation and real rates,
@@ -706,6 +759,29 @@ release between minors that only adds (0.19.1).
   their last bits. `scripts/bdd_benchmark.py` measures what the diagrams
   cost: at the step limit the search holds some hundreds of megabytes at
   most, so the steps, not the memory, are what stops a core.
+- Changed: `events_by_period`'s and `failures_by_period`'s notes, their
+  docstrings and the schedule guide say that with `discount=` the
+  costs by period (`cost`'s mean and range, `expected_cost`) stay
+  undiscounted, the present values being `expected_npv` and `npv`; the
+  note read as if `cost` were discounted. The values are unchanged.
+- Changed: `RepairableRBD`'s docstring and the costs guide say that a
+  component's `"downtime_cost"` and the system's `downtime_cost_rate`
+  add up (an hour a series component is down costs both), so lost
+  output is priced in one of them. No behaviour changes.
+
+### Fixed
+
+- Fixed: `RepairableRBD.cost_by_window` (and `events_by_period` with
+  `cost=True`) without a seed gave windows that cost less than nothing
+  in some simulations (on one diagram some 3,700 of 26,000, down to
+  -309,000). A window's cost is a simulation's cost to its end less its
+  cost to its start, which needs every end's run to draw the same
+  histories; a seeded call did, but an unseeded one let each run draw
+  its own. An unseeded call now draws one seed (from numpy's global
+  random number generator) for all its runs, so it is the seeded call
+  of that seed: never below 0, and the windows add to one run. Seeded
+  results are unchanged. `events_by_period` likewise seeds its
+  histories, costs and simulated present values once.
 
 ## [0.19.1] - 2026-11-16
 

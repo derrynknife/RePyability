@@ -28,7 +28,7 @@ from repyability.rbd._common import (
     _constant_rate,
     _sf_values,
 )
-from repyability.rbd._covariate_schedule import ScheduledLife
+from repyability.rbd._covariate_schedule import ClockLife
 from repyability.rbd._hidden_life import (
     TestedLife,
 )
@@ -135,7 +135,7 @@ def _require_reliabilities(rbd, node) -> None:
         getattr(component, "time_to_replace", None),
     ):
         if (
-            isinstance(model, (StandbyModel, LoadSharingModel, ScheduledLife))
+            isinstance(model, (StandbyModel, LoadSharingModel, ClockLife))
             and model.is_simulated
         ):
             raise model._no_reliability()
@@ -304,7 +304,7 @@ def _minimal_cycle_blocker(rbd, node) -> Optional[str]:
     life = component.reliability
     if (
         is_mixture(life)
-        or isinstance(life, ScheduledLife)
+        or isinstance(life, ClockLife)
         or not callable(getattr(life, "Hf", None))
     ):
         return "its life has no cumulative hazard to count its failures by"
@@ -492,9 +492,9 @@ def _require_no_plans(rbd) -> None:
             f"{_upgraded(rbd)} (its units have another life from then), "
             "so the diagram has no long run with it: ask for its values "
             "over a horizon (expected_npv(horizon), expected_cost(T), "
-            "mission_availability(T), point_availability(t)), or, for "
-            "the long run, give the component the life it has after the "
-            "upgrade."
+            "mission_availability(T), point_availability(t)); the "
+            "long-run methods (mean_availability(), expected_cost_rate() "
+            "and the others) give the long run once upgraded."
         )
     from ._shutdowns import require_no_several
 
