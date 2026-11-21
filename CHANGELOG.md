@@ -733,6 +733,29 @@ release between minors that only adds (0.19.1).
   their last bits. `scripts/bdd_benchmark.py` measures what the diagrams
   cost: at the step limit the search holds some hundreds of megabytes at
   most, so the steps, not the memory, are what stops a core.
+- Changed: `events_by_period`'s and `failures_by_period`'s notes, their
+  docstrings and the schedule guide say that with `discount=` the
+  costs by period (`cost`'s mean and range, `expected_cost`) stay
+  undiscounted, the present values being `expected_npv` and `npv`; the
+  note read as if `cost` were discounted. The values are unchanged.
+- Changed: `RepairableRBD`'s docstring and the costs guide say that a
+  component's `"downtime_cost"` and the system's `downtime_cost_rate`
+  add up (an hour a series component is down costs both), so lost
+  output is priced in one of them. No behaviour changes.
+
+### Fixed
+
+- Fixed: `RepairableRBD.cost_by_window` (and `events_by_period` with
+  `cost=True`) without a seed gave windows that cost less than nothing
+  in some simulations (on one diagram some 3,700 of 26,000, down to
+  -309,000). A window's cost is a simulation's cost to its end less its
+  cost to its start, which needs every end's run to draw the same
+  histories; a seeded call did, but an unseeded one let each run draw
+  its own. An unseeded call now draws one seed (from numpy's global
+  random number generator) for all its runs, so it is the seeded call
+  of that seed: never below 0, and the windows add to one run. Seeded
+  results are unchanged. `events_by_period` likewise seeds its
+  histories, costs and simulated present values once.
 
 ## [0.19.1] - 2026-11-16
 

@@ -200,7 +200,11 @@ class RepairableRBD(RBD):
           the cost (anything with ``qf`` and ``mean``, such as a fitted
           surpyval model) drawn afresh at each failure. ``"downtime_cost"``
           is a number charged per unit time the component is down, whether
-          or not the system is. A cost left out, None or 0 prices nothing.
+          or not the system is, on top of ``downtime_cost_rate`` while the
+          system is down too: a component in series with
+          ``"downtime_cost": 500`` and ``downtime_cost_rate=1000`` costs
+          1,500 an hour down. Price lost output in one of them, not both.
+          A cost left out, None or 0 prices nothing.
           ``"preventive"`` schedules preventive maintenance: a dict with an
           ``"interval"`` and optional ``"policy"``, ``"duration"`` and
           ``"cost"``. Under ``"policy": "age"`` (the default) the unit is
@@ -435,7 +439,10 @@ class RepairableRBD(RBD):
         The problems found are recorded in ``structure_check``.
     downtime_cost_rate : float, optional
         Cost per unit time the whole system is down (e.g. lost
-        production), by default 0.0 (not priced).
+        production), by default 0.0 (not priced). It adds to each down
+        component's own ``"downtime_cost"``, so lost output priced in
+        both is counted twice (a series component down an hour costs
+        both rates).
     capacity : dict[Hashable, float or dict], optional
         Each node's capacity, keyed by node name, by default None: the
         throughput it passes while it is up, a positive number in any unit
@@ -4202,7 +4209,9 @@ class RepairableRBD(RBD):
             The number of simulations, as for
             [`cost`][repyability.RepairableRBD.cost].
         seed : int, optional
-            The random seed, as for `cost`.
+            The random seed, as for `cost`. By default None: one seed
+            drawn from numpy's global random number generator for every
+            window's run, so the windows still share their histories.
         engine : str, optional
             The simulation engine, as for `cost`.
         levels : array-like, optional

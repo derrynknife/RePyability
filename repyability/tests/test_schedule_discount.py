@@ -451,9 +451,10 @@ def test_uc48_wear_ring_present_value_by_month(pump):
     )
     assert round(months.eac, 2) == 2869.53
     assert months.notes[-1] == (
-        "Discounted to 2026-11-16 at 7% a year. The expected cost is "
-        "discounted from when it is expected to fall, to within 2.47 in "
-        "all; the ranges are not discounted."
+        "Discounted to 2026-11-16 at 7% a year. The present values "
+        "(expected_npv, npv) discount the expected cost from when it is "
+        "expected to fall, to within 2.47 in all; expected_cost and the "
+        "ranges are not discounted."
     )
     json.dumps(months.to_dict())
     # no discount is the expected cost itself
@@ -616,7 +617,8 @@ def test_a_part_with_no_cost_has_no_present_value(pump):
     assert months.npv == pytest.approx(months.expected_npv.sum())
     assert 0.0 < months.npv_precision <= 1e-3 * months.npv
     assert months.notes[-1].endswith(
-        f"to within {months.npv_precision:.3g} in all."
+        f"to within {months.npv_precision:.3g} in all; expected_cost is "
+        "not discounted."
     )
     with pytest.raises(ValueError, match="npv_tolerance must be a share"):
         failures_by_period(
@@ -694,8 +696,9 @@ def test_uc49_constant_rate_by_month_as_present_values():
     # costs at a constant rate: the equivalent annual cost is the rate
     assert months.eac == pytest.approx(0.5 * 8766.0, rel=1e-7)
     assert months.notes[1].startswith(
-        "Discounted to 2027-01-01 at 7% a year. Each cost is discounted "
-        "from when it falls (exact)"
+        "Discounted to 2027-01-01 at 7% a year. The present values "
+        "(expected_npv, npv) discount each cost from when it falls (exact); "
+        "cost (its mean and range) is not discounted"
     )
     json.dumps(months.to_dict())
     # at no discount, the periods' means

@@ -6,9 +6,10 @@ The exact counts and means over ``[0, t)`` (``expected_events``,
 difference of the values at its two ends. The spread of a cost cannot be
 differenced: it comes from simulated histories, each cut at every
 window's end. The simulations of a seeded run draw the same lives
-whatever the window, so the runs to each end are the same histories cut
-off there, and a simulation's cost in a window is its cost to the
-window's end less its cost to the window's start.
+whatever the window (an unseeded call draws one seed for all its
+runs), so the runs to each end are the same histories cut off there,
+and a simulation's cost in a window is its cost to the window's end
+less its cost to the window's start.
 """
 
 import math
@@ -138,6 +139,13 @@ def cost_by_window(
             f"levels must be percentiles, 0 to 100; got {levels!r}."
         )
     from ._covariate_schedule import on_clock
+    from ._streams import shared_seed
+
+    # Every run below must draw the same histories, so that a window's
+    # cost is one history's cost to its end less its cost to its start:
+    # left unseeded, each run drew its own, and their differences could
+    # be below 0.
+    seed = shared_seed(seed)
 
     # A life on the diagram's clock has no exact values: the means are
     # then the simulations' own.

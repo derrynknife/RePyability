@@ -236,7 +236,9 @@ class FailuresByPeriod(_Plain):
         The expected planned replacements in each period (None when run
         to failure).
     expected_cost : numpy.ndarray or None
-        The expected cost in each period; None for a part with no cost.
+        The expected cost in each period, as it falls (not discounted,
+        with a discount too: the present values are ``expected_npv``);
+        None for a part with no cost.
     cost_low, cost_high : numpy.ndarray or None
         Each period's cost range: its 5th and 95th percentiles (90% of
         outcomes, two-sided).
@@ -589,9 +591,11 @@ def failures_by_period(
         total["npv_precision"] = npv_precision
         notes.append(
             f"{_discount.words(given, usage.start, escalation)} The "
-            "expected cost is discounted from when it is expected to "
-            f"fall, to within {npv_precision:.3g} in all"
-            + ("; the ranges are not discounted." if low is not None else ".")
+            "present values (expected_npv, npv) discount the expected "
+            "cost from when it is expected to fall, to within "
+            f"{npv_precision:.3g} in all; expected_cost"
+            + (" and the ranges are" if low is not None else " is")
+            + " not discounted."
         )
     return FailuresByPeriod(
         period=period,
@@ -648,7 +652,9 @@ class EventsByPeriod(_Plain):
     cost : CostByWindow or None
         [`RepairableRBD.cost_by_window`][repyability.RepairableRBD.cost_by_window]'s
         answer, with ``cost=True``: each period's exact mean, and its range
-        (5th to 95th percentile) simulated.
+        (5th to 95th percentile) simulated. Both are the costs as they
+        fall, not discounted, with a discount too: the present values are
+        ``expected_npv``.
     range : str or None
         What the cost range is, in words (None with no cost).
     notes : tuple of str
@@ -809,6 +815,12 @@ def events_by_period(
     from repyability.rbd._covariate_schedule import on_clock
 
     simulated = on_clock(rbd)
+    if simulated or cost:
+        from repyability.rbd._streams import shared_seed
+
+        # The histories, the costs and the present values are cut from
+        # one set of simulations, seeded once.
+        seed = shared_seed(seed)
     if simulated:
         events = _history_events(rbd, ends, state, mc_samples, seed)
         notes.append(
@@ -864,11 +876,12 @@ def events_by_period(
             npv, discount, float(seconds[-1]) / _YEAR_SECONDS
         )
         notes.append(
-            f"{_discount.words(given, usage.start, escalation)} Each cost is "
-            "discounted from when it falls ("
+            f"{_discount.words(given, usage.start, escalation)} The "
+            "present values (expected_npv, npv) discount each cost from "
+            "when it falls ("
             + ("in each simulation" if simulated else "exact")
-            + "); the range is not discounted, and an acquisition cost "
-            "is not in the periods."
+            + "); cost (its mean and range) is not discounted, and an "
+            "acquisition cost is not in the periods."
         )
     notes.append(
         "The diagram's clock is calendar time from the forecast's start; "
