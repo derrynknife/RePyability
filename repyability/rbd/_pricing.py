@@ -1,9 +1,11 @@
 """Up/down histories priced with a diagram's own costs: each failure its
 repair and replace costs, each planned outage its preventive cost, each
 component's and the system's time down their downtime costs, the repair
-crews' salaries over the whole time and the system's time up its value,
-each discounted at the time it fell (a rate over a span exactly), by
-period, category and component, and history by history.
+crews' salaries over the whole time and the system's time up its value
+(a rate, or each step's of a ``ValueSchedule``), each grown at its
+stream's escalation (``price * exp(g t)``) and discounted at the time it
+fell (a rate over a span exactly), by period, category and component,
+and history by history.
 
 ``plan_vs_actual`` prices one history (an outage log, ``_plan_actual``)
 and ``npv_distribution`` every simulated one (``_npv_runs``); what a
@@ -128,8 +130,7 @@ def priced(
     logs: Mapping[Any, Any],
     system: Optional[Any],
     ends: np.ndarray,
-    rate: float,
-    value_rate: float,
+    money,
     skip,
     size: int = 1,
     hidden: Optional[Mapping[Any, Any]] = None,
@@ -138,13 +139,16 @@ def priced(
     period, category and component, history by history, priced with the
     diagram's costs (a cost drawn from a distribution at its mean) at the
     times they fell, but for the cells in ``skip``, ``{(category,
-    component)}``. ``logs`` are each component's histories and ``system``
-    the system's (``timelines._Data``); ``system`` is needed only for a
-    system downtime cost or a value. ``hidden`` gives, under shutdowns,
-    each component's holds and the changes down they hid
+    component)}``. ``money`` (an ``_npv.Money``) gives the rate, the
+    value earned (a rate or steps) and each stream's growth: an amount at
+    ``t`` is its price times ``exp(g t)``. ``logs`` are each component's
+    histories and ``system`` the system's (``timelines._Data``);
+    ``system`` is needed only for a system downtime cost or a value.
+    ``hidden`` gives, under shutdowns, each component's holds and the
+    changes down they hid
     (``_timeline_runs.Hidden``): a hold is no task, and a hidden change
     is charged as a recorded one would be."""
-    ledger = Ledger(ends, rate, size)
+    ledger = Ledger(ends, money.rate, size)
     for node, costs in rbd.costs.items():
         data = logs[node]
         history, times, down, planned = changes(data)
@@ -170,27 +174,50 @@ def priced(
                     _mean_cost(costs[key]),
                     category,
                     node,
+                    money.growth(node, category),
                 )
         rate_down = costs.get("downtime_cost", 0.0)
         if rate_down:
             ledger.spans(
-                *spans(data, up=False), rate_down, "component_downtime", node
+                *spans(data, up=False),
+                rate_down,
+                "component_downtime",
+                node,
+                money.growth(node, "component_downtime"),
             )
-    if rbd.downtime_cost_rate or value_rate:
+    if rbd.downtime_cost_rate or money.earns:
         ledger.spans(
             *spans(system, up=False),
             rbd.downtime_cost_rate,
             "system_downtime",
             None,
+            money.growth("system_downtime"),
         )
-        ledger.spans(*spans(system, up=True), value_rate, "value", None)
+        history, a, b = spans(system, up=True)
+        for lo, hi, worth in zip(*money.steps(ledger.ends[-1])):
+            # Each step of the value earned, over the spans up within it.
+            inside = (b > lo) & (a < hi)
+            ledger.spans(
+                history[inside],
+                np.maximum(a[inside], lo),
+                np.minimum(b[inside], hi),
+                worth,
+                "value",
+                None,
+                money.growth("value"),
+            )
     for node, upgrade in getattr(rbd, "_upgrades", {}).items():
         # An upgrade's capital cost, at its time, in every history.
         if upgrade.cost and ("capital", node) not in skip:
             at = np.full(size, upgrade.at)
             keep = at < ledger.ends[-1]
             ledger.events(
-                np.arange(size)[keep], at[keep], upgrade.cost, "capital", node
+                np.arange(size)[keep],
+                at[keep],
+                upgrade.cost,
+                "capital",
+                node,
+                money.growth(node, "capital"),
             )
     # The repair crews' salaries, the same in every history.
     ledger.spans(
@@ -200,5 +227,6 @@ def priced(
         _crew_salaries(rbd),
         "crews",
         None,
+        money.growth("crews"),
     )
     return ledger

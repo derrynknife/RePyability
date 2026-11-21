@@ -25,6 +25,28 @@ release between minors that only adds (0.19.1).
   its spec: no result changes. (The name `MaintenancePlan` stays the
   result of choosing intervals.)
 
+- Added: a value schedule and escalation in the simulated NPV and in
+  a plan against what happened (UC-57 of the maintenance README, part
+  2). `npv_distribution`, `compare_npv` and `plan_vs_actual` take
+  `value_rate` as a `ValueSchedule` and `escalation=`, `rates=` and
+  `inflation=` as `expected_npv` does; `best_switch_time` takes
+  `escalation=`, `rates=` and `inflation=`. Each cost in a run or a log
+  is charged at its price grown to when it fell, each up span earns
+  each step's rate over its part of it, grown, and each is discounted
+  exactly. `plan_vs_actual` values the plan with `expected_npv` on the
+  same arguments, and the rest from now with the schedule's steps from
+  then, each stream grown to now. The results state the basis
+  (`rate_basis`, `inflation`, `escalation`, `value_schedule`). With a
+  number and no growth every value is unchanged.
+
+- Added: `Shocks(rate, p, lethal_rate)`, shocks at a rate of their own
+  as a common-cause group's model: `CCFGroup(members, Shocks(...))`. A
+  `NonRepairableRBD` writes the group's causes into its structure as
+  `shock_nodes` does (the same nodes and the same values, to the last
+  bit), so the members keep their own lives and ages and every analysis
+  takes the shocks; the diagram is saved with the group as given. A
+  fault tree refuses the model, saying what to draw instead.
+
 - Added: maintenance that does harm (UC-62 of the maintenance README).
   A `"preventive"` spec's `"restoration"` takes a restoration factor `q`
   above 1, a task that leaves the unit older than it was (Kijima II with

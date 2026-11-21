@@ -62,6 +62,8 @@ NOT_NODES = {
     # A contract's terms on availability: an input to npv_distribution.
     "AvailabilityContract",
     "BetaFactor",
+    # A common-cause group's model: shocks at a rate of their own.
+    "Shocks",
     # A calendar of opportunities, priced (#319): a calendar policy's input.
     "Calendar",
     "CCFGroup",

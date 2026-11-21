@@ -33,6 +33,7 @@ from repyability import (
     RepairableRBD,
     RepeatedNode,
     RepeatedStandbyNode,
+    Shocks,
     StandbyModel,
 )
 from repyability.maintenance import AgePolicy, Prices, UnitPlan
@@ -337,6 +338,11 @@ def nonrepairable_kinds():
             EDGES,
             {"a": unit, "b": unit, "c": E([0.002])},
             ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate"))],
+        ),
+        "shocks": NonRepairableRBD(
+            EDGES,
+            {"a": unit, "b": surv.Weibull.from_params([400.0, 1.5]), **rest},
+            ccf_groups=[CCFGroup(["a", "b"], Shocks(1e-3, 0.5, 2e-4))],
         ),
         "fixed": NonRepairableRBD(
             EDGES, {"a": FIXED(0.1), "b": FIXED(0.2), "c": FIXED(0.05)}

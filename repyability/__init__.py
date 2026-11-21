@@ -109,7 +109,13 @@ from repyability.rbd._mission_results import (
 from repyability.rbd._mission_settings import BlockSetting, MissionPhase
 from repyability.rbd._model_utils import model_parameters
 from repyability.rbd._streams import seed_entropy
-from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor, CCFGroup
+from repyability.rbd.ccf import (
+    MGL,
+    AlphaFactor,
+    BetaFactor,
+    CCFGroup,
+    Shocks,
+)
 from repyability.rbd.chunks import SimulationChunk
 from repyability.rbd.contracts import AvailabilityContract
 from repyability.rbd.degrading_node import DegradingNode
@@ -228,6 +234,7 @@ __all__ = [
     "MGL",
     "AlphaFactor",
     "CCFGroup",
+    "Shocks",
     "shock_nodes",
     "minimal_repair_time_to_nth_failure",
     "ComponentOption",

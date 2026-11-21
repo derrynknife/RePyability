@@ -75,7 +75,14 @@ from ._model_utils import (
 )
 from ._overrides import life_now, unit_life
 from ._sampling import RowSampler, column, inverse_sampler, row_sampler
-from .ccf import VALIDITY, BetaFactor, CCFGroup, as_groups, checked_groups
+from .ccf import (
+    VALIDITY,
+    BetaFactor,
+    CCFGroup,
+    Shocks,
+    as_groups,
+    checked_groups,
+)
 from .ccf import parameters as ccf_parameters
 from .ccf import shock_outcomes, validity_warning
 from .ccf import with_parameters as with_ccf_parameters
@@ -110,6 +117,7 @@ from .results import (
     UncertaintyResult,
 )
 from .routes import EXACT, NUMERICAL, AnalysisRoute, Refused, model_route
+from .shocks import written_shocks
 from .standby_node import StandbyModel
 from .uncertainty import (
     GIVEN,
@@ -696,6 +704,28 @@ class NonRepairableRBD(RBD):
             "ccf_groups": ccf_groups,
             "capacity": dict(capacity) if capacity else None,
         }
+        # Shocks at a rate of their own are written into the structure,
+        # each cause an exponential component after every member it fails
+        # (``shock_nodes``): from here on the diagram is the one written
+        # out, as if given so, and it is saved as it was given
+        # (``_given_args``).
+        self.shock_groups = [
+            g for g in ccf_groups if isinstance(g.model, Shocks)
+        ]
+        if self.shock_groups:
+            self._given_args = dict(self._init_args)
+            ccf_groups = [
+                g for g in ccf_groups if not isinstance(g.model, Shocks)
+            ]
+            edges, reliabilities = written_shocks(
+                edges, reliabilities, self.shock_groups
+            )
+            self._init_args = {
+                **self._init_args,
+                "edges": [tuple(e) for e in edges],
+                "reliabilities": dict(reliabilities),
+                "ccf_groups": ccf_groups,
+            }
         reliabilities = copy(reliabilities)
         for key, value in reliabilities.items():
             if key == value:
