@@ -517,7 +517,9 @@ def _check_plan_state(rbd, node, state) -> None:
     cannot be given: a ``since_scheduled`` (its plan's times, from now,
     place its replacements) and the long-run state (it has none)."""
     schedule = rbd._preventive.get(node)
-    if schedule is None or schedule.plan is None:
+    if schedule is None or (
+        schedule.plan is None and node not in rbd._upgrades
+    ):
         return
     what = "is replaced at the times of a plan (replace_at), which ends"
     whose = "is replaced at the times of its plan (replace_at)"

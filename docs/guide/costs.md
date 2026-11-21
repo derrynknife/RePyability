@@ -610,7 +610,12 @@ after the upgrade's time is drawn from the new model, from the same
 random number the old one would have used, and the capital cost is
 charged at its time. So `compare_npv` against keeping the old component
 gives the upgrade's worth run by run, with its spread. An upgraded
-component takes no maintenance or tests of its own yet.
+component may also be under block replacement on its own interval
+(`"preventive": {"policy": "block", ...}`): it is replaced every
+interval with the life in service, and at the upgrade's time as at a
+block time (at its cost and in its time, beside the capital cost). Age
+replacement, tests and the other tasks are not taken with an upgrade
+yet.
 
 ### A plan against what happened
 

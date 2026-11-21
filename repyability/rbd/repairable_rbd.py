@@ -1020,9 +1020,15 @@ class RepairableRBD(RBD):
                     upgrade = _spec._validate_upgrade(name, component)
                     self._upgrades[name] = upgrade
                     # Its schedule: replaced at the upgrade's time, by a
-                    # unit of the new life (see _curves._plan_curve).
-                    self._preventive[name] = _Preventive(
-                        upgrade.at, "block", None, times=(upgrade.at,)
+                    # unit of the new life (see _curves._plan_curve), as
+                    # one more of its block replacements if it has them.
+                    block = self._preventive.get(name)
+                    self._preventive[name] = (
+                        _Preventive(
+                            upgrade.at, "block", None, times=(upgrade.at,)
+                        )
+                        if block is None
+                        else block._replace(upgrade_at=upgrade.at)
                     )
                     if upgrade.cost:
                         node_costs["capital_cost"] = upgrade.cost

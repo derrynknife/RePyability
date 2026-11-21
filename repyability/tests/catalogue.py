@@ -712,6 +712,24 @@ def repairable_kinds():
                     repair_cost=5.0,
                 ),
             ),
+            # Upgraded, and block-replaced before and after (the
+            # upgrade as one more replacement): over a horizon.
+            "upgraded at a time, block-replaced": system(
+                unit(
+                    preventive={
+                        "policy": "block",
+                        "interval": 200.0,
+                        "cost": 3.0,
+                        "duration": surv.ExactEventTime.from_params([2.0]),
+                    },
+                    upgrade={
+                        "at": 300.0,
+                        "reliability": W([900, 2.0]),
+                        "cost": 50.0,
+                    },
+                    repair_cost=5.0,
+                ),
+            ),
             "block replacement, in no time": system(
                 unit(
                     repairability="instant",

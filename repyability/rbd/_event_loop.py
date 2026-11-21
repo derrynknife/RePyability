@@ -584,8 +584,17 @@ class _UpgradedComponent(_StreamedComponent):
 
     __slots__ = ("now", "_at", "_lives")
 
-    def __init__(self, uniforms, repair, lives, at: float, start=None):
-        super().__init__(uniforms, repair, start=start)
+    def __init__(
+        self,
+        uniforms,
+        repair,
+        lives,
+        at: float,
+        start=None,
+        timed=(None, None),
+    ):
+        # ``timed``: its block replacements' times, a stream and the model.
+        super().__init__(uniforms, repair, timed[0], timed[1], start)
         self.now = 0.0
         self._at = at
         #: The two lives' quantile functions (with streams), or their
@@ -610,11 +619,13 @@ def _upgraded(rbd, node, run=None, path: tuple = ()) -> _UpgradedComponent:
     RNG."""
     component, upgrade = rbd.components[node], rbd._upgrades[node]
     models = (component.reliability, upgrade.life)
-    uniforms = repair = start = None
+    uniforms = repair = start = duration = None
     if run is not None:
         uniforms = run.stream(path, _streams.FAILURE)
         repair = run.stream(path, _streams.REPAIR)
         start = run.stream(path, _streams.START)
+        duration = run.stream(path, _streams.DURATION)
+    timed = (duration, _duration_model(rbd, node))
     if uniforms is None or repair is None:
         return _UpgradedComponent(
             None,
@@ -622,9 +633,12 @@ def _upgraded(rbd, node, run=None, path: tuple = ()) -> _UpgradedComponent:
             tuple(_ModelDraws(model) for model in models),
             upgrade.at,
             start,
+            timed,
         )
     lives = tuple(stream_sampler(model) for model in models)
-    return _UpgradedComponent(uniforms, repair, lives, upgrade.at, start)
+    return _UpgradedComponent(
+        uniforms, repair, lives, upgrade.at, start, timed
+    )
 
 
 def _clock(source, t: float) -> None:

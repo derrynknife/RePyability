@@ -243,9 +243,10 @@ def test_what_an_upgrade_is_not_taken_with_says_what_to_run():
                 "upgrade": {"at": 5.0, "reliability": E([1e-3])},
                 "preventive": {"interval": 50.0},
             },
-            "Component 'a' has an upgrade and a preventive task "
-            "('preventive'), which are not taken together yet: give it "
-            "one or the other.",
+            "Component 'a' has an upgrade and a preventive task other "
+            "than block replacement on its own interval ('policy': "
+            "'block'), which are not taken together yet: give it block "
+            "replacement, or one or the other.",
         ),
         (
             {"upgrade": {"at": 5.0, "reliability": 100.0}},

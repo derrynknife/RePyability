@@ -1010,8 +1010,29 @@ def _validate_upgrade(node, spec: dict) -> _Upgrade:
             f"{sorted(map(str, unknown))}; it takes "
             f"{', '.join(UPGRADE_KEYS)}."
         )
+    task = spec.get("preventive")
+    if task is not None and not (
+        isinstance(task, dict)
+        and task.get("policy") == "block"
+        and not any(
+            task.get(key) is not None
+            for key in (
+                "shutdown",
+                "replace_at",
+                "restoration",
+                "restore_to",
+                "replace_every",
+                "basis",
+            )
+        )
+    ):
+        raise ValueError(
+            f"Component {node!r} has an upgrade and a preventive task "
+            "other than block replacement on its own interval ('policy': "
+            "'block'), which are not taken together yet: give it block "
+            "replacement, or one or the other."
+        )
     for key, what in (
-        ("preventive", "a preventive task"),
         ("inspection", "an inspection"),
         ("standby", "standby units"),
         ("repair", "an imperfect repair"),
