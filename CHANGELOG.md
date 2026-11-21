@@ -865,6 +865,12 @@ release between minors that only adds (0.19.1).
 
 ### Fixed
 
+- Fixed: the API reference has a page for `UnitPlan` and its tasks
+  and prices (`Prices`, `AgePolicy`, `BlockPolicy`, `ConditionPolicy`,
+  `CalendarReplacement`, `AtShutdown`, `Inspection`, `Upgrade`,
+  `Restoration`, `ImperfectRepair`), and lists
+  `schedule.CalendarContext`; each of their parameters is documented,
+  with its unit, as are `schedule.Condition`'s. No behaviour changes.
 - Fixed: `RepairableRBD.cost_by_window` (and `events_by_period` with
   `cost=True`) without a seed gave windows that cost less than nothing
   in some simulations (on one diagram some 3,700 of 26,000, down to

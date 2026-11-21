@@ -126,6 +126,7 @@ nav:
       - Fault trees, missions, networks: api/other-systems.md
       - Node models: api/nodes.md
       - Components and maintenance: api/components.md
+      - Unit plans: api/unit-plans.md
       - Stress-strength interference: api/stress-strength.md
       - Timelines: api/timelines.md
       - Schedules: api/schedule.md
