@@ -242,3 +242,35 @@ def test_a_group_of_too_many_members_is_refused():
             {n: dict(spec) for n in names},
             ccf_groups=[CCFGroup(names, Shocks(1e-3, 0.5))],
         )
+
+
+@pytest.mark.parametrize("life", [E([1e-3]), W([300.0, 2.0])])
+@pytest.mark.parametrize("crews", [None, 1])
+def test_a_member_s_own_values_refuse_and_say_what_to_run(life, crews):
+    """A member's own long-run availability and its spares come from its
+    own life, which the shocks add to, so they refuse (with crews, as
+    the crews' chain does), as the routes say; the simulated count of
+    spares runs."""
+    spec = {"reliability": life, "repairability": E([0.1])}
+    rbd = RepairableRBD(
+        PARALLEL,
+        {"a": dict(spec), "b": dict(spec)},
+        ccf_groups=[CCFGroup(["a", "b"], Shocks(1e-3, 0.5))],
+        repair_crews=crews,
+    )
+    report = rbd.analysis_routes()
+    for name, call in (
+        ("node_availability", rbd.node_availability),
+        ("spares_demand", lambda: rbd.spares_demand(1000.0)),
+        ("spares_stock", lambda: rbd.spares_stock(1000.0, fill_rate=0.9)),
+    ):
+        assert report[name].route == "refused"
+        with pytest.raises(NotImplementedError):
+            call()
+    if crews is None:
+        assert "shocks fail it too" in report["node_availability"].reason
+        assert "simulat" in report["spares_demand"].reason
+    demand = rbd.spares_demand(
+        1000.0, method="simulate", mc_samples=50, seed=0
+    )
+    assert set(demand) == {"a", "b"}

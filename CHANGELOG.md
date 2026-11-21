@@ -20,13 +20,16 @@ release between minors that only adds (0.19.1).
   tested member's failure waits for its test. The simulations run it (in
   Python; the compiled engine hands a diagram with groups over, as
   before), and every exact and numerical method refuses, naming the
-  simulation. For exponential members a seeded run is the equivalent
-  rate-split group's, strike for strike, as the shocks' causes take the
-  shared causes' streams; no existing seeded result changes. Scheduled
-  maintenance, imperfect repair or a maintenance group on a member, and
-  a tested member started from a state, are refused by name. The
-  group's `rate`, `p` and `lethal_rate` are levers (`ccf_rate`, `ccf_p`,
-  `ccf_lethal_rate`).
+  simulation, as do a member's own long-run availability
+  (`node_availability`) and its exact spares (`spares_demand`,
+  `spares_stock`), which its own life no longer gives;
+  `spares_demand(method="simulate")` counts them. For exponential
+  members a seeded run is the equivalent rate-split group's, strike for
+  strike, as the shocks' causes take the shared causes' streams; no
+  existing seeded result changes. Scheduled maintenance, imperfect
+  repair or a maintenance group on a member, and a tested member started
+  from a state, are refused by name. The group's `rate`, `p` and
+  `lethal_rate` are levers (`ccf_rate`, `ccf_p`, `ccf_lethal_rate`).
 
 - Added: the long run of a diagram with an upgrade (UC-64 of the
   maintenance README): `mean_availability`, `expected_cost_rate`,

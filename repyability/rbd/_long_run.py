@@ -136,6 +136,7 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
     for check in (
         partial(_requirements._require_perfect_repair, rbd),
         partial(_requirements._require_times, rbd),
+        partial(_shocked, rbd),
     ):
         message = r.refusal(partial(check, node))
         if message:
@@ -230,6 +231,17 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
     if life == r.SIMULATED:
         return life, f"age replacement of a life from {how}"
     return r.NUMERICAL, "age replacement: its mean up time, by quadrature"
+
+
+def _shocked(rbd, node) -> None:
+    """Raise for a member of a ``Shocks`` group: its long-run values
+    have no exact form (see ``_require_own_failures``)."""
+    _requirements._require_own_failures(
+        rbd,
+        node,
+        "estimate its availability by simulation, with availability() "
+        "(the run's node_uptime and node_downtime).",
+    )
 
 
 def _long_run_nodes(rbd) -> Dict[Any, Tuple[str, str]]:
@@ -384,6 +396,7 @@ def _node_availability(rbd, node) -> float:
         if node in chain.nodes:
             return chain.availability(node)
         return float(rbd.components[node].mean_availability())
+    _shocked(rbd, node)
     if node in rbd._imperfect:
         terms = _minimal_cycle_terms(rbd, node)
         return terms.up / terms.length
@@ -425,6 +438,7 @@ def _node_unavailability(rbd, node) -> float:
     not couple the components (see ``_long_run_unavailabilities``)."""
     _requirements._require_perfect_repair(rbd, node)
     _requirements._require_times(rbd, node)
+    _shocked(rbd, node)
     if node in rbd._imperfect:
         terms = _minimal_cycle_terms(rbd, node)
         return min(1.0, (terms.failed + terms.planned) / terms.length)
@@ -619,6 +633,7 @@ def replacement_cycle(rbd, node) -> ReplacementCycle:
     # The checks _node_long_run makes, in its order.
     _requirements._require_perfect_repair(rbd, node)
     _requirements._require_times(rbd, node)
+    _shocked(rbd, node)
     _requirements._require_no_opportunities(rbd, node)
     _requirements._require_block_models(rbd, node)
     cycle = _block_cycle(rbd, node)
@@ -1216,6 +1231,7 @@ def _node_frequencies(rbd, node) -> Tuple[float, float, float]:
 
     _requirements._require_perfect_repair(rbd, node)
     _requirements._require_times(rbd, node)
+    _shocked(rbd, node)
     component = rbd.components[node]
     if isinstance(component, RepairableRBD):
         failures, planned = _outage_frequencies(component)
