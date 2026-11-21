@@ -52,8 +52,11 @@ class Condition:
     life : surpyval regression model
         Proportional or additive hazards, or accelerated failure time,
         fitted with the covariate (as a block's ``"covariates"`` takes).
-    fresh, stale : sequence of float
-        The covariates in force while serviced, and while overdue.
+    fresh : sequence of float
+        The covariates in force while the unit is serviced.
+    stale : sequence of float
+        The covariates in force while it is overdue (and throughout
+        without the service), as many as ``fresh``.
     lasts : float
         How long a service keeps the unit ``fresh``, more than 0.
     """
@@ -81,7 +84,14 @@ class Condition:
             )
 
     def schedule(self, times: np.ndarray):
-        """The covariate schedule the services at ``times`` give."""
+        """The covariate schedule the services at ``times`` give.
+
+        Parameters
+        ----------
+        times : array_like
+            The times of the services, on the diagram's clock (the plan's
+            unit of time, from 0).
+        """
         from surpyval.univariate.regression import StepSchedule
 
         # Each service keeps the unit fresh for ``lasts``; a service before
@@ -105,6 +115,7 @@ class Condition:
         return StepSchedule.from_changepoints(points, values)
 
     def describe(self) -> str:
+        """What the condition is, in words."""
         return (
             f"a fitted condition: covariates {list(self.fresh)} for "
             f"{float(self.lasts):g} after each service, "

@@ -49,6 +49,8 @@ tasks on dates and failures, events and work by calendar period (see the
 
 ::: repyability.schedule.DutySchedule
 
+::: repyability.schedule.CalendarContext
+
 ::: repyability.schedule.failures_by_period
 
 ::: repyability.schedule.FailuresByPeriod

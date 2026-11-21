@@ -86,7 +86,13 @@ class CalendarContext:
         """Node ``node``'s duty as a block's ``"duty"`` takes it: a share
         of the time, or the steps of its forecast over the diagram's clock
         (a ``DutySchedule`` in the calendar's unit); None for a node the
-        calendar gives no plan."""
+        calendar gives no plan.
+
+        Parameters
+        ----------
+        node : hashable
+            The diagram's node, as named in ``duty``.
+        """
         if node not in self.duty:
             return None
         given = self.duty[node]
@@ -117,7 +123,14 @@ class CalendarContext:
 
     def model_time(self, moments) -> np.ndarray:
         """The diagram's clock at each moment: real time since the
-        calendar's start, in its unit."""
+        calendar's start, in its unit.
+
+        Parameters
+        ----------
+        moments : str, datetime or sequence of them
+            The moments, as the calendar's ``UsageForecast`` reads them
+            (local to its time zone).
+        """
         usage = self.usage
         given = [moments] if isinstance(moments, (str, datetime)) else moments
         seconds = np.array(
@@ -131,6 +144,13 @@ class CalendarContext:
         after its start (a task due at the start itself is due now, and
         is not taken as done): a ``"preventive"`` spec's ``"replace_at"``
         for a task on the rule.
+
+        Parameters
+        ----------
+        rule : Recurrence
+            The recurrence rule whose dates are taken.
+        at : str or time, optional
+            The clock time on each date (``"06:00"``); midnight by default.
 
         Examples
         --------
@@ -156,7 +176,14 @@ class CalendarContext:
     def diagram(self, rbd):
         """``rbd`` (a ``RepairableRBD``) on this calendar: each node the
         calendar gives a plan has it as its ``"duty"``. The diagram
-        itself when the calendar gives no plan."""
+        itself when the calendar gives no plan.
+
+        Parameters
+        ----------
+        rbd : RepairableRBD
+            The diagram, each node the calendar's ``duty`` names a unit
+            with a life (a spec or a ``UnitPlan``).
+        """
         from repyability.rbd.repairable_rbd import RepairableRBD
 
         components = dict(rbd._init_args["components"])

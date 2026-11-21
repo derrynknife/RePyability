@@ -62,7 +62,32 @@ class Restoration:
     leaves it older), a virtual age to restore to (``to_age``), or a
     fitted surpyval ``GeneralizedRenewal`` (``process``). With
     ``replace_every`` ``N``, every ``N``-th task replaces the unit, at
-    ``replacement_cost`` (the task's own cost if None).
+    ``replacement_cost`` (the task's own cost if None). The rules are in
+    [Maintaining a system](../guide/system-maintenance.md), "Planned
+    maintenance that restores partly".
+
+    Parameters
+    ----------
+    q : float, optional
+        Kijima's restoration factor, 0 or more: 0 renews the unit, 1
+        leaves it as old as it was, above 1 leaves it older. Not given with
+        ``to_age`` or ``process``.
+    model : str, optional
+        Kijima's virtual-age model for ``q``: ``"kijima2"`` (the default,
+        the factor applied to the whole virtual age) or ``"kijima1"``
+        (to the age gained since the last action).
+    to_age : float, optional
+        A virtual age, 0 or more and in the plan's unit of time, that
+        each task leaves the unit at, whatever its age before.
+    process : surpyval GeneralizedRenewal, optional
+        A fitted renewal process whose Kijima model and factor each task
+        takes.
+    replace_every : int, optional
+        Every ``replace_every``-th task since the unit was last renewed
+        replaces it as new instead.
+    replacement_cost : float or distribution, optional
+        The price of such a replacement, in money; by default the task's
+        own ``cost``.
     """
 
     q: Optional[float] = None
@@ -161,7 +186,35 @@ class AgePolicy(_Task):
     time), ``duration`` its time (a model, or ``"instant"``), and
     ``opportunity`` the age from which a stop of the unit's maintenance
     group renews it early. ``basis="operating"`` counts the times in
-    operating hours (put on the clock through the unit's duty).
+    operating hours (put on the clock through the unit's duty). The
+    spec's keys are in the [preventive maintenance
+    guide](../guide/system-maintenance.md#preventive-maintenance).
+
+    Parameters
+    ----------
+    interval : float
+        The age at which the unit is replaced, in the plan's unit of time,
+        more than 0 (``inf``: never).
+    cost : float or distribution, optional
+        The price of each task, in money: a number, or a distribution of it
+        (anything with ``qf`` and ``mean``, such as a fitted surpyval
+        model) drawn afresh each time. None prices nothing.
+    duration : model, float or "instant", optional
+        How long each task takes, in the plan's unit of time: a
+        time-to-maintain model or a fixed time, the unit down meanwhile (a
+        planned outage); ``"instant"`` (the default) renews it in place.
+    opportunity : float, optional
+        An age, from 0 to ``interval``, from which a stop of the unit's
+        maintenance group (the plan's ``group``) renews it early, as the
+        task would; None takes no opportunity.
+    restoration : Restoration, optional
+        How much of the unit's age each task takes away; None (the
+        default) renews it as new.
+    basis : str, optional
+        What the task's times are counted in: ``"calendar"`` (None, the
+        default) or ``"operating"``, the unit's running hours, put on the
+        calendar through its ``duty`` (see [Operating part of the
+        time](../guide/repairable.md#operating-part-of-the-time)).
     """
 
     interval: Any = None
@@ -178,7 +231,36 @@ class AgePolicy(_Task):
 @dataclass(frozen=True)
 class BlockPolicy(_Task):
     """Replace (or restore) the unit every ``interval`` whatever its age,
-    or at each of the given ``times`` (from 0) and no more."""
+    or at each of the given ``times`` (from 0) and no more. A
+    replacement due while the unit is down is skipped.
+
+    Parameters
+    ----------
+    interval : float, optional
+        The time between replacements, in the plan's unit of time (at
+        ``interval``, ``2 * interval``, ...); not given with ``times``.
+    times : sequence of float, optional
+        The times of the replacements, increasing, from 0 on the
+        diagram's clock, and none after the last: a plan valued over a
+        horizon (see [Replacement at given
+        times](../guide/system-maintenance.md#replacement-at-given-times)).
+    cost : float or distribution, optional
+        The price of each task, in money: a number, or a distribution of it
+        (anything with ``qf`` and ``mean``, such as a fitted surpyval
+        model) drawn afresh each time. None prices nothing.
+    duration : model, float or "instant", optional
+        How long each task takes, in the plan's unit of time: a
+        time-to-maintain model or a fixed time, the unit down meanwhile (a
+        planned outage); ``"instant"`` (the default) renews it in place.
+    restoration : Restoration, optional
+        How much of the unit's age each task takes away; None (the
+        default) renews it as new.
+    basis : str, optional
+        What the task's times are counted in: ``"calendar"`` (None, the
+        default) or ``"operating"``, the unit's running hours, put on the
+        calendar through its ``duty`` (see [Operating part of the
+        time](../guide/repairable.md#operating-part-of-the-time)).
+    """
 
     interval: Any = None
     times: Optional[Tuple[float, ...]] = None
@@ -191,6 +273,8 @@ class BlockPolicy(_Task):
     _PLAIN: ClassVar[Tuple[str, ...]] = ("interval",) + _COMMON
 
     def spec(self) -> dict:
+        """The ``"preventive"`` spec this task is (``"replace_at"`` for
+        given ``times``)."""
         out = super().spec()
         if self.times is not None:
             # A plan's times are block replacement by default.
@@ -214,7 +298,44 @@ class ConditionPolicy(_Task):
     """Inspect the unit every ``interval`` and replace (or restore) it
     when its chance of failing by the next inspection is above
     ``threshold``, or, for a degradation process, its measured ``level``
-    is reached; each inspection costs ``inspection_cost``."""
+    is reached; each inspection costs ``inspection_cost``. See
+    [Replacement on
+    condition](../guide/system-maintenance.md#replacement-on-condition).
+
+    Parameters
+    ----------
+    interval : float
+        The time between inspections, in the plan's unit of time, more
+        than 0; inspections are done while the unit is up, in no time.
+    threshold : float, optional
+        A probability: the unit is replaced when its chance of
+        failing before the next inspection, given its age, is above it.
+        Not given with ``level``.
+    level : float, optional
+        For a life that is a degradation process: the measured level, in
+        the process's units, at or past which the unit is replaced
+        (simulated only). Not given with ``threshold``.
+    inspection_cost : float or distribution, optional
+        The price of each inspection, in money (a number, or a
+        distribution drawn afresh each time).
+    cost : float or distribution, optional
+        The price of each replacement, in money: a number, or a
+        distribution of it (anything with ``qf`` and ``mean``, such as a
+        fitted surpyval model) drawn afresh each time. None prices
+        nothing.
+    duration : model, float or "instant", optional
+        How long each task takes, in the plan's unit of time: a
+        time-to-maintain model or a fixed time, the unit down meanwhile (a
+        planned outage); ``"instant"`` (the default) renews it in place.
+    restoration : Restoration, optional
+        How much of the unit's age each task takes away; None (the
+        default) renews it as new.
+    basis : str, optional
+        What the task's times are counted in: ``"calendar"`` (None, the
+        default) or ``"operating"``, the unit's running hours, put on the
+        calendar through its ``duty`` (see [Operating part of the
+        time](../guide/repairable.md#operating-part-of-the-time)).
+    """
 
     interval: Any = None
     threshold: Optional[float] = None
@@ -239,7 +360,29 @@ class CalendarReplacement(_Task):
     """Replace the unit on a calendar ``policy``'s thresholds: a
     ``CalendarPolicy`` (``NonRepairable.optimal_calendar_policy``) or a
     site's ``ShutdownPolicy``, whose prices are charged; ``opportunity``
-    as for ``AgePolicy``."""
+    as for ``AgePolicy``. See [Replacement on a calendar
+    policy](../guide/system-maintenance.md#replacement-on-a-calendar-policy).
+
+    Parameters
+    ----------
+    policy : CalendarPolicy or ShutdownPolicy
+        The calendar policy whose thresholds say when the unit is
+        replaced: at the first time its age reaches one. Its prices are
+        charged, so the task takes no ``cost``.
+    duration : model, float or "instant", optional
+        How long each task takes, in the plan's unit of time: a
+        time-to-maintain model or a fixed time, the unit down meanwhile (a
+        planned outage); ``"instant"`` (the default) replaces it in place.
+    opportunity : float, optional
+        An age, from which a stop of the unit's
+        maintenance group (the plan's ``group``) renews it early, as the
+        task would; None takes no opportunity.
+    basis : str, optional
+        What the task's times are counted in: ``"calendar"`` (None, the
+        default) or ``"operating"``, the unit's running hours, put on the
+        calendar through its ``duty`` (see [Operating part of the
+        time](../guide/repairable.md#operating-part-of-the-time)).
+    """
 
     policy: Any = None
     duration: Any = INSTANT
@@ -250,6 +393,8 @@ class CalendarReplacement(_Task):
     _PLAIN: ClassVar[Tuple[str, ...]] = ("duration", "opportunity", "basis")
 
     def spec(self) -> dict:
+        """The ``"preventive"`` spec this task is (its policy under
+        ``"calendar"``)."""
         out = super().spec()
         _put(out, "calendar", self.policy)
         return out
@@ -267,7 +412,40 @@ class AtShutdown(_Task):
     """Renew the unit at each of the site's shutdowns named ``shutdown``
     (a name, or a list of names), taking the shut's time; with
     ``older_than``, only if it is that old. ``policy="condition"``
-    inspects it there instead, replacing it above ``threshold``."""
+    inspects it there instead, replacing it above ``threshold``. See
+    [Shutdowns](../guide/system-maintenance.md#shutdowns).
+
+    Parameters
+    ----------
+    shutdown : str or list of str
+        The name (or names) of the diagram's shutdowns at whose shuts the
+        task is done; it takes the shut's time.
+    policy : str, optional
+        ``"block"`` (the default): renewed at every shut (with
+        ``older_than``, only if that old). ``"condition"``: inspected at
+        every shut and replaced above ``threshold``.
+    older_than : float, optional
+        Renewed at a shut only if its age then is at least this, in the
+        plan's unit of time.
+    threshold : float, optional
+        Under ``"condition"``: the probability of failing
+        before the next shut, given its age, above which it is replaced.
+    inspection_cost : float or distribution, optional
+        The price of each inspection (under ``"condition"``), in money
+        (a number, or a distribution drawn afresh each time).
+    cost : float or distribution, optional
+        The price of each renewal, in money: a number, or a distribution of it
+        (anything with ``qf`` and ``mean``, such as a fitted surpyval
+        model) drawn afresh each time. None prices nothing.
+    restoration : Restoration, optional
+        How much of the unit's age each task takes away; None (the
+        default) renews it as new.
+    basis : str, optional
+        What the task's times are counted in: ``"calendar"`` (None, the
+        default) or ``"operating"``, the unit's running hours, put on the
+        calendar through its ``duty`` (see [Operating part of the
+        time](../guide/repairable.md#operating-part-of-the-time)).
+    """
 
     shutdown: Any = None
     policy: str = "block"
@@ -290,6 +468,8 @@ class AtShutdown(_Task):
     )
 
     def spec(self) -> dict:
+        """The ``"preventive"`` spec this task is (with its
+        ``"shutdown"``)."""
         out = super().spec()
         if self.policy != self.DEFAULT_POLICY:
             out = {"policy": self.policy, **out}
@@ -308,7 +488,43 @@ class Inspection:
     """Test the unit every ``interval`` (or at the site's ``shutdown``),
     finding a hidden failure; the first at ``offset``, each finding one
     with probability ``coverage`` and every ``full_test`` all of them,
-    each taking ``duration`` and costing ``cost``."""
+    each taking ``duration`` and costing ``cost``. The spec's keys are in
+    [Hidden failures and
+    inspection](../guide/system-maintenance.md#hidden-failures-and-inspection).
+
+    Parameters
+    ----------
+    interval : float, optional
+        The time between tests, in the plan's unit of time, more than 0;
+        not given with ``shutdown``.
+    cost : float or distribution, optional
+        The price of each test, in money: a number, or a distribution of it
+        (anything with ``qf`` and ``mean``, such as a fitted surpyval
+        model) drawn afresh each time. None prices nothing.
+    duration : model, float or "instant", optional
+        How long each test takes, in the plan's unit of time: a model or a
+        fixed time, the unit off line meanwhile; ``"instant"`` (the
+        default) takes no time.
+    offset : float, optional
+        The time of the first test, from 0 to less than ``interval``
+        (tests at ``offset``, ``offset + interval``, ...); by default the
+        first is at ``interval``.
+    coverage : float, optional
+        The chance in [0, 1] that a test finds a failure (by default 1); a
+        failure a test misses stays hidden until a full test.
+    full_test : float, optional
+        With a ``coverage`` below 1: the time between full tests, which
+        find every failure, a whole multiple of ``interval``.
+    shutdown : str or list of str, optional
+        The name (or names) of the diagram's shutdowns at whose shuts the
+        unit is tested, in place of an ``interval``.
+    basis : str, optional
+        What the test's times (``interval``, ``offset``, ``full_test``)
+        are counted in: ``"calendar"`` (None, the default) or
+        ``"operating"``, the unit's running hours, put on the calendar
+        through its ``duty`` (see [Operating part of the
+        time](../guide/repairable.md#operating-part-of-the-time)).
+    """
 
     interval: Any = None
     cost: Any = None
@@ -345,7 +561,18 @@ class Inspection:
 class Upgrade:
     """From time ``at`` (from 0) the unit has another ``life``: the unit
     in service is replaced by one of it, in no time, for the capital
-    ``cost``."""
+    ``cost``.
+
+    Parameters
+    ----------
+    at : float
+        When the upgrade is made, from 0 on the diagram's clock, in the
+        plan's unit of time.
+    life : model
+        The new unit's time-to-failure model (as the plan's ``life``).
+    cost : float, optional
+        The capital cost of the upgrade, in money, charged at ``at``.
+    """
 
     at: Any = None
     life: Any = None
@@ -372,7 +599,25 @@ class ImperfectRepair:
     (``"kijima1"`` or ``"kijima2"``) with factor ``q`` in [0, 1], or a
     fitted renewal ``process`` (G1, ARA, ARI) repairing by its own rule.
     With ``replace_after`` ``N``, the ``N``-th failure since the unit was
-    renewed replaces it."""
+    renewed replaces it. See [Imperfect
+    repair](../guide/repairable.md#imperfect-repair).
+
+    Parameters
+    ----------
+    model : str, optional
+        Kijima's virtual-age model: ``"kijima1"`` (the default, the
+        factor applied to the age gained since the last repair) or
+        ``"kijima2"`` (to the whole virtual age).
+    q : float, optional
+        The restoration factor in [0, 1]: 0 renews the unit at each
+        repair, 1 leaves it as old as it was (minimal repair).
+    process : surpyval renewal model, optional
+        A fitted G1, ARA or ARI renewal process repairing by its own rule,
+        in place of ``model`` and ``q``.
+    replace_after : int, optional
+        The failure, counted since the unit was renewed, at which it is
+        replaced rather than repaired.
+    """
 
     model: str = "kijima1"
     q: Optional[float] = None
@@ -395,7 +640,23 @@ class Prices:
     """The unit's own prices: each ``repair``, each ``replace`` (a
     failure that uses a spare; each a number or a distribution), its own
     ``downtime`` per unit of time down, and its ``acquisition``, the
-    one-off cost of buying it. A task's price is the task's ``cost``."""
+    one-off cost of buying it. A task's price is the task's ``cost``.
+    The [costs guide](../guide/costs.md) says which price is charged when.
+
+    Parameters
+    ----------
+    repair : float or distribution, optional
+        The price of each repair (each failure), in money: a number, or a
+        distribution drawn afresh each time.
+    replace : float or distribution, optional
+        The price of each replacement on failure (one that uses a spare),
+        in money: a number, or a distribution drawn afresh each time.
+    downtime : float, optional
+        The price per unit of time the unit is down, in money per the
+        plan's unit of time, whether or not the system is.
+    acquisition : float, optional
+        The one-off cost of buying the unit, in money.
+    """
 
     repair: Any = None
     replace: Any = None
@@ -491,6 +752,47 @@ class UnitPlan:
     Each takes ``calendar``, a ``schedule.CalendarContext`` whose ``duty``
     names the node ``"unit"``: the diagram on that calendar.
 
+    Parameters
+    ----------
+    life : model
+        The unit's time-to-failure model, in the plan's unit of time: a
+        fitted surpyval model, or any model with a life's functions (a
+        ``NonRepairableRBD`` included), as a spec's ``"reliability"``.
+    repair : model, float or "instant", optional
+        The unit's time-to-repair model, as a spec's
+        ``"repairability"``; ``"instant"`` repairs it in no time.
+    tasks : sequence, optional
+        Its tasks: at most one preventive task (``AgePolicy``,
+        ``BlockPolicy``, ``ConditionPolicy``, ``CalendarReplacement`` or
+        ``AtShutdown``), one ``Inspection`` and one ``Upgrade``.
+    prices : Prices or dict, optional
+        The unit's own prices (a dict is read as the fields of a
+        ``Prices``); by default none.
+    imperfect_repair : ImperfectRepair, optional
+        Makes each repair partial; by default a repair renews the unit.
+    priority : float, optional
+        Its place in the repair crews' queue: higher first.
+    group : hashable, optional
+        The name of its maintenance group, whose stops it shares.
+    standby : dict, optional
+        Makes the node a standby group of such units, as a spec's
+        ``"standby"``.
+    duty : float, optional
+        The share of the time it operates, in (0, 1], for a life in
+        operating hours.
+    covariates : surpyval StepSchedule, optional
+        The covariates of a regression life over time.
+    salvage : float or callable, optional
+        What the unit is worth at the end, in money: a number, or a
+        function of the age of the unit in service (taking an array of
+        ages); negative for a cost of disposal.
+    escalation : float, optional
+        The continuous growth rate per unit of time of every price of the
+        unit, of either sign.
+    retire_at : float, optional
+        When the unit is retired, in the plan's unit of time from 0;
+        nothing is earned or spent after it.
+
     Examples
     --------
     >>> import surpyval as surv
@@ -568,7 +870,13 @@ class UnitPlan:
 
     def task(self, kind: str):
         """The plan's ``"preventive"``, ``"inspection"`` or ``"upgrade"``
-        task, or None."""
+        task, or None.
+
+        Parameters
+        ----------
+        kind : str
+            ``"preventive"``, ``"inspection"`` or ``"upgrade"``.
+        """
         from repyability.utils.checks import one_of
 
         one_of("kind", kind, ("preventive", "inspection", "upgrade"))
@@ -593,7 +901,14 @@ class UnitPlan:
     @classmethod
     def from_spec(cls, spec: dict) -> "UnitPlan":
         """The plan a spec dict states (the spec a ``RepairableRBD`` node
-        takes); a key no field holds is refused."""
+        takes); a key no field holds is refused.
+
+        Parameters
+        ----------
+        spec : dict
+            A spec dict with a ``"reliability"``, as a ``RepairableRBD``
+            node takes it.
+        """
         if not isinstance(spec, dict) or "reliability" not in spec:
             raise ValueError(
                 "A spec is a dict with a 'reliability' (and a "
@@ -681,7 +996,13 @@ class UnitPlan:
 
     @classmethod
     def from_dict(cls, data: dict) -> "UnitPlan":
-        """The plan ``to_dict`` saved."""
+        """The plan ``to_dict`` saved.
+
+        Parameters
+        ----------
+        data : dict
+            What ``to_dict`` returned.
+        """
         from repyability.rbd.serialisation import _deserialise_component
 
         if not isinstance(data, dict) or data.get("kind") != "unit_plan":
@@ -697,7 +1018,14 @@ class UnitPlan:
         """The ``RepairableRBD`` of this plan's one node (named
         ``UnitPlan.NODE``), on ``calendar`` if given (a
         ``schedule.CalendarContext``; its ``duty`` names the node
-        ``"unit"``): what every valuation of the plan alone asks."""
+        ``"unit"``): what every valuation of the plan alone asks.
+
+        Parameters
+        ----------
+        calendar : CalendarContext, optional
+            The calendar the plan's diagram runs on (its ``duty`` names
+            the node ``"unit"``); by default none.
+        """
         from repyability.rbd.repairable_rbd import RepairableRBD
 
         node = self.NODE
@@ -716,7 +1044,14 @@ class UnitPlan:
     def analysis_routes(self, calendar=None) -> dict:
         """How each valuation of the plan alone is worked out (exact,
         numerical, simulated or refused, with the reason), without
-        running anything: its diagram's routes, by the plan's method."""
+        running anything: its diagram's routes, by the plan's method.
+
+        Parameters
+        ----------
+        calendar : CalendarContext, optional
+            The calendar the plan's diagram runs on (its ``duty`` names
+            the node ``"unit"``); by default none.
+        """
         routes = self.diagram(calendar).analysis_routes()
         return {
             mine: routes[theirs]
@@ -729,6 +1064,16 @@ class UnitPlan:
         ``RepairableRBD.expected_npv`` of its one-node diagram (the same
         arguments), its salvage, escalation and retirement taken from
         the plan where the arguments leave them out.
+
+        Parameters
+        ----------
+        horizon : float
+            The length of time valued, in the plan's unit of time.
+        calendar : CalendarContext, optional
+            The calendar the plan's diagram runs on (its ``duty`` names
+            the node ``"unit"``); by default none.
+        **kwargs
+            As for ``RepairableRBD.expected_npv``.
 
         Examples
         --------
@@ -752,14 +1097,36 @@ class UnitPlan:
     def cash_flows(self, horizon, *, calendar=None, **kwargs):
         """The plan's expected cash flows by period and category: the
         table of ``expected_npv`` (the same arguments; ``periods`` sets
-        the periods)."""
+        the periods).
+
+        Parameters
+        ----------
+        horizon : float
+            The length of time valued, in the plan's unit of time.
+        calendar : CalendarContext, optional
+            The calendar the plan's diagram runs on (its ``duty`` names
+            the node ``"unit"``); by default none.
+        **kwargs
+            As for ``expected_npv``.
+        """
         return self.expected_npv(
             horizon, calendar=calendar, **kwargs
         ).cash_flows
 
     def npv_distribution(self, horizon, *, calendar=None, **kwargs):
         """The plan's NPV in each of many simulated runs:
-        ``RepairableRBD.npv_distribution`` of its one-node diagram."""
+        ``RepairableRBD.npv_distribution`` of its one-node diagram.
+
+        Parameters
+        ----------
+        horizon : float
+            The length of time valued, in the plan's unit of time.
+        calendar : CalendarContext, optional
+            The calendar the plan's diagram runs on (its ``duty`` names
+            the node ``"unit"``); by default none.
+        **kwargs
+            As for ``RepairableRBD.npv_distribution``.
+        """
         return self.diagram(calendar).npv_distribution(horizon, **kwargs)
 
     def plan_vs_actual(
@@ -767,7 +1134,23 @@ class UnitPlan:
     ):
         """The plan against what happened to the unit: its ``Timeline``
         (outage log) to ``now``, as ``RepairableRBD.plan_vs_actual`` of
-        its one-node diagram; a ``state`` is the unit's ``NodeState``."""
+        its one-node diagram; a ``state`` is the unit's ``NodeState``.
+
+        Parameters
+        ----------
+        timeline : Timeline
+            The unit's outage log up to ``now``.
+        now : float
+            The time of the last record, in the plan's unit of time.
+        horizon : float
+            The length of time valued from 0, in the plan's unit of time.
+        calendar : CalendarContext, optional
+            The calendar the plan's diagram runs on (its ``duty`` names
+            the node ``"unit"``); by default none.
+        **kwargs
+            As for ``RepairableRBD.plan_vs_actual``; a ``state`` or
+            ``start_state`` is the unit's own ``NodeState``.
+        """
         state = kwargs.pop("state", None)
         if state is not None:
             kwargs["state"] = {self.NODE: state}
@@ -780,19 +1163,50 @@ class UnitPlan:
 
     def expected_cost(self, t, *, calendar=None, **kwargs):
         """The plan's expected cost to ``t``:
-        ``RepairableRBD.expected_cost`` of its one-node diagram."""
+        ``RepairableRBD.expected_cost`` of its one-node diagram.
+
+        Parameters
+        ----------
+        t : float
+            The time to which costs are counted, in the plan's unit of
+            time.
+        calendar : CalendarContext, optional
+            The calendar the plan's diagram runs on (its ``duty`` names
+            the node ``"unit"``); by default none.
+        **kwargs
+            As for ``RepairableRBD.expected_cost``.
+        """
         return self.diagram(calendar).expected_cost(t, **kwargs)
 
     def expected_cost_rate(self, *, calendar=None) -> float:
         """The plan's long-run expected cost per unit time:
-        ``RepairableRBD.expected_cost_rate`` of its one-node diagram."""
+        ``RepairableRBD.expected_cost_rate`` of its one-node diagram.
+
+        Parameters
+        ----------
+        calendar : CalendarContext, optional
+            The calendar the plan's diagram runs on (its ``duty`` names
+            the node ``"unit"``); by default none.
+        """
         return self.diagram(calendar).expected_cost_rate()
 
     def events_by_period(self, usage, period: str = "month", **kwargs):
         """The plan's expected events (and on request costs) in each
         calendar period: ``schedule.events_by_period`` of its one-node
         diagram; ``usage`` a ``UsageForecast`` or a ``CalendarContext``
-        (giving the node ``"unit"`` its duty plan)."""
+        (giving the node ``"unit"`` its duty plan).
+
+        Parameters
+        ----------
+        usage : UsageForecast or CalendarContext
+            The calendar and the unit's duty plan (a ``CalendarContext``'s
+            ``duty`` names the node ``"unit"``).
+        period : str, optional
+            The calendar period counted in: ``"month"`` (the default), as
+            ``schedule.events_by_period`` takes.
+        **kwargs
+            As for ``schedule.events_by_period``.
+        """
         from repyability.schedule import events_by_period
 
         return events_by_period(self.diagram(), usage, period, **kwargs)
@@ -801,13 +1215,32 @@ class UnitPlan:
         """The plan's expected failures (with the other events) in each
         calendar period, as ``events_by_period``: a unit in a plan is
         worked out by the diagram's engine, its tasks and repairs taking
-        their time, on the calendar its duty plan gives."""
+        their time, on the calendar its duty plan gives.
+
+        Parameters
+        ----------
+        usage : UsageForecast or CalendarContext
+            As for ``events_by_period``.
+        period : str, optional
+            As for ``events_by_period``.
+        **kwargs
+            As for ``events_by_period``.
+        """
         return self.events_by_period(usage, period, **kwargs)
 
     def optimal_replacement_interval(self, *, calendar=None, **kwargs):
         """The plan's best age-replacement interval:
         ``RepairableRBD.optimal_replacement_intervals`` of its one-node
-        diagram (the same arguments, but ``nodes``)."""
+        diagram (the same arguments, but ``nodes``).
+
+        Parameters
+        ----------
+        calendar : CalendarContext, optional
+            The calendar the plan's diagram runs on (its ``duty`` names
+            the node ``"unit"``); by default none.
+        **kwargs
+            As for ``RepairableRBD.optimal_replacement_intervals``.
+        """
         return self.diagram(calendar).optimal_replacement_intervals(**kwargs)
 
     def least_spend_for_downtime(
@@ -836,7 +1269,16 @@ class UnitPlan:
     def optimal_inspection_interval(self, *, calendar=None, **kwargs):
         """The plan's best proof-test interval:
         ``RepairableRBD.optimal_inspection_intervals`` of its one-node
-        diagram (the same arguments, but ``nodes``)."""
+        diagram (the same arguments, but ``nodes``).
+
+        Parameters
+        ----------
+        calendar : CalendarContext, optional
+            The calendar the plan's diagram runs on (its ``duty`` names
+            the node ``"unit"``); by default none.
+        **kwargs
+            As for ``RepairableRBD.optimal_inspection_intervals``.
+        """
         return self.diagram(calendar).optimal_inspection_intervals(**kwargs)
 
 
