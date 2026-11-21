@@ -203,10 +203,6 @@ def test_a_schedule_is_steps_of_plain_numbers():
         ValueSchedule([1.0, 2.0], [1.0, 1.0])
     with pytest.raises(ValueError, match="one for each|for each of"):
         ValueSchedule([0.0, 2.0], [1.0])
-    with pytest.raises(ValueError, match="npv_distribution"):
-        pump().npv_distribution(
-            T, value_rate=ValueSchedule([0.0], [1.0]), mc_samples=2
-        )
 
 
 # -- on dates -----------------------------------------------------------------

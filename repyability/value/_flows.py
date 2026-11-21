@@ -35,16 +35,29 @@ class Ledger:
         cell[0][:] += np.bincount(history, present, minlength=self.size)
         cell[1][:] += np.bincount(history, nominal, minlength=self.size)
 
-    def events(self, history, times, price: float, category, component):
-        """``price`` charged at each of ``times``, in its history."""
+    def events(
+        self,
+        history,
+        times,
+        price: float,
+        category,
+        component,
+        growth: float = 0.0,
+    ):
+        """``price`` charged at each of ``times``, in its history, grown
+        to then at ``growth`` (``price * exp(growth t)``)."""
         times = np.asarray(times, float)
         if not price or not times.size:
             return
         history = np.asarray(history, np.int64)
         periods = np.searchsorted(self.ends, times, side="right")
         periods = np.minimum(periods, len(self.ends) - 1)
-        present = price * np.exp(-self.rate * times)
-        nominal = np.full(times.size, float(price))
+        present = price * np.exp(-(self.rate - growth) * times)
+        nominal = (
+            price * np.exp(growth * times)
+            if growth
+            else np.full(times.size, float(price))
+        )
         for k in np.unique(periods):
             mask = periods == k
             self._add(
@@ -57,10 +70,17 @@ class Ledger:
             )
 
     def spans(
-        self, history, starts, stops, per_time: float, category, component
+        self,
+        history,
+        starts,
+        stops,
+        per_time: float,
+        category,
+        component,
+        growth: float = 0.0,
     ):
         """``per_time`` over each span from ``starts`` to ``stops``, in its
-        history."""
+        history, grown at ``growth`` (``per_time * exp(growth t)``)."""
         starts = np.asarray(starts, float)
         if not per_time or not starts.size:
             return
@@ -78,8 +98,8 @@ class Ledger:
                 category,
                 component,
                 history[inside],
-                per_time * discounted_span(a, b, self.rate),
-                per_time * (b - a),
+                per_time * discounted_span(a, b, self.rate - growth),
+                per_time * discounted_span(a, b, -growth),
             )
 
     def totals(self) -> Dict[tuple, Tuple[np.ndarray, np.ndarray]]:

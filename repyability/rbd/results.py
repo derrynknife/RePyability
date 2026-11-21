@@ -2361,7 +2361,8 @@ class NPVDistribution(_ResultMapping):
     discount_rate : float
         The continuous rate per unit time the amounts were discounted at.
     value_rate : float
-        The value earned per unit time while the system works.
+        The value earned per unit time while the system works (NaN with
+        a ``value_schedule``).
     samples : numpy.ndarray
         Each run's net present value: ``value_samples - cost_samples``,
         plus ``contract_samples`` with a contract.
@@ -2430,6 +2431,17 @@ class NPVDistribution(_ResultMapping):
     period_availability : numpy.ndarray or None
         Each run's availability in each of the contract's periods, one
         row a run: the share of the period the system was up.
+    rate_basis : str
+        ``"nominal"`` or ``"real"``, as for ``ExpectedNPV``.
+    inflation : float or None
+        The continuous inflation per unit time real rates were made
+        nominal with; None when not given.
+    escalation : dict
+        Each stream's growth per unit time, as given (see
+        ``ExpectedNPV``); empty with none.
+    value_schedule : ValueSchedule or None
+        The value earned as steps, when given one (``value_rate`` is
+        then NaN); None for a single rate.
 
     Examples
     --------
@@ -2493,6 +2505,10 @@ class NPVDistribution(_ResultMapping):
     undiscounted_contract_payoff: float = 0.0
     period_ends: Optional[List[float]] = None
     period_availability: Optional[np.ndarray] = None
+    rate_basis: str = "nominal"
+    inflation: Optional[float] = None
+    escalation: Dict[Hashable, float] = field(default_factory=dict)
+    value_schedule: Any = None
 
     @property
     def std(self) -> float:
@@ -4612,7 +4628,8 @@ class PlanVsActual(_ResultMapping):
     discount_rate : float
         The continuous discount rate per unit time (0: undiscounted).
     value_rate : float
-        The value earned per unit time while the system works.
+        The value earned per unit time while the system works (NaN with
+        a ``value_schedule``).
     plan_npv : float
         The original plan's expected net present value over the horizon.
     revalued_npv : float
@@ -4672,7 +4689,21 @@ class PlanVsActual(_ResultMapping):
         The original plan over the horizon, from its start.
     rest : ExpectedNPV or None
         The rest valued as of ``now`` (its own clock from 0), with no
-        acquisition cost; None if ``now`` is the horizon.
+        acquisition cost; None if ``now`` is the horizon. With a value
+        schedule or escalation, its own amounts are those from ``now``:
+        ``rest_cash_flows`` are them grown and discounted to the plan's
+        clock.
+    rate_basis : str
+        ``"nominal"`` or ``"real"``, as for ``ExpectedNPV``.
+    inflation : float or None
+        The continuous inflation per unit time real rates were made
+        nominal with; None when not given.
+    escalation : dict
+        Each stream's growth per unit time, as given (see
+        ``ExpectedNPV``); empty with none.
+    value_schedule : ValueSchedule or None
+        The value earned as steps, when given one (``value_rate`` is
+        then NaN); None for a single rate.
     """
 
     now: float
@@ -4702,6 +4733,10 @@ class PlanVsActual(_ResultMapping):
     derived_states: List[Hashable]
     plan: ExpectedNPV
     rest: Optional[ExpectedNPV]
+    rate_basis: str = "nominal"
+    inflation: Optional[float] = None
+    escalation: Dict[Hashable, float] = field(default_factory=dict)
+    value_schedule: Any = None
 
     def __repr__(self) -> str:
         return (
@@ -5229,6 +5264,14 @@ class SimulatedSwitchTime(_ResultMapping):
         The seed every switch time's runs share.
     engine : str
         The engine that ran them.
+    rate_basis : str
+        ``"nominal"`` or ``"real"``, as for ``ExpectedNPV``.
+    inflation : float or None
+        The continuous inflation per unit time real rates were made
+        nominal with; None when not given.
+    escalation : dict
+        Each stream's growth per unit time, as given (see
+        ``ExpectedNPV``); empty with none.
     """
 
     switch_time: float
@@ -5248,6 +5291,9 @@ class SimulatedSwitchTime(_ResultMapping):
     n_simulations: int
     seed: Any
     engine: str
+    rate_basis: str = "nominal"
+    inflation: Optional[float] = None
+    escalation: Dict[Hashable, float] = field(default_factory=dict)
 
     def difference_interval(
         self, against: str = "never switch", confidence: float = 0.95

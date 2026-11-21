@@ -6,7 +6,10 @@ every engine), priced with the diagram's own costs and discounted at the
 times they fell (``_pricing``): each failure its repair and replace
 costs, each planned outage its preventive cost, each component's and the
 system's time down their downtime costs, and the system's time up its
-value, the integral of ``value_rate * exp(-r t)`` over its spans up. The
+value, the integral of ``value_rate * exp(-r t)`` over its spans up (each
+step's rate over its part of them, for a ``ValueSchedule``), every amount
+grown at its stream's escalation (``price * exp(g t)``, see
+``_npv.Money``). The
 acquisition costs are paid at 0 in every run, and each shutdown's cost at
 each of its starts (its calendar's, the same in every run). A component a
 shut holds off line shows a planned change in its history that is no
@@ -36,7 +39,6 @@ from repyability.rbd import (
 )
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import _npv, _pricing, _requirements, _streams
-from repyability.rbd._common import _discount_rate
 from repyability.rbd.contracts import AvailabilityContract
 from repyability.rbd.results import (
     ConfidenceInterval,
@@ -173,21 +175,19 @@ def _contract(contract) -> Optional[AvailabilityContract]:
     )
 
 
-def _settings(rbd, horizon, discount_rate, value_rate, contract, mc_samples):
+def _settings(rbd, horizon, money, contract, mc_samples):
     """The checked settings both methods share."""
-    rate = _discount_rate(discount_rate)
     horizon = _npv._number(horizon, "horizon", strict=True)
-    value_rate = _npv.steady_value(value_rate, "npv_distribution")
     contract = _contract(contract)
     ends = (
         None if contract is None else np.array(contract.period_ends(horizon))
     )
-    if not value_rate and contract is None:
+    if not money.earns and contract is None:
         _requirements._require_costs(rbd)
     n = checks.whole_number(
         10_000 if mc_samples is None else mc_samples, "mc_samples"
     )
-    return rate, horizon, value_rate, contract, ends, n
+    return horizon, contract, ends, n
 
 
 def _seed(seed):
@@ -203,8 +203,7 @@ def priced_chunk(
     rbd,
     horizon: float,
     ends: np.ndarray,
-    rate: float,
-    value_rate: float,
+    money,
     size: int,
     seed: int,
     engine: str,
@@ -213,7 +212,8 @@ def priced_chunk(
 ):
     """Simulations ``first`` to ``first + size - 1`` of the run ``seed``
     seeds, over ``horizon``, priced (``_pricing.priced``, by the periods
-    ending at ``ends``) with each shutdown's cost at its starts: the
+    ending at ``ends``, valued by ``money``, an ``_npv.Money``) with each
+    shutdown's cost at its starts: the
     ledger, the runs (a ``TimelineSimulation``)."""
     from repyability.rbd import _timeline_runs
 
@@ -237,8 +237,7 @@ def priced_chunk(
         logs,
         runs.system._data,
         ends,
-        rate,
-        value_rate,
+        money,
         (),
         size,
         hidden=hidden if rbd._shutdowns else None,
@@ -252,6 +251,7 @@ def priced_chunk(
             shut.cost,
             "shutdown",
             None,
+            money.growth("shutdown"),
         )
     return ledger, runs
 
@@ -281,10 +281,16 @@ def npv_distribution(
     engine: str,
     state,
     contract=None,
+    escalation=None,
+    rates: str = "nominal",
+    inflation=None,
 ) -> NPVDistribution:
     """See ``RepairableRBD.npv_distribution``."""
-    rate, horizon, value_rate, contract, ends, n = _settings(
-        rbd, horizon, discount_rate, value_rate, contract, mc_samples
+    money = _npv.Money(
+        rbd, discount_rate, value_rate, escalation, rates, inflation
+    )
+    horizon, contract, ends, n = _settings(
+        rbd, horizon, money, contract, mc_samples
     )
     if hurdle is not None:
         hurdle = checks.number_or_nan(hurdle)
@@ -299,8 +305,7 @@ def npv_distribution(
     return _priced_runs(
         rbd,
         horizon,
-        rate,
-        value_rate,
+        money,
         contract,
         ends,
         n,
@@ -315,8 +320,7 @@ def npv_distribution(
 def _priced_runs(
     rbd,
     horizon: float,
-    rate: float,
-    value_rate: float,
+    money,
     contract: Optional[AvailabilityContract],
     contract_ends: Optional[np.ndarray],
     n: int,
@@ -340,8 +344,7 @@ def _priced_runs(
             rbd,
             horizon,
             ends,
-            rate,
-            value_rate,
+            money,
             size,
             seed,
             engine,
@@ -386,8 +389,14 @@ def _priced_runs(
     if contract is not None:
         assert available is not None and contract_ends is not None
         payments = contract.payoff(available)
-        paid = payments @ np.exp(-rate * contract_ends)
-        plain_paid = float(payments.sum(axis=1).mean())
+        # Its payments grow only with the inflation of real rates.
+        lift = money.growth()
+        paid = payments @ np.exp(-(money.rate - lift) * contract_ends)
+        plain_paid = float(
+            (payments @ np.exp(lift * contract_ends)).mean()
+            if lift
+            else payments.sum(axis=1).mean()
+        )
 
     samples = values - costs + paid
     ordered = np.sort(samples)
@@ -400,8 +409,8 @@ def _priced_runs(
     plain_value_mean = float(plain_value.mean())
     return NPVDistribution(
         horizon=horizon,
-        discount_rate=rate,
-        value_rate=value_rate,
+        discount_rate=money.given_rate,
+        value_rate=money.value_rate,
         samples=samples,
         value_samples=values,
         cost_samples=costs,
@@ -436,6 +445,7 @@ def _priced_runs(
             else [float(e) for e in contract_ends]
         ),
         period_availability=available,
+        **money.stated(),
     )
 
 
@@ -482,6 +492,17 @@ def _require_matched(rbd, which: str, horizon: float, state) -> None:
     )
 
 
+def _own(escalation, rbd, other):
+    """``escalation`` without the components only ``other`` has."""
+    if not isinstance(escalation, dict):
+        return escalation
+    return {
+        key: rate
+        for key, rate in escalation.items()
+        if key in rbd.components or key not in other.components
+    }
+
+
 def compare_npv(
     rbd,
     other,
@@ -495,6 +516,9 @@ def compare_npv(
     confidence: float,
     engine: str,
     state,
+    escalation=None,
+    rates: str = "nominal",
+    inflation=None,
 ) -> NPVComparison:
     """See ``RepairableRBD.compare_npv``."""
     from repyability.rbd.repairable_rbd import RepairableRBD
@@ -504,11 +528,24 @@ def compare_npv(
             "other must be a RepairableRBD, the plan to compare with; got "
             f"{type(other).__name__}."
         )
-    settings = [
-        _settings(d, horizon, discount_rate, value_rate, contract, mc_samples)
-        for d in (rbd, other)
+    # Each plan's own: an escalation may name a component of either plan,
+    # which the other leaves out.
+    monies = [
+        _npv.Money(
+            d,
+            discount_rate,
+            value_rate,
+            _own(escalation, d, o),
+            rates,
+            inflation,
+        )
+        for d, o in ((rbd, other), (other, rbd))
     ]
-    rate, horizon, value_rate, contract, ends, n = settings[0]
+    settings = [
+        _settings(d, horizon, money, contract, mc_samples)
+        for d, money in zip((rbd, other), monies)
+    ]
+    horizon, contract, ends, n = settings[0]
     montecarlo.check_confidence(confidence)
     checks.one_of("engine", engine, ("auto", "python", "numba"))
     seed = _seed(seed)
@@ -519,8 +556,7 @@ def compare_npv(
         _priced_runs(
             diagram,
             horizon,
-            rate,
-            value_rate,
+            money,
             contract,
             ends,
             n,
@@ -530,7 +566,7 @@ def compare_npv(
             None,
             0.1,
         )
-        for diagram in (rbd, other)
+        for diagram, money in zip((rbd, other), monies)
     )
     differences = this.samples - that.samples
     estimate = float(differences.mean())
