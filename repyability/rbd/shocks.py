@@ -39,6 +39,41 @@ def _rate(value, name: str) -> float:
     return number
 
 
+def checked(rate, p, lethal_rate) -> Tuple[float, float, float]:
+    """The rate, the probability and the lethal rate of a shock process,
+    as floats, or a ``ValueError`` saying what each must be."""
+    rate = _rate(rate, "rate")
+    lethal_rate = _rate(lethal_rate, "lethal_rate")
+    chance = number_or_nan(p)
+    if not 0.0 < chance <= 1.0:
+        raise ValueError(
+            "p, the probability that a shock fails a member it reaches, "
+            f"must be a number above 0 and at most 1, got {p!r}."
+        )
+    return rate, chance, lethal_rate
+
+
+def causes(
+    members: tuple, rate: float, p: float, lethal_rate: float
+) -> List[Tuple[tuple, float]]:
+    """A shock process's independent causes: each set of ``members`` a
+    shock can fail exactly (in their order, smaller sets first) with the
+    rate it strikes at, ``rate * p**j * (1 - p)**(m - j)`` for a set of
+    ``j`` of the ``m`` (plus ``lethal_rate`` for all of them); those of
+    rate 0 left out."""
+    m = len(members)
+    out: List[Tuple[tuple, float]] = []
+    for size in range(1, m + 1):
+        strikes = rate * p**size * (1.0 - p) ** (m - size)
+        if size == m:
+            strikes += lethal_rate
+        if strikes > 0.0:
+            out += [
+                (struck, strikes) for struck in combinations(members, size)
+            ]
+    return out
+
+
 def shock_nodes(
     edges: Iterable[Tuple[Hashable, Hashable]],
     nodes: Dict[Any, Any],
@@ -150,29 +185,13 @@ def shock_nodes(
                 f"Member {member!r} repeats node {nodes[member]!r}: name "
                 "the node it repeats as the member, once."
             )
-    rate = _rate(rate, "rate")
-    lethal_rate = _rate(lethal_rate, "lethal_rate")
-    chance = number_or_nan(p)
-    if not 0.0 < chance <= 1.0:
-        raise ValueError(
-            "p, the probability that a shock fails a member it reaches, "
-            f"must be a number above 0 and at most 1, got {p!r}."
-        )
-    m = len(members)
-    causes = []
-    for size in range(1, m + 1):
-        strikes = rate * chance**size * (1.0 - chance) ** (m - size)
-        if size == m:
-            strikes += lethal_rate
-        if strikes > 0.0:
-            causes += [
-                (struck, strikes) for struck in combinations(members, size)
-            ]
+    rate, chance, lethal_rate = checked(rate, p, lethal_rate)
+    struck_by = causes(tuple(members), rate, chance, lethal_rate)
     for member in members:
         after = [edge for edge in edges if edge[0] == member]
         edges = [edge for edge in edges if edge[0] != member]
         last = member
-        for struck, strikes in causes:
+        for struck, strikes in struck_by:
             if member not in struck:
                 continue
             node, first = (name, struck, member), (name, struck, struck[0])
@@ -190,3 +209,26 @@ def shock_nodes(
             last = node
         edges += [(last, to) for _, to in after]
     return edges, nodes
+
+
+def shock_name(index: int, count: int) -> Hashable:
+    """The name of the ``index``-th of a diagram's ``count`` shock
+    groups, the first item of its cause nodes' names: ``"shock"`` for an
+    only group, else ``"shock 1"``, ``"shock 2"``, ..."""
+    return "shock" if count == 1 else f"shock {index + 1}"
+
+
+def written_shocks(edges, nodes, groups) -> Tuple[list, dict]:
+    """The diagram's edges and nodes with each of ``groups`` (each a
+    ``CCFGroup`` of a ``Shocks`` model) written in by ``shock_nodes``."""
+    for index, group in enumerate(groups):
+        edges, nodes = shock_nodes(
+            edges,
+            nodes,
+            group.members,
+            group.model.rate,
+            group.model.p,
+            group.model.lethal_rate,
+            name=shock_name(index, len(groups)),
+        )
+    return list(edges), nodes

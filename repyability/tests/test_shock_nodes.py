@@ -13,6 +13,7 @@ from repyability import (
     BetaFactor,
     CCFGroup,
     NonRepairableRBD,
+    Shocks,
     shock_nodes,
 )
 
@@ -231,3 +232,123 @@ def test_a_name_in_use_and_a_repeat_as_a_member_are_refused():
         shock_nodes(edges, nodes, names, 1e-5)
     with pytest.raises(ValueError, match="repeats node"):
         shock_nodes(parallel(names), {"p1": life, "p2": "p1"}, names, 1e-5)
+
+
+# The same shocks as a group's model: ``CCFGroup(members, Shocks(...))``.
+def shocked_pair():
+    one = surv.Weibull.from_params([8000.0, 2.5])
+    two = surv.LogNormal.from_params([9.0, 0.7])
+    names = ["p1", "p2"]
+    models = {"p1": one, "p2": two}
+    edges, nodes = shock_nodes(
+        parallel(names), models, names, 2e-5, 0.6, lethal_rate=1e-6
+    )
+    group = CCFGroup(names, Shocks(2e-5, 0.6, lethal_rate=1e-6))
+    return (
+        NonRepairableRBD(parallel(names), models, ccf_groups=[group]),
+        NonRepairableRBD(edges, nodes),
+    )
+
+
+def test_a_shocks_group_is_shock_nodes_to_the_last_bit():
+    given, by_hand = shocked_pair()
+    state = {"p1": 6000.0, "p2": 1000.0}
+    assert list(given.nodes) == list(by_hand.nodes)
+    assert np.array_equal(given.sf(X), by_hand.sf(X))
+    assert np.array_equal(given.ff(X), by_hand.ff(X))
+    assert given.mean() == by_hand.mean()
+    assert given.bx_life(10) == by_hand.bx_life(10)
+    assert np.array_equal(
+        given.sf_given_state(X, state), by_hand.sf_given_state(X, state)
+    )
+    assert given.remaining_life(0.9, state) == by_hand.remaining_life(
+        0.9, state
+    )
+    assert given.birnbaum_importance(2000.0) == by_hand.birnbaum_importance(
+        2000.0
+    )
+    assert np.array_equal(given.random(50, seed=3), by_hand.random(50, seed=3))
+    assert given.mean(method="simulate", seed=0) == by_hand.mean(
+        method="simulate", seed=0
+    )
+    assert given.analysis_routes() == by_hand.analysis_routes()
+
+
+def test_a_shocks_group_is_saved_as_given():
+    import json
+
+    given, _ = shocked_pair()
+    saved = json.loads(json.dumps(given.to_dict()))
+    assert saved["ccf_groups"] == [
+        {
+            "members": ["p1", "p2"],
+            "model": {
+                "kind": "shocks",
+                "rate": 2e-5,
+                "p": 0.6,
+                "lethal_rate": 1e-6,
+            },
+        }
+    ]
+    assert len(saved["edges"]) == 4
+    again = NonRepairableRBD.from_dict(saved)
+    assert np.array_equal(again.sf(X), given.sf(X))
+    # A CCFGroup compares by identity: its members and model do not.
+    assert [(g.members, g.model) for g in again.shock_groups] == [
+        (g.members, g.model) for g in given.shock_groups
+    ]
+
+
+def test_two_shock_groups_and_a_group_of_another_model():
+    life = surv.Exponential.from_params([1e-4])
+    names = list("abcd")
+    edges = parallel(names)
+    models = {n: life for n in names}
+    rbd = NonRepairableRBD(
+        edges,
+        models,
+        ccf_groups=[
+            CCFGroup(["a", "b"], Shocks(1e-5)),
+            CCFGroup(["c", "d"], BetaFactor(0.1, basis="rate")),
+            CCFGroup(["c", "d"], Shocks(2e-5, 0.5)),
+        ],
+    )
+    written, nodes = shock_nodes(
+        edges, models, ["a", "b"], 1e-5, name="shock 1"
+    )
+    written, nodes = shock_nodes(
+        written, nodes, ["c", "d"], 2e-5, 0.5, name="shock 2"
+    )
+    by_hand = NonRepairableRBD(
+        written,
+        nodes,
+        ccf_groups=[CCFGroup(["c", "d"], BetaFactor(0.1, basis="rate"))],
+    )
+    assert np.array_equal(rbd.sf(X), by_hand.sf(X))
+
+
+def test_the_shocks_model_checks_what_it_is_given():
+    with pytest.raises(ValueError, match="rate above 0"):
+        Shocks(0.0)
+    with pytest.raises(ValueError, match="above 0 and at most 1"):
+        Shocks(1e-5, p=0.0)
+    with pytest.raises(ValueError, match="rate must be"):
+        Shocks(-1.0)
+    assert Shocks(1e-5, 0.5) == Shocks(1e-5, 0.5)
+    assert Shocks(1e-5, 0.5) != Shocks(1e-5, 0.6)
+    assert Shocks(3e-5, 0.5, 1e-6).causes(("a", "b")) == [
+        (("a",), 7.5e-6),
+        (("b",), 7.5e-6),
+        (("a", "b"), 7.5e-6 + 1e-6),
+    ]
+
+
+def test_a_fault_tree_refuses_a_shocks_group():
+    from repyability import FaultTree
+
+    with pytest.raises(ValueError, match="NonRepairableRBD"):
+        FaultTree(
+            {"top": ("AND", ["a", "b"])},
+            {"a": 0.1, "b": 0.1},
+            ccf_groups=[CCFGroup(["a", "b"], Shocks(1e-5))],
+        )

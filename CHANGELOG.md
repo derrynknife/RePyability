@@ -12,6 +12,14 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: `Shocks(rate, p, lethal_rate)`, shocks at a rate of their own
+  as a common-cause group's model: `CCFGroup(members, Shocks(...))`. A
+  `NonRepairableRBD` writes the group's causes into its structure as
+  `shock_nodes` does (the same nodes and the same values, to the last
+  bit), so the members keep their own lives and ages and every analysis
+  takes the shocks; the diagram is saved with the group as given. A
+  fault tree refuses the model, saying what to draw instead.
+
 - Added: `shock_nodes(edges, nodes, members, rate, p, lethal_rate)`,
   shocks that fail each member they reach with a probability (the
   binomial failure rate model), for a `NonRepairableRBD` whose members
