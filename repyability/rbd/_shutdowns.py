@@ -70,6 +70,25 @@ _TINY_OFFSET = 1e-9
 # -- validation ---------------------------------------------------------------
 
 
+def as_specs(given):
+    """A diagram's ``shutdowns`` in the dict form: an ``Opportunities``
+    record in model time read as one shutdown per kind (its shut costs,
+    durations, scopes and options), a dict or None as it is."""
+    from repyability.maintenance._opportunities import Opportunities
+    from repyability.maintenance._site_policy import ShutdownPolicy
+
+    if isinstance(given, Opportunities):
+        return given._diagram_shutdowns() or None
+    if isinstance(given, ShutdownPolicy):
+        raise ValueError(
+            "shutdowns takes the site's shuts, not a part's policy at them: "
+            "give the Opportunities the policy was worked out for, on the "
+            "diagram's clock (Opportunities.on_diagram(start, end) for "
+            "shuts on real dates)."
+        )
+    return given
+
+
 def validate(given) -> Dict[Hashable, _Shutdown]:
     """A diagram's ``shutdowns`` (a dict of a name and a spec each),
     checked: each spec's keys, its calendar, duration, cost and option,
@@ -79,8 +98,8 @@ def validate(given) -> Dict[Hashable, _Shutdown]:
         return {}
     if not isinstance(given, dict):
         raise ValueError(
-            "shutdowns must be a dict of a name and a spec for each "
-            f"shutdown, got {given!r}."
+            "shutdowns must be Opportunities (in model time) or a dict of a "
+            f"name and a spec for each shutdown, got {given!r}."
         )
     out = {name: _validate_one(name, spec) for name, spec in given.items()}
     _refuse_overlaps(list(out.values()))

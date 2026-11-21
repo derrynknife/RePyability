@@ -136,7 +136,18 @@ class Opportunity:
     takes_down : list of str, optional
         The labels (lines, units, areas) it takes down; by default None,
         the whole site. A policy given ``where=`` uses only the
-        opportunities that take that label down.
+        opportunities that take that label down. On a diagram
+        (``RepairableRBD(shutdowns=Opportunities(...))``) the labels are
+        the nodes it holds off line.
+    idle_ageing : bool, optional
+        On a diagram: whether the blocks it holds off line and does not
+        work on keep ageing through it (True, the default) or stand still
+        until it ends. A part's policy does not use it.
+    opportunistic : float or dict, optional
+        On a diagram: the components it renews if they are at least so
+        old, as a diagram's shutdown's ``"opportunistic"`` (an age for
+        every component in its scope under age replacement, or a dict of
+        an age by component). A part's policy does not use it.
     cost : float, optional
         **Deprecated** (also as the second argument, the 0.14 form
         ``Opportunity(name, cost, period=...)``): a price on the
@@ -174,6 +185,8 @@ class Opportunity:
     duration: Optional[float] = None
     at: Any = None
     takes_down: Optional[Tuple[str, ...]] = None
+    idle_ageing: bool = True
+    opportunistic: Any = None
 
     def __init__(
         self,
@@ -190,6 +203,8 @@ class Opportunity:
         at=None,
         takes_down=None,
         cost=None,
+        idle_ageing=True,
+        opportunistic=None,
     ):
         if checks.is_number(rule):
             # The 0.14 form, Opportunity(name, cost, period, offset, dates).
@@ -235,6 +250,8 @@ class Opportunity:
             ("duration", duration),
             ("at", at),
             ("takes_down", takes_down),
+            ("idle_ageing", idle_ageing),
+            ("opportunistic", opportunistic),
         ):
             object.__setattr__(self, key, value)
         self._check()
@@ -246,6 +263,8 @@ class Opportunity:
             if f.name == "name" or value is None:
                 continue
             if f.name == "offset" and value == 0.0:
+                continue
+            if f.name == "idle_ageing" and value is True:
                 continue
             shown.append(f"{f.name}={value!r}")
         return f"Opportunity({', '.join(shown)})"
@@ -303,6 +322,44 @@ class Opportunity:
                     f"site; got {self.takes_down!r}."
                 )
             object.__setattr__(self, "takes_down", takes_down)
+        self._check_diagram_options()
+
+    def _check_diagram_options(self) -> None:
+        """``idle_ageing`` and ``opportunistic``, which only a diagram
+        uses: checked here for their kind, and by the diagram against its
+        nodes."""
+        if not isinstance(self.idle_ageing, (bool, np.bool_)):
+            raise ValueError(
+                f"Opportunity {self.name!r}: idle_ageing must be True (the "
+                "blocks not worked on keep ageing) or False (they stand "
+                f"still), got {self.idle_ageing!r}."
+            )
+        object.__setattr__(self, "idle_ageing", bool(self.idle_ageing))
+        given = self.opportunistic
+        if given is None:
+            return
+        if isinstance(given, tuple) and all(
+            isinstance(pair, tuple) and len(pair) == 2 for pair in given
+        ):
+            given = dict(given)
+        ages = list(given.values()) if isinstance(given, dict) else [given]
+        if not ages or not all(
+            checks.is_number(a) and float(a) >= 0.0 for a in ages
+        ):
+            raise ValueError(
+                f"Opportunity {self.name!r}: opportunistic must be an age, "
+                "0 or more (inf for never), or a dict of an age by "
+                f"component, at least one; got {given!r}."
+            )
+        object.__setattr__(
+            self,
+            "opportunistic",
+            (
+                tuple((node, float(a)) for node, a in given.items())
+                if isinstance(given, dict)
+                else float(given)
+            ),
+        )
 
     def _check_model_time(self) -> None:
         for key in ("then_every", "also_every", "at"):
@@ -691,6 +748,14 @@ class Opportunity:
         )
         if self.cost is not None:
             out["cost"] = self.cost
+        if not self.idle_ageing:
+            out["idle_ageing"] = False
+        if self.opportunistic is not None:
+            out["opportunistic"] = (
+                [[node, age] for node, age in self.opportunistic]
+                if isinstance(self.opportunistic, tuple)
+                else self.opportunistic
+            )
         return out
 
     @classmethod
@@ -740,6 +805,15 @@ class Opportunity:
             )
         if data.get("cost") is not None:
             made = made._replaced(cost=_price(data["cost"], "cost"))
+        opportunistic = data.get("opportunistic")
+        if isinstance(opportunistic, list):
+            opportunistic = {node: age for node, age in opportunistic}
+        if opportunistic is not None or "idle_ageing" in data:
+            made = made._replaced(
+                idle_ageing=data.get("idle_ageing", True),
+                opportunistic=opportunistic,
+            )
+            made._check_diagram_options()
         return made
 
 

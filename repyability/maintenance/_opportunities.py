@@ -251,6 +251,11 @@ class Opportunities:
     time_zone : str, optional
         On real dates: the site's IANA zone (``"Australia/Brisbane"``);
         None: clock times as they are, with no daylight saving.
+    shut_costs : dict, optional
+        The site's own cost of each kind of shut, by name, charged at
+        every shut when the record is a diagram's shutdowns
+        (``RepairableRBD(shutdowns=...)``, as a shutdown's ``"cost"``):
+        not a part's price, which each part brings. By default none.
 
     Examples
     --------
@@ -273,7 +278,14 @@ class Opportunities:
     True
     """
 
-    def __init__(self, opportunities=(), *, any_day=True, time_zone=None):
+    def __init__(
+        self,
+        opportunities=(),
+        *,
+        any_day=True,
+        time_zone=None,
+        shut_costs=None,
+    ):
         from repyability.schedule._meters import zone
 
         if isinstance(opportunities, (Opportunity, _shutdowns.Shutdown)):
@@ -326,6 +338,7 @@ class Opportunities:
             )
         self.opportunities: Tuple[Opportunity, ...] = tuple(listed)
         self.any_day: bool = any_day
+        self.shut_costs: Dict[str, float] = _shut_costs(shut_costs, names)
         self.time_zone = time_zone
         #: A failure's price from a deprecated Calendar(failure=).
         self._failure_price: Optional[float] = None
@@ -511,6 +524,8 @@ class Opportunities:
             out["failure_price"] = self._failure_price
         if self._clock is not None:
             out["time"] = self._clock
+        if self.shut_costs:
+            out["shut_costs"] = dict(self.shut_costs)
         return out
 
     @classmethod
@@ -540,7 +555,7 @@ class Opportunities:
                 "These Opportunities were saved by a newer RePyability "
                 f"(version {data['version']}): upgrade to read them."
             )
-        return cls._legacy(
+        made = cls._legacy(
             [Opportunity.from_dict(o) for o in data.get("opportunities", [])],
             any_day=bool(data.get("any_day", True)),
             any_day_price=data.get("any_day_price"),
@@ -548,6 +563,76 @@ class Opportunities:
             clock=data.get("time"),
             zone=data.get("time_zone"),
         )
+        made.shut_costs = _shut_costs(data.get("shut_costs"), made.names)
+        return made
+
+    # -- on a diagram --------------------------------------------------
+
+    def _diagram_shutdowns(self) -> Dict[str, dict]:
+        """The record as a diagram's shutdowns (model time only): one
+        shutdown per kind, by name, in the spec the dict form takes, so
+        that the record and the dicts it stands for are one diagram."""
+        if self.model_time is False:
+            raise ValueError(
+                "A diagram runs on model time, and these opportunities are "
+                "on real dates: put them on the diagram's clock with "
+                "Opportunities.on_diagram(start, end) and give the dict it "
+                "returns as shutdowns."
+            )
+        out: Dict[str, dict] = {}
+        for o in self.opportunities:
+            if o.cost is not None:
+                raise ValueError(
+                    f"Opportunity {o.name!r} has a price of its own (a "
+                    "part's, deprecated): a diagram's shut takes the site's "
+                    "cost, Opportunities(shut_costs={name: cost})."
+                )
+            spec: Dict[str, Any] = {}
+            if o.period is not None:
+                period = float(o.period)
+                # Every period from the offset, both ways: on the diagram's
+                # clock, the first after 0 (a shut at 0 itself is not taken,
+                # as a task due at 0 is not).
+                spec["period"] = period
+                spec["offset"] = float(o.offset) % period
+            else:
+                spec["times"] = list(o.dates or ())
+            spec["duration"] = 0.0 if o.duration is None else o.duration
+            if o.takes_down is not None:
+                spec["scope"] = list(o.takes_down)
+            if o.name in self.shut_costs:
+                spec["cost"] = self.shut_costs[o.name]
+            if not o.idle_ageing:
+                spec["idle_ageing"] = False
+            if o.opportunistic is not None:
+                spec["opportunistic"] = (
+                    dict(o.opportunistic)
+                    if isinstance(o.opportunistic, tuple)
+                    else o.opportunistic
+                )
+            out[o.name] = spec
+        return out
+
+
+def _shut_costs(given, names) -> Dict[str, float]:
+    """``Opportunities``' ``shut_costs`` checked: a cost, 0 or more, by the
+    name of one of its opportunities."""
+    if given is None:
+        return {}
+    if not isinstance(given, Mapping):
+        raise TypeError(
+            "shut_costs must map each kind of shut, by name, to the site's "
+            f"cost of it; got {given!r}."
+        )
+    out: Dict[str, float] = {}
+    for name, cost in given.items():
+        if name not in names:
+            raise ValueError(
+                f"shut_costs names {name!r}, which is not one of the "
+                f"opportunities {list(names)}."
+            )
+        out[name] = _price(cost, f"The shut cost of {name!r}")
+    return out
 
 
 def _listed(names: List[str]) -> str:
