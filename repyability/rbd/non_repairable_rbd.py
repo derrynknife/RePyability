@@ -9121,16 +9121,16 @@ def _invert_life(rbd, shares: np.ndarray, kwargs: dict) -> np.ndarray:
     side = np.zeros(shares.shape, dtype=int)
     tiny = 4.0 * np.finfo(float).eps
     for _ in range(200):
-        open_ = (hi - lo > tiny * np.maximum(1.0, np.abs(hi))) & (
-            g_lo != 0.0
-        ) & (g_hi != 0.0)
+        open_ = (
+            (hi - lo > tiny * np.maximum(1.0, np.abs(hi)))
+            & (g_lo != 0.0)
+            & (g_hi != 0.0)
+        )
         if not np.any(open_):
             break
         with np.errstate(invalid="ignore", divide="ignore"):
             x = hi - g_hi * (hi - lo) / (g_hi - g_lo)
-        x = np.where(
-            np.isfinite(x) & (x > lo) & (x < hi), x, 0.5 * (lo + hi)
-        )
+        x = np.where(np.isfinite(x) & (x > lo) & (x < hi), x, 0.5 * (lo + hi))
         x = np.where(open_, x, lo)
         g = gap(x)
         above = open_ & (g > 0.0)
@@ -9139,8 +9139,12 @@ def _invert_life(rbd, shares: np.ndarray, kwargs: dict) -> np.ndarray:
         hi = np.where(above, x, hi)
         lo = np.where(below, x, lo)
         # Illinois: halve the end kept twice running.
-        g_lo = np.where(below, g, np.where(above & (side == 1), g_lo / 2, g_lo))
-        g_hi = np.where(above, g, np.where(below & (side == -1), g_hi / 2, g_hi))
+        g_lo = np.where(
+            below, g, np.where(above & (side == 1), g_lo / 2, g_lo)
+        )
+        g_hi = np.where(
+            above, g, np.where(below & (side == -1), g_hi / 2, g_hi)
+        )
         side = np.where(above, 1, np.where(below, -1, side))
         lo = np.where(hit, x, lo)
         hi = np.where(hit, x, hi)
@@ -9149,4 +9153,3 @@ def _invert_life(rbd, shares: np.ndarray, kwargs: dict) -> np.ndarray:
         g_lo == 0.0, lo, np.where(g_hi == 0.0, hi, 0.5 * (lo + hi))
     )
     return np.exp(found)
-

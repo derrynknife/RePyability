@@ -68,7 +68,7 @@ def test_the_quantile_s_ends_and_refusals():
             fixed.qf(0.5)
 
 
-# -- a unit whose life is a diagram --------------------------------------------
+# -- a unit whose life is a diagram -------------------------------------------
 
 WEIBULL = surv.Weibull.from_params([100.0, 2.0])
 ONE = surv.Weibull.from_params([100.0 / math.sqrt(2.0), 2.0])
