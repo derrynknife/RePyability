@@ -553,6 +553,14 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- Changed: money has one home, `repyability.value`: discounting (one
+  convention, continuous at a rate per unit time, with a yearly rate
+  converted to it in one place), escalation and real rates,
+  `ValueSchedule` (still `repyability.ValueSchedule`), the cost
+  categories and the cash-flow table. The diagrams, the maintenance
+  module and the schedule module use it in place of their own copies.
+  No result changes.
+
 - Changed (intentional, the numbers can differ): a shutdown that takes
   no time and has a cost is charged at each of its starts by
   `availability()` and `cost()` (and so `npv_distribution`), as

@@ -14,6 +14,14 @@ schedules and meters read by date) are recorded in
 UC-4 and UC-10 there). The caller (the Reliafy app, or anyone) holds the
 records and decides what "today" is.
 
+**Money has one home**, `repyability.value`: discounting (continuous, at
+a rate per unit of the clock the money falls on; a yearly rate converted
+to it in one place), escalation and real rates, `ValueSchedule`, the
+cost categories and the cash-flow table. The use cases here that value a
+plan (UC-19, UC-21, UC-44, UC-46, UC-57 and the others with a
+`discount_rate`) and the calendar's in `repyability/schedule/README.md`
+all go through it.
+
 ## The use cases, by number
 
 | # | The question here, in model time | State |

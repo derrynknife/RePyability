@@ -170,7 +170,6 @@ from repyability.rbd.results import (
 from repyability.rbd.routes import AnalysisRoute, AnalysisRoutes
 from repyability.rbd.shards import run_shard
 from repyability.rbd.standby_node import StandbyModel
-from repyability.rbd.value_schedule import ValueSchedule
 from repyability.repairable import (
     Repairable,
     minimal_repair_time_to_nth_failure,
@@ -181,6 +180,7 @@ from repyability.stress_strength import (
     stress_strength_over_time,
 )
 from repyability.timelines import Timeline, Timelines
+from repyability.value import ValueSchedule
 
 __all__ = [
     "__version__",
