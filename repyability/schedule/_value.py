@@ -823,6 +823,21 @@ def task_value(
     ends = np.atleast_1d(usage.model_time(list(found.ends), unit=unit))
     ends = np.maximum.accumulate(np.maximum(ends, 0.0))
     due, dates, done_s = _done_instants(task, usage, notes)
+    retire_at = getattr(getattr(does, "plan", None), "retire_at", None)
+    if isinstance(does, Services) and retire_at is not None:
+        # The unit is retired on its plan (on the diagram's clock, the
+        # forecast's calendar time in ``unit``): no service after it.
+        from ._usage import UNITS
+
+        kept = done_s / 3600.0 / UNITS[unit] <= retire_at
+        if not kept.all():
+            notes.append(
+                f"The plan retires the unit {retire_at:g} {unit} into the "
+                f"forecast: the {int((~kept).sum())} service(s) after it "
+                "are not done."
+            )
+            dates = [d for d, k in zip(dates, kept) if k]
+            done_s = done_s[kept]
     starts_s = usage._start_s
     clock_s = usage._start_s + done_s
     scale = usage._unit(unit)

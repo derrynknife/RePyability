@@ -69,7 +69,8 @@ def refusal(rbd) -> Optional[Tuple[str, Tuple[Hashable, ...]]]:
             (),
         )
     for category, node, why in _pricing.unrecorded(rbd):
-        if category == "acquisition":
+        if category in ("acquisition", "salvage"):
+            # (Paid at the start, and credited at the end, by the runs.)
             continue
         whose = (
             "A maintenance group's set-up cost"
@@ -108,12 +109,10 @@ def refusal(rbd) -> Optional[Tuple[str, Tuple[Hashable, ...]]]:
     return None
 
 
-def _require_priceable(rbd, own_end: bool = False) -> None:
-    """Refuse a diagram whose runs cannot be priced; ``own_end``: the
-    valuation credits the components' own salvage and retirement
-    (``_npv.own_end``), else it refuses them."""
-    if not own_end:
-        _npv.refuse_own_end(rbd)
+def _require_priceable(rbd) -> None:
+    """Refuse a diagram whose runs cannot be priced (each valuation of
+    runs credits the components' own salvage and retirement, through
+    ``_npv.own_end``)."""
     found = refusal(rbd)
     if found is not None:
         raise NotImplementedError(found[0])
@@ -316,7 +315,7 @@ def npv_distribution(
     tail = _share(tail, "tail")
     checks.one_of("engine", engine, ("auto", "python", "numba"))
     seed = _seed(seed)
-    _require_priceable(rbd, own_end=True)
+    _require_priceable(rbd)
     return _priced_runs(
         rbd,
         horizon,
@@ -587,7 +586,7 @@ def compare_npv(
     for diagram, which, s in zip(
         (rbd, other), ("this plan", "the other plan"), settings
     ):
-        _require_priceable(diagram, own_end=True)
+        _require_priceable(diagram)
         _require_matched(diagram, which, s[0], state)
     this, that = (
         _priced_runs(

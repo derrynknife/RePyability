@@ -18,9 +18,20 @@ release between minors that only adds (0.19.1).
   credited the salvage at the end, discounted as `expected_npv`
   discounts it (`NPVDistribution.salvage`, `undiscounted_salvage` and
   `retire_at`). A salvage by age of the unit in service, and one unit
-  of several retiring, are still refused, saying what to give;
-  `best_switch_time`, `plan_vs_actual` and `task_value` still refuse a
-  unit's own salvage or retirement. Results without them are unchanged.
+  of several retiring, are still refused, saying what to give.
+  Results without them are unchanged.
+- Added: `best_switch_time`, `plan_vs_actual` and a service's
+  `task_value` take a unit's own `retire_at` and `salvage` too, which
+  they refused. `best_switch_time` scans switch times up to the
+  retirement and credits every candidate's runs the salvage
+  (`SimulatedSwitchTime.salvage`, `undiscounted_salvage`, `retire_at`);
+  `plan_vs_actual` values the plan and the rest from today to the
+  retirement, with the salvage there (by age, from the unit's state
+  today), lists the salvage among what a log does not record, and
+  refuses a `now` past the retirement; `task_value` runs each side to
+  its plan's retirement, credits the salvage in the period it falls
+  in, and does no service after it. Results without them are
+  unchanged.
 - Added: `RepairableRBD(shutdowns=)` takes the site's `Opportunities`
   in model time, so a site's shuts are one record for its parts'
   policies and its diagram: each `Opportunity` is a shutdown of its name

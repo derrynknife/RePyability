@@ -72,24 +72,6 @@ def own_escalation(rbd, escalation):
     return own_terms(rbd, math.inf, None, escalation, None)[1]
 
 
-def refuse_own_end(rbd, method: str = "") -> None:
-    """Refuse a valuation that credits no salvage and runs to its horizon
-    (``best_switch_time``, ``plan_vs_actual``, a service's value) for a
-    diagram whose components carry their own salvage or retirement,
-    which it would leave out."""
-    for node, own in getattr(rbd, "_valuation", {}).items():
-        for key in ("salvage", "retire_at"):
-            if key in own:
-                raise NotImplementedError(
-                    f"Component {node!r} has its own {key!r}, which the "
-                    "valuations of switch times and of logs "
-                    "(best_switch_time, plan_vs_actual, task_value) do "
-                    "not take yet: expected_npv and npv_distribution "
-                    f"credit it. Value a plan without its {key!r} here "
-                    "(and its worth at the end with expected_npv)."
-                )
-
-
 def own_end(rbd, horizon: float, money):
     """Where a valuation of runs ends, and what it credits there, from
     the components' own ``"retire_at"`` and ``"salvage"`` (see
@@ -107,7 +89,8 @@ def own_end(rbd, horizon: float, money):
             raise NotImplementedError(
                 f"Component {node!r} has a salvage by age, which the "
                 "valuations of simulated runs (npv_distribution, "
-                "compare_npv) do not take yet: give it as a number, or "
+                "compare_npv, best_switch_time, a service's task_value) "
+                "do not take yet: give it as a number, or "
                 "value its worth at the end with expected_npv."
             )
     credits = _salvage(rbd, salvage, stop, None, set())
