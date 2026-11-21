@@ -48,6 +48,10 @@
 
 ::: repyability.NPVComparison
 
+::: repyability.DowntimeRiskResult
+
+::: repyability.DowntimeDesign
+
 ::: repyability.NPVUncertainty
 
 ::: repyability.MaintenanceEffect

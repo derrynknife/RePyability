@@ -810,6 +810,29 @@ class UnitPlan:
         diagram (the same arguments, but ``nodes``)."""
         return self.diagram(calendar).optimal_replacement_intervals(**kwargs)
 
+    def least_spend_for_downtime(
+        self, horizon, limit, *, calendar=None, **kwargs
+    ):
+        """The least spend that keeps a bad run's downtime under
+        ``limit``: ``RepairableRBD.least_spend_for_downtime`` of its
+        one-node diagram (the same arguments; a lever names the node
+        ``"unit"``).
+
+        Parameters
+        ----------
+        horizon : float
+            The length of time valued.
+        limit : float
+            The downtime a bad run must stay under.
+        calendar : CalendarContext, optional
+            The calendar the diagram runs on, as for ``diagram``.
+        **kwargs
+            As for ``RepairableRBD.least_spend_for_downtime``.
+        """
+        return self.diagram(calendar).least_spend_for_downtime(
+            horizon, limit, **kwargs
+        )
+
     def optimal_inspection_interval(self, *, calendar=None, **kwargs):
         """The plan's best proof-test interval:
         ``RepairableRBD.optimal_inspection_intervals`` of its one-node
@@ -829,4 +852,5 @@ _PLAN_ROUTES = {
     "failures_by_period": "expected_events_by_window",
     "optimal_replacement_interval": "optimal_replacement_intervals",
     "optimal_inspection_interval": "optimal_inspection_intervals",
+    "least_spend_for_downtime": "least_spend_for_downtime",
 }

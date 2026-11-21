@@ -917,6 +917,8 @@ class _Tally:
         # each simulation's until it is folded in.
         self.system_unplanned: Optional[ExactSum] = None
         self._unplanned_rows: list = []
+        # Each simulation's time down unplanned, in order (as uptimes).
+        self.unplanned_times: list = []
         self.node_uptime = [ExactSum() for _ in range(n)]
         self.node_downtime = [ExactSum() for _ in range(n)]
         self.intersection_uptime = [ExactSum() for _ in range(n)]
@@ -1192,6 +1194,7 @@ class _Tally:
         if self.system_unplanned is None:
             self.system_unplanned = ExactSum()
         self.system_unplanned.add(values)
+        self.unplanned_times.extend(np.ravel(values).tolist())
 
     def unplanned_downtime(self) -> ExactSum:
         """The time the systems were down unplanned, exactly: all their

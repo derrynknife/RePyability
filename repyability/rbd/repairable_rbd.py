@@ -84,6 +84,7 @@ from repyability.rbd import (
     _costs,
     _crews,
     _curves,
+    _downtime_risk,
     _event_loop,
     _first_failure,
     _intervals,
@@ -5004,6 +5005,141 @@ class RepairableRBD(RBD):
             escalation=escalation,
             rates=rates,
             inflation=inflation,
+        )
+
+    def least_spend_for_downtime(
+        self,
+        horizon: float,
+        limit: float,
+        *,
+        level: float = 0.95,
+        objective: str = "var",
+        measure: str = "hours",
+        downtime: str = "all",
+        redundancy: Optional[Mapping] = None,
+        intervals: Optional[Mapping] = None,
+        max_units: Optional[Mapping] = None,
+        budget: Optional[float] = None,
+        value_rate: float = 0.0,
+        confidence: float = 0.95,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        engine: str = "auto",
+    ):
+        """The least spend that keeps a bad run's downtime under
+        ``limit``: "I want to be 95% sure I don't lose more than this on
+        downtime over the horizon; what is the least I need to pay?".
+        Simulated.
+
+        In plain terms: the target is the system's downtime over
+        ``horizon``, in hours or its cost (each hour down at the
+        ``downtime_cost_rate`` and ``value_rate``), all of it or only the
+        unplanned part (``downtime=``). A design meets the limit when an
+        upper confidence bound on the downtime's quantile at ``level``
+        (``objective="var"``, an order statistic, exact) or on the mean of
+        the worst share beyond it (``"cvar"``, approximate) is under it.
+        The levers are each at their own price, and spend is unbounded
+        unless ``budget`` is given: ``redundancy`` (copies of a node in
+        parallel with it, at a price each) and ``intervals`` (a node's
+        preventive interval, through the candidates given, at its tasks'
+        expected cost). The search takes, step by step, the move that
+        lowers the bad run's downtime most per extra spend, every design
+        on the same seed, until one meets the limit; its designs are the
+        frontier. If the levers stop short, ``stopped`` says what stopped
+        them (the budget, their caps, or planned task downtime no lever
+        lowers). Every design reports both its planned and its unplanned
+        downtime, the mean and the quantile at ``level``, in hours and
+        in cost. The guide's "Downtime you can be sure of" explains.
+
+        Parameters
+        ----------
+        horizon : float
+            The length of time valued, more than 0.
+        limit : float
+            The downtime (hours, or cost) a bad run must stay under.
+        level : float, optional
+            The share of runs that must stay under it, by default 0.95.
+        objective : str, optional
+            ``"var"`` (the default) or ``"cvar"``.
+        measure : str, optional
+            ``"hours"`` (the default) or ``"cost"``.
+        downtime : str, optional
+            ``"all"`` (the default) or ``"unplanned"``.
+        redundancy : dict, optional
+            ``{node: price of a copy}``: the nodes that may be given
+            copies in parallel.
+        intervals : dict, optional
+            ``{node: intervals to try, in order}`` for nodes with a
+            preventive task.
+        max_units : dict, optional
+            ``{node: most copies}``; by default none.
+        budget : float, optional
+            The most the levers may cost; by default no bound.
+        value_rate : float, optional
+            The value lost per unit time down, added to the
+            ``downtime_cost_rate`` for ``measure="cost"``, by default 0.
+        confidence : float, optional
+            The level of the bound, by default 0.95.
+        mc_samples : int, optional
+            Each design's runs, by default 2,000.
+        seed : int, optional
+            Seeds every design's runs; by default one is drawn, and kept.
+        engine : str, optional
+            ``"auto"``, ``"python"`` or ``"numba"``, as for
+            ``availability``.
+
+        Returns
+        -------
+        DowntimeRiskResult
+            ``met``, the ``design`` (the cheapest that meets the limit, or
+            the best found), the ``frontier``, and ``floor`` and
+            ``stopped`` when the limit is not met.
+
+        Raises
+        ------
+        ValueError
+            If an argument is invalid, or a lever's node cannot take it.
+        NotImplementedError
+            If a redundancy node is in a maintenance or common-cause
+            group, or as for ``availability``.
+
+        Examples
+        --------
+        A pump down about 5% of the time, 50 hours a repair: a second
+        pump at 5,000 keeps a bad year's downtime under 100 hours:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> pump = RepairableRBD(
+        ...     [("s", "p"), ("p", "t")],
+        ...     {"p": {"reliability": E([1e-3]),
+        ...            "repairability": E([0.02])}},
+        ... )
+        >>> found = pump.least_spend_for_downtime(
+        ...     8760.0, 100.0, redundancy={"p": 5000.0},
+        ...     mc_samples=1000, seed=1,
+        ... )
+        >>> found.met, found.design.copies, found.design.spend
+        (True, {'p': 1}, 5000.0)
+        """
+        return _downtime_risk.least_spend_for_downtime(
+            self,
+            horizon,
+            limit,
+            level=level,
+            objective=objective,
+            measure=measure,
+            downtime=downtime,
+            redundancy=redundancy,
+            intervals=intervals,
+            max_units=max_units,
+            budget=budget,
+            value_rate=value_rate,
+            confidence=confidence,
+            mc_samples=mc_samples,
+            seed=seed,
+            engine=engine,
         )
 
     def best_switch_time(
