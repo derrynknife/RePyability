@@ -39,7 +39,7 @@ from repyability.rbd import _npv, _pricing, _requirements
 from repyability.rbd._model_utils import is_fixed_probability
 from repyability.rbd.node_state import NodeState
 from repyability.rbd.results import ExpectedNPV, PlanVsActual
-from repyability.rbd.value_schedule import ValueSchedule
+from repyability.value.value_schedule import ValueSchedule
 
 
 def _log_state_refusal(rbd, node) -> Optional[str]:

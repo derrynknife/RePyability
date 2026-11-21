@@ -1,21 +1,19 @@
-"""Small helpers the ``RepairableRBD`` modules share: the checks of a
-horizon and a discount rate, a model's mean, survival and cumulative
-distribution as arrays, a constant failure rate, the common period of
-inspection intervals, the repair crews' salaries, and the shapes results
-take.
+"""Small helpers the ``RepairableRBD`` modules share: the check of a
+horizon (the discount checks are ``repyability.value``'s), a model's
+mean, survival and cumulative distribution as arrays, a constant
+failure rate, the common period of inspection intervals, the repair
+crews' salaries, and the shapes results take.
 """
 
 import functools
 import math
 import numbers
-import warnings
 import weakref
 from fractions import Fraction
 from typing import (
     Any,
     Callable,
     Iterable,
-    List,
     Optional,
 )
 
@@ -27,9 +25,14 @@ from repyability.rbd._model_utils import (
 )
 from repyability.utils.checks import (
     number_or_nan,
-    real_array,
 )
-from repyability.utils.wrappers import outside_level
+from repyability.value import _rates
+
+# The discount checks are the money module's (``repyability.value``),
+# kept under the names the diagram's modules import.
+_discount_rate = _rates.discount_rate
+_horizons = _rates.horizons
+_present_horizon = _rates.present_horizon
 
 
 def _keeps_virtual_age(rbd, node) -> bool:
@@ -251,91 +254,6 @@ def _horizon(horizon) -> float:
             f"horizon must be a finite, non-negative number, got {horizon!r}."
         )
     return value
-
-
-def _discount_rate(discount_rate) -> float:
-    """``discount_rate`` as a float: a ValueError unless it is a finite,
-    non-negative number (#184)."""
-    number = isinstance(
-        discount_rate, (int, float, np.integer, np.floating)
-    ) and not isinstance(discount_rate, bool)
-    rate = float(discount_rate) if number else float("nan")
-    if not (np.isfinite(rate) and rate >= 0.0):
-        raise ValueError(
-            "discount_rate must be a finite, non-negative number (a "
-            "continuous rate per unit time of the component models), got "
-            f"{discount_rate!r}."
-        )
-    return rate
-
-
-def _horizons(horizon, rate: float) -> np.ndarray:
-    """``horizon``, a number or an array of them, as an array of
-    non-negative floats: finite, unless costs are discounted at ``rate``
-    (#231), where an endless horizon is worth ``1 / rate`` of a steady
-    cost rate. Else a ValueError."""
-    try:
-        values = real_array(horizon, "horizon")
-    except (TypeError, ValueError):
-        values = np.array(np.nan)
-    if values.size and np.all(values >= 0.0) and np.all(values < np.inf):
-        return values
-    if values.size and np.all(values >= 0.0):
-        if rate > 0.0:
-            return values
-        raise ValueError(
-            "horizon must be finite without a discount_rate: an undiscounted "
-            f"cost over an endless horizon is endless; got {horizon!r}."
-        )
-    raise ValueError(
-        "horizon must be a finite, non-negative number (or an array of "
-        f"them; inf with a discount_rate), got {horizon!r}."
-    )
-
-
-#: A discount rate times the shortest of the components' mean lives
-#: beyond which their failures' costs are discounted to almost nothing
-#: (``exp(-20)``, 2e-9), and times a horizon beyond which the whole time
-#: scale is: a rate given per year with the models in hours, say (#231).
-#: A long horizon is no mistake in itself.
-_DISCOUNTED_AWAY = 20.0
-
-
-_HORIZON_AWAY = 1000.0
-
-
-def _present_horizon(
-    horizons: np.ndarray,
-    rate: float,
-    lives: Callable[[], List[float]] = list,
-) -> np.ndarray:
-    """What a unit cost rate over ``[0, horizon)`` is worth at the start,
-    discounted continuously at ``rate`` per unit time (#184): ``(1 -
-    exp(-rate * horizon)) / rate``, the horizon itself undiscounted, and
-    ``1 / rate`` for an endless one; for each of ``horizons``. Warns where
-    the rate discounts the costs away (#231): times the shortest of the
-    components' mean ``lives`` more than ``_DISCOUNTED_AWAY``, or times a
-    horizon more than ``_HORIZON_AWAY``."""
-    if rate == 0.0:
-        return horizons
-    known = [life for life in lives() if 0.0 < life < math.inf]
-    finite = horizons[np.isfinite(horizons)]
-    span, what = 0.0, ""
-    if known and rate * min(known) > _DISCOUNTED_AWAY:
-        span, what = min(known), "the components' shortest mean life"
-    elif finite.size and rate * float(finite.max()) > _HORIZON_AWAY:
-        span, what = float(finite.max()), "the horizon"
-    if what:
-        warnings.warn(
-            f"discount_rate {rate:g} discounts the costs at {what} "
-            f"({span:g}) by a factor of exp(-{rate * span:.3g}), to "
-            "almost nothing: it is a continuous rate per unit time of the "
-            "component models. For an annual rate i with models in hours, "
-            "give math.log(1 + i) / 8760 (7% a year: "
-            f"{math.log(1.07) / 8760:.3g} an hour).",
-            stacklevel=outside_level(),
-        )
-    return -np.expm1(-rate * horizons) / rate
 
 
 #: How closely a discounted expected cost from new is worked out (#231):

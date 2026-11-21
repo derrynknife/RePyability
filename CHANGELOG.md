@@ -26,6 +26,31 @@ release between minors that only adds (0.19.1).
   (`rate_basis`, `inflation`, `escalation`, `value_schedule`). With a
   number and no growth every value is unchanged.
 
+- Added: maintenance that does harm (UC-62 of the maintenance README).
+  A `"preventive"` spec's `"restoration"` takes a restoration factor `q`
+  above 1, a task that leaves the unit older than it was (Kijima II with
+  `q = 1.1` takes the virtual age to `1.1 (v + x)`), where it was held
+  to [0, 1]; the lever `preventive.restoration.q` ranges from 0 up. A
+  repair's `q` stays in [0, 1], and its refusal now says only a task's
+  may be above 1. `q = 1` gives the failures of no service; with
+  `compare_npv` against the plan without the task, a plan shows whether
+  a task is worth stopping. Simulated as any restoration (in Python).
+
+- Added: `shock_nodes(edges, nodes, members, rate, p, lethal_rate)`,
+  shocks that fail each member they reach with a probability (the
+  binomial failure rate model), for a `NonRepairableRBD` whose members
+  have any lives, each its own, at their own ages. Shocks at a constant
+  rate that fail each of `m` members independently with probability `p`
+  are an independent cause for each set of members, at rate `rate p^j
+  (1 - p)^(m - j)` for a set of `j`; the function writes each into the
+  diagram as an exponential node after every member it fails (one
+  component in several places), so every analysis takes them as it
+  takes any repeated node: the reliability, MTTF, B-lives and importance
+  exactly, given each member's age too, and the simulations. For
+  exponential members the values are the alpha-factor group's by rate
+  (to 1e-12). In the guide: "Common causes with wear-out lives and
+  ages".
+
 - Added: common causes for members that wear out and have aged. The
   condition-based methods (`sf_given_state`, `remaining_life`,
   `mean_residual_life`, `importances_given_state`) take a common-cause
@@ -581,6 +606,14 @@ release between minors that only adds (0.19.1).
   (exact by default, simulation on request).
 
 ### Changed
+
+- Changed: money has one home, `repyability.value`: discounting (one
+  convention, continuous at a rate per unit time, with a yearly rate
+  converted to it in one place), escalation and real rates,
+  `ValueSchedule` (still `repyability.ValueSchedule`), the cost
+  categories and the cash-flow table. The diagrams, the maintenance
+  module and the schedule module use it in place of their own copies.
+  No result changes.
 
 - Changed (intentional, the numbers can differ): a shutdown that takes
   no time and has a cost is charged at each of its starts by

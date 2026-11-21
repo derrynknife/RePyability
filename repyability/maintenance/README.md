@@ -14,6 +14,14 @@ schedules and meters read by date) are recorded in
 UC-4 and UC-10 there). The caller (the Reliafy app, or anyone) holds the
 records and decides what "today" is.
 
+**Money has one home**, `repyability.value`: discounting (continuous, at
+a rate per unit of the clock the money falls on; a yearly rate converted
+to it in one place), escalation and real rates, `ValueSchedule`, the
+cost categories and the cash-flow table. The use cases here that value a
+plan (UC-19, UC-21, UC-44, UC-46, UC-57 and the others with a
+`discount_rate`) and the calendar's in `repyability/schedule/README.md`
+all go through it.
+
 ## The use cases, by number
 
 | # | The question here, in model time | State |
@@ -53,6 +61,7 @@ records and decides what "today" is.
 | UC-56 | At each planned outage, also replace the parts close enough to their own replacement, since the plant is down anyway: what the scope adds, by outage, and what the plan then costs | **Built** (simulated): a shutdown's `"opportunistic"`, the count by outage in `AvailabilityResult.outage_jobs`; the exact methods refuse, naming the simulation |
 | UC-57 | What a plan is worth when the price it earns steps up, its costs escalate at their own rates, and the rate is real or nominal; and the same escalation on dates | **Built**: `expected_npv(value_rate=ValueSchedule(...), escalation=, rates=, inflation=)`; `escalation=` beside `discount=` in `repyability.schedule` |
 | UC-58 | An outage's overhaul that leaves a part as if a given age, not by a Kijima factor | **Built** (simulated): a `"preventive"` spec's `"restore_to"`; `restore_to=0` is a renewal (exact where renewals are) |
+| UC-62 | A service that does harm: a fitted restoration factor above 1, each service leaving the unit older than it was. What does it do to the failures, and is the service worth stopping? | **Built** (simulated): a `"preventive"` `"restoration"` with `q` above 1; `compare_npv` against no service |
 | UC-59 | A part renewed at a short stop every month and again at the long yearly overhaul, each renewal as long as its shut | **Built**: a `"preventive"` spec's `"shutdown"` as a list of shutdowns, exact over a horizon |
 | UC-60 | A part upgraded in year 3 and block-replaced before and after, the new model on the same interval | **Built**: an `"upgrade"` with a `"preventive"` block policy, numerical over a horizon and simulated |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
@@ -2312,6 +2321,63 @@ answers back into dates is Reliafy's too.)
   runs every analysis against its route.
 - **Learned / open questions:** an age that is a function of the age at
   the outage was left out; Kijima II is the proportional one.
+
+### UC-62: "Our 250-hour service is invasive: the fit of the pump's history says each one leaves it older than it was (Kijima II, q = 1.1). What does that do to the failures, and is the service worth stopping?"
+
+**Who asks.** A reliability engineer whose fitted restoration factor
+(surpyval's `GeneralizedRenewal` on the pump's repair and service history)
+came out above 1: services that disturb a working unit (a seal reseated,
+a bearing reassembled) and make an early failure more likely.
+
+**What they know.** The pump's life (Weibull, scale 1,000 h, shape 2.5),
+replaced at a failure for 400; the service every 250 h, 4 h long, 20 a
+time; the fitted factor, Kijima II, `q = 1.1`.
+
+**What they want back.** The failures with and without the service, and
+the value of the service against not doing it, at 7% a year over a year.
+
+**How it is solved.** A `"preventive"` task with a `"restoration"` whose
+`q` is above 1: Kijima's definitions hold for any `q` from 0, a service
+after an operating time `x` since the last action taking the virtual age
+`v` to `v + q x` (Kijima I) or `q (v + x)` (Kijima II). Below 1 the task
+takes age away; at 1 it leaves the unit as old as it was; above 1 it adds
+age. Only a task may do that: a repair's `q` stays in [0, 1], as a
+repair restores a failed unit. The simulation takes it as it takes any
+restoration (the compiled engine hands a restoring task to the Python
+loop, as before), and `compare_npv` values the plan with the service
+against the plan without it, run by run on the same random numbers.
+
+**The hand-worked answer.** With no failure, tasks at 250, 500 and 750 h
+leave the virtual age at 275, 577.5 and 910.25 h under Kijima II with
+`q = 1.1` (275, 550 and 825 h under Kijima I), against 250, 500 and 750 at
+`q = 1`. The chance of no failure by 1,000 h is `exp(-sum of H over the
+four pieces)`, `H(t) = (t / 1000)^2.5`: 0.295142 under Kijima II and
+0.326487 under Kijima I with `q = 1.1`, and `exp(-1) = 0.367879` at
+`q = 1`, which is the pump with no service at all (each piece of `H`
+continues where the last stopped). At `q = 0.5` it is 0.703789 (II) and
+0.618741 (I): a good service.
+
+Simulated (4,000 runs, seed 8, instant repairs, services in no time),
+the failures over 3,000 h are 2.974 at `q = 1` (the renewal function
+without service: 2.973), and under Kijima II 3.233 at 1.1 and 3.488 at
+1.2 (standard errors 0.013). With the 400 failure cost, the 20 service
+and 4 h service outages, over a year at 7% (4,000 runs, seed 3), the
+service at `q = 1.1` is worth -918.97 (standard error 11.67) against no
+service, worse in 87% of the runs: worth stopping. At `q = 0.5` it is
+worth +1,528.85 (standard error 13.00).
+
+**Checks.** At `q = 1` the chance of surviving the pieces equals the
+pump without service, exactly, and Kijima I and II give the same runs to
+the bit (`v + 1 x` and `1 (v + x)` are the same number); the survival
+chance with `q = 1.1` against the closed form above; failures and cost
+rise with `q` above 1; a repair's `q` above 1 is refused, saying only a
+task's may be.
+
+**What was learned.** Nothing new was needed in the engines: Kijima's
+arithmetic was already right for any `q`; only the check on the spec
+held it to [0, 1]. A factor above 1 is how harmful or invasive
+maintenance is modelled, and the NPV comparison is how a plan shows that
+a task is worth stopping.
 
 ### UC-59: "A stop every month renews the bearing; a long overhaul every year renews the pump and the bearing. What is the plan worth over two years, and how available is the line?"
 

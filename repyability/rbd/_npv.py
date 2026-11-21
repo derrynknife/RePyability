@@ -18,67 +18,16 @@ from repyability.rbd._common import (
 )
 from repyability.rbd._tally import _CATEGORIES
 from repyability.rbd.results import ExpectedNPV
-from repyability.rbd.value_schedule import ValueSchedule, value_of
 from repyability.utils import checks
-
-#: The streams ``escalation`` names besides the cost categories and the
-#: components.
-_STREAMS = ("value", "salvage")
+from repyability.value import _escalation as _money
+from repyability.value._escalation import STREAMS as _STREAMS  # noqa: F401
+from repyability.value._escalation import inflation as _inflation
+from repyability.value.value_schedule import ValueSchedule, value_of
 
 
 def _escalation(rbd, escalation) -> Dict[Any, float]:
-    """``escalation`` checked: a dict of a growth rate (a continuous rate
-    per unit time, of either sign) by cost category, component,
-    ``"value"`` or ``"salvage"``."""
-    if escalation is None:
-        return {}
-    if not isinstance(escalation, dict):
-        raise ValueError(
-            "escalation must be a dict of a growth rate per unit time by "
-            "cost category, component, 'value' or 'salvage' (e.g. "
-            f"{{'repair': 0.03 / 8760}}); got {escalation!r}."
-        )
-    out: Dict[Any, float] = {}
-    for key, rate in escalation.items():
-        if not (
-            key in rbd.components or key in _CATEGORIES or key in _STREAMS
-        ):
-            raise ValueError(
-                f"escalation names {key!r}, which is no component, cost "
-                f"category ({', '.join(_CATEGORIES)}), 'value' or "
-                "'salvage'."
-            )
-        number = checks.number_or_nan(rate)
-        if not math.isfinite(number):
-            raise ValueError(
-                f"The escalation of {key!r} must be a finite growth rate "
-                "per unit time of the models (continuous; 3% a year with "
-                f"models in hours is math.log(1.03) / 8760); got {rate!r}."
-            )
-        out[key] = number
-    return out
-
-
-def _inflation(inflation, rates: str) -> float:
-    """The continuous inflation per unit time added to every rate: with
-    ``rates="real"``, ``inflation`` (0 when not given); refused with
-    ``"nominal"``, whose rates have it already."""
-    checks.one_of("rates", rates, ("nominal", "real"))
-    if inflation is None:
-        return 0.0
-    if rates == "nominal":
-        raise ValueError(
-            'inflation is for rates="real": nominal rates and growths '
-            'have it in them already. Give rates="real" with real '
-            "rates, or leave inflation out."
-        )
-    number = checks.number_or_nan(inflation)
-    if not math.isfinite(number):
-        raise ValueError(
-            "inflation must be a finite continuous rate per unit time of "
-            f"the models; got {inflation!r}."
-        )
-    return number
+    """``escalation`` checked for ``rbd``'s components."""
+    return _money.escalation(rbd.components, escalation)
 
 
 def _number(value, name: str, strict: bool) -> float:
@@ -131,10 +80,7 @@ class Money:
 
     def growth(self, *keys) -> float:
         """The growth of a stream, by the first of ``keys`` named."""
-        for key in keys:
-            if key in self.escalation:
-                return self.escalation[key] + self.lift
-        return self.lift
+        return _money.growth(self.escalation, self.lift, *keys)
 
     def steps(self, stop: float):
         """The value earned as steps before ``stop``: their starts, ends

@@ -181,19 +181,19 @@ def best_switch_time(
     _require_scheduled(rbd)
     _npv_runs._require_priceable(rbd)
     rows = _rows(rbd, covariates)
-    rates = np.atleast_1d(checks.real_array(value_rates, "value_rates"))
+    earned = np.atleast_1d(checks.real_array(value_rates, "value_rates"))
     if (
-        rates.shape != (2,)
-        or not np.all(np.isfinite(rates))
-        or np.any(rates < 0.0)
+        earned.shape != (2,)
+        or not np.all(np.isfinite(earned))
+        or np.any(earned < 0.0)
     ):
         raise ValueError(
             "value_rates must be two finite numbers, at least 0: what the "
             "system earns per unit of time up before the switch, and "
             f"after; got {value_rates!r}."
         )
-    rates = rates.astype(float)
-    if not np.any(rates):
+    earned = earned.astype(float)
+    if not np.any(earned):
         _requirements._require_costs(rbd)
     money = _npv.Money(
         rbd, discount_rate, 1.0, escalation, rates_basis, inflation
@@ -216,7 +216,7 @@ def best_switch_time(
         if s not in valued:
             twin = _twin(rbd, rows, s, H)
             samples, _, _, used = _runs(
-                twin, H, s, rates, money, n, seed, engine, state
+                twin, H, s, earned, money, n, seed, engine, state
             )
             valued[s] = (samples, used)
         return valued[s][0]
@@ -253,7 +253,7 @@ def best_switch_time(
         npvs=npvs,
         horizon=H,
         discount_rate=money.given_rate,
-        value_rates=[float(v) for v in rates],
+        value_rates=[float(v) for v in earned],
         n_simulations=n,
         seed=seed,
         engine=valued[best_s][1] or engine,
