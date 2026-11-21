@@ -1954,7 +1954,9 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     component = rbd.components[node]
     schedule = rbd._preventive[node]
     if schedule.policy == "block" and (
-        schedule.times is not None or schedule.shuts is not None
+        schedule.times is not None
+        or schedule.shuts is not None
+        or schedule.upgrade_at is not None
     ):
         # Its own plan's times, a shutdown's given times, or the starts of
         # several shutdowns.
@@ -2162,6 +2164,13 @@ def _plan_times(schedule, horizon: float):
     times, each its ``duration``; at several shutdowns (``shuts``), the
     starts of each in order up to the first after ``horizon`` (enough for
     the stretches that cover it), each its own shut's."""
+    if schedule.upgrade_at is not None:
+        # Block replacement on its interval, up to the first time after
+        # the horizon, and at the upgrade.
+        T = float(schedule.interval)
+        last = math.floor(max(horizon, 0.0) / T) + 1
+        times = np.union1d(T * np.arange(1, last + 1), [schedule.upgrade_at])
+        return times, [schedule.duration] * len(times)
     if schedule.shuts is None:
         times = np.asarray(schedule.times, dtype=float)
         return times, [schedule.duration] * len(times)

@@ -54,6 +54,7 @@ records and decides what "today" is.
 | UC-57 | What a plan is worth when the price it earns steps up, its costs escalate at their own rates, and the rate is real or nominal; and the same escalation on dates | **Built**: `expected_npv(value_rate=ValueSchedule(...), escalation=, rates=, inflation=)`; `escalation=` beside `discount=` in `repyability.schedule` |
 | UC-58 | An outage's overhaul that leaves a part as if a given age, not by a Kijima factor | **Built** (simulated): a `"preventive"` spec's `"restore_to"`; `restore_to=0` is a renewal (exact where renewals are) |
 | UC-59 | A part renewed at a short stop every month and again at the long yearly overhaul, each renewal as long as its shut | **Built**: a `"preventive"` spec's `"shutdown"` as a list of shutdowns, exact over a horizon |
+| UC-60 | A part upgraded in year 3 and block-replaced before and after, the new model on the same interval | **Built**: an `"upgrade"` with a `"preventive"` block policy, numerical over a horizon and simulated |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -2897,6 +2898,48 @@ answers back into dates is Reliafy's too.)
   - A salvage by age is a plain component's from new; any other takes a
     number.
   - A retirement is the system's; a component's is not said yet.
+
+### UC-60: "The pump is block-replaced every 4,000 hours. In year 3 we fit a better model and keep replacing it on the same interval. What is that worth over eight years?"
+
+- **Status:** built: a component spec's `"upgrade"` with a
+  `"preventive"` of `"policy": "block"` on its own interval.
+- **Who asks, and why:** the capital planner whose upgrade does not end
+  the maintenance plan: the new model is serviced as the old one was.
+- **What they know:** a pump (Weibull 6,000 h and 2.0; repairs
+  exponential, 24 h mean, 5,000 each), replaced every 4,000 h in 12 h
+  for 2,500; 400 an hour down; an upgrade at 26,280 h (year 3) to a
+  Weibull of 12,000 h and 2.0, for 40,000; 8% a year over 8 years.
+- **What they want back:** the plan's cost and value with and without
+  the upgrade, and how sure the difference is.
+- **How it is solved:** the upgrade is one more replacement of the
+  block policy, at its time, at the policy's cost and in its time, beside
+  the capital cost; the units put into service from it have the new
+  life. Over a horizon its block times and the upgrade are a plan's
+  times (UC-51's stretches, the lives switching at the upgrade); the
+  simulation draws each life from the life in service when it starts
+  (UC-52). An upgrade at a block time is that block replacement. The
+  calendar counts from now (a `since_scheduled` is refused), and there
+  is no long run (refused, naming the values over a horizon).
+- **Today (by hand, before it was built):** an upgrade refused any task
+  of its own; a plan of `replace_at` times with a second diagram for the
+  new life, joined by hand. A memoryless unit's chain between
+  replacements, its rate changing at the upgrade, is the test's
+  reference. As built: kept, 220,736.8 undiscounted and 163,830.7
+  discounted, availability 0.99482; upgraded, 223,084.5 and 171,592.5,
+  0.99571. `compare_npv(kept, mc_samples=4000, seed=1)` gives the
+  upgrade -7,251 ± 308 (-7,761.8 exact): it does not pay over 8 years.
+- **Checks:** `test_upgrade_maintenance.py`: an upgrade to the same life
+  at a block time is block replacement (curve and events to 1e-10; its
+  NPV equals the same plan of block times to 1e-10, and block
+  replacement's to 2.5e-10, integrated on other pieces); between block
+  times, one more replacement (a plan at the merged times, to 1e-10); a
+  memoryless unit against its chain; the simulation from new and from
+  an age (20,000 runs, four standard errors); the refusals. The
+  catalogue's "upgraded at a time, block-replaced".
+- **Learned / open questions:** age replacement and tests on an upgraded
+  part, its long run after the upgrade, its spares and `plan_vs_actual`,
+  and retiring a single part (`retire_at={node: t}`) are left for a
+  later use case.
 
 ### UC-53: "The trip is tested at 6 and 12 months and then at 2 years, not on one interval. Over the next 3 years, what will each test find, how long is the trip failed, and what does the plan cost against never testing it?"
 

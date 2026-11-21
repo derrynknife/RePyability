@@ -672,6 +672,11 @@ class _Preventive(NamedTuple):
     #: shortest of theirs and ``duration`` the longest, which only size
     #: the simulation's streams; None at one shutdown or none.
     shuts: Optional[Tuple[Tuple[Any, Any], ...]] = None
+    #: Under ``"block"`` on its own interval, for an upgraded component
+    #: (see ``_Upgrade``): the upgrade's time, at which the unit is
+    #: replaced as at a block time (at its cost and in its time); None
+    #: for none.
+    upgrade_at: Optional[float] = None
 
     @property
     def plan(self) -> Optional[Tuple[float, ...]]:
@@ -683,7 +688,14 @@ class _Preventive(NamedTuple):
     def due(self, renewed: float) -> float:
         """When the next preventive action (under ``"condition"``, the next
         inspection) falls, for a unit put into service as new at
-        ``renewed``, or inspected then."""
+        ``renewed``, or inspected then; an upgrade's time (``upgrade_at``)
+        is one such action."""
+        due = self._due(renewed)
+        if self.upgrade_at is not None and renewed < self.upgrade_at:
+            return min(due, self.upgrade_at)
+        return due
+
+    def _due(self, renewed: float) -> float:
         if self.policy == "age":
             return renewed + self.interval
         if self.policy == "calendar":

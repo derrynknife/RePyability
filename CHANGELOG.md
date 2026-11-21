@@ -12,6 +12,15 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: block replacement on an upgraded component (UC-60 of the
+  maintenance README). A component with an `"upgrade"` may have a
+  `"preventive"` of `"policy": "block"` on its own interval: it is
+  replaced every interval with the life in service, and at the
+  upgrade's time as at a block time (at its cost and in its time,
+  beside the capital cost). Numerical over a horizon and simulated;
+  other tasks with an upgrade are still refused, now saying block
+  replacement is taken.
+
 - Added: an upgraded component is simulated (UC-52 of the maintenance
   README). `availability`, `cost`, `simulate_timelines`,
   `npv_distribution` and `compare_npv` take a component's `"upgrade"`:
