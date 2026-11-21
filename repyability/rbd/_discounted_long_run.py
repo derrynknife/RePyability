@@ -213,37 +213,32 @@ def node_eac(rbd, node: Hashable, rate: float) -> float:
     """A component's own equivalent annual cost at ``rate`` (see the
     module docstring): its failures', its replacements' at an age, its
     tests' and its own downtime's."""
-    from repyability.maintenance._options import _discounted_length, _reach
+    from repyability.maintenance._options import cycle_eac
 
     if node in rbd._inspection:
         return _tested_eac(rbd, node, rate)
     costs = rbd.costs.get(node, {})
     component = rbd.components[node]
     schedule = rbd._preventive.get(node)
-    survival = component.reliability_function
     age = math.inf if schedule is None else float(schedule.interval)
-    if math.isinf(age):
-        kept = 0.0
-        up = _discounted_length(component, 0.0, _reach(component, rate), rate)
-    else:
-        kept = math.exp(-rate * age) * float(np.ravel(survival(age))[0])
-        up = _discounted_length(component, 0.0, age, rate)
-    failed = max(1.0 - kept - rate * up, 0.0)
-    repair = _discounted_time(component.time_to_replace, rate)
-    planned = (
-        0.0 if schedule is None else _discounted_time(schedule.duration, rate)
+    return cycle_eac(
+        component,
+        age,
+        rate,
+        failure_cost=sum(
+            _mean_cost(costs[key])
+            for key in rbd.PER_FAILURE_COST_KEYS
+            if key in costs
+        ),
+        planned_cost=_mean_cost(costs.get("preventive_cost", 0.0)),
+        downtime=costs.get("downtime_cost", 0.0),
+        repair=_discounted_time(component.time_to_replace, rate),
+        planned=(
+            0.0
+            if schedule is None
+            else _discounted_time(schedule.duration, rate)
+        ),
     )
-    per_failure = sum(
-        _mean_cost(costs[key])
-        for key in rbd.PER_FAILURE_COST_KEYS
-        if key in costs
-    )
-    preventive = _mean_cost(costs.get("preventive_cost", 0.0))
-    down = costs.get("downtime_cost", 0.0)
-    cycle = failed * (per_failure + down * repair) + kept * (
-        preventive + down * planned
-    )
-    return cycle / (up + failed * repair + kept * planned)
 
 
 def system_terms(rbd, availability: float, value_rate: float) -> float:

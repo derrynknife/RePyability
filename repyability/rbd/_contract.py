@@ -179,6 +179,12 @@ def _diagram(document, what: str):
 
     if not isinstance(document, dict):
         _fail(f"{what} must be a diagram's to_dict(), an object.")
+    if document.get("kind") == "unit_plan":
+        # A unit's plan, valued as its one-node diagram (UC-65 of the
+        # maintenance README).
+        from repyability.maintenance._plan import UnitPlan
+
+        return UnitPlan.from_dict(document).diagram()
     rbd = RepairableRBD.from_dict(document)
     if not isinstance(rbd, RepairableRBD):
         _fail(f"{what} must be a RepairableRBD: the NPV analyses are its.")
@@ -227,7 +233,9 @@ def value_plan(spec: dict) -> dict:
 
     In plain terms: "what is this plan worth?" in one call, for an agent
     or a service. The request names a diagram as
-    [`to_dict`][repyability.RepairableRBD.to_dict] saves it, one of the
+    [`to_dict`][repyability.RepairableRBD.to_dict] saves it (or a unit's
+    plan as [`UnitPlan.to_dict`][repyability.UnitPlan.to_dict] saves it,
+    valued as its one-node diagram), one of the
     NPV analyses (``"expected_npv"``, ``"expected_npv_uncertainty"``,
     ``"npv_distribution"``, ``"compare_npv"`` with the ``"other"`` plan,
     or ``"plan_vs_actual"``), and that method's inputs by name, as plain

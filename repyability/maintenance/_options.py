@@ -709,19 +709,59 @@ class AgeReplacementValue(_ResultMapping):
     cycle_cost: float
 
 
+def _cycle(part, age: float, rate: float):
+    """A new part's first cycle under replacement at ``age`` (``inf``:
+    run to failure), discounted at ``rate``: the chance of reaching the
+    planned replacement, discounted to then (``kept``), of failing before
+    it, discounted (``failed``: with ``M`` the discounted mean time up,
+    ``1 - kept - rate * M``, by parts), and ``M`` itself."""
+    if math.isinf(age):
+        kept = 0.0
+        length = _discounted_length(part, 0.0, _reach(part, rate), rate)
+    else:
+        kept = math.exp(-rate * age) * float(
+            np.ravel(part.reliability_function(age))[0]
+        )
+        length = _discounted_length(part, 0.0, age, rate)
+    failed = max(1.0 - kept - rate * length, 0.0)
+    return kept, failed, length
+
+
 def _cycle_value(part, age: float, rate: float, cp: float, cu: float):
     """A new part's first cycle under replacement at ``age``: its present
     cost (``cp`` at ``age``, ``cu`` at a failure first, each discounted to
     when it falls) and its discounted length ``M(age)``."""
-    # The chance of reaching the planned replacement, discounted to then
-    # (kept), and of failing before it, discounted (failed): with M the
-    # discounted mean time up, 1 - kept - rate * M, by parts.
-    kept = math.exp(-rate * age) * float(
-        np.ravel(part.reliability_function(age))[0]
-    )
-    length = _discounted_length(part, 0.0, age, rate)
-    failed = max(1.0 - kept - rate * length, 0.0)
+    kept, failed, length = _cycle(part, age, rate)
     return cu * failed + cp * kept, length
+
+
+def cycle_eac(
+    part,
+    age: float,
+    rate: float,
+    *,
+    failure_cost: float,
+    planned_cost: float = 0.0,
+    downtime: float = 0.0,
+    repair: float = 0.0,
+    planned: float = 0.0,
+) -> float:
+    """The equivalent annual cost of replacing ``part`` at ``age``
+    (``inf``: running it to failure) at the continuous discount rate
+    ``rate`` (0: the long-run cost rate), over its renewal cycle (Fox,
+    1966): the one definition, which a part alone and a diagram's
+    component both take.
+
+    Every category of a unit's own: ``failure_cost`` at each failure,
+    ``planned_cost`` at each planned replacement, and its own
+    ``downtime`` per unit of time over the discounted repair time
+    ``repair`` and the discounted time of the planned work ``planned``,
+    which lengthen the cycle (0 for work in no time)."""
+    kept, failed, length = _cycle(part, age, rate)
+    cycle = failed * (failure_cost + downtime * repair) + kept * (
+        planned_cost + downtime * planned
+    )
+    return cycle / (length + failed * repair + kept * planned)
 
 
 def age_replacement_value(
@@ -824,9 +864,8 @@ def discounted_run_to_failure(part, rate: float, cu: float) -> float:
         )
         kept = np.exp(-rate * ages) * R
         length = float(np.sum(np.diff(ages) * (kept[1:] + kept[:-1]) / 2.0))
-    else:
-        length = _discounted_length(part, 0.0, upper, rate)
-    return cu * max(1.0 - rate * length, 0.0) / length
+        return cu * max(1.0 - rate * length, 0.0) / length
+    return cycle_eac(part, math.inf, rate, failure_cost=cu)
 
 
 def discounted_optimum(part, rate: float, cp: float, cu: float):
@@ -885,8 +924,7 @@ def discounted_optimum(part, rate: float, cp: float, cu: float):
             )
             return float(_discounted_rates(cp, cu, grid, S, rate)[-1])
         with np.errstate(all="ignore"):
-            cycle, length = _cycle_value(part, t, rate, cp, cu)
-        return cycle / length
+            return cycle_eac(part, t, rate, failure_cost=cu, planned_cost=cp)
 
     lo, hi = float(ages[max(i - 1, 1)]), float(ages[min(i + 1, ages.size - 1)])
     best_age, best = float(ages[i]), eac(float(ages[i]))

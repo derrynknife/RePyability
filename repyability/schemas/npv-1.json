@@ -5,7 +5,7 @@
   "description": "A request to value a plan (value_plan) and its answer.",
   "$defs": {
     "diagram": {
-      "description": "A RepairableRBD as its to_dict() saves it.",
+      "description": "A RepairableRBD as its to_dict() saves it, or a UnitPlan as its to_dict() saves it (valued as its one-node diagram, UnitPlan.diagram()).",
       "type": "object"
     },
     "number": {
