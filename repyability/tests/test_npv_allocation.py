@@ -222,15 +222,26 @@ def test_the_arguments_are_checked():
         allocate(HORIZON, objective="npv", value_rate=-1.0)
 
 
-def test_crews_keep_their_refusal():
-    crewed = RepairableRBD(
-        [("s", "a"), ("a", "b"), ("b", "t")],
+def test_a_crew_for_every_job_is_the_allocation_without_crews():
+    """Crews are allocated (test_crew_allocation.py); with a crew for
+    every component no job waits, so the NPV search is the one with no
+    crews at all."""
+    edges = [("s", "a"), ("a", "b"), ("b", "t")]
+    plain = RepairableRBD(
+        edges,
         {"a": part("a"), "b": part("b")},
         downtime_cost_rate=DOWNTIME,
-        repair_crews=1,
     )
-    with pytest.raises(NotImplementedError, match="crew"):
-        crewed.allocate_redundancy(HORIZON, objective="npv", value_rate=5.0)
+    crewed = RepairableRBD(
+        edges,
+        {"a": part("a"), "b": part("b")},
+        downtime_cost_rate=DOWNTIME,
+        repair_crews=2,
+    )
+    free = plain.allocate_redundancy(HORIZON, objective="npv", value_rate=5.0)
+    held = crewed.allocate_redundancy(HORIZON, objective="npv", value_rate=5.0)
+    assert held.units == free.units
+    assert held.npv == pytest.approx(free.npv, rel=1e-9)
 
 
 def test_the_result_goes_through_json():
