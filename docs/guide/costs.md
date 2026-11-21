@@ -51,6 +51,14 @@ plant = RepairableRBD(
 plant.has_costs   # True
 ```
 
+The two downtime costs add up: a component's `downtime_cost` is charged
+whenever it is down, and `downtime_cost_rate` whenever the system is, so
+an hour a series component is down costs both. With
+`"downtime_cost": 500.0` on a series pump and `downtime_cost_rate=1000.0`,
+that hour costs 1,500. Price lost production in one place: put it in
+`downtime_cost_rate`, and keep `downtime_cost` for what the component's
+own outage costs (a hired stand-by unit, a penalty per leg).
+
 Every cost defaults to 0, so any subset can be priced. Costs are
 undiscounted (but for the [total cost](#discounting)'s optional discount
 rate), and every failure is repaired at the same price (preventive

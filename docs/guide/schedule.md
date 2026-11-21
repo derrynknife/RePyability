@@ -512,7 +512,8 @@ worth.npv_precision < 0.001 * worth.npv  # True
 ```
 
 `npv_tolerance` (0.001 by default) sets how short the windows are; a
-tenth of it takes ten times the windows. The ranges stay undiscounted.
+tenth of it takes ten times the windows. `expected_cost` and the ranges
+stay undiscounted: the present values are `expected_npv` and `npv`.
 
 One part rarely fails in a given month, so the monthly figures become
 useful once you add them up over many positions. The expected values
@@ -643,7 +644,8 @@ round(float(by_month.events.system_failures[0]), 3)  # -> 0.372
 `cost=True` adds `cost_by_window`: each period's mean cost is exact, and
 its range is simulated. With `cost=True, discount=0.07` each period also
 has `expected_npv`, its expected cost as a present value, with `npv` and
-`eac`. This is exact: the diagram's clock is calendar time, so the
+`eac`; `cost` (its mean and range) stays the cost as it falls, not
+discounted, as `failures_by_period`'s `expected_cost` does. This is exact: the diagram's clock is calendar time, so the
 yearly rate is one continuous rate on it, which
 `RepairableRBD.expected_cost(discount_rate=)` takes.
 
