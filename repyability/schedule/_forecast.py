@@ -718,10 +718,17 @@ def events_by_period(
     Parameters
     ----------
     rbd : RepairableRBD
-    usage : UsageForecast
+    usage : UsageForecast or CalendarContext
         Gives the periods, the site's time zone and "now" (its start);
         ``UsageForecast.calendar(start, end)`` when there is no plan.
-        ``usage.duty()`` is the share a block's ``"duty"`` takes.
+        A [`CalendarContext`][repyability.schedule.CalendarContext] also
+        gives each unit its duty plan (and its unit of time, and the dates
+        of tasks on a recurrence rule): a plan of one share is worked out
+        exactly, as a block's ``"duty"``; with a plan that changes over
+        time (weekday shifts), each unit's life is drawn in operating time
+        and put on the calendar by its plan, so the events are the means
+        of the simulations' histories, and the cost's means simulated
+        too.
     period : str, optional
         ``"day"``, ``"week"``, ``"month"`` (the default), ``"quarter"`` or
         ``"year"``.
@@ -734,7 +741,8 @@ def events_by_period(
     cost : bool, optional
         Also the cost by period (simulated range), by default False.
     mc_samples, seed : optional
-        With ``cost=True``, the simulations, as for ``cost_by_window``.
+        With ``cost=True``, or a duty plan that changes over time, the
+        simulations, as for ``cost_by_window`` (1,000 by default).
     discount : float, optional
         With ``cost=True``, a yearly discount rate (0.07 for 7% a year):
         the result then has each period's ``expected_npv``, its expected
@@ -775,6 +783,17 @@ def events_by_period(
     >>> [round(float(x), 3) for x in months.events.system_failures[:2]]
     [0.372, 0.336]
     """
+    from ._calendar import calendar_of
+
+    context = calendar_of(usage)
+    if context is not None:
+        if unit is not None and unit != context.unit:
+            raise ValueError(
+                f"unit={unit!r} differs from the calendar's unit "
+                f"({context.unit!r}): give it once, on the calendar."
+            )
+        rbd = context.diagram(rbd)
+        usage, unit = context.usage, context.unit
     usage = _usage(usage)
     notes: List[str] = []
     discount = _discount.yearly(discount)
@@ -787,7 +806,19 @@ def events_by_period(
     unit = _resolve_unit(unit, _model_label(rbd), "diagram", notes)
     found, seconds = _period_edges(usage, period)
     ends = seconds / 3600.0 / UNITS[unit]
-    events = rbd.expected_events_by_window(ends, state=state)
+    from repyability.rbd._covariate_schedule import on_clock
+
+    simulated = on_clock(rbd)
+    if simulated:
+        events = _history_events(rbd, ends, state, mc_samples, seed)
+        notes.append(
+            "A unit's duty plan changes over time, so its life on the "
+            "calendar depends on when each unit is put into service: the "
+            "events are counted in the simulations' histories (means of "
+            f"{_runs_of(rbd, mc_samples)} runs), not exact."
+        )
+    else:
+        events = rbd.expected_events_by_window(ends, state=state)
     costs = None
     if cost:
         costs = rbd.cost_by_window(
@@ -798,13 +829,20 @@ def events_by_period(
             levels=RANGE_LEVELS,
         )
         notes.append(
-            f"Each period's mean cost is exact; its range ({RANGE_WORDS}) "
-            "is simulated."
+            f"Each period's mean cost is simulated, and its range "
+            f"({RANGE_WORDS})."
+            if simulated
+            else f"Each period's mean cost is exact; its range "
+            f"({RANGE_WORDS}) is simulated."
         )
     expected_npv = npv = eac = None
     if discount is not None:
         rate = _discount.per_unit(discount, UNITS[unit])
-        if rate >= 0.0:
+        if simulated:
+            present = _simulated_present(
+                rbd, ends, rate, state, mc_samples, seed
+            )
+        elif rate >= 0.0:
             present = rbd.expected_cost(ends, state=state, discount_rate=rate)
         else:
             # Costs escalating faster than the discount: a rate below 0,
@@ -814,7 +852,12 @@ def events_by_period(
             present = _windows._discounted_cost(
                 rbd, ends, rate, None, None, "p", state, None
             )
-        running = np.atleast_1d(np.asarray(present.mean, float))
+        running = np.atleast_1d(
+            np.asarray(
+                present if isinstance(present, np.ndarray) else present.mean,
+                float,
+            )
+        )
         expected_npv = np.diff(running, prepend=0.0)
         npv = float(running[-1])
         eac = _discount.equivalent_annual(
@@ -822,12 +865,14 @@ def events_by_period(
         )
         notes.append(
             f"{_discount.words(given, usage.start, escalation)} Each cost is "
-            "discounted from when it falls (exact); the range is not "
-            "discounted, and an acquisition cost is not in the periods."
+            "discounted from when it falls ("
+            + ("in each simulation" if simulated else "exact")
+            + "); the range is not discounted, and an acquisition cost "
+            "is not in the periods."
         )
     notes.append(
         "The diagram's clock is calendar time from the forecast's start; "
-        "running hours reach it through the blocks' duty."
+        "running hours reach it through each block's duty plan."
     )
     return EventsByPeriod(
         period=period,
@@ -844,6 +889,129 @@ def events_by_period(
         npv=npv,
         eac=eac,
     )
+
+
+def _runs_of(rbd, mc_samples) -> int:
+    """The simulations a run of ``rbd`` takes for ``mc_samples``."""
+    return int(mc_samples) if mc_samples is not None else 1000
+
+
+def _traced(rbd) -> None:
+    """Refuse what a history does not show: a task or test that takes no
+    time (it leaves no outage), and the tests of hidden failures (a
+    failure is found later than it happens)."""
+    lead = (
+        "The events by period of a diagram whose duty plan changes over "
+        "time are counted in the simulations' histories"
+    )
+    for node, task in rbd._preventive.items():
+        if task.duration is None:
+            raise NotImplementedError(
+                f"{lead}, where a preventive task that takes no time "
+                f"(node {node!r}) leaves no trace: give it the time it "
+                "takes, or the duty as one share."
+            )
+    if rbd._inspection:
+        node = next(iter(rbd._inspection))
+        raise NotImplementedError(
+            f"{lead}, which do not count the tests of hidden failures "
+            f"(node {node!r}) yet: give the duty as one share."
+        )
+    if rbd._shutdowns:
+        raise NotImplementedError(
+            f"{lead}, which do not count a site's shutdowns yet: give the "
+            "duty as one share."
+        )
+
+
+def _history_events(rbd, ends, state, mc_samples, seed):
+    """Each window's expected events (an ``EventsByWindow``), the means
+    over the simulations' histories (``simulate_timelines``): a change
+    down that is not planned is a failure, a planned one a preventive
+    task, and each outage's time in a window its downtime there."""
+    from repyability.rbd.results import EventsByWindow
+
+    _traced(rbd)
+    ends = np.asarray(ends, dtype=float)
+    runs = rbd.simulate_timelines(
+        float(ends[-1]),
+        state=state,
+        mc_samples=mc_samples if mc_samples is not None else 1000,
+        seed=seed,
+    )
+    starts = np.concatenate(([0.0], ends[:-1]))
+
+    def tally(lines):
+        out = {k: np.zeros(ends.size) for k in ("f", "p", "d", "pd")}
+        n = len(lines)
+        for i in range(n):
+            line = lines[i]
+            times, planned = line.changes, line.planned
+            down = np.arange(0 if line.up else 1, times.size, 2)
+            at = times[down]
+            window = np.searchsorted(ends, at, side="right")
+            inside = window < ends.size
+            np.add.at(out["f"], window[inside & ~planned[down]], 1.0)
+            np.add.at(out["p"], window[inside & planned[down]], 1.0)
+            # Outages: from each change down to the next change up.
+            begin = list(at)
+            finish = [
+                times[j + 1] if j + 1 < times.size else line.end for j in down
+            ]
+            flags = list(planned[down])
+            if not line.up:
+                begin.insert(0, 0.0)
+                finish.insert(0, times[0] if times.size else line.end)
+                flags.insert(0, False)
+            for a, b, flag in zip(begin, finish, flags):
+                span = np.clip(
+                    np.minimum(b, ends) - np.maximum(a, starts), 0.0, None
+                )
+                out["d"] += span
+                if flag:
+                    out["pd"] += span
+        return {k: v / n for k, v in out.items()}
+
+    system = tally(runs.system)
+    nodes = {node: tally(lines) for node, lines in runs.components.items()}
+    zeros = {node: np.zeros(ends.size) for node in nodes}
+    return EventsByWindow(
+        starts=starts,
+        ends=ends,
+        system_failures=system["f"],
+        system_planned_outages=system["p"],
+        system_downtime=system["d"],
+        node_failures={n: v["f"] for n, v in nodes.items()},
+        node_corrective={n: v["f"] for n, v in nodes.items()},
+        node_preventive={n: v["p"] for n, v in nodes.items()},
+        node_inspections=zeros,
+        node_downtime={n: v["d"] for n, v in nodes.items()},
+        shutdowns=np.zeros(ends.size),
+        system_planned_downtime=system["pd"],
+        system_unplanned_downtime=system["d"] - system["pd"],
+        node_planned_downtime={n: v["pd"] for n, v in nodes.items()},
+        node_unplanned_downtime={
+            n: v["d"] - v["pd"] for n, v in nodes.items()
+        },
+    )
+
+
+def _simulated_present(rbd, ends, rate, state, mc_samples, seed):
+    """The expected cost from the start to each end as a present value,
+    each cost discounted from when it falls in the simulations
+    (``npv_distribution``, one seeded set of histories cut at each
+    end)."""
+    out = []
+    for end in np.asarray(ends, dtype=float):
+        run = rbd.npv_distribution(
+            float(end),
+            discount_rate=rate,
+            mc_samples=mc_samples,
+            seed=seed,
+            state=state,
+        )
+        out.append(-float(run.mean))
+    return np.asarray(out)
 
 
 # ---------------------------------------------------------- shuts on dates

@@ -902,7 +902,7 @@ class RepairableRBD(RBD):
         # _covariate_schedule); the spec as given keeps the regression
         # model and the schedule, for saving and drawing.
         components = _covariate_schedule.on_schedules(components)
-        components, self._operating_tasks = _on_duty(components)
+        components, self._operating_tasks, clocks = _on_duty(components)
         self.repair_crews = _validate_crews(repair_crews)
         self.crew_cost_rate = _spec._validate_crew_cost(
             crew_cost_rate, self.repair_crews
@@ -988,6 +988,9 @@ class RepairableRBD(RBD):
                     )
                     if cost is not None:
                         node_costs["preventive_cost"] = cost
+                    if name in clocks:
+                        # Counted in operating time on a plan that changes.
+                        schedule = schedule._replace(clock=clocks[name])
                     if (
                         np.isfinite(schedule.interval)
                         or schedule.policy == "calendar"

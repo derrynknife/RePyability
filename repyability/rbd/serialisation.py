@@ -55,6 +55,7 @@ from repyability.rbd.regression_node import RegressionNode
 from repyability.rbd.repeated_node import PARALLEL, RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.standby_node import StandbyModel
+from repyability.utils.checks import is_number
 
 #: Whether every model must load back as the class it is (see
 #: ``exactly``).
@@ -413,7 +414,11 @@ def _serialise_component(value) -> dict:
         if value.get("replace_after") is not None:
             out["replace_after"] = int(value["replace_after"])
         if value.get("duty") is not None:
-            out["duty"] = float(value["duty"])
+            duty = value["duty"]
+            # A share, or a duty plan that changes over time (its dict).
+            out["duty"] = (
+                float(duty) if is_number(duty) else _duty_plan_dict(duty)
+            )
         if value.get("covariates") is not None:
             from repyability.rbd._covariate_schedule import schedule_to_dict
 
@@ -555,7 +560,16 @@ def _deserialise_component(d: dict) -> Any:
         if "replace_after" in d:
             out["replace_after"] = d["replace_after"]
         if "duty" in d:
-            out["duty"] = d["duty"]
+            duty = d["duty"]
+            if isinstance(duty, dict):
+                from repyability.schedule import DutySchedule
+
+                duty = DutySchedule(
+                    str(duty.get("unit", "hours")),
+                    tuple(float(t) for t in duty["times"]),
+                    tuple(float(x) for x in duty["shares"]),
+                )
+            out["duty"] = duty
         if "covariates" in d:
             from repyability.rbd._covariate_schedule import (
                 schedule_from_dict,
@@ -868,3 +882,21 @@ def rbd_to_json(rbd: RBD, **json_kwargs) -> str:
 def rbd_from_json(s: str) -> RBD:
     """Reconstruct an RBD from a JSON string."""
     return rbd_from_dict(json.loads(s))
+
+
+def _duty_plan_dict(plan) -> dict:
+    """A duty plan that changes over time (a ``DutySchedule``, or its
+    dict) as JSON."""
+    if isinstance(plan, dict):
+        unit, times, shares = (
+            plan.get("unit", "hours"),
+            plan["times"],
+            plan["shares"],
+        )
+    else:
+        unit, times, shares = plan.unit, plan.times, plan.shares
+    return {
+        "unit": str(unit),
+        "times": [float(t) for t in times],
+        "shares": [float(x) for x in shares],
+    }

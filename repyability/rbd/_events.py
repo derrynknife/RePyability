@@ -678,6 +678,12 @@ class _Preventive(NamedTuple):
     #: for none.
     upgrade_at: Optional[float] = None
 
+    #: Counted in operating time on a duty plan that changes over time
+    #: (a ``_duty.PlannedLife``, the block's life): each action falls when
+    #: the plan's operating time reaches the time it is due at in
+    #: operating time; None on the diagram's clock.
+    clock: Any = None
+
     @property
     def plan(self) -> Optional[Tuple[float, ...]]:
         """The component's own list of replacement times
@@ -690,7 +696,12 @@ class _Preventive(NamedTuple):
         inspection) falls, for a unit put into service as new at
         ``renewed``, or inspected then; an upgrade's time (``upgrade_at``)
         is one such action."""
-        due = self._due(renewed)
+        if self.clock is not None:
+            # In operating time, and back on the diagram's clock.
+            clock = self.clock
+            due = clock.inverse(self._due(clock.operating(renewed)))
+        else:
+            due = self._due(renewed)
         if self.upgrade_at is not None and renewed < self.upgrade_at:
             return min(due, self.upgrade_at)
         return due

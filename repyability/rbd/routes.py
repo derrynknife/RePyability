@@ -176,7 +176,7 @@ def model_route(model) -> Tuple[str, str]:
     from surpyval import Parametric
 
     from ._bayesian_life import PosteriorPredictive
-    from ._covariate_schedule import ScheduledLife
+    from ._covariate_schedule import ClockLife
     from .helper_classes import PerfectReliability, PerfectUnreliability
     from .joint_node import JointNode
     from .load_sharing_node import LoadSharingModel
@@ -188,7 +188,7 @@ def model_route(model) -> Tuple[str, str]:
 
     if model is PerfectReliability or model is PerfectUnreliability:
         return EXACT, "a constant"
-    if isinstance(model, ScheduledLife):
+    if isinstance(model, ClockLife):
         return REFUSED, str(model._no_reliability())
     if isinstance(model, (StandbyModel, LoadSharingModel)):
         if model.is_simulated:
@@ -229,7 +229,7 @@ def mean_route(model) -> Tuple[str, str]:
     """How a node model's mean lifetime (its ``mean()``) is found: the route,
     and a phrase saying how, or the message its ``mean()`` would raise."""
     from ._bayesian_life import PosteriorPredictive
-    from ._covariate_schedule import ScheduledLife
+    from ._covariate_schedule import ClockLife
     from .degrading_node import DegradingNode
     from .joint_node import JointNode
     from .load_sharing_node import LoadSharingModel
@@ -238,7 +238,7 @@ def mean_route(model) -> Tuple[str, str]:
     from .repeated_node import RepeatedNode
     from .standby_node import StandbyModel
 
-    if isinstance(model, ScheduledLife):
+    if isinstance(model, ClockLife):
         return REFUSED, str(model._no_reliability("mean life"))
     if isinstance(model, NonRepairableRBD):
         message = refusal(model._require_lifetimes)

@@ -872,6 +872,60 @@ in `test_schedule_forecast.py`.
   model); `test_uc42_with_surpyval_equivalence`, skipped before surpyval
   0.28 (run by hand against surpyval's `dev`: it passes).
 
+### UC-64: "Our line has two pumps in parallel: one runs weekday shifts, the other around the clock. The first has its seal changed every 4,000 running hours, the second at a check on the first Monday of each quarter. What failures, services and costs come each month?"
+
+- **Status:** built: `CalendarContext(usage, duty={node: forecast or
+  share}, unit=)`, taken by `events_by_period`; a block's `"duty"`
+  takes a share or a `DutySchedule` (`UsageForecast.schedule()`); a
+  task on a rule is replaced at `CalendarContext.rule_times(rule, at)`
+  (its `"replace_at"`).
+- **Who asks:** UC-39's planner, whose pumps do not run alike: one on
+  Monday to Friday 06:00 to 22:00 (80 h a week), one 24/7.
+- **What they know:** one diagram (the two pumps, each life in operating
+  hours, Weibull scale 3,000 h and shape 2, repairs of about 8 h); the
+  shift pump's 4-hour seal change every 4,000 operating hours, the 24/7
+  pump's at the check on the first Monday of each quarter (06:00); each
+  pump's duty plan; the months of 2027.
+- **The answer, by hand:** each pump runs its own clock `D(t)`, the
+  operating hours from 1 January to `t`. The shift pump runs 4,176 h in
+  2027 and reaches 4,000 h at the end of the shift on **Thursday 16
+  December, 22:00** (`usage.moment(4000)`), so its one seal change falls
+  in December (the plan's hours, whatever repairs the pump has: the
+  service is on the plan). The 24/7 pump's seal
+  is changed on **4 January, 5 April, 5 July and 4 October** at 06:00
+  (the rule's dates). With repairs in no time, a pump is its operating-time
+  process seen through `D`: its expected failures by `t` are `M(D(t))`,
+  `M` the renewal count (with its block service) in operating time, from
+  the one-node diagram with no duty; the simulation on the calendar
+  agrees within its error (`test_a_unit_is_its_operating_process_seen_through_its_plan`).
+- **How it is solved:** the engine always runs on calendar time. The
+  analysis, not the plan, says each unit's duty: `CalendarContext.diagram`
+  gives each node its plan as its `"duty"`. A plan of one share is the
+  constant share it always was (the model rescaled, exact). A plan that
+  changes is a life on the diagram's clock (`_duty.PlannedLife`): a unit
+  put in at `t0` fails at `D⁻¹(D(t0) + L)`, `L` drawn from the model's own
+  quantile function in operating hours, and a task counted in operating
+  time falls when `D` reaches it (`_Preventive.clock`). Its reliability
+  from new, `R(D(t))`, is the model's own `sf`; a unit put in later has
+  another, so it is no renewal process, and the Python simulation counts
+  it (the compiled engine hands it over). `events_by_period` then counts
+  each month's events in the histories and takes the cost's mean and
+  range from the same runs, each cost discounted from when it falls.
+- **Decisions (defaults):** a plan belongs to the analysis
+  (`CalendarContext.duty`), not to the unit's plan; a task in operating
+  time on a block with no duty counts the diagram's clock as its
+  operating time (as a model without a calendar runs from 0); a plan
+  holds its last share past its end (the calendar refuses a forecast
+  that ends first); on a plan that changes, a unit starts new (a state
+  other than new, a virtual age, replacement on condition, tests counted
+  in operating time and standby groups are refused, saying so).
+- **Checks:** `test_duty_plans.py`: a plan of one share is the duty share
+  to the bit; the simulation against `M(D(t))` for run to failure, block
+  and age replacement; a usage task's dates equal the forecast's
+  `moment`s; a rule's dates; saving; the refusals. A rule as a spec of
+  its own (resolved by the calendar) is not built: the diagram must
+  stand without a calendar, and a rule's dates need one.
+
 ### What is not built yet
 
 - **A part's expected failure costs for ever, on dates.**
@@ -894,9 +948,11 @@ in `test_schedule_forecast.py`.
   planned hour and start as 0.9, an expected value. The dates when 90%
   of runs go ahead (the nth run to go ahead follows a negative binomial)
   are not worked out yet.
-- **A duty that changes inside a `RepairableRBD`.** `schedule()` gives
-  the duty as steps over calendar time, for that later work; today a
-  block takes one average share, `duty()`.
+- **Exact values on a duty plan that changes.** A unit on such a plan
+  is simulated (UC-64). Where its repairs and tasks take no time it is
+  its operating-time process seen through `D`, so its exact curves could
+  be the operating-time ones at `D(t)`; not built yet. Nor are tests
+  counted in operating time on such a plan, or a start other than new.
 
 ## Candidates
 
