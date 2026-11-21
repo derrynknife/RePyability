@@ -62,6 +62,7 @@ all go through it.
 | UC-57 | What a plan is worth when the price it earns steps up, its costs escalate at their own rates, and the rate is real or nominal; and the same escalation on dates | **Built**: `expected_npv(value_rate=ValueSchedule(...), escalation=, rates=, inflation=)`; `escalation=` beside `discount=` in `repyability.schedule` |
 | UC-58 | An outage's overhaul that leaves a part as if a given age, not by a Kijima factor | **Built** (simulated): a `"preventive"` spec's `"restore_to"`; `restore_to=0` is a renewal (exact where renewals are) |
 | UC-62 | A service that does harm: a fitted restoration factor above 1, each service leaving the unit older than it was. What does it do to the failures, and is the service worth stopping? | **Built** (simulated): a `"preventive"` `"restoration"` with `q` above 1; `compare_npv` against no service |
+| UC-63 | One pump's plan: its life and repairs, its tasks each in its own clock, and its prices, held as one object that a diagram's node takes | **Built**: `UnitPlan` with `AgePolicy`, `BlockPolicy`, `ConditionPolicy`, `CalendarReplacement`, `AtShutdown`, `Inspection`, `Upgrade`, `Restoration`, `ImperfectRepair` and `Prices`; a spec dict is its shorthand (`UnitPlan.from_spec`, `plan.spec()`) |
 | UC-59 | A part renewed at a short stop every month and again at the long yearly overhaul, each renewal as long as its shut | **Built**: a `"preventive"` spec's `"shutdown"` as a list of shutdowns, exact over a horizon |
 | UC-60 | A part upgraded in year 3 and block-replaced before and after, the new model on the same interval | **Built**: an `"upgrade"` with a `"preventive"` block policy, numerical over a horizon and simulated |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
@@ -2378,6 +2379,75 @@ arithmetic was already right for any `q`; only the check on the spec
 held it to [0, 1]. A factor above 1 is how harmful or invasive
 maintenance is modelled, and the NPV comparison is how a plan shows that
 a task is worth stopping.
+
+### UC-63: "One pump's plan: what are its tasks and prices, and how does the diagram take it?"
+
+**Who asks.** Anyone who writes a unit's maintenance down once and uses
+it in several places: on a diagram today, valued alone or on the
+calendar later. And a caller (the Reliafy app) that keeps a unit's plan
+as a record and hands it over, rather than assembling a spec dict.
+
+**What they know.** The pump's life (Weibull, scale 1,000 h, shape 2.5)
+and its repair time (exponential, mean 10 h); a service every 4,000
+operating hours that renews it, 20 a time, taking a fixed 4 h; a repair
+costs 400 and its own downtime 5 an hour. It runs 60% of the time.
+
+**What they want back.** One object that says all of that, each task in
+its own clock (4,000 operating hours is kept as operating hours, a
+task at the site's shutdowns as a binding to them by name, a calendar
+policy as the policy), that a `RepairableRBD` node takes as it takes
+the spec dict, and that saves and loads.
+
+**How it is solved.** `UnitPlan(life, repair, tasks=(...),
+prices=Prices(...))`, frozen plain data. Each task is its own object:
+`AgePolicy`, `BlockPolicy` (on an interval or at given times),
+`ConditionPolicy` (a threshold or a measured level), `CalendarReplacement`
+(a `CalendarPolicy` or `ShutdownPolicy`), `AtShutdown` (bound to the
+site's shutdowns by name), `Inspection` and `Upgrade`; a task that
+restores partly carries a `Restoration` (Kijima, to an age, or a fitted
+process; every so many tasks a replacement), and imperfect repairs an
+`ImperfectRepair`. A task's own price is the task's (`cost`), as each
+task has its own; the unit's prices (repair, replace, its own downtime,
+acquisition) are `Prices`. A task counted in operating time says so
+(`basis="operating"`). What belongs to the system stays on the diagram:
+structure, system downtime and value, crews, spares, the site's
+shutdowns and common-cause groups (a plan only names its maintenance
+group and its place in the crews' queue).
+
+The spec dict is the plan's shorthand: `UnitPlan.from_spec(spec)`
+reads one, and `plan.spec()` writes the spec the diagram's engines read.
+A node given a plan is the node given its spec, so every analysis, the
+routes, the levers and saving take it unchanged; `RepairableRBD.plans`
+reads each spec node back as a plan.
+
+**The hand-worked answer.** The plan above and the spec
+
+```
+{"reliability": Weibull(1000, 2.5), "repairability": Exponential(0.1),
+ "repair_cost": 400, "downtime_cost": 5, "duty": 0.6,
+ "preventive": {"policy": "age", "interval": 4000, "basis": "operating",
+                "cost": 20, "duration": ExactEventTime(4)}}
+```
+
+are one node: `plan.spec()` is that dict, and `from_spec` of it is the
+plan. Seeded, a diagram of plans and the same diagram of specs give the
+same runs to the last bit, on both engines; their routes are the same.
+
+**Checks.** Every spec of the test catalogue reads into a plan and back
+to the same spec (up to keys at their defaults, such as an `"age"`
+policy or an `"instant"` duration); a reader that met a key it does not
+place refuses, so a new spec key cannot be dropped quietly. Diagrams of
+plans against diagrams of specs, seeded, to the bit, on both engines; a
+plan node in the catalogue; a plan saves and loads; a plan with two
+preventive tasks is refused, saying a spec holds one (bind it to several
+shutdowns instead).
+
+**What was learned.** The spec's keys already were a unit's plan; what
+the plan adds is a name for each task and its clock, and one place a
+unit's maintenance is written down. Salvage, a unit's own escalation and
+retirement are still the analyses' arguments (`expected_npv(salvage=,
+retire_at=, escalation=)`), not the plan's: they join it when a plan is
+valued alone.
 
 ### UC-59: "A stop every month renews the bearing; a long overhaul every year renews the pump and the bearing. What is the plan worth over two years, and how available is the line?"
 

@@ -36,6 +36,7 @@ from repyability import (
     Shocks,
     StandbyModel,
 )
+from repyability.maintenance import AgePolicy, Prices, UnitPlan
 from repyability.rbd import bdd, modular
 from repyability.rbd._usage import has_at_usage
 from repyability.tests.test_performance_equivalence import (
@@ -693,6 +694,16 @@ def repairable_kinds():
             ),
             "block replacement": system(
                 unit(preventive={"interval": 300.0, "policy": "block"})
+            ),
+            # One unit's maintenance plan as a node: the node its spec
+            # gives (UC-63 of the maintenance README).
+            "a maintenance plan": system(
+                UnitPlan(
+                    life,
+                    repair,
+                    tasks=(AgePolicy(interval=300.0, cost=4.0),),
+                    prices=Prices(repair=2.0, downtime=1.0),
+                )
             ),
             # Replaced at the times of a plan, and after the last no more
             # (block replacement at any list of times).

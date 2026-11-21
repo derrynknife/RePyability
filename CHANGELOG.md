@@ -12,6 +12,19 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: `UnitPlan`, one unit's maintenance plan (UC-63 of the
+  maintenance README): its life and repair models, its tasks (`AgePolicy`,
+  `BlockPolicy`, `ConditionPolicy`, `CalendarReplacement`, `AtShutdown`,
+  `Inspection`, `Upgrade`, with a `Restoration` for a task that restores
+  partly), its imperfect repairs (`ImperfectRepair`) and its `Prices`,
+  each task in its own clock, as frozen plain data that saves
+  (`to_dict`, `from_dict`). A `RepairableRBD` node takes a plan as it
+  takes the spec dict, which is the plan's shorthand
+  (`UnitPlan.from_spec`, `plan.spec()`); `RepairableRBD.plans` reads
+  each spec node back as a plan. A node given a plan is the node given
+  its spec: no result changes. (The name `MaintenancePlan` stays the
+  result of choosing intervals.)
+
 - Added: a value schedule and escalation in the simulated NPV and in
   a plan against what happened (UC-57 of the maintenance README, part
   2). `npv_distribution`, `compare_npv` and `plan_vs_actual` take

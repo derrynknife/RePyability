@@ -384,6 +384,11 @@ class RepairableRBD(RBD):
           ``"instant"`` repair. Its long-run values are exact from its
           Markov chain when its units' lives and repair times are
           exponential; it is simulated in Python.
+        - A [`UnitPlan`][repyability.UnitPlan]: one unit's life
+          and repair models, its tasks and its prices, of which the spec
+          dict above is the shorthand. The node is the node given
+          ``plan.spec()``; [`plans`][repyability.RepairableRBD.plans]
+          reads each spec node back as a plan.
         - A [`NonRepairable`][repyability.NonRepairable], pairing a
           reliability model with a time-to-replace model. Each node gets
           its own copy, so one object can be given for several identical
@@ -803,6 +808,18 @@ class RepairableRBD(RBD):
         call_out: Optional[dict] = None,
     ):
         _check_on_infeasible_rbd(on_infeasible_rbd)
+        # A unit's UnitPlan is the node given its spec (UC-63 of
+        # the maintenance README): the spec is the plan's shorthand.
+        from repyability.maintenance._plan import UnitPlan
+
+        components = {
+            name: (
+                component.spec()
+                if isinstance(component, UnitPlan)
+                else component
+            )
+            for name, component in dict(components).items()
+        }
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)
@@ -1284,6 +1301,20 @@ class RepairableRBD(RBD):
                     value = mean(works * change) / R
                 out[node] = value
         return out
+
+    @property
+    def plans(self) -> dict:
+        """Each node given as a spec dict or a plan, as the
+        [`UnitPlan`][repyability.UnitPlan] it states (UC-63 of
+        the maintenance README), by node; a fitted renewal process given
+        as a life reads as its life from new and its repairs."""
+        from repyability.maintenance._plan import UnitPlan
+
+        return {
+            name: UnitPlan.from_spec(component)
+            for name, component in self._init_args["components"].items()
+            if isinstance(component, dict)
+        }
 
     @property
     def has_costs(self) -> bool:
