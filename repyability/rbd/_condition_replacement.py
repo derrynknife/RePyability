@@ -778,7 +778,7 @@ def condition_plan_availability(
     stretches = []
     for k, length in enumerate(lengths):
         steps = None
-        if open_end and k == count - 1:
+        if last_like is not None and k == count - 1:
             wanted = _steps(life, last_like) * length / last_like
             steps = int(np.clip(np.ceil(wanted), _MIN_STEPS, _MAX_LAST_STEPS))
         # The time its starting inspection looks ahead to: none at the
