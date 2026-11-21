@@ -12,6 +12,58 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: a `RepairableRBD` takes `Shocks(rate, p, lethal_rate)` as a
+  common-cause group's model, for members of any lives, which need not
+  be alike. Shocks come at a rate of their own and each fails each
+  member with probability `p`; a strike fails the members it names that
+  are up, in the group's order, each then repaired on its own, and a
+  tested member's failure waits for its test. The simulations run it (in
+  Python; the compiled engine hands a diagram with groups over, as
+  before), and every exact and numerical method refuses, naming the
+  simulation, as do a member's own long-run availability
+  (`node_availability`) and its exact spares (`spares_demand`,
+  `spares_stock`), which its own life no longer gives;
+  `spares_demand(method="simulate")` counts them. For exponential
+  members a seeded run is the equivalent rate-split group's, strike for
+  strike, as the shocks' causes take the shared causes' streams; no
+  existing seeded result changes. Scheduled maintenance, imperfect
+  repair or a maintenance group on a member, and a tested member started
+  from a state, are refused by name. The group's `rate`, `p` and
+  `lethal_rate` are levers (`ccf_rate`, `ccf_p`, `ccf_lethal_rate`).
+
+- Added: a `NonRepairableRBD` as a unit's life (UC-66 of the
+  maintenance README): a subassembly replaced whole at its failure,
+  taken wherever a life is (`UnitPlan`, a spec's `"reliability"`,
+  `NonRepairable`) by its functions, exact where the routes are and
+  simulated from the streams as any model's draws. `NonRepairableRBD.qf`
+  inverts its `ff` to near machine precision in both tails.
+
+- Added: a unit's plan valued alone (UC-65 of the maintenance README).
+  `UnitPlan` has `expected_npv`, `cash_flows`, `npv_distribution`,
+  `plan_vs_actual`, `expected_cost`, `expected_cost_rate`,
+  `events_by_period`, `failures_by_period`,
+  `optimal_replacement_interval`, `optimal_inspection_interval` and
+  `analysis_routes`, each the method of its one-node diagram
+  (`UnitPlan.diagram()`, the node `"unit"`), on a
+  `schedule.CalendarContext` given as `calendar=`. A plan holds the
+  unit's own money: `salvage` (a number or a function of age),
+  `escalation` (a growth rate for its prices) and `retire_at`, which are
+  also component spec keys; `expected_npv` takes them as its arguments
+  of the same names for the node (the arguments still work, and win).
+  A unit's retirement in a diagram of several, and a unit's salvage or
+  retirement in `npv_distribution`, `compare_npv`, `best_switch_time`
+  and `plan_vs_actual`, are refused, saying what to use.
+
+- Added: the long run of a diagram with an upgrade (UC-64 of the
+  maintenance README): `mean_availability`, `expected_cost_rate`,
+  `node_availability`, the importance measures (by default, in the long
+  run), `replacement_cycle` and the other long-run methods give the
+  values once upgraded, those of the diagram built with each upgraded
+  component's new life (its block replacement kept, the time before the
+  upgrade and its capital cost ignored), where they refused. Asked over
+  time, the measures follow the upgrade as before; `total_cost` still
+  refuses, its horizon starting before the upgrade.
+
 - Added: a block kept unless it is due (`"older_than"`, or on
   condition with a threshold) at a shutdown's given times, valued
   without simulation. Over a horizon, `point_availability`,

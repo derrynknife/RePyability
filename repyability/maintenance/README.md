@@ -63,8 +63,11 @@ all go through it.
 | UC-58 | An outage's overhaul that leaves a part as if a given age, not by a Kijima factor | **Built** (simulated): a `"preventive"` spec's `"restore_to"`; `restore_to=0` is a renewal (exact where renewals are) |
 | UC-62 | A service that does harm: a fitted restoration factor above 1, each service leaving the unit older than it was. What does it do to the failures, and is the service worth stopping? | **Built** (simulated): a `"preventive"` `"restoration"` with `q` above 1; `compare_npv` against no service |
 | UC-63 | One pump's plan: its life and repairs, its tasks each in its own clock, and its prices, held as one object that a diagram's node takes | **Built**: `UnitPlan` with `AgePolicy`, `BlockPolicy`, `ConditionPolicy`, `CalendarReplacement`, `AtShutdown`, `Inspection`, `Upgrade`, `Restoration`, `ImperfectRepair` and `Prices`; a spec dict is its shorthand (`UnitPlan.from_spec`, `plan.spec()`) |
+| UC-65 | One pump's plan valued alone: its NPV over eight years at 7%, its cash flows by year, its spread, its plan against what happened, its long-run cost and best interval; with its salvage, its prices' growth and its retirement on the plan | **Built**: `UnitPlan.expected_npv`, `cash_flows`, `npv_distribution`, `plan_vs_actual`, `expected_cost`, `expected_cost_rate`, `events_by_period`, `failures_by_period`, `optimal_replacement_interval`, `optimal_inspection_interval` and `analysis_routes`, each its one-node diagram's (`UnitPlan.diagram`), on a `CalendarContext` if given; `UnitPlan(salvage=, escalation=, retire_at=)` and the spec keys of the same names |
 | UC-59 | A part renewed at a short stop every month and again at the long yearly overhaul, each renewal as long as its shut | **Built**: a `"preventive"` spec's `"shutdown"` as a list of shutdowns, exact over a horizon |
 | UC-60 | A part upgraded in year 3 and block-replaced before and after, the new model on the same interval | **Built**: an `"upgrade"` with a `"preventive"` block policy, numerical over a horizon and simulated |
+| UC-66 | A pump whose seal is a redundant pair, replaced whole when both have failed: its life is a diagram | **Built**: a `NonRepairableRBD` as a life wherever a life is taken (`UnitPlan`, a spec's `"reliability"`, `NonRepairable`), by its functions; `NonRepairableRBD.qf` inverts its `ff` to near machine precision |
+| UC-64 | What a part costs per year once upgraded: the long run of the diagram with the new life, the time before the upgrade ignored | **Built**: the long-run methods of a diagram with an `"upgrade"` give the values of the diagram after it |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -2449,6 +2452,79 @@ retirement are still the analyses' arguments (`expected_npv(salvage=,
 retire_at=, escalation=)`), not the plan's: they join it when a plan is
 valued alone.
 
+### UC-65: "What is this pump's plan worth alone over eight years at 7%, and its cash flows by year?"
+
+**Who asks.** The planner of UC-63, who has written the pump's plan down
+once and wants it valued without drawing a diagram around it: its net
+present value, a yearly table to put beside the budget, how bad a run
+could be, how the plan has gone so far, and its cost per year in the
+long run. The caller (the Reliafy app) values a unit's plan alone as it
+values a system.
+
+**What they know.** The pump's life (Weibull, scale 20,000 h, shape
+2.5) and repairs (exponential, mean 24 h, 6,000 each); a renewal at
+12,000 h of age for 1,500; bought for 40,000 and worth 5,000 when it
+goes; eight years of 8,760 h at 7% a year.
+
+**What they want back.** The NPV, the cash flows by year and category,
+and the other valuations a diagram has, with the salvage (and, where
+given, the growth of its prices and its retirement) held by the plan.
+
+**How it is solved.** A plan alone is the diagram of its one node,
+`UnitPlan.diagram()` (the node named `UnitPlan.NODE`, `"unit"`), and
+each valuation of the plan is that diagram's method with the same
+arguments: `expected_npv`, `cash_flows` (its table), `npv_distribution`,
+`plan_vs_actual` (one `Timeline`), `expected_cost`,
+`expected_cost_rate`, `events_by_period` and `failures_by_period` (the
+diagram's events on the calendar), the optimisers and `analysis_routes`.
+There is no second route: the diagram's exact methods are already the
+single unit's (its renewal curves, age and block replacement, the tested
+unit's model), so a plan alone and a diagram holding it agree by
+construction, exact where the diagram is exact and simulated where it
+simulates. A `calendar` (a `schedule.CalendarContext` whose duty names
+`"unit"`) puts the diagram on it first, as `CalendarContext.diagram`
+does.
+
+The unit's own money moves onto the plan: `salvage` (a number or a
+function of the age of the unit in service), `escalation` (one growth
+rate for all its prices) and `retire_at`. They are spec keys of the same
+names, so a diagram holding the plan takes them too: `expected_npv`
+takes each as its argument of the same name for the node, an argument
+given for the node taking precedence (a system's salvage, a number, is
+added to the units' own). A unit retiring is the system's retirement
+only where it is the diagram's only unit; in a diagram of several it is
+refused, saying to give the valuation's `retire_at`. The valuations of
+runs and logs (`npv_distribution`, `compare_npv`, `best_switch_time`,
+`plan_vs_actual`) take a plan's escalation and refuse its salvage and
+retirement, naming them, as they take neither as arguments.
+
+**The hand-worked answer, today.** The diagram of the one pump,
+`RepairableRBD([("s", "p"), ("p", "t")], {"p": spec})`, valued by
+`expected_npv(8 * 8760, discount_rate=log(1.07) / 8760, salvage={"p":
+5000}, periods=8)`: an NPV of -48,719 (the purchase 40,000, the repairs
+and renewals, the salvage's 5,000 worth 2,910 now), an equivalent
+annual cost of 8,357 a year, and eight yearly rows by category. The
+plan alone gives the same numbers to the last bit.
+
+**Checks.** `test_plan_alone.py`: over every plan of the catalogue that
+stands alone (no maintenance group, site shutdown or standby group), the
+plan's `expected_npv`, `expected_cost_rate` and `npv_distribution` equal
+a diagram holding it, drawn and named otherwise, to 1e-12 (or both
+refuse alike), and their routes agree; on a calendar of one share and
+of weekday shifts, the plan's runs, expected NPV and events by week
+equal its diagram on that calendar; the plan's salvage (a number and by
+age), escalation and retirement equal the arguments for the node, the
+arguments win, a retirement past the horizon is the horizon, a unit's
+retirement in a diagram of several is refused, the runs refuse a
+salvage, and the terms save and load; the exact NPV is the mean of
+4,000 seeded runs within four standard errors.
+
+**What was learned.** The diagram is already the single unit's engine;
+what a plan alone needed was a name for its one-node diagram and the
+unit's money on the plan. A salvage and a retirement in the simulated
+runs and in `plan_vs_actual`, and one unit's retirement within a
+system, are left for later.
+
 ### UC-59: "A stop every month renews the bearing; a long overhaul every year renews the pump and the bearing. What is the plan worth over two years, and how available is the line?"
 
 - **Status:** built: a `"preventive"` spec's `"shutdown"` given as a
@@ -3107,6 +3183,75 @@ valued alone.
   part, its long run after the upgrade, its spares and `plan_vs_actual`,
   and retiring a single part (`retire_at={node: t}`) are left for a
   later use case.
+
+### UC-66: "Our pump's seals are a redundant pair, and the cartridge is replaced whole once both have failed. What is its plan worth?"
+
+**Who asks.** The planner of UC-65, whose unit is a subassembly: a
+seal cartridge with two seals in parallel, each with its own fitted
+life, replaced as one part when it fails.
+
+**What they know.** Each seal's life (exponential, 0.01 a day); the
+cartridge's repair (exponential, mean 2 days) and prices.
+
+**What they want back.** The plan's values with the cartridge's life
+being the diagram of its seals, worked out exactly where the diagram's
+functions allow and simulated otherwise, as for any life.
+
+**How it is solved.** A `NonRepairableRBD` whose reliability changes
+with time is taken by its functions, as any surpyval model with a
+life's functions is (`_model_utils.by_functions`, `is_diagram_life`):
+its `sf`, `ff`, `df`, `hf`, `Hf` and `mean` are the diagram's own, and
+`qf` (new) inverts `ff` for a share up to a half and `sf` above, on
+logarithms, by false position kept to a bracket, so a draw is seeded
+from the streams as a model's is. So `UnitPlan(life=diagram)`, a spec's
+`"reliability"` and `NonRepairable(diagram)` take it, saving takes it,
+and every route treats it as a smooth life.
+
+**The hand-worked answer.** The pair's life is `(1 - exp(-0.01 t))^2`
+failed, a mean of `1/0.01 + 1/0.02 = 150` days, so repaired in a mean
+of 2 days the cartridge is up `150 / 152 = 0.98684` of the time, which
+`UnitPlan(pair, repair).diagram().mean_availability()` gives.
+
+**Checks.** `test_diagram_life.py`: the parallel pair's `qf` against
+its closed form, and a series pair of Weibulls of shape 2 against the
+one Weibull it is, each to 1e-13 over shares from 1e-14 to 1 - 1e-9; a
+unit whose life is the series pair against the unit of that one
+Weibull, exact (long run, over time, NPV) and simulated (seeded
+availability and NPV runs), to 1e-12; the parallel pair's availability
+against `150 / 152`; a diagram taken by `NonRepairable` and a spec,
+saved and loaded. A catalogue kind holds a diagram as a life.
+
+**What was learned.** Nothing but the quantile was missing: a diagram
+already had a life's functions. A nested `RepairableRBD`'s costs
+counted in its parent are left for later.
+
+### UC-64: "Once the pump is upgraded, what does it cost per year?"
+
+- **Status:** built: the long-run methods of a diagram with an
+  `"upgrade"` (`mean_availability`, `expected_cost_rate`, the importance
+  measures by default, `replacement_cycle`, ...) give the long run once
+  upgraded.
+- **Who asks, what they know, what they want back:** the planner of
+  UC-60, who has the upgrade over a horizon and wants the steady state
+  after it: the availability and cost rate the plant settles to with
+  the new model, to set a budget per year.
+- **How it is solved:** after its upgrade a component has the new life
+  for ever, so the long run is that of the diagram built with the new
+  life (its block replacement kept), the time before the upgrade and
+  its capital cost ignored. The long-run methods are asked of that
+  diagram, which the diagram builds once. Asked over time (`x`,
+  `window` or `state`), the measures follow the upgrade as before.
+  `total_cost(horizon)`, the long-run rate times a horizon from 0,
+  stays refused: the horizon starts before the upgrade.
+- **Today (by hand, before it was built):** the long run was refused;
+  the second diagram, built by hand with the new life, gave it.
+- **Checks:** `test_upgrade_long_run.py`: each long-run method equals
+  the diagram built with the new life (to 1e-12), with and without
+  block replacement; a memoryless unit's `mu / (lambda' + mu)`; the
+  routes say so; values over time still follow the upgrade.
+- **Learned / open questions:** age replacement and tests on an
+  upgraded part, its spares counts and `plan_vs_actual` across the
+  upgrade, and retiring a single part are still open.
 
 ### UC-61: "Our plan has two outages a year that cost 300 each, and at each we renew the pump if it is past 500 hours. The expected NPV is fine; how bad could a run be?"
 

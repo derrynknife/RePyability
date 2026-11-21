@@ -427,6 +427,19 @@ _POLICIES = {
 }
 
 
+#: The plan's fields written as the spec's keys of the same name.
+_OWN_KEYS = (
+    "priority",
+    "group",
+    "standby",
+    "duty",
+    "covariates",
+    "salvage",
+    "escalation",
+    "retire_at",
+)
+
+
 def _kind(task) -> str:
     if isinstance(task, PREVENTIVE_TASKS):
         return "preventive"
@@ -459,6 +472,25 @@ class UnitPlan:
     operates, for a life in operating hours) and ``covariates`` (a
     surpyval ``StepSchedule``) are as in the spec.
 
+    Three terms are the unit's own money, which a valuation
+    (``expected_npv``) takes as it takes its arguments of the same names
+    for the node: ``salvage``, what the unit is worth at the end (a
+    number, or a function of the age of the unit in service, taking an
+    array of ages; negative for a cost of disposal); ``escalation``, the
+    growth rate per unit time of every price of the unit (continuous, of
+    either sign); and ``retire_at``, when the unit is retired, nothing
+    earned or spent after it (a plan valued alone, or the only unit of a
+    diagram).
+
+    A plan is valued alone through the diagram of its one node
+    (``diagram()``, the node named ``UnitPlan.NODE``): ``expected_npv``,
+    ``cash_flows``, ``npv_distribution``, ``plan_vs_actual``,
+    ``expected_cost``, ``expected_cost_rate``, ``events_by_period``,
+    ``failures_by_period`` and the optimisers are that diagram's, so a plan
+    alone and a diagram holding it give the same values by the same code.
+    Each takes ``calendar``, a ``schedule.CalendarContext`` whose ``duty``
+    names the node ``"unit"``: the diagram on that calendar.
+
     Examples
     --------
     >>> import surpyval as surv
@@ -485,6 +517,13 @@ class UnitPlan:
     standby: Optional[dict] = None
     duty: Optional[float] = None
     covariates: Any = None
+    salvage: Any = None
+    escalation: Optional[float] = None
+    retire_at: Optional[float] = None
+
+    #: The node a plan valued alone is in its one-node diagram
+    #: (``diagram()``): what its results' tables name.
+    NODE: ClassVar[str] = "unit"
 
     def __post_init__(self):
         if self.life is None:
@@ -547,7 +586,7 @@ class UnitPlan:
             out[_kind(task)] = task.spec()
         if self.imperfect_repair is not None:
             out.update(self.imperfect_repair.spec())
-        for key in ("priority", "group", "standby", "duty", "covariates"):
+        for key in _OWN_KEYS:
             _put(out, key, getattr(self, key))
         return out
 
@@ -625,16 +664,7 @@ class UnitPlan:
                 }
             ),
             imperfect_repair=imperfect,
-            **{
-                key: _take(spec, used, key)
-                for key in (
-                    "priority",
-                    "group",
-                    "standby",
-                    "duty",
-                    "covariates",
-                )
-            },
+            **{key: _take(spec, used, key) for key in _OWN_KEYS},
         )
         _all_read("component", spec, used)
         return plan
@@ -660,3 +690,143 @@ class UnitPlan:
                 f"'unit_plan', from UnitPlan.to_dict): {data!r}."
             )
         return cls.from_spec(_deserialise_component(data["spec"]))
+
+    # -- the plan valued alone (UC-65 of this package's README) ------------
+
+    def diagram(self, calendar=None):
+        """The ``RepairableRBD`` of this plan's one node (named
+        ``UnitPlan.NODE``), on ``calendar`` if given (a
+        ``schedule.CalendarContext``; its ``duty`` names the node
+        ``"unit"``): what every valuation of the plan alone asks."""
+        from repyability.rbd.repairable_rbd import RepairableRBD
+
+        node = self.NODE
+        rbd = RepairableRBD([("input", node), (node, "output")], {node: self})
+        if calendar is None:
+            return rbd
+        from repyability.schedule._calendar import CalendarContext
+
+        if not isinstance(calendar, CalendarContext):
+            raise TypeError(
+                "calendar must be a schedule.CalendarContext (its duty "
+                f"naming the node {node!r}); got {calendar!r}."
+            )
+        return calendar.diagram(rbd)
+
+    def analysis_routes(self, calendar=None) -> dict:
+        """How each valuation of the plan alone is worked out (exact,
+        numerical, simulated or refused, with the reason), without
+        running anything: its diagram's routes, by the plan's method."""
+        routes = self.diagram(calendar).analysis_routes()
+        return {
+            mine: routes[theirs]
+            for mine, theirs in _PLAN_ROUTES.items()
+            if theirs in routes
+        }
+
+    def expected_npv(self, horizon, *, calendar=None, **kwargs):
+        """The plan's expected net present value over ``horizon``:
+        ``RepairableRBD.expected_npv`` of its one-node diagram (the same
+        arguments), its salvage, escalation and retirement taken from
+        the plan where the arguments leave them out.
+
+        Examples
+        --------
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability.maintenance import AgePolicy, Prices, UnitPlan
+        >>> pump = UnitPlan(
+        ...     surv.Weibull.from_params([20000.0, 2.5]),
+        ...     surv.Exponential.from_params([1 / 24]),
+        ...     tasks=(AgePolicy(interval=12000.0, cost=1500.0),),
+        ...     prices=Prices(repair=6000.0, acquisition=40000.0),
+        ...     salvage=5000.0,
+        ... )
+        >>> r = math.log(1.07) / 8760
+        >>> result = pump.expected_npv(8 * 8760.0, discount_rate=r)
+        >>> round(result.npv), round(result.salvage)
+        (-48719, 2910)
+        """
+        return self.diagram(calendar).expected_npv(horizon, **kwargs)
+
+    def cash_flows(self, horizon, *, calendar=None, **kwargs):
+        """The plan's expected cash flows by period and category: the
+        table of ``expected_npv`` (the same arguments; ``periods`` sets
+        the periods)."""
+        return self.expected_npv(
+            horizon, calendar=calendar, **kwargs
+        ).cash_flows
+
+    def npv_distribution(self, horizon, *, calendar=None, **kwargs):
+        """The plan's NPV in each of many simulated runs:
+        ``RepairableRBD.npv_distribution`` of its one-node diagram."""
+        return self.diagram(calendar).npv_distribution(horizon, **kwargs)
+
+    def plan_vs_actual(
+        self, timeline, now, horizon, *, calendar=None, **kwargs
+    ):
+        """The plan against what happened to the unit: its ``Timeline``
+        (outage log) to ``now``, as ``RepairableRBD.plan_vs_actual`` of
+        its one-node diagram; a ``state`` is the unit's ``NodeState``."""
+        state = kwargs.pop("state", None)
+        if state is not None:
+            kwargs["state"] = {self.NODE: state}
+        start = kwargs.pop("start_state", None)
+        if start is not None:
+            kwargs["start_state"] = {self.NODE: start}
+        return self.diagram(calendar).plan_vs_actual(
+            {self.NODE: timeline}, now, horizon, **kwargs
+        )
+
+    def expected_cost(self, t, *, calendar=None, **kwargs):
+        """The plan's expected cost to ``t``:
+        ``RepairableRBD.expected_cost`` of its one-node diagram."""
+        return self.diagram(calendar).expected_cost(t, **kwargs)
+
+    def expected_cost_rate(self, *, calendar=None) -> float:
+        """The plan's long-run expected cost per unit time:
+        ``RepairableRBD.expected_cost_rate`` of its one-node diagram."""
+        return self.diagram(calendar).expected_cost_rate()
+
+    def events_by_period(self, usage, period: str = "month", **kwargs):
+        """The plan's expected events (and on request costs) in each
+        calendar period: ``schedule.events_by_period`` of its one-node
+        diagram; ``usage`` a ``UsageForecast`` or a ``CalendarContext``
+        (giving the node ``"unit"`` its duty plan)."""
+        from repyability.schedule import events_by_period
+
+        return events_by_period(self.diagram(), usage, period, **kwargs)
+
+    def failures_by_period(self, usage, period: str = "month", **kwargs):
+        """The plan's expected failures (with the other events) in each
+        calendar period, as ``events_by_period``: a unit in a plan is
+        worked out by the diagram's engine, its tasks and repairs taking
+        their time, on the calendar its duty plan gives."""
+        return self.events_by_period(usage, period, **kwargs)
+
+    def optimal_replacement_interval(self, *, calendar=None, **kwargs):
+        """The plan's best age-replacement interval:
+        ``RepairableRBD.optimal_replacement_intervals`` of its one-node
+        diagram (the same arguments, but ``nodes``)."""
+        return self.diagram(calendar).optimal_replacement_intervals(**kwargs)
+
+    def optimal_inspection_interval(self, *, calendar=None, **kwargs):
+        """The plan's best proof-test interval:
+        ``RepairableRBD.optimal_inspection_intervals`` of its one-node
+        diagram (the same arguments, but ``nodes``)."""
+        return self.diagram(calendar).optimal_inspection_intervals(**kwargs)
+
+
+#: Each valuation of a plan alone, by the route of its diagram's method.
+_PLAN_ROUTES = {
+    "expected_npv": "expected_npv",
+    "cash_flows": "expected_npv",
+    "npv_distribution": "npv_distribution",
+    "plan_vs_actual": "plan_vs_actual",
+    "expected_cost": "expected_cost",
+    "expected_cost_rate": "expected_cost_rate",
+    "events_by_period": "expected_events_by_window",
+    "failures_by_period": "expected_events_by_window",
+    "optimal_replacement_interval": "optimal_replacement_intervals",
+    "optimal_inspection_interval": "optimal_inspection_intervals",
+}

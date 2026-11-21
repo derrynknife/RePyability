@@ -169,6 +169,22 @@ def _require_times(rbd, node) -> None:
             )
 
 
+def _require_own_failures(rbd, node, simulate: str) -> None:
+    """Raise if a component also fails at shocks of a ``Shocks`` group:
+    its own models do not give its failures, which the group's shocks
+    add to. ``simulate`` says what to run instead."""
+    from repyability.rbd.ccf import Shocks
+
+    for group in rbd.ccf_groups:
+        if node in group.members and isinstance(group.model, Shocks):
+            raise NotImplementedError(
+                f"Component {node!r} is in common-cause group "
+                f"{list(group.members)}, whose shocks fail it too, at a "
+                "rate of their own, so its own life does not give its "
+                f"failures: {simulate}"
+            )
+
+
 def _require_unscheduled_stages(rbd, node) -> None:
     """Raise if a degrading component is maintained or inspected on a
     schedule: its long-run time in each stage has no exact value."""
@@ -492,9 +508,9 @@ def _require_no_plans(rbd) -> None:
             f"{_upgraded(rbd)} (its units have another life from then), "
             "so the diagram has no long run with it: ask for its values "
             "over a horizon (expected_npv(horizon), expected_cost(T), "
-            "mission_availability(T), point_availability(t)), or, for "
-            "the long run, give the component the life it has after the "
-            "upgrade."
+            "mission_availability(T), point_availability(t)); the "
+            "long-run methods (mean_availability(), expected_cost_rate() "
+            "and the others) give the long run once upgraded."
         )
     from ._shutdowns import require_no_several
 

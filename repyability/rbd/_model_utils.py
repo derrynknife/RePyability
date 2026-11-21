@@ -129,6 +129,14 @@ def life_functions(model) -> Dict[str, str]:
     return missing
 
 
+def is_diagram_life(model) -> bool:
+    """Whether ``model`` is a ``NonRepairableRBD`` taken as a life: one
+    whose reliability changes with time."""
+    from .non_repairable_rbd import NonRepairableRBD
+
+    return isinstance(model, NonRepairableRBD) and not model.is_fixed
+
+
 def by_functions(model) -> bool:
     """Whether ``model`` is a life taken by what it can do (#93): a
     surpyval model none of the kinds RePyability takes by its class (a
@@ -137,12 +145,16 @@ def by_functions(model) -> bool:
     of ``LIFE_FUNCTIONS`` (``life_functions``): a Royston-Parmar fit, a
     regression at one unit's covariates (``regression.at(Z)``), a
     destructive degradation model, and any other surpyval model with
-    them."""
+    them. A ``NonRepairableRBD`` whose reliability changes with time is
+    one too: a subassembly replaced whole at its failure, taken by its
+    functions (its ``qf`` inverting its ``ff``)."""
     from surpyval import NonParametric, Parametric
 
     from ._degradation import is_degradation
     from .joint_node import is_joint
 
+    if is_diagram_life(model):
+        return True
     if not type(model).__module__.startswith("surpyval."):
         return False
     if (

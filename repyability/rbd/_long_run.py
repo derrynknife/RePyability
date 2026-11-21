@@ -136,6 +136,7 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
     for check in (
         partial(_requirements._require_perfect_repair, rbd),
         partial(_requirements._require_times, rbd),
+        partial(_shocked, rbd),
     ):
         message = r.refusal(partial(check, node))
         if message:
@@ -230,6 +231,17 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
     if life == r.SIMULATED:
         return life, f"age replacement of a life from {how}"
     return r.NUMERICAL, "age replacement: its mean up time, by quadrature"
+
+
+def _shocked(rbd, node) -> None:
+    """Raise for a member of a ``Shocks`` group: its long-run values
+    have no exact form (see ``_require_own_failures``)."""
+    _requirements._require_own_failures(
+        rbd,
+        node,
+        "estimate its availability by simulation, with availability() "
+        "(the run's node_uptime and node_downtime).",
+    )
 
 
 def _long_run_nodes(rbd) -> Dict[Any, Tuple[str, str]]:
@@ -384,6 +396,7 @@ def _node_availability(rbd, node) -> float:
         if node in chain.nodes:
             return chain.availability(node)
         return float(rbd.components[node].mean_availability())
+    _shocked(rbd, node)
     if node in rbd._imperfect:
         terms = _minimal_cycle_terms(rbd, node)
         return terms.up / terms.length
@@ -425,6 +438,7 @@ def _node_unavailability(rbd, node) -> float:
     not couple the components (see ``_long_run_unavailabilities``)."""
     _requirements._require_perfect_repair(rbd, node)
     _requirements._require_times(rbd, node)
+    _shocked(rbd, node)
     if node in rbd._imperfect:
         terms = _minimal_cycle_terms(rbd, node)
         return min(1.0, (terms.failed + terms.planned) / terms.length)
@@ -619,6 +633,7 @@ def replacement_cycle(rbd, node) -> ReplacementCycle:
     # The checks _node_long_run makes, in its order.
     _requirements._require_perfect_repair(rbd, node)
     _requirements._require_times(rbd, node)
+    _shocked(rbd, node)
     _requirements._require_no_opportunities(rbd, node)
     _requirements._require_block_models(rbd, node)
     cycle = _block_cycle(rbd, node)
@@ -1216,6 +1231,7 @@ def _node_frequencies(rbd, node) -> Tuple[float, float, float]:
 
     _requirements._require_perfect_repair(rbd, node)
     _requirements._require_times(rbd, node)
+    _shocked(rbd, node)
     component = rbd.components[node]
     if isinstance(component, RepairableRBD):
         failures, planned = _outage_frequencies(component)
@@ -1482,3 +1498,86 @@ def mean_down_time(
     if omega > 0.0:
         return unavailability / omega
     return 0.0 if unavailability <= 0.0 else float("inf")
+
+
+#: The long-run methods a diagram with upgrades answers as the diagram
+#: after them (see ``after_upgrades``): those that are long-run values,
+#: or are by default (no ``x``, ``window`` or ``state`` given).
+#: ``parameter_sensitivity`` is not one: its levers are the diagram's
+#: own (the upgrade's time, the old life), which the diagram after the
+#: upgrades has not; the long-run values it asks for are those once
+#: upgraded all the same (``ROUTED_AFTER_UPGRADES``).
+AFTER_UPGRADES = (
+    "availability_allocation",
+    "barlow_proschan_importance",
+    "birnbaum_importance",
+    "capacity_distribution",
+    "criticality_importance",
+    "differential_importance",
+    "expected_cost_rate",
+    "expected_cost_rate_uncertainty",
+    "fussell_vesely",
+    "improvement_potential",
+    "joint_importance",
+    "mean_availability",
+    "mean_availability_uncertainty",
+    "mean_down_time",
+    "mean_time_between_failures",
+    "mean_unavailability",
+    "mean_up_time",
+    "mttf_mttr_allocation",
+    "node_action_rates",
+    "node_availability",
+    "pfd_breakdown",
+    "replacement_cycle",
+    "risk_achievement_worth",
+    "risk_reduction_worth",
+    "system_failure_frequency",
+    "uncertainty_importance",
+)
+
+#: The methods whose routes are those of the diagram after the upgrades.
+ROUTED_AFTER_UPGRADES = AFTER_UPGRADES + ("parameter_sensitivity",)
+
+#: The arguments that ask one of those methods for values over time.
+_OVER_TIME = ("x", "window", "state")
+
+
+def after_upgrades(rbd):
+    """The diagram as it is once its upgrades are done, for its long run:
+    each upgraded component with the upgrade's life in place of its own,
+    and no upgrade (its time and capital cost dropped; a block
+    replacement on its own interval kept). Built once and kept."""
+    twin = getattr(rbd, "_upgraded_twin", None)
+    if twin is None:
+        components = dict(rbd._init_args["components"])
+        for node in rbd._upgrades:
+            spec = dict(components[node])
+            upgrade = spec.pop("upgrade")
+            spec["reliability"] = upgrade["reliability"]
+            components[node] = spec
+        twin = type(rbd)(**{**rbd._init_args, "components": components})
+        rbd._upgraded_twin = twin
+    return twin
+
+
+def follows_upgrades(method):
+    """A long-run method of ``RepairableRBD`` (one of ``AFTER_UPGRADES``):
+    on a diagram with upgrades, and not asked over time, the long run is
+    that after the upgrades, the earlier stretch ignored, so the method
+    is asked of ``after_upgrades``."""
+    import inspect
+
+    signature = inspect.signature(method)
+    timed = [name for name in _OVER_TIME if name in signature.parameters]
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        if self._upgrades:
+            given = signature.bind(self, *args, **kwargs).arguments
+            if all(given.get(name) is None for name in timed):
+                twin = after_upgrades(self)
+                return getattr(twin, method.__name__)(*args, **kwargs)
+        return method(self, *args, **kwargs)
+
+    return wrapper
