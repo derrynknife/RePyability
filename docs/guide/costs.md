@@ -453,7 +453,10 @@ gives each run's net present value (`samples`) and their spread: `p10`,
 the worst `tail` of the runs. Its `mean` estimates `expected_npv`'s, within
 `mean_interval()`; `percentile_interval(q)` gives a percentile's confidence
 interval by the binomial method. It works where the exact methods refuse
-(crews with other lives, maintenance groups), as the simulation does. A
+(crews with other lives, maintenance groups, opportunistic renewals at
+shutdowns), as the simulation does. A shutdown's cost is charged at each of
+its starts; a component it holds off line is not charged for the hold, and a
+failure or renewal in the shut is charged as anywhere else. A
 cost charged at an event the histories do not record (a standby group's
 units' failures, tests, planned replacements that take no time, a set-up
 cost, a calendar policy's prices) is not left out: the method refuses the

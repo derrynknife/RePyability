@@ -837,8 +837,8 @@ def _shut_events(rbd, t_simulation: float, forced: set) -> list:
     """The events of the shutdowns' windows in ``[0, t_simulation)``: each
     start, and its end if it falls in the window, the nodes held at
     ``forced`` left out (they are held whatever a shut does). A shut in
-    no time that renews components opportunistically has its starts
-    alone, which hold nothing."""
+    no time that costs or renews components opportunistically has its
+    starts alone, which hold nothing (but charge its cost)."""
     from repyability.rbd import _shutdowns
 
     out = []
@@ -849,7 +849,11 @@ def _shut_events(rbd, t_simulation: float, forced: set) -> list:
             for node, age in rbd._outage_rules.get(shut.name, ())
             if node not in forced
         )
-        if not shut.duration > 0.0 and not rbd._outage_rules.get(shut.name):
+        if not (
+            shut.duration > 0.0
+            or shut.cost
+            or rbd._outage_rules.get(shut.name)
+        ):
             continue
         nodes = tuple(
             node for node in _shutdowns.scope(rbd, shut) if node not in forced
@@ -2991,11 +2995,17 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     # among its changes) were planned changes down, maintenance or a
     # test off line; and the system's changes: their times, the
     # component whose change made each, which of its changes that was,
-    # and whether it was planned.
+    # and whether it was planned. With shutdowns, also which of each
+    # component's planned changes were a shut's holds (places among its
+    # changes, as planned_of), and the changes down its hold hid, each
+    # charged: their times and whether planned (see _npv_runs).
     history = ctx.history
     at_start = [view[node] for node in index] if history else None
     times_of: list = [[] for _ in range(n)] if history else []
     planned_of: list = [[] for _ in range(n)] if history else []
+    shut_record = bool(history) and bool(rbd._shutdowns)
+    held_of: list = [[] for _ in range(n)] if shut_record else []
+    hidden_of: list = [[] for _ in range(n)] if shut_record else []
     system_record: tuple = ([], [], [], []) if history else ()
     # The system's state, and its up and down time until ``since``, its
     # last change; each component's last change, and the system's up and
@@ -3104,6 +3114,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
                     times_of[c].append(t)
                     if not event.status:
                         planned_of[c].append(len(times_of[c]) - 1)
+                        held_of[c].append(len(times_of[c]) - 1)
             if not event.status:
                 # Charged at its start; its paused nodes stand still.
                 if node.cost:
@@ -3221,6 +3232,11 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
                 times_of[c].append(t)
                 if not event.status and (event.preventive or event.inspection):
                     planned_of[c].append(len(times_of[c]) - 1)
+        elif shut_record and not event.status:
+            # A change down a shut's hold hides, charged all the same.
+            hidden_of[c].append(
+                (t, bool(event.preventive or event.inspection))
+            )
         if event.status:
             restored[c] += 1
         elif event.preventive:
@@ -3369,7 +3385,15 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     rec.opportunistic = opportunistic
     rec.outage_jobs = outage_jobs
     rec.history = (
-        (at_start, times_of, planned_of, started_up, system_record)
+        (
+            at_start,
+            times_of,
+            planned_of,
+            started_up,
+            system_record,
+            held_of if shut_record else None,
+            hidden_of if shut_record else None,
+        )
         if history
         else None
     )

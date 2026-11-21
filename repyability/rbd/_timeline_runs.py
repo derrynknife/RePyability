@@ -32,7 +32,11 @@ class Block(NamedTuple):
     happened); the system's state at 0 (``up``); and each simulation's
     changes of the system's (``system_offsets``: the time, the component
     whose change made it, which of that component's changes it was, and
-    whether it was planned)."""
+    whether it was planned). With shutdowns, the Python loop's also say
+    which changes were a shut's holds (``held``, beside ``planned``) and
+    the changes down a hold hid (``hidden``: bounds, offsets, times and
+    whether planned, laid out as the changes); numba's loop holds
+    nothing (``None``)."""
 
     start: np.ndarray
     bounds: np.ndarray
@@ -45,6 +49,20 @@ class Block(NamedTuple):
     causes: np.ndarray
     nth: np.ndarray
     system_planned: np.ndarray
+    held: Optional[np.ndarray] = None
+    hidden: Optional[tuple] = None
+
+
+class Hidden(NamedTuple):
+    """What a component's histories leave out under shutdowns: which of
+    its changes (aligned with its ``_Data.times``) were a shut's holds,
+    and the changes down a hold hid, each with its history, time and
+    whether planned."""
+
+    held: np.ndarray
+    history: np.ndarray
+    times: np.ndarray
+    planned: np.ndarray
 
 
 class Records:
@@ -131,6 +149,41 @@ class Records:
         )
         return components, system
 
+    def hidden(self) -> List[Hidden]:
+        """Each component's holds and hidden changes (see ``Hidden``), in
+        the order of the components."""
+        self.compact()
+        blocks = self.blocks or [_block([], self.m)]
+        out = []
+        for c in range(self.m):
+            held, history, times, planned = [], [], [], []
+            first = 0
+            for b in blocks:
+                lo, hi = b.bounds[c], b.bounds[c + 1]
+                n = b.up.size
+                held.append(
+                    np.zeros(hi - lo, bool)
+                    if b.held is None
+                    else b.held[lo:hi]
+                )
+                if b.hidden is not None:
+                    bounds, offsets, at, flags = b.hidden
+                    a, z = bounds[c], bounds[c + 1]
+                    counts = np.diff(offsets[c])
+                    history.append(first + np.repeat(np.arange(n), counts))
+                    times.append(at[a:z])
+                    planned.append(flags[a:z])
+                first += n
+            out.append(
+                Hidden(
+                    np.concatenate(held),
+                    np.concatenate(history or [np.zeros(0, np.int64)]),
+                    np.concatenate(times or [np.zeros(0)]),
+                    np.concatenate(planned or [np.zeros(0, bool)]),
+                )
+            )
+        return out
+
 
 def _block(histories: list, m: int) -> Block:
     """The Python loop's records of simulations (see ``_replicate``) as a
@@ -163,6 +216,34 @@ def _block(histories: list, m: int) -> Block:
             if places:
                 planned[bounds[c] + grouped[c, s] + np.asarray(places)] = True
     system = offsets([len(h[4][0]) for h in histories])
+    held = hidden = None
+    if any(h[5] is not None for h in histories):
+        # Under shutdowns: the holds, by their places as the planned
+        # changes, and the changes down they hid, laid out as the changes.
+        held = np.zeros(times.size, bool)
+        for s, h in enumerate(histories):
+            for c, places in enumerate(h[5]):
+                if places:
+                    at = bounds[c] + grouped[c, s] + np.asarray(places)
+                    held[at] = True
+        hidden_offsets = np.zeros((m, n + 1), np.int64)
+        np.cumsum(
+            np.array(
+                [[len(h[6][c]) for h in histories] for c in range(m)],
+                np.int64,
+            ).reshape(m, n),
+            axis=1,
+            out=hidden_offsets[:, 1:],
+        )
+        hidden_bounds = np.zeros(m + 1, np.int64)
+        np.cumsum(hidden_offsets[:, n], out=hidden_bounds[1:])
+        changes = [x for c in range(m) for h in histories for x in h[6][c]]
+        hidden = (
+            hidden_bounds,
+            hidden_offsets,
+            np.array([t for t, _ in changes], float),
+            np.array([p for _, p in changes], bool),
+        )
 
     def system_changes(field: int, dtype) -> np.ndarray:
         lists = (h[4][field] for h in histories)
@@ -180,6 +261,8 @@ def _block(histories: list, m: int) -> Block:
         system_changes(1, np.int64),
         system_changes(2, np.int64),
         system_changes(3, bool),
+        held,
+        hidden,
     )
 
 
@@ -195,9 +278,11 @@ def simulate(
     n_jobs,
     start: int,
     state=None,
+    hidden: bool = False,
 ):
     """``simulate_timelines``: validated, run, and returned as a
-    ``TimelineSimulation``."""
+    ``TimelineSimulation``; with ``hidden``, with each component's holds
+    and hidden changes too (``Records.hidden``, for pricing the runs)."""
     from repyability.rbd._runs import _UNSTREAMED
     from repyability.rbd.results import TimelineSimulation
 
@@ -275,9 +360,14 @@ def simulate(
         parts, recorded = tally.histories.data(t_simulation)
         data = dict(zip(rbd.components, parts))
         system = _named(rbd, recorded)
+        left_out = (
+            dict(zip(rbd.components, tally.histories.hidden()))
+            if hidden
+            else None
+        )
     finally:
         np.random.set_state(after)
-    return TimelineSimulation(
+    result = TimelineSimulation(
         system=Timelines._from_data(system),
         components={
             node: Timelines._from_data(d, node) for node, d in data.items()
@@ -289,6 +379,7 @@ def simulate(
         method="event loop",
         start=start,
     )
+    return (result, left_out) if hidden else result
 
 
 def with_costs(
