@@ -2013,8 +2013,8 @@ answers back into dates is Reliafy's too.)
   acquisition costs are paid at 0 in every run. Only the runs' present
   values are kept, made in parts of 2,000. A cost the histories do not
   record (a standby group's units' failures, tests, replacements that
-  take no time, calendar prices, set-up costs, shutdowns, a partial
-  restoration's replacement) refuses the diagram, naming the cost and
+  take no time, calendar prices, set-up costs, a partial restoration's
+  replacement) refuses the diagram, naming the cost and
   what to run instead, rather than being left out. The summaries are
   plain: the mean with its normal interval, percentiles as order
   statistics (the `ceil(p n)`-th lowest) with binomial intervals, the
@@ -2174,8 +2174,7 @@ answers back into dates is Reliafy's too.)
   `"preventive"` category, as a group's opportunistic renewals are,
   rather than a category of their own (which would widen every cost
   table and both engines' arrays); their cost is the count times the
-  part's preventive cost. `npv_distribution` still refuses shutdowns,
-  whose holds and costs its histories do not record.
+  part's preventive cost. `npv_distribution` prices them (UC-61).
 
 ### UC-57: "Our selling price steps up next year, labour rises 4% a year and parts 2%, and finance quotes a real rate of 5% with 3% inflation. What is the plan worth, and does it matter whether we work in real or nominal money?"
 
@@ -2940,6 +2939,56 @@ answers back into dates is Reliafy's too.)
   part, its long run after the upgrade, its spares and `plan_vs_actual`,
   and retiring a single part (`retire_at={node: t}`) are left for a
   later use case.
+
+### UC-61: "Our plan has two outages a year that cost 300 each, and at each we renew the pump if it is past 500 hours. The expected NPV is fine; how bad could a run be?"
+
+- **Status:** built: `npv_distribution`, `compare_npv` and
+  `best_switch_time` take a diagram with `shutdowns`.
+- **Who asks, and why:** the planner of UC-46 whose plan has planned
+  outages (UC-23, UC-24) or renews parts at them (UC-56): the spread of
+  the NPV was refused, though `cost()` gave the undiscounted spread and
+  `expected_npv` the mean where it is exact.
+- **What they know:** the diagram, its shutdowns (times or a period, a
+  duration, a scope, a cost, opportunistic renewals), the value rate,
+  the horizon and the rate.
+- **What they want back:** UC-46's answer: each run's NPV, its
+  percentiles, the chance below a hurdle, the CVaR; two plans compared
+  run for run.
+- **How it is solved (simulated):** the runs are priced as UC-46's,
+  with three things the histories alone got wrong. A shut's cost is
+  deterministic: charged at each of its starts in the window, in every
+  run, discounted exactly. A component a shut holds off line shows a
+  planned change down in its history, which is no task: the Python loop
+  (the only engine that holds anything; numba's runs shuts in no time
+  that cost nothing) marks each hold, and it is not charged. And the
+  changes a hold hides (a failure while idle in the shut, a renewal made
+  in it: a task at the shut that comes after the hold, an opportunistic
+  renewal) are recorded beside the histories, each with its time and
+  whether planned, and charged as a recorded change is. The public
+  timelines are unchanged: what the system and a component's downtime
+  saw is still the held view.
+- **Today (by hand, before it was built):** refused, naming
+  `expected_npv` and `cost()`. Pricing the histories as they were, the
+  outage diagram of `test_shutdowns.py` (800 h, 300 runs) charged 393 a run of
+  preventive work for 128 done (each hold taken as a task) and missed
+  failures in the shuts; with the holds and hidden changes, each run's
+  undiscounted cost is `cost().samples`' to 1e-10. Building it showed
+  that a shut in no time with a cost was not charged by the simulation at
+  all (0 against `expected_cost`'s 45 over 10 shuts); it is now.
+- **Checks:** `test_npv_shutdowns.py`: at no discounting, each run
+  against the simulation's own cost and uptime, and each category
+  against `cost()`, for outages at given times (one standing a part
+  still), opportunistic renewals in long shuts, a shut in no time and a
+  part with its own tasks held by shuts that do no work on it; that
+  those cases have holds and hidden changes to price; the mean against
+  `expected_npv` (4,000 runs, a 99.99% interval) and the shuts' cost
+  against its calendar sum to 1e-12; identical plans differ by exactly
+  0; the shut in no time charged by `cost()`.
+- **Learned / open questions:** the hidden changes could be the
+  component's own history (its process under the hold) recorded in
+  full; only the charged changes are needed, so only those are kept.
+  `plan_vs_actual` still refuses shutdowns: a log given by hand would
+  need its holds marked.
 
 ### UC-53: "The trip is tested at 6 and 12 months and then at 2 years, not on one interval. Over the next 3 years, what will each test find, how long is the trip failed, and what does the plan cost against never testing it?"
 

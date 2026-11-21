@@ -7,7 +7,12 @@ times they fell (``_pricing``): each failure its repair and replace
 costs, each planned outage its preventive cost, each component's and the
 system's time down their downtime costs, and the system's time up its
 value, the integral of ``value_rate * exp(-r t)`` over its spans up. The
-acquisition costs are paid at 0 in every run. A cost charged at an event
+acquisition costs are paid at 0 in every run, and each shutdown's cost at
+each of its starts (its calendar's, the same in every run). A component a
+shut holds off line shows a planned change in its history that is no
+task: the Python loop marks those holds, and records the changes down a
+hold hid (a failure in the shut, a renewal made in it), which are charged
+as recorded ones are (``_timeline_runs.Hidden``). A cost charged at an event
 the histories do not record (``_pricing.unrecorded``: a standby group's
 units' failures, a test, a replacement that takes no time, a set-up) is
 not left out: the method refuses the diagram, naming it. Only the runs'
@@ -54,13 +59,6 @@ _INSTEAD = (
 def refusal(rbd) -> Optional[Tuple[str, Tuple[Hashable, ...]]]:
     """Why the runs of ``rbd`` cannot be priced from their histories, and
     the components named, or None if they can."""
-    if rbd._shutdowns:
-        return (
-            "The diagram has shutdowns, which hold components off line and "
-            "are charged at times the histories do not record: the runs "
-            "cannot be priced from them." + _INSTEAD,
-            (),
-        )
     if _crews._call_out_priced(rbd):
         return (
             "The call-out crew's fee and rate are charged when it is "
@@ -201,6 +199,63 @@ def _seed(seed):
     return seed
 
 
+def priced_chunk(
+    rbd,
+    horizon: float,
+    ends: np.ndarray,
+    rate: float,
+    value_rate: float,
+    size: int,
+    seed: int,
+    engine: str,
+    first: int,
+    state,
+):
+    """Simulations ``first`` to ``first + size - 1`` of the run ``seed``
+    seeds, over ``horizon``, priced (``_pricing.priced``, by the periods
+    ending at ``ends``) with each shutdown's cost at its starts: the
+    ledger, the runs (a ``TimelineSimulation``)."""
+    from repyability.rbd import _timeline_runs
+
+    runs, hidden = _timeline_runs.simulate(
+        rbd,
+        horizon,
+        size,
+        seed,
+        None,
+        None,
+        False,
+        engine,
+        None,
+        first,
+        state,
+        hidden=True,
+    )
+    logs = {node: runs.components[node]._data for node in rbd.costs}
+    ledger = _pricing.priced(
+        rbd,
+        logs,
+        runs.system._data,
+        ends,
+        rate,
+        value_rate,
+        (),
+        size,
+        hidden=hidden if rbd._shutdowns else None,
+    )
+    for shut in rbd._shutdowns.values():
+        # Its cost at each start, in every run (as the loop charges it).
+        starts = shut.starts(horizon)
+        ledger.events(
+            np.repeat(np.arange(size), starts.size),
+            np.tile(starts, size),
+            shut.cost,
+            "shutdown",
+            None,
+        )
+    return ledger, runs
+
+
 def _up_by_period(system, ends: np.ndarray, size: int) -> np.ndarray:
     """Each history's availability in each period ending at ``ends``: the
     share of the period it was up, ``(size, periods)``."""
@@ -281,19 +336,19 @@ def _priced_runs(
     used = None
     for first in range(0, n, _CHUNK):
         size = min(_CHUNK, n - first)
-        runs = rbd.simulate_timelines(
+        ledger, runs = priced_chunk(
+            rbd,
             horizon,
-            mc_samples=size,
-            seed=seed,
-            engine=engine,
-            start=first,
-            state=state,
+            ends,
+            rate,
+            value_rate,
+            size,
+            seed,
+            engine,
+            first,
+            state,
         )
         used = used or runs.engine
-        logs = {node: runs.components[node]._data for node in rbd.costs}
-        ledger = _pricing.priced(
-            rbd, logs, runs.system._data, ends, rate, value_rate, (), size
-        )
         for key, (pv, plain) in ledger.totals().items():
             present.setdefault(key, np.zeros(n))[first : first + size] = pv
             nominal.setdefault(key, np.zeros(n))[first : first + size] = plain

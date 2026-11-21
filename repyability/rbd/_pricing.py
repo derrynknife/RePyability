@@ -263,6 +263,7 @@ def priced(
     value_rate: float,
     skip,
     size: int = 1,
+    hidden: Optional[Mapping[Any, Any]] = None,
 ) -> Ledger:
     """The cash flows the histories imply over ``[0, ends[-1]]``, by
     period, category and component, history by history, priced with the
@@ -270,17 +271,28 @@ def priced(
     times they fell, but for the cells in ``skip``, ``{(category,
     component)}``. ``logs`` are each component's histories and ``system``
     the system's (``timelines._Data``); ``system`` is needed only for a
-    system downtime cost or a value."""
+    system downtime cost or a value. ``hidden`` gives, under shutdowns,
+    each component's holds and the changes down they hid
+    (``_timeline_runs.Hidden``): a hold is no task, and a hidden change
+    is charged as a recorded one would be."""
     ledger = Ledger(ends, rate, size)
     for node, costs in rbd.costs.items():
         data = logs[node]
         history, times, down, planned = changes(data)
+        tasks = down & planned
+        left_out = None if hidden is None else hidden[node]
+        if left_out is not None:
+            tasks &= ~left_out.held
+            history = np.concatenate((history, left_out.history))
+            times = np.concatenate((times, left_out.times))
+            down = np.concatenate((down, np.ones(left_out.times.size, bool)))
+            planned = np.concatenate((planned, left_out.planned))
+            tasks = np.concatenate((tasks, left_out.planned))
         failures = down & ~planned
-        outages = down & planned
         charges = [("repair_cost", "repair", failures)]
         if node not in rbd._imperfect:
             charges.append(("replace_cost", "replace", failures))
-        charges.append(("preventive_cost", "preventive", outages))
+        charges.append(("preventive_cost", "preventive", tasks))
         for key, category, mask in charges:
             if key in costs and (category, node) not in skip:
                 ledger.events(

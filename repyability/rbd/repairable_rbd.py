@@ -4646,15 +4646,19 @@ class RepairableRBD(RBD):
         time down their downtime costs, each discounted at the time it
         fell (``exp(-discount_rate * t)``), less the value earned while
         the system was up, and the acquisition costs paid at the start.
-        The runs' mean estimates ``expected_npv``'s value, within its
-        confidence interval. It works for diagrams the exact methods
-        refuse (repair crews with other lives, maintenance groups,
-        scheduled covariates), as the simulation does.
+        A shutdown's cost is charged at each of its starts; a component
+        it holds off line is not charged for the hold, and what happens
+        to it in the shut (a failure, an opportunistic renewal) is
+        charged as anywhere else. The runs' mean estimates
+        ``expected_npv``'s value, within its confidence interval. It
+        works for diagrams the exact methods refuse (repair crews with
+        other lives, maintenance groups, scheduled covariates,
+        opportunistic renewals at shutdowns), as the simulation does.
 
         A cost charged at an event the histories do not record (a
         standby group's units' failures, tests and inspections, planned
         replacements that take no time, a calendar policy's prices, a
-        maintenance group's set-up, a shutdown) is not left out: the
+        maintenance group's set-up) is not left out: the
         method refuses the diagram, naming it. A cost given as a
         distribution is charged at its mean (``priced_at_mean``).
 
