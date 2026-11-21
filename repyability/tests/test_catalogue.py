@@ -37,6 +37,7 @@ from repyability import (
     RepeatedStandbyNode,
     StandbyModel,
 )
+from repyability.maintenance import UnitPlan
 from repyability.rbd import routes
 from repyability.rbd._bayesian_life import as_life
 from repyability.rbd._degradation import is_degradation
@@ -100,6 +101,18 @@ NOT_NODES = {
     "SimulationChunk",
     "Timeline",
     "Timelines",
+    "ValueSchedule",
+    # A maintenance plan's parts (the plan itself is a node).
+    "AgePolicy",
+    "AtShutdown",
+    "BlockPolicy",
+    "CalendarReplacement",
+    "ConditionPolicy",
+    "ImperfectRepair",
+    "Inspection",
+    "Prices",
+    "Restoration",
+    "Upgrade",
 }
 #: The node classes a NonRepairableRBD takes as a node's model.
 NONREPAIRABLE_NODES = {
@@ -118,6 +131,7 @@ NONREPAIRABLE_NODES = {
 #: The node classes a RepairableRBD takes, as a component or its life.
 REPAIRABLE_NODES = {
     DegradingNode,
+    UnitPlan,
     NonRepairable,
     PerfectReliability,
     PosteriorPredictive,
@@ -235,6 +249,9 @@ def nonrepairable_kinds(rbd, models, options) -> set:
 def repairable_kinds(rbd, components, options) -> set:
     found = set()
     for component in components.values():
+        if isinstance(component, UnitPlan):
+            found.add("UnitPlan")
+            component = component.spec()
         if not isinstance(component, dict):
             found |= model_kinds(component)
             continue

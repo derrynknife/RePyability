@@ -23,6 +23,37 @@ release between minors that only adds (0.19.1).
   A block tested at given times stays simulated, and the exact methods
   say so.
 
+- Added: each unit's own duty plan on the calendar (UC-64 of the
+  schedule README). A block's `"duty"` takes a `DutySchedule` (the
+  shares of the time it runs over the diagram's clock, from
+  `UsageForecast.schedule()`) as well as one share: its life is drawn in
+  operating hours and put on the calendar through the plan (a unit put
+  in at `t0` fails when the plan has run its life on from `t0`), and a
+  `"preventive"` task counted in operating time (`"basis":
+  "operating"`) falls when the plan reaches it. Such a block is
+  simulated (the Python engine; the exact methods refuse it, saying
+  why), and `cost_by_window` then takes each window's mean from the
+  simulations, as it does for a covariate schedule.
+  `schedule.CalendarContext(usage, duty={node: forecast or share},
+  unit=)` is the calendar an analysis runs on: `events_by_period` takes
+  it, giving each unit its plan (counting the events in the
+  simulations' histories, and discounting each simulated cost from when
+  it falls, where a plan changes), and `rule_times` gives a recurrence
+  rule's dates on the diagram's clock for a task's `"replace_at"`.
+
+- Added: `UnitPlan`, one unit's maintenance plan (UC-63 of the
+  maintenance README): its life and repair models, its tasks (`AgePolicy`,
+  `BlockPolicy`, `ConditionPolicy`, `CalendarReplacement`, `AtShutdown`,
+  `Inspection`, `Upgrade`, with a `Restoration` for a task that restores
+  partly), its imperfect repairs (`ImperfectRepair`) and its `Prices`,
+  each task in its own clock, as frozen plain data that saves
+  (`to_dict`, `from_dict`). A `RepairableRBD` node takes a plan as it
+  takes the spec dict, which is the plan's shorthand
+  (`UnitPlan.from_spec`, `plan.spec()`); `RepairableRBD.plans` reads
+  each spec node back as a plan. A node given a plan is the node given
+  its spec: no result changes. (The name `MaintenancePlan` stays the
+  result of choosing intervals.)
+
 - Added: a value schedule and escalation in the simulated NPV and in
   a plan against what happened (UC-57 of the maintenance README, part
   2). `npv_distribution`, `compare_npv` and `plan_vs_actual` take
@@ -625,6 +656,20 @@ release between minors that only adds (0.19.1).
   (exact by default, simulation on request).
 
 ### Changed
+
+- Changed: a task counted in operating time on a block with no
+  `"duty"` is no longer refused: the diagram's clock is then the
+  block's operating time (as a share of 1), until an analysis's
+  calendar gives the block its plan. Nothing that ran before changes.
+
+- Changed: a block's `"duty"` (and a life at a usage rate) moves its
+  life onto the calendar by the model's own `rescale_time` where
+  surpyval has it (its release after 0.28), so any model that rescales
+  itself takes a duty, a mixture among them. Values move in the last
+  bits where surpyval's arithmetic differs from RePyability's own (a
+  scale times `1 / d` rather than over `d`): exact window counts by
+  some 6e-15 relative on the diagrams checked. With surpyval 0.28
+  nothing changes.
 
 - Changed: money has one home, `repyability.value`: discounting (one
   convention, continuous at a rate per unit time, with a yearly rate

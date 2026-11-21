@@ -33,6 +33,7 @@ ends.
 answers and how it is solved.
 """
 
+from repyability.schedule._calendar import CalendarContext
 from repyability.schedule._duty import (
     Continuous,
     DutyPlan,
@@ -78,6 +79,7 @@ from repyability.schedule._value import (
 )
 
 __all__ = [
+    "CalendarContext",
     "Continuous",
     "Crossing",
     "DutyPlan",

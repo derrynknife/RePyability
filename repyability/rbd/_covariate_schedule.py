@@ -59,18 +59,66 @@ _REFUSED_KEYS = {
 
 
 def is_scheduled(model) -> bool:
-    """Whether ``model`` is a life under a covariate schedule."""
-    return isinstance(model, ScheduledLife)
+    """Whether ``model`` is a life on the diagram's clock (a
+    ``ClockLife``: under a covariate schedule, or on a duty plan that
+    changes over time)."""
+    return isinstance(model, ClockLife)
 
 
-def scheduled(component) -> Optional["ScheduledLife"]:
-    """The ``ScheduledLife`` of a ``RepairableRBD`` component (a
-    ``NonRepairable``), or None for one with no covariate schedule."""
+def scheduled(component) -> Optional["ClockLife"]:
+    """The ``ClockLife`` of a ``RepairableRBD`` component (a
+    ``NonRepairable``), or None for one whose life does not depend on
+    when it is put into service."""
     life = getattr(component, "reliability", None)
-    return life if isinstance(life, ScheduledLife) else None
+    return life if isinstance(life, ClockLife) else None
 
 
-class ScheduledLife:
+def on_clock(rbd) -> bool:
+    """Whether a component of ``rbd`` has a life on the diagram's clock
+    (a ``ClockLife``), which only the simulations take."""
+    return any(
+        scheduled(component) is not None
+        for component in rbd.components.values()
+    )
+
+
+class ClockLife:
+    """A unit's life on the diagram's clock: what is left of it depends
+    on when the unit is put into service (``life_left``), so it is no
+    renewal process, and only the simulations (the Python engine) take
+    it. A covariate schedule's (``ScheduledLife``) and a duty plan's that
+    changes over time (``_duty.PlannedLife``) are such lives."""
+
+    #: Only simulations take it (as a simulated ``StandbyModel``).
+    is_simulated = True
+    #: Whether an age has no one meaning on it (the unit's clock changes
+    #: speed), so that a virtual age and a start at an age are refused.
+    clock = False
+    node: Any = None
+    #: How a message names what the block runs on.
+    lead = "runs on a covariate schedule"
+    #: Why an age has no one meaning on it (with ``clock``).
+    aged = (
+        "with an accelerated failure time (or life) model, whose clock "
+        "changes speed with the covariates"
+    )
+
+    def life_left(self, t0: float, age: float, u: float) -> float:
+        raise NotImplementedError  # pragma: no cover - each has its own
+
+    def _no_reliability(self, what: str = "reliability") -> Exception:
+        """The refusal of the exact and numerical methods (see
+        ``is_simulated``), one message whatever ``what`` they need."""
+        return NotImplementedError(
+            f"Component {self.node!r} {self.lead} on the diagram's clock, "
+            "so it has no reliability or mean life of its own: each "
+            "unit's life depends on when it is put into service. Only the "
+            "simulations take it: availability, cost and "
+            "simulate_timelines (the Python engine)."
+        )
+
+
+class ScheduledLife(ClockLife):
     """A unit's life under a covariate schedule on the diagram's clock
     (see the module's notes). It is a life only simulations take: its
     ``sf``, ``ff``, ``mean`` and ``random`` refuse (a unit's life depends
@@ -87,9 +135,6 @@ class ScheduledLife:
     node : hashable
         The block's name, for the messages.
     """
-
-    #: Only simulations take it (as a simulated ``StandbyModel``).
-    is_simulated = True
 
     def __init__(self, model: Any, schedule: Any, node: Any = None):
         from surpyval.univariate.regression import StepSchedule
@@ -194,18 +239,6 @@ class ScheduledLife:
             )
 
     # -- What it refuses ---------------------------------------------------
-
-    def _no_reliability(self, what: str = "reliability") -> Exception:
-        """The refusal of the exact and numerical methods (see
-        ``is_simulated``), one message whatever ``what`` they need."""
-        return NotImplementedError(
-            f"Component {self.node!r} runs on a covariate schedule on the "
-            "diagram's clock, so it has no reliability or mean life of its "
-            "own: each unit's life depends on when it is put into service. "
-            "Only the "
-            "simulations take it: availability, cost and "
-            "simulate_timelines (the Python engine)."
-        )
 
     def sf(self, x):
         raise self._no_reliability()
@@ -421,11 +454,12 @@ def check(rbd) -> None:
     members fail at their constant rates."""
     for group in rbd.ccf_groups:
         for member in group.members:
-            if scheduled(rbd.components.get(member)) is not None:
+            life = scheduled(rbd.components.get(member))
+            if life is not None:
                 raise ValueError(
-                    f"Component {member!r} runs on a covariate schedule, "
-                    "and is in a common-cause group, whose members fail "
-                    "at constant rates: leave it out of the group."
+                    f"Component {member!r} {life.lead}, and is in a "
+                    "common-cause group, whose members fail at constant "
+                    "rates: leave it out of the group."
                 )
 
 
@@ -438,7 +472,22 @@ def check_state(rbd, node, state, inspected: bool) -> None:
     age at the covariates in force at 0."""
     life = scheduled(rbd.components[node])
     assert life is not None
-    lead = f"Component {node!r} runs on a covariate schedule"
+    lead = f"Component {node!r} {life.lead}"
+    if getattr(life, "new_only", False) and not (
+        state.alive
+        and not state.age
+        and not state.virtual_age
+        and state.since_scheduled is None
+        and not state.stationary
+        and not state.own_life
+        and not state.maintenance
+    ):
+        raise NotImplementedError(
+            f"{lead}, which says its operating time from the diagram's 0 "
+            "on, not before: a state other than new (an age, a task last "
+            "done, down) is not taken on it. Leave it out (new), or give "
+            "its duty as one share."
+        )
     if state.stationary:
         raise NotImplementedError(
             f"{lead}, so it has no long-run state: give its state now, or "
@@ -457,9 +506,8 @@ def check_state(rbd, node, state, inspected: bool) -> None:
         return
     if life.clock:
         raise NotImplementedError(
-            f"{lead} with an accelerated failure time (or life) model, "
-            "whose clock changes speed with the covariates, so an age "
-            "has no one meaning on it: leave it out (new)."
+            f"{lead} {life.aged}, so an age has no one meaning on it: "
+            "leave it out (new)."
         )
     if inspected:
         raise NotImplementedError(
@@ -467,6 +515,7 @@ def check_state(rbd, node, state, inspected: bool) -> None:
             "drawn from its last test, before the diagram's time starts. "
             "Leave it out (new)."
         )
+    assert isinstance(life, ScheduledLife)  # a duty plan's has clock
     k, _ = life._step_at(0.0)
     if not life._curves(k)[0](age) < math.inf:
         raise ValueError(

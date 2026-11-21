@@ -1100,19 +1100,24 @@ def _failures_between(model, ages: np.ndarray) -> np.ndarray:
     return out
 
 
-def _on_duty(components: dict) -> Tuple[dict, dict]:
+def _on_duty(components: dict) -> Tuple[dict, dict, dict]:
     """The components, each spec whose life is at a usage rate given the
     surpyval distribution it is (``_usage.first_clock_life``), each spec
     with a ``"duty"`` given its life on the
-    calendar (see ``_duty.on_calendar``): one object for each model and
+    calendar (see ``_duty.on_calendar``; on a duty plan that changes over
+    time, a ``_duty.PlannedLife``): one object for each model and
     duty, so that components sharing a model still share it; and each
     task counted in operating time put on the calendar through its
-    block's duty (``_duty.tasks_on_calendar``). Return them, and the duty
+    block's duty (``_duty.tasks_on_calendar``). Return them, the duty
     of each component with such a task (its tasks' times in operating
-    time per unit of calendar time)."""
+    time per unit of calendar time), and the ``PlannedLife`` of each
+    component whose preventive task is counted in operating time on a
+    plan that changes (its task's ``clock``)."""
     from repyability.rbd._duty import (
-        duty_fraction,
+        PlannedLife,
+        duty_value,
         on_calendar,
+        planned_refusals,
         tasks_on_calendar,
     )
     from repyability.rbd._usage import first_clock_life, is_life_at_usage
@@ -1120,6 +1125,7 @@ def _on_duty(components: dict) -> Tuple[dict, dict]:
     moved: dict = {}
     out = {}
     operating: dict = {}
+    clocks: dict = {}
     for name, component in components.items():
         if isinstance(component, dict):
             d = None
@@ -1132,18 +1138,25 @@ def _on_duty(components: dict) -> Tuple[dict, dict]:
                     "reliability": moved["usage", id(life)],
                 }
             if component.get("duty") is not None:
-                d = duty_fraction(name, component["duty"])
+                d = duty_value(name, component["duty"])
                 life = component["reliability"]
-                key = (id(life), d)
-                if key not in moved:
-                    moved[key] = on_calendar(name, life, d)
-                component = {**component, "reliability": moved[key]}
+                if isinstance(d, float):
+                    key = (id(life), d)
+                    if key not in moved:
+                        moved[key] = on_calendar(name, life, d)
+                    component = {**component, "reliability": moved[key]}
+                else:
+                    planned_refusals(name, component)
+                    d = PlannedLife(life, d, name)
+                    component = {**component, "reliability": d}
             component, counted = tasks_on_calendar(name, component, d)
             if counted:
-                assert d is not None  # refused without one
-                operating[name] = d
+                if isinstance(d, PlannedLife):
+                    clocks[name] = d
+                else:
+                    operating[name] = 1.0 if d is None else d
         out[name] = component
-    return out, operating
+    return out, operating, clocks
 
 
 def _is_junction(name, component) -> bool:

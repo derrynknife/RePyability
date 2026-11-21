@@ -36,8 +36,10 @@ from repyability import (
     Shocks,
     StandbyModel,
 )
+from repyability.maintenance import AgePolicy, Prices, UnitPlan
 from repyability.rbd import bdd, modular
 from repyability.rbd._usage import has_at_usage
+from repyability.schedule import DutySchedule
 from repyability.tests.test_performance_equivalence import (
     binomial_first,
     instrument_air,
@@ -694,6 +696,16 @@ def repairable_kinds():
             "block replacement": system(
                 unit(preventive={"interval": 300.0, "policy": "block"})
             ),
+            # One unit's maintenance plan as a node: the node its spec
+            # gives (UC-63 of the maintenance README).
+            "a maintenance plan": system(
+                UnitPlan(
+                    life,
+                    repair,
+                    tasks=(AgePolicy(interval=300.0, cost=4.0),),
+                    prices=Prices(repair=2.0, downtime=1.0),
+                )
+            ),
             # Replaced at the times of a plan, and after the last no more
             # (block replacement at any list of times).
             "replaced at given times": system(
@@ -1046,6 +1058,22 @@ def repairable_kinds():
                     preventive={
                         "interval": 75.0,
                         "basis": "operating",
+                        "cost": 2.0,
+                    },
+                    replace_cost=10.0,
+                )
+            ),
+            # A duty plan that changes over time: lives and tasks in
+            # operating time put on the calendar through it (simulated).
+            "on a duty plan that changes, maintained by running hours": system(
+                unit(
+                    duty=DutySchedule(
+                        "hours", (0.0, 40.0, 100.0), (1.0, 0.0, 0.5)
+                    ),
+                    preventive={
+                        "interval": 75.0,
+                        "basis": "operating",
+                        "duration": E([2.0]),
                         "cost": 2.0,
                     },
                     replace_cost=10.0,

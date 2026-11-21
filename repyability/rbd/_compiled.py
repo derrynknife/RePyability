@@ -194,8 +194,16 @@ def _unsupported_level(
             continue
         if type(component) is not NonRepairable:
             return f"the {type(component).__name__} of node {name!r}"
-        if scheduled(component) is not None:
-            return f"the covariate schedule of node {name!r}"
+        clocked = scheduled(component)
+        if clocked is not None:
+            # A life on the diagram's clock (the Python loop's
+            # _ScheduledComponent).
+            what = (
+                "covariate schedule"
+                if clocked.lead.endswith("covariate schedule")
+                else "duty plan that changes over time"
+            )
+            return f"the {what} of node {name!r}"
         if not _streamed(prefix + (name,), plan, rbd._standby.get(name)):
             return (
                 f"the models of node {name!r} (their draws cannot be "
