@@ -99,6 +99,7 @@ NOT_NODES = {
     "SimulationChunk",
     "Timeline",
     "Timelines",
+    "ValueSchedule",
     # A maintenance plan's parts (the plan itself is a node).
     "AgePolicy",
     "AtShutdown",
@@ -114,7 +115,6 @@ NOT_NODES = {
 #: The node classes a NonRepairableRBD takes as a node's model.
 NONREPAIRABLE_NODES = {
     DegradingNode,
-    UnitPlan,
     LoadSharingModel,
     NonRepairableRBD,
     PerfectReliability,
@@ -129,6 +129,7 @@ NONREPAIRABLE_NODES = {
 #: The node classes a RepairableRBD takes, as a component or its life.
 REPAIRABLE_NODES = {
     DegradingNode,
+    UnitPlan,
     NonRepairable,
     PerfectReliability,
     PosteriorPredictive,
