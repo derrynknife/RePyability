@@ -1096,6 +1096,13 @@ class NonRepairableRBD(RBD):
             _, Q = self._ccf_system_pair(p, q, working, broken)
             with np.errstate(divide="ignore", invalid="ignore"):
                 return {node: shares[node] / Q for node in self.nodes}
+        return self._ccf_measure_at(measure, p, q, working, broken, kind)
+
+    def _ccf_measure_at(
+        self, measure: str, p, q, working, broken, kind: str = "failure"
+    ) -> Dict[Any, Union[float, np.ndarray]]:
+        """``_ccf_measure`` (but Fussell-Vesely) at the nodes' given
+        probabilities of working ``p`` and of failing ``q``."""
         evaluation = self._ccf_evaluation(p, q, working, broken)
         R, Q = (np.atleast_1d(value) for value in evaluation.system())
         out: Dict[Any, Union[float, np.ndarray]] = {}
@@ -1431,17 +1438,49 @@ class NonRepairableRBD(RBD):
             warned.add(index)
             validity_warning(group, largest)
 
-    def _require_no_ccf_for_states(self) -> None:
-        """Raise if the RBD has CCF groups, for the condition-based methods
-        (``sf_given_state``, ``remaining_life``,
-        ``importances_given_state``)."""
-        if self.ccf_groups:
-            raise NotImplementedError(
-                "Condition-based evaluation (sf_given_state / remaining_life "
-                "/ importances_given_state) does not yet account for "
-                "common-cause (CCF) groups; use sf()/ff() for CCF system "
-                "reliability."
-            )
+    def _require_ccf_states(self, state: Optional[dict] = None) -> None:
+        """Raise where the condition-based methods (``sf_given_state``,
+        ``remaining_life``, ``mean_residual_life``,
+        ``importances_given_state``) cannot take the RBD's common-cause
+        groups: a group splitting a probability (which says nothing of a
+        member's age), and, given the validated ``state``, a group whose
+        members are not all in one state. A group splitting the failure
+        rate gives its shared causes a share of the members' hazard, which
+        is one hazard only while the members are the same age."""
+        for group in self.ccf_groups:
+            if group.model.basis != "rate":
+                raise NotImplementedError(
+                    "Condition-based evaluation (sf_given_state / "
+                    "remaining_life / mean_residual_life / "
+                    "importances_given_state) does not take common-cause "
+                    f"group {list(group.members)!r}, which splits a "
+                    "probability of failing: that says nothing of a "
+                    "member's age. For members of one age, split the "
+                    f"failure rate ({group.model._by_rate()!r}); for "
+                    "members of different ages, draw the shared cause as a "
+                    "node in series with them (the guide's 'Common causes "
+                    "with wear-out lives and ages'). sf()/ff() give the "
+                    "reliability from new."
+                )
+            if state is None:
+                continue
+            given = [state.get(member) for member in group.members]
+            if any(one != given[0] for one in given[1:]) or (
+                given[0] is not None and not given[0].alive
+            ):
+                raise NotImplementedError(
+                    "The members of common-cause group "
+                    f"{list(group.members)!r} must be in one state for the "
+                    "condition-based methods: alive, at one age (and of one "
+                    "model and level, if given). The group's shared causes "
+                    "take a share of the members' hazard, which is one "
+                    "hazard only while the members are the same age; the "
+                    "states given differ, or a member has failed. For "
+                    "members of different ages, draw the shared cause as a "
+                    "node in series with them, an exponential shock or a "
+                    "repeated node (the guide's 'Common causes with "
+                    "wear-out lives and ages')."
+                )
 
     def _allocation_groups(self, nodes, options, ways) -> dict:
         """The common-cause group of each costed node in one, for redundancy
@@ -5376,7 +5415,13 @@ class NonRepairableRBD(RBD):
             if stateless
             else ""
         )
-        states = r.refusal(self._require_no_ccf_for_states)
+        if grouped:
+            note += (
+                " A common-cause group's members are given one state "
+                "(alive, at one age): its causes share the members' "
+                "hazard from that age."
+            )
+        states = r.refusal(self._require_ccf_states)
         give(
             ("sf_given_state", "importances_given_state"),
             (
@@ -7160,8 +7205,8 @@ class NonRepairableRBD(RBD):
         of its own model if its state gives one; one at a measured level, the
         first passage from it (see ``_overrides.life_now``).
         """
-        self._require_no_ccf_for_states()
         state = self._validate_state(state)
+        self._require_ccf_states(state)
         node_probabilities: Dict[Any, ArrayLike] = {}
         for node_name, model in self.reliabilities.items():
             node_state = state.get(node_name)
@@ -7242,7 +7287,10 @@ class NonRepairableRBD(RBD):
             node), or a node whose model is a standby, load-sharing or
             repeated node or a nested RBD.
         NotImplementedError
-            If the RBD has common-cause (CCF) groups.
+            If the RBD has a common-cause (CCF) group that splits a
+            probability, or one whose members are not given one state
+            (alive, at one age): a group splitting the failure rate is
+            taken at its members' common age.
 
         Notes
         -----
@@ -7272,6 +7320,12 @@ class NonRepairableRBD(RBD):
         if state is None:
             state = {}
         node_probabilities = self._state_node_probabilities(x, state)
+        if self.ccf_groups:
+            # Each cause's share of the members' cumulative hazard from
+            # their age on: the split at the conditional probabilities.
+            return self._ccf_system_probability(
+                node_probabilities, set(), set(), method
+            )
         return self.system_probability(node_probabilities, method=method)
 
     def remaining_life(
@@ -7396,7 +7450,8 @@ class NonRepairableRBD(RBD):
             If the RBD is fixed-probability (its reliability does not
             change with time), or as for ``sf_given_state``.
         NotImplementedError
-            As for ``sf_given_state`` (common-cause groups).
+            As for ``sf_given_state`` (common-cause groups it cannot
+            take).
 
         Examples
         --------
@@ -7416,7 +7471,7 @@ class NonRepairableRBD(RBD):
         """
         if state is None:
             state = {}
-        self._require_no_ccf_for_states()
+        self._require_ccf_states()
         self._require_lifetimes()
         # Each model's knots, moved back by its age where it has one.
         knots, kinks = [np.empty(0)], [np.empty(0)]
@@ -7505,7 +7560,8 @@ class NonRepairableRBD(RBD):
             invalid (as for ``sf_given_state``), or ``kind`` is neither
             ``"failure"`` nor ``"success"``.
         NotImplementedError
-            If the RBD has common-cause (CCF) groups.
+            As for ``sf_given_state`` (common-cause groups it cannot
+            take).
 
         Examples
         --------
@@ -7536,8 +7592,25 @@ class NonRepairableRBD(RBD):
         scalar_in = np.ndim(x) == 0
         x_arr = np.atleast_1d(np.asarray(x, dtype=float))
         node_probabilities = self._state_node_probabilities(x_arr, state)
-        birnbaum = super()._birnbaum_importance(node_probabilities)
-        criticality = super()._criticality_importance(node_probabilities, kind)
+        if self.ccf_groups:
+            one_of("kind", kind, ("failure", "success"))
+            failures = {
+                node: 1.0 - np.asarray(value, dtype=float)
+                for node, value in node_probabilities.items()
+            }
+            birnbaum: Dict[Any, Any]
+            criticality: Dict[Any, Any]
+            birnbaum, criticality = (
+                self._ccf_measure_at(
+                    measure, node_probabilities, failures, set(), set(), kind
+                )
+                for measure in ("birnbaum", "criticality")
+            )
+        else:
+            birnbaum = super()._birnbaum_importance(node_probabilities)
+            criticality = super()._criticality_importance(
+                node_probabilities, kind
+            )
 
         def _squeeze(measure):
             return {

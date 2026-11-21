@@ -12,6 +12,21 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: common causes for members that wear out and have aged. The
+  condition-based methods (`sf_given_state`, `remaining_life`,
+  `mean_residual_life`, `importances_given_state`) take a common-cause
+  group that splits the failure rate (`basis="rate"`) when its members
+  are given one state (alive, at one age): each cause takes its share of
+  the members' hazard from that age on, whatever their life. They
+  refused every group before. Members in different states, a failed
+  member and a group splitting a probability are refused, saying what to
+  do. A new guide page, "Common causes with wear-out lives and ages",
+  shows it beside the model for members of different ages: a shock at
+  its own rate that fails every member it reaches, drawn as an
+  exponential node in series with them (a repeated node where they sit
+  in different branches), with the Weibull and exponential closed forms
+  of the split as checks.
+
 - Added: the NPV spread of a diagram with shutdowns (UC-61 of the
   maintenance README). `npv_distribution`, `compare_npv` and
   `best_switch_time` price the runs of a diagram with shutdowns, where
