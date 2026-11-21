@@ -196,7 +196,12 @@ def best_switch_time(
     if not np.any(earned):
         _requirements._require_costs(rbd)
     money = _npv.Money(
-        rbd, discount_rate, 1.0, escalation, rates_basis, inflation
+        rbd,
+        discount_rate,
+        1.0,
+        _npv.own_escalation(rbd, escalation),
+        rates_basis,
+        inflation,
     )
     H = _npv._number(horizon, "horizon", strict=True)
     n = checks.whole_number(

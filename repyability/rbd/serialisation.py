@@ -435,6 +435,19 @@ def _serialise_component(value) -> dict:
             }
             if upgrade.get("cost"):
                 out["upgrade"]["cost"] = float(upgrade["cost"])
+        for key in ("salvage", "escalation", "retire_at"):
+            # The unit's own money: numbers (a salvage by age is a
+            # function, which is not saved).
+            own = value.get(key)
+            if own is None:
+                continue
+            if callable(own):
+                raise NotImplementedError(
+                    f"Cannot save a {key!r} given as a function (a salvage "
+                    "by age): save the diagram with the salvage as a "
+                    "number, or without it, and give the function again."
+                )
+            out[key] = float(own)
         if value.get("standby") is not None:
             # A standby group: numbers only.
             out["standby"] = {
@@ -586,6 +599,9 @@ def _deserialise_component(d: dict) -> Any:
             }
         if "standby" in d:
             out["standby"] = dict(d["standby"])
+        for key in ("salvage", "escalation", "retire_at"):
+            if key in d:
+                out[key] = d[key]
         return out
     return deserialise_model(d)
 

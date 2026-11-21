@@ -304,7 +304,11 @@ class RepairableRBD(RBD):
           ``"acquisition_cost"`` is the one-off cost of buying the unit, a
           number: it is not a running cost, so it is left out of
           ``expected_cost_rate`` and the simulated costs, and counted by
-          ``total_cost`` and ``allocate_redundancy``. ``"priority"`` is the
+          ``total_cost`` and ``allocate_redundancy``. ``"salvage"``,
+          ``"escalation"`` and ``"retire_at"`` are the unit's own money,
+          which ``expected_npv`` takes as its arguments of the same names
+          for the node (a ``UnitPlan``'s fields of those names).
+          ``"priority"`` is the
           component's place in the queue for a repair crew (see
           ``repair_crews``): a number, higher first, by default 0.
           ``"group"`` names the component's maintenance group (see
@@ -948,6 +952,9 @@ class RepairableRBD(RBD):
         self._standby: dict[Any, _Standby] = {}
         # One-off purchase costs, by node (only non-zero ones).
         self.acquisition_costs: dict[Any, float] = {}
+        # Each component's own money (its "salvage", "escalation" and
+        # "retire_at"), by node: what a valuation takes for it.
+        self._valuation: dict[Any, dict] = {}
         # Each component's maintenance group, by node (see _maintenance).
         self._member_group: dict[Any, Hashable] = {}
         # Components repaired imperfectly, by node (see _ImperfectComponent).
@@ -1071,6 +1078,9 @@ class RepairableRBD(RBD):
                     )
                     if upgrade.cost:
                         node_costs["capital_cost"] = upgrade.cost
+                own_money = _spec._validate_valuation(name, component)
+                if own_money:
+                    self._valuation[name] = own_money
                 if component.get("acquisition_cost") is not None:
                     acquisition = _spec._validate_cost(
                         name, "acquisition_cost", component["acquisition_cost"]
