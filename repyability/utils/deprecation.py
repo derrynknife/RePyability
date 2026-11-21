@@ -239,23 +239,44 @@ _REMOVED = frozenset(REMOVED_NAMES)
 _COUNTS = frozenset({"mc_samples", "max_samples"})
 
 
+#: The names of a simulation's count that a method drawing parameters
+#: (``n_draws``) is given by mistake.
+_SIMULATION_COUNTS = _REMOVED | _COUNTS
+
+
 def refuses_removed_names(function):
     """``function``, refusing the simulation-count names 0.12 removed with
     the names that took their place, where Python would say only that the
     keyword was unexpected; ``function`` itself where it takes
-    neither ``mc_samples`` nor ``max_samples``."""
+    neither ``mc_samples`` nor ``max_samples``.
+
+    A method that takes ``n_draws`` but not ``mc_samples`` (the
+    ``*_uncertainty`` methods, which draw the uncertain models'
+    parameters and work each draw out without simulating it) refuses
+    ``mc_samples`` and the removed names, naming ``n_draws``: the two
+    names count different things, so ``n_draws`` is kept (#105's
+    ``mc_samples`` counts simulations)."""
     if getattr(function, "refuses_removed_names", False):
         return function
     try:
         taken = set(inspect.signature(function).parameters)
     except (TypeError, ValueError):
         return function
-    if not taken & _COUNTS:
+    draws = "n_draws" in taken and not taken & _COUNTS
+    if not taken & _COUNTS and not draws:
         return function
     name = function.__qualname__.removesuffix(".__init__")
 
     @functools.wraps(function)
     def checked(*args, **kwargs):
+        if draws and not _SIMULATION_COUNTS.isdisjoint(kwargs):
+            old = next(k for k in kwargs if k in _SIMULATION_COUNTS)
+            raise TypeError(
+                f"{name}() got an unexpected keyword argument {old!r}: it "
+                "takes n_draws=, the number of draws of the uncertain "
+                "models' parameters, each draw worked out without "
+                "simulating it (mc_samples counts simulations)."
+            )
         if kwargs and not _REMOVED.isdisjoint(kwargs):
             for old in kwargs:
                 if old in _REMOVED and old not in taken:

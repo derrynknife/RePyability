@@ -337,6 +337,14 @@ class BetaFactor(_Model):
     any size. Use it through a [`CCFGroup`][repyability.CCFGroup]; models
     with equal ``beta`` and ``basis`` compare equal.
 
+    **Which basis.** The default, ``basis="probability"``, splits each
+    member's probability of failing over a mission or a proof-test
+    interval, where it is small. For a whole life, pass
+    ``basis="rate"``: the RBD's exact ``mean`` (MTTF) refuses the
+    probability split, its simulated lifetimes leave such a group out,
+    and its ``sf`` warns once a member's probability of failing passes
+    0.1.
+
     ``basis`` says what ``beta`` is a fraction of. By default,
     ``"probability"``, of each member's probability of failing ``Q``: the
     shared cause fails the group with ``beta * Q``, and each member fails
@@ -1170,13 +1178,15 @@ def validity_warning(group: "CCFGroup", Q: float) -> None:
     model = group.model
     rate = model._by_rate()
     warnings.warn(
-        f"Common-cause group {list(group.members)} ({model!r}): its "
-        f"members' probability of failing reaches Q = {Q:.3g} at the times "
-        f"evaluated, beyond the {VALIDITY} the probability split is meant "
-        "for. It is a rare-event model: about 3.5% off a rate-based split "
-        "at Q = 0.1 and further beyond, and from about Q = 0.5 it makes a "
-        "redundant group more reliable than an independent one. Over a "
-        f"lifetime, split the failure rate: {rate!r}.",
+        f"Common-cause group {list(group.members)} ({model!r}) splits "
+        "each member's probability of failing (basis='probability', the "
+        f"default): its members' probability of failing reaches Q = "
+        f"{Q:.3g} at the times evaluated, beyond the {VALIDITY} that split "
+        "is meant for. It is a rare-event model: about 3.5% off a "
+        "rate-based split at Q = 0.1 and further beyond, and from about "
+        "Q = 0.5 it makes a redundant group more reliable than an "
+        "independent one. Over a lifetime (Q past 0.1, an MTTF, a "
+        f"simulation), split the failure rate: {rate!r}.",
         UserWarning,
         # Point at the first caller outside the package.
         stacklevel=outside_level(),

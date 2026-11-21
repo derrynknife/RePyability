@@ -29,6 +29,7 @@ grid of levels.
 """
 
 import math
+import sys
 
 import numpy as np
 from scipy.special import gammainc, gammaincinv, log_ndtr, ndtr
@@ -45,7 +46,14 @@ def _kinds():
 
 def is_degradation(model) -> bool:
     """Whether ``model`` is a surpyval Wiener or gamma degradation process
-    (fitted, or built), as a component life."""
+    (fitted, or built), as a component life.
+
+    No model can be one before ``surpyval.degradation`` is imported, so
+    until then it is not imported to check: it loads surpyval's
+    regression code with pandas, which took about 2 s of a session's
+    first diagram."""
+    if "surpyval.degradation" not in sys.modules:
+        return False
     return isinstance(model, _kinds())
 
 

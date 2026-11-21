@@ -18,6 +18,7 @@ age is the prediction's, so the node is not conditioned again on a
 ``NodeState`` age (see ``NonRepairableRBD.sf_given_state``).
 """
 
+import sys
 from typing import Any, Optional
 
 import numpy as np
@@ -38,8 +39,16 @@ NOT_REPAIRABLE = (
 
 
 def _joint_classes() -> tuple:
-    """surpyval's ``JointModel`` and ``DynamicPrediction``. (The latter
-    has no public home in surpyval yet, so it comes from its module.)"""
+    """surpyval's ``JointModel`` and ``DynamicPrediction``, or ``()``
+    while surpyval's joint models are not imported. (The latter has no
+    public home in surpyval yet, so it comes from its module.)
+
+    A model can only be one of them once their module is imported, so
+    until then nothing is imported to check: importing them loads
+    surpyval's regression and degradation code with pandas, which took
+    about 2 s of a session's first diagram."""
+    if "surpyval.univariate.joint" not in sys.modules:
+        return ()
     from surpyval import JointModel
     from surpyval.univariate.joint import DynamicPrediction
 
@@ -55,8 +64,8 @@ def is_joint(model) -> bool:
 def as_node(model):
     """``model``, but a surpyval ``DynamicPrediction`` as the
     ``JointNode`` of its unit (a diagram takes a prediction as a node)."""
-    _, prediction = _joint_classes()
-    if isinstance(model, prediction):
+    classes = _joint_classes()
+    if classes and isinstance(model, classes[1]):
         return JointNode(model)
     return model
 

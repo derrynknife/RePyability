@@ -489,7 +489,14 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   public function of the classes that simulate (an `RBD` subclass gets it
   from `RBD.__init_subclass__`); a new class whose methods take
   `mc_samples` gets `@refuse_removed_names`. A seed goes through
-  `checks.seed` where it is taken.
+  `checks.seed` where it is taken. `n_draws` is kept, deliberately, for
+  the number of draws of uncertain models' parameters (the
+  `*_uncertainty` methods, `uncertainty_importance`,
+  `optimal_replacement_intervals`), each draw worked out without
+  simulating it: a method that takes `n_draws` but not `mc_samples`
+  refuses `mc_samples=` (and the removed names), naming `n_draws`, through
+  the same wrapper (a class with such methods gets `@refuse_removed_names`
+  too).
 - **Inputs are checked where they are given (#233)**: numbers through
   `checks.is_number`/`number_or_nan` (not `bool`, not text), times through
   `checks.real_array`, a choice of option through `checks.one_of`, and
