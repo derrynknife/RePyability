@@ -545,6 +545,67 @@ gain.probability_other_better     # -> 0.0005
 Two independent runs of the same size would have pinned the difference down
 less than half as well (`independent_standard_error`).
 
+### Downtime you can be sure of
+
+"I want to be 95% sure I don't lose more than 100 hours to downtime this
+year: what is the least I need to pay?" `least_spend_for_downtime` answers
+that. A design meets the limit when an upper confidence bound on its
+downtime's 95th percentile is under it: an order statistic, so that the
+simulation's own noise cannot make a design look safe. The levers each
+have their price (copies of a node at a price each, a node's maintenance
+intervals at the cost of their tasks), and spend has no bound unless you
+give `budget=`:
+
+```python
+one_pump = RepairableRBD(
+    [("s", "p"), ("p", "t")],
+    {"p": {"reliability": surv.Exponential.from_params([1e-3]),
+           "repairability": surv.Exponential.from_params([0.02])}},
+)
+sure = one_pump.least_spend_for_downtime(8760.0, 100.0, redundancy={"p": 5000.0},
+                                     mc_samples=1000, seed=1)
+sure.met, sure.design.copies, sure.design.spend   # -> (True, {'p': 1}, 5000.0)
+round(sure.design.estimate, 1), round(sure.design.bound, 1)   # -> (80.6, 90.2)
+round(sure.frontier[0].estimate)   # -> 752   one pump's bad year, in hours
+```
+
+`frontier` lists the designs from the cheapest, each with its spend and
+its bad-year downtime, so you see what each extra dollar buys. The
+target is all system downtime by default; `downtime="unplanned"` counts
+failures only, and `measure="cost"` prices each hour at the diagram's
+`downtime_cost_rate` (and any `value_rate=` lost). Every design reports
+both its `planned` and its `unplanned` downtime, the mean and the bad
+year's, in hours and cost, so the trade-off shows. Cutting a wearing
+unit's unplanned downtime with shorter intervals costs planned shutdown:
+
+```python
+worn_unit = RepairableRBD(
+    [("s", "p"), ("p", "t")],
+    {"p": {"reliability": surv.Weibull.from_params([4000.0, 3.0]),
+           "repairability": surv.Exponential.from_params([1 / 72.0]),
+           "repair_cost": 2000.0,
+           "preventive": {"interval": 8000.0, "cost": 300.0,
+                          "duration": surv.ExactEventTime.from_params([8.0])}}},
+)
+pm_intervals = {"p": [4000.0, 2000.0, 1000.0, 500.0]}
+trade = worn_unit.least_spend_for_downtime(8760.0, 10.0, downtime="unplanned",
+                                      intervals=pm_intervals, mc_samples=1000,
+                                      seed=3)
+trade.design.intervals, round(trade.design.planned["bad_hours"])   # -> ({'p': 500.0}, 136)
+[round(d.unplanned["bad_hours"]) for d in trade.frontier]   # -> [347, 307, 183, 81, 0]
+everything = worn_unit.least_spend_for_downtime(8760.0, 10.0, intervals=pm_intervals,
+                                           mc_samples=1000, seed=3)
+everything.met, everything.floor   # -> (False, 'planned')
+```
+
+No unplanned downtime in a bad year needs 136 hours of planned shutdown.
+Counting all downtime, 10 hours cannot be reached by intervals, and the
+result says which floor stopped the levers (`floor`, and `stopped` in
+words): here the planned task downtime; otherwise the budget or the
+levers' caps (`max_units`, the last interval). `objective="cvar"` targets
+the mean of the worst 5% instead (its bound is normal, approximate). A
+`UnitPlan` takes the same method, through its one-node diagram.
+
 For one part replaced at an age or at a failure, over for ever,
 `NonRepairable.age_replacement_value(age, discount_rate=)` gives the net
 present value (Fox, 1966) and the equivalent annual cost in closed form. At a

@@ -625,6 +625,19 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
     out["npv_distribution"] = _npv_runs.route(rbd, out["simulate_timelines"])
     out["best_switch_time"] = _switch_runs.route(rbd, out["npv_distribution"])
     out["compare_npv"] = _npv_runs.compare_route(out["npv_distribution"], rbd)
+    out["least_spend_for_downtime"] = (
+        out["availability"]
+        if out["availability"].route == r.REFUSED
+        else r.AnalysisRoute(
+            r.SIMULATED,
+            "Each design's availability runs on one seed, its downtime per "
+            "run (planned and unplanned) taken against the limit by an "
+            "upper bound on its risk measure; a greedy search over the "
+            "levers.",
+            engine=out["availability"].engine,
+            engine_reason=out["availability"].engine_reason,
+        )
+    )
     engine, why = _runs._engine_choice(rbd, capacity=False)
     if unpriced:
         out["cost"] = r.refused(unpriced)

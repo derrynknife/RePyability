@@ -2330,8 +2330,9 @@ def _order_statistic(ordered: np.ndarray, p: float) -> float:
     """The ``p`` quantile of the sorted values ``ordered``: the smallest
     value with at least a share ``p`` of them at or below it (the
     ``ceil(p n)``-th, at least the first)."""
-    k = max(1, math.ceil(round(p * ordered.size, 9)))
-    return float(ordered[k - 1])
+    from repyability.value._risk import quantile
+
+    return quantile(ordered, p)
 
 
 @dataclass
@@ -3537,6 +3538,11 @@ class AvailabilityResult(_ResultMapping):
     uptimes : numpy.ndarray, optional
         The system's up time in each simulation, in order (they sum to
         ``system_uptime``); None in a result built without them.
+    unplanned_downtimes : numpy.ndarray, optional
+        The system's unplanned downtime in each simulation, in the order
+        of ``uptimes`` (see ``system_unplanned_downtime``); None for a
+        diagram that takes no planned outage (all its downtime is
+        unplanned) or a result built without them.
     antithetic : bool
         Whether the simulations ran in antithetic pairs (simulations ``2i``
         and ``2i + 1``; see ``RepairableRBD.availability``), by default
@@ -3680,6 +3686,7 @@ class AvailabilityResult(_ResultMapping):
     shutdowns: int = 0
     system_planned_downtime: Optional[float] = None
     system_unplanned_downtime: Optional[float] = None
+    unplanned_downtimes: Optional[np.ndarray] = None
 
     @property
     def mean_capacity(self) -> Optional[float]:
@@ -5357,4 +5364,121 @@ class SimulatedSwitchTime(_ResultMapping):
             f"switch_at_once_npv={self.switch_at_once_npv:.6g}, "
             f"n_simulations={self.n_simulations}, "
             f"horizon={self.horizon:g})"
+        )
+
+
+@dataclass
+class DowntimeDesign(_ResultMapping):
+    """One design of ``RepairableRBD.least_spend_for_downtime``'s search:
+    its levers, its spend, and its downtime over the horizon.
+
+    Attributes
+    ----------
+    copies : dict
+        The copies of each redundancy node, by node.
+    intervals : dict
+        Each interval node's task interval (None: as given), by node.
+    spend : float
+        What the levers cost beyond the diagram as given: the copies'
+        prices, and the change in the expected preventive cost over the
+        horizon.
+    estimate : float
+        The target downtime's risk measure: its quantile at the level, or
+        its tail mean.
+    bound : float
+        The estimate's upper confidence bound.
+    meets : bool
+        Whether the bound is at or under the limit.
+    planned : dict
+        The planned downtime, whichever is targeted: ``mean_hours`` and
+        ``bad_hours`` (the quantile at the level), and ``mean_cost`` and
+        ``bad_cost`` at the downtime's rate (None without one).
+    unplanned : dict
+        The unplanned downtime, in the same terms.
+    """
+
+    copies: Dict[Hashable, int]
+    intervals: Dict[Hashable, Optional[float]]
+    spend: float
+    estimate: float
+    bound: float
+    meets: bool
+    planned: Dict[str, Optional[float]]
+    unplanned: Dict[str, Optional[float]]
+
+
+@dataclass
+class DowntimeRiskResult(_ResultMapping):
+    """The least spend that keeps a bad run's downtime under a limit:
+    returned by ``RepairableRBD.least_spend_for_downtime``.
+
+    Attributes
+    ----------
+    horizon : float
+        The horizon.
+    limit : float
+        The limit on the target downtime.
+    level : float
+        The level of its risk measure (0.95: "95% sure").
+    objective : str
+        ``"var"`` (the downtime's quantile at ``level``) or ``"cvar"``
+        (the mean of the worst share beyond it).
+    measure : str
+        ``"hours"`` or ``"cost"``.
+    downtime : str
+        ``"all"`` (planned and unplanned) or ``"unplanned"``.
+    confidence : float
+        The level of the upper bound a design must keep under the limit.
+    bound_method : str
+        How the bound is found.
+    budget : float or None
+        The most the levers may cost, if given.
+    met : bool
+        Whether a design meets the limit.
+    design : DowntimeDesign
+        The cheapest design that meets it, or else the design with the
+        lowest bad-run downtime found.
+    frontier : list of DowntimeDesign
+        The search's designs in order: spend rising, the bad-run downtime
+        falling.
+    floor : str or None
+        When no design meets the limit, what stopped the levers:
+        ``"budget"``, ``"caps"``, ``"planned"`` (planned task downtime
+        no lever lowers), ``"lowest"`` (no lever given lowers it) or
+        ``"steps"``.
+    stopped : str or None
+        The same, in words, with the lowest downtime reached.
+    n_simulations : int
+        Each design's runs.
+    seed : int
+        Their seed (every design takes it).
+    engine : str
+        The engine asked for (``"auto"`` lets each design's run choose).
+    """
+
+    horizon: float
+    limit: float
+    level: float
+    objective: str
+    measure: str
+    downtime: str
+    confidence: float
+    bound_method: str
+    budget: Optional[float]
+    met: bool
+    design: DowntimeDesign
+    frontier: List[DowntimeDesign]
+    floor: Optional[str]
+    stopped: Optional[str]
+    n_simulations: int
+    seed: int
+    engine: str
+
+    def __repr__(self) -> str:
+        what = "met" if self.met else f"not met ({self.floor})"
+        return (
+            f"DowntimeRiskResult(limit {self.limit:g} {self.measure} at "
+            f"{self.level:g}: {what}; spend {self.design.spend:.6g}, "
+            f"estimate {self.design.estimate:.6g}, bound "
+            f"{self.design.bound:.6g}; {len(self.frontier)} designs)"
         )

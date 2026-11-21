@@ -12,6 +12,23 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: `RepairableRBD.least_spend_for_downtime(horizon, limit, ...)`
+  and `UnitPlan.least_spend_for_downtime` (UC-68 of the maintenance
+  README): the least spend that keeps a bad run's downtime (hours, or
+  cost with `measure="cost"`) under a limit at `level` (95% by default),
+  counting all system downtime or `downtime="unplanned"`. A design meets
+  the limit when an upper confidence bound on the downtime's quantile
+  (an order statistic, exact) or tail mean (`objective="cvar"`,
+  normal) is under it. Levers: `redundancy` (copies at a price each) and
+  `intervals` (a preventive interval's candidates), searched greedily on
+  common random numbers, with no bound on spend unless `budget=`. The
+  result has the frontier of spend against the bad run's downtime, each
+  design's planned and unplanned downtime (mean and bad run, hours and
+  cost), and, when the limit is not met, the floor that stopped the
+  levers. The risk measures are in `repyability.value._risk`.
+  `AvailabilityResult.unplanned_downtimes` gives each run's unplanned
+  downtime, which both engines already worked out. No existing result
+  changes.
 - Added: `schedule.task_value` values a service (UC-67 of the schedule
   README) with `Services(plan, effect=)`. By default a service has no
   effect on the life: it is an accepted cost, and its value is minus its

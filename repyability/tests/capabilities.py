@@ -144,6 +144,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 "Two plans' net present values compared",
                 ("compare_npv",),
             ),
+            (
+                "Least spend for a bad run's downtime (simulated)",
+                ("least_spend_for_downtime",),
+            ),
             ("Cost in each of a run of windows", ("cost_by_window",)),
             ("Simulated cost (distribution)", ("cost",)),
             ("Total cost of ownership", ("total_cost",)),

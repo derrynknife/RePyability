@@ -37,6 +37,7 @@ Architecture):
 | A unit whose life is a subassembly | a `NonRepairableRBD` as the life | UC-66 |
 | What happens on dates: rules, duty plans, each unit's plan on the calendar | `repyability.schedule` (its README) | UC-10, UC-39, UC-64 there |
 | What belongs to the system: structure, system downtime and value, crews, spares, site shutdowns, common-cause groups | `RepairableRBD` | UC-21, UC-23, UC-46, UC-59 |
+| How bad a bad run is (a quantile or tail mean of a priced outcome, with its bound) | `repyability.value._risk` | UC-68 |
 
 Not yet single:
 - a site's shutdowns are both the diagram's `shutdowns=` dicts and `Opportunities`/`ShutdownPolicy`;
@@ -89,6 +90,7 @@ Not yet single:
 | UC-60 | A part upgraded in year 3 and block-replaced before and after, the new model on the same interval | **Built**: an `"upgrade"` with a `"preventive"` block policy, numerical over a horizon and simulated |
 | UC-66 | A pump whose seal is a redundant pair, replaced whole when both have failed: its life is a diagram | **Built**: a `NonRepairableRBD` as a life wherever a life is taken (`UnitPlan`, a spec's `"reliability"`, `NonRepairable`), by its functions; `NonRepairableRBD.qf` inverts its `ff` to near machine precision |
 | UC-64 | What a part costs per year once upgraded: the long run of the diagram with the new life, the time before the upgrade ignored | **Built**: the long-run methods of a diagram with an `"upgrade"` give the values of the diagram after it |
+| UC-68 | "95% sure": the least spend that keeps a bad year's downtime (hours or cost) under a limit, with the frontier and both planned and unplanned downtime | **Built** (simulated): `RepairableRBD.least_spend_for_downtime` and `UnitPlan.least_spend_for_downtime`, with redundancy and interval levers; risk measures in `repyability.value._risk` |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -3273,6 +3275,96 @@ counted in its parent are left for later.
 - **Learned / open questions:** age replacement and tests on an
   upgraded part, its spares counts and `plan_vs_actual` across the
   upgrade, and retiring a single part are still open.
+
+### UC-68: "I want to be 95% sure I don't lose more than x on downtime this year. What is the least I need to pay to make that happen?"
+
+**Who asks.** An owner whose contracts, budgets and insurance are set on
+a bad year, not the average one. Every optimiser so far takes expected
+values; a bad year matters as much.
+
+**What they know.** The system's diagram (or one unit's plan), its
+repairs and tasks; the levers they could pull, each at its own price:
+copies of a unit in parallel (redundancy), and a unit's maintenance
+interval; a limit `x` on the year's downtime, in hours or in cost; how
+sure (95%).
+
+**What they want back.** The cheapest design whose bad year (95th
+percentile) stays under `x`; the frontier of spend against the bad
+year's downtime, so they see what each extra dollar buys; both the
+planned and the unplanned downtime of every design (the mean and the bad
+year's, in hours and cost), so the trade-off shows; and, when the levers
+cannot reach `x`, which floor stopped them.
+
+**Decisions (the owner's, 21 Nov 2026).**
+- The target is **downtime only**: the system's hours down, or their cost
+  (the diagram's `downtime_cost_rate` and any `value_rate` lost). Not
+  total cost: spending to cut downtime raises the maintenance part.
+- Spend is the decision and has no bound unless `budget=` is given.
+- By default all system downtime counts; `downtime="unplanned"` counts
+  failures only (the split of UC-25: down unplanned when it would still
+  be down with every planned task finished).
+- The risk measure is the downtime's quantile at `level` (0.95), or the
+  mean of the worst share beyond it (`objective="cvar"`). The randomness
+  is that of failures and repairs, the models taken as known.
+- "Sure" despite simulation noise: a design meets `x` only when an upper
+  confidence bound on its percentile is under it (an order statistic,
+  the binomial method, exact; the tail mean's bound is normal, and says
+  so).
+
+**How it is solved.** The risk measures sit in the money module
+(`repyability.value._risk`), on priced outcomes. Each design is run by
+`availability` on one seed (common random numbers), and each run's
+downtime is `horizon - uptime`, its unplanned part the engines' own
+(kept per run), the rest planned. The search is the allocations'
+marginal analysis: from the diagram as given, each step takes the move
+that lowers the bad year's downtime most per extra spend: a copy of a
+node (drawn as `allocate_redundancy` draws a train of one node), or a
+node's interval moved to a later candidate (any later one, as a
+quantile can stay put over one step); its spend is the copies' prices
+plus the change in the expected preventive cost. It stops at the first
+design that meets `x`, or when no move lowers the downtime. The
+frontier is the designs evaluated that no other beats on both spend and
+downtime. Floors: the budget, the levers' caps, or planned task downtime
+at or over the limit alone (shorter intervals add to it, and copies with
+the same tasks do not remove it). A plan alone takes its one-node
+diagram's method (`UnitPlan.least_spend_for_downtime`).
+
+**The hand-worked answer.** A pump with exponential lives (mean 1,000 h)
+and repairs (mean 50 h), up at the start, over 8,760 h: its downtime is
+an alternating renewal process's occupation time, whose distribution is
+exact by uniformisation (given `n` jumps at rate `L = max(λ, μ)`, the
+`n + 1` spacings are Dirichlet(1, ..., 1), so `k` spent down sum to
+`T × Beta(k, n + 1 - k)`). Its 95th percentile is **766.35 h** (median
+393.08 h; no downtime at all with chance `exp(-8.76) = 0.000157`). 4,000
+runs give 761.7 h (bound 783.3). A second pump at 5,000 brings the bad
+year under 100 h (80.6 h, bound 90.2, from 1,000 runs); limits of 200,
+50, 10 and 1 h are each met by copies, at a spend that rises as the
+limit falls.
+
+The trade-off: a wearing unit (Weibull, scale 4,000 h, shape 3; repairs
+of mean 72 h) with an 8 h task every 8,000 h. To be 95% sure of under 10
+h of *unplanned* downtime the interval must come down to 500 h (1,000
+runs): the bad year's unplanned downtime falls from 347 h to 0, and
+planned downtime rises from none to 136 h. With all downtime counted,
+10 h cannot be reached by intervals: the planned task downtime is the
+floor, and the answer says so.
+
+**Checks.** `test_downtime_risk.py`: the single pump's percentile against
+the exact distribution (within four of the quantile's standard errors,
+seed fixed beforehand), and the distribution's ends; the quantile bound
+against the binomial definition; level 0.5 on a symmetric loss is its
+median; redundancy meets every limit at a rising spend; the frontier
+never rises with spend; along the unplanned frontier planned downtime
+rises; the planned floor and the budget floor named; seeded repeats and
+cost as hours times the rate; a plan alone equal to its diagram; the
+refusals. The bound's coverage at its stated rate is
+`scripts/downtime_bound_coverage.py`, a study with fixed seeds, to run
+at consolidation.
+
+**What was learned.** The engines already split each run's downtime into
+planned and unplanned, and then summed it; keeping it per run was all
+the risk needed. Spares, crews and call-out, upgrades and parameter
+uncertainty are levers still to add (filed).
 
 ### UC-61: "Our plan has two outages a year that cost 300 each, and at each we renew the pump if it is past 500 hours. The expected NPV is fine; how bad could a run be?"
 

@@ -2409,6 +2409,11 @@ def _availability_result(
         ),
         system_planned_downtime=system_planned,
         system_unplanned_downtime=system_unplanned,
+        unplanned_downtimes=(
+            np.asarray(tally.unplanned_times, dtype=float)
+            if len(tally.unplanned_times) == len(tally.uptimes)
+            else None
+        ),
         **capacity_fields,
     )
 
