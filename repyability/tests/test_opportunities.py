@@ -26,7 +26,7 @@ from repyability import (
     __version__,
 )
 from repyability.schedule import Recurrence, Usage
-from repyability.utils.deprecation import REMOVED_IN_0_21
+from repyability.utils.deprecation import NEXT_REMOVAL
 
 LIFE = surv.Weibull.from_params([1000.0, 2.5])
 NOW = "2026-11-16"
@@ -655,7 +655,7 @@ def test_the_site_s_dates_and_outages_need_no_prices():
 def test_each_old_form_warns_with_its_replacement(make, match):
     with pytest.warns(FutureWarning, match=match) as caught:
         make()
-    assert any(REMOVED_IN_0_21 in str(w.message) for w in caught)
+    assert any(NEXT_REMOVAL in str(w.message) for w in caught)
 
 
 def test_the_0_14_positional_form_still_reads():
@@ -679,7 +679,7 @@ def test_what_0_20_deprecates_goes_in_0_21():
     # two calendar method names: removed in 0.21. This fails as a reminder
     # once the version reaches it.
     version = tuple(map(int, __version__.split(".")))[:2]
-    assert version < tuple(map(int, REMOVED_IN_0_21.split(".")))
+    assert version < tuple(map(int, NEXT_REMOVAL.split(".")))
 
 
 def test_prices_go_through_json():

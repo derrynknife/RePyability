@@ -1051,7 +1051,7 @@ maintenance replaces it (a partial `"restoration"` is refused).
 ```python
 from surpyval import ARA
 
-pump = ARA.fit_from_parameters([1000, 2.0], 0.5)
+pump = ARA.from_params([1000, 2.0], 0.5)
 rbd = RepairableRBD([("s", "p"), ("p", "t")],
                     {"p": {"reliability": pump, "repairability": "instant"}})
 run = rbd.availability(t_simulation=5000.0, mc_samples=1000, seed=1)

@@ -10,6 +10,24 @@ release between minors that only adds (0.19.1).
 
 ## [Unreleased]
 
+## [0.20] - 2026-11-22
+
+Money over time and site shutdowns. Net present values are exact by
+default, refused where they can't be and worked out to a `horizon=` on
+request. They cover a unit's plan valued alone (`UnitPlan`), upgrades,
+retirement and salvage, value schedules and escalation, and the spread
+of a plan's value with contract payoffs. Schedule forecasts discount
+each cost from when it is expected to fall. A site's `Opportunities`
+are one record for its parts' policies and its diagram. The release
+also adds repair crews that cost something, a call-out crew, shocks at
+a rate of their own, and the best time to switch a whole diagram from
+one way of running to another.
+
+The minimum surpyval is 0.29. Some numbers change on purpose; each is
+marked "intentional" under Changed. 0.20 deprecates a price on an
+opportunity, the `Calendar` names and `method="auto"` sampling a long
+calendar, all refused from 0.21. It removes nothing.
+
 ### Added
 
 - Added: `allocate_redundancy` and `redundancy_front` take
@@ -780,6 +798,11 @@ release between minors that only adds (0.19.1).
   (exact by default, simulation on request).
 
 ### Changed
+
+- Changed: the minimum surpyval is 0.29. The examples and guides build
+  the renewal processes with `from_params` (`GeneralizedRenewal`,
+  `GeneralizedOneRenewal`, `ARA`, `ARI`), the name surpyval 0.29 gives
+  `fit_from_parameters`, which warns there and goes in surpyval 0.30.
 
 - Changed: RePyability takes surpyval's `JointModel` and
   `SemiParametricRegressionModel` from their subpackages

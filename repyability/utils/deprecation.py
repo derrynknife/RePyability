@@ -1,14 +1,14 @@
 """Deprecated names, arguments and calls.
 
-A deprecation gives one minor release's notice: what 0.19 deprecates goes
-in 0.20 (``NEXT_REMOVAL``). Each warns with a ``FutureWarning``, which
+A deprecation gives one minor release's notice: what 0.20 deprecates goes
+in 0.21 (``NEXT_REMOVAL``), and what 0.21 deprecates in 0.22
+(``REMOVED_IN_0_22``). Each warns with a ``FutureWarning``, which
 Python always shows, as the notice is short: an argument renamed
 (``renamed``; an attribute, ``renamed_attribute``), a result's value
 called that is now a property (``called``), arguments a method ignores
-(``ignored``), or a function that moved to surpyval (``moved``). 0.19
-deprecates nothing.
+(``ignored``), or a function that moved to surpyval (``moved``).
 
-0.20 deprecates, for removal in 0.21 (``REMOVED_IN_0_21``), a price on an
+0.20 deprecates, for removal in 0.21 (``NEXT_REMOVAL``), a price on an
 opportunity (``price_on_part``: ``Opportunity(name, cost, ...)``,
 ``Shutdown(replace_cost=)``, ``Shutdowns(any_day=<price>)``,
 ``Calendar(failure=, anytime=)``; the prices come with the part), and
@@ -20,7 +20,8 @@ choice made for the caller that it should make itself (``refuses_from``:
 ``method="auto"`` sampling a calendar too long to work out exactly, which
 0.21 refuses, naming a ready ``horizon=`` and ``method="sampling"``).
 
-0.18 deprecated nothing, so 0.19 removes nothing.
+0.19 deprecated nothing, so 0.20 removes nothing. 0.18 deprecated
+nothing, so 0.19 removed nothing.
 What 0.17 deprecated went in 0.18: ``repyability.demonstration``'s nine
 functions and ``DemonstrationPlan``, for ``surpyval.test_planning``'s.
 0.16 deprecated nothing, nor did 0.15, so 0.16 and 0.17 removed nothing.
@@ -49,11 +50,11 @@ import numpy as np
 
 from repyability.utils.wrappers import outside_level
 
-#: The release that removes what 0.19 deprecates.
-NEXT_REMOVAL = "0.20"
 #: The release that removes what 0.20 deprecates: one minor release's
 #: notice from the release that first warns of it.
-REMOVED_IN_0_21 = "0.21"
+NEXT_REMOVAL = "0.21"
+#: The release that removes what 0.21 deprecates.
+REMOVED_IN_0_22 = "0.22"
 
 
 def _called_warning(name: str, removal: str) -> None:
@@ -171,11 +172,11 @@ def moved(old: str, new: str, why: str, removal: str = NEXT_REMOVAL) -> None:
 
 
 def replaced(
-    old: str, new: str, why: str, removal: str = REMOVED_IN_0_21
+    old: str, new: str, why: str, removal: str = NEXT_REMOVAL
 ) -> None:
     """Warn that ``old`` (a class, or a method as ``"Class.method"``) is
     deprecated for ``new``, for the reason ``why``: removed in
-    ``removal`` (``REMOVED_IN_0_21`` by default)."""
+    ``removal`` (``NEXT_REMOVAL`` by default)."""
     warnings.warn(
         f"{old} is deprecated: use {new}, as {why}. {old} will be removed "
         f"in {removal}.",
@@ -184,10 +185,10 @@ def replaced(
     )
 
 
-def price_on_part(how: str, removal: str = REMOVED_IN_0_21) -> None:
+def price_on_part(how: str, removal: str = NEXT_REMOVAL) -> None:
     """Warn that ``how`` (``"Opportunity(name, cost, ...)"``) puts a price
     on an opportunity or a collection of them, which the part now
-    carries: deprecated, refused in ``removal`` (``REMOVED_IN_0_21`` by
+    carries: deprecated, refused in ``removal`` (``NEXT_REMOVAL`` by
     default)."""
     warnings.warn(
         f"{how} puts a price on the opportunities, which is deprecated: an "
@@ -201,9 +202,9 @@ def price_on_part(how: str, removal: str = REMOVED_IN_0_21) -> None:
     )
 
 
-def refuses_from(what: str, instead: str, removal: str = REMOVED_IN_0_21):
+def refuses_from(what: str, instead: str, removal: str = NEXT_REMOVAL):
     """Warn that ``what`` (a choice the call made for the caller, as it
-    has until now) is deprecated: from ``removal`` (``REMOVED_IN_0_21`` by
+    has until now) is deprecated: from ``removal`` (``NEXT_REMOVAL`` by
     default) the call refuses, and the caller gives ``instead``."""
     warnings.warn(
         f"{what} From {removal} this refuses: {instead}",

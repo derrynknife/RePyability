@@ -206,7 +206,7 @@ def ara_process():
     Weibull life and half its age taken away at each repair, which the
     simulation steps with surpyval (a repair surpyval fits that is not
     Kijima's)."""
-    return surv.ARA.fit_from_parameters([300.0, 1.5], 0.5)
+    return surv.ARA.from_params([300.0, 1.5], 0.5)
 
 
 @_fitted_once
