@@ -13,7 +13,7 @@ import json
 import numpy as np
 import pytest
 import surpyval as surv
-from surpyval.univariate.regression import StepSchedule
+from surpyval.univariate.regression import ProportionalOddsFitter, StepSchedule
 
 from repyability import NodeState, NonRepairableRBD, RegressionNode
 
@@ -32,7 +32,7 @@ def models(data):
     return {
         "aft": surv.WeibullAFT.fit(x, Z=Z),
         "ph": surv.CoxPH.fit(x, Z=Z),
-        "po": surv.ProportionalOddsFitter(surv.Weibull).fit(x, Z=Z),
+        "po": ProportionalOddsFitter(surv.Weibull).fit(x, Z=Z),
     }
 
 

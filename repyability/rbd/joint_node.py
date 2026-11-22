@@ -40,8 +40,7 @@ NOT_REPAIRABLE = (
 
 def _joint_classes() -> tuple:
     """surpyval's ``JointModel`` and ``DynamicPrediction``, or ``()``
-    while surpyval's joint models are not imported. (The latter has no
-    public home in surpyval yet, so it comes from its module.)
+    while surpyval's joint models are not imported.
 
     A model can only be one of them once their module is imported, so
     until then nothing is imported to check: importing them loads
@@ -49,8 +48,7 @@ def _joint_classes() -> tuple:
     about 2 s of a session's first diagram."""
     if "surpyval.univariate.joint" not in sys.modules:
         return ()
-    from surpyval import JointModel
-    from surpyval.univariate.joint import DynamicPrediction
+    from surpyval.univariate.joint import DynamicPrediction, JointModel
 
     return JointModel, DynamicPrediction
 

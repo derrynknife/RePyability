@@ -37,7 +37,7 @@ def _is_semiparametric(model) -> bool:
     Cox model): its baseline is an estimate on the observed range only,
     with no tail beyond it. (Recognised by its type, not by its survival
     curve.)"""
-    from surpyval import SemiParametricRegressionModel
+    from surpyval.univariate.regression import SemiParametricRegressionModel
 
     return isinstance(model, SemiParametricRegressionModel)
 

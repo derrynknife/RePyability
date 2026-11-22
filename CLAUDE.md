@@ -646,10 +646,14 @@ RePyability's own in 0.17 with the same values.
 surpyval's deprecation policy calls public (the top level, its listed
 subpackages' `__all__`, `surpyval.univariate.regression.kinds`) and reads
 no underscored attribute; `test_public_surpyval_api.py` fails on anything
-else. Two names have no public home yet and are listed there
-(`NO_PUBLIC_HOME`): `DynamicPrediction` (`rbd/joint_node.py`) and
-`conditional_gaps` (`rbd/_event_loop._aged_life`). Take each from its
-public home once surpyval gives it one; that test fails when it does.
+else. Take a model class from its subpackage, not the top level
+(`surpyval.univariate.joint`'s `JointModel`,
+`surpyval.univariate.regression`'s `SemiParametricRegressionModel`): from
+0.29 surpyval keeps only what users call at its top level, and the rest
+warn there. One name has no public home yet and is listed there
+(`NO_PUBLIC_HOME`): `conditional_gaps` (`rbd/_event_loop._aged_life`).
+Take it from its public home once surpyval gives it one; that test fails
+when it does.
 
 What remains (each checked against surpyval 0.28 on 15 Nov 2026):
 

@@ -781,6 +781,11 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- Changed: RePyability takes surpyval's `JointModel` and
+  `SemiParametricRegressionModel` from their subpackages
+  (`surpyval.univariate.joint`, `surpyval.univariate.regression`), not
+  its top level, where surpyval 0.29 warns of them. Nothing else
+  changes.
 - Changed: a schedule forecast's present values (`failures_by_period`
   and `task_value` with `discount=`) discount each expected cost from
   when it is expected to fall, by the diagram's own integral (the
