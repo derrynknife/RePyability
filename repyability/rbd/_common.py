@@ -15,6 +15,7 @@ from typing import (
     Callable,
     Iterable,
     Optional,
+    Tuple,
 )
 
 import numpy as np
@@ -293,6 +294,69 @@ def _discount_pieces(ends: np.ndarray, horizon: float):
         np.concatenate(([0.0], ends, np.linspace(0.0, horizon, 33)))
     )
     return edges[:-1], edges[1:]
+
+
+def _discounted_accrual(
+    values: Callable[[np.ndarray], np.ndarray],
+    ends: np.ndarray,
+    rate: float,
+    pieces: Tuple[np.ndarray, np.ndarray],
+    tolerance: float = _DISCOUNT_TOLERANCE,
+):
+    """The present value at 0, at the continuous ``rate``, of a cost that
+    accrues as ``C``, to each of ``ends``: ``exp(-r T) C(T) + r *
+    integral_0^T exp(-r s) C(s) ds``, the one design of an accrued
+    cost's present value, for a diagram's expected cost (#231) and a
+    schedule's forecast alike. ``values(times)`` is ``C`` at ``times``,
+    as rows (several costs at once). The integral is taken by the
+    Gauss-Kronrod (7, 15) rule on ``pieces`` (``(starts, stops)``, with
+    every one of ``ends`` among the stops), and the pieces whose two
+    rules differ most are halved until the first row's differences add
+    up to ``tolerance`` of its integral, for at most
+    ``_DISCOUNT_ROUNDS`` rounds: ``C`` may jump (at a scheduled event)
+    or bend, where a piece's error only shrinks with it. Returns the
+    present values (rows by ``ends``) and the first row's error, ``r``
+    times the rules' differences (a bound on the integral's error)."""
+    from ._mean_lifetime import _G7_W, _GK_W, _GK_X
+
+    at_ends = values(ends)
+
+    def rules(a: np.ndarray, b: np.ndarray):
+        """The pieces' integrals of ``exp(-r s) C(s)`` by the Kronrod
+        rule, as rows, and the first row's error, against the Gauss
+        rule."""
+        half = 0.5 * (b - a)
+        x = (0.5 * (a + b))[:, None] + half[:, None] * _GK_X
+        g = np.exp(-rate * x) * values(x.ravel()).reshape(-1, *x.shape)
+        kronrod = (g @ _GK_W) * half
+        return kronrod, np.abs(kronrod[0] - (g[0] @ _G7_W) * half)
+
+    a, b = pieces
+    found, error = rules(a, b)
+    for _ in range(_DISCOUNT_ROUNDS):
+        budget = tolerance * abs(float(found[0].sum()))
+        if error.sum() <= budget:
+            break
+        # Halve the pieces over their share of the error allowed.
+        split = error > budget / error.size
+        middle = 0.5 * (a + b)[split]
+        halves, errors = rules(
+            np.concatenate([a[split], middle]),
+            np.concatenate([middle, b[split]]),
+        )
+        a = np.concatenate([a[~split], a[split], middle])
+        b = np.concatenate([b[~split], middle, b[split]])
+        found = np.concatenate([found[:, ~split], halves], axis=1)
+        error = np.concatenate([error[~split], errors])
+    order = np.argsort(b, kind="stable")
+    running = np.concatenate(
+        [np.zeros((len(at_ends), 1)), np.cumsum(found[:, order], axis=1)],
+        axis=1,
+    )
+    # Every end is a piece's end: the pieces up to it are within it.
+    upto = np.searchsorted(b[order], ends, side="right")
+    present = np.exp(-rate * ends) * at_ends + rate * running[:, upto]
+    return present, abs(rate) * float(error.sum())
 
 
 def _common_period(intervals: Iterable[float]) -> float:

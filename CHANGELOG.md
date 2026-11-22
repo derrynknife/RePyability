@@ -773,6 +773,21 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- Changed: a schedule forecast's present values (`failures_by_period`
+  and `task_value` with `discount=`) discount each expected cost from
+  when it is expected to fall, by the diagram's own integral (the
+  Gauss-Kronrod rule, its pieces halved to `npv_tolerance`), in place
+  of short windows each discounted at its middle; `npv_precision` (and
+  `TaskValue.precision`'s share from it) is the integral's error
+  estimate, plus, run to failure, how far the expected failures (worked
+  out on a grid, linear between its points) can be from the true ones,
+  not half a bracket. Values move by about the old
+  precision's size or less: the README's wear ring (UC-48) is
+  $2,882.74 to within $0.016, from $2,882.77 give or take $2.47 (each
+  month by up to $0.02, the EAC $2,869.51 from $2,869.53), and its
+  run-to-failure cost is worked out from `failures`, about twice as
+  fast. Diagram results are unchanged to the bit. The private
+  `bracket` helper is gone.
 - Changed: every result made of several runs on one seed draws that seed
   the same way when given none: from numpy's global RNG, so
   `np.random.seed` makes the call repeatable, as it already did for

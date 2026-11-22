@@ -593,39 +593,41 @@ in `test_schedule_forecast.py`.
   its cost discounted from the month's start and at least from its end
   (the months end 0.041, 0.126, 0.211, 0.287, 0.372, 0.455, 0.539,
   0.622, 0.706, 0.791, 0.873, 0.958 and 1.040 years on): **between
-  $2,874.75 and $2,890.71**, so $2,882.73 give or take $7.98. Cut into
-  36 equal windows (10.6 days each, cut again at the months' ends), the
-  same bracket is **$2,882.77 give or take $2.47**; by month $104.40,
-  $226.18, $214.53, $210.04, $246.82, $239.75, $230.71, $242.25,
-  $241.48, $239.53, $236.52, $222.20 and $228.36. With 353 windows
-  (`npv_tolerance=1e-4`) it is $2,882.74 give or take $0.28. The
-  equivalent annual cost over the 1.04 years is $2,869.53.
+  $2,874.75 and $2,890.71**, so $2,882.73 give or take $7.98. Each
+  failure's cost discounted from when it is expected to fall (the
+  integral below), the value is **$2,882.74**, to within $0.016 at the
+  default tolerance (and $2,882.741 to within $0.0007 at
+  `npv_tolerance=1e-5`); by month $104.40, $226.20, $214.53, $210.05,
+  $246.83, $239.74, $230.71, $242.24, $241.48, $239.51, $236.52,
+  $222.18 and $228.36. The equivalent annual cost over the 1.04 years
+  is $2,869.51. (Until #604, short windows each discounted at their
+  middle gave $2,882.77 give or take $2.47, and an EAC of $2,869.53.)
 - **How it is solved:** an expected cost accrues as the part runs, so
-  discounting it needs the dates inside each period. The forecast is cut
-  into short windows of calendar time (equal ones, cut again at the
-  periods' ends), each window's end is turned into operating
-  time, and `cost_by_window` gives each window's expected cost (every
-  policy it takes, with no new renewal maths). The expected cost to date
-  never falls and the discount factor never rises, so discounting each
-  window's cost at its start and at its end brackets the true value
-  (`_discount.bracket`): the middle is given, and half the bracket is
-  `npv_precision`. Half a window's bracket is less than `ln(1 +
-  discount)` × half its length in years of its value, so the forecast's
-  years × `ln(1 + discount) / (2 × npv_tolerance)` windows are within
-  the tolerance, and that many are asked for, once. Windows with no
-  running add nothing. The middle is usually far closer than the bracket
-  says (its own error is second order in the window's length): the
-  bracket is what is certain.
+  discounting it needs the dates inside each period. With `C(s)` the
+  expected cost by the calendar time `s` (the part's expected cost to
+  the operating time the duty plan has run by `s`), the present value
+  to `T` is `exp(-r T) C(T) + r ∫ exp(-r s) C(s) ds`, each cost
+  discounted from when it is expected to fall. It is the diagram's own
+  discounting (`_common._discounted_accrual`, the one design of an
+  accrued cost's present value): the integral by the Gauss-Kronrod (7,
+  15) rule on pieces from the start (32 equal ones, cut again at the
+  periods' ends), the pieces whose two rules differ most halved until
+  the differences, times `r`, are within `npv_tolerance` of the value.
+  `npv_precision` is that error estimate plus what the error of `C`
+  itself can move the value: run to failure, `failures`' count is
+  worked out at a grid's points and taken linearly between them, off
+  by at most an eighth of the grid's largest second difference, and at
+  most that times `exp(-r T) + |1 - exp(-r T)|` in the present value.
+  `C` comes from `failures` run to failure, and from `cost_by_window`'s means under a policy
+  (every policy it takes, with no new renewal maths). Days with no
+  running add nothing.
 - **Decisions (defaults):**
-  - `npv_tolerance` is 1e-3 (ten cents in a hundred dollars), 34
-    windows a year at 7%: a year by month takes under a second, five
-    years under a policy about six. The bracket is first order in the
-    window's length, so each tenth of the tolerance takes ten times the
-    windows: 1e-4 is 340 a year (days), and 1e-6 would be 34,000 (a
-    quarter of an hour each), which `cost_by_window` does not work out
-    in a useful time. At most 2,000 windows are worked out; a forecast
-    that falls short of the tolerance says so in its notes, with what it
-    reached.
+  - `npv_tolerance` is 1e-3 (ten cents in a hundred dollars). The
+    rules' difference is a cautious estimate: the ring's value at 1e-3
+    is within $0.002 of the one at 1e-5. A duty plan's shifts bend `C`
+    at every start and stop, which the halving closes in on; at most
+    60 rounds are worked out, and a forecast that falls short of the
+    tolerance says so in its notes, with what it reached.
   - The ranges (5th to 95th percentile) stay undiscounted, and the notes
     say so: a discounted distribution of a part's cost is a later item.
   - At `discount=0` the present values are the expected costs
@@ -716,9 +718,9 @@ in `test_schedule_forecast.py`.
   `age` before the first), so its expected failures to any time are a
   sum of `NonRepairable.failures` over the stretches (its renewal
   count, to about 1e-6; no new renewal maths). Without the task they are `failures` from `age`. Each
-  side's failure cost is discounted as UC-48's (short windows, each at
-  its start and end, the bracket's middle given and its half the
-  precision); a planned replacement is discounted from its own instant.
+  side's failure cost is discounted as UC-48's (from when it is
+  expected to fall, the integral's error estimate the precision); a
+  planned replacement is discounted from its own instant.
   `value = without − with`, by period and in all.
 - **Decisions (defaults):**
   - **Block replacement on dates:** a failure between two services does
@@ -793,8 +795,8 @@ in `test_schedule_forecast.py`.
   without the task it is the same with no tests. Each side's demands on
   a failed device accrue with the device's operating time (the demand
   rate times the failed time), so they go by period and are discounted
-  exactly as UC-50's failures are (`_accrued_npv`'s short windows, the
-  bracket's middle, its half in `precision`, with the grid's own error);
+  exactly as UC-50's failures are (`_accrued_npv`'s integral, its error
+  estimate in `precision`, with the grid's own error);
   a test's cost and the repair of what it finds are discounted from the
   instant the task is done. `value = without - with`. The result is
   UC-50's `TaskValue`: its "failures" are the demands that meet the

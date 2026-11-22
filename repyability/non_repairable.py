@@ -504,6 +504,35 @@ class NonRepairable:
             None if cost is None else shaped(cost),
         )
 
+    def _failures_error(self, horizon: float, age: float = 0.0) -> float:
+        """How far ``failures``' expected count may be from the true one
+        anywhere in ``[0, horizon]``, from its age: the renewal count's
+        later units are worked out at a grid's points and taken linearly
+        between them, which is off by at most ``h**2 / 8`` times the
+        count's curvature, the largest second difference of the grid's
+        counts over 8. 0 where the count has no such grid (the first
+        unit's failures are its life's own CDF, exactly)."""
+        from repyability.rbd import _curves
+        from repyability.rbd.node_state import NodeState
+        from repyability.rbd.repairable_rbd import RepairableRBD
+
+        if not horizon > 0.0:
+            return 0.0
+        unit = RepairableRBD([("s", "unit"), ("unit", "t")], {"unit": self})
+        states = _curves._states(unit, {"unit": NodeState(age=age)}, set())
+        curves = _curves._availability_curves(
+            unit, float(horizon), set(), counts=True, state=states
+        )
+        events = getattr(curves.get("unit"), "unit_events", None)
+        later = getattr(events, "later", None)
+        if events is None or later is None or len(later) < 3:
+            return 0.0
+        times = np.asarray(events.times, dtype=float)
+        # The cells up to the horizon, with the one it falls in.
+        stop = int(np.searchsorted(times, horizon, side="left")) + 2
+        curvature = np.abs(np.diff(np.asarray(later, dtype=float)[:stop], 2))
+        return float(curvature.max()) / 8.0 if curvature.size else 0.0
+
     def set_costs_planned_and_unplanned(self, cp, cu):
         """Set the planned and unplanned replacement costs.
 

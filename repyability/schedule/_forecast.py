@@ -40,11 +40,9 @@ from ._usage import UsageForecast, _Plain
 RANGE_LEVELS = (5.0, 95.0)
 RANGE_WORDS = "the 5th to 95th percentile (90% of outcomes, two-sided)"
 
-#: How close a part's present value is worked out by default: half the
-#: bracket around it, as a share of it.
+#: How close a part's present value is worked out by default: the
+#: quadrature's error estimate, as a share of it.
 NPV_TOLERANCE = 1e-3
-#: The most windows a part's expected cost is asked for to get there.
-MAX_WINDOWS = 2000
 _YEAR_SECONDS = 3600.0 * _discount.HOURS_A_YEAR
 
 
@@ -134,53 +132,69 @@ def _accrued_npv(
     tolerance: float,
     costs: Callable[[np.ndarray], np.ndarray],
     notes: List[str],
+    cost_error: float = 0.0,
 ):
     """The present value, in each period and in all, of a part's expected
     cost, which accrues as it runs: ``(by period, total, precision)``.
 
     ``costs(ends)`` is the expected cost in each of the consecutive
-    windows of operating time ending at ``ends`` (increasing, from 0).
-    The forecast is cut into short windows of calendar time (equal ones,
-    cut again at the periods' ends), each window's expected cost is
-    asked for, and discounted at the window's start and at its end: the
-    true value is between the two (``_discount.bracket``), so the middle
-    is reported and half the bracket is its precision. The windows are
-    short enough for that to be within ``tolerance`` of the value, unless
-    that takes more than ``MAX_WINDOWS``.
+    windows of operating time ending at ``ends`` (increasing, from 0),
+    so ``C(s)``, the expected cost by the calendar time ``s``, is their
+    sum to the operating time the duty plan has run by ``s``. Its
+    present value is the diagram's (``_common._discounted_accrual``):
+    ``exp(-r T) C(T) + r * integral_0^T exp(-r s) C(s) ds``, each cost
+    discounted from when it is expected to fall, the integral taken by
+    the Gauss-Kronrod rule on pieces halved until its error estimate is
+    within ``tolerance`` of the value. The precision is that estimate
+    plus what ``cost_error`` (a bound on how far ``C`` itself may be from
+    the true expected cost, anywhere in the forecast) can move the value:
+    ``cost_error * (exp(-r T) + |1 - exp(-r T)|)``.
     """
-    span = float(seconds[-1])
+    from repyability.rbd._common import (
+        _DISCOUNT_ROUNDS,
+        _discount_pieces,
+        _discounted_accrual,
+    )
+
     scale = usage._unit(unit)
     base = usage._at_s("hours", usage._start_s)
-    # Half a window's bracket is under rate x half its length of its
-    # value, so windows this short are within the tolerance.
     rate = _discount.continuous(discount)
-    wanted = int(np.ceil(span / _YEAR_SECONDS * abs(rate) / (2.0 * tolerance)))
-    count = min(max(wanted, 1), MAX_WINDOWS)
-    edges = np.unique(
-        np.concatenate([np.linspace(0.0, span, count + 1)[1:], seconds])
+    ends = np.asarray(seconds, float) / _YEAR_SECONDS
+
+    def accrued(years: np.ndarray) -> np.ndarray:
+        """``C`` at ``years`` from the start, as one row."""
+        model = usage._at_s("hours", usage._start_s + years * _YEAR_SECONDS)
+        model = np.maximum((model - base) / scale, 0.0)
+        knots, where = np.unique(model, return_inverse=True)
+        moving = knots > 0.0
+        cumulative = np.zeros(knots.size)
+        if moving.any():
+            cumulative[moving] = np.cumsum(costs(knots[moving]))
+        return cumulative[np.ravel(where)][None, :]
+
+    present, precision = _discounted_accrual(
+        accrued, ends, rate, _discount_pieces(ends, float(ends[-1])), tolerance
     )
-    edges = edges[edges > 0.0]
-    model = (usage._at_s("hours", usage._start_s + edges) - base) / scale
-    model = np.maximum.accumulate(np.maximum(model, 0.0))
-    moving = np.diff(model, prepend=0.0) > 0.0
-    amounts = np.zeros(edges.size)
-    if moving.any():
-        amounts[moving] = np.maximum(costs(model[moving]), 0.0)
-    value, half = _discount.bracket(
-        discount,
-        amounts,
-        np.concatenate([[0.0], edges[:-1]]) / _YEAR_SECONDS,
-        edges / _YEAR_SECONDS,
+    by_period = np.diff(present[0], prepend=0.0)
+    # A period with no running accrues nothing: exactly 0, not what its
+    # ends' values leave over in rounding.
+    running = np.diff(
+        usage._at_s("hours", usage._start_s + np.asarray(seconds, float)),
+        prepend=base,
     )
-    total, precision = float(value.sum()), float(half.sum())
-    if precision > tolerance * total:
+    by_period[running <= 0.0] = 0.0
+    total = float(present[0, -1])
+    # The expected cost's own error, discounted: at most cost_error at T
+    # and in the integral, whose weights r exp(-r s) add up to 1 - exp(-r T).
+    shrink = float(np.exp(-rate * ends[-1]))
+    precision += cost_error * (shrink + abs(1.0 - shrink))
+    if precision > tolerance * abs(total):
         notes.append(
             f"The present value is within {precision:.3g} of the true one "
             f"({precision / total:.2g} of it), short of npv_tolerance="
-            f"{tolerance:g}: {MAX_WINDOWS} windows is the most worked out."
+            f"{tolerance:g}: {_DISCOUNT_ROUNDS} rounds of halving is the "
+            "most worked out."
         )
-    index = np.searchsorted(seconds, edges, side="left")
-    by_period = np.bincount(index, weights=value, minlength=seconds.size)
     return by_period, total, precision
 
 
@@ -264,9 +278,9 @@ class FailuresByPeriod(_Plain):
         The periods' ``expected_npv`` summed: the forecast's expected
         cost as a present value.
     npv_precision : float or None
-        How far the true ``npv`` can be from the one given: half the
-        bracket between discounting each short window's expected cost at
-        its start and at its end (0 at a discount of 0).
+        How far the true ``npv`` can be from the one given: the error
+        estimate of the integral its expected cost is discounted by (0
+        at a discount of 0).
     eac : float or None
         The equivalent annual cost: the steady cost a year over the
         forecast worth ``npv``.
@@ -381,10 +395,9 @@ def failures_by_period(
         A yearly discount rate (0.07 for 7% a year): the result then has
         each period's ``expected_npv``, the expected cost as a present
         value at the forecast's start, with ``npv``, ``npv_precision``
-        and ``eac``. An expected cost accrues as the part runs, so the
-        forecast is cut into short windows and each window's expected
-        cost is discounted at its start and at its end: the true value
-        lies between, the middle is given and half the bracket is
+        and ``eac``. An expected cost accrues as the part runs, and each
+        part of it is discounted from when it is expected to fall: an
+        integral over the forecast, whose error estimate is
         ``npv_precision``. The ranges stay undiscounted. By default None:
         no present values.
     escalation : float, optional
@@ -394,11 +407,10 @@ def failures_by_period(
         falls, at the net yearly rate ``(1 + discount) / (1 + escalation)
         - 1``. By default None: today's prices.
     npv_tolerance : float, optional
-        How close the present value is worked out: the windows are short
-        enough for ``npv_precision`` to be within this share of ``npv``
-        (at most 2,000 of them, which the notes say when it falls
-        short); by default 1e-3, ten cents in a hundred dollars. A tenth
-        of it takes ten times the windows.
+        How close the present value is worked out: the integral's pieces
+        are halved until ``npv_precision`` is within this share of
+        ``npv`` (the notes say when it falls short); by default 1e-3,
+        ten cents in a hundred dollars.
 
     Returns
     -------
@@ -559,7 +571,11 @@ def failures_by_period(
             expected_npv = np.array(cost, float)
             npv, npv_precision = float(total["expected_cost"] or 0.0), 0.0
         else:
-            if windows is not None:
+            # Run to failure, a window's expected cost is its expected
+            # failures' (failures' exact counts, which cost_by_window's
+            # distributions only repeat, at many times the work).
+            cost_error = 0.0
+            if policy != "run to failure":
 
                 def costs(model_ends: np.ndarray) -> np.ndarray:
                     return part.cost_by_window(
@@ -581,8 +597,19 @@ def failures_by_period(
                         prepend=0.0,
                     )
 
+                # The counts are linear between their grid's points: how
+                # far that can be from the true count is in the precision.
+                cost_error = part.cu * part._failures_error(total_end, age)
+
             expected_npv, npv, npv_precision = _accrued_npv(
-                usage, seconds, unit, discount, npv_tolerance, costs, notes
+                usage,
+                seconds,
+                unit,
+                discount,
+                npv_tolerance,
+                costs,
+                notes,
+                cost_error,
             )
         eac = _discount.equivalent_annual(
             npv, discount, float(seconds[-1]) / _YEAR_SECONDS

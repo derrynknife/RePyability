@@ -199,8 +199,9 @@ class TaskValue(_Plain):
         and ``count`` (the times the task is done).
     precision : float
         How far the true total ``value`` can be from the one given: the
-        two sides' present values are each within half a bracket of
-        theirs (as ``FailuresByPeriod.npv_precision``); 0 undiscounted.
+        two sides' present values are each within their integrals'
+        error estimates of theirs (as
+        ``FailuresByPeriod.npv_precision``); 0 undiscounted.
     eac : dict or None
         With a discount, the equivalent annual cost of ``with_task`` and
         ``without_task`` and of ``value`` over the forecast: the steady
@@ -983,7 +984,8 @@ def task_value(
             f"{_discount.words(given, usage.start, escalation)} A failure's "
             "expected "
             "cost is discounted from when it is expected to fall, each "
-            f"side to within its bracket ({precision:.3g} on the value in "
+            f"side to within its error estimate ({precision:.3g} on the "
+            "value in "
             "all); the task's cost from when it is done."
         )
     avoided = fails_without - fails_with

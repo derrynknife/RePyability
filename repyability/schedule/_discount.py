@@ -6,7 +6,7 @@ the dated replacement policies (``repyability.maintenance``): an amount
 ``y`` years after the date it is discounted to is worth ``(1 +
 discount) ** -y`` of itself, a year being 365.25 days. The arithmetic
 (``factor``, ``per_unit``, ``equivalent_annual``, ``perpetuity``,
-``bracket``, ``net`` and the conversion of a yearly rate to a
+``net`` and the conversion of a yearly rate to a
 continuous one) is ``repyability.value``'s, the one convention for every
 present value in RePyability; it is imported here under the names the
 schedule module has always used. What is the schedule's own is the
@@ -20,7 +20,6 @@ from typing import Optional
 from repyability.value._rates import (  # noqa: F401
     DAYS_A_YEAR,
     HOURS_A_YEAR,
-    bracket,
     continuous,
     equivalent_annual,
     factor,

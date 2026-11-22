@@ -97,15 +97,6 @@ def test_the_discount_convention():
     assert _discount.yearly(None) is None
 
 
-def test_a_bracket_holds_a_cost_wherever_it_falls():
-    # 100 somewhere in the first year, 50 somewhere in the second
-    value, half = _discount.bracket(0.07, [100.0, 50.0], [0, 1], [1, 2])
-    high = 100.0 + 50.0 / 1.07
-    low = 100.0 / 1.07 + 50.0 / 1.07**2
-    assert value.sum() == pytest.approx((high + low) / 2)
-    assert half.sum() == pytest.approx((high - low) / 2)
-
-
 # ------------------------------------------------------------ UC-47
 
 
@@ -422,38 +413,44 @@ def test_uc48_wear_ring_present_value_by_month(pump):
     assert round(high.sum(), 2) == 2890.71 and round(low.sum(), 2) == 2874.75
     assert np.all(months.expected_npv <= high + 1e-9)
     assert np.all(months.expected_npv >= low - 1e-9)
-    # in 36 equal windows, cut at the months' ends: $2,882.77 give or
-    # take $2.47
-    assert months.npv == pytest.approx(2882.77, abs=0.005)
-    assert months.npv_precision == pytest.approx(2.47, abs=0.005)
+    # Each failure's cost discounted from when it is expected to fall:
+    # $2,882.742, to within $0.0165 (the 36 windows' bracket of the
+    # method before gave $2,882.77 give or take $2.47).
+    assert months.npv == pytest.approx(2882.742, abs=5e-4)
+    assert months.npv_precision == pytest.approx(0.01646, abs=5e-5)
     assert months.npv_precision <= 1e-3 * months.npv
+    finer = failures_by_period(
+        part, pump, "month", age=5200.0, discount=0.07, npv_tolerance=1e-5
+    )
+    assert abs(finer.npv - months.npv) <= months.npv_precision
+    assert finer.npv_precision <= 1e-5 * finer.npv
     assert months.expected_npv.sum() == pytest.approx(months.npv, rel=1e-13)
     assert months.total["expected_npv"] == months.npv
     assert months.total["npv_precision"] == months.npv_precision
     assert [round(float(x), 2) for x in months.expected_npv] == [
         104.40,
-        226.18,
+        226.20,
         214.53,
-        210.04,
-        246.82,
-        239.75,
+        210.05,
+        246.83,
+        239.74,
         230.71,
-        242.25,
+        242.24,
         241.48,
-        239.53,
+        239.51,
         236.52,
-        222.20,
+        222.18,
         228.36,
     ]
     years = ends[-1]
     assert months.eac == pytest.approx(
         RATE * months.npv / (1 - math.exp(-RATE * years))
     )
-    assert round(months.eac, 2) == 2869.53
+    assert round(months.eac, 2) == 2869.51
     assert months.notes[-1] == (
         "Discounted to 2026-11-16 at 7% a year. The present values "
         "(expected_npv, npv) discount the expected cost from when it is "
-        "expected to fall, to within 2.47 in all; expected_cost and the "
+        "expected to fall, to within 0.0165 in all; expected_cost and the "
         "ranges are not discounted."
     )
     json.dumps(months.to_dict())
@@ -488,9 +485,9 @@ def test_constant_rate_in_calendar_time_against_the_closed_form():
         assert quarters.npv_precision <= tolerance * quarters.npv
         assert abs(quarters.npv - exact) <= quarters.npv_precision
         if last is not None:
-            assert quarters.npv_precision < last
+            assert quarters.npv_precision <= last
         last = quarters.npv_precision
-    # each quarter against its own closed form, within the bracket
+    # each quarter against its own closed form
     _, seconds = _period_edges(usage, "quarter")
     t = np.r_[0.0, seconds / 3600.0]
     by_quarter = 0.5 * np.diff(-np.expm1(-r * t)) / r
@@ -505,7 +502,7 @@ def calendar_years(operating):
     return (week * 168.0 + day * 24.0 + 6.0 + hour) / 8766.0
 
 
-def test_the_bracket_narrows_and_holds_a_simulation(pump):
+def test_the_present_value_holds_a_simulation(pump):
     # 400,000 rings renewed at each failure over the forecast's 4,352
     # operating hours from age 5,200, each failure's $4,800 discounted
     # from when the pump reaches that hour on its shifts.
@@ -535,8 +532,8 @@ def test_the_bracket_narrows_and_holds_a_simulation(pump):
         assert months.npv_precision <= tolerance * months.npv
         assert abs(worth.mean() - months.npv) < (4 * se + months.npv_precision)
         if last is not None:
-            # the finer bracket is inside the coarser one
-            assert months.npv_precision < last[1]
+            # the finer value is within the coarser one's precision
+            assert months.npv_precision <= last[1]
             assert abs(months.npv - last[0]) <= last[1]
         last = (months.npv, months.npv_precision)
     assert abs(worth.mean() - months.npv) < 4 * se
@@ -554,11 +551,10 @@ def test_nothing_accrues_while_idle(pump):
     months = failures_by_period(
         ring(unplanned_cost=4800.0), pump, "month", age=5200.0, discount=0.07
     )
-    # cut by day or by month, the brackets hold the same value
+    # cut by day or by month, the same value, within the precisions
     assert abs(days.npv - months.npv) <= (
         days.npv_precision + months.npv_precision
     )
-    assert days.npv_precision <= months.npv_precision
 
 
 def test_a_policy_as_a_present_value(pump):
@@ -629,26 +625,26 @@ def test_a_part_with_no_cost_has_no_present_value(pump):
 
 
 def test_a_forecast_short_of_the_tolerance_says_so(pump, monkeypatch):
-    # 1e-4 takes 353 windows; with 100 the most, the notes say how far
-    # it got.
-    from repyability.schedule import _forecast
+    # With two rounds of halving the most, 1e-7 is out of reach: the
+    # notes say how far it got.
+    from repyability.rbd import _common
 
-    monkeypatch.setattr(_forecast, "MAX_WINDOWS", 100)
+    monkeypatch.setattr(_common, "_DISCOUNT_ROUNDS", 2)
     months = failures_by_period(
         ring(unplanned_cost=4800.0),
         pump,
         "month",
         age=5200.0,
         discount=0.07,
-        npv_tolerance=1e-4,
+        npv_tolerance=1e-7,
     )
-    assert 1e-4 * months.npv < months.npv_precision < 1e-3 * months.npv
+    assert 1e-7 * months.npv < months.npv_precision < 1e-3 * months.npv
     assert any(
-        "short of npv_tolerance=0.0001: 100 windows is the most worked out"
-        in note
+        "short of npv_tolerance=1e-07: 2 rounds of halving is the most "
+        "worked out" in note
         for note in months.notes
     )
-    assert abs(months.npv - 2882.75) <= months.npv_precision
+    assert abs(months.npv - 2882.741) <= months.npv_precision + 5e-4
 
 
 # ------------------------------------------------------------ UC-49
