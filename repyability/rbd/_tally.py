@@ -1317,7 +1317,12 @@ class _Tally:
         self.system_uptime.add(other.system_uptime)
         self.system_downtime.add(other.system_downtime)
         if other.system_unplanned is not None:
-            self.add_unplanned(other.system_unplanned)
+            # The exact total, and each simulation's time after this
+            # tally's, in order (as uptimes).
+            if self.system_unplanned is None:
+                self.system_unplanned = ExactSum()
+            self.system_unplanned.add(other.system_unplanned)
+            self.unplanned_times.extend(other.unplanned_times)
         for name in self._COUNTS:
             setattr(self, name, getattr(self, name) + getattr(other, name))
         for name in self._NODE_SUMS:
@@ -1384,6 +1389,7 @@ class _Tally:
                 for name in self._NODE_SUMS
             },
             "uptimes": list(self.uptimes),
+            "unplanned_times": list(self.unplanned_times),
             "cost_samples": list(self.cost_samples),
             "cost_by_category": {
                 key: amount.partials
@@ -1457,6 +1463,9 @@ class _Tally:
         for name in cls._NODE_SUMS:
             setattr(tally, name, [_exact_total(v) for v in data[name]])
         tally.uptimes = [float(v) for v in data["uptimes"]]
+        tally.unplanned_times = [
+            float(v) for v in data.get("unplanned_times", ())
+        ]
         tally.cost_samples = [float(v) for v in data["cost_samples"]]
         tally.cost_by_category.update(
             {

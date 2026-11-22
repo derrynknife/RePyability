@@ -149,6 +149,8 @@ def test_maintenance_that_takes_time_is_a_planned_outage():
             "system_downtime": 140.0,
             "setup": 0.0,
             "shutdown": 0.0,
+            "crews": 0.0,
+            "capital": 0.0,
         }
     )
     assert result.cost.by_component == pytest.approx({"c": 110.0})
@@ -492,7 +494,7 @@ def test_forced_nodes_are_not_maintained():
         ),
         ({"policy": "calendar"}, "needs a calendar"),
         ({"interval": 10, "duration": "quick"}, "time-to-maintain model"),
-        ({"interval": 10, "duration": 2.0}, "time-to-maintain model"),
+        ({"interval": 10, "duration": -2.0}, "time-to-maintain model"),
         ({"interval": 10, "cost": -1.0}, "non-negative"),
         (
             {"interval": 10, "cost": surv.Normal.from_params([1, 5])},

@@ -779,6 +779,8 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             "simulate_chunk",
             "availability_from_chunks",
             "shards",
+            # Each design's availability runs.
+            "least_spend_for_downtime",
         ):
             out[name] = r.refused(meshed)
     # A run of windows: the exact values over time (the window's own

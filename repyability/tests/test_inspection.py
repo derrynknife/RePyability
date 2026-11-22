@@ -485,7 +485,7 @@ def test_the_simulation_matches_the_exact_values():
         ({"interval": -5}, "positive, finite"),
         ({"interval": float("inf")}, "positive, finite"),
         ({"interval": "yearly"}, "positive, finite"),
-        ({"interval": 50, "duration": 3.0}, "time-to-test model"),
+        ({"interval": 50, "duration": -3.0}, "time-to-test model"),
         ({"interval": 50, "cost": -1.0}, "non-negative"),
     ],
 )

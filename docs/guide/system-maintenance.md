@@ -1302,7 +1302,12 @@ site = Opportunities(
     [Opportunity("overhaul", period=8760.0, duration=72.0)],
     shut_costs={"overhaul": 5000.0},
 )
-line = RepairableRBD(edges, components, shutdowns=site)
+pump = {
+    "reliability": surv.Weibull.from_params([30000.0, 2.0]),
+    "repairability": surv.Exponential.from_params([1 / 24.0]),
+}
+line = RepairableRBD([("in", "pump"), ("pump", "out")], {"pump": pump},
+                     shutdowns=site)
 ```
 
 **Outages at given times.** A plan of outages is rarely on a period:
