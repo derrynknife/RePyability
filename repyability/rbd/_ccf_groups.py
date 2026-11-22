@@ -35,6 +35,7 @@ from repyability.rbd._events import (
     _Cause,
 )
 from repyability.rbd._model_utils import distribution_name, never_fails
+from repyability.rbd.ccf import Shocks
 from repyability.rbd.modular import GraphStructure
 from repyability.utils.checks import (
     structure_method,
@@ -60,12 +61,20 @@ def _ccf_rates(rbd, group) -> Tuple[float, Optional[float]]:
     rate (None for hidden failures, found by tests), for its chain
     (see ``_ccf_chain``); raise if the chain does not cover them."""
     where = f"Common-cause group {list(group.members)}"
+    if isinstance(group.model, Shocks):
+        raise NotImplementedError(
+            f"{where}: its shocks come at a rate of their own while its "
+            "members keep their own lives, which no chain of the group "
+            "follows. Estimate the values by simulation, with "
+            "availability() or cost()."
+        )
     if rbd._crews_couple():
         raise NotImplementedError(
-            f"{where}: with limited repair crews, the crews' Markov "
-            "chain does not take common causes in, as yet. Estimate the "
-            "values by simulation, with availability() or cost(), which "
-            "take both."
+            f"{where}: with limited repair crews its members wait for "
+            "a crew with the other components, which the group's own "
+            "chain does not follow (the crews' Markov chain takes the "
+            "group in where it works the values out). Estimate the "
+            "values by simulation, with availability() or cost()."
         )
     rates = set()
     for member in group.members:
@@ -222,13 +231,23 @@ def _shared_causes(rbd) -> List[_Cause]:
     ``_own_rate``)."""
     out = []
     for group in rbd.ccf_groups:
-        rate = _constant_rate(rbd.components[group.members[0]].reliability)
-        if rate is None:
-            continue  # refused (see _require_groups_simulated)
         coins = any(
             member in rbd._inspection and rbd._inspection[member].partial
             for member in group.members
         )
+        if isinstance(group.model, Shocks):
+            # Shocks at a rate of their own: every set of members a shock
+            # can fail is a cause, one member's too (its own life is its
+            # own model's). A cause names its members in the group's
+            # order, the order a strike fails them in.
+            out += [
+                _Cause(struck, rate, coins)
+                for struck, rate in group.model.causes(group.members)
+            ]
+            continue
+        rate = _constant_rate(rbd.components[group.members[0]].reliability)
+        if rate is None:
+            continue  # refused (see _require_groups_simulated)
         for struck, cause in _ccf_chain.causes(
             group.model, group.members, rate
         ):
@@ -251,6 +270,8 @@ def _own_rate(rbd, node) -> Optional[float]:
     which the simulation refuses, see ``_require_groups_simulated``)."""
     for group in rbd.ccf_groups:
         if node in group.members:
+            if isinstance(group.model, Shocks):
+                return None  # its own life is its own model's
             rate = _constant_rate(rbd.components[node].reliability)
             if rate is None:
                 return None
@@ -273,9 +294,10 @@ def _require_groups_simulated(rbd, states: Optional[dict] = None):
 
     for group in rbd.ccf_groups:
         where = f"Common-cause group {list(group.members)}"
+        shocked = isinstance(group.model, Shocks)
         for member in group.members:
             life = rbd.components[member].reliability
-            if _constant_rate(life) is None:
+            if not shocked and _constant_rate(life) is None:
                 raise NotImplementedError(
                     f"{where}: its members' failure rate is split "
                     "between the causes, which needs exponential lives, "
@@ -291,8 +313,25 @@ def _require_groups_simulated(rbd, states: Optional[dict] = None):
                         f"{where}: member {member!r} has {what}, which "
                         "the simulation of its group does not take in, "
                         "as yet."
+                        + (
+                            " Simulate the diagram with the member left "
+                            f"out of the group, or without its {what}."
+                            if shocked
+                            else ""
+                        )
                     )
             start = (states or {}).get(member)
+            if shocked:
+                if start is not None and member in rbd._inspection:
+                    raise NotImplementedError(
+                        f"{where}: member {member!r} is tested and "
+                        "started from a state, and a shock may have "
+                        "failed it, unseen, since its last test, which "
+                        "the simulation does not draw for a member with "
+                        "a life of its own. Start it as new (leave it "
+                        "out of the states)."
+                    )
+                continue
             if start is not None and start.own_life:
                 raise NotImplementedError(
                     f"{where}: member {member!r} has a life of its own "
@@ -303,6 +342,13 @@ def _require_groups_simulated(rbd, states: Optional[dict] = None):
     for component in rbd.components.values():
         if isinstance(component, RepairableRBD):
             _require_groups_simulated(component)
+
+
+def _own_chains(rbd) -> bool:
+    """Whether the common-cause groups are worked out by chains of their
+    own: not with limited repair crews, whose chain takes the groups in
+    with the queue (#251, see ``_crews._crew_causes``)."""
+    return bool(rbd.ccf_groups) and not rbd._crews_couple()
 
 
 def _require_ccf_long_run(rbd) -> None:
@@ -820,8 +866,9 @@ def _ccf_fv_shares(
 
 def _require_ccf_frequencies(rbd) -> None:
     """Raise if the failure frequency with common-cause groups is not
-    worked out: where their long-run values are not."""
-    if rbd.ccf_groups:
+    worked out: where their long-run values are not (with limited repair
+    crews, their chain has the groups' frequencies)."""
+    if _own_chains(rbd):
         _require_ccf_long_run(rbd)
 
 

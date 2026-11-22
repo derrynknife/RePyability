@@ -35,84 +35,11 @@ from typing import Any, Dict, Hashable, List, Optional, Tuple
 
 import numpy as np
 
-from repyability.rbd import _npv, _requirements
-from repyability.rbd._common import _discount_rate
+from repyability.rbd import _npv, _pricing, _requirements
 from repyability.rbd._model_utils import is_fixed_probability
-from repyability.rbd._spec import _mean_cost
-from repyability.rbd._tally import _CATEGORIES
 from repyability.rbd.node_state import NodeState
 from repyability.rbd.results import ExpectedNPV, PlanVsActual
-
-_ORDER = {
-    name: i
-    for i, name in enumerate(("acquisition",) + _CATEGORIES + ("value",))
-}
-
-#: Why a cost the log does not determine is left out of the comparison.
-_UNITS = (
-    "A standby group's log is the group's: its units' failures, which "
-    "are charged, are not in it."
-)
-_HIDDEN = (
-    "A hidden failure is charged when a test finds it, which the log "
-    "does not record."
-)
-_TESTS = "Tests that find nothing leave no outage in the log."
-_INSPECTIONS = "Inspections that replace nothing leave no outage in the log."
-_INSTANT = (
-    "Its planned replacements take no time, so they leave no outage in "
-    "the log."
-)
-_CALENDAR = (
-    "Its calendar policy prices each planned replacement at its "
-    "opportunity, which the log does not record."
-)
-_REPLACED = (
-    "It is replaced, rather than repaired, at failures counted from its "
-    "last renewal, which the log does not mark."
-)
-_SETUP = (
-    "A set-up cost is charged at each stop of a maintenance group, which "
-    "includes renewals the log does not mark."
-)
-_BOUGHT = "Paid at the start: the log does not record purchases."
-
-
-def _not_compared(rbd) -> List[Tuple[str, Optional[Hashable], str]]:
-    """The priced cells, ``(category, component, reason)``, that the log
-    does not determine (see the module's notes), by the diagram's kinds
-    of component alone."""
-    out: List[Tuple[str, Optional[Hashable], str]] = []
-    for node, costs in rbd.costs.items():
-        failure = [k for k in ("repair_cost", "replace_cost") if k in costs]
-        if node in rbd._standby:
-            out += [(k[:-5], node, _UNITS) for k in failure]
-        elif node in rbd._inspection:
-            out += [(k[:-5], node, _HIDDEN) for k in failure]
-        else:
-            imperfect = rbd._imperfect.get(node)
-            if (
-                imperfect is not None
-                and imperfect.replace_after is not None
-                and "replace_cost" in costs
-            ):
-                out.append(("replace", node, _REPLACED))
-        if node in rbd._inspection and "inspection_cost" in costs:
-            out.append(("inspection", node, _TESTS))
-        schedule = rbd._preventive.get(node)
-        if schedule is not None:
-            if schedule.policy == "calendar":
-                out.append(("preventive", node, _CALENDAR))
-            elif schedule.duration is None and "preventive_cost" in costs:
-                out.append(("preventive", node, _INSTANT))
-            if "inspection_cost" in costs:
-                out.append(("inspection", node, _INSPECTIONS))
-    if any(spec.setup_cost for spec in rbd._maintenance.values()):
-        out.append(("setup", None, _SETUP))
-    for node, price in rbd.acquisition_costs.items():
-        if price:
-            out.append(("acquisition", node, _BOUGHT))
-    return out
+from repyability.value.value_schedule import ValueSchedule
 
 
 def _log_state_refusal(rbd, node) -> Optional[str]:
@@ -213,6 +140,29 @@ def _require_log_states(rbd, given=()) -> None:
             raise NotImplementedError(reason)
 
 
+def _require_no_plans(rbd) -> None:
+    """Raise if a component is replaced at the times of a plan, which
+    are counted from 0: the rest from today is valued on the same
+    diagram from today, where they would be counted again."""
+    if rbd._upgrades:
+        raise NotImplementedError(
+            f"{_requirements._upgraded(rbd)}, counted from 0, which the "
+            "rest from today is not valued with yet: value the plan with "
+            "expected_npv, and the rest on a diagram whose upgrade is at "
+            "the time still to come, counted from today (or, once it is "
+            "past, with the new life), with expected_npv(state=)."
+        )
+    planned = _requirements._planned(rbd)
+    if planned:
+        raise NotImplementedError(
+            f"Component {planned[0]!r} is replaced at the times of a plan "
+            "(replace_at), counted from 0, which the rest from today is "
+            "not valued with yet: value the plan with expected_npv, and "
+            "the rest on a diagram whose replace_at holds the times still "
+            "to come, counted from today, with expected_npv(state=)."
+        )
+
+
 def route(rbd, npv_route):
     """``plan_vs_actual``'s route: ``expected_npv``'s (it values the plan
     and the rest from today with it), unless a component's state now is
@@ -221,6 +171,9 @@ def route(rbd, npv_route):
 
     if npv_route.route == r.REFUSED:
         return npv_route
+    planned = r.refusal(lambda: _require_no_plans(rbd))
+    if planned:
+        return r.refused(planned)
     for node in rbd.components:
         reason = _log_state_refusal(rbd, node)
         if reason is not None:
@@ -348,147 +301,21 @@ def _states_now(rbd, logs, now, given, start_state) -> Tuple[dict, list]:
 # -- pricing a log ----------------------------------------------------------
 
 
-def _discounted_span(a, b, rate: float):
-    """The integral of ``exp(-rate t)`` from ``a`` to ``b``."""
-    a, b = np.asarray(a, float), np.asarray(b, float)
-    if not rate:
-        return b - a
-    return np.exp(-rate * a) * -np.expm1(-rate * (b - a)) / rate
-
-
-class _Ledger:
-    """Amounts by (period, category, component), present and
-    undiscounted, as costs (positive) or value."""
-
-    def __init__(self, ends: np.ndarray, rate: float):
-        self.ends = ends
-        self.starts = np.concatenate(([0.0], ends[:-1]))
-        self.rate = rate
-        self.cells: Dict[tuple, List[float]] = {}
-
-    def _add(self, k: int, category, component, present, nominal) -> None:
-        cell = self.cells.setdefault((k, category, component), [0.0, 0.0])
-        cell[0] += float(present)
-        cell[1] += float(nominal)
-
-    def events(self, times, price: float, category, component) -> None:
-        """``price`` charged at each of ``times``."""
-        times = np.asarray(times, float)
-        if not price or not times.size:
-            return
-        periods = np.searchsorted(self.ends, times, side="right")
-        periods = np.minimum(periods, len(self.ends) - 1)
-        present = price * np.exp(-self.rate * times)
-        for k in np.unique(periods):
-            mask = periods == k
-            self._add(
-                int(k),
-                category,
-                component,
-                present[mask].sum(),
-                price * mask.sum(),
-            )
-
-    def spans(self, spans, per_time: float, category, component) -> None:
-        """``per_time`` over each span, ``(start, stop)`` rows."""
-        spans = np.asarray(spans, float).reshape(-1, 2)
-        if not per_time or not spans.size:
-            return
-        for k, (lo, hi) in enumerate(zip(self.starts, self.ends)):
-            a = np.maximum(spans[:, 0], lo)
-            b = np.minimum(spans[:, 1], hi)
-            inside = b > a
-            if not np.any(inside):
-                continue
-            a, b = a[inside], b[inside]
-            self._add(
-                k,
-                category,
-                component,
-                per_time * _discounted_span(a, b, self.rate).sum(),
-                per_time * (b - a).sum(),
-            )
-
-    def rows(self) -> List[Dict[str, Any]]:
-        out = []
-        for (k, category, component), (present, nominal) in self.cells.items():
-            sign = 1.0 if category == "value" else -1.0
-            out.append(
-                _row(
-                    k + 1,
-                    self.starts[k],
-                    self.ends[k],
-                    category,
-                    component,
-                    sign * present,
-                    sign * nominal,
-                )
-            )
-        return _sorted(out)
-
-
-def _row(period, start, end, category, component, present, nominal) -> dict:
-    return {
-        "period": int(period),
-        "start": float(start),
-        "end": float(end),
-        "category": category,
-        "component": component,
-        "present_value": float(present),
-        "undiscounted": float(nominal),
-    }
-
-
-def _sorted(rows: List[dict]) -> List[dict]:
-    return sorted(
-        rows,
-        key=lambda r: (
-            r["period"],
-            _ORDER.get(r["category"], len(_ORDER)),
-            str(r["component"]),
-        ),
-    )
-
-
-def _priced_log(
-    rbd, logs, ends: np.ndarray, rate: float, value_rate: float, skip
-) -> List[dict]:
+def _priced_log(rbd, logs, ends: np.ndarray, money, skip) -> List[dict]:
     """The cash flows the logs imply over ``[0, ends[-1]]``, by period,
     category and component, priced with the diagram's costs (a cost drawn
     from a distribution at its mean) at the times they fell, but for the
-    cells in ``skip``, ``{(category, component)}``."""
+    cells in ``skip``, ``{(category, component)}``, valued by ``money``
+    (an ``_npv.Money``, see ``_pricing``)."""
     from repyability.timelines import _system_timeline
 
-    ledger = _Ledger(ends, rate)
-    for node, costs in rbd.costs.items():
-        log = logs[node]
-        changes, planned = log.changes, log.planned
-        after_up = np.arange(changes.size) % 2 == (0 if not log.up else 1)
-        down = ~after_up
-        failures = changes[down & ~planned]
-        outages = changes[down & planned]
-        charges = [("repair_cost", "repair", failures)]
-        if node not in rbd._imperfect:
-            charges.append(("replace_cost", "replace", failures))
-        charges.append(("preventive_cost", "preventive", outages))
-        for key, category, times in charges:
-            if key in costs and (category, node) not in skip:
-                ledger.events(times, _mean_cost(costs[key]), category, node)
-        rate_down = costs.get("downtime_cost", 0.0)
-        if rate_down:
-            ledger.spans(
-                log.down_intervals, rate_down, "component_downtime", node
-            )
-    if rbd.downtime_cost_rate or value_rate:
-        system = _system_timeline(rbd, logs)
-        ledger.spans(
-            system.down_intervals,
-            rbd.downtime_cost_rate,
-            "system_downtime",
-            None,
-        )
-        ledger.spans(system.up_intervals, value_rate, "value", None)
-    return ledger.rows()
+    system = (
+        _system_timeline(rbd, logs)._data
+        if rbd.downtime_cost_rate or money.earns
+        else None
+    )
+    data = {node: logs[node]._data for node in rbd.costs}
+    return _pricing.priced(rbd, data, system, ends, money, skip).rows()
 
 
 # -- the analysis -----------------------------------------------------------
@@ -557,7 +384,7 @@ def _variance(actual: List[dict], expected: List[dict]) -> List[dict]:
             key = (r["period"], r["category"], r["component"])
             cell = cells.setdefault(
                 key,
-                _row(
+                _pricing.row(
                     r["period"],
                     r["start"],
                     r["end"],
@@ -569,11 +396,34 @@ def _variance(actual: List[dict], expected: List[dict]) -> List[dict]:
             )
             cell["present_value"] += sign * r["present_value"]
             cell["undiscounted"] += sign * r["undiscounted"]
-    return _sorted(list(cells.values()))
+    return _pricing.sort_rows(list(cells.values()))
 
 
 def _total(rows, key: str = "present_value") -> float:
     return float(sum(r[key] for r in rows))
+
+
+def _from(value_rate, now: float):
+    """The value earned from ``now`` on its own clock: a schedule's steps
+    from then (the step in force at ``now`` from 0), or the rate."""
+    if not isinstance(value_rate, ValueSchedule):
+        return value_rate
+    times = np.asarray(value_rate.times)
+    later = times > now
+    first = int(np.flatnonzero(~later)[-1])
+    return ValueSchedule(
+        np.concatenate(([0.0], times[later] - now)),
+        np.concatenate(
+            ([value_rate.rates[first]], np.asarray(value_rate.rates)[later])
+        ),
+    )
+
+
+def _row_growth(money, category: str, component) -> float:
+    """The growth of a cash-flow row's stream (see ``_npv.Money``)."""
+    if component is None or category in ("value", "salvage"):
+        return money.growth(category)
+    return money.growth(component, category)
 
 
 def plan_vs_actual(
@@ -583,14 +433,26 @@ def plan_vs_actual(
     horizon,
     *,
     discount_rate: float,
-    value_rate: float,
+    value_rate,
     periods,
     method: str,
     state,
     start_state,
+    escalation=None,
+    rates: str = "nominal",
+    inflation=None,
 ) -> PlanVsActual:
     """See ``RepairableRBD.plan_vs_actual``."""
-    rate = _discount_rate(discount_rate)
+    escalation = _npv.own_escalation(rbd, escalation)
+    money = _npv.Money(
+        rbd, discount_rate, value_rate, escalation, rates, inflation
+    )
+    valued = dict(
+        discount_rate=money.given_rate,
+        escalation=escalation,
+        rates=rates,
+        inflation=inflation,
+    )
     now = _npv._number(now, "now", strict=True)
     horizon = _npv._number(horizon, "horizon", strict=True)
     if math.isclose(now, horizon, rel_tol=1e-12):
@@ -600,7 +462,18 @@ def plan_vs_actual(
             f"now ({now:g}) is past the horizon ({horizon:g}): the plan "
             "ends before today."
         )
-    value_rate = _npv._number(value_rate, "value_rate", strict=False)
+    # A plan's own retirement ends it (and the rest from now) there, with
+    # its salvage credited at that end, as expected_npv credits it.
+    retire_at = _npv.own_terms(rbd, horizon, None, None, None)[2]
+    if retire_at is not None:
+        if now > retire_at and not math.isclose(now, retire_at, rel_tol=1e-12):
+            raise ValueError(
+                f"now ({now:g}) is past the retirement on the plan "
+                f"({retire_at:g}): the plan ends before today. Compare the "
+                "log with a plan to a later retire_at, or without one."
+            )
+        horizon = float(retire_at)
+        now = min(now, horizon)
     for name, given in (("state", state), ("start_state", start_state)):
         if given is not None and not isinstance(given, Mapping):
             raise TypeError(
@@ -616,14 +489,15 @@ def plan_vs_actual(
         plan = _npv.expected_npv(
             rbd,
             horizon,
-            discount_rate=rate,
             value_rate=value_rate,
+            **valued,
             periods=ends,
             working_nodes=None,
             broken_nodes=None,
             method=method,
             state=start_state,
         )
+    _require_no_plans(rbd)
     given = dict(state or {})
     states, derived = _states_now(rbd, logs, now, given, start_state)
     so_far = int(np.searchsorted(ends, now, side="right"))
@@ -636,8 +510,8 @@ def plan_vs_actual(
                 _npv.expected_npv(
                     rbd,
                     horizon - now,
-                    discount_rate=rate,
-                    value_rate=value_rate,
+                    value_rate=_from(value_rate, now),
+                    **valued,
                     periods=rest_ends,
                     working_nodes=None,
                     broken_nodes=None,
@@ -646,29 +520,31 @@ def plan_vs_actual(
                 )
             )
 
-    left_out = _not_compared(rbd)
+    left_out = _pricing.unrecorded(rbd)
     skip = {(category, node) for category, node, _ in left_out}
     before = [r for r in plan.cash_flows if r["period"] <= so_far]
     expected = [
         r for r in before if (r["category"], r["component"]) not in skip
     ]
     as_planned = [r for r in before if (r["category"], r["component"]) in skip]
-    actual = _priced_log(rbd, logs, ends[:so_far], rate, value_rate, skip)
+    actual = _priced_log(rbd, logs, ends[:so_far], money, skip)
     variance = _variance(actual, expected)
 
-    back = math.exp(-rate * now)
     rest_rows = []
     if rest is not None:
         for r in rest.cash_flows:
+            # The rest's amounts are from now: each stream grown to now
+            # and discounted back to the start.
+            g = _row_growth(money, r["category"], r["component"])
             rest_rows.append(
-                _row(
+                _pricing.row(
                     r["period"] + so_far,
                     r["start"] + now,
                     r["end"] + now,
                     r["category"],
                     r["component"],
-                    r["present_value"] * back,
-                    r["undiscounted"],
+                    r["present_value"] * math.exp(-(money.rate - g) * now),
+                    r["undiscounted"] * math.exp(g * now),
                 )
             )
     by_category: Dict[str, float] = {}
@@ -689,8 +565,8 @@ def plan_vs_actual(
     return PlanVsActual(
         now=now,
         horizon=horizon,
-        discount_rate=rate,
-        value_rate=value_rate,
+        discount_rate=money.given_rate,
+        value_rate=money.value_rate,
         plan_npv=plan.npv,
         revalued_npv=revalued,
         change=revalued - plan.npv,
@@ -719,4 +595,5 @@ def plan_vs_actual(
         derived_states=derived,
         plan=plan,
         rest=rest,
+        **money.stated(),
     )

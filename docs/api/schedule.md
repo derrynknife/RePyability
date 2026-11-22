@@ -15,6 +15,8 @@ tasks on dates and failures, events and work by calendar period (see the
 
 ::: repyability.schedule.TaskDue
 
+::: repyability.schedule.LongRunValue
+
 ::: repyability.schedule.work_by_period
 
 ::: repyability.schedule.WorkByPeriod
@@ -47,6 +49,8 @@ tasks on dates and failures, events and work by calendar period (see the
 
 ::: repyability.schedule.DutySchedule
 
+::: repyability.schedule.CalendarContext
+
 ::: repyability.schedule.failures_by_period
 
 ::: repyability.schedule.FailuresByPeriod
@@ -56,3 +60,15 @@ tasks on dates and failures, events and work by calendar period (see the
 ::: repyability.schedule.EventsByPeriod
 
 ::: repyability.schedule.shutdown_spec
+
+::: repyability.schedule.task_value
+
+::: repyability.schedule.Replaces
+
+::: repyability.schedule.Finds
+
+::: repyability.schedule.Services
+
+::: repyability.schedule.Condition
+
+::: repyability.schedule.TaskValue

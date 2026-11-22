@@ -257,6 +257,12 @@ class _StandbyGroup:
             _Unit(self._node, unit), t, Event(ends, None, True)
         ):
             self._queue(ends, _UNIT_REPAIRED, unit)
+        elif crews.call_when:
+            from . import _event_loop
+
+            started = crews.call(t)
+            if started is not None:
+                _event_loop._crew_started(self._rbd, started)
 
     def crew_started(self, unit: int, ends: float) -> None:
         """A crew has started unit ``unit``'s repair late: it ends at
@@ -343,11 +349,33 @@ class _Crews:
     the highest priority, and of those the one that fell due first. The
     job's length was drawn when it fell due, so waiting shifts the
     component's restoration without changing its draws.
+
+    With a call-out crew (``call_when`` waiting jobs call it, a
+    ``RepairableRBD``'s ``call_out``): a job that makes that many wait
+    brings it, and it starts the first of them at once (``call``). While
+    it is engaged there is a crew more; it leaves at the first end of a
+    job that leaves a crew with no waiting job to take (``release``): the
+    crews are alike, so whichever job it has then is finished by the crew
+    that came free. ``calls`` counts its call-outs and ``engaged_time``
+    its time engaged, which ``close`` ends at the end of the window. The
+    crews' Markov chain copies this (``_crew_chain._enumerate``).
     """
 
-    __slots__ = ("free", "served", "holding", "waiting", "_order", "_rank")
+    __slots__ = (
+        "free",
+        "served",
+        "holding",
+        "waiting",
+        "_order",
+        "_rank",
+        "call_when",
+        "engaged",
+        "calls",
+        "engaged_time",
+        "_since",
+    )
 
-    def __init__(self, crews: int, served, priority: dict):
+    def __init__(self, crews: int, served, priority: dict, call_when: int = 0):
         self.free = crews
         self.served = frozenset(served)
         self.holding: set = set()
@@ -360,10 +388,16 @@ class _Crews:
             )
             for key in served
         }
+        self.call_when = call_when
+        self.engaged = False
+        self.calls = 0
+        self.engaged_time = 0.0
+        self._since = 0.0
 
     def request(self, node, due: float, done: "Event") -> Optional["Event"]:
         """``node``'s job, due at ``due`` and ending with ``done`` if a crew
-        starts it at once: ``done``, or None while the job waits."""
+        starts it at once: ``done``, or None while the job waits (with a
+        call-out crew, ``call`` then says whether it comes)."""
         if self.free:
             self.free -= 1
             self.holding.add(node)
@@ -373,14 +407,38 @@ class _Crews:
         self._order += 1
         return None
 
+    def call(self, t: float) -> Optional[Tuple[Any, float, "Event"]]:
+        """A job has had to wait at ``t``: if that makes ``call_when`` of
+        them and the call-out crew is not engaged, it comes and starts
+        the first (as ``release`` gives it); or None."""
+        if (
+            not self.call_when
+            or self.engaged
+            or len(self.waiting) < self.call_when
+        ):
+            return None
+        self.engaged = True
+        self.calls += 1
+        self._since = t
+        return self._start(t)
+
     def release(self, node, t: float) -> Optional[Tuple[Any, float, "Event"]]:
         """``node``'s job is done at ``t``: its crew starts the next waiting
         job, if any. That job's component, how long it waited, and the event
-        that now ends it; or None."""
+        that now ends it; or None, and the call-out crew, if engaged,
+        leaves in its place."""
         self.holding.discard(node)
-        if not self.waiting:
+        if self.waiting:
+            return self._start(t)
+        if self.engaged:
+            self.engaged = False
+            self.engaged_time += t - self._since
+        else:
             self.free += 1
-            return None
+        return None
+
+    def _start(self, t: float) -> Tuple[Any, float, "Event"]:
+        """A crew starts the first waiting job at ``t``."""
         _, due, _, waiting, done = heapq.heappop(self.waiting)
         self.holding.add(waiting)
         wait = t - due
@@ -392,6 +450,13 @@ class _Crews:
             done.inspection,
         )
         return waiting, wait, ends
+
+    def close(self, t: float) -> Tuple[int, float]:
+        """The call-out crew's call-outs and its time engaged by ``t``,
+        the end of the window."""
+        if self.engaged:
+            return self.calls, self.engaged_time + (t - self._since)
+        return self.calls, self.engaged_time
 
 
 class _Fixed:
@@ -594,20 +659,61 @@ class _Preventive(NamedTuple):
     #: which the unit is replaced there, in place of the ``threshold``;
     #: None for none.
     older_than: Optional[float] = None
-    #: At a shutdown's given times (sorted, from 0) rather than every
-    #: ``interval``: those times; None for a period.
+    #: At given times (sorted, from 0) rather than every ``interval``: a
+    #: shutdown's, or the component's own plan (``"replace_at"``); None
+    #: for a period.
     times: Optional[Tuple[float, ...]] = None
     #: The name of the shutdown the actions are done at; None for none.
+    #: At several shutdowns, their names (a tuple), with ``shuts``.
     shutdown: Any = None
+    #: At several shutdowns (block replacement at each of their starts):
+    #: each ``_Shutdown`` with the model of the time its renewal takes
+    #: there (its own duration; None for none). ``interval`` is then the
+    #: shortest of theirs and ``duration`` the longest, which only size
+    #: the simulation's streams; None at one shutdown or none.
+    shuts: Optional[Tuple[Tuple[Any, Any], ...]] = None
+    #: Under ``"block"`` on its own interval, for an upgraded component
+    #: (see ``_Upgrade``): the upgrade's time, at which the unit is
+    #: replaced as at a block time (at its cost and in its time); None
+    #: for none.
+    upgrade_at: Optional[float] = None
+
+    #: Counted in operating time on a duty plan that changes over time
+    #: (a ``_duty.PlannedLife``, the block's life): each action falls when
+    #: the plan's operating time reaches the time it is due at in
+    #: operating time; None on the diagram's clock.
+    clock: Any = None
+
+    @property
+    def plan(self) -> Optional[Tuple[float, ...]]:
+        """The component's own list of replacement times
+        (``"replace_at"``), after the last of which it is replaced no
+        more; None on a period, or at a shutdown's times."""
+        return self.times if self.shutdown is None else None
 
     def due(self, renewed: float) -> float:
         """When the next preventive action (under ``"condition"``, the next
         inspection) falls, for a unit put into service as new at
-        ``renewed``, or inspected then."""
+        ``renewed``, or inspected then; an upgrade's time (``upgrade_at``)
+        is one such action."""
+        if self.clock is not None:
+            # In operating time, and back on the diagram's clock.
+            clock = self.clock
+            due = clock.inverse(self._due(clock.operating(renewed)))
+        else:
+            due = self._due(renewed)
+        if self.upgrade_at is not None and renewed < self.upgrade_at:
+            return min(due, self.upgrade_at)
+        return due
+
+    def _due(self, renewed: float) -> float:
         if self.policy == "age":
             return renewed + self.interval
         if self.policy == "calendar":
             return self.calendar._next_planned(renewed, renewed)[0]
+        if self.shuts is not None:
+            # The first start of any of its shutdowns after ``renewed``.
+            return min(shut.due(renewed) for shut, _ in self.shuts)
         if self.times is not None:
             return _next_time(self.times, renewed)
         if self.offset or self.shutdown is not None:
@@ -623,6 +729,29 @@ class _Preventive(NamedTuple):
         # there).
         due = float(np.floor(renewed / self.interval) + 1.0) * self.interval
         return due if due > renewed else due + self.interval
+
+    def duration_at(self, t: float):
+        """The model of the time the preventive action due at ``t`` takes
+        (None for none): at several shutdowns, that of the one starting
+        at ``t``; else ``duration``."""
+        if self.shuts is None:
+            return self.duration
+        before = float(np.nextafter(t, -np.inf))
+        for shut, model in self.shuts:
+            if shut.due(before) == t:
+                return model
+        return self.duration
+
+
+class _Upgrade(NamedTuple):
+    """A component's upgrade (its spec's ``"upgrade"``): at the time
+    ``at`` the unit in service is replaced, in no time, by one of the life
+    ``life``, as is every unit put into service after it, for the capital
+    cost ``cost``, charged then."""
+
+    at: float
+    life: Any
+    cost: float
 
 
 class _Imperfect(NamedTuple):
@@ -644,9 +773,11 @@ class _Restoration(NamedTuple):
     """A component's preventive maintenance that restores it only partly
     (a ``"preventive"`` spec's ``"restoration"``): ``kijima``
     (``"kijima1"`` or ``"kijima2"``) and its restoration factor ``q`` (0
-    as new, 1 as bad as old), and the task, counting from the unit's last
-    renewal, that replaces it as new instead (``"replace_every"``; None
-    for never)."""
+    as new, 1 as bad as old, above 1 older than it was), or
+    ``"to_age"`` and the virtual age ``q`` every task leaves the unit at
+    (``"restore_to"``); and the task,
+    counting from the unit's last renewal, that replaces it as new
+    instead (``"replace_every"``; None for never)."""
 
     kijima: str
     q: float
@@ -758,7 +889,8 @@ class _Shutdown(NamedTuple):
     lasts, ``duration``; the nodes it holds off line (``scope``, None for
     the whole system); its ``cost``, charged at each; and whether the
     blocks in its scope not worked on keep ageing through it
-    (``idle_ageing``) or stand still until it ends."""
+    (``idle_ageing``) or stand still until it ends; and the components
+    it renews if they are old enough (``opportunistic``)."""
 
     name: Any
     #: A float, or None at given times.
@@ -769,6 +901,10 @@ class _Shutdown(NamedTuple):
     scope: Optional[Tuple[Any, ...]]
     cost: float
     idle_ageing: bool
+    #: The components renewed at each start if old enough: ``{node:
+    #: age}``, a number for every component in the scope under age
+    #: replacement, or None (resolved by ``_shutdowns.check``).
+    opportunistic: Any = None
 
     @property
     def periodic(self) -> bool:

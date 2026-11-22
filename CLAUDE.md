@@ -8,7 +8,7 @@ first. This file adds the internals and conventions it does not cover.
 release; the latest published release is on PyPI
 (`https://pypi.org/pypi/repyability/json`) and the CHANGELOG's newest
 dated section. New work goes under the CHANGELOG's `[Unreleased]`. The
-minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
+minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
 
 ## Architecture & scope
 
@@ -42,6 +42,33 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   options at a planned replacement), a failure's consequences at system
   level, and the probabilities a forecast is made of (expected failures
   and costs over a window from a state, and their distribution).
+
+- **Maintenance and money are layered.** Each question has one home,
+  and the layers above call the ones below rather than repeat them:
+  - `repyability.value`: money. Discounting (one convention, continuous
+    at a rate per unit of the clock the money falls on; a yearly rate
+    converted in one place), escalation and real rates,
+    `ValueSchedule`, the cost categories and the cash-flow table.
+  - `repyability.maintenance`: a unit's plan and the single part's
+    maths. `UnitPlan` (its life, repairs, tasks, `Prices`, and its own
+    `salvage`, `escalation` and `retire_at`; a spec dict is its
+    shorthand), the policies, and `NonRepairable`'s methods. The
+    age-replacement EAC has one definition (`_options.cycle_eac`),
+    which a diagram's component takes too. A plan is valued alone
+    through its one-node diagram (`UnitPlan.diagram()`): there is no
+    second single-unit route.
+  - `repyability.schedule`: the calendar. Rules, duty plans and
+    `CalendarContext`, which gives an analysis its calendar and each
+    unit its duty plan. The duty plan belongs to the analysis, not to
+    the plan or the diagram.
+  - `RepairableRBD`: only what belongs to the system. Its structure,
+    system downtime and value, crews, spares, the site's shutdowns and
+    common-cause groups. A node takes a `UnitPlan` (or its spec), and a
+    life can be any model with a life's functions, a `NonRepairableRBD`
+    included.
+
+  What is still duplicated is listed in the maintenance README's
+  "Layers" section, so that it goes rather than spreads.
 
 - **Model behaviour belongs in surpyval too.** When a surpyval model
   misbehaves (its draws, means, densities or save format), raise an issue in
@@ -126,6 +153,17 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   a call binds costs reference counting that numba cannot prune in a
   function this size, and passing the run's tuples to a function per
   simulation cost several times the loop (measured in #206).
+- **A life on the diagram's clock is the Python loop's alone**
+  (`_covariate_schedule.ClockLife`: a covariate schedule's
+  `ScheduledLife`, and a duty plan that changes over time,
+  `_duty.PlannedLife`): what is left of a unit's life depends on when it
+  is put into service (`life_left(t0, age, u)`, the loop's
+  `_ScheduledComponent`), so the exact methods refuse it and
+  `_compiled.unsupported` hands it to Python. A task counted in
+  operating time on such a plan carries it as its `_Preventive.clock`
+  (due in operating time, mapped back through the plan's inverse). The
+  engine always runs on calendar time; an analysis's
+  `schedule.CalendarContext` gives each unit its plan.
 - **Simulations take turns across threads (#216).** The event loop keeps
   a run's state on the diagram (`_run_state`, an `_events._Run`) and draws that cannot be
   streamed come from numpy's global RNG, so a run holds
@@ -221,9 +259,26 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   checks it changes nothing.
 - **The repair crews' Markov chain (`repyability/rbd/_crew_chain.py`)
   copies the simulation's queue (`_events._Crews`)**: which waiting job a free crew
-  takes, and how instant jobs pass through. A change to one goes into the
-  other; `test_crew_chain.py` checks the chain's exact values against the
-  simulation. Likewise a standby group's chain (`_standby_chain.py`) copies
+  takes, and how instant jobs pass through, and when a call-out crew
+  (`call_out`) comes and goes: it is engaged exactly while a job more than
+  the crews is under repair, so the chain's state needs nothing more. A
+  change to one goes into the other; `test_crew_chain.py` and
+  `test_call_out_crew.py` check the chain's exact values against the
+  simulation. It takes common-cause groups in too (#251,
+  `_crews._crew_causes`): a shared cause's strike is its members' failures
+  one after another in the cause's order, each as a failure of its own
+  (`_crew_chain._enumerate`'s `failed`), which is the order
+  `_event_loop._strike` queues them in only for two members (the event
+  queue releases ties at one time by its heap's shape, so the chain
+  refuses causes of more, `MAX_STRUCK`); `test_crews_ccf.py` checks it
+  against the simulation. The chain can count a component's alike copies
+  (`copies`: a state says how many are under repair and waiting, not
+  which), for the redundancy allocation with crews
+  (`_crew_allocation.py`, each design worked out whole from its chain,
+  the search bounded by the unavailability with a crew for every job and
+  the copies' prices); `test_crew_allocation.py` checks the counted chain
+  against the chain of every copy, and each design against the diagram
+  with its copies drawn out. Likewise a standby group's chain (`_standby_chain.py`) copies
   `_events._StandbyGroup`'s rules (switching, spares, repairs), checked by
   `test_repairable_standby.py`.
 - **A phased mission's Markov chain (`repyability/rbd/_mission_chain.py`)
@@ -258,6 +313,18 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   (`_Counted`) rather than tell them apart, which holds for a
   `BetaFactor`'s one shared cause: `test_ccf_allocations.py` checks them
   against the chain of every copy.
+- **A `Shocks` group's causes are the simulation's shared causes at
+  rates of their own** (`_ccf_groups._shared_causes`, from
+  `Shocks.causes`): every set of members a shock can fail, a single
+  member's too, each a `_Cause` on the cause streams, while a member's
+  own life is its own model's (`_own_rate` is None). A cause names its
+  members in the group's order, which is the order `_event_loop._strike`
+  fails them in: that is the rule for members struck at one instant. No
+  chain copies them: `_ccf_rates` refuses the group for every exact
+  method. A `NonRepairableRBD` writes the same causes into its structure
+  (`shocks.written_shocks`) and is from then on the diagram written out;
+  it saves the diagram as given (`_given_args`). `test_shock_nodes.py`
+  and `test_repairable_shocks.py` check both.
 - **A common-cause group's chain with tests and repairs that take time
   (`_ccf_chain._Timed`, #220) copies the simulation's inspections** too
   (`_event_loop._inspected_follow_up`, `_event_loop._inspected_next`, `_event_loop._strike`): a working member
@@ -449,7 +516,14 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   public function of the classes that simulate (an `RBD` subclass gets it
   from `RBD.__init_subclass__`); a new class whose methods take
   `mc_samples` gets `@refuse_removed_names`. A seed goes through
-  `checks.seed` where it is taken.
+  `checks.seed` where it is taken. `n_draws` is kept, deliberately, for
+  the number of draws of uncertain models' parameters (the
+  `*_uncertainty` methods, `uncertainty_importance`,
+  `optimal_replacement_intervals`), each draw worked out without
+  simulating it: a method that takes `n_draws` but not `mc_samples`
+  refuses `mc_samples=` (and the removed names), naming `n_draws`, through
+  the same wrapper (a class with such methods gets `@refuse_removed_names`
+  too).
 - **Inputs are checked where they are given (#233)**: numbers through
   `checks.is_number`/`number_or_nan` (not `bool`, not text), times through
   `checks.real_array`, a choice of option through `checks.one_of`, and
@@ -499,11 +573,22 @@ minimum surpyval is in `pyproject.toml` (0.28 as of 0.19).
   `surpyval.test_planning`'s, and 0.18 removed them with
   `DemonstrationPlan` (`test_removed_in_0_18.py`). 0.18 and 0.19
   deprecate nothing, so 0.19 removes nothing (nor does 0.19.1, which
-  only adds the life at a usage rate as a block); `NEXT_REMOVAL` is 0.20,
-  which `test_what_0_19_deprecates_goes_in_0_20` reminds. A new
+  only adds the life at a usage rate as a block), and 0.20 removes
+  nothing. 0.20 deprecates, for 0.21 (`NEXT_REMOVAL`, which
+  `test_what_0_20_deprecates_goes_in_0_21` in `test_api_consistency.py`
+  reminds; a deprecation in 0.21's development goes in
+  `REMOVED_IN_0_22`), `Calendar`,
+  `Shutdown`, `Shutdowns`, prices on opportunities and
+  `optimal_calendar_policy`/`calendar_policy_cost` (UC-45; the prices
+  come with the part), which `test_what_0_20_deprecates_goes_in_0_21`
+  (`test_opportunities.py`) reminds, and `method="auto"` sampling a
+  calendar too long to sweep (UC-44, `refuses_from`), which
+  `test_auto_sampling_refuses_in_0_21` (`test_exact_or_horizon.py`)
+  reminds. A new
   deprecation warns through `deprecation.renamed`, `renamed_attribute`,
-  `called`, `ignored` or `moved`, with a test that fails once the version
-  reaches its removal.
+  `called`, `ignored`, `moved`, `replaced`, `price_on_part` or
+  `refuses_from`, with a test
+  that fails once the version reaches its removal.
 - **No result depends on the unit of time (or of a covariate).** A step,
   grid or probe is sized from the models (a typical life,
   `failure_time_scale`), never in absolute time, and a proportional
@@ -563,10 +648,14 @@ RePyability's own in 0.17 with the same values.
 surpyval's deprecation policy calls public (the top level, its listed
 subpackages' `__all__`, `surpyval.univariate.regression.kinds`) and reads
 no underscored attribute; `test_public_surpyval_api.py` fails on anything
-else. Two names have no public home yet and are listed there
-(`NO_PUBLIC_HOME`): `DynamicPrediction` (`rbd/joint_node.py`) and
-`conditional_gaps` (`rbd/_event_loop._aged_life`). Take each from its
-public home once surpyval gives it one; that test fails when it does.
+else. Take a model class from its subpackage, not the top level
+(`surpyval.univariate.joint`'s `JointModel`,
+`surpyval.univariate.regression`'s `SemiParametricRegressionModel`): from
+0.29 surpyval keeps only what users call at its top level, and the rest
+warn there. One name has no public home yet and is listed there
+(`NO_PUBLIC_HOME`): `conditional_gaps` (`rbd/_event_loop._aged_life`).
+Take it from its public home once surpyval gives it one; that test fails
+when it does.
 
 What remains (each checked against surpyval 0.28 on 15 Nov 2026):
 
@@ -594,13 +683,14 @@ What remains (each checked against surpyval 0.28 on 15 Nov 2026):
   condition on survival, which for a Wiener path keeps the units that
   crossed and came back, so it is not this.)
 
-- **Rescaling a model's time for a duty cycle.** surpyval has no
-  rescaling (#845 gave models only a unit label). A spec's `"duty"` puts a
-  life in operating time on the calendar, `R(d t)`, by `_duty._SCALED`, one rule per surpyval distribution (a new
-  one needs its rule there, which `test_units` checks against `R(d t)`).
-  Take surpyval's rescaling once the minimum surpyval has it. (0.28's
-  `EquivalenceModel.at_usage` turns a two-clock life into one clock at a
-  usage rate; it does not rescale a model's time.)
+- **Rescaling a model's time for a duty cycle** (surpyval 0.28 only).
+  A spec's `"duty"` puts a life in operating time on the calendar, `R(d
+  t)`, by the model's own `rescale_time(d)` (surpyval's release after
+  0.28). With 0.28, which has none, `_duty._SCALED` moves each surpyval
+  distribution's parameters (a rule per distribution, which `test_units`
+  checks against `R(d t)` with `rescale_time` hidden). Drop `_SCALED`,
+  and `on_calendar`'s fallback, once the minimum surpyval has
+  `rescale_time`.
 - **Parameter ranges for drawing fits other than distributions** (no
   surpyval issue yet). surpyval gives no range per parameter for a
   regression, a degradation or repairable-unit process or a mixture, so
@@ -608,6 +698,18 @@ What remains (each checked against surpyval 0.28 on 15 Nov 2026):
   refuses just below 0 and just above 1, to draw it on the log or logit
   scale. Take surpyval's ranges once the minimum surpyval says them.
   (0.27 keeps them private, such as a regression's `_parameter_bounds`.)
+
+- **A share of a model's hazard** (no surpyval issue known yet: a hazard
+  ratio as a model option, with `isf`). A common-cause group splitting
+  the failure rate gives each cause a share `c` of its members' hazard,
+  survival `R(t)^c`, which no surpyval 0.28 model is. `ccf._hazard` and
+  `ccf._rate_causes` work it out from the members' own model as
+  `exp(-c H)` and `-expm1(-c H)` (`H` from whichever of `ff` and `sf`
+  keeps its digits), and `NonRepairableRBD._group_sampler` draws it
+  through the members' quantile function at `-expm1(-e)`, `e` the first
+  of the causes' exponential times. Build each cause's life with
+  surpyval's hazard ratio (`from_params(..., hr=c)`) once the minimum
+  surpyval has it.
 
 - **A joint frailty model's own integration in `RepairOrReplace`**
   (`maintenance/_repair_or_replace.py`). surpyval 0.27's

@@ -8,7 +8,9 @@ calendar. This page covers the first part: **which dates a rule gives**
 map between dates and operating hours it gives (`UsageForecast`), which
 puts tasks counted in running hours on dates; and, through that map,
 **failures, events and shuts on the calendar** (`failures_by_period`,
-`events_by_period`, `shutdown_spec`, `Opportunity.from_recurrence`).
+`events_by_period`, `shutdown_spec`, `Opportunity.from_recurrence`),
+and what a task is worth against not doing it (`task_value`): a
+replacement, or a test that finds a hidden failure.
 
 The module computes and stores nothing. You pass it dates, rules and what
 you know (when a task was last done); it never reads the clock. Dates are
@@ -212,6 +214,48 @@ work.count  # (3, 5, 4, 4)
 work.hours  # (4.5, 10.0, 6.0, 6.0)
 work.cost  # (360.0, 960.0, 480.0, 480.0)
 ```
+
+## Present values: `discount=`
+
+Give a yearly discount rate and the forecasts return present values
+beside the plain totals. `discount=0.07` is 7% a year, the effective
+yearly rate (the convention of the dated replacement policies): an
+amount `y` years after the first date is worth `1 / 1.07 ** y` of
+itself, with a year of 365.25 days. Money is discounted to the
+forecast's first date, which is your "today". With no `discount`,
+nothing changes.
+
+A $250 task every 30 days from 20 November 2026, over its first year:
+
+```python
+grease = Task("grease bearings",
+              every=Recurrence.every(30, "days", "2026-11-20"), cost=250.0)
+year = grease.due("2026-11-20", "2027-11-19", discount=0.07)
+year.count  # -> 13
+year.cost  # -> 3250
+round(year.npv, 2)  # -> 3144.10
+```
+
+Each task is discounted from the date it is done (after its visit, if
+it waits for one). `eac` is the equivalent annual cost: the steady cost
+a year over the period that is worth the same. `work_by_period(...,
+discount=0.07)` gives each period's `npv`, with `total_npv` and `eac`.
+
+`long_run_value` is what the task is worth repeating for ever:
+
+```python
+value = grease.long_run_value("2026-11-20", 0.07)
+round(value.npv)  # -> 45112
+value.method  # 'closed form'
+```
+
+A plain interval of days or weeks is a geometric sum, `250 / (1 - 1.07
+** (-30 / 365.25))`. Any other task (the first Tuesday of the month, a
+task that waits for visits, two limits) is summed date by date until
+what is left cannot matter: `precision` is the most the dates left out
+could add, and `summed_to` the last date summed. It refuses, saying what
+to run, where there is no such value: at `discount=0`, for given dates
+(they end), and for a limit by use (its usage forecast ends).
 
 ## Duty plans: operating hours on dates
 
@@ -455,6 +499,23 @@ outcomes). Month by month the numbers are small, about 0.05 failures
 [round(float(c)) for c in months.expected_cost[:3]]  # [105, 227, 217]
 ```
 
+With `discount=`, each period also has its expected cost as a present
+value. An expected cost accrues as the part runs, and each part of it is
+discounted from when it is expected to fall: an integral over the
+forecast, worked out until its error estimate is small. `npv_precision`
+is that estimate plus how far the expected cost itself can be from the
+true one (the expected failures are worked out on a grid).
+
+```python
+worth = failures_by_period(ring, usage, "month", age=5200.0, discount=0.07)
+round(worth.npv)  # -> 2883
+worth.npv_precision < 0.001 * worth.npv  # True
+```
+
+`npv_tolerance` (0.001 by default) sets how small `npv_precision` must
+be, as a share of `npv`. `expected_cost` and the ranges
+stay undiscounted: the present values are `expected_npv` and `npv`.
+
 One part rarely fails in a given month, so the monthly figures become
 useful once you add them up over many positions. The expected values
 add up; the ranges do not, so `total` gives the whole forecast's own
@@ -470,6 +531,144 @@ from dated shuts (below). The part's `age` is its age when the forecast
 starts. The model's unit comes from its label (`unit="h"` on the
 surpyval model), or from `unit=`. With neither, it is taken as hours and
 the notes say so.
+
+### Is a replacement task worth it?
+
+A task's cost is only worth paying for what it prevents. `task_value`
+values a task against not doing it: the part's cost with the task, without
+it, and the difference, by period. Say every 6-monthly service fits a new
+wear ring for $600:
+
+```python
+from repyability.schedule import Recurrence, Replaces, Task, task_value
+
+new_ring = Task("new wear ring",
+                every=Recurrence.every(6, "months", "2026-12-01"), cost=600.0)
+worth = task_value(new_ring, Replaces(ring), usage, age=5200.0, discount=0.07)
+[str(d) for d in worth.dates]  # ['2026-12-01', '2027-06-01']
+round(worth.total["with_task"])  # -> 1517
+round(worth.total["without_task"])  # -> 2883
+round(worth.total["value"])  # -> 1366
+round(worth.total["failures_avoided"], 3)  # -> 0.549
+```
+
+`Replaces(ring)` says what the task does: it puts a new ring in every
+time it is done, whatever the ring's age. A failure in between is
+replaced too and does not move the service dates. Without the task, the
+ring runs to failure from the same age over the same dates (`with_words`
+and `without_words` say so). `value` is `without_task - with_task`, so a
+positive value means the task pays. Here it does: the ring is old, and
+the first service replaces it in two weeks. Each failure's cost is
+discounted as `failures_by_period` discounts it, and `precision` is how
+far the value can be from the true one; the task's own cost is
+discounted from the day it is done. With no `discount` the numbers are
+plain expected costs ($1,550.82 against $2,987.56).
+
+The task's `cost` is the planned ring's price. A task with no cost takes
+the part's `planned_cost`. If both are given and differ, the call is
+refused, naming the two numbers. A task by use (`every=Usage(2000,
+"hours")`) is done when the meter reaches its reading.
+
+### Is a test of a hidden failure worth it?
+
+A test of a protective device (a trip, a relief valve, a standby pump's
+start) replaces nothing and prevents no failure. What it buys is time: a
+device that has failed without anyone knowing is found and repaired at
+the next test, instead of sitting failed until it is needed. `Finds`
+says that is what the task does. Say a trip fails hidden at 0.1 a year
+and is tested every 6 months at $400; a repair costs $3,000; the event
+it protects against comes once in 2 years and costs $250,000 if the trip
+is failed then:
+
+```python
+from repyability.schedule import Finds, UsageForecast
+
+trip = NonRepairable(surv.Exponential.from_params([0.1]))  # per year
+trip_test = Task("trip test",
+                 every=Recurrence.every(6, "months", "2027-01-01"), cost=400.0)
+years = UsageForecast.calendar("2026-11-16", "2029-11-16")
+does = Finds(trip, demand_rate=0.5, consequence_cost=250_000.0,
+             repair_cost=3_000.0)
+tested = task_value(trip_test, does, years, unit="years", discount=0.07)
+round(tested.total["found"], 3)  # -> 0.228
+round(tested.total["unavailability_with"], 4)  # -> 0.0213
+round(tested.total["unavailability_without"], 4)  # -> 0.0894
+round(tested.total["failures_avoided"], 3)  # -> 0.102
+round(tested.total["value"], -2)  # -> 19800.0
+```
+
+The trip's life is in calendar years, so the forecast is
+`UsageForecast.calendar` and `unit="years"`; a device whose life is in
+running hours takes a duty plan's forecast, and demands then come only
+while it runs (`demand_rate` is per unit of the device's own time). With
+the task, the cost is the tests, the repairs of what they find, and the
+demands that meet the trip failed. Without it the trip is never tested.
+The result's "failures" are those demands: here the tests avoid about
+0.1 of them over three years, and are worth about $19,800 today.
+`found` is the failures the tests find, and `unavailability_with` and
+`unavailability_without` are the trip's mean unavailability in each
+period (and over the whole forecast in `total`).
+
+By default, a demand that meets the device failed also shows the
+failure, which is repaired then. That is what happens without the task,
+too: a failure stays until a demand finds it. With
+`demands_reveal=False`, only a test finds a failure, as
+[`failure_finding`](maintenance.md) has it, so never tested, a failure
+is for good. Tests and repairs take no time, a test never misses, and
+the device is taken to be working when the forecast starts. The task's
+`cost` is one test's. `precision` includes the error of the numerical
+solution. In model time, with the tests at any list of times,
+`failure_finding_window` gives the same numbers.
+
+### Is a service worth it?
+
+A service (lubricate, adjust, clean, overhaul) neither replaces the unit
+nor tests it, and what it does to the failure rate is not known from the
+task. By default `task_value` takes it as having **no effect**: the
+service is an accepted cost, and its value is minus its cost's present
+value, worked out exactly. Say a gearbox, 4,000 h old and running around
+the clock, is serviced every 3 months for $800:
+
+```python
+from repyability.maintenance import Prices, Restoration, UnitPlan
+from repyability.schedule import Services
+
+gearbox = UnitPlan(surv.Weibull.from_params([8760.0, 3.0]), "instant",
+                   prices=Prices(repair=12000.0))
+service = Task("gearbox service",
+               every=Recurrence.every(3, "months", "2027-04-01"), cost=800.0)
+year = UsageForecast.calendar("2027-01-01", "2028-01-01")
+cost_only = task_value(service, Services(gearbox), year, age=4000.0,
+                       discount=0.07)
+round(cost_only.total["value"], 2)  # -> -2320.95
+```
+
+A benefit is credited only when you state what a service does. If the
+fit of the gearbox's history (surpyval's `GeneralizedRenewal`) says each
+service leaves 60% of its virtual age, give that restoration:
+
+```python
+fitted = task_value(service, Services(gearbox, Restoration(q=0.6)), year,
+                    age=4000.0, discount=0.07, mc_samples=1000, seed=4)
+fitted.method  # -> 'simulated'
+round(fitted.total["value"], -1)  # -> 3660.0
+round(fitted.total["value_lower"], -1)  # -> 3240.0
+round(fitted.total["value_upper"], -1)  # -> 4080.0
+```
+
+The effect is the plan's own task effect, a `Restoration` (Kijima I or
+II: 0 as new under Kijima II, 1 no effect, which is then valued exactly
+as the default, above 1 a service that does harm; or a virtual age to
+restore to, or a fitted process). A `Condition(life, fresh=, stale=,
+lasts=)` instead takes a regression life fitted with a "serviced or
+overdue" covariate, at `fresh` for `lasts` after each service. With an
+effect, the plan's one-node diagram is simulated with the service on its
+dates and without it, from one seed, so both see the same failures until
+a service changes them; each run is priced with the plan's prices, by
+period. `value_lower` and `value_upper` are the value's 90% interval
+(`confidence=`), by period and in `total`. The plan must hold no
+preventive task of its own. A virtual age on a duty plan that changes
+over time is not followed yet: give the unit's duty as one share.
 
 ### A system, by month
 
@@ -494,7 +693,12 @@ round(float(by_month.events.system_failures[0]), 3)  # -> 0.372
 
 `events` holds `expected_events_by_window`'s answer, which is exact.
 `cost=True` adds `cost_by_window`: each period's mean cost is exact, and
-its range is simulated.
+its range is simulated. With `cost=True, discount=0.07` each period also
+has `expected_npv`, its expected cost as a present value, with `npv` and
+`eac`; `cost` (its mean and range) stays the cost as it falls, not
+discounted, as `failures_by_period`'s `expected_cost` does. This is exact: the diagram's clock is calendar time, so the
+yearly rate is one continuous rate on it, which
+`RepairableRBD.expected_cost(discount_rate=)` takes.
 
 ### Shuts on dates
 
@@ -527,10 +731,11 @@ spec = shutdown_spec(overhaul, "2026-11-14", "2029-12-31", duration=48.0, at="06
 spec["times"]  # [8478.0, 17382.0, 26118.0]
 ```
 
-`RepairableRBD(..., shutdowns={"overhaul": spec})` takes it. Its
-simulations (`cost()`, `availability()`) handle shuts at given times.
-The exact methods, and so `events_by_period`, take shuts on a period
-only, and refuse such a diagram with a message that says so.
+`RepairableRBD(..., shutdowns={"overhaul": spec})` takes it. Shuts at
+given times are valued over a horizon, exactly where the blocks worked
+on in them are renewed (`expected_npv`, `expected_cost`), and simulated
+(`cost()`, `availability()`); they end, so the long-run methods refuse
+such a diagram with a message that says so.
 
 ### Two clocks
 

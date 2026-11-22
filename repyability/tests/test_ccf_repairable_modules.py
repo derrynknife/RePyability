@@ -558,21 +558,21 @@ def test_the_split_refuses_before_building_it(monkeypatch):
 
 
 @pytest.mark.parametrize("basis", ["probability", "rate"])
-def test_groups_with_limited_crews_refuse_rather_than_drop_the_groups(basis):
-    # The crews' chain does not take common causes in: the long-run values
-    # refused only over time, and gave the system without its groups in
-    # the long run; then each component's own, which a shared failure
-    # changes too, as one member waits for the crew (#251).
+def test_groups_with_limited_crews_are_in_the_crews_chain(basis):
+    # A shared failure makes one member wait for the crew, so neither the
+    # groups' own chains nor the crews' chain without the groups has the
+    # values: the long run once gave the system without its groups, then
+    # refused, and the crews' chain now takes the groups in (#251).
     units = {n: revealed(1e-3, 0.1) for n in "abc"}
     edges = [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+    options = {"repair_crews": 1, "downtime_cost_rate": 5.0}
     rbd = RepairableRBD(
         edges,
         units,
         ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis=basis))],
-        repair_crews=1,
-        downtime_cost_rate=5.0,
+        **options,
     )
-    message = "crews' Markov chain does not take common causes in"
+    plain = RepairableRBD(edges, units, **options)
     for method in (
         "mean_availability",
         "mean_unavailability",
@@ -587,14 +587,16 @@ def test_groups_with_limited_crews_refuse_rather_than_drop_the_groups(basis):
         "barlow_proschan_importance",
         "parameter_sensitivity",
         "expected_cost_rate",
-        "capacity_distribution",
         "point_availability",
         "mission_availability",
     ):
         args = (100.0,) if method.startswith(("point", "mission")) else ()
-        with pytest.raises(NotImplementedError, match=message):
-            getattr(rbd, method)(*args)
-        assert rbd.analysis_routes()[method].route == "refused", method
+        got = getattr(rbd, method)(*args)
+        assert rbd.analysis_routes()[method].route != "refused", method
+        if method != "parameter_sensitivity":
+            assert got != getattr(plain, method)(*args), method
+    # The shared cause makes the pair fail together more often.
+    assert rbd.mean_unavailability() > plain.mean_unavailability()
     # The simulations take both.
     assert rbd.analysis_routes()["availability"].route == "simulated"
     rbd.availability(100.0, mc_samples=20, seed=1)

@@ -47,9 +47,7 @@ def generalised_renewal():
     """A Kijima I process fitted to ten units' simulated histories (its
     restoration factor about 0.5, well inside its range)."""
     np.random.seed(3)
-    truth = surv.GeneralizedRenewal.fit_from_parameters(
-        [10.0, 2.0], 0.5, kijima="i"
-    )
+    truth = surv.GeneralizedRenewal.from_params([10.0, 2.0], 0.5, kijima="i")
     data = truth.time_terminated_simulation_data(T=100, items=10)
     return surv.GeneralizedRenewal.fit(data.x, i=data.i, c=data.c, kijima="i")
 

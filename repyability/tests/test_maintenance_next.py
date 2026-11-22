@@ -17,6 +17,13 @@ from repyability import (
     Opportunity,
 )
 
+# The 0.14 and 0.19 forms (Calendar, Shutdown, Shutdowns, prices on the
+# opportunities, optimal_calendar_policy) still work, deprecated: these
+# tests keep them unchanged, and test_opportunities.py the new forms.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:.*(is deprecated|puts a price on the opportunities):FutureWarning"
+)
+
 LIFE = surv.Weibull.from_params([365.0, 2.0])
 BEARING = NonRepairable(LIFE, planned_cost=150.0, unplanned_cost=400.0)
 OUTAGES = [(150.0, 100.0), (330.0, 100.0)]

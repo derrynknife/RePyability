@@ -44,6 +44,9 @@ _MAX_INTERVALS = 100_000
 #: Grid steps per block interval: at least, at most, and per interquartile
 #: range of the lives.
 _MIN_STEPS, _MAX_STEPS, _STEPS_PER_SPREAD = 2_000, 20_000, 40
+#: The most grid steps of a plan's last stretch, after its last time (see
+#: ``plan_availability``).
+_MAX_LAST_STEPS = 80_000
 #: The longest grid, in steps, for the repairs and replacements that carry a
 #: unit from one block interval into the next.
 _MAX_GRID = 4_000_000
@@ -252,12 +255,14 @@ def _grid(
     node,
     starts: bool = False,
     life_checked: bool = True,
+    steps: Optional[int] = None,
 ) -> _Grid:
     """The grid and renewal functions of a unit under block replacement
     (see ``block_cycle`` for the arguments; ``starts``: with the renewal
     function of the units put into service, for replacement on
     condition; ``life_checked=False``: the life is a degradation
-    process, which ``_level_replacement`` checks itself)."""
+    process, which ``_level_replacement`` checks itself; ``steps``: the
+    grid's steps over the interval, by default ``_steps``)."""
     from scipy.signal import fftconvolve
 
     if life_checked:
@@ -265,7 +270,8 @@ def _grid(
     fix = _Duration(repair, "repair", node)
     replace = _Duration(duration, "replacement", node)
     T = float(interval)
-    steps = _steps(life, T)
+    if steps is None:
+        steps = _steps(life, T)
     h = T / steps
     grid = h * np.arange(steps + 1)
 
@@ -521,6 +527,166 @@ def _head_start(head: BlockHead, g: _Grid):
     return carried, C, float(head.up)
 
 
+def _onto(P: np.ndarray, C: np.ndarray, g: _Grid, onto: _Grid):
+    """``P`` and ``C`` (a CDF and its integral on ``g.rho``, as ``_carry``
+    gives them) on the points ``onto.rho`` of the next interval's grid,
+    where its step differs: linear between ``g``'s points (for ``C``, that
+    is its masses at those points, each then spread over the two nearest
+    points of the new grid, so that its mean is kept), and past them as
+    ``_carry`` extends them, ``P`` constant."""
+    if onto is g:
+        return P, C
+    x, end = onto.rho, float(g.rho[-1])
+    return (
+        np.interp(x, g.rho, P),
+        np.interp(x, g.rho, C) + P[-1] * np.maximum(x - end, 0.0),
+    )
+
+
+def _followed(grids, head: Optional[BlockHead]):
+    """A unit followed from one block time to the next (see
+    ``block_availability``), each interval on its own grid of ``grids``
+    (one grid again and again, on a period; one for each stretch between
+    the times of a plan, ``plan_availability``): for each interval, its
+    grid, the smooth part of the unit's availability on it, the
+    probability that it is replaced at the interval's start, and its
+    expected failures by each grid point."""
+    from scipy.signal import fftconvolve
+
+    starts: dict = {}
+    previous = None
+    P = C = density = np.empty(0)
+    for g in grids:
+        steps, h = g.steps, g.h
+        if id(g) not in starts:
+            # A replacement that starts at the interval's start: the CDF
+            # of when the unit is back in service, and its integral.
+            starts[id(g)] = (
+                g.replace.cdf(g.rho),
+                g.rho - g.replace.in_progress(g.rho),
+            )
+        start_P, start_C = starts[id(g)]
+        if previous is None and head is None:
+            # The first interval: put into service new at 0.
+            P = np.ones(g.length + 1)
+            C = g.rho.copy()
+            other = np.zeros(g.length + 1)
+            replaced = 1.0
+        else:
+            if previous is None:
+                assert head is not None
+                other, C, replaced = _head_start(head, g)
+            else:
+                other, C, in_repair = _carry(P, C, density, previous)
+                # Up at this block time: put into service in the last
+                # interval and not in a repair at its end (so that no
+                # probability is lost).
+                replaced = float(P[previous.steps]) - in_repair
+                other, C = _onto(other, C, previous, g)
+            P = other + replaced * start_P
+            C = C + replaced * start_C
+        w = _masses(P, C, steps, h)
+        row = other[: steps + 1] - fftconvolve(w, 1.0 - g.A)[: steps + 1]
+        # Failures in each cell of this interval, from the units put into
+        # service in it, and their running count over the interval.
+        density = np.diff(fftconvolve(w, g.N)[: steps + 1]) / h
+        failures = np.concatenate([[0.0], np.cumsum(density * h)])
+        yield g, row, replaced, failures
+        previous = g
+
+
+def plan_availability(
+    life,
+    repair,
+    duration,
+    lengths,
+    node=None,
+    head: Optional[BlockHead] = None,
+    last_like: Optional[float] = None,
+    lives: Optional[list] = None,
+    durations: Optional[list] = None,
+) -> list:
+    """The point availability of a component replaced at the times of a
+    plan (if it is up at them), stretch by stretch: a ``BlockAvailability``
+    of one interval for each of ``lengths``, the times from one of the
+    plan's times (or 0, or the end of a ``head``) to the next.
+
+    The unit is followed as ``block_availability`` follows it, each
+    stretch on a grid of its own length (stretches of one length share
+    theirs, so that equal stretches are block replacement on that period,
+    to rounding), with what is carried from one into the next (the
+    repairs and replacements still going on) put onto the next one's grid
+    (see ``_onto``). Every stretch but the first from new starts with the
+    replacement of the unit if it is up.
+
+    Parameters
+    ----------
+    life, repair, duration, node, head
+        As for ``block_availability``.
+    lengths : sequence of float
+        Each stretch's length, positive.
+    last_like : float, optional
+        For a last stretch that ends at no time of the plan (the one after
+        its last time, as long as it is asked for): the length of a
+        stretch whose grid's step it takes, so that it is followed as
+        finely however long it is (up to ``_MAX_LAST_STEPS`` steps).
+    lives : list, optional
+        Each stretch's life, where the units put into service in it have
+        another than ``life`` (after an upgrade); by default ``life`` in
+        every stretch.
+    durations : list, optional
+        The time the replacement that starts each stretch takes, where
+        they differ (a unit renewed at several shutdowns, each of its own
+        length); by default ``duration`` for every stretch.
+
+    Returns
+    -------
+    list of BlockAvailability
+
+    Raises
+    ------
+    NotImplementedError
+        As ``block_cycle`` does, for a stretch.
+    """
+    if lives is None:
+        lives = [life] * len(lengths)
+    if durations is None:
+        durations = [duration] * len(lengths)
+    made: dict = {}
+    keys = [
+        (length, id(own), id(taken))
+        for length, own, taken in zip(lengths, lives, durations)
+    ]
+    for k, (length, own) in enumerate(zip(lengths, lives)):
+        if keys[k] in made:
+            continue
+        steps = None
+        if last_like is not None and k == len(lengths) - 1:
+            wanted = _steps(own, last_like) * length / last_like
+            steps = int(np.clip(np.ceil(wanted), _MIN_STEPS, _MAX_LAST_STEPS))
+        made[keys[k]] = _grid(
+            own, repair, durations[k], length, node, steps=steps
+        )
+    fresh = head is None
+    out = []
+    following = _followed((made[key] for key in keys), head)
+    for g, row, replaced, failures in following:
+        out.append(
+            BlockAvailability(
+                g.interval,
+                g.grid,
+                row[None, :],
+                np.array([replaced]),
+                g.replace,
+                False,
+                failures[None, :],
+                fresh,
+            )
+        )
+        fresh = False
+    return out
+
+
 def block_availability(
     life,
     repair,
@@ -572,10 +738,10 @@ def block_availability(
         As ``block_cycle`` does, or if the availability has not settled
         into repeating within the intervals the grid can keep.
     """
-    from scipy.signal import fftconvolve
+    from itertools import repeat
 
     g = _grid(life, repair, duration, interval, node)
-    steps, h = g.steps, g.h
+    steps = g.steps
     most = max(3, _MAX_VALUES // (steps + 1))
     # An infinite horizon: until it settles, for its long-run cycle.
     count = (
@@ -583,32 +749,12 @@ def block_availability(
         if np.isfinite(horizon)
         else most + 1
     )
-    # A replacement that starts at the interval's start: the CDF of when
-    # the unit is back in service, and its integral.
-    start_P = g.replace.cdf(g.rho)
-    start_C = g.rho - g.replace.in_progress(g.rho)
-    down = 1.0 - g.A
-    if head is None:
-        # The first interval: put into service new at 0.
-        P = np.ones(g.length + 1)
-        C = g.rho.copy()
-        other = np.zeros(g.length + 1)
-        replaced = 1.0
-    else:
-        other, C, replaced = _head_start(head, g)
-        P = other + replaced * start_P
-        C = C + replaced * start_C
     rows: list = []
     probabilities: list = []
     failing: list = []
     settled = False
-    for k in range(count):
-        w = _masses(P, C, steps, h)
-        row = other[: steps + 1] - fftconvolve(w, down)[: steps + 1]
-        # Failures in each cell of this interval, from the units put into
-        # service in it, and their running count over the interval.
-        density = np.diff(fftconvolve(w, g.N)[: steps + 1]) / h
-        failures = np.concatenate([[0.0], np.cumsum(density * h)])
+    following = _followed(repeat(g, count), head)
+    for k, (_, row, replaced, failures) in enumerate(following):
         if (
             k >= 2
             and abs(replaced - probabilities[-1]) < _SETTLED
@@ -627,12 +773,6 @@ def block_availability(
         rows.append(row)
         probabilities.append(replaced)
         failing.append(failures)
-        other, C, in_repair = _carry(P, C, density, g)
-        # Up at the next block time: put into service in this interval and
-        # not in a repair at its end (so that no probability is lost).
-        replaced = float(P[steps]) - in_repair
-        P = other + replaced * start_P
-        C = C + replaced * start_C
     return BlockAvailability(
         g.interval,
         g.grid,

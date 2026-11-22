@@ -18,7 +18,6 @@ from repyability import (
     MGL,
     AlphaFactor,
     BetaFactor,
-    Calendar,
     CCFGroup,
     DegradingNode,
     FaultTree,
@@ -26,6 +25,7 @@ from repyability import (
     LoadSharingModel,
     NonRepairable,
     NonRepairableRBD,
+    Opportunities,
     Opportunity,
     PerfectReliability,
     PerfectUnreliability,
@@ -33,10 +33,13 @@ from repyability import (
     RepairableRBD,
     RepeatedNode,
     RepeatedStandbyNode,
+    Shocks,
     StandbyModel,
 )
+from repyability.maintenance import AgePolicy, Prices, UnitPlan
 from repyability.rbd import bdd, modular
 from repyability.rbd._usage import has_at_usage
+from repyability.schedule import DutySchedule
 from repyability.tests.test_performance_equivalence import (
     binomial_first,
     instrument_air,
@@ -203,7 +206,7 @@ def ara_process():
     Weibull life and half its age taken away at each repair, which the
     simulation steps with surpyval (a repair surpyval fits that is not
     Kijima's)."""
-    return surv.ARA.fit_from_parameters([300.0, 1.5], 0.5)
+    return surv.ARA.from_params([300.0, 1.5], 0.5)
 
 
 @_fitted_once
@@ -336,6 +339,11 @@ def nonrepairable_kinds():
             EDGES,
             {"a": unit, "b": unit, "c": E([0.002])},
             ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate"))],
+        ),
+        "shocks": NonRepairableRBD(
+            EDGES,
+            {"a": unit, "b": surv.Weibull.from_params([400.0, 1.5]), **rest},
+            ccf_groups=[CCFGroup(["a", "b"], Shocks(1e-3, 0.5, 2e-4))],
         ),
         "fixed": NonRepairableRBD(
             EDGES, {"a": FIXED(0.1), "b": FIXED(0.2), "c": FIXED(0.05)}
@@ -663,10 +671,9 @@ def systems_of_every_kind():
 def calendar_policy(life):
     """A calendar policy for ``life`` (#319): shuts every 60 at 2, and a
     failure at 10."""
-    calendar = Calendar(
-        [Opportunity("shut", 2.0, period=60.0)], failure=10.0, anytime=None
-    )
-    return NonRepairable(life).optimal_calendar_policy(calendar)
+    shuts = Opportunities([Opportunity("shut", period=60.0)], any_day=False)
+    part = NonRepairable(life, unplanned_cost=10.0, opportunity_cost=2.0)
+    return part.optimal_opportunity_policy(shuts)
 
 
 def repairable_kinds():
@@ -688,6 +695,80 @@ def repairable_kinds():
             ),
             "block replacement": system(
                 unit(preventive={"interval": 300.0, "policy": "block"})
+            ),
+            # One unit's maintenance plan as a node: the node its spec
+            # gives (UC-63 of the maintenance README).
+            "a maintenance plan": system(
+                UnitPlan(
+                    life,
+                    repair,
+                    tasks=(AgePolicy(interval=300.0, cost=4.0),),
+                    prices=Prices(repair=2.0, downtime=1.0),
+                )
+            ),
+            # A life that is a diagram: a subassembly (a series pair)
+            # replaced whole at its failure, taken by its functions.
+            "a life that is a diagram": system(
+                unit(
+                    reliability=NonRepairableRBD(
+                        [("s", "x"), ("x", "y"), ("y", "t")],
+                        {"x": W([400.0, 2.0]), "y": W([400.0, 2.0])},
+                    )
+                )
+            ),
+            # A plan valued alone, with its own money: its salvage, its
+            # prices' growth and its retirement (UC-65 of the maintenance
+            # README), the one node of its diagram.
+            "a plan valued alone": UnitPlan(
+                life,
+                repair,
+                tasks=(AgePolicy(interval=300.0, cost=4.0),),
+                prices=Prices(repair=2.0, downtime=1.0),
+                salvage=3.0,
+                escalation=1e-3,
+                retire_at=250.0,
+            ).diagram(),
+            # Replaced at the times of a plan, and after the last no more
+            # (block replacement at any list of times).
+            "replaced at given times": system(
+                unit(
+                    preventive={
+                        "replace_at": [150.0, 400.0, 700.0],
+                        "duration": W([4, 2]),
+                        "cost": 20.0,
+                    },
+                    repair_cost=5.0,
+                ),
+            ),
+            # Upgraded at a time: its units have another life from then,
+            # at a capital cost (worked out over a horizon, and simulated).
+            "upgraded at a time": system(
+                unit(
+                    upgrade={
+                        "at": 250.0,
+                        "reliability": W([900, 2.0]),
+                        "cost": 50.0,
+                    },
+                    repair_cost=5.0,
+                ),
+            ),
+            # Upgraded, and block-replaced before and after (the
+            # upgrade as one more replacement): over a horizon.
+            "upgraded at a time, block-replaced": system(
+                unit(
+                    preventive={
+                        "policy": "block",
+                        "interval": 200.0,
+                        "cost": 3.0,
+                        "duration": surv.ExactEventTime.from_params([2.0]),
+                    },
+                    upgrade={
+                        "at": 300.0,
+                        "reliability": W([900, 2.0]),
+                        "cost": 50.0,
+                    },
+                    repair_cost=5.0,
+                ),
             ),
             "block replacement, in no time": system(
                 unit(
@@ -1004,6 +1085,22 @@ def repairable_kinds():
                     replace_cost=10.0,
                 )
             ),
+            # A duty plan that changes over time: lives and tasks in
+            # operating time put on the calendar through it (simulated).
+            "on a duty plan that changes, maintained by running hours": system(
+                unit(
+                    duty=DutySchedule(
+                        "hours", (0.0, 40.0, 100.0), (1.0, 0.0, 0.5)
+                    ),
+                    preventive={
+                        "interval": 75.0,
+                        "basis": "operating",
+                        "duration": E([2.0]),
+                        "cost": 2.0,
+                    },
+                    replace_cost=10.0,
+                )
+            ),
             "operated part of the time, tested by running hours": system(
                 unit(
                     duty=0.5,
@@ -1049,6 +1146,11 @@ def repairable_kinds():
                 unit(priority=1), repair_crews=1, downtime_cost_rate=5.0
             ),
             "enough repair crews": system(unit(), repair_crews=3),
+            "paid repair crews": system(
+                unit(priority=1, repair_cost=2.0),
+                repair_crews=1,
+                crew_cost_rate=0.5,
+            ),
             "too meshed": too_meshed(
                 lambda: RepairableRBD(
                     BRIDGE, {n: unit(repair_cost=2.0) for n in "abcde"}
@@ -1127,6 +1229,46 @@ def repairable_kinds():
                 ccf_groups=[
                     CCFGroup(["a", "b", "d"], AlphaFactor([0.95, 0.04, 0.01]))
                 ],
+            ),
+            "shocks, revealed": RepairableRBD(
+                EDGES,
+                {
+                    "a": {
+                        "reliability": W([400.0, 1.5]),
+                        "repairability": E([0.5]),
+                    },
+                    "b": {
+                        "reliability": W([300.0, 2.0]),
+                        "repairability": W([3.0, 2.0]),
+                    },
+                    "c": {
+                        "reliability": E([0.002]),
+                        "repairability": E([0.5]),
+                    },
+                },
+                ccf_groups=[CCFGroup(["a", "b"], Shocks(1e-3, 0.5, 2e-4))],
+            ),
+            "shocks, tested": RepairableRBD(
+                EDGES,
+                {
+                    **{
+                        node: {
+                            "reliability": W([600.0, 1.5]),
+                            "repairability": "instant",
+                            "inspection": {
+                                "interval": 100.0,
+                                "coverage": 0.8,
+                                "full_test": 300.0,
+                            },
+                        }
+                        for node in "ab"
+                    },
+                    "c": {
+                        "reliability": E([0.002]),
+                        "repairability": E([0.5]),
+                    },
+                },
+                ccf_groups=[CCFGroup(["a", "b"], Shocks(1e-3, 0.5))],
             ),
             "common cause, Weibull": system(
                 unit(), ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))]
@@ -1275,6 +1417,102 @@ def repairable_kinds():
                     }
                 },
             ),
+            # Outages at given times whose job leaves a block as if 50
+            # old (simulated).
+            "outages restoring to an age": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={
+                            "shutdown": "outage",
+                            "restore_to": 50.0,
+                            "cost": 2.0,
+                        }
+                    ),
+                    "b": unit(),
+                    "c": unit(),
+                },
+                shutdowns={
+                    "outage": {
+                        "times": [150.0, 400.0, 700.0],
+                        "duration": 8.0,
+                        "scope": ["a"],
+                    }
+                },
+            ),
+            # Outages at given times, each renewing a block: exact over
+            # a horizon (no long run).
+            "outages at given times, renewing": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={"shutdown": "outage", "cost": 2.0},
+                        repair_cost=5.0,
+                    ),
+                    "b": unit(),
+                    "c": unit(),
+                },
+                shutdowns={
+                    "outage": {
+                        "times": [150.0, 400.0, 700.0],
+                        "duration": 8.0,
+                        "scope": ["a", "c"],
+                        "cost": 30.0,
+                    }
+                },
+            ),
+            # A block renewed at two shutdowns, a short stop on a period
+            # and longer outages at given times, each renewal taking its
+            # own shut's length: exact over a horizon (no long run).
+            "a block renewed at several shutdowns": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={
+                            "shutdown": ["stop", "outage"],
+                            "cost": 2.0,
+                        },
+                        repair_cost=5.0,
+                    ),
+                    "b": unit(),
+                    "c": unit(),
+                },
+                shutdowns={
+                    "stop": {"period": 100.0, "duration": 1.0, "scope": ["a"]},
+                    "outage": {
+                        "times": [250.0, 640.0],
+                        "duration": 12.0,
+                        "scope": ["a", "c"],
+                        "cost": 30.0,
+                    },
+                },
+            ),
+            # Outages at given times that renew a block under age
+            # replacement if it is old enough then (simulated).
+            "outages renewing opportunistically": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(
+                        preventive={
+                            "policy": "age",
+                            "interval": 300.0,
+                            "cost": 2.0,
+                        },
+                        repair_cost=5.0,
+                    ),
+                    "b": unit(),
+                    "c": unit(),
+                },
+                shutdowns={
+                    "outage": {
+                        "times": [150.0, 400.0, 700.0],
+                        "duration": 8.0,
+                        "scope": ["a", "b"],
+                        "cost": 30.0,
+                        "opportunistic": {"a": 100.0},
+                    }
+                },
+            ),
             "shutdown in no time": RepairableRBD(
                 EDGES,
                 {
@@ -1364,6 +1602,22 @@ def repairable_kinds():
                 repair_crews=1,
                 downtime_cost_rate=5.0,
                 capacity={"a": 5.0, "b": 5.0, "c": 10.0},
+            ),
+            # One crew, and a call-out crew once two jobs wait.
+            "a call-out crew": RepairableRBD(
+                EDGES,
+                {
+                    node: {
+                        "reliability": E([0.002]),
+                        "repairability": E([0.05]),
+                        "priority": priority,
+                        "repair_cost": 3.0,
+                    }
+                    for node, priority in zip("abc", (1, 0, 0))
+                },
+                repair_crews=1,
+                call_out={"when_waiting": 2, "fee": 40.0, "rate": 6.0},
+                downtime_cost_rate=5.0,
             ),
         }
     )

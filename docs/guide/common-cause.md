@@ -213,6 +213,8 @@ reliability:
   the group;
 - while `Q` is small it agrees with the probability split to first order,
   so over a mission or a proof-test interval the two give about the same.
+- members that have run for a while, all to one age, are taken at that
+  age ([wear-out lives and ages](common-cause-ages.md)).
 
 ```python
 pair_rate = NonRepairableRBD(
@@ -375,7 +377,7 @@ group's.
 | `sf_uncertainty`, `time_to_reliability_uncertainty`, `bx_life_uncertainty`, `mean_uncertainty` | Each draw worked out with the groups; the members drawn together, and the group's model too if it is given. `mean_uncertainty` refuses a group splitting a probability, as `mean` does. |
 | `allocate_redundancy`, `redundancy_front` | A member's copies join its group: a `BetaFactor` group's, active copies of the member's own model. Copies of an `MGL` or `AlphaFactor` group's member, and options or cold spares for a member, raise `NotImplementedError`. |
 | `allocate_reliability_redundancy` | Includes the groups; a member in `uses` raises `NotImplementedError` (its reliability is the group's). |
-| The condition-based methods (`sf_given_state`, `remaining_life`, `importances_given_state`) | Raise `NotImplementedError`: they would need members of different ages. |
+| The condition-based methods (`sf_given_state`, `remaining_life`, `mean_residual_life`, `importances_given_state`) | Include a group splitting the rate whose members are given one state (alive, at one age): each cause takes its share of the members' hazard from that age. Raise `NotImplementedError` for members in different states, and for a group splitting a probability. See [wear-out lives and ages](common-cause-ages.md), which also draws a shock that fails members of different ages as a node in series. |
 | `working_nodes` / `broken_nodes` naming a group member | Raises `NotImplementedError`. |
 
 ```python
@@ -502,10 +504,22 @@ times the long-run grid's times) the exact values refuse, saying so, before
 working anything out: simulate such a system with `availability()` or
 `cost()`. The capacity distribution and the allocations still take every
 combination of every group's states at once, and refuse, before building
-them, where those would take too much memory. Limited repair crews are
-refused too, by every exact value, `node_availability` among them: the
-groups' chains do not take the crews' queue in, and the crews' chain does
-not take the common causes in, as yet. The simulations take both.
+them, where those would take too much memory.
+
+With limited repair crews a shared failure's members queue for a crew with
+the other components, which the groups' own chains do not follow: the
+[crews' Markov chain](repairable.md#repair-crews) takes the groups in
+instead. A shared cause strikes at its rate and fails the members it names
+that are up, and they join the queue one after another in the group's
+order, as in the simulation, so the first named is repaired first when a
+crew is free. The long-run values, the importance measures and the values
+over time then come from that chain, as without groups. It takes causes
+that strike two members (any group of two; a larger `AlphaFactor` or `MGL`
+group whose causes of three or more have no share): the simulation queues
+three or more components struck at one instant in the order its event
+queue releases them, which is not a rule a chain can copy, so those
+refuse, as do members repaired instantly or found by tests. The
+simulations take them all.
 
 Over time, each group's chain is followed from every member up at 0 (by
 uniformization, or through the members' tests, after whose first periods it
@@ -639,8 +653,54 @@ exponential repairs, or tests and repairs over by the next test) holds for
 the exact and numerical values; the simulations need exponential lives
 alone. A member held working or broken, a member with a life of its own (a
 `level` or `model` in its state), a member maintained on a schedule,
-repaired imperfectly or in a maintenance group, and a group with limited
-repair crews are refused, with the reason; `analysis_routes()` says which.
+repaired imperfectly or in a maintenance group, and with limited repair
+crews a group one of whose causes strikes three or more members, are
+refused, with the reason; `analysis_routes()` says which. (With limited
+repair crews a member may be held: it is struck no more, and the causes it
+shares still strike the others.)
+
+### Shocks at a rate of their own
+
+The models above split the members' own failure rate, so their members
+must have exponential lives. [`Shocks(rate, p, lethal_rate)`][repyability.Shocks]
+adds failures instead: shocks come at `rate`, whatever the members' ages,
+and each fails each member with probability `p` (`lethal_rate` adds shocks
+that fail every member), while each member keeps its own life, of any kind,
+for its other failures. The members need not be alike. A strike fails the
+members it names that are up, in the group's order; each is then repaired
+on its own, and a tested member's failure waits, unseen, for its test (with
+a test that can miss, one coin for all the failures of a strike). A member
+that is down when a shock comes is not struck.
+
+A `RepairableRBD` simulates such a group, in Python, and its exact methods
+refuse it, naming the simulation:
+
+```python
+from repyability import Shocks
+
+worn = {
+    "reliability": surv.Weibull.from_params([300, 2.0]),
+    "repairability": surv.Exponential.from_params([0.1]),
+}
+struck = RepairableRBD(
+    [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+    {"a": dict(worn), "b": dict(worn)},
+    ccf_groups=[CCFGroup(["a", "b"], Shocks(rate=1e-3, p=0.5))],
+)
+struck.analysis_routes()["availability"].route         # 'simulated'
+struck.analysis_routes()["mean_availability"].route    # 'refused'
+run = struck.availability(5000.0, mc_samples=2000, seed=0)
+```
+
+For exponential members the shocks are the rate-split groups above, strike
+for strike: own failures at `2^-10` with lethal shocks at `2^-10` are a
+`BetaFactor(0.5)` pair of rate `2^-9`, and a seeded run of one is the
+other's. A member of a `Shocks` group may be tested or repaired, and
+started from its age; scheduled maintenance, imperfect repair or a
+maintenance group on a member is refused, as is a tested member started
+from a state (a shock may have failed it since its last test). Without
+repairs, the same model is exact: see [wear-out lives and
+ages](common-cause-ages.md).
 
 Common-cause groups can also be added to a diagram in the browser in
 [Reliafy](https://reliafy.com/guides/common-cause-group).

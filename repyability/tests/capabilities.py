@@ -55,7 +55,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ),
             (
                 "B-life, time to a reliability",
-                ("bx_life", "time_to_reliability"),
+                ("bx_life", "time_to_reliability", "qf"),
             ),
             ("Given the system's age", ("cs",)),
             ("Given the components' ages or states", ("sf_given_state",)),
@@ -132,6 +132,22 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Expected cost in a window", ("expected_cost",)),
             ("Expected net present value", ("expected_npv",)),
             ("A plan against what happened", ("plan_vs_actual",)),
+            (
+                "Simulated net present value (distribution)",
+                ("npv_distribution",),
+            ),
+            (
+                "Best time to switch blocks' running (simulated NPV)",
+                ("best_switch_time",),
+            ),
+            (
+                "Two plans' net present values compared",
+                ("compare_npv",),
+            ),
+            (
+                "Least spend for a bad run's downtime (simulated)",
+                ("least_spend_for_downtime",),
+            ),
             ("Cost in each of a run of windows", ("cost_by_window",)),
             ("Simulated cost (distribution)", ("cost",)),
             ("Total cost of ownership", ("total_cost",)),
@@ -266,6 +282,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("bx_life_uncertainty", "time_to_reliability_uncertainty"),
             ),
             ("Of the cost rate", ("expected_cost_rate_uncertainty",)),
+            (
+                "Of the net present value",
+                ("expected_npv_uncertainty",),
+            ),
         ],
     ),
     (
@@ -382,6 +402,7 @@ FAMILIES: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {
             (
                 "mean_availability_uncertainty",
                 "expected_cost_rate_uncertainty",
+                "expected_npv_uncertainty",
             ),
         ),
         (

@@ -10,6 +10,8 @@
 
 ::: repyability.Opportunity
 
+::: repyability.Opportunities
+
 ::: repyability.Calendar
 
 ::: repyability.Shutdowns
@@ -27,6 +29,8 @@
 ::: repyability.scheduled_replacement
 
 ::: repyability.failure_finding
+
+::: repyability.failure_finding_window
 
 ::: repyability.optimal_failure_finding_interval
 

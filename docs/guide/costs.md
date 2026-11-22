@@ -23,6 +23,23 @@ Costs are optional keys of a component's dict, plus one system-level rate:
 | Component | `downtime_cost` | Per unit time *this component* is down, even if the system is up (a degraded-mode or per-leg penalty). A number. |
 | Component | `acquisition_cost` | Once, to buy the unit. A number. Not a running cost: see [the total cost of ownership](#the-total-cost-of-ownership). |
 | System | `downtime_cost_rate=` | Per unit time the *system* is down (lost production). A number. |
+| System | `crew_cost_rate=` | Per unit time per repair crew, busy or not (a salary), with `repair_crews=`. A number. See [paying the repair crews](#paying-the-repair-crews). |
+| System | `call_out=` | A call-out crew's `"fee"` per call-out and `"rate"` per unit time engaged, with `repair_crews=`. See [a call-out crew](#a-call-out-crew). |
+
+Which cost is charged when, for a component:
+
+| When | Charged |
+|---|---|
+| It fails (a replacement or repair on failure) | `repair_cost` and `replace_cost`; for a component repaired imperfectly, `replace_cost` only when it is replaced. |
+| A planned replacement (a `"preventive"` task) | The task's `"cost"`, not `replace_cost`. |
+| An inspection of a `"condition"` policy | The task's `"inspection_cost"`. |
+| A test of an `"inspection"` spec (hidden failures) | That spec's `"cost"`; a failure it finds is then charged `repair_cost` and `replace_cost`. |
+| While it is down, for any reason | `downtime_cost` per unit time, and `downtime_cost_rate=` while the system is down too. |
+
+So a $4,000 planned replacement taking 8 hours is
+`"preventive": {"policy": "age", "interval": ..., "cost": 4000.0, "duration": 8.0}`
+(a number is a fixed time; a model of the time is given the same way), not
+`replace_cost`, which a failure is charged.
 
 ```python
 import numpy as np
@@ -48,6 +65,14 @@ plant = RepairableRBD(
 )
 plant.has_costs   # True
 ```
+
+The two downtime costs add up: a component's `downtime_cost` is charged
+whenever it is down, and `downtime_cost_rate` whenever the system is, so
+an hour a series component is down costs both. With
+`"downtime_cost": 500.0` on a series pump and `downtime_cost_rate=1000.0`,
+that hour costs 1,500. Price lost production in one place: put it in
+`downtime_cost_rate`, and keep `downtime_cost` for what the component's
+own outage costs (a hired stand-by unit, a penalty per leg).
 
 Every cost defaults to 0, so any subset can be priced. Costs are
 undiscounted (but for the [total cost](#discounting)'s optional discount
@@ -86,6 +111,96 @@ With nothing priced, not even an [acquisition cost](#the-total-cost-of-ownership
 `expected_cost_rate`, `total_cost`, `expected_cost` and `cost` refuse (a
 `routes.Refused`, a `ValueError`), as every analysis refuses a diagram with
 nothing it works on.
+
+### Paying the repair crews
+
+With [limited repair crews](repairable.md#repair-crews), a crew more
+shortens the queue for repairs, but it is paid whether it works or not.
+`crew_cost_rate=` prices each of the `repair_crews` crews per unit time:
+the crews cost `repair_crews · crew_cost_rate` per unit time from the
+start, whatever happens, and every cost result shows it under the
+category `"crews"`. Here a second crew saves less lost production than
+its salary:
+
+```python
+def crewed(crews):
+    return RepairableRBD(
+        edges,
+        {
+            "A": unit(0.1, 1.0, repair_cost=200.0),
+            "B": unit(0.1, 1.0, repair_cost=200.0),
+            "C": unit(0.02, 0.5, repair_cost=500.0, replace_cost=1500.0),
+        },
+        downtime_cost_rate=1000.0,
+        repair_crews=crews,
+        crew_cost_rate=20.0,
+    )
+
+crewed(1).expected_cost_rate()   # -> 152.77   20.0 of it the crew's
+crewed(2).expected_cost_rate()   # -> 161.33
+```
+
+Over a window `T` the crews cost `n c T`, and discounted at a rate `r`,
+`n c (1 − exp(−r T)) / r`; a simulation adds the same amount to every
+run:
+
+```python
+crewed(1).expected_cost(100.0).by_category["crews"]   # -> 2000.0
+crewed(1).expected_cost(100.0, discount_rate=0.05).by_category["crews"]   # -> 397.30
+```
+
+### A call-out crew
+
+A contract crew that comes only when repairs queue is paid only then.
+`call_out={"when_waiting": k, "fee": f, "rate": c}` is one crew more: when
+a job falls due, finds every crew busy and is the `k`-th waiting, the
+call-out crew comes at once and starts the waiting job the next free crew
+would have taken. While it is engaged there is a crew more. It leaves at
+the first end of a job that leaves a crew with no waiting job to take
+(the crews are alike: the job it has then, if any, is finished by the crew
+that came free), and jobs that wait while it is engaged call no other.
+Each call-out costs `f` and its time engaged `c` per unit time, under
+`"crews"` with any salaries.
+
+With exponential lives and repairs the crews' Markov chain has the
+call-out crew exactly, in the long run, over time and discounted;
+otherwise the simulations follow the same rule (in Python). What a
+contract is worth is the difference from the same system without it:
+
+```python
+def on_call(call_out=None):
+    return RepairableRBD(
+        edges,
+        {
+            "A": unit(0.1, 1.0, repair_cost=200.0),
+            "B": unit(0.1, 1.0, repair_cost=200.0),
+            "C": unit(0.02, 0.5, repair_cost=500.0, replace_cost=1500.0),
+        },
+        downtime_cost_rate=1000.0,
+        repair_crews=1,
+        call_out=call_out,
+    )
+
+contract = {"when_waiting": 1, "fee": 300.0, "rate": 50.0}
+on_call().expected_cost_rate()           # -> 132.77
+on_call(contract).expected_cost_rate()   # -> 129.69   the contract pays
+
+states = on_call(contract).crew_states()
+float(states.probabilities @ states.call_out_rate)      # -> 0.0254   call-outs per unit time
+float(states.probabilities @ states.call_out_engaged)   # -> 0.0148   of the time engaged
+
+with_it = on_call(contract).expected_npv(100.0, discount_rate=0.05)
+without = on_call().expected_npv(100.0, discount_rate=0.05)
+with_it.npv - without.npv                # -> 37.74   the contract's value
+with_it.cost_by_category["crews"]        # -> 157.27  what it costs, discounted
+```
+
+`npv_distribution` prices simulated histories, which do not record the
+call-outs: it refuses a call-out crew with a fee or a rate, and `cost()`
+gives the spread of the undiscounted cost.
+
+A crew cost needs `repair_crews`: as many crews as are needed (the
+default) cannot be priced, and the constructor refuses it.
 
 ## The simulated cost distribution
 
@@ -351,6 +466,146 @@ npv.cash_flows[3]["category"]   # 'value'
 sum(row["present_value"] for row in npv.cash_flows)   # -> 7448539.5
 ```
 
+The average hides the risk: a plan with a slightly lower mean and a much
+better worst case is often the one to choose. `npv_distribution(horizon,
+discount_rate=, value_rate=, mc_samples=, seed=, hurdle=, tail=0.1)`
+simulates the runs themselves (the histories of `simulate_timelines`, by
+seed), prices each with the diagram's own costs at the times they fell, and
+gives each run's net present value (`samples`) and their spread: `p10`,
+`p50` and `p90`, the share of runs below a `hurdle`, and `cvar`, the mean of
+the worst `tail` of the runs. Its `mean` estimates `expected_npv`'s, within
+`mean_interval()`; `percentile_interval(q)` gives a percentile's confidence
+interval by the binomial method. It works where the exact methods refuse
+(crews with other lives, maintenance groups, opportunistic renewals at
+shutdowns), as the simulation does. A shutdown's cost is charged at each of
+its starts; a component it holds off line is not charged for the hold, and a
+failure or renewal in the shut is charged as anywhere else. A
+cost charged at an event the histories do not record (a standby group's
+units' failures, tests, planned replacements that take no time, a set-up
+cost, a calendar policy's prices) is not left out: the method refuses the
+diagram, naming the cost. A cost given as a distribution is charged at its
+mean (`priced_at_mean`).
+
+```python
+runs = line.npv_distribution(87600.0, discount_rate=seven, value_rate=120.0,
+                             mc_samples=10_000, seed=1, hurdle=7.4e6)
+runs.mean                      # -> 7448443.9   expected_npv's 7448539.5, within mean_interval()
+runs.p10, runs.p90             # -> (7417097.8, 7478039.2)
+runs.probability_below_hurdle  # -> 0.0268
+runs.cvar                      # -> 7404250.8   the worst tenth of the runs, on average
+```
+
+**Contracts that pay on availability.** An availability contract charges a
+penalty for each point of availability below a target in each period, and
+may pay a bonus for each point above it: a threshold, which an expected value
+cannot price. `AvailabilityContract(periods, target, penalty_per_point,
+bonus_per_point=0, cap=None)` states the terms (a point is one percentage
+point; `cap` is the most a period can charge or pay), and
+`npv_distribution(..., contract=)` pays them run by run, from the share of
+each period the system was up in that run, at the period's end. The payments
+are kept apart (`contract_samples`, `contract_payoff`), with each run's
+availability by period (`period_availability`).
+
+**Comparing two plans.** A choice between plans is about the difference.
+`compare_npv(other, horizon, ...)` runs both plans from one seed, a component
+in the same place in both drawing the same random numbers (as `compare`
+does), so each run's difference comes from how the plans differ rather than
+from luck. Identical plans differ by exactly 0 in every run. Here a pump
+repaired in 5 hours on average against one repaired in 10, under monthly
+terms of 99%, over a year at 8%:
+
+```python
+import math
+import surpyval as surv
+from repyability import AvailabilityContract, RepairableRBD
+
+def pump_line(mttr):
+    return RepairableRBD(
+        [("s", "p"), ("p", "t")],
+        {"p": {"reliability": surv.Exponential.from_params([1e-3]),
+               "repairability": surv.Exponential.from_params([1 / mttr]),
+               "repair_cost": 500.0}},
+    )
+
+terms = AvailabilityContract(730.0, target=0.99, penalty_per_point=1000.0,
+                             bonus_per_point=100.0, cap=5000.0)
+r = math.log(1.08) / 8760
+runs = pump_line(10.0).npv_distribution(8760.0, discount_rate=r, value_rate=10.0,
+                                        mc_samples=2000, seed=1, contract=terms)
+runs.mean, runs.contract_payoff   # -> (73784, -5546)   penalties cost 5,546 on average
+gain = pump_line(5.0).compare_npv(pump_line(10.0), 8760.0, discount_rate=r,
+                                  value_rate=10.0, contract=terms,
+                                  mc_samples=2000, seed=1)
+gain.mean                         # -> 4767   the faster repair is worth this much more
+gain.interval.lower, gain.interval.upper    # -> (4656, 4879)
+gain.interval.standard_error, gain.independent_standard_error   # -> (56.9, 139.8)
+gain.probability_other_better     # -> 0.0005
+```
+
+Two independent runs of the same size would have pinned the difference down
+less than half as well (`independent_standard_error`).
+
+### Downtime you can be sure of
+
+"I want to be 95% sure I don't lose more than 100 hours to downtime this
+year: what is the least I need to pay?" `least_spend_for_downtime` answers
+that. A design meets the limit when an upper confidence bound on its
+downtime's 95th percentile is under it: an order statistic, so that the
+simulation's own noise cannot make a design look safe. The levers each
+have their price (copies of a node at a price each, a node's maintenance
+intervals at the cost of their tasks), and spend has no bound unless you
+give `budget=`:
+
+```python
+one_pump = RepairableRBD(
+    [("s", "p"), ("p", "t")],
+    {"p": {"reliability": surv.Exponential.from_params([1e-3]),
+           "repairability": surv.Exponential.from_params([0.02])}},
+)
+sure = one_pump.least_spend_for_downtime(8760.0, 100.0, redundancy={"p": 5000.0},
+                                     mc_samples=1000, seed=1)
+sure.met, sure.design.copies, sure.design.spend   # -> (True, {'p': 1}, 5000.0)
+round(sure.design.estimate, 1), round(sure.design.bound, 1)   # -> (80.6, 90.2)
+round(sure.frontier[0].estimate)   # -> 752   one pump's bad year, in hours
+```
+
+`frontier` lists the designs from the cheapest, each with its spend and
+its bad-year downtime, so you see what each extra dollar buys. The
+target is all system downtime by default; `downtime="unplanned"` counts
+failures only, and `measure="cost"` prices each hour at the diagram's
+`downtime_cost_rate` (and any `value_rate=` lost). Every design reports
+both its `planned` and its `unplanned` downtime, the mean and the bad
+year's, in hours and cost, so the trade-off shows. Cutting a wearing
+unit's unplanned downtime with shorter intervals costs planned shutdown:
+
+```python
+worn_unit = RepairableRBD(
+    [("s", "p"), ("p", "t")],
+    {"p": {"reliability": surv.Weibull.from_params([4000.0, 3.0]),
+           "repairability": surv.Exponential.from_params([1 / 72.0]),
+           "repair_cost": 2000.0,
+           "preventive": {"interval": 8000.0, "cost": 300.0,
+                          "duration": surv.ExactEventTime.from_params([8.0])}}},
+)
+pm_intervals = {"p": [4000.0, 2000.0, 1000.0, 500.0]}
+trade = worn_unit.least_spend_for_downtime(8760.0, 10.0, downtime="unplanned",
+                                      intervals=pm_intervals, mc_samples=1000,
+                                      seed=3)
+trade.design.intervals, round(trade.design.planned["bad_hours"])   # -> ({'p': 500.0}, 136)
+[round(d.unplanned["bad_hours"]) for d in trade.frontier]   # -> [347, 307, 183, 81, 0]
+everything = worn_unit.least_spend_for_downtime(8760.0, 10.0, intervals=pm_intervals,
+                                           mc_samples=1000, seed=3)
+everything.met, everything.floor   # -> (False, 'planned')
+```
+
+No unplanned downtime in a bad year needs 136 hours of planned shutdown.
+Counting all downtime, 10 hours cannot be reached by intervals, and the
+result says which floor stopped the levers (`floor`, and `stopped` in
+words): here the planned task downtime; otherwise the budget or the
+levers' caps (`max_units`, the last interval). `objective="cvar"` targets
+the mean of the worst 5% instead (its bound is normal, approximate). A
+`UnitPlan` takes the same method, through its one-node diagram.
+
 For one part replaced at an age or at a failure, over for ever,
 `NonRepairable.age_replacement_value(age, discount_rate=)` gives the net
 present value (Fox, 1966) and the equivalent annual cost in closed form. At a
@@ -363,6 +618,94 @@ bearing = NonRepairable(surv.Weibull.from_params([1000.0, 2.5]),
 bearing.age_replacement_value(493.0).eac                    # -> 0.003462
 bearing.age_replacement_value(493.0, discount_rate=seven).eac * 8760   # -> 30.3
 ```
+
+### Upgrades, retirement and salvage
+
+"Is the upgrade worth it?" and "run it to the end, or retire it now?" are
+questions a net present value answers. Three things say them:
+
+- **An upgrade** is on the component: `"upgrade": {"at": time,
+  "reliability": new_life, "cost": capital}`. From that time (in the
+  diagram's time from 0) its units have the new life: the unit in service
+  is replaced by one of it, in no time, and a unit in a repair then comes
+  back with it. The capital cost is charged at that time, whatever the
+  unit's state, under the category `"capital"`.
+- **`retire_at=`** on `expected_npv` retires the system before the
+  horizon: nothing is earned or spent after it, and the equivalent annual
+  cost is over the time to it.
+- **`salvage=`** credits what is left at the end (the retirement, or the
+  horizon), discounted from there: a number for the system, or a dict of
+  a number for each component; negative for a cost of disposal. The cash
+  flows show it under `"salvage"`, and the result's `salvage` is its
+  present value (`cost` stays the costs alone).
+
+```python
+import math
+import numpy as np
+import surpyval as surv
+from repyability import RepairableRBD
+
+def worn_pump(**more):
+    E = surv.Exponential.from_params
+    return RepairableRBD(
+        [("in", "pump"), ("pump", "out")],
+        {"pump": {"reliability": E([1 / 500.0]),
+                  "repairability": E([1 / 50.0]),
+                  "repair_cost": 2000.0, **more}},
+    )
+
+rate, horizon = math.log(1.08) / 8760.0, 8000.0
+kept = worn_pump().expected_npv(horizon, discount_rate=rate, value_rate=40.0)
+kept.npv                                         # -> 252977.9
+better = surv.Exponential.from_params([1 / 2000.0])
+upgraded = worn_pump(
+    upgrade={"at": 2000.0, "reliability": better, "cost": 30000.0}
+).expected_npv(horizon, discount_rate=rate, value_rate=40.0)
+upgraded.npv                                     # -> 253936.5
+upgraded.cost_by_category["capital"]             # -> 29477.5
+retired = worn_pump().expected_npv(
+    horizon, discount_rate=rate, value_rate=40.0,
+    retire_at=6000.0, salvage=8000.0,
+)
+retired.npv                                      # -> 199015.8
+retired.salvage                                  # -> 7589.2
+```
+
+A component's salvage may depend on the age of its unit in service: give
+a function of the age (taking an array of ages). Its expected value is
+worked out from the age of the unit in service at the end, for a plain
+component from new (one with maintenance, tests, an upgrade or a state at
+0 takes a number, and says so); a unit down then is credited nothing.
+
+```python
+by_age = worn_pump().expected_npv(
+    horizon, discount_rate=rate, value_rate=40.0,
+    salvage={"pump": lambda age: 8000.0 * np.exp(-age / 1000.0)},
+)
+by_age.undiscounted_salvage                      # -> 4848.5
+```
+
+An upgraded component's values over a horizon are worked out
+(`point_availability`, `expected_events`, `expected_cost`,
+`expected_npv`): its curve is followed to the upgrade with the old life
+and from it with the new, as a [replacement at a given
+time](system-maintenance.md#replacement-at-given-times) is. Once
+upgraded, the component has the new life for ever, so the long-run
+methods (`mean_availability`, `expected_cost_rate`, the importance
+measures by default, ...) give the long run once upgraded: the values
+of the diagram built with the new life, the time before the upgrade
+ignored (`total_cost`, over a horizon from 0, refuses). The simulations follow it too (`availability`, `cost`,
+`npv_distribution`, `compare_npv`, in Python): a life that starts at or
+after the upgrade's time is drawn from the new model, from the same
+random number the old one would have used, and the capital cost is
+charged at its time. So `compare_npv` against keeping the old component
+gives the upgrade's worth run by run, with its spread. An upgraded
+component may also be under block replacement on its own interval
+(`"preventive": {"policy": "block", ...}`): it is replaced every
+interval with the life in service, and at the upgrade's time as at a
+block time (at its cost and in its time, beside the capital cost). Age
+replacement, tests and the other tasks are not taken with an upgrade
+yet.
 
 ### A plan against what happened
 
@@ -452,6 +795,32 @@ was used and what was read off the logs. A component missing from the logs
 is refused, never taken to have run without failing; one that never went
 down has `Timeline([], end=now)`.
 
+### One call, as JSON
+
+An agent or a service asks an NPV question as one JSON document and gets
+one back: `value_plan` takes the diagram as `to_dict()` saves it, the
+analysis (`expected_npv`, `expected_npv_uncertainty`, `npv_distribution`,
+`compare_npv` with the `"other"` plan, or `plan_vs_actual`) and its
+inputs by name, in plain data, and answers with the request it answers,
+the units, the route and the result's `to_dict()`, or the refusal and
+what to run instead. The request is the record: valuing it again gives
+the same answer (a seeded analysis given no seed has one written in).
+`npv_schema()` gives the JSON Schema of both documents.
+
+```python
+from repyability import value_plan
+
+answer = value_plan({
+    "schema": 1,
+    "diagram": worn_pump().to_dict(),
+    "analysis": "expected_npv",
+    "inputs": {"horizon": horizon, "discount_rate": rate,
+               "value_rate": 40.0},
+})
+answer["route"]["route"]                         # -> 'exact'
+value_plan(answer["request"]) == answer          # -> True
+```
+
 ### Buying redundancy
 
 A redundant copy is bought once and then runs: it fails, is repaired and
@@ -475,6 +844,38 @@ fraction of the time one pump is down; it pays once `H` exceeds about 41,200
 hours. A third would save at most `100 · U² · (1 − U) = 0.0097` per hour,
 less than the 0.495 per hour its repairs cost, so it never pays, whatever it
 costs to buy.
+
+Redundancy is a capital decision: the copies are bought now and what they
+save comes later, so a `discount_rate` counts against them. And a plant
+that is down loses what it would have earned, not only what the outage
+costs. `objective="npv"` with a `value_rate` (what the system earns per
+unit time while it works) chooses the design with the highest net present
+value over the horizon, and gives the `npv`, its split into `value`,
+`acquisition_cost` and `running_cost`, and the `eac` (the same as a steady
+cost per unit time; `objective="eac"` chooses by it, which over one horizon
+is the same design):
+
+```python
+import math
+hard = math.log(1.30) / 8760      # 30% a year, the models in hours
+line.allocate_redundancy(87600.0, discount_rate=hard).units   # {'pump': 1}
+best = line.allocate_redundancy(
+    87600.0, objective="npv", discount_rate=hard, value_rate=400.0
+)
+best.units               # {'pump': 2}   an hour down now loses 500
+best.npv                 # -> 12314517.8   = value - acquisition_cost - running_cost
+best.value               # -> 12385481.5
+best.running_cost        # -> 30963.7
+best.eac                 # -> -397.67      per hour: it earns more than it costs
+```
+
+A value earned while the system works is a cost of its downtime, so the
+search is the same one, with an hour down costing `downtime_cost_rate +
+value_rate`; with no value it gives the total cost's design. The running
+costs, the downtime and the value are the long-run rates over the horizon's
+present value, as `total_cost` counts them (the result's `basis` says so);
+[`expected_npv`](#net-present-value) values a design from new,
+with its availability over time.
 
 The result is a [`TotalCostAllocation`][repyability.TotalCostAllocation]:
 `units`, `total_cost`, `acquisition_cost`, `cost_rate` (the running cost
@@ -512,9 +913,29 @@ system's availability is theirs times the rest's, and a dynamic program over
 the nodes finds the optimum for any number of them; on other structures a
 branch and bound over the designs does, which suits a handful of nodes.
 
-The model and its limits: copies are active and repaired independently of
-each other (as many repair crews as failed copies), and fail independently
-unless the component is in a common-cause group: then its copies join the
+With limited [repair crews](repairable.md#repair-crews) a copy is one more
+job that can wait for a crew: it can keep a crew from another component,
+and a copy more can even leave the system down more. Each design is then
+worked out whole, from the crews' Markov chain of its components and their
+copies (exponential lives and repairs; a call-out crew and the crews'
+salaries are counted), the chain counting how many of a component's alike
+copies are up rather than telling them apart. The search keeps to what
+still holds: no design is down less than with a crew for every job, and
+every copy is bought. `"exact"` starts from the greedy design and solves
+the chains of the designs that could still beat it by those two, the most
+promising first; the result's `basis` says the designs came from the
+crews' chain. A design it needs whose chain is too large (15,000 states)
+is refused by name: bound the copies with `max_units`, or compare designs
+with `compare()`. With crews, whole trains, common-cause groups,
+maintenance groups and shutdowns are refused, and a node whose copies
+cost nothing to buy needs a `max_units`. (The number of crews is not
+chosen: compare the allocations for each. And with at least as many crews
+as components, where no job waits, the copies are taken to have crews
+too, as without `repair_crews`.)
+
+Otherwise the model and its limits: copies are active and repaired
+independently of each other (as many repair crews as failed copies), and
+fail independently unless the component is in a common-cause group: then its copies join the
 group, a `BetaFactor` group's shared cause failing them all (see [repairable
 systems](common-cause.md#repairable-systems); an `MGL` group's member is
 refused). Copies of a component with hidden failures are inspected together. A nested

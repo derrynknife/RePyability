@@ -251,6 +251,87 @@ def _gap_words(n: int, unit: str) -> str:
     return f"{n} {unit[:-1] if n == 1 else unit}"
 
 
+def check_when(
+    label: str,
+    name: str,
+    *,
+    rule=None,
+    dates=None,
+    then_every=None,
+    every=None,
+    also_every=None,
+    at=None,
+):
+    """When a shut on real dates happens, checked: one of a ``rule``,
+    ``dates`` or ``every``, with what goes with each. ``label`` starts
+    each message (``"Shutdown 'weekly stop'"``), ``name`` names a bad
+    date. Returns the dates (in
+    order, once each), ``every`` (a number as a float) and ``at`` (a
+    clock time), as kept."""
+    from repyability.schedule import Recurrence, Usage
+    from repyability.schedule._meters import clock
+
+    given = [
+        k
+        for k, v in (("rule", rule), ("dates", dates), ("every", every))
+        if v is not None
+    ]
+    if len(given) != 1:
+        raise ValueError(
+            f"{label}: give when it happens one way: a "
+            "rule (a Recurrence), dates, or every= (a period such as "
+            "'30 days', or a Usage)."
+        )
+    if rule is not None and not isinstance(rule, Recurrence):
+        raise TypeError(
+            f"{label}: rule must be a Recurrence "
+            f"(Recurrence.weekly('Sat'), ...); got {rule!r}."
+        )
+    if dates is not None:
+        if isinstance(dates, (str, date)) or not hasattr(dates, "__iter__"):
+            raise TypeError(
+                f"{label}: dates must be a list of dates; got {dates!r}."
+            )
+        days = sorted({_iso_date(d, f"A date of {name!r}") for d in dates})
+        if not days:
+            raise ValueError(f"{label}: dates must have at least one.")
+        dates = tuple(days)
+    if then_every is not None:
+        if dates is None:
+            raise ValueError(
+                f"{label}: then_every is the gap after "
+                "the last of its dates: give dates= too."
+            )
+        _gap(then_every, f"{label}: then_every")
+    if every is not None:
+        if isinstance(every, Usage):
+            pass
+        elif checks.is_number(every):
+            if not 0.0 < float(every) < math.inf:
+                raise ValueError(
+                    f"{label}: every must be more than 0; got {every!r}."
+                )
+            every = float(every)
+        else:
+            _period_hours(every, f"{label}: every")
+    if also_every is not None:
+        if not isinstance(every, Usage):
+            raise ValueError(
+                f"{label}: also_every is a calendar limit "
+                "on a shut by use (every=Usage(...)), whichever comes "
+                "first."
+            )
+        _period_hours(also_every, f"{label}: also_every")
+    if at is not None:
+        if isinstance(every, Usage):
+            raise ValueError(
+                f"{label}: a shut by use falls when the "
+                "meter gets there, so it takes no clock time (at=)."
+            )
+        at = clock(at, "at")
+    return dates, every, at
+
+
 # ---------------------------------------------------------------- records
 
 
@@ -279,7 +360,7 @@ class Shutdown:
     dates : list of date or str, optional
         Its fixed dates, instead of a rule. A policy uses them as dated
         (never averaged): see
-        [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+        [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
     then_every : str, optional
         With ``dates``: the gap at which the kind recurs after its last
         date (``"4 years"``, ``"18 months"``, ``"6 weeks"``, ``"90
@@ -302,7 +383,7 @@ class Shutdown:
 
     Examples
     --------
-    >>> from repyability import Shutdown
+    >>> from repyability.maintenance._shutdowns import Shutdown
     >>> from repyability.schedule import Recurrence
     >>> Shutdown("weekly stop", Recurrence.weekly("Sat"), replace_cost=3.0,
     ...          duration="8h").describe()
@@ -323,9 +404,6 @@ class Shutdown:
     at: Optional[time] = None
 
     def __post_init__(self):
-        from repyability.schedule import Recurrence, Usage
-        from repyability.schedule._meters import clock
-
         if not isinstance(self.name, str) or not self.name.strip():
             raise TypeError(f"A shut's name must be text; got {self.name!r}.")
         if self.name in (ANYTIME, "failure", "any other day"):
@@ -334,71 +412,19 @@ class Shutdown:
                 "replacement on any other day, or a failure): give the shut "
                 "another name."
             )
-        given = [
-            k
-            for k, v in (
-                ("rule", self.rule),
-                ("dates", self.dates),
-                ("every", self.every),
-            )
-            if v is not None
-        ]
-        if len(given) != 1:
-            raise ValueError(
-                f"Shutdown {self.name!r}: give when it happens one way: a "
-                "rule (a Recurrence), dates, or every= (a period such as "
-                "'30 days', or a Usage)."
-            )
-        if self.rule is not None and not isinstance(self.rule, Recurrence):
-            raise TypeError(
-                f"Shutdown {self.name!r}: rule must be a Recurrence "
-                f"(Recurrence.weekly('Sat'), ...); got {self.rule!r}."
-            )
-        if self.dates is not None:
-            if isinstance(self.dates, (str, date)) or not hasattr(
-                self.dates, "__iter__"
-            ):
-                raise TypeError(
-                    f"Shutdown {self.name!r}: dates must be a list of dates; "
-                    f"got {self.dates!r}."
-                )
-            days = sorted(
-                {_iso_date(d, f"A date of {self.name!r}") for d in self.dates}
-            )
-            if not days:
-                raise ValueError(
-                    f"Shutdown {self.name!r}: dates must have at least one."
-                )
-            object.__setattr__(self, "dates", tuple(days))
-        if self.then_every is not None:
-            if self.dates is None:
-                raise ValueError(
-                    f"Shutdown {self.name!r}: then_every is the gap after "
-                    "the last of its dates: give dates= too."
-                )
-            _gap(self.then_every, f"Shutdown {self.name!r}: then_every")
-        if self.every is not None:
-            if isinstance(self.every, Usage):
-                pass
-            elif checks.is_number(self.every):
-                if not 0.0 < float(self.every) < math.inf:
-                    raise ValueError(
-                        f"Shutdown {self.name!r}: every must be more than 0; "
-                        f"got {self.every!r}."
-                    )
-                object.__setattr__(self, "every", float(self.every))
-            else:
-                _period_hours(self.every, f"Shutdown {self.name!r}: every")
-        if self.also_every is not None:
-            if not isinstance(self.every, Usage):
-                raise ValueError(
-                    f"Shutdown {self.name!r}: also_every is a calendar limit "
-                    "on a shut by use (every=Usage(...)), whichever comes "
-                    "first."
-                )
-            _period_hours(
-                self.also_every, f"Shutdown {self.name!r}: also_every"
-            )
+        dates, every, at = check_when(
+            f"Shutdown {self.name!r}",
+            self.name,
+            rule=self.rule,
+            dates=self.dates,
+            then_every=self.then_every,
+            every=self.every,
+            also_every=self.also_every,
+            at=self.at,
+        )
+        object.__setattr__(self, "dates", dates)
+        object.__setattr__(self, "every", every)
+        object.__setattr__(self, "at", at)
         if not (
             checks.is_number(self.replace_cost)
             and 0.0 <= float(self.replace_cost) < math.inf
@@ -409,13 +435,6 @@ class Shutdown:
             )
         object.__setattr__(self, "replace_cost", float(self.replace_cost))
         object.__setattr__(self, "duration", _duration(self.duration))
-        if self.at is not None:
-            if isinstance(self.every, Usage):
-                raise ValueError(
-                    f"Shutdown {self.name!r}: a shut by use falls when the "
-                    "meter gets there, so it takes no clock time (at=)."
-                )
-            object.__setattr__(self, "at", clock(self.at, "at"))
 
     def __init__(
         self,
@@ -560,7 +579,7 @@ class Shutdowns:
     site's time zone.
 
     The same record gives a part's replacement policy its cheap moments
-    ([`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy])
+    ([`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy])
     and a diagram its outages (``on_diagram``). A failure is not priced
     here: it costs the part's own ``unplanned_cost`` everywhere.
 
@@ -577,7 +596,7 @@ class Shutdowns:
 
     Examples
     --------
-    >>> from repyability import Shutdown, Shutdowns
+    >>> from repyability.maintenance._shutdowns import Shutdown, Shutdowns
     >>> from repyability.schedule import Recurrence
     >>> site = Shutdowns(
     ...     [
@@ -734,31 +753,31 @@ class Shutdowns:
             The part.
         plan : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         method : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         horizon : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         discount : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         now : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         readings : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         unit : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         failure_timing : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         dated_until : optional
             As for
-            [`NonRepairable.optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`NonRepairable.optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
 
         Returns
         -------
@@ -926,7 +945,7 @@ class Shutdowns:
 @dataclass(frozen=True)
 class ShutdownRoute(_ResultMapping):
     """How a policy at a site will be worked out: returned by
-    [`Shutdowns.route`][repyability.Shutdowns.route].
+    [`Opportunities.route`][repyability.Opportunities.route].
 
     Attributes
     ----------
@@ -1803,12 +1822,10 @@ def _decide(
         )
     site = layout.site
     part = layout.part
-    if horizon is not None or discount is not None:
-        if horizon is None:
-            raise ValueError(
-                "discount= goes with horizon=: give the last day the costs "
-                "count to as well."
-            )
+    long_discount = None
+    if horizon is None and discount is not None:
+        long_discount = _long_run_discount(layout, discount, method)
+    elif horizon is not None:
         if discount is None:
             raise ValueError(
                 "horizon= needs discount= too: the yearly rate future costs "
@@ -1910,10 +1927,26 @@ def _decide(
             failure_timing=failure_timing,
             refuse=refuse,
             dated_until=dated_until,
+            discount=long_discount,
         )
         if dated is not None:
             return dated
     if not site.shutdowns:
+        if long_discount is not None:
+            return _Decision(
+                "exact",
+                "No shuts: this is plain age replacement, at the age with "
+                "the least equivalent annual cost at "
+                f"{_percent(long_discount)} a year (Fox, 1966; one "
+                "discounted integral of the part's survival an age).",
+                "closed form",
+                0.01,
+                cycle=None,
+                discount=long_discount,
+                failure_timing=None,
+                why="there are no shuts, so this is plain age replacement",
+                how="by Fox's formula (closed form)",
+            )
         return _Decision(
             "exact",
             "No shuts: this is plain age replacement (exact long-run "
@@ -1952,11 +1985,21 @@ def _decide(
         else:
             patterns[kind.name] = pattern
     if broken:
+        from repyability.maintenance._horizon import ready_site_text
+
+        ready = ready_site_text(layout, long_discount)
         choice = (
             "Choose method='averaged' (assumes shuts fall evenly within their "
-            "usual gaps) or give horizon= and discount= (lowest net present "
-            "cost on the real dates)."
+            f"usual gaps) or give {ready}: the lowest total cost on the real "
+            "dates to then, worked out exactly."
         )
+        if long_discount is not None:
+            choice = (
+                "A discounted long run needs shuts that repeat, so that the "
+                f"same cycle comes round again. Give {ready}: the lowest net "
+                "present cost on the real dates to then, and its equivalent "
+                "annual cost; or leave discount= out for method='averaged'."
+            )
         reason = (
             "These shuts don't repeat on a fixed cycle in the part's clock: "
             f"{_listed(broken)}."
@@ -1965,7 +2008,8 @@ def _decide(
             raise ValueError(
                 f"{reason} So there is no repeating cycle to "
                 f"{'be exact over' if method == 'exact' else 'sample'}: use "
-                "method='averaged' or a horizon (horizon= and discount=)."
+                f"method='averaged', or give {ready}, the lowest cost on the "
+                "real dates to then."
             )
         if refuse:
             raise ValueError(f"{reason} {choice}")
@@ -2019,22 +2063,25 @@ def _decide(
             "failure_timing='half_step' (the default), which gives the same "
             "to about 1e-7."
         )
-    how = (
-        "by quadrature (the part's life integrated across each gap between "
-        "shuts, failures timed at the instant they happen)"
-        if failure_timing == "exact"
-        else "on a grid of steps sized from the life, each failure's "
-        "replacement counted half a step old"
-    )
+    how = how_words(failure_timing)
+    lead = "Exact long-run average"
+    if long_discount is not None:
+        lead = (
+            "Lowest equivalent annual cost at "
+            f"{_percent(long_discount)} a year, discounted over the long run "
+            "(the present value of every replacement from now on, forever, "
+            "by discounted value iteration over the cycle)"
+        )
     if short:
         return _Decision(
             "exact",
-            f"Exact long-run average: {repeat}, so nothing about shut timing "
+            f"{lead}: {repeat}, so nothing about shut timing "
             f"is assumed; worked out {how}.",
             solver,
             seconds,
             patterns=patterns,
             cycle=cycle,
+            discount=long_discount,
             failure_timing=failure_timing,
             why=f"{repeat}, so nothing about shut timing is assumed",
             how=how,
@@ -2046,27 +2093,105 @@ def _decide(
     if method == "exact":
         return _Decision(
             "exact_long_cycle",
-            f"Exact long-run average over a long cycle ({repeat}), worked out "
+            f"{lead} over a long cycle ({repeat}), worked out "
             f"{how}: {_seconds_text(seconds)}.",
             solver,
             seconds,
             patterns=patterns,
             cycle=cycle,
+            discount=long_discount,
             failure_timing=failure_timing,
             why=f"over a long cycle: {repeat}",
             how=how,
         )
+    from repyability.maintenance._horizon import ready_site_text
+
+    pace = layout.pace()
+    ready = ready_site_text(
+        layout, long_discount, None if not pace else cycle / pace, step
+    )
     choice = (
         f"{long_text} Choose method='exact' (the same calculation, "
-        f"{_seconds_text(seconds)}) or method='sampling' (an estimate with "
-        "its "
-        "standard error, as many samples as you ask for)."
+        f"{_seconds_text(seconds)}), method='sampling' (an estimate with "
+        "its standard error, as many samples as you ask for), or give "
+        f"{ready}: the lowest total cost on the real dates to then."
     )
+    if long_discount is not None:
+        choice = (
+            f"{long_text} Discounted, choose method='exact' (the same "
+            f"calculation, {_seconds_text(seconds)}), or give {ready}: the "
+            "lowest net present cost on the real dates to then; sampling "
+            "gives a long-run average, not a present value."
+        )
     if refuse:
         raise ValueError(choice)
     return _Decision(
-        "long_cycle", choice, None, None, patterns=patterns, cycle=cycle
+        "long_cycle",
+        choice,
+        None,
+        None,
+        patterns=patterns,
+        cycle=cycle,
+        discount=long_discount,
     )
+
+
+def how_words(failure_timing) -> str:
+    """How the exact routes work a cycle out, in words."""
+    if failure_timing == "exact":
+        return (
+            "by quadrature (the part's life integrated across each gap "
+            "between shuts, failures timed at the instant they happen)"
+        )
+    return (
+        "on a grid of steps sized from the life, each failure's "
+        "replacement counted half a step old"
+    )
+
+
+def _percent(rate: float) -> str:
+    """A yearly rate in words: ``7%``, ``2.5%``."""
+    return f"{100.0 * rate:.4g}%"
+
+
+def _long_run_discount(layout: _Layout, discount, method) -> Optional[float]:
+    """The yearly discount of a discounted long run (``discount=`` with no
+    horizon), checked: None for 0 (the long-run average). Refused where
+    the long run is not discounted exactly: the averaged and sampled
+    routes (long-run averages), a duty plan (a clock that does not keep a
+    steady pace with the calendar) and a clock with no pace in time."""
+    if not (checks.is_number(discount) and 0.0 <= float(discount) < 10.0):
+        raise ValueError(
+            "discount must be a yearly rate such as 0.07 (7%), at least "
+            f"0; got {discount!r}."
+        )
+    rate = float(discount)
+    if rate == 0.0:
+        return None
+    from repyability.maintenance._horizon import ready_site_text
+
+    if method in ("averaged", "sampling"):
+        raise ValueError(
+            f"method={method!r} gives a long-run average, which is not "
+            "discounted: leave method out (or give method='exact') with "
+            f"discount=, or give {ready_site_text(layout, rate)}: the "
+            "lowest net present cost on the real dates to then."
+        )
+    if layout.plan is not None:
+        raise ValueError(
+            "A discounted long run needs the part's clock to keep a steady "
+            "pace with the calendar, and a duty plan's does not. Give "
+            f"{ready_site_text(layout, rate)}: the lowest net present cost "
+            "on the real dates to then, through the plan, and its "
+            "equivalent annual cost; or leave discount= out."
+        )
+    if layout.pace() is None:
+        raise ValueError(
+            f"The part's clock ({layout.unit}) has no pace in time, so a "
+            "yearly discount is no rate on it: give a duty plan with "
+            "horizon= and discount=, or leave discount= out."
+        )
+    return rate
 
 
 def _exact_step(

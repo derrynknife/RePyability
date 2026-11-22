@@ -877,6 +877,61 @@ class UncertaintyResult(_ResultMapping):
         )
 
 
+@dataclass(repr=False)
+class NPVUncertainty(UncertaintyResult):
+    """The spread of a plan's expected net present value over plausible
+    models of its components: returned by
+    ``RepairableRBD.expected_npv_uncertainty``.
+
+    Each draw gives the uncertain components plausible models (from a
+    fit's parameter covariance, a Bayesian fit's posterior, or the
+    distributions given) and values the plan exactly as ``expected_npv``
+    does. The spread is how unsure the NPV is because the models are
+    estimates, not how a run of the plan varies (``npv_distribution``).
+    ``interval(0.9)`` gives the 90% interval, as for every
+    ``UncertaintyResult``.
+
+    Attributes
+    ----------
+    samples : numpy.ndarray
+        The expected NPV of each draw.
+    nominal : float
+        The expected NPV with every component's own model.
+    n_draws : int
+        The number of draws.
+    band : str or None
+        What the band is: ``"confidence"``, ``"credible"``, ``"given"`` or
+        ``"mixed"`` (see ``UncertaintyResult``).
+    horizon : float
+        The length of time valued, as for ``expected_npv``.
+    discount_rate : float
+        The continuous discount rate per unit time it was valued at.
+    value_rate : float
+        The value earned per unit time while the system works.
+    variance_shares : dict
+        Each uncertain input's share of the NPV's variance by the delta
+        method (the NPV's derivatives in the input's parameters against
+        their covariance; summing to 1), by the input's key; empty with
+        ``shares=False``.
+    delta_variance : float or None
+        The NPV's variance by the delta method, which the shares divide:
+        near ``std ** 2`` where the NPV is close to linear in the
+        parameters over their spread. None with ``shares=False``.
+    held_fixed : list
+        The models every draw keeps as they are, each as ``{"node": ...,
+        "role": ...}`` (a role as ``parameter_sensitivity`` names it;
+        ``"ccf"`` for a common-cause group's model, under its members):
+        their uncertainty is not in the spread.
+    """
+
+    horizon: float = 0.0
+    discount_rate: float = 0.0
+    value_rate: float = 0.0
+    variance_shares: Dict[Hashable, float] = field(default_factory=dict)
+    delta_variance: Optional[float] = None
+    held_fixed: List[Dict[str, Any]] = field(default_factory=list)
+
+
 @dataclass
 class UpDownImportance(_ResultMapping):
     """An importance measure split by system state.
@@ -1252,11 +1307,13 @@ class CostResult(_ResultMapping):
         ``"replace"`` (both charged per failure; for a hidden failure, when
         an inspection finds it), ``"preventive"`` (charged per preventive
         replacement), ``"inspection"`` (charged per inspection),
-        ``"component_downtime"``, ``"system_downtime"`` and ``"setup"`` (a
-        maintenance group's set-up cost, charged once per stop), found as
+        ``"component_downtime"``, ``"system_downtime"``, ``"setup"`` (a
+        maintenance group's set-up cost, charged once per stop),
+        ``"shutdown"`` and ``"crews"`` (the repair crews' salaries,
+        ``crew_cost_rate``, the same in every replication), found as
         ``mean`` is: exact for an exact ``mean``, given the modules'
         histories for a conditional one, and otherwise the simulations' own
-        means. The seven sum to ``mean``, but for a run controlled by a
+        means. They sum to ``mean``, but for a run controlled by a
         twin that is not the system itself (``control_variate=True``),
         whose breakdowns are the simulations' own and sum to
         ``sample_mean``.
@@ -1857,8 +1914,9 @@ class ExpectedCost(_ResultMapping):
         The expected cost of ``"repair"`` and ``"replace"`` (per corrective
         action), ``"preventive"`` (per preventive replacement),
         ``"inspection"`` (per test), ``"component_downtime"``,
-        ``"system_downtime"`` and ``"setup"`` (once per stop of a
-        maintenance group), as in ``CostResult``.
+        ``"system_downtime"``, ``"setup"`` (once per stop of a
+        maintenance group), ``"shutdown"`` and ``"crews"`` (the repair
+        crews' salaries), as in ``CostResult``.
     by_component : dict
         The expected cost attributable to each costed component (its
         repair, replace, preventive, inspection and own downtime cost).
@@ -2115,7 +2173,8 @@ class ExpectedNPV(_ResultMapping):
         The continuous rate per unit time the amounts were discounted at
         (0: not discounted).
     value_rate : float
-        The value earned per unit time while the system works.
+        The value earned per unit time while the system works (NaN with
+        a ``value_schedule``).
     npv : float
         The expected net present value: ``value - cost``.
     value : float
@@ -2125,7 +2184,9 @@ class ExpectedNPV(_ResultMapping):
         acquisition cost (paid at the start).
     eac : float
         The equivalent annual cost: ``cost`` divided by the
-        ``annuity_factor``, per unit of the models' time.
+        ``annuity_factor``, per unit of the models' time: the level
+        annuity at ``discount_rate`` worth the costs, so with real rates a
+        level real annuity.
     undiscounted_npv : float
         The same sum with no discounting.
     undiscounted_value : float
@@ -2136,25 +2197,60 @@ class ExpectedNPV(_ResultMapping):
     cost_by_category : dict
         The present value of the cost in each category (``"repair"``,
         ``"replace"``, ``"preventive"``, ``"inspection"``,
-        ``"component_downtime"``, ``"system_downtime"``, ``"setup"``, and
-        ``"acquisition"``), as positive amounts.
+        ``"component_downtime"``, ``"system_downtime"``, ``"setup"``,
+        ``"shutdown"``, ``"crews"`` and ``"acquisition"``), as positive
+        amounts.
     cost_by_component : dict
         The present value of the cost attributable to each costed
         component, with its acquisition cost.
     period_ends : list
         Where each period of the cash-flow table ends, in the models'
         time: the last is the horizon.
+    salvage : float
+        The present value of the salvage credited at the end (the
+        retirement, or the horizon); 0 with none.
+    undiscounted_salvage : float
+        The salvage, not discounted.
+    retire_at : float or None
+        When the system is retired, before the horizon: nothing is earned
+        or spent after it. None if it runs to the horizon.
+    rate_sensitivity : float or None
+        How the NPV moves with the continuous discount rate, ``d npv /
+        d r``, per unit of the rate per unit time (times a change of
+        rate, the NPV's change), from
+        ``expected_npv(rate_sensitivity=True)``; None otherwise. It is
+        negative where the value earned outweighs the costs, as a higher
+        rate shrinks the later earnings.
+    rate_sensitivity_error : float or None
+        An estimate of the error of ``rate_sensitivity``, from the
+        differences it is worked out from (see ``expected_npv``); None
+        with no ``rate_sensitivity``.
+    rate_basis : str
+        ``"nominal"`` or ``"real"``: what ``discount_rate`` and the
+        growths are in. With ``"real"`` and an ``inflation``, the
+        undiscounted amounts are nominal (grown by it too); the present
+        values are the same either way.
+    inflation : float or None
+        The continuous inflation per unit time real rates were made
+        nominal with; None when not given.
+    escalation : dict
+        Each stream's growth per unit time, as given (a cost category, a
+        component, ``"value"`` or ``"salvage"``): an amount at ``t`` is
+        its price times ``exp(g t)``. Empty with none.
+    value_schedule : ValueSchedule or None
+        The value earned as steps, when given one (``value_rate`` is
+        then NaN); None for a single rate.
     cash_flows : list
         The cash-flow table: one dict per period, category and component
         with something in it, with ``period`` (from 1), ``start``, ``end``,
-        ``category`` (a cost category, or ``"value"``), ``component`` (None
-        for value, the system's downtime and a group's set-up),
-        ``present_value`` and ``undiscounted``, both signed: costs
-        negative, value positive. The ``present_value`` of all rows add up
+        ``category`` (a cost category, ``"value"`` or ``"salvage"``),
+        ``component`` (None for value, the system's salvage, its downtime
+        and a group's set-up),
+        ``present_value`` and ``undiscounted``, both signed: costs negative,
+        value and salvage positive. The ``present_value`` of all rows add up
         to ``npv``. Costs given by period and category are the exact
-        increments of the expected cost; the table is for applying your
-        own tax, depreciation and financial-year conventions outside the
-        package.
+        increments of the expected cost; the table is for applying your own
+        tax, depreciation and financial-year conventions outside the package.
 
     Examples
     --------
@@ -2200,22 +2296,451 @@ class ExpectedNPV(_ResultMapping):
     cost_by_component: Dict[Hashable, float]
     period_ends: List[float]
     cash_flows: List[Dict[str, Any]]
+    salvage: float = 0.0
+    undiscounted_salvage: float = 0.0
+    retire_at: Optional[float] = None
+    rate_sensitivity: Optional[float] = None
+    rate_sensitivity_error: Optional[float] = None
+    rate_basis: str = "nominal"
+    inflation: Optional[float] = None
+    escalation: Dict[Hashable, float] = field(default_factory=dict)
+    value_schedule: Any = None
 
     @property
     def annuity_factor(self) -> float:
-        """What one unit of cost per unit time, steady over the horizon,
-        is worth now: ``(1 - exp(-r H)) / r`` for the ``discount_rate``
-        ``r`` and the ``horizon`` ``H``, and ``H`` with none.
+        """What one unit of cost per unit time, steady over the horizon
+        (to the retirement, with a ``retire_at``), is worth now:
+        ``(1 - exp(-r H)) / r`` for the ``discount_rate`` ``r`` and the
+        ``horizon`` ``H``, and ``H`` with none.
 
         Returns
         -------
         float
             The factor ``eac`` divides the cost by.
         """
+        length = self.horizon if self.retire_at is None else self.retire_at
         if not self.discount_rate:
-            return self.horizon
+            return length
         return float(
-            -np.expm1(-self.discount_rate * self.horizon) / self.discount_rate
+            -np.expm1(-self.discount_rate * length) / self.discount_rate
+        )
+
+
+def _order_statistic(ordered: np.ndarray, p: float) -> float:
+    """The ``p`` quantile of the sorted values ``ordered``: the smallest
+    value with at least a share ``p`` of them at or below it (the
+    ``ceil(p n)``-th, at least the first)."""
+    from repyability.value._risk import quantile
+
+    return quantile(ordered, p)
+
+
+@dataclass
+class NPVDistribution(_ResultMapping):
+    """The net present value of each simulated run of a system over a
+    horizon, and their spread: returned by
+    ``RepairableRBD.npv_distribution``.
+
+    In plain terms: [`ExpectedNPV`][repyability.ExpectedNPV] is the
+    average over every way the failures could fall; this is how far one
+    run, the one you will live through, can fall from it. ``p10`` is the
+    value nine runs in ten beat, ``probability_below_hurdle`` the chance
+    of ending below a value you must reach, and ``cvar`` the average of
+    the worst ``tail`` of the runs: a plan with a slightly lower mean and
+    a much better worst case is often the one to choose.
+
+    Each run's NPV is its value earned while the system was up less every
+    cost it met, each discounted at the time it fell (``exp(-r t)``), the
+    acquisition costs paid at the start. ``mean`` estimates the expected
+    NPV, within ``mean_interval()``; the percentiles and ``cvar`` describe
+    the runs and do not shrink with more of them.
+
+    Attributes
+    ----------
+    horizon : float
+        The length of time valued, in the models' unit.
+    discount_rate : float
+        The continuous rate per unit time the amounts were discounted at.
+    value_rate : float
+        The value earned per unit time while the system works (NaN with
+        a ``value_schedule``).
+    samples : numpy.ndarray
+        Each run's net present value: ``value_samples - cost_samples``,
+        plus ``contract_samples`` with a contract.
+    value_samples : numpy.ndarray
+        Each run's present value earned while the system worked.
+    cost_samples : numpy.ndarray
+        Each run's present value of every cost, the acquisition included.
+    mean : float
+        The runs' mean NPV: the estimate of the expected NPV.
+    value : float
+        The runs' mean present value earned.
+    cost : float
+        The runs' mean present cost.
+    undiscounted_npv : float
+        The runs' mean NPV with no discounting.
+    undiscounted_value : float
+        The runs' mean value earned, undiscounted.
+    undiscounted_cost : float
+        The runs' mean cost, undiscounted, with the acquisition costs.
+    cost_by_category : dict
+        The runs' mean present cost in each category, as for
+        ``ExpectedNPV``.
+    cost_by_component : dict
+        The runs' mean present cost of each costed component, with its
+        acquisition cost.
+    p10 : float
+        The 10th percentile of the runs' NPVs (see ``percentile``).
+    p50 : float
+        Their median, the 50th percentile.
+    p90 : float
+        Their 90th percentile.
+    hurdle : float or None
+        The value the NPV is compared with, if given.
+    probability_below_hurdle : float or None
+        The share of the runs whose NPV is below ``hurdle`` (None without
+        one).
+    tail : float
+        The share of the runs ``cvar`` averages.
+    cvar : float
+        The conditional value at risk: the mean NPV of the worst ``tail``
+        of the runs (the ``ceil(tail n)`` lowest).
+    n_simulations : int
+        How many runs.
+    seed : int
+        The seed of the runs (drawn when none was given), to repeat them.
+    engine : str
+        The engine that simulated them: ``"python"`` or ``"numba"``.
+    priced_at_mean : list
+        The components with a cost given as a distribution: each such
+        cost is charged at its mean, so the spread is that of the events
+        alone.
+    contract : dict or None
+        The ``AvailabilityContract``'s terms (its ``to_dict()``), if one
+        was given.
+    contract_samples : numpy.ndarray or None
+        Each run's present value of the contract's payments, a category
+        of its own: bonuses positive, penalties negative, each paid at
+        its period's end (None without a contract).
+    contract_payoff : float
+        The runs' mean present value of the contract's payments (0
+        without a contract).
+    undiscounted_contract_payoff : float
+        The runs' mean total of the contract's payments, undiscounted.
+    period_ends : list of float or None
+        The ends of the contract's periods.
+    period_availability : numpy.ndarray or None
+        Each run's availability in each of the contract's periods, one
+        row a run: the share of the period the system was up.
+    rate_basis : str
+        ``"nominal"`` or ``"real"``, as for ``ExpectedNPV``.
+    inflation : float or None
+        The continuous inflation per unit time real rates were made
+        nominal with; None when not given.
+    escalation : dict
+        Each stream's growth per unit time, as given (see
+        ``ExpectedNPV``); empty with none.
+    value_schedule : ValueSchedule or None
+        The value earned as steps, when given one (``value_rate`` is
+        then NaN); None for a single rate.
+    salvage : float
+        The present value of the salvage the components' plans credit at
+        the end (their own ``"salvage"``, as a number), the same in every
+        run and in ``samples``; 0 with none.
+    undiscounted_salvage : float
+        That salvage, not discounted.
+    retire_at : float or None
+        When a plan's own ``"retire_at"`` ended the runs before the
+        horizon (``horizon`` is then that time); None otherwise.
+
+    Examples
+    --------
+    A pump earning 10 per hour while it works, failing on average every
+    1000 hours, repaired in 10 at 500 per repair, bought for 20,000,
+    valued over 5 years of 8,760 hours at 8% a year:
+
+    >>> import math
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "p"), ("p", "t")],
+    ...     {
+    ...         "p": {
+    ...             "reliability": surv.Exponential.from_params([1e-3]),
+    ...             "repairability": surv.Exponential.from_params([0.1]),
+    ...             "repair_cost": 500.0,
+    ...             "acquisition_cost": 20000.0,
+    ...         }
+    ...     },
+    ... )
+    >>> r = math.log(1.08) / 8760  # per hour
+    >>> runs = rbd.npv_distribution(
+    ...     5 * 8760.0, discount_rate=r, value_rate=10.0, mc_samples=2000,
+    ...     seed=1, hurdle=320_000,
+    ... )
+    >>> round(runs.mean), round(runs.p10), round(runs.p90)
+    (322045, 317651, 326267)
+    >>> round(runs.probability_below_hurdle, 3), round(runs.cvar)
+    (0.268, 315980)
+    """
+
+    horizon: float
+    discount_rate: float
+    value_rate: float
+    samples: np.ndarray
+    value_samples: np.ndarray
+    cost_samples: np.ndarray
+    mean: float
+    value: float
+    cost: float
+    undiscounted_npv: float
+    undiscounted_value: float
+    undiscounted_cost: float
+    cost_by_category: Dict[str, float]
+    cost_by_component: Dict[Hashable, float]
+    p10: float
+    p50: float
+    p90: float
+    hurdle: Optional[float]
+    probability_below_hurdle: Optional[float]
+    tail: float
+    cvar: float
+    n_simulations: int
+    seed: Any
+    engine: str
+    priced_at_mean: List[Hashable]
+    contract: Optional[Dict[str, Any]] = None
+    contract_samples: Optional[np.ndarray] = None
+    contract_payoff: float = 0.0
+    undiscounted_contract_payoff: float = 0.0
+    period_ends: Optional[List[float]] = None
+    period_availability: Optional[np.ndarray] = None
+    rate_basis: str = "nominal"
+    inflation: Optional[float] = None
+    escalation: Dict[Hashable, float] = field(default_factory=dict)
+    value_schedule: Any = None
+    salvage: float = 0.0
+    undiscounted_salvage: float = 0.0
+    retire_at: Optional[float] = None
+
+    @property
+    def std(self) -> float:
+        """The standard deviation of the runs' NPVs (nan for one run).
+
+        Returns
+        -------
+        float
+            How much one run's NPV varies.
+        """
+        if self.samples.size < 2:
+            return math.nan
+        return float(np.std(self.samples, ddof=1))
+
+    def mean_interval(self, confidence: float = 0.95) -> ConfidenceInterval:
+        """A confidence interval for the expected NPV: ``mean +/- z *
+        std / sqrt(n)``, by the central limit theorem, for the normal
+        quantile ``z`` of ``confidence``. It says how well the runs pin
+        the average down; for the range one run falls in, use
+        ``percentile``.
+
+        Parameters
+        ----------
+        confidence : float, optional
+            The confidence level, strictly between 0 and 1, by default 0.95.
+
+        Returns
+        -------
+        ConfidenceInterval
+            The mean, its bounds, standard error and the number of runs.
+
+        Raises
+        ------
+        ValueError
+            If ``confidence`` is not strictly between 0 and 1.
+        """
+        if not 0.0 < confidence < 1.0:
+            raise ValueError("confidence must be between 0 and 1.")
+        se = montecarlo.standard_error(self.samples, False)
+        z = montecarlo.z_value(confidence)
+        return ConfidenceInterval(
+            estimate=self.mean,
+            lower=self.mean - z * se,
+            upper=self.mean + z * se,
+            confidence=confidence,
+            standard_error=se,
+            n_samples=int(self.samples.size),
+            method="simulated",
+        )
+
+    def percentile(self, q: float) -> float:
+        """The ``q``-th percentile of the runs' NPVs: the lowest run's
+        NPV with at least ``q`` percent of the runs at or below it (an
+        order statistic, the ``ceil(q n / 100)``-th lowest, no
+        interpolation).
+
+        Parameters
+        ----------
+        q : float
+            The percentile, more than 0 and at most 100: ``q`` strictly
+            between 0 and 1 warns, as it is more likely a fraction meant.
+
+        Returns
+        -------
+        float
+            The NPV.
+
+        Raises
+        ------
+        ValueError
+            If ``q`` is not in ``(0, 100]``.
+        """
+        p = self._share(q)
+        return _order_statistic(np.sort(self.samples), p)
+
+    def percentile_interval(
+        self, q: float, confidence: float = 0.95
+    ) -> Tuple[float, float]:
+        """A confidence interval for the ``q``-th percentile of the NPV, by
+        the binomial method (distribution-free): order statistics ``l``
+        and ``u`` such that the percentile lies between them with at
+        least ``confidence``, as the number of runs below it is binomial.
+        A bound the runs are too few to give is ``-inf`` or ``inf``.
+
+        Parameters
+        ----------
+        q : float
+            The percentile, as for ``percentile``.
+        confidence : float, optional
+            The confidence level, strictly between 0 and 1, by default 0.95.
+
+        Returns
+        -------
+        tuple of float
+            The lower and upper bounds.
+
+        Raises
+        ------
+        ValueError
+            If ``q`` or ``confidence`` is out of range.
+        """
+        from scipy.stats import binom
+
+        p = self._share(q)
+        if not 0.0 < confidence < 1.0:
+            raise ValueError("confidence must be between 0 and 1.")
+        ordered = np.sort(self.samples)
+        n = ordered.size
+        alpha = 1.0 - confidence
+        low = int(binom.ppf(alpha / 2.0, n, p))
+        high = int(binom.ppf(1.0 - alpha / 2.0, n, p)) + 1
+        lower = float(ordered[low - 1]) if low >= 1 else -math.inf
+        upper = float(ordered[high - 1]) if high <= n else math.inf
+        return lower, upper
+
+    def probability_below(self, hurdle: float) -> float:
+        """The share of the runs whose NPV is below ``hurdle``.
+
+        Parameters
+        ----------
+        hurdle : float
+            The value to reach.
+
+        Returns
+        -------
+        float
+            The estimated chance of ending below it.
+        """
+        return float(np.mean(self.samples < float(hurdle)))
+
+    @staticmethod
+    def _share(q) -> float:
+        _on_percent_scale(q, "percentile")
+        q = float(q)
+        if not 0.0 < q <= 100.0:
+            raise ValueError(
+                "The percentile must be more than 0 and at most 100; got "
+                f"{q!r}."
+            )
+        return q / 100.0
+
+    def __repr__(self) -> str:
+        # A summary (#235): the runs are in ``samples``.
+        parts = [
+            f"mean={self.mean:.6g}",
+            f"p10={self.p10:.6g}",
+            f"p50={self.p50:.6g}",
+            f"p90={self.p90:.6g}",
+            f"cvar={self.cvar:.6g}",
+            f"tail={self.tail:g}",
+        ]
+        if self.hurdle is not None:
+            parts.append(
+                f"probability_below_hurdle={self.probability_below_hurdle:.4g}"
+            )
+        if self.contract is not None:
+            parts.append(f"contract_payoff={self.contract_payoff:.6g}")
+        parts += [
+            f"n_simulations={self.n_simulations}",
+            f"horizon={self.horizon:g}",
+        ]
+        return f"NPVDistribution({', '.join(parts)})"
+
+
+@dataclass
+class NPVComparison(_ResultMapping):
+    """How much more one plan is worth than another, run by run, on the
+    same random numbers: returned by ``RepairableRBD.compare_npv``.
+
+    In plain terms: both plans are simulated with the same failures and
+    repairs wherever they share a component (the same random numbers),
+    so each run's difference comes from how the plans differ, not from
+    luck. The difference is then known far more precisely than either
+    plan's value: compare ``interval.standard_error`` with
+    ``independent_standard_error``, what two independent runs of the
+    same size would give.
+
+    Attributes
+    ----------
+    differences : numpy.ndarray
+        Each run's NPV of this plan less the other's.
+    mean : float
+        The mean difference: the estimate of the expected one.
+    interval : ConfidenceInterval
+        The mean difference with its standard error and normal
+        confidence interval (not clipped: it may be negative).
+    probability_other_better : float
+        The share of runs in which the other plan's NPV is higher.
+    independent_standard_error : float
+        The standard error the mean difference would have from two
+        independent runs of the same size: the two plans' own standard
+        errors combined.
+    this : NPVDistribution
+        This plan's runs.
+    other : NPVDistribution
+        The other plan's runs.
+    n_simulations : int
+        How many runs of each plan.
+    seed : int
+        The seed both plans' runs were made from.
+    """
+
+    differences: np.ndarray
+    mean: float
+    interval: ConfidenceInterval
+    probability_other_better: float
+    independent_standard_error: float
+    this: NPVDistribution
+    other: NPVDistribution
+    n_simulations: int
+    seed: Any
+
+    def __repr__(self) -> str:
+        # A summary (#235): the runs are in ``differences``.
+        return (
+            f"NPVComparison(mean={self.mean:.6g}, "
+            f"standard_error={self.interval.standard_error:.4g}, "
+            f"probability_other_better={self.probability_other_better:.4g}, "
+            f"n_simulations={self.n_simulations})"
         )
 
 
@@ -2374,6 +2899,36 @@ class TotalCostAllocation(_ResultMapping):
     discount_rate : float
         The continuous discount rate the running costs were discounted at
         (0: undiscounted).
+    objective : str
+        What the design was chosen by: ``"cost"`` (the lowest total
+        cost), ``"npv"`` (the highest net present value) or ``"eac"``
+        (the lowest equivalent annual cost, less the value earned), the
+        last two with a ``value_rate``. Over one horizon ``"npv"`` and
+        ``"eac"`` choose the same design.
+    value_rate : float
+        The value earned per unit time while the system works that the
+        objective counted.
+    value : float or None
+        For ``"npv"`` and ``"eac"``, the present value of what the system
+        earns over the horizon: ``value_rate`` times its long-run
+        availability times the horizon's present value. None for
+        ``"cost"``, as are the four below.
+    running_cost : float or None
+        The present value of the running costs over the horizon, with
+        the cost of the system's downtime: ``total_cost -
+        acquisition_cost``.
+    npv : float or None
+        The net present value: ``value - total_cost``, the split being
+        ``value - acquisition_cost - running_cost``.
+    eac : float or None
+        The equivalent annual cost, less the value earned: the steady
+        amount per unit time over the horizon worth ``-npv`` (``-npv``
+        over the horizon's present value; ``nan`` over a horizon of 0).
+    basis : str or None
+        What the net present value is made of, in words, with what is
+        approximate in it; and, with limited repair crews, that each
+        design's values come from the crews' Markov chain (under any
+        objective).
 
     Examples
     --------
@@ -2411,6 +2966,13 @@ class TotalCostAllocation(_ResultMapping):
     method: str
     trains: Optional[Dict[Hashable, list]] = None
     discount_rate: float = 0.0
+    objective: str = "cost"
+    value_rate: float = 0.0
+    value: Optional[float] = None
+    running_cost: Optional[float] = None
+    npv: Optional[float] = None
+    eac: Optional[float] = None
+    basis: Optional[str] = None
 
 
 @dataclass
@@ -2469,12 +3031,133 @@ class MaintenancePlan(_ResultMapping):
         ``offset_shares``, or else each keeping its share of the interval,
         so that plans compare as they are. ``with_intervals`` takes
         them as they are. None for ``optimal_replacement_intervals``.
+    objective : str
+        What the intervals were chosen to minimise: ``"cost"`` (the
+        long-run cost rate, or with a cost cap the unavailability),
+        ``"eac"`` (the equivalent annual cost at ``discount_rate``, less
+        the value earned) or ``"npv"`` (less the expected net present
+        value over ``horizon``).
+    discount_rate : float
+        The continuous rate per unit time the objective was discounted
+        at (0: not discounted).
+    value_rate : float
+        The value earned per unit time while the system works that the
+        objective counted.
+    horizon : float or None
+        The horizon of ``"npv"``; None otherwise.
+    objective_value : float or None
+        What the objective comes to with those intervals: for ``"eac"``
+        the equivalent annual cost less the value earned, per unit time;
+        for ``"npv"`` the expected net present value. None for
+        ``"cost"``, whose value is ``cost_rate``.
+    basis : str or None
+        For ``"eac"`` and ``"npv"``, what ``objective_value`` is made
+        of, in words, with what is approximate in it.
+    robustness : PlanRobustness or None
+        With ``optimal_replacement_intervals(robust=...)``, how often the
+        choice stays the best across draws of the uncertain models, and
+        what it loses where it does not; None otherwise.
     """
 
     intervals: Dict[Hashable, float]
     cost_rate: float
     availability: float
     offsets: Optional[Dict[Hashable, float]] = None
+    objective: str = "cost"
+    discount_rate: float = 0.0
+    value_rate: float = 0.0
+    horizon: Optional[float] = None
+    objective_value: Optional[float] = None
+    basis: Optional[str] = None
+    robustness: Optional["PlanRobustness"] = None
+
+
+@dataclass
+class PlanRobustness(_ResultMapping):
+    """How robust a choice of intervals is to the uncertainty of the
+    models it was made with: the ``robustness`` of a ``MaintenancePlan``
+    from ``RepairableRBD.optimal_replacement_intervals(robust=...)``.
+
+    Intervals chosen on fitted models are the best for those models. Each
+    draw gives the uncertain components plausible models (as
+    ``mean_availability_uncertainty`` draws them), and the choice is
+    scored again under them, by the plan's own objective, against other
+    plans: by default the ``candidates`` near it (each interval one step
+    either way: the next of ``allowed``, or a quarter longer or shorter
+    without), every candidate under the same draws; or, with
+    ``robust="reoptimise"``, against each draw's own best intervals,
+    chosen again (slower). The ``score`` is what the choice minimises: the
+    cost rate (or with a cost cap the unavailability), the equivalent
+    annual cost less the value earned, or for ``"npv"`` less the expected
+    NPV; a ``regret`` is in its units, how much worse the choice scores
+    than the best plan of the draw.
+
+    Attributes
+    ----------
+    method : str
+        ``"neighbours"`` or ``"reoptimise"``.
+    candidates : list
+        The plans compared, the choice first: each a dict of node to
+        interval. With ``"reoptimise"``, the choice alone.
+    scores : numpy.ndarray
+        Each draw's score of each candidate (a row each draw).
+    meets_target : numpy.ndarray
+        Whether each candidate meets the plan's target
+        (``min_availability`` or ``max_cost_rate``) in each draw: all
+        True with none.
+    regret : numpy.ndarray
+        Each draw's regret: the choice's score less the best score among
+        the plans that meet the target (NaN where none does; negative
+        where the choice misses the target but scores better).
+    share_best : float or None
+        The share of draws in which the choice is the best plan that
+        meets the target. With ``"reoptimise"``, the share in which each
+        draw's own best intervals are the choice: None without
+        ``allowed``, whose continuous search never lands on the same
+        intervals twice.
+    share_best_by_candidate : list
+        For ``"neighbours"``, the share of draws in which each candidate
+        is the best (ties to the earliest); empty with ``"reoptimise"``.
+    share_meets_target : float
+        The share of draws in which the choice meets the target.
+    expected_regret : float
+        The mean regret over the draws that have one.
+    draw_choices : list or None
+        With ``"reoptimise"``, each draw's own best intervals; None
+        otherwise.
+    n_draws : int
+        The number of draws.
+    band : str or None
+        What the draws are (see ``UncertaintyResult``): ``"confidence"``,
+        ``"credible"``, ``"given"`` or ``"mixed"``.
+    held_fixed : list
+        The models every draw keeps as they are, as for
+        ``NPVUncertainty``: their uncertainty is not counted.
+    """
+
+    method: str
+    candidates: List[Dict[Hashable, float]]
+    scores: np.ndarray
+    meets_target: np.ndarray
+    regret: np.ndarray
+    share_best: Optional[float]
+    share_best_by_candidate: List[float]
+    share_meets_target: float
+    expected_regret: float
+    draw_choices: Optional[List[Dict[Hashable, float]]]
+    n_draws: int
+    band: Optional[str]
+    held_fixed: List[Dict[str, Any]]
+
+    def __repr__(self) -> str:
+        best = "None" if self.share_best is None else f"{self.share_best:.3g}"
+        return (
+            f"PlanRobustness(method={self.method!r}, "
+            f"candidates={len(self.candidates)}, share_best={best}, "
+            f"expected_regret={self.expected_regret:.6g}, "
+            f"share_meets_target={self.share_meets_target:.3g}, "
+            f"n_draws={self.n_draws})"
+        )
 
 
 @dataclass
@@ -2867,6 +3550,11 @@ class AvailabilityResult(_ResultMapping):
     uptimes : numpy.ndarray, optional
         The system's up time in each simulation, in order (they sum to
         ``system_uptime``); None in a result built without them.
+    unplanned_downtimes : numpy.ndarray, optional
+        The system's unplanned downtime in each simulation, in the order
+        of ``uptimes`` (see ``system_unplanned_downtime``); None for a
+        diagram that takes no planned outage (all its downtime is
+        unplanned) or a result built without them.
     antithetic : bool
         Whether the simulations ran in antithetic pairs (simulations ``2i``
         and ``2i + 1``; see ``RepairableRBD.availability``), by default
@@ -2900,9 +3588,18 @@ class AvailabilityResult(_ResultMapping):
         availability's): ``delivered_fraction`` is then that exact value.
         None otherwise.
     opportunistic_renewals : dict, optional
-        With maintenance groups (see ``RepairableRBD``): each component's
-        early renewals at another's stop, summed over the simulations.
-        None without groups.
+        With maintenance groups, or shutdowns that renew components
+        opportunistically (see ``RepairableRBD``): each component's early
+        renewals at another's stop or at a shut, summed over the
+        simulations. None without either.
+    outage_jobs : list, optional
+        With shutdowns that renew components opportunistically: for each
+        start of such a shut in the window, in order, a dict of its
+        ``"shutdown"``, its ``"start"``, the ``"mean"`` number of
+        components renewed there per simulation, its ``"standard_error"``
+        and a 95% interval (``"lower"``, ``"upper"``: the mean less and
+        plus 1.96 standard errors, the lower no less than 0). None
+        otherwise.
     control_variate : ControlVariate, optional
         The exact twin the run was controlled by (see
         [`ControlVariate`][repyability.ControlVariate]): by default the
@@ -2994,12 +3691,14 @@ class AvailabilityResult(_ResultMapping):
     demand: Optional[float] = None
     delivered: Optional[np.ndarray] = None
     opportunistic_renewals: Optional[Dict[Hashable, int]] = None
+    outage_jobs: Optional[List[Dict[str, Any]]] = None
     control_variate: Optional[ControlVariate] = None
     conditional: Optional[ConditionalRun] = None
     delivered_control: Optional[ControlVariate] = None
     shutdowns: int = 0
     system_planned_downtime: Optional[float] = None
     system_unplanned_downtime: Optional[float] = None
+    unplanned_downtimes: Optional[np.ndarray] = None
 
     @property
     def mean_capacity(self) -> Optional[float]:
@@ -3948,7 +4647,8 @@ class PlanVsActual(_ResultMapping):
     discount_rate : float
         The continuous discount rate per unit time (0: undiscounted).
     value_rate : float
-        The value earned per unit time while the system works.
+        The value earned per unit time while the system works (NaN with
+        a ``value_schedule``).
     plan_npv : float
         The original plan's expected net present value over the horizon.
     revalued_npv : float
@@ -4008,7 +4708,21 @@ class PlanVsActual(_ResultMapping):
         The original plan over the horizon, from its start.
     rest : ExpectedNPV or None
         The rest valued as of ``now`` (its own clock from 0), with no
-        acquisition cost; None if ``now`` is the horizon.
+        acquisition cost; None if ``now`` is the horizon. With a value
+        schedule or escalation, its own amounts are those from ``now``:
+        ``rest_cash_flows`` are them grown and discounted to the plan's
+        clock.
+    rate_basis : str
+        ``"nominal"`` or ``"real"``, as for ``ExpectedNPV``.
+    inflation : float or None
+        The continuous inflation per unit time real rates were made
+        nominal with; None when not given.
+    escalation : dict
+        Each stream's growth per unit time, as given (see
+        ``ExpectedNPV``); empty with none.
+    value_schedule : ValueSchedule or None
+        The value earned as steps, when given one (``value_rate`` is
+        then NaN); None for a single rate.
     """
 
     now: float
@@ -4038,6 +4752,10 @@ class PlanVsActual(_ResultMapping):
     derived_states: List[Hashable]
     plan: ExpectedNPV
     rest: Optional[ExpectedNPV]
+    rate_basis: str = "nominal"
+    inflation: Optional[float] = None
+    escalation: Dict[Hashable, float] = field(default_factory=dict)
+    value_schedule: Any = None
 
     def __repr__(self) -> str:
         return (
@@ -4132,6 +4850,15 @@ class CrewStates(_ResultMapping):
         (it has crews of its own); 1 for the input and output nodes.
     probabilities : numpy.ndarray
         Each state's long-run probability, adding up to 1.
+    call_out_rate : numpy.ndarray or None
+        With a call-out crew (``call_out``), the rate at which it is
+        called in each state: ``probabilities @ call_out_rate`` is its
+        call-outs per unit time in the long run. Zeros without one (None
+        for a result made without it).
+    call_out_engaged : numpy.ndarray or None
+        1 in the states the call-out crew is engaged in, else 0:
+        ``probabilities @ call_out_engaged`` is the fraction of the time
+        it is engaged.
 
     Examples
     --------
@@ -4146,6 +4873,8 @@ class CrewStates(_ResultMapping):
 
     node_availability: Dict[Hashable, np.ndarray]
     probabilities: np.ndarray
+    call_out_rate: Optional[np.ndarray] = None
+    call_out_engaged: Optional[np.ndarray] = None
 
     def __repr__(self) -> str:
         # A summary (#235): the states' values are in the fields.
@@ -4496,3 +5225,285 @@ class ModelParameters(_ResultMapping):
         out = super().to_dict()
         out["cls"] = getattr(self.cls, "name", str(self.cls))
         return out
+
+
+@dataclass
+class SimulatedSwitchTime(_ResultMapping):
+    """The best time to switch blocks of a system from one way of running
+    them to another, by simulation: returned by
+    [`RepairableRBD.best_switch_time`][repyability.RepairableRBD.best_switch_time].
+
+    In plain terms: the switching blocks run the first way until
+    ``switch_time`` and the second way after it, and the system earns the
+    first value rate per unit of time up before it and the second after.
+    Switching at 0 runs the second way from the start; switching at the
+    horizon never switches. Every candidate time is simulated from the
+    same seed, so the differences between them are much steadier than
+    the NPVs themselves; ``difference_interval`` says how sure the
+    best is better than either end.
+
+    Attributes
+    ----------
+    switch_time : float
+        The scanned switch time with the highest mean NPV, in ``[0,
+        horizon]``.
+    choice : str
+        ``"switch at once"``, ``"never switch"`` or ``"switch"`` (in
+        between).
+    npv : float
+        The mean NPV when switching at ``switch_time``.
+    never_switch_npv : float
+        The mean NPV of running the first way throughout.
+    switch_at_once_npv : float
+        The mean NPV of running the second way throughout.
+    gain : float
+        ``npv`` less the better of the two above (0 when an end is best).
+    samples : numpy.ndarray
+        Each run's NPV switching at ``switch_time``.
+    never_switch_samples : numpy.ndarray
+        Each run's NPV never switching (the same runs' random numbers).
+    switch_at_once_samples : numpy.ndarray
+        Each run's NPV switching at once.
+    times : list of float
+        Every switch time valued, in order: the scan from 0 to the
+        horizon and the finer one around its best.
+    npvs : list of float
+        The mean NPV at each of ``times``, to audit the answer (the NPV
+        need not have one peak).
+    horizon : float
+        The length of time valued.
+    discount_rate : float
+        The continuous discount rate per unit time.
+    value_rates : list of float
+        What the system earns per unit of time up before the switch, and
+        after.
+    n_simulations : int
+        The runs at each switch time.
+    seed : int
+        The seed every switch time's runs share.
+    engine : str
+        The engine that ran them.
+    rate_basis : str
+        ``"nominal"`` or ``"real"``, as for ``ExpectedNPV``.
+    inflation : float or None
+        The continuous inflation per unit time real rates were made
+        nominal with; None when not given.
+    escalation : dict
+        Each stream's growth per unit time, as given (see
+        ``ExpectedNPV``); empty with none.
+    salvage : float
+        The present value of the salvage the components' plans credit at
+        the end (their own ``"salvage"``, as a number), the same for
+        every candidate and in every run's NPV; 0 with none.
+    undiscounted_salvage : float
+        That salvage, not discounted.
+    retire_at : float or None
+        When a plan's own ``"retire_at"`` ended the runs before the
+        horizon (``horizon`` is then that time, and switching at it is
+        never switching); None otherwise.
+    """
+
+    switch_time: float
+    choice: str
+    npv: float
+    never_switch_npv: float
+    switch_at_once_npv: float
+    gain: float
+    samples: np.ndarray
+    never_switch_samples: np.ndarray
+    switch_at_once_samples: np.ndarray
+    times: List[float]
+    npvs: List[float]
+    horizon: float
+    discount_rate: float
+    value_rates: List[float]
+    n_simulations: int
+    seed: Any
+    engine: str
+    rate_basis: str = "nominal"
+    inflation: Optional[float] = None
+    escalation: Dict[Hashable, float] = field(default_factory=dict)
+    salvage: float = 0.0
+    undiscounted_salvage: float = 0.0
+    retire_at: Optional[float] = None
+
+    def difference_interval(
+        self, against: str = "never switch", confidence: float = 0.95
+    ) -> ConfidenceInterval:
+        """A confidence interval for how much switching at
+        ``switch_time`` beats ``against`` on average: the mean of the
+        runs' differences ``+/- z * std / sqrt(n)``, the runs paired by
+        their random numbers. The best time is picked from the same runs,
+        so the interval leans a little in its favour; give more
+        ``mc_samples`` to narrow it.
+
+        Parameters
+        ----------
+        against : str, optional
+            ``"never switch"`` (the default) or ``"switch at once"``.
+        confidence : float, optional
+            The confidence level, strictly between 0 and 1, by default
+            0.95.
+
+        Returns
+        -------
+        ConfidenceInterval
+            The mean difference, its bounds, standard error and the number
+            of runs.
+
+        Raises
+        ------
+        ValueError
+            If ``against`` or ``confidence`` is not as described.
+        """
+        from repyability.utils import checks
+
+        checks.one_of("against", against, ("never switch", "switch at once"))
+        if not 0.0 < confidence < 1.0:
+            raise ValueError("confidence must be between 0 and 1.")
+        other = (
+            self.never_switch_samples
+            if against == "never switch"
+            else self.switch_at_once_samples
+        )
+        difference = self.samples - other
+        estimate = float(difference.mean())
+        se = montecarlo.standard_error(difference, False)
+        z = montecarlo.z_value(confidence)
+        return ConfidenceInterval(
+            estimate=estimate,
+            lower=estimate - z * se,
+            upper=estimate + z * se,
+            confidence=confidence,
+            standard_error=se,
+            n_samples=int(difference.size),
+            method="simulated",
+        )
+
+    def __repr__(self) -> str:
+        # A summary (#235): the runs are in the samples.
+        return (
+            f"SimulatedSwitchTime(switch_time={self.switch_time:.6g}, "
+            f"choice={self.choice!r}, npv={self.npv:.6g}, "
+            f"never_switch_npv={self.never_switch_npv:.6g}, "
+            f"switch_at_once_npv={self.switch_at_once_npv:.6g}, "
+            f"n_simulations={self.n_simulations}, "
+            f"horizon={self.horizon:g})"
+        )
+
+
+@dataclass
+class DowntimeDesign(_ResultMapping):
+    """One design of ``RepairableRBD.least_spend_for_downtime``'s search:
+    its levers, its spend, and its downtime over the horizon.
+
+    Attributes
+    ----------
+    copies : dict
+        The copies of each redundancy node, by node.
+    intervals : dict
+        Each interval node's task interval (None: as given), by node.
+    spend : float
+        What the levers cost beyond the diagram as given: the copies'
+        prices, and the change in the expected preventive cost over the
+        horizon.
+    estimate : float
+        The target downtime's risk measure: its quantile at the level, or
+        its tail mean.
+    bound : float
+        The estimate's upper confidence bound.
+    meets : bool
+        Whether the bound is at or under the limit.
+    planned : dict
+        The planned downtime, whichever is targeted: ``mean_hours`` and
+        ``bad_hours`` (the quantile at the level), and ``mean_cost`` and
+        ``bad_cost`` at the downtime's rate (None without one).
+    unplanned : dict
+        The unplanned downtime, in the same terms.
+    """
+
+    copies: Dict[Hashable, int]
+    intervals: Dict[Hashable, Optional[float]]
+    spend: float
+    estimate: float
+    bound: float
+    meets: bool
+    planned: Dict[str, Optional[float]]
+    unplanned: Dict[str, Optional[float]]
+
+
+@dataclass
+class DowntimeRiskResult(_ResultMapping):
+    """The least spend that keeps a bad run's downtime under a limit:
+    returned by ``RepairableRBD.least_spend_for_downtime``.
+
+    Attributes
+    ----------
+    horizon : float
+        The horizon.
+    limit : float
+        The limit on the target downtime.
+    level : float
+        The level of its risk measure (0.95: "95% sure").
+    objective : str
+        ``"var"`` (the downtime's quantile at ``level``) or ``"cvar"``
+        (the mean of the worst share beyond it).
+    measure : str
+        ``"hours"`` or ``"cost"``.
+    downtime : str
+        ``"all"`` (planned and unplanned) or ``"unplanned"``.
+    confidence : float
+        The level of the upper bound a design must keep under the limit.
+    bound_method : str
+        How the bound is found.
+    budget : float or None
+        The most the levers may cost, if given.
+    met : bool
+        Whether a design meets the limit.
+    design : DowntimeDesign
+        The cheapest design that meets it, or else the design with the
+        lowest bad-run downtime found.
+    frontier : list of DowntimeDesign
+        The search's designs in order: spend rising, the bad-run downtime
+        falling.
+    floor : str or None
+        When no design meets the limit, what stopped the levers:
+        ``"budget"``, ``"caps"``, ``"planned"`` (planned task downtime
+        no lever lowers), ``"lowest"`` (no lever given lowers it) or
+        ``"steps"``.
+    stopped : str or None
+        The same, in words, with the lowest downtime reached.
+    n_simulations : int
+        Each design's runs.
+    seed : int
+        Their seed (every design takes it).
+    engine : str
+        The engine asked for (``"auto"`` lets each design's run choose).
+    """
+
+    horizon: float
+    limit: float
+    level: float
+    objective: str
+    measure: str
+    downtime: str
+    confidence: float
+    bound_method: str
+    budget: Optional[float]
+    met: bool
+    design: DowntimeDesign
+    frontier: List[DowntimeDesign]
+    floor: Optional[str]
+    stopped: Optional[str]
+    n_simulations: int
+    seed: int
+    engine: str
+
+    def __repr__(self) -> str:
+        what = "met" if self.met else f"not met ({self.floor})"
+        return (
+            f"DowntimeRiskResult(limit {self.limit:g} {self.measure} at "
+            f"{self.level:g}: {what}; spend {self.design.spend:.6g}, "
+            f"estimate {self.design.estimate:.6g}, bound "
+            f"{self.design.bound:.6g}; {len(self.frontier)} designs)"
+        )

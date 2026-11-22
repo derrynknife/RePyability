@@ -75,7 +75,14 @@ from ._model_utils import (
 )
 from ._overrides import life_now, unit_life
 from ._sampling import RowSampler, column, inverse_sampler, row_sampler
-from .ccf import VALIDITY, BetaFactor, CCFGroup, as_groups, checked_groups
+from .ccf import (
+    VALIDITY,
+    BetaFactor,
+    CCFGroup,
+    Shocks,
+    as_groups,
+    checked_groups,
+)
 from .ccf import parameters as ccf_parameters
 from .ccf import shock_outcomes, validity_warning
 from .ccf import with_parameters as with_ccf_parameters
@@ -110,6 +117,7 @@ from .results import (
     UncertaintyResult,
 )
 from .routes import EXACT, NUMERICAL, AnalysisRoute, Refused, model_route
+from .shocks import written_shocks
 from .standby_node import StandbyModel
 from .uncertainty import (
     GIVEN,
@@ -696,6 +704,28 @@ class NonRepairableRBD(RBD):
             "ccf_groups": ccf_groups,
             "capacity": dict(capacity) if capacity else None,
         }
+        # Shocks at a rate of their own are written into the structure,
+        # each cause an exponential component after every member it fails
+        # (``shock_nodes``): from here on the diagram is the one written
+        # out, as if given so, and it is saved as it was given
+        # (``_given_args``).
+        self.shock_groups = [
+            g for g in ccf_groups if isinstance(g.model, Shocks)
+        ]
+        if self.shock_groups:
+            self._given_args = dict(self._init_args)
+            ccf_groups = [
+                g for g in ccf_groups if not isinstance(g.model, Shocks)
+            ]
+            edges, reliabilities = written_shocks(
+                edges, reliabilities, self.shock_groups
+            )
+            self._init_args = {
+                **self._init_args,
+                "edges": [tuple(e) for e in edges],
+                "reliabilities": dict(reliabilities),
+                "ccf_groups": ccf_groups,
+            }
         reliabilities = copy(reliabilities)
         for key, value in reliabilities.items():
             if key == value:
@@ -1096,6 +1126,13 @@ class NonRepairableRBD(RBD):
             _, Q = self._ccf_system_pair(p, q, working, broken)
             with np.errstate(divide="ignore", invalid="ignore"):
                 return {node: shares[node] / Q for node in self.nodes}
+        return self._ccf_measure_at(measure, p, q, working, broken, kind)
+
+    def _ccf_measure_at(
+        self, measure: str, p, q, working, broken, kind: str = "failure"
+    ) -> Dict[Any, Union[float, np.ndarray]]:
+        """``_ccf_measure`` (but Fussell-Vesely) at the nodes' given
+        probabilities of working ``p`` and of failing ``q``."""
         evaluation = self._ccf_evaluation(p, q, working, broken)
         R, Q = (np.atleast_1d(value) for value in evaluation.system())
         out: Dict[Any, Union[float, np.ndarray]] = {}
@@ -1431,17 +1468,49 @@ class NonRepairableRBD(RBD):
             warned.add(index)
             validity_warning(group, largest)
 
-    def _require_no_ccf_for_states(self) -> None:
-        """Raise if the RBD has CCF groups, for the condition-based methods
-        (``sf_given_state``, ``remaining_life``,
-        ``importances_given_state``)."""
-        if self.ccf_groups:
-            raise NotImplementedError(
-                "Condition-based evaluation (sf_given_state / remaining_life "
-                "/ importances_given_state) does not yet account for "
-                "common-cause (CCF) groups; use sf()/ff() for CCF system "
-                "reliability."
-            )
+    def _require_ccf_states(self, state: Optional[dict] = None) -> None:
+        """Raise where the condition-based methods (``sf_given_state``,
+        ``remaining_life``, ``mean_residual_life``,
+        ``importances_given_state``) cannot take the RBD's common-cause
+        groups: a group splitting a probability (which says nothing of a
+        member's age), and, given the validated ``state``, a group whose
+        members are not all in one state. A group splitting the failure
+        rate gives its shared causes a share of the members' hazard, which
+        is one hazard only while the members are the same age."""
+        for group in self.ccf_groups:
+            if group.model.basis != "rate":
+                raise NotImplementedError(
+                    "Condition-based evaluation (sf_given_state / "
+                    "remaining_life / mean_residual_life / "
+                    "importances_given_state) does not take common-cause "
+                    f"group {list(group.members)!r}, which splits a "
+                    "probability of failing: that says nothing of a "
+                    "member's age. For members of one age, split the "
+                    f"failure rate ({group.model._by_rate()!r}); for "
+                    "members of different ages, draw the shared cause as a "
+                    "node in series with them (the guide's 'Common causes "
+                    "with wear-out lives and ages'). sf()/ff() give the "
+                    "reliability from new."
+                )
+            if state is None:
+                continue
+            given = [state.get(member) for member in group.members]
+            if any(one != given[0] for one in given[1:]) or (
+                given[0] is not None and not given[0].alive
+            ):
+                raise NotImplementedError(
+                    "The members of common-cause group "
+                    f"{list(group.members)!r} must be in one state for the "
+                    "condition-based methods: alive, at one age (and of one "
+                    "model and level, if given). The group's shared causes "
+                    "take a share of the members' hazard, which is one "
+                    "hazard only while the members are the same age; the "
+                    "states given differ, or a member has failed. For "
+                    "members of different ages, draw the shared cause as a "
+                    "node in series with them, an exponential shock or a "
+                    "repeated node (the guide's 'Common causes with "
+                    "wear-out lives and ages')."
+                )
 
     def _allocation_groups(self, nodes, options, ways) -> dict:
         """The common-cause group of each costed node in one, for redundancy
@@ -3046,6 +3115,7 @@ class NonRepairableRBD(RBD):
         required: Union[int, Dict[Hashable, int], None] = None,
         strategy: Union[str, Dict[Hashable, str]] = "active",
         switching_probability: Union[float, Dict[Hashable, float]] = 1.0,
+        start_probability: Union[float, Dict[Hashable, float]] = 1.0,
         mixing: bool = True,
         method: str = "exact",
     ) -> RedundancyAllocation:
@@ -3153,8 +3223,17 @@ class NonRepairableRBD(RBD):
         switching_probability : float or dict, optional
             For cold standby, the probability that switching onto a spare
             succeeds, for every cold node (a number) or particular ones (a
-            dict). By default 1.0 (perfect switching). Imperfect switching
-            is supported with one unit required.
+            dict). By default 1.0 (perfect switching). A failed switch
+            ends the arrangement. Imperfect switching is supported with one
+            unit required.
+        start_probability : float or dict, optional
+            For cold standby, the probability that a spare starts once
+            switched in, for every cold node (a number) or particular ones
+            (a dict): a spare that fails to start is skipped, and the next
+            one is tried, as a
+            [`StandbyModel`][repyability.StandbyModel]'s
+            ``start_probability`` (and a standby block's) means. By default
+            1.0. Give it or ``switching_probability``, not both.
         mixing : bool, optional
             For nodes with options: whether their copies may be of
             different types (the default), or must all be of one type.
@@ -3195,7 +3274,8 @@ class NonRepairableRBD(RBD):
             number with several resources; a node nothing limits (see
             ``max_units``); an invalid ``max_units``, ``minimise``,
             ``mixing``, ``required`` (or one above ``max_units``),
-            ``strategy`` or ``switching_probability``; cold standby of a
+            ``strategy``, ``switching_probability`` or
+            ``start_probability`` (or both of the last two); cold standby of a
             fixed probability; ``t`` missing for a time-varying RBD or not a
             single number; a budget that cannot afford the required copies
             of each costed node; a ``target`` outside (0, 1) or not
@@ -3314,6 +3394,7 @@ class NonRepairableRBD(RBD):
             required,
             strategy,
             switching_probability,
+            start_probability,
             mixing,
             method,
         )
@@ -3479,6 +3560,7 @@ class NonRepairableRBD(RBD):
         required,
         strategy,
         switching_probability,
+        start_probability,
         mixing,
         method,
     ) -> SimpleNamespace:
@@ -3531,6 +3613,15 @@ class NonRepairableRBD(RBD):
         switching = self._redundancy_switching(
             nodes, switching_probability, ways, fewest
         )
+        starts = self._redundancy_switching(
+            nodes, start_probability, ways, fewest, "start_probability"
+        )
+        if any(p < 1.0 for p in switching) and any(p < 1.0 for p in starts):
+            raise ValueError(
+                "Give switching_probability (a failed switch ends the "
+                "arrangement) or start_probability (a spare that fails to "
+                "start is skipped, and the next one is tried), not both."
+            )
         grouped = self._allocation_groups(nodes, options, ways)
         # The lifetime (or probability) model of one copy of each kind.
         models = [
@@ -3678,6 +3769,7 @@ class NonRepairableRBD(RBD):
                         units,
                         k=fewest[i],
                         switching_probability=switching[i],
+                        start_probability=starts[i],
                     )
                     if standby.is_simulated:
                         raise NotImplementedError(
@@ -3926,15 +4018,22 @@ class NonRepairableRBD(RBD):
         return [choices[given[node]] for node in nodes]
 
     @staticmethod
-    def _redundancy_switching(nodes, switching_probability, ways, fewest):
+    def _redundancy_switching(
+        nodes,
+        switching_probability,
+        ways,
+        fewest,
+        name: str = "switching_probability",
+    ):
         """The probability that switching onto each costed node's next cold
-        spare succeeds."""
+        spare succeeds (or, as ``name="start_probability"``, that each
+        spare starts once switched in)."""
         cold = [node for node, way in zip(nodes, ways) if "cold" in way]
         if isinstance(switching_probability, dict):
             for node in switching_probability:
                 if node not in cold:
                     raise ValueError(
-                        "switching_probability applies to cold standby, and "
+                        f"{name} applies to cold standby, and "
                         f"node {node!r} is not a cold standby node in costs."
                     )
             given = {
@@ -3943,7 +4042,7 @@ class NonRepairableRBD(RBD):
         else:
             if float(switching_probability) != 1.0 and not cold:
                 raise ValueError(
-                    "switching_probability applies to cold standby, which no "
+                    f"{name} applies to cold standby, which no "
                     "node uses (see strategy)."
                 )
             given = {node: switching_probability for node in nodes}
@@ -3952,10 +4051,12 @@ class NonRepairableRBD(RBD):
             rho = float(given[node])
             if not 0.0 <= rho <= 1.0:
                 raise ValueError(
-                    f"switching_probability for node {node!r} must be in "
+                    f"{name} for node {node!r} must be in "
                     f"[0, 1], got {given[node]!r}."
                 )
-            if rho < 1.0 and "cold" in way and k > 1:
+            if name == "switching_probability" and (
+                rho < 1.0 and "cold" in way and k > 1
+            ):
                 raise ValueError(
                     "Imperfect switching is supported for cold standby with "
                     f"one unit required; node {node!r} requires {k}."
@@ -4194,6 +4295,7 @@ class NonRepairableRBD(RBD):
         required: Union[int, Dict[Hashable, int], None] = None,
         strategy: Union[str, Dict[Hashable, str]] = "active",
         switching_probability: Union[float, Dict[Hashable, float]] = 1.0,
+        start_probability: Union[float, Dict[Hashable, float]] = 1.0,
         mixing: bool = True,
     ) -> List[RedundancyAllocation]:
         """The whole cost-reliability trade-off of redundancy allocation.
@@ -4235,6 +4337,8 @@ class NonRepairableRBD(RBD):
             ``"active"``, ``"cold"`` or ``"choose"``, as for
             ``allocate_redundancy``.
         switching_probability : float or dict, optional
+            For cold standby, as for ``allocate_redundancy``.
+        start_probability : float or dict, optional
             For cold standby, as for ``allocate_redundancy``.
         mixing : bool, optional
             Whether a node's copies may mix types, as for
@@ -4296,6 +4400,7 @@ class NonRepairableRBD(RBD):
             required,
             strategy,
             switching_probability,
+            start_probability,
             mixing,
             "exact",
         )
@@ -5238,7 +5343,7 @@ class NonRepairableRBD(RBD):
         )
         fixed = r.refusal(self._require_time_varying)
         give(
-            ("time_to_reliability", "bx_life"),
+            ("time_to_reliability", "bx_life", "qf"),
             (
                 r.refused(fixed)
                 if fixed
@@ -5376,7 +5481,13 @@ class NonRepairableRBD(RBD):
             if stateless
             else ""
         )
-        states = r.refusal(self._require_no_ccf_for_states)
+        if grouped:
+            note += (
+                " A common-cause group's members are given one state "
+                "(alive, at one age): its causes share the members' "
+                "hazard from that age."
+            )
+        states = r.refusal(self._require_ccf_states)
         give(
             ("sf_given_state", "importances_given_state"),
             (
@@ -7024,6 +7135,61 @@ class NonRepairableRBD(RBD):
             lambda t: float(self.sf(t, **kwargs)), target, upper_bound
         )
 
+    def qf(self, p, **kwargs):
+        """The time by which a share ``p`` of systems have failed: the
+        inverse of [`ff`][repyability.NonRepairableRBD.ff], for each ``p``
+        in [0, 1], so a diagram can be a unit's life.
+
+        Each time is found to near machine precision in both tails: a
+        share up to a half solves ``ff(t) = p`` and a larger one ``sf(t) =
+        1 - p``, each on the logarithms of time and probability, by false
+        position kept to a bracket (the Illinois rule) from a bracket
+        doubled out from the median. A share no more than the chance of
+        having failed at 0 gives 0, and 1 gives ``inf``.
+
+        Parameters
+        ----------
+        p : float or array_like
+            The shares failed, each in [0, 1].
+        **kwargs
+            Keyword arguments of ``sf`` (``working_nodes``,
+            ``broken_nodes``, ``method``).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            A time for each share (a float for a single one).
+
+        Examples
+        --------
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> pair = NonRepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {n: surv.Exponential.from_params([0.01]) for n in "ab"},
+        ... )
+        >>> t = pair.qf(0.25)  # (1 - exp(-0.01 t))**2 = 0.25
+        >>> round(t, 6), round(-100 * math.log(1 - 0.5), 6)
+        (69.314718, 69.314718)
+        """
+        self._require_time_varying()
+        given = np.asarray(p, dtype=float)
+        shares = np.atleast_1d(given).ravel()
+        if not np.all((shares >= 0.0) & (shares <= 1.0)):
+            raise ValueError(
+                "qf takes shares failed in [0, 1] (a probability of "
+                f"failing by the time); got {p!r}."
+            )
+        out = np.empty_like(shares)
+        at_start = float(self.ff(0.0, **kwargs))
+        out[shares <= at_start] = 0.0
+        out[shares == 1.0] = np.inf
+        todo = (shares > at_start) & (shares < 1.0)
+        if np.any(todo):
+            out[todo] = _invert_life(self, shares[todo], kwargs)
+        return float(out[0]) if given.ndim == 0 else out.reshape(given.shape)
+
     def _invert_reliability(
         self,
         sf_func,
@@ -7160,8 +7326,8 @@ class NonRepairableRBD(RBD):
         of its own model if its state gives one; one at a measured level, the
         first passage from it (see ``_overrides.life_now``).
         """
-        self._require_no_ccf_for_states()
         state = self._validate_state(state)
+        self._require_ccf_states(state)
         node_probabilities: Dict[Any, ArrayLike] = {}
         for node_name, model in self.reliabilities.items():
             node_state = state.get(node_name)
@@ -7242,7 +7408,10 @@ class NonRepairableRBD(RBD):
             node), or a node whose model is a standby, load-sharing or
             repeated node or a nested RBD.
         NotImplementedError
-            If the RBD has common-cause (CCF) groups.
+            If the RBD has a common-cause (CCF) group that splits a
+            probability, or one whose members are not given one state
+            (alive, at one age): a group splitting the failure rate is
+            taken at its members' common age.
 
         Notes
         -----
@@ -7272,6 +7441,12 @@ class NonRepairableRBD(RBD):
         if state is None:
             state = {}
         node_probabilities = self._state_node_probabilities(x, state)
+        if self.ccf_groups:
+            # Each cause's share of the members' cumulative hazard from
+            # their age on: the split at the conditional probabilities.
+            return self._ccf_system_probability(
+                node_probabilities, set(), set(), method
+            )
         return self.system_probability(node_probabilities, method=method)
 
     def remaining_life(
@@ -7396,7 +7571,8 @@ class NonRepairableRBD(RBD):
             If the RBD is fixed-probability (its reliability does not
             change with time), or as for ``sf_given_state``.
         NotImplementedError
-            As for ``sf_given_state`` (common-cause groups).
+            As for ``sf_given_state`` (common-cause groups it cannot
+            take).
 
         Examples
         --------
@@ -7416,7 +7592,7 @@ class NonRepairableRBD(RBD):
         """
         if state is None:
             state = {}
-        self._require_no_ccf_for_states()
+        self._require_ccf_states()
         self._require_lifetimes()
         # Each model's knots, moved back by its age where it has one.
         knots, kinks = [np.empty(0)], [np.empty(0)]
@@ -7505,7 +7681,8 @@ class NonRepairableRBD(RBD):
             invalid (as for ``sf_given_state``), or ``kind`` is neither
             ``"failure"`` nor ``"success"``.
         NotImplementedError
-            If the RBD has common-cause (CCF) groups.
+            As for ``sf_given_state`` (common-cause groups it cannot
+            take).
 
         Examples
         --------
@@ -7536,8 +7713,25 @@ class NonRepairableRBD(RBD):
         scalar_in = np.ndim(x) == 0
         x_arr = np.atleast_1d(np.asarray(x, dtype=float))
         node_probabilities = self._state_node_probabilities(x_arr, state)
-        birnbaum = super()._birnbaum_importance(node_probabilities)
-        criticality = super()._criticality_importance(node_probabilities, kind)
+        if self.ccf_groups:
+            one_of("kind", kind, ("failure", "success"))
+            failures = {
+                node: 1.0 - np.asarray(value, dtype=float)
+                for node, value in node_probabilities.items()
+            }
+            birnbaum: Dict[Any, Any]
+            criticality: Dict[Any, Any]
+            birnbaum, criticality = (
+                self._ccf_measure_at(
+                    measure, node_probabilities, failures, set(), set(), kind
+                )
+                for measure in ("birnbaum", "criticality")
+            )
+        else:
+            birnbaum = super()._birnbaum_importance(node_probabilities)
+            criticality = super()._criticality_importance(
+                node_probabilities, kind
+            )
 
         def _squeeze(measure):
             return {
@@ -8922,3 +9116,76 @@ class NonRepairableRBD(RBD):
         return life_end(
             lambda t: self._sf_and_ff(t, working_nodes, broken_nodes)[0], knots
         )
+
+
+def _invert_life(rbd, shares: np.ndarray, kwargs: dict) -> np.ndarray:
+    """The times at which ``rbd`` has failed with probability ``shares``
+    (each strictly between its chance at 0 and 1), for ``qf``: on the
+    lower half ``log ff(t) = log p`` and on the upper ``log sf(t) =
+    log(1 - p)``, in ``log t``, by false position with the Illinois rule
+    from a bracket doubled out from the median life."""
+    lower = shares <= 0.5
+    target = np.where(lower, np.log(shares), np.log1p(-shares))
+
+    def gap(log_t: np.ndarray) -> np.ndarray:
+        """Increasing in ``log t``, 0 at the time sought."""
+        t = np.exp(log_t)
+        with np.errstate(divide="ignore"):
+            low = np.log(np.asarray(rbd.ff(t, **kwargs), dtype=float))
+            high = np.log(np.asarray(rbd.sf(t, **kwargs), dtype=float))
+        return np.where(lower, low - target, target - high)
+
+    median = float(rbd.time_to_reliability(0.5, **kwargs))
+    lo = np.full(shares.shape, math.log(median))
+    hi = lo.copy()
+    g_lo, g_hi = gap(lo), gap(hi)
+    for _ in range(2000):
+        down = g_lo > 0.0
+        up = g_hi < 0.0
+        if not (np.any(down) or np.any(up)):
+            break
+        lo[down] -= math.log(2.0)
+        hi[up] += math.log(2.0)
+        g_lo = np.where(down, gap(lo), g_lo)
+        g_hi = np.where(up, gap(hi), g_hi)
+    else:
+        raise ValueError(
+            "qf found no time with the share failed asked for (the "
+            "diagram's reliability does not fall that far)."
+        )
+    # The lower end may still have g_lo == 0 or the upper g_hi == 0.
+    side = np.zeros(shares.shape, dtype=int)
+    tiny = 4.0 * np.finfo(float).eps
+    for _ in range(200):
+        open_ = (
+            (hi - lo > tiny * np.maximum(1.0, np.abs(hi)))
+            & (g_lo != 0.0)
+            & (g_hi != 0.0)
+        )
+        if not np.any(open_):
+            break
+        with np.errstate(invalid="ignore", divide="ignore"):
+            x = hi - g_hi * (hi - lo) / (g_hi - g_lo)
+        x = np.where(np.isfinite(x) & (x > lo) & (x < hi), x, 0.5 * (lo + hi))
+        x = np.where(open_, x, lo)
+        g = gap(x)
+        above = open_ & (g > 0.0)
+        below = open_ & (g < 0.0)
+        hit = open_ & (g == 0.0)
+        hi = np.where(above, x, hi)
+        lo = np.where(below, x, lo)
+        # Illinois: halve the end kept twice running.
+        g_lo = np.where(
+            below, g, np.where(above & (side == 1), g_lo / 2, g_lo)
+        )
+        g_hi = np.where(
+            above, g, np.where(below & (side == -1), g_hi / 2, g_hi)
+        )
+        side = np.where(above, 1, np.where(below, -1, side))
+        lo = np.where(hit, x, lo)
+        hi = np.where(hit, x, hi)
+        g_lo = np.where(hit, 0.0, g_lo)
+    found = np.where(
+        g_lo == 0.0, lo, np.where(g_hi == 0.0, hi, 0.5 * (lo + hi))
+    )
+    return np.exp(found)

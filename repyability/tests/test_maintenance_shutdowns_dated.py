@@ -20,6 +20,13 @@ from repyability import (
 )
 from repyability.schedule import DutyPlan, Recurrence, Shifts
 
+# The 0.14 and 0.19 forms (Calendar, Shutdown, Shutdowns, prices on the
+# opportunities, optimal_calendar_policy) still work, deprecated: these
+# tests keep them unchanged, and test_opportunities.py the new forms.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:.*(is deprecated|puts a price on the opportunities):FutureWarning"
+)
+
 LIFE = surv.Weibull.from_params([1000.0, 2.5])
 NOW = "2026-11-16"
 TURNAROUNDS = ["2027-03-03", "2028-09-09"]

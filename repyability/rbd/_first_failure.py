@@ -34,7 +34,7 @@ from typing import Any, Dict, NoReturn, Optional, Tuple
 import numpy as np
 
 from repyability.rbd import _crew_chain as crew_chain
-from repyability.rbd import _curves, _overrides, _requirements
+from repyability.rbd import _crews, _curves, _overrides, _requirements
 from repyability.rbd._common import _constant_rate, _repair_rate
 from repyability.rbd._mean_lifetime import mean_lifetime, model_knots
 from repyability.rbd.modular import NODE, SERIES, GraphStructure
@@ -145,11 +145,13 @@ def _markov_rates(rbd) -> Tuple[Dict[Any, Tuple[float, float]], int]:
         [rbd._priority.get(node, 0.0) for node in rates],
         [math.isinf(repair) for _, repair in rates.values()],
         crews,
+        _crews._call_when(rbd),
     )
     if count > crew_chain.MAX_STATES:
+        # (With a call-out crew, the states are counted only that far.)
         _refuse(
-            f"Its Markov chain has {count:,} states, more than the "
-            f"{crew_chain.MAX_STATES:,} it is solved for"
+            "Its Markov chain has more than the "
+            f"{crew_chain.MAX_STATES:,} states it is solved for"
         )
     return rates, crews
 
@@ -256,6 +258,7 @@ class _Absorbing:
             [rates[node][1] for node in nodes],
             [rbd._priority.get(node, 0.0) for node in nodes],
             crews,
+            _crews._call_when(rbd),
         )
         structure = rbd._decomposition()
         size = len(chain.probabilities)

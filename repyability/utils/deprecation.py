@@ -1,14 +1,27 @@
 """Deprecated names, arguments and calls.
 
-A deprecation gives one minor release's notice: what 0.19 deprecates goes
-in 0.20 (``NEXT_REMOVAL``). Each warns with a ``FutureWarning``, which
+A deprecation gives one minor release's notice: what 0.20 deprecates goes
+in 0.21 (``NEXT_REMOVAL``), and what 0.21 deprecates in 0.22
+(``REMOVED_IN_0_22``). Each warns with a ``FutureWarning``, which
 Python always shows, as the notice is short: an argument renamed
 (``renamed``; an attribute, ``renamed_attribute``), a result's value
 called that is now a property (``called``), arguments a method ignores
-(``ignored``), or a function that moved to surpyval (``moved``). 0.19
-deprecates nothing.
+(``ignored``), or a function that moved to surpyval (``moved``).
 
-0.18 deprecated nothing, so 0.19 removes nothing.
+0.20 deprecates, for removal in 0.21 (``NEXT_REMOVAL``), a price on an
+opportunity (``price_on_part``: ``Opportunity(name, cost, ...)``,
+``Shutdown(replace_cost=)``, ``Shutdowns(any_day=<price>)``,
+``Calendar(failure=, anytime=)``; the prices come with the part), and
+the names ``Calendar``, ``Shutdown``, ``Shutdowns``,
+``NonRepairable.optimal_calendar_policy`` and ``calendar_policy_cost``
+(``replaced``), for ``Opportunities``, ``Opportunity``,
+``optimal_opportunity_policy`` and ``opportunity_policy_cost``; and a
+choice made for the caller that it should make itself (``refuses_from``:
+``method="auto"`` sampling a calendar too long to work out exactly, which
+0.21 refuses, naming a ready ``horizon=`` and ``method="sampling"``).
+
+0.19 deprecated nothing, so 0.20 removes nothing. 0.18 deprecated
+nothing, so 0.19 removed nothing.
 What 0.17 deprecated went in 0.18: ``repyability.demonstration``'s nine
 functions and ``DemonstrationPlan``, for ``surpyval.test_planning``'s.
 0.16 deprecated nothing, nor did 0.15, so 0.16 and 0.17 removed nothing.
@@ -37,8 +50,11 @@ import numpy as np
 
 from repyability.utils.wrappers import outside_level
 
-#: The release that removes what 0.19 deprecates.
-NEXT_REMOVAL = "0.20"
+#: The release that removes what 0.20 deprecates: one minor release's
+#: notice from the release that first warns of it.
+NEXT_REMOVAL = "0.21"
+#: The release that removes what 0.21 deprecates.
+REMOVED_IN_0_22 = "0.22"
 
 
 def _called_warning(name: str, removal: str) -> None:
@@ -155,6 +171,48 @@ def moved(old: str, new: str, why: str, removal: str = NEXT_REMOVAL) -> None:
     )
 
 
+def replaced(
+    old: str, new: str, why: str, removal: str = NEXT_REMOVAL
+) -> None:
+    """Warn that ``old`` (a class, or a method as ``"Class.method"``) is
+    deprecated for ``new``, for the reason ``why``: removed in
+    ``removal`` (``NEXT_REMOVAL`` by default)."""
+    warnings.warn(
+        f"{old} is deprecated: use {new}, as {why}. {old} will be removed "
+        f"in {removal}.",
+        FutureWarning,
+        stacklevel=outside_level(),
+    )
+
+
+def price_on_part(how: str, removal: str = NEXT_REMOVAL) -> None:
+    """Warn that ``how`` (``"Opportunity(name, cost, ...)"``) puts a price
+    on an opportunity or a collection of them, which the part now
+    carries: deprecated, refused in ``removal`` (``NEXT_REMOVAL`` by
+    default)."""
+    warnings.warn(
+        f"{how} puts a price on the opportunities, which is deprecated: an "
+        "opportunity applies to every part, so the price comes with the "
+        "part (NonRepairable's planned_cost on any day, unplanned_cost at a "
+        "failure, opportunity_cost at an opportunity, and "
+        "opportunity_costs={name: price} for one opportunity). It is used "
+        f"as the part's price for now; {removal} will refuse it.",
+        FutureWarning,
+        stacklevel=outside_level(),
+    )
+
+
+def refuses_from(what: str, instead: str, removal: str = NEXT_REMOVAL):
+    """Warn that ``what`` (a choice the call made for the caller, as it
+    has until now) is deprecated: from ``removal`` (``NEXT_REMOVAL`` by
+    default) the call refuses, and the caller gives ``instead``."""
+    warnings.warn(
+        f"{what} From {removal} this refuses: {instead}",
+        FutureWarning,
+        stacklevel=outside_level(),
+    )
+
+
 def renamed_attribute(
     owner: str, old: str, new: str, why: str, removal: str = NEXT_REMOVAL
 ) -> None:
@@ -182,23 +240,44 @@ _REMOVED = frozenset(REMOVED_NAMES)
 _COUNTS = frozenset({"mc_samples", "max_samples"})
 
 
+#: The names of a simulation's count that a method drawing parameters
+#: (``n_draws``) is given by mistake.
+_SIMULATION_COUNTS = _REMOVED | _COUNTS
+
+
 def refuses_removed_names(function):
     """``function``, refusing the simulation-count names 0.12 removed with
     the names that took their place, where Python would say only that the
     keyword was unexpected; ``function`` itself where it takes
-    neither ``mc_samples`` nor ``max_samples``."""
+    neither ``mc_samples`` nor ``max_samples``.
+
+    A method that takes ``n_draws`` but not ``mc_samples`` (the
+    ``*_uncertainty`` methods, which draw the uncertain models'
+    parameters and work each draw out without simulating it) refuses
+    ``mc_samples`` and the removed names, naming ``n_draws``: the two
+    names count different things, so ``n_draws`` is kept (#105's
+    ``mc_samples`` counts simulations)."""
     if getattr(function, "refuses_removed_names", False):
         return function
     try:
         taken = set(inspect.signature(function).parameters)
     except (TypeError, ValueError):
         return function
-    if not taken & _COUNTS:
+    draws = "n_draws" in taken and not taken & _COUNTS
+    if not taken & _COUNTS and not draws:
         return function
     name = function.__qualname__.removesuffix(".__init__")
 
     @functools.wraps(function)
     def checked(*args, **kwargs):
+        if draws and not _SIMULATION_COUNTS.isdisjoint(kwargs):
+            old = next(k for k in kwargs if k in _SIMULATION_COUNTS)
+            raise TypeError(
+                f"{name}() got an unexpected keyword argument {old!r}: it "
+                "takes n_draws=, the number of draws of the uncertain "
+                "models' parameters, each draw worked out without "
+                "simulating it (mc_samples counts simulations)."
+            )
         if kwargs and not _REMOVED.isdisjoint(kwargs):
             for old in kwargs:
                 if old in _REMOVED and old not in taken:

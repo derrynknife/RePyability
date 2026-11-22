@@ -1119,11 +1119,31 @@ class Recurrence:
             return
         if self.anchor is not None:
             lo = max(lo, self.anchor)
-            rule = self._rrule(self.anchor)
+            rule = self._rrule(self._counted_from(lo))
         else:
             rule = self._rrule(lo)
         for moment in rule.xafter(_midnight(lo), inc=True):
             yield moment.date()
+
+    def _counted_from(self, lo: date) -> date:
+        """Where the dateutil rule counts from for the dates from ``lo``
+        (on or after the anchor): the anchor moved on by a whole number of
+        the rule's steps, to no later than ``lo``. The dates from ``lo``
+        are the anchor's own, without walking to them from it, which made
+        each far date cost its distance from the anchor."""
+        anchor = self.anchor
+        assert anchor is not None
+        if self.rule == "weekly" or self.unit in ("days", "weeks"):
+            step = self.every_n * (1 if self.unit == "days" else 7)
+            return anchor + timedelta(days=(lo - anchor).days // step * step)
+        yearly = self.rule == "yearly" or self.unit == "years"
+        months = self.every_n * (12 if yearly else 1)
+        first = anchor.year * 12 + anchor.month - 1
+        steps = (lo.year * 12 + lo.month - 1 - first) // months
+        if steps <= 0:
+            return anchor
+        index = first + steps * months
+        return date(index // 12, index % 12 + 1, 1)
 
     def _walk(self, lo: date) -> Iterator[Tuple[date, Optional[date], str]]:
         """Each raw date from ``lo`` on with what became of it: ``(raw,

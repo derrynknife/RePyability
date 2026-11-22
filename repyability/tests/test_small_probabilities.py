@@ -11,6 +11,7 @@ from fractions import Fraction
 import numpy as np
 import pytest
 import surpyval as surv
+from surpyval.univariate.regression import ProportionalOddsFitter
 
 from repyability import (
     BetaFactor,
@@ -241,7 +242,7 @@ def test_a_proportional_odds_node_along_a_schedule():
     rng = np.random.default_rng(0)
     Z = rng.normal(size=(400, 1))
     data = rng.weibull(1.8, size=400) * 80.0 * np.exp(-0.4 * Z[:, 0]) + 1e-3
-    model = surv.ProportionalOddsFitter(surv.Weibull).fit(data, Z=Z)
+    model = ProportionalOddsFitter(surv.Weibull).fit(data, Z=Z)
     x = np.array([1e-6, 1e-3, 1.0, 50.0])
     fixed = RegressionNode(model, covariates=[0.5])
     varying = RegressionNode(

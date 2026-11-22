@@ -13,6 +13,13 @@ import surpyval as surv
 from repyability import Calendar, NonRepairable, Opportunity
 from repyability.maintenance import _replacement
 
+# The 0.14 and 0.19 forms (Calendar, Shutdown, Shutdowns, prices on the
+# opportunities, optimal_calendar_policy) still work, deprecated: these
+# tests keep them unchanged, and test_opportunities.py the new forms.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:.*(is deprecated|puts a price on the opportunities):FutureWarning"
+)
+
 
 def solve(part, calendar, **options):
     """The calendar policy, on a grid of a given step where a check needs
@@ -207,12 +214,15 @@ def test_the_sampled_policy_is_deterministic():
 
 def test_auto_chooses_the_method(nested_exact):
     assert nested_exact.method == "dp" and nested_exact.basis == "exact"
-    # Falling to sampling is said: the cycle is too long, and mc_samples
-    # sets the cost.
-    with pytest.warns(UserWarning, match="mc_samples") as record:
+    # Falling to sampling is said, as a deprecation (0.21 refuses it):
+    # the cycle is too long, mc_samples sets the cost, and the ready
+    # horizon and method='sampling' are named.
+    with pytest.warns(FutureWarning, match="mc_samples") as record:
         sampled = solve(BEARING, COPRIME, step=1.0, mc_samples=2, seed=0)
     assert sampled.method == "sampling"
-    assert f"more than {_replacement.MAX_CYCLE:,}" in str(record[0].message)
+    message = str(record[0].message)
+    assert f"more than {_replacement.MAX_CYCLE:,}" in message
+    assert "horizon=" in message and "method='sampling'" in message
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         asked = solve(

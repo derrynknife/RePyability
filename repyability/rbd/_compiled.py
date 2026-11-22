@@ -132,10 +132,17 @@ def _unsupported_level(
     if rbd._too_meshed() is not None:
         # Its structure is the graph itself (modular.GraphStructure).
         return "a structure too meshed to work out"
+    if rbd._upgrades:
+        # A unit's life changes at the upgrade (the Python loop's
+        # _UpgradedComponent).
+        return "an upgrade"
     if rbd.ccf_groups:
         return "common-cause groups"
     if _crews._crews_limited(rbd) and not numba:
         return "repair crews"
+    if _crews._call_when(rbd):
+        # The Python loop's queue has the call-out crew's rule alone.
+        return "a call-out crew"
     if rbd._standby and not numba:
         return "standby groups"
     if rbd._maintenance:
@@ -143,13 +150,19 @@ def _unsupported_level(
     if rbd._shutdowns and (
         not numba
         or any(
-            shut.duration > 0.0 or shut.cost or not shut.periodic
+            shut.duration > 0.0
+            or shut.cost
+            or not shut.periodic
+            or shut.opportunistic is not None
             for shut in rbd._shutdowns.values()
         )
+        or any(s.shuts is not None for s in rbd._preventive.values())
     ):
         # numba's own loop runs the tasks bound to shuts on a period that
         # take no time and cost nothing (block replacement and tests with
-        # the shut's offset), which are those shuts entirely.
+        # the shut's offset), which are those shuts entirely; not the
+        # renewals a shut makes opportunistically, which the Python loop
+        # makes at its starts, nor a block renewed at several shuts.
         return "shutdowns"
     if rbd._imperfect:
         return "imperfect repair"
@@ -181,8 +194,16 @@ def _unsupported_level(
             continue
         if type(component) is not NonRepairable:
             return f"the {type(component).__name__} of node {name!r}"
-        if scheduled(component) is not None:
-            return f"the covariate schedule of node {name!r}"
+        clocked = scheduled(component)
+        if clocked is not None:
+            # A life on the diagram's clock (the Python loop's
+            # _ScheduledComponent).
+            what = (
+                "covariate schedule"
+                if clocked.lead.endswith("covariate schedule")
+                else "duty plan that changes over time"
+            )
+            return f"the {what} of node {name!r}"
         if not _streamed(prefix + (name,), plan, rbd._standby.get(name)):
             return (
                 f"the models of node {name!r} (their draws cannot be "
@@ -195,11 +216,14 @@ def _unsupported_maintenance(
     rbd, plan: _streams.Plan, prefix: tuple = ()
 ) -> Optional[str]:
     """What in a run's preventive maintenance numba's loop cannot simulate:
-    replacement on condition or on a calendar policy, and a maintenance
+    replacement at the times of a plan (a ``"replace_at"``), on condition
+    or on a calendar policy, and a maintenance
     time whose draws cannot be
     streamed. (A component whose own draws cannot be is refused for that,
     and every drawn cost is streamed.)"""
     for node, schedule in rbd._preventive.items():
+        if schedule.plan is not None:
+            return "replacement at the times of a plan"
         if schedule.policy == "condition":
             return "replacement on condition"
         if schedule.policy == "calendar":

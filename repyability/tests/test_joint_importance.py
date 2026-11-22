@@ -343,16 +343,22 @@ def test_a_repairable_diagram_with_groups():
     assert held[("a", "c")] == 0.0 and held[("a", "b")] == pytest.approx(-1.0)
     with pytest.raises(NotImplementedError, match="common-cause group"):
         shared.joint_importance(broken_nodes=["a"])
-    # With limited repair crews too, the groups refuse as the other
-    # measures do.
+    # With limited repair crews too, their chain takes the group in
+    # (#251): each pair's is Birnbaum's measure of one with the other
+    # held either way, a member held being struck no more.
     crews = RepairableRBD(
         PAIR_THEN_C,
         units,
         ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
         repair_crews=1,
     )
-    with pytest.raises(NotImplementedError, match="repair crews"):
-        crews.joint_importance()
+    pairs = crews.joint_importance()
+    assert pairs[("a", "c")] == pytest.approx(
+        crews.birnbaum_importance(working_nodes=["c"])["a"]
+        - crews.birnbaum_importance(broken_nodes=["c"])["a"],
+        rel=1e-12,
+    )
+    assert pairs[("a", "b")] < 0 < pairs[("a", "c")]
 
 
 def test_a_fault_tree_s_is_its_diagram_s():

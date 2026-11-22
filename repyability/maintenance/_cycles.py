@@ -139,9 +139,29 @@ def _best_interval(
 ) -> Tuple[float, float]:
     """The interval minimising ``g(., K)`` and its cost rate: ``inf`` and the
     rate at the far end of the grid where lengthening it keeps paying."""
+    return _minimise(unit, lambda t: _rate(unit, t, cycles, factor, cp), scale)
+
+
+def _never_replace_rate(unit, t: np.ndarray, factor: float) -> np.ndarray:
+    """``g_inf(T)``: the long-run cost rate of overhauling every ``T`` and
+    never replacing. The age at the start of a period settles where an
+    overhaul takes off what the period added, ``v* = f T / (1 - f)``, so
+    each period then expects ``Lambda(v* + T) - Lambda(v*)`` repairs and
+    costs one overhaul. ``g(T, K)`` tends to it as ``K`` grows."""
+    v = factor * t / (1.0 - factor)
+    repairs = _lambda(unit, v + t) - _lambda(unit, v)
+    return (unit.cr * repairs + unit.co) / t
+
+
+def _minimise(unit, rate, scale: float) -> Tuple[float, float]:
+    """The interval minimising ``rate`` (a function of an array of
+    intervals) by a grid search and a bounded refinement: ``inf`` and the
+    rate at the far end of the grid where lengthening it keeps paying."""
     for _ in range(8):
         grid = scale * np.logspace(-3.0, 3.0, 1201)
-        rates = _rate(unit, grid, cycles, factor, cp)
+        with np.errstate(over="ignore", invalid="ignore"):
+            # A steep intensity (Cox-Lewis's) overflows far out: no plan.
+            rates = np.nan_to_num(rate(grid), nan=math.inf)
         i = int(np.argmin(rates))
         if i == len(grid) - 1:
             big = float(grid[-1])
@@ -158,7 +178,7 @@ def _best_interval(
             continue
 
         def f(x: float) -> float:
-            return float(_rate(unit, np.array([x]), cycles, factor, cp)[0])
+            return float(rate(np.array([x]))[0])
 
         res = minimize_scalar(
             f,
@@ -170,8 +190,32 @@ def _best_interval(
     return float(grid[i]), float(rates[i])
 
 
+def _failure_limit(unit, cp: float, max_failures: int) -> Tuple[int, float]:
+    """The best replace-at-the-``n``-th-failure plan at the replacement
+    cost ``cp``: ``(cr (n - 1) + cp) / E[T_n]``, with ``E[T_n]`` exact for
+    an analytic model. ``(0, inf)`` when ``E[T_n]`` is infinite (an
+    intensity that falls away)."""
+    try:
+        expected = unit._exact_times_to_failures(max_failures)
+    except ValueError:
+        return 0, math.inf
+    n = np.arange(1, len(expected) + 1)
+    rates = (unit.cr * (n - 1) + cp) / expected
+    i = int(np.nanargmin(rates))
+    return int(n[i]), float(rates[i])
+
+
+#: The plans compared, in the order a tie is settled (the first wins).
+PLANS = (
+    "replace only",
+    "overhaul and replace",
+    "overhaul only",
+    "failure limit",
+)
+
+
 def optimal_policy(
-    unit, overhaul_factor, replacement_cost, max_cycles
+    unit, overhaul_factor, replacement_cost, max_cycles, max_failures
 ) -> OverhaulReplacePolicy:
     """See ``Repairable.optimal_overhaul_replace_policy``."""
     unit._require_costs()
@@ -183,18 +227,67 @@ def optimal_policy(
             "max_cycles must be a whole number, 1 or more; got "
             f"{max_cycles!r}."
         )
+    if not (checks.is_whole(max_failures) and int(max_failures) >= 1):
+        raise ValueError(
+            "max_failures must be a whole number, 1 or more; got "
+            f"{max_failures!r}."
+        )
     scale = _scale(unit, cp)
+    interval, rate = _best_interval(unit, 1, factor, cp, scale)
+    if math.isinf(interval):
+        # No wear-out: neither overhauls nor replacements pay; run the
+        # unit to failure, repairing it.
+        return OverhaulReplacePolicy(
+            interval=interval,
+            cycles=1,
+            cost_rate=rate,
+            plan="run to failure",
+            alternatives={"run to failure": {"cost_rate": rate}},
+            saving=0.0,
+        )
+    found = {
+        "replace only": {"interval": interval, "cycles": 1, "cost_rate": rate}
+    }
     best = None
-    for k in range(1, int(max_cycles) + 1):
+    for k in range(2, int(max_cycles) + 1):
         interval, rate = _best_interval(unit, k, factor, cp, scale)
-        if math.isinf(interval):
-            # No wear-out: neither overhauls nor replacements pay.
-            return OverhaulReplacePolicy(
-                interval=interval, cycles=1, cost_rate=rate
-            )
         if best is None or rate < best[2] * (1.0 - 1e-12):
             best = (interval, k, rate)
-    assert best is not None
+    limit_reached = False
+    if best is not None:
+        limit_reached = best[1] == int(max_cycles)
+        found["overhaul and replace"] = {
+            "interval": best[0],
+            "cycles": best[1],
+            "cost_rate": best[2],
+        }
+    interval, rate = _minimise(
+        unit, lambda t: _never_replace_rate(unit, t, factor), scale
+    )
+    found["overhaul only"] = {
+        "interval": interval,
+        "cycles": math.inf,
+        "cost_rate": rate,
+    }
+    count, rate = _failure_limit(unit, cp, int(max_failures))
+    if count:
+        found["failure limit"] = {"failure_count": count, "cost_rate": rate}
+
+    winner = PLANS[0]
+    for plan in PLANS[1:]:
+        if plan in found and found[plan]["cost_rate"] < found[winner][
+            "cost_rate"
+        ] * (1.0 - 1e-12):
+            winner = plan
+    others = [found[plan]["cost_rate"] for plan in found if plan != winner]
+    chosen = found[winner]
     return OverhaulReplacePolicy(
-        interval=best[0], cycles=best[1], cost_rate=best[2]
+        interval=chosen.get("interval", math.inf),
+        cycles=chosen.get("cycles", 1),
+        cost_rate=chosen["cost_rate"],
+        plan=winner,
+        failure_count=count if winner == "failure limit" else None,
+        alternatives=found,
+        saving=min(others) - chosen["cost_rate"] if others else 0.0,
+        cycles_limit_reached=limit_reached,
     )

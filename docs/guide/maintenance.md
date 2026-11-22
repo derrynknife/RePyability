@@ -121,30 +121,42 @@ Age replacement has one planned price at every moment. In a plant, the price
 depends on the date: replacing a bearing in the annual shut costs little, in a
 quarterly shut more, at a weekly stop more again, on any other day more still
 (or it is not allowed), and at a failure most of all.
-[`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]
+[`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy]
 finds the long-run optimal policy over such a calendar
 (opportunity-based age replacement, after Dekker et al.). The state is the
 date and the part's age, and the policy is a **threshold for each date**:
 replace the part if it is at least `a*(t)` old.
 
-Times are numbers in the life model's unit (days here), from 0. Which dates a
-rule gives is [`repyability.schedule`](schedule.md)'s.
+The opportunities ([`Opportunities`][repyability.Opportunities] of
+[`Opportunity`][repyability.Opportunity]) say when; the **prices come with
+the part**, as one record of shuts serves every part: `planned_cost` on any
+other day, `unplanned_cost` at a failure, `opportunity_cost` at an
+opportunity (by default its `planned_cost`, as any other day), and
+`opportunity_costs` for particular ones, by name or by the `Opportunity`
+itself. Here, times are numbers in the life model's unit (days), from 0;
+the same works on real dates (below). Which dates a rule gives is
+[`repyability.schedule`](schedule.md)'s.
 
 ```python
 import surpyval as surv
-from repyability import Calendar, NonRepairable, Opportunity
+from repyability import NonRepairable, Opportunities, Opportunity
 
-bearing = NonRepairable(surv.Weibull.from_params([1000.0, 2.5]))
-plant = Calendar(
+plant = Opportunities(
     [
-        Opportunity("weekly", 3.0, period=7.0),
-        Opportunity("quarterly", 2.0, period=91.0),
-        Opportunity("annual", 1.0, period=364.0),
+        Opportunity("weekly", period=7.0),
+        Opportunity("quarterly", period=91.0),
+        Opportunity("annual", period=364.0),
     ],
-    failure=20.0,      # by default the part's unplanned_cost
-    anytime=4.0,       # any other day; None: not allowed; by default its planned_cost
+    any_day=True,      # a planned replacement on any other day (the default)
 )
-policy = bearing.optimal_calendar_policy(plant)
+bearing = NonRepairable(
+    surv.Weibull.from_params([1000.0, 2.5]),
+    planned_cost=4.0,          # any other day
+    unplanned_cost=20.0,       # a failure
+    opportunity_costs={"weekly": 3.0, "quarterly": 2.0, "annual": 1.0},
+)
+policy = bearing.optimal_opportunity_policy(plant)
+policy.prices.price("annual"), policy.prices.row("annual").source   # -> (1.0, 'override')
 
 policy.cost_rate             # -> 0.006943   a day (2.53 a year)
 policy.replacement_rates     # a day; a year:  annual 0.962, failure 0.078,
@@ -159,8 +171,15 @@ policy.next_replacement(age=60.0, now=364.0)
 # -> PlannedReplacement(time=728.0, kind='annual', price=1.0)
 ```
 
-An [`Opportunity`][repyability.Opportunity] repeats every `period` from its
-`offset`, or falls on given `dates`.
+An [`Opportunity`][repyability.Opportunity] in model time repeats every
+`period` from its `offset`, or falls on given `dates`. The policy's
+`prices` ([`OpportunityPrices`][repyability.OpportunityPrices]) list the
+price each opportunity was given and where it came from (an override, the
+part's `opportunity_cost`, or its `planned_cost`), and any opportunity not
+used: one shorter than the part's `job_duration` ("the 6 h job doesn't fit
+in the 4 h stop"), or, with `where=`, one that does not take that label
+down. (`Calendar`, with the prices on the opportunities, is deprecated; it
+still works, and gives the same numbers.)
 
 - **What the policy does, and costs.** `replacement_rates` and `cost_rates`
   give, by kind, the replacements and the cost a unit of time in the long
@@ -184,7 +203,7 @@ An [`Opportunity`][repyability.Opportunity] repeats every `period` from its
 
 The chart is drawn by `scripts/calendar_policy_chart.py`. The quarterly and
 annual thresholds, with what the simple policies cost over ten years of the
-plant ([`calendar_policy_cost`][repyability.NonRepairable.calendar_policy_cost]
+plant ([`opportunity_policy_cost`][repyability.NonRepairable.opportunity_policy_cost]
 prices a rule given as the age from which each kind of replacement replaces):
 
 | Policy | Rule | Cost over 10 years |
@@ -214,8 +233,10 @@ prices a rule given as the age from which each kind of replacement replaces):
   over `mc_samples` sampled times of the cycle of a window's rate, each window
   an exact solve, with its standard error (`cost_rate_se`); the threshold at a
   time is a solve over a window from it, deterministic. Each window takes a
-  second or more, so `mc_samples` (64 by default) sets the cost, and
-  `"auto"` warns when it falls to sampling. A sampled policy's rates by kind
+  second or more, so `mc_samples` (64 by default) sets the cost.
+  `"auto"` still falls to sampling there, with a `FutureWarning`: from
+  0.21 it refuses, naming a ready `horizon=` (the lowest total cost to
+  then, worked out exactly) and `method="sampling"`. A sampled policy's rates by kind
   (`replacement_rates`, `cost_rates`) and the schedule's chances are
   estimates from a new unit run in, with no standard error: only the cost
   rate has one, and the rates by kind move with the seed (by some 10% at
@@ -250,16 +271,16 @@ it is followed as worked out, in a maintenance group too, whose stops are
 then chances to renew the part that the policy did not plan for: it is not
 re-optimised for them.
 
-## Shutdown policies on real dates (`Shutdowns`)
+## Shutdown policies on real dates
 
 A site keeps its shuts as rules on dates ("every Saturday", "the first
 Tuesday of November"), fixed dates (turnarounds), plain periods or a use
-("every 15,000 km"). [`Shutdowns`][repyability.Shutdowns] holds them as **one record**:
-each [`Shutdown`][repyability.Shutdown] with what replacing a part then
-costs (and how long it lasts, for diagrams), the price of a planned
-replacement on any other day (or none), and the site's time zone. A failure
-always costs the part's own `unplanned_cost`. Given a site,
-[`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]
+("every 15,000 km"). [`Opportunities`][repyability.Opportunities] holds them as **one record**:
+each [`Opportunity`][repyability.Opportunity] with when it happens, how long
+it lasts and what it takes down, whether a planned replacement may be made
+on any other day, and the site's time zone. Each part brings its prices, as
+in model time. Given opportunities on real dates,
+[`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy]
 returns a [`ShutdownPolicy`][repyability.ShutdownPolicy] with the answer on
 the real dates and how it was worked out, by one of the routes it always
 names:
@@ -269,7 +290,7 @@ names:
 | **exact** | The shuts repeat in the part's own clock on a short cycle (about a minute's work or less) | nothing | "Exact long-run average: $X a year." |
 | **long cycle** | They repeat, but only after a long cycle | `method="exact"` (slow, said beforehand) or `"sampling"` (with its ±) | "Estimated long-run average: $X a year ± $Y" |
 | **averaged** | They don't repeat (rules by month or year, a use on another meter) | `method="averaged"` | "Long-run average, assuming shuts fall evenly within their usual gaps (...)" |
-| **horizon** | Any site | `horizon=` and `discount=` (0 for the plain total) | "Lowest net present cost to ... at 7% a year: $X. Decisions from about ... depend on where the horizon ends." |
+| **horizon** | Any site; never refused | `horizon=` and `discount=` (0 for the plain total) | "Lowest net present cost to ... at 7% a year: $X (an equivalent annual cost of $Y a year). Decisions from about ... depend on where the horizon ends." |
 | **dated then long run** | Some shuts are on fixed dates (or you give `dated_until=`) | nothing more, or what the recurring shuts' long run needs (above) | "Dated window to 9 Sep 2028, then the long-run average: $X a year. ..." |
 
 **Fixed dates are never averaged.** Without a horizon, a site with fixed
@@ -291,8 +312,17 @@ the recurring shuts' real dates until the window's decisions no longer
 change.
 
 Nothing is chosen silently: where a choice is needed, the call is refused
-with what to choose, and
-[`Shutdowns.route`][repyability.Shutdowns.route] says beforehand which
+with what to choose, a ready horizon among it, worked out from the
+inputs (with a discount, the day past which costs are discounted to under
+one part in a billion: `horizon='2333-11-16'` at 7% from 16 Nov 2026; with
+none, the full cycle and three of the part's life spans). With `discount=`
+and no horizon, the answer is the exact discounted long run wherever the
+shuts repeat, and a given rule (`opportunity_policy_cost`, `compare()`)
+is priced the same way; shuts that drift on real dates, a duty plan or a
+long cycle refuse with the ready horizon. In model time the same holds:
+`horizon=` is a number in the calendar's own time, with `discount_rate=`.
+And
+[`Opportunities.route`][repyability.Opportunities.route] says beforehand which
 route, which solver (`"closed form"`, `"grid"`, `"quadrature"` or
 `"sampling"`) and about how long. Routes 1-3 give a cost a year, the horizon
 a net present cost (`measure`), so the two are never compared by accident.
@@ -321,11 +351,14 @@ round(policy.cost_rate, 6)     # -> 0.003462   a day
 plain period (a fixed length of time), so the stops repeat in the part's
 clock and the route is exact:
 
-```python
-from repyability import Shutdown, Shutdowns
+The bearing has no `opportunity_cost`, so a stop is priced as any other
+day, at its `planned_cost` of 1:
 
-site = Shutdowns([Shutdown("monthly stop", every="30 days", replace_cost=1)])
-best = bearing.optimal_calendar_policy(site, unit="days")   # the life's unit
+```python
+from repyability import Opportunities, Opportunity
+
+site = Opportunities([Opportunity("monthly stop", every="30 days")], any_day=False)
+best = bearing.optimal_opportunity_policy(site, unit="days")   # the life's unit
 best.route                     # 'exact'
 best.rule.text                 # 'Replace at a monthly stop if older than 479.1 days; never on any other day (the site allows none).'
 round(best.cost, 3)            # -> 1.265   a year
@@ -340,20 +373,23 @@ dates into its clock:
 ```python
 from repyability.schedule import DutyPlan, Recurrence, Shifts
 
-pump_bearing = NonRepairable(surv.Weibull.from_params([20_000, 2.5]), unplanned_cost=40.0)
-plant = Shutdowns(
+plant = Opportunities(
     [
-        Shutdown("weekly stop", Recurrence.weekly("Sat"), replace_cost=3.0, duration="8h"),
-        Shutdown("quarterly shut", Recurrence.monthly(weekday="Sunday", nth=1, every=3,
-                                                      anchor="2026-12-06"),
-                 replace_cost=2.0, duration="1d"),
-        Shutdown("annual shut", Recurrence.yearly(month="November", weekday="Tuesday", nth=1),
-                 replace_cost=1.0, duration="3d"),
-        Shutdown("turnaround", dates=["2027-03-03", "2028-09-09"], replace_cost=0.5,
-                 duration="14d"),
+        Opportunity("weekly stop", Recurrence.weekly("Sat"), duration="8h"),
+        Opportunity("quarterly shut", Recurrence.monthly(weekday="Sunday", nth=1, every=3,
+                                                         anchor="2026-12-06"),
+                    duration="1d"),
+        Opportunity("annual shut", Recurrence.yearly(month="November", weekday="Tuesday", nth=1),
+                    duration="3d"),
+        Opportunity("turnaround", dates=["2027-03-03", "2028-09-09"], duration="14d"),
     ],
-    any_day=4.0,
     time_zone="Australia/Brisbane",
+)
+pump_bearing = NonRepairable(
+    surv.Weibull.from_params([20_000, 2.5]),
+    planned_cost=4.0, unplanned_cost=40.0,
+    opportunity_costs={"weekly stop": 3.0, "quarterly shut": 2.0,
+                       "annual shut": 1.0, "turnaround": 0.5},
 )
 shifts = DutyPlan(Shifts("Mon-Fri", "06:00", "22:00"), time_zone="Australia/Brisbane")
 plant.route(pump_bearing, plan=shifts, now="2026-11-16", unit="hours").route   # 'horizon_or_averaged'
@@ -367,7 +403,7 @@ gaps (the turnarounds are never averaged):
 
 ```python
 when = dict(plan=shifts, now="2026-11-16", unit="hours", age=3100)
-best = pump_bearing.optimal_calendar_policy(plant, method="averaged", **when)
+best = pump_bearing.optimal_opportunity_policy(plant, method="averaged", **when)
 best.route                         # 'dated_then_long_run'
 best.solver, best.long_run_route   # ('grid', 'averaged')
 round(best.cost, 2)                # -> 1.9   a year, after the window
@@ -385,13 +421,13 @@ turnaround on 3 Mar 2027 if older than 1,544 hours; at the turnaround on
 annual shut if older than 1,949 hours; ...". The long-run figure is the
 recurring shuts' own: the same site without the turnarounds gives $1.90 a
 year too. Were the turnarounds to go on every four years,
-`Shutdown("turnaround", dates=[...], then_every="4 years", ...)` says so,
+`Opportunity("turnaround", dates=[...], then_every="4 years", ...)` says so,
 and the result states "turnarounds after 9 Sep 2028 assumed every 4 years
 (your setting)". A horizon uses every date to its end and needs a
 discount:
 
 ```python
-ten_years = pump_bearing.optimal_calendar_policy(
+ten_years = pump_bearing.optimal_opportunity_policy(
     plant, horizon="2036-11-16", discount=0.07, **when
 )
 ten_years.measure                  # 'net present cost'
@@ -408,16 +444,18 @@ duty: the duty only turns the answers into dates.
 ```python
 from repyability.schedule import Rate, Usage
 
-gearbox = NonRepairable(surv.Weibull.from_params([180_000, 2.2]), unplanned_cost=40_000)
+gearbox = NonRepairable(
+    surv.Weibull.from_params([180_000, 2.2]),
+    planned_cost=14_000, unplanned_cost=40_000, opportunity_cost=9_000,
+)
 truck = DutyPlan(Rate(400, per="day", meter="km"))
-depot = Shutdowns(
-    [Shutdown("service", every=Usage(15_000, "km"), also_every="6 months",
-              replace_cost=9_000, duration="6h")],
-    any_day=14_000,
+depot = Opportunities(
+    [Opportunity("service", every=Usage(15_000, "km"), also_every="6 months",
+                 duration="6h")],
 )
 road = dict(plan=truck, now="2026-11-16", readings={"km": 212_000}, unit="km")
 depot.route(gearbox, **road).route      # 'exact'
-service = gearbox.optimal_calendar_policy(depot, age=28_000, **road)
+service = gearbox.optimal_opportunity_policy(depot, age=28_000, **road)
 service.rule.text                       # 'Replace at a service if older than 89,000 km; on any other day once older than 243,143 km.'
 str(service.next_replacement)           # 'At the service, 17 May 2027, part 101,000 old'
 service.schedule("2027-12-31")[0]       # ('2027-07-31', 'service', 103000.0)   a gearbox fitted today
@@ -435,20 +473,23 @@ flights = DutyPlan(
     per_run={"landings": 1},            # each sector is one landing
     time_zone="Australia/Brisbane",
 )
-base = Shutdowns(
+base = Opportunities(
     [
-        Shutdown("night stop", Recurrence.weekly("Mon-Sun"), at="21:00",
-                 replace_cost=1_200, duration="7h"),
-        Shutdown("A-check", every=Usage(600, "hours"), replace_cost=800, duration="10h"),
-        Shutdown("C-check", every="2 years", replace_cost=300, duration="21d"),
+        Opportunity("night stop", Recurrence.weekly("Mon-Sun"), at="21:00", duration="7h"),
+        Opportunity("A-check", every=Usage(600, "hours"), duration="10h"),
+        Opportunity("C-check", every="2 years", duration="21d"),
     ],
+    any_day=False,
     time_zone="Australia/Brisbane",
 )
-brakes = NonRepairable(surv.Weibull.from_params([2_400, 3.0]), unplanned_cost=25_000)
+brakes = NonRepairable(
+    surv.Weibull.from_params([2_400, 3.0]), unplanned_cost=25_000,
+    opportunity_costs={"night stop": 1_200, "A-check": 800, "C-check": 300},
+)
 fleet = dict(plan=flights, now="2026-11-16", unit="landings",
              readings={"landings": 8_410, "hours": 14_220})
 base.route(brakes, **fleet).route       # 'horizon_or_averaged'
-brakes_policy = brakes.optimal_calendar_policy(base, method="averaged", **fleet)
+brakes_policy = brakes.optimal_opportunity_policy(base, method="averaged", **fleet)
 brakes_policy.rule.text                 # 'Replace at a C-check if older than 124.6 landings; at an A-check if older than 440.5 landings; never at a night stop or on any other day (the site allows none).'
 ```
 
@@ -456,7 +497,7 @@ brakes_policy.rule.text                 # 'Replace at a C-check if older than 12
 plain age replacement, and says so:
 
 ```python
-anyday = bearing.optimal_calendar_policy(Shutdowns([], any_day=1), unit="days")
+anyday = bearing.optimal_opportunity_policy(Opportunities(), unit="days")
 anyday.solver                                    # 'closed form'
 round(anyday.rule.thresholds["any other day"][0], 2)   # -> 493.05
 round(anyday.cost_rate, 6)                       # -> 0.003462
@@ -473,10 +514,46 @@ choice.best                             # 'At the service, 18 Dec 2026'
 [str(o) for o in choice.options][:3]    # ['Now', 'At the service, 18 Dec 2026', 'At the service, 25 Jan 2027']
 ```
 
+**Example 8: one site, two parts, prices from the records.** The
+opportunities are the site's; each part brings its own prices and the time
+its job takes. An opportunity shorter than the job is not used for that
+part, and the policy's `prices` say why.
+[`NonRepairable.opportunity_prices`][repyability.NonRepairable.opportunity_prices]
+works the prices out from what a replacement costs and how long the plant
+is down for it (the downtime's cost is the system's, so it stays off the
+part): at a stop the job fits in, the replacement alone; on any other day,
+that and the downtime; at a failure, the failure's cost and its downtime.
+`apply(part)` gives the part those prices.
+
+```python
+site = Opportunities(
+    [
+        Opportunity("weekly stop", Recurrence.weekly("Sat"), duration="8h"),
+        Opportunity("shift change", Recurrence.weekly("Mon-Fri"), at="14:00", duration="4h"),
+    ],
+    time_zone="Australia/Brisbane",
+)
+prices = NonRepairable.opportunity_prices(
+    site, replacement_cost=1_200, replacement_duration="6h",
+    failure_cost=4_200, failure_duration="18h", downtime_cost=2_500,
+)
+[(r.name, r.price) for r in prices.rows if r.used]
+# -> [('weekly stop', 1200.0), ('any day', 16200.0), ('failure', 49200.0)]
+prices.row("shift change").reason   # "the 6 h job doesn't fit in the 4 h shift change"
+pump = prices.apply(NonRepairable(surv.Weibull.from_params([8_000, 2.0])))
+seal = NonRepairable(surv.Weibull.from_params([3_000, 3.0]), planned_cost=300,
+                     unplanned_cost=2_000, opportunity_cost=150, job_duration="2h")
+for part in (pump, seal):
+    policy = part.optimal_opportunity_policy(site, now="2026-11-16", unit="hours")
+    print(policy.prices.unused, policy.prices.price("weekly stop"))
+# ('shift change',) 1200.0
+# () 150.0
+```
+
 **Simpler rules, a rule's price, its spread, and diagrams.** `compare()`
 prices run to failure, age replacement on any day and every shut of each
 kind by the same route;
-[`calendar_policy_cost`][repyability.NonRepairable.calendar_policy_cost]
+[`opportunity_policy_cost`][repyability.NonRepairable.opportunity_policy_cost]
 with a site prices a rule you give and returns a
 [`RuleCost`][repyability.RuleCost] (cost, measure, route, replacements by
 kind). `cost_distribution(until=, policy=)` and `cost_by_window(dates,
@@ -490,7 +567,7 @@ diagram's day 0, `now`). Change a shut's rule once, and both move.
 ```python
 rules = {c.name: round(c.cost) for c in service.compare()}
 rules["run to failure"], rules["every service"]   # (36660, 89303)   a year
-priced = gearbox.calendar_policy_cost(depot, {"service": 89_000}, **road)
+priced = gearbox.opportunity_policy_cost(depot, {"service": 89_000}, **road)
 priced.measure, round(priced.cost)                 # ('cost per year', 26113)
 ```
 
@@ -546,7 +623,7 @@ near its minimum, so the interval found varies more than the cost rate:
 ```python
 from surpyval.recurrent import GeneralizedRenewal
 
-model = GeneralizedRenewal.fit_from_parameters(
+model = GeneralizedRenewal.from_params(
     [1500, 2.0], q=0.4, kijima="i", dist=surv.Weibull
 )
 compressor = Repairable(model)
@@ -620,7 +697,7 @@ policy.cost_rate                            # -> 0.41626
 
 Real plants often work in two levels. Failures are repaired on the spot, which leaves the unit as bad as it was. Every so often the unit is **overhauled**, which makes it younger but not new. After a few overhauls it is **replaced**, which clears the age the overhauls could not. The questions are how often to overhaul (`interval`) and how many periods to run before replacing (`cycles`).
 
-The overhaul takes off a share of the unit's age: `overhaul_factor` is the share it *keeps*, from 0 (as good as new) up to, not including, 1 (no effect). The unit's failures follow a power-law or other intensity model (an analytic model, such as `CrowAMSAA`), and repairs, overhauls and replacements take no time:
+The overhaul takes off a share of the unit's age: `overhaul_factor` is the share it *keeps*, from 0 (as good as new) up to, not including, 1 (no effect). The optimiser prices four plans, each at its best setting, and returns the cheapest: overhaul and replace after `cycles` periods; overhaul only, never replacing; replace only, with no overhauls; and repair each failure, replacing at a failure count. The unit's failures follow a power-law or other intensity model (an analytic model, such as `CrowAMSAA`), and repairs, overhauls and replacements take no time:
 
 ```python
 from surpyval.recurrent import CrowAMSAA
@@ -634,12 +711,20 @@ pump.overhaul_replace_cost_rate(280.0, 1, 0.6, 20.0)   # -> 0.1183
 pump.overhaul_replace_cost_rate(177.7, 2, 0.6, 20.0)   # -> 0.1172
 
 best = pump.optimal_overhaul_replace_policy(0.6, 20.0, max_cycles=5)
-best.interval, best.cycles   # -> (177.70161320528848, 2)
+best.plan, best.interval, best.cycles   # -> ('overhaul only', 73.79..., inf)
+best.cost_rate, best.saving            # -> 0.1129..., 0.0028...
+best.alternatives["overhaul and replace"]["cost_rate"]   # -> 0.1172...
+
+# An overhaul that takes off only 10% of the age: replacing pays.
+small = pump.optimal_overhaul_replace_policy(0.9, 20.0, max_cycles=5)
+small.plan, small.failure_count        # -> ('failure limit', 13)
 ```
+
+Here an overhaul every 74 that is never followed by a replacement is the cheapest plan, about 3.7% cheaper than overhauling every 178 and replacing every second period. An overhaul that keeps part of the age lets it build up only to a ceiling, `v* = f·T / (1 − f)` at the start of each period (where an overhaul takes off what the period added), so the long-run cost rate of never replacing is `(cr·[Λ(v* + T) − Λ(v*)] + co) / T`; an expensive replacement then rarely pays. When the overhaul does little, replacing does pay, and here replacing at the 13th failure beats replacing on a schedule. `plan` names the winner, `alternatives` holds every plan's cost rate and settings, and `saving` is how much less per unit time the winner costs than the next best.
 
 Behind the numbers: period `j` starts at the age `v` the overhauls have left (`v_0 = 0`, `v_j = f (v_(j-1) + T)` for the share `f` kept), and expects `Λ(v + T) − Λ(v)` failures, `Λ` being the model's cumulative intensity. A replacement cycle of `K` periods then costs `cr` times the repairs, plus `(K − 1)` overhauls and one replacement, and lasts `K·T`; the long-run cost rate is that cost over that length. It is exact, with no simulation. With one period (`cycles=1`) it is the periodic replacement of `optimal_overhaul_policy`, at the replacement cost.
 
-Take the result as a comparison of a few policies, not a sharp optimum. The cost rate is flat, here the best of two periods saves about 1% over replacing every 280, and it need not fall steadily with the number of periods: it can have a local minimum at a few periods and a slightly lower value at many (overhaul for ever, never replace). A result equal to `max_cycles` may mean more periods pay, so try a few limits. A unit that does not wear out is never overhauled (`interval` is `inf`, `cycles` is 1). The result is an [`OverhaulReplacePolicy`][repyability.OverhaulReplacePolicy]. It needs an analytic (`cif`) model: a simulation-backed imperfect-repair model counts failures from new only and is refused.
+Take the result as a comparison of a few policies, not a sharp optimum: the cost rates are flat near their minima. The overhaul-and-replace rate need not fall steadily with the number of periods; `cycles_limit_reached` says its best used `max_cycles`, so more periods might pay (they tend towards overhauling only, which is priced anyway). The failure limit searches up to `max_failures` (default 30). A unit that does not wear out is run to failure (`plan` is `"run to failure"`, `interval` is `inf`, `cycles` is 1). The result is an [`OverhaulReplacePolicy`][repyability.OverhaulReplacePolicy]. It needs an analytic (`cif`) model: a simulation-backed imperfect-repair model counts failures from new only and is refused.
 
 ## Repair again or replace? A fleet with lemons (`RepairOrReplace`)
 
@@ -887,18 +972,20 @@ counts are worked out as for one window from now. Under block replacement
 each window's planned replacements are known.
 
 **Under a calendar policy.** Both take `calendar=`, the `CalendarPolicy`
-of [`optimal_calendar_policy`](#replacement-over-a-calendar-of-shuts-nonrepairable)
+of [`optimal_opportunity_policy`](#replacement-over-a-calendar-of-shuts-nonrepairable)
 worked out for the part, in place of `every` and `resets`: at each
 opportunity the part is replaced if it is at least that time's threshold
 age, at that opportunity's price, and a failure costs the part's
 `unplanned_cost`. The calendar's times are counted from now. Here, UC-7's
-best policy for the bearing, with a shut every 180 days, the next in 21:
+best policy for the bearing, with a shut every 180 days, the next in 21
+(the bearing has no `opportunity_cost`, so a shut costs its
+`planned_cost`, 100):
 
 ```python
-from repyability import Calendar, Opportunity
+from repyability import Opportunities, Opportunity
 
-plant = Calendar([Opportunity("shut", 100.0, period=180.0, offset=21.0)], anytime=None)
-best = bearing.optimal_calendar_policy(plant)
+plant = Opportunities([Opportunity("shut", period=180.0, offset=21.0)], any_day=False)
+best = bearing.optimal_opportunity_policy(plant)
 best.schedule()[0][1:3]                        # -> ('shut', 138.0)
 spend = bearing.cost_distribution(1086.0, calendar=best, age=224.0, budget=1500.0)
 round(spend.mean, 1), [float(c) for c in spend.percentiles]   # -> (1090.0, [600.0, 1000.0, 1600.0])
@@ -953,7 +1040,7 @@ exact, in the part's time unit.
 
 ```python
 from repyability import (
-    NonRepairable, failure_finding, on_condition,
+    NonRepairable, failure_finding, failure_finding_window, on_condition,
     optimal_failure_finding_interval, run_to_failure, scheduled_replacement,
 )
 
@@ -978,6 +1065,31 @@ optimal_failure_finding_interval(valve, target_unavailability=0.001).interval  #
 
 Without a target, `optimal_failure_finding_interval` takes the test, repair
 and consequence costs and the demand rate, and finds the cheapest interval.
+
+Those are long-run numbers for one even interval. `failure_finding_window`
+takes the tests at any times, a device that is not new, and a window: what
+each test finds, how long the device is failed, and what the plan costs,
+with a discount rate if you give one. An empty list of times is a device
+never tested.
+
+```python
+trip = NonRepairable(surv.Exponential.from_params([0.1]))   # per year
+prices = dict(demand_rate=0.5, repair_cost=1500.0, consequence_cost=50_000.0)
+tested = failure_finding_window(trip, [0.5, 1.0, 2.0], 3.0, test_cost=200.0, **prices)
+round(tested.mean_unavailability, 4)   # -> 0.0351
+round(tested.cost, 2)   # -> 3555.15
+never = failure_finding_window(trip, [], 3.0, **prices)
+round(never.cost, 2)   # -> 6904.57
+```
+
+Here a demand that meets the device failed costs the consequence and also
+shows the failure, which is repaired then (`demands_reveal=True`, the
+default). That is why "never tested" has a finite cost. With
+`demands_reveal=False` only a test finds a failure, as `failure_finding`
+has it, and even tests over a long window give its numbers. Where a demand
+shows a failure the answer is numerical, and `precision` says how close.
+For tests on real dates, see
+[Is a test of a hidden failure worth it?](schedule.md#is-a-test-of-a-hidden-failure-worth-it).
 
 **On condition** is for a failure that gives warning: the P-F interval is
 the time from the warning to the failure. Inspect every so often, finding the

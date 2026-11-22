@@ -13,9 +13,21 @@ coming (#348),
     cost(u, price) = price S(u) + failure (1 - S(u)) - g ∫₀ᵘ S,
 
 with ``S(u) = R(a + u) / R(a)``, the chance the part is working ``u`` from
-now (replacing now costs its price). The time the part serves is time a
-new part would otherwise serve, which ``g`` values: this is the relative
-value of the renewal-reward process, a new part taken to be worth the same
+now (replacing now costs its price). With a policy chosen at a continuous
+discount ``r`` (its ``discount_rate``), each choice is discounted at that
+rate and ``g`` is the policy's equivalent annual cost (Fox, 1966): with
+``M(u) = ∫₀ᵘ exp(-r t) S(t) dt``,
+
+    cost(u, price) = price exp(-r u) S(u)
+                     + failure (1 - exp(-r u) S(u) - r M(u)) - g M(u),
+
+the present value of the choice and of the policy after it, less the
+policy's present value from now (``g / r``), as the policy is the same
+whenever the part is replaced. At ``r = 0`` it is the cost above.
+
+The time the part serves is time a new part would otherwise serve,
+which ``g`` values: this is the relative value of the renewal-reward
+process, a new part taken to be worth the same
 whenever it is fitted. With no outages and the age replacement's rate,
 replacing now is the best from the optimal replacement age exactly.
 
@@ -114,7 +126,12 @@ class NextReplacement(_ResultMapping):
     cost_rate : float
         The value of a unit of the part's service, the baseline: the
         long-run cost a unit of time of the policy given, or of the part's
-        [`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy].
+        [`optimal_replacement_policy`][repyability.NonRepairable.optimal_replacement_policy];
+        for a policy chosen at a discount, its equivalent annual cost
+        (``eac``).
+    discount_rate : float
+        The continuous rate a unit of time each choice is discounted at:
+        the policy's ``discount_rate`` (0 for one with none).
     """
 
     age: float
@@ -123,6 +140,7 @@ class NextReplacement(_ResultMapping):
     choices: List[ReplacementChoice]
     replace_from_age: float
     cost_rate: float
+    discount_rate: float = 0.0
 
 
 def _amount(value, name: str) -> float:
@@ -191,11 +209,20 @@ def _beyond(lasting, scale: float) -> float:
 
 
 class _Life:
-    """A part's life, priced: each choice's cost from an age."""
+    """A part's life, priced: each choice's cost from an age, valued at
+    ``rate`` a unit of service and discounted at ``discount`` (0: not)."""
 
-    def __init__(self, sf, scale: float, failed: float, rate: float):
+    def __init__(
+        self,
+        sf,
+        scale: float,
+        failed: float,
+        rate: float,
+        discount: float = 0.0,
+    ):
         self.sf, self.scale = sf, scale
         self.failed, self.rate = failed, rate
+        self.discount = discount
 
     def survival(self, x: float) -> float:
         with np.errstate(invalid="ignore"):
@@ -205,6 +232,8 @@ class _Life:
         """The cost of keeping a part ``age`` old to ``u`` from now, then
         replacing it at ``price``."""
         held = self.survival(age)
+        if self.discount > 0.0:
+            return self._discounted_keep(age, u, price, held)
         lasting = self.survival(age + u) / held
         cost = price * lasting + self.failed * (1.0 - lasting)
         if self.rate > 0.0:
@@ -212,6 +241,24 @@ class _Life:
                 served = quad(self.survival, age, age + u, limit=200)[0]
             cost -= self.rate * served / held
         return cost
+
+    def _discounted_keep(self, age, u, price, held) -> float:
+        """``keep`` at the discount: the chance of reaching ``u``
+        discounted to then, the failures before it discounted to when
+        they fall, and the discounted service ``M``."""
+        r = self.discount
+        if math.isinf(u):
+            lasting = 0.0
+        else:
+            lasting = math.exp(-r * u) * self.survival(age + u) / held
+
+        def served(x):
+            return self.survival(x) * math.exp(-r * (x - age))
+
+        with np.errstate(invalid="ignore"):
+            m = quad(served, age, age + u, limit=200)[0] / held
+        failed = max(1.0 - lasting - r * m, 0.0)
+        return price * lasting + self.failed * failed - self.rate * m
 
     def planned(self, age: float, price: float) -> tuple:
         """The best time from now for a planned replacement of a part
@@ -224,8 +271,16 @@ class _Life:
         times = np.linspace(0.0, later, _GRID)
         with np.errstate(invalid="ignore"):
             lasting = np.ravel(np.asarray(self.sf(age + times), float)) / held
-        costs = price * lasting + self.failed * (1.0 - lasting)
-        costs -= self.rate * cumulative_trapezoid(lasting, times, initial=0.0)
+        if self.discount > 0.0:
+            lasting = lasting * np.exp(-self.discount * times)
+            m = cumulative_trapezoid(lasting, times, initial=0.0)
+            failed = np.maximum(1.0 - lasting - self.discount * m, 0.0)
+            costs = price * lasting + self.failed * failed - self.rate * m
+        else:
+            costs = price * lasting + self.failed * (1.0 - lasting)
+            costs -= self.rate * cumulative_trapezoid(
+                lasting, times, initial=0.0
+            )
         i = int(np.argmin(costs))
         if i == _GRID - 1:
             # Still falling where the part is all but sure to have failed:
@@ -265,10 +320,12 @@ def _break_even(beaten, oldest: float) -> float:
     return high
 
 
-def _baseline(part, policy) -> float:
+def _baseline(part, policy) -> tuple:
     """The long-run cost a unit of time of ``policy`` (a
     ``CalendarPolicy`` or a ``MaintenancePolicy``), or of the part's
-    optimal replacement policy if none is given."""
+    optimal replacement policy if none is given, and the continuous
+    discount rate its choices are discounted at: for a policy chosen at
+    a discount, its equivalent annual cost and its rate (else 0)."""
     from repyability.maintenance import CalendarPolicy, MaintenancePolicy
 
     if policy is None:
@@ -281,7 +338,12 @@ def _baseline(part, policy) -> float:
             "(optimal_calendar_policy) or a MaintenancePolicy "
             f"(optimal_replacement_policy), not {what}; got {policy!r}."
         )
-    return _amount(policy.cost_rate, "the cost rate of policy")
+    discount = float(getattr(policy, "discount_rate", 0.0) or 0.0)
+    if discount > 0.0:
+        return _amount(policy.eac, "the equivalent annual cost of policy"), (
+            discount
+        )
+    return _amount(policy.cost_rate, "the cost rate of policy"), 0.0
 
 
 #: ``planned``'s default: the part's planned cost.
@@ -297,11 +359,13 @@ def optimal_next_replacement(
     policy=None,
     planned=_PART,
     rate=None,
+    discount_rate=0.0,
 ) -> NextReplacement:
     """The work of ``NonRepairable.optimal_next_replacement`` (see
     there). ``planned`` prices a planned replacement on any day (None: no
     such choice) and ``rate`` gives the baseline directly, for a site's
-    shuts on real dates."""
+    shuts on real dates, with ``discount_rate`` the continuous rate its
+    choices are discounted at."""
     from repyability.rbd._model_utils import model_mean
 
     if isinstance(planned, str) or now_cost is None:
@@ -321,9 +385,13 @@ def optimal_next_replacement(
     age = float(age)
     now = part.cp if now_cost is None else _amount(now_cost, "now_cost")
     coming = _coming(scheduled_outages)
-    rate = _baseline(part, policy) if rate is None else _amount(rate, "rate")
+    if rate is None:
+        rate, discount = _baseline(part, policy)
+    else:
+        rate = _amount(rate, "rate")
+        discount = _amount(discount_rate, "discount_rate")
     mean = model_mean(part.reliability)
-    life = _Life(part.reliability_function, mean, part.cu, rate)
+    life = _Life(part.reliability_function, mean, part.cu, rate, discount)
     if not life.survival(age) > 0.0:
         raise ValueError(
             f"The life gives no chance of a unit working at age {age:g}."
@@ -369,4 +437,5 @@ def optimal_next_replacement(
         choices,
         max(evens),
         rate,
+        discount,
     )

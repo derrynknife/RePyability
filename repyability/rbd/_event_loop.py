@@ -41,6 +41,7 @@ from repyability.rbd import (
     _unplanned,
 )
 from repyability.rbd._common import (
+    _crew_salaries,
     _keeps_virtual_age,
     _safe_mean,
 )
@@ -491,11 +492,13 @@ class _ImperfectComponent(_StreamedComponent):
             return
         restoration: Any = self._restoration
         x = t - self.since
-        self.age = (
-            restoration.q * (self.age + x)
-            if restoration.kijima == "kijima2"
-            else self.age + restoration.q * x
-        )
+        if restoration.kijima == "to_age":
+            # To a given virtual age, whatever its age before (#570).
+            self.age = restoration.q
+        elif restoration.kijima == "kijima2":
+            self.age = restoration.q * (self.age + x)
+        else:
+            self.age = self.age + restoration.q * x
         self._fails_next = True
         self.operated = 0.0
         self.tasks += 1
@@ -567,10 +570,82 @@ class _ScheduledComponent(_ImperfectComponent):
         return self._unit.reliability.life_left(self.now, self.age, u)
 
 
+class _UpgradedComponent(_StreamedComponent):
+    """Stands in during a simulation for an upgraded component (a spec's
+    ``"upgrade"``, see ``_spec._Upgrade``): as ``_StreamedComponent``,
+    but each life is a uniform of its ``FAILURE`` stream turned into a
+    time by the life in service when it starts (the time ``now`` the loop
+    sets before each draw, ``_clock``): the component's own before the
+    upgrade's time ``at``, the upgrade's from it. So an upgrade to the
+    same life is a plain replacement at ``at``, draw for draw. The unit
+    up at ``at`` is replaced then by the component's schedule, and one in
+    a repair is back with the new life once it is repaired. Without
+    streams, each life is drawn by its model from numpy's global RNG."""
+
+    __slots__ = ("now", "_at", "_lives")
+
+    def __init__(
+        self,
+        uniforms,
+        repair,
+        lives,
+        at: float,
+        start=None,
+        timed=(None, None),
+    ):
+        # ``timed``: its block replacements' times, a stream and the model.
+        super().__init__(uniforms, repair, timed[0], timed[1], start)
+        self.now = 0.0
+        self._at = at
+        #: The two lives' quantile functions (with streams), or their
+        #: models' draws (without).
+        self._lives = lives
+
+    def next_event(self):
+        if not self._fails_next:
+            return super().next_event()
+        self._fails_next = False
+        life = self._lives[self.now >= self._at]
+        if self._failure is None:
+            return life.draw(), False
+        u = np.array([self._failure.draw()])
+        return float(np.asarray(life(u), dtype=float)[0]), False
+
+
+def _upgraded(rbd, node, run=None, path: tuple = ()) -> _UpgradedComponent:
+    """The stand-in of upgraded component ``node`` (see
+    ``_UpgradedComponent``): its draws from its streams in ``run``, at
+    ``path``, where it has them, else from its models and numpy's global
+    RNG."""
+    component, upgrade = rbd.components[node], rbd._upgrades[node]
+    models = (component.reliability, upgrade.life)
+    uniforms = repair = start = duration = None
+    if run is not None:
+        uniforms = run.stream(path, _streams.FAILURE)
+        repair = run.stream(path, _streams.REPAIR)
+        start = run.stream(path, _streams.START)
+        duration = run.stream(path, _streams.DURATION)
+    timed = (duration, _duration_model(rbd, node))
+    if uniforms is None or repair is None:
+        return _UpgradedComponent(
+            None,
+            _ModelDraws(component.time_to_replace),
+            tuple(_ModelDraws(model) for model in models),
+            upgrade.at,
+            start,
+            timed,
+        )
+    lives = tuple(stream_sampler(model) for model in models)
+    return _UpgradedComponent(
+        uniforms, repair, lives, upgrade.at, start, timed
+    )
+
+
 def _clock(source, t: float) -> None:
-    """Tell a component on a covariate schedule that its next draw is
-    made at ``t`` (a life starting then); nothing for any other."""
-    if source.__class__ is _ScheduledComponent:
+    """Tell a component on a covariate schedule, or an upgraded one, that
+    its next draw is made at ``t`` (a life starting then); nothing for
+    any other."""
+    if source.__class__ in (_ScheduledComponent, _UpgradedComponent):
         source.now = t
 
 
@@ -714,25 +789,72 @@ def _simulate_block(span: Tuple[int, int]) -> "_Tally":
 class _Shut:
     """A shutdown in a simulation (see ``_shutdowns``), the component of
     the events of its windows: a start (status False), which holds its
-    ``nodes`` off line, charges its ``cost`` and stands its ``paused``
-    nodes' own processes still, and an end ``duration`` later (status
-    True), which lets them go."""
+    ``nodes`` off line, charges its ``cost``, stands its ``paused``
+    nodes' own processes still and renews each of its ``opportunistic``
+    components (with its age) that is that old (see ``_outage_renewals``),
+    and an end ``duration`` later (status True), which lets them go.
+    ``places`` gives each start's place in a simulation's
+    ``outage_jobs``, where its renewals are counted."""
 
-    __slots__ = ("name", "nodes", "paused", "duration", "cost")
+    __slots__ = (
+        "name",
+        "nodes",
+        "paused",
+        "duration",
+        "cost",
+        "opportunistic",
+        "places",
+    )
 
-    def __init__(self, name, nodes, paused, duration: float, cost: float):
+    def __init__(
+        self,
+        name,
+        nodes,
+        paused,
+        duration: float,
+        cost: float,
+        opportunistic: tuple = (),
+        places: Optional[dict] = None,
+    ):
         self.name, self.nodes, self.paused = name, nodes, paused
         self.duration, self.cost = duration, cost
+        self.opportunistic, self.places = opportunistic, places or {}
+
+
+def outage_starts(rbd, t_simulation: float) -> List[Tuple[Hashable, float]]:
+    """The starts of the shutdowns that renew components opportunistically
+    in ``[0, t_simulation)``, as ``(name, time)``, shut by shut: the
+    outages whose renewals a simulation counts (``outage_jobs``)."""
+    return [
+        (shut.name, float(start))
+        for shut in rbd._shutdowns.values()
+        if rbd._outage_rules.get(shut.name)
+        for start in shut.starts(t_simulation)
+    ]
 
 
 def _shut_events(rbd, t_simulation: float, forced: set) -> list:
     """The events of the shutdowns' windows in ``[0, t_simulation)``: each
     start, and its end if it falls in the window, the nodes held at
-    ``forced`` left out (they are held whatever a shut does)."""
+    ``forced`` left out (they are held whatever a shut does). A shut in
+    no time that costs or renews components opportunistically has its
+    starts alone, which hold nothing (but charge its cost)."""
     from repyability.rbd import _shutdowns
 
     out = []
-    for shut in _shutdowns.timed(rbd):
+    first = 0
+    for shut in rbd._shutdowns.values():
+        rules = tuple(
+            (node, age)
+            for node, age in rbd._outage_rules.get(shut.name, ())
+            if node not in forced
+        )
+        if not (
+            shut.duration > 0.0
+            or shut.cost
+            or rbd._outage_rules.get(shut.name)
+        ):
+            continue
         nodes = tuple(
             node for node in _shutdowns.scope(rbd, shut) if node not in forced
         )
@@ -740,13 +862,22 @@ def _shut_events(rbd, t_simulation: float, forced: set) -> list:
             node
             for node in nodes
             if not shut.idle_ageing
-            and shut.name not in _shutdowns.bound_to(rbd, node)
+            and shut.name not in _shutdowns.worked_on(rbd, node)
         )
-        source = _Shut(shut.name, nodes, paused, shut.duration, shut.cost)
-        for start in shut.starts(t_simulation):
-            out.append(Event(float(start), source, False))
+        if not shut.duration > 0.0:
+            nodes = paused = ()
+        starts = [float(start) for start in shut.starts(t_simulation)]
+        places = {}
+        if rbd._outage_rules.get(shut.name):
+            places = {start: first + k for k, start in enumerate(starts)}
+            first += len(starts)
+        source = _Shut(
+            shut.name, nodes, paused, shut.duration, shut.cost, rules, places
+        )
+        for start in starts:
+            out.append(Event(start, source, False))
             end = float(start) + shut.duration
-            if end < t_simulation:
+            if shut.duration > 0.0 and end < t_simulation:
                 out.append(Event(end, source, True))
     return out
 
@@ -912,6 +1043,11 @@ class _ShardRunner:
 _ACTION_COST_KEYS = ("preventive_cost", "inspection_cost", "replacement_cost")
 
 
+#: The place of the repair crews' costs among the categories.
+_CREWS = _CATEGORIES.index("crews")
+_CAPITAL = _CATEGORIES.index("capital")
+
+
 def _validate_crews(crews) -> Optional[int]:
     """``repair_crews``, validated: a whole number of crews, at least 1, or
     None for as many as are needed."""
@@ -964,19 +1100,24 @@ def _failures_between(model, ages: np.ndarray) -> np.ndarray:
     return out
 
 
-def _on_duty(components: dict) -> Tuple[dict, dict]:
+def _on_duty(components: dict) -> Tuple[dict, dict, dict]:
     """The components, each spec whose life is at a usage rate given the
     surpyval distribution it is (``_usage.first_clock_life``), each spec
     with a ``"duty"`` given its life on the
-    calendar (see ``_duty.on_calendar``): one object for each model and
+    calendar (see ``_duty.on_calendar``; on a duty plan that changes over
+    time, a ``_duty.PlannedLife``): one object for each model and
     duty, so that components sharing a model still share it; and each
     task counted in operating time put on the calendar through its
-    block's duty (``_duty.tasks_on_calendar``). Return them, and the duty
+    block's duty (``_duty.tasks_on_calendar``). Return them, the duty
     of each component with such a task (its tasks' times in operating
-    time per unit of calendar time)."""
+    time per unit of calendar time), and the ``PlannedLife`` of each
+    component whose preventive task is counted in operating time on a
+    plan that changes (its task's ``clock``)."""
     from repyability.rbd._duty import (
-        duty_fraction,
+        PlannedLife,
+        duty_value,
         on_calendar,
+        planned_refusals,
         tasks_on_calendar,
     )
     from repyability.rbd._usage import first_clock_life, is_life_at_usage
@@ -984,6 +1125,7 @@ def _on_duty(components: dict) -> Tuple[dict, dict]:
     moved: dict = {}
     out = {}
     operating: dict = {}
+    clocks: dict = {}
     for name, component in components.items():
         if isinstance(component, dict):
             d = None
@@ -996,18 +1138,25 @@ def _on_duty(components: dict) -> Tuple[dict, dict]:
                     "reliability": moved["usage", id(life)],
                 }
             if component.get("duty") is not None:
-                d = duty_fraction(name, component["duty"])
+                d = duty_value(name, component["duty"])
                 life = component["reliability"]
-                key = (id(life), d)
-                if key not in moved:
-                    moved[key] = on_calendar(name, life, d)
-                component = {**component, "reliability": moved[key]}
+                if isinstance(d, float):
+                    key = (id(life), d)
+                    if key not in moved:
+                        moved[key] = on_calendar(name, life, d)
+                    component = {**component, "reliability": moved[key]}
+                else:
+                    planned_refusals(name, component)
+                    d = PlannedLife(life, d, name)
+                    component = {**component, "reliability": d}
             component, counted = tasks_on_calendar(name, component, d)
             if counted:
-                assert d is not None  # refused without one
-                operating[name] = d
+                if isinstance(d, PlannedLife):
+                    clocks[name] = d
+                else:
+                    operating[name] = 1.0 if d is None else d
         out[name] = component
-    return out, operating
+    return out, operating, clocks
 
 
 def _is_junction(name, component) -> bool:
@@ -1114,6 +1263,12 @@ def _stream_specs(
             if scheduled(component) is not None:
                 # Uniforms, which its stand-in inverts along the schedule.
                 failure = _uniforms
+            upgrade = rbd._upgrades.get(name)
+            if upgrade is not None:
+                # Uniforms, which its stand-in turns into lives by the
+                # life in service (see _UpgradedComponent).
+                old_and_new = (failure, stream_sampler(upgrade.life))
+                failure = None if None in old_and_new else _uniforms
             repair = stream_sampler(component.time_to_replace)
         if failure is None or repair is None:
             complete = False
@@ -1311,6 +1466,10 @@ def _streamed_components(
                     component, run, prefix + (name,), arrangement
                 )
             )
+            if name in rbd._upgrades:
+                made[id(component)] = _upgraded(
+                    rbd, name, run, prefix + (name,)
+                )
             own = _ccf_groups._own_rate(rbd, name)
             if own is not None and made[id(component)] is component:
                 # Not streamed: its own cause's life all the same.
@@ -1710,7 +1869,12 @@ def _start_queue(
     # may need one (with enough, no job ever waits).
     crews = rbd.repair_crews
     rbd._run_state._crews = (
-        _Crews(crews, _crews._crew_served(rbd), rbd._priority)
+        _Crews(
+            crews,
+            _crews._crew_served(rbd),
+            rbd._priority,
+            _crews._call_when(rbd),
+        )
         if crews is not None and _crews._crews_limited(rbd)
         else None
     )
@@ -1996,7 +2160,16 @@ def _crew_follow_up(rbd, event: Event, next_event: Event) -> Optional[Event]:
                 _crew_started(rbd, started)
         return next_event
     if next_event.status:
-        return crews.request(node, event.time, next_event)
+        ends = crews.request(node, event.time, next_event)
+        if ends is None and crews.call_when:
+            # The job waits: the call-out crew may come for the first
+            # waiting job (this one, perhaps, which then never waited).
+            started = crews.call(event.time)
+            if started is not None and started[0] == node:
+                return started[2]
+            if started is not None:
+                _crew_started(rbd, started)
+        return ends
     return next_event
 
 
@@ -2046,6 +2219,10 @@ def _maintained_follow_up(
             source.reset()
         if not event.status:
             # Down for maintenance: back, as new, once it is done.
+            if schedule.shuts is not None:
+                # At several shutdowns: the length of the one starting now.
+                fixed = schedule.duration_at(t)
+                return Event(t + float(fixed.params[0]), node, True, True)
             if isinstance(source, _StreamedComponent):
                 duration = source.maintenance_time()
             else:
@@ -2127,9 +2304,10 @@ def _renewal(
     else:
         # Maintenance that takes time is a planned outage; in zero time
         # the unit is renewed in place, and stays up.
-        event = Event(due, node, schedule.duration is None, True)
-    if node in rbd._early_members:
-        # Kept, should a stop of its group renew it early (see _stop).
+        event = Event(due, node, schedule.duration_at(due) is None, True)
+    if node in rbd._early_members or node in rbd._outage_members:
+        # Kept, should a stop of its group, or a shutdown, renew it early
+        # (see _stop and _outage_renewals).
         rbd._run_state._renewed_at[node] = start
         rbd._run_state._pending_event[node] = event
     return event
@@ -2160,6 +2338,7 @@ def _own_sources(rbd, states: Optional[dict] = None) -> dict:
         and not starting
         and not rbd.ccf_groups
         and not timed
+        and not rbd._upgrades
     ):
         return rbd.components
     sources = dict(rbd.components)
@@ -2185,9 +2364,15 @@ def _own_sources(rbd, states: Optional[dict] = None) -> dict:
             model=_duration_model(rbd, node),
             restoration=rbd._restoring.get(node),
         )
+    for node in rbd._upgrades:
+        sources[node] = _upgraded(rbd, node)
     for node in starting:
-        if node in timed or _ccf_groups._own_rate(rbd, node) is not None:
-            continue  # its schedule's, or its own cause's, draws above
+        if (
+            node in timed
+            or node in rbd._upgrades
+            or _ccf_groups._own_rate(rbd, node) is not None
+        ):
+            continue  # its schedule's, upgrade's or own cause's draws
         component = rbd.components[node]
         sources[node] = _StreamedComponent(
             _ModelDraws(component.reliability),
@@ -2235,6 +2420,39 @@ def _stop(rbd, group, t: float, trigger=None) -> List[Event]:
         renewal = Event(t, member, schedule.duration is None, True)
         rbd._run_state._early[id(renewal)] = renewal
         rbd._run_state._renewing.add(member)
+        out.append(renewal)
+    return out
+
+
+def _outage_renewals(rbd, rules: tuple, t: float) -> List[Event]:
+    """At the start of a shutdown at ``t``, the components of ``rules``
+    (each with its age) renewed opportunistically: each that is working
+    and at least that old (the time since it was put in), renewed now as
+    its age replacement would renew it, at its cost and in its time; the
+    failure or replacement it had ahead of it is cancelled, as at a stop
+    of a maintenance group (``_stop``). One whose own failure or
+    replacement is due at ``t``, or that is being renewed, keeps it.
+    Returns the renewals to queue."""
+    run = rbd._run_state
+    out: List[Event] = []
+    for member, age in rules:
+        if (
+            member not in run._renewed_at
+            or member in run._renewing
+            or not run.component_status[member]
+            or t - run._renewed_at[member] < age
+        ):
+            continue
+        pending = run._pending_event.get(member)
+        if pending is not None and pending.time <= t:
+            continue  # due now
+        run._pending_event.pop(member, None)
+        if pending is not None and pending.time < run.t_simulation:
+            run._cancelled[id(pending)] = pending
+        schedule = rbd._preventive[member]
+        renewal = Event(t, member, schedule.duration is None, True)
+        run._early[id(renewal)] = renewal
+        run._renewing.add(member)
         out.append(renewal)
     return out
 
@@ -2662,9 +2880,13 @@ def _run_alone(
                 ),
                 jobs,
             )
+        # The crews' salaries, the same in every simulation: charged here,
+        # on every engine (a sharded run's shards charge their own).
+        salaries = 0.0 if sharded is not None else _crew_salaries(rbd)
         start, goal = first, first + N
         while True:
             runner(start, goal)
+            tally.charge_crews(goal - start, salaries * t_simulation)
             more = 0 if stop is None else stop(tally)
             if not more:
                 break
@@ -2752,6 +2974,13 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     maintenance, member_group = rbd._maintenance, rbd._member_group
     cancelled, early = rbd._run_state._cancelled, rbd._run_state._early
     opportunistic = [0] * n
+    # The renewals made at each start of a shutdown that renews components
+    # opportunistically (see outage_starts).
+    outage_jobs = (
+        [0] * len(outage_starts(rbd, ctx.t_simulation))
+        if rbd._outage_members
+        else None
+    )
     failures = restorations = planned = 0
     changes: list = []
     deltas: list = []
@@ -2779,11 +3008,17 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     # among its changes) were planned changes down, maintenance or a
     # test off line; and the system's changes: their times, the
     # component whose change made each, which of its changes that was,
-    # and whether it was planned.
+    # and whether it was planned. With shutdowns, also which of each
+    # component's planned changes were a shut's holds (places among its
+    # changes, as planned_of), and the changes down its hold hid, each
+    # charged: their times and whether planned (see _npv_runs).
     history = ctx.history
     at_start = [view[node] for node in index] if history else None
     times_of: list = [[] for _ in range(n)] if history else []
     planned_of: list = [[] for _ in range(n)] if history else []
+    shut_record = bool(history) and bool(rbd._shutdowns)
+    held_of: list = [[] for _ in range(n)] if shut_record else []
+    hidden_of: list = [[] for _ in range(n)] if shut_record else []
     system_record: tuple = ([], [], [], []) if history else ()
     # The system's state, and its up and down time until ``since``, its
     # last change; each component's last change, and the system's up and
@@ -2892,6 +3127,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
                     times_of[c].append(t)
                     if not event.status:
                         planned_of[c].append(len(times_of[c]) - 1)
+                        held_of[c].append(len(times_of[c]) - 1)
             if not event.status:
                 # Charged at its start; its paused nodes stand still.
                 if node.cost:
@@ -2901,6 +3137,12 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
                     moved = _shifted(rbd, member, t, node.duration)
                     if moved is not None:
                         push(heap, (moved.time, moved))
+                if node.opportunistic:
+                    renewals = _outage_renewals(rbd, node.opportunistic, t)
+                    assert outage_jobs is not None  # it has rules
+                    outage_jobs[node.places[t]] += len(renewals)
+                    for renewal in renewals:
+                        push(heap, (renewal.time, renewal))
             if changed is not None and works(view) != up:
                 system_up, system_down, since = system_up_t, system_down_t, t
                 up = not up
@@ -3003,6 +3245,11 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
                 times_of[c].append(t)
                 if not event.status and (event.preventive or event.inspection):
                     planned_of[c].append(len(times_of[c]) - 1)
+        elif shut_record and not event.status:
+            # A change down a shut's hold hides, charged all the same.
+            hidden_of[c].append(
+                (t, bool(event.preventive or event.inspection))
+            )
         if event.status:
             restored[c] += 1
         elif event.preventive:
@@ -3122,6 +3369,19 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         charge = rbd.downtime_cost_rate * (t_simulation - system_up)
         rep_cost += charge
         by_category[5] += charge
+        for node, upgrade in rbd._upgrades.items():
+            # An upgrade's capital cost, at its time, in every simulation
+            # that reaches it.
+            if upgrade.cost and upgrade.at < t_simulation:
+                rep_cost += upgrade.cost
+                by_category[_CAPITAL] += upgrade.cost
+                by_node[node] += upgrade.cost
+        if crews is not None and crews.call_when:
+            # The call-out crew: its fee each time it came, and its rate
+            # while it was engaged (see _Crews).
+            charge = _crews._call_out_charge(rbd, *crews.close(t_simulation))
+            rep_cost += charge
+            by_category[_CREWS] += charge
 
     rec = _Replication()
     rec.uptime = system_up
@@ -3136,8 +3396,17 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     rec.capacity_changes = rec.capacity_time = rec.delivered = None
     rec.replacements = replaced
     rec.opportunistic = opportunistic
+    rec.outage_jobs = outage_jobs
     rec.history = (
-        (at_start, times_of, planned_of, started_up, system_record)
+        (
+            at_start,
+            times_of,
+            planned_of,
+            started_up,
+            system_record,
+            held_of if shut_record else None,
+            hidden_of if shut_record else None,
+        )
         if history
         else None
     )

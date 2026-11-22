@@ -19,6 +19,7 @@ import numpy as np
 
 from repyability.rbd import _crews, _long_run, _requirements, _shutdowns
 from repyability.rbd._common import (
+    _crew_salaries,
     _discount_rate,
     _horizons,
     _present_horizon,
@@ -45,8 +46,12 @@ def expected_cost_rate(
         _requirements._require_separate_setups(rbd)
 
     _shutdowns.require_exact(rbd)
-    # The shutdowns' own costs, at each shut.
-    rate = _shutdowns.cost_rate(rbd)
+    # The shutdowns' own costs, at each shut, and the repair crews'
+    # salaries, paid whatever happens.
+    rate = _shutdowns.cost_rate(rbd) + _crew_salaries(rbd)
+    # A call-out crew's fees and its rate while engaged, from the crews'
+    # chain.
+    rate += _crews._call_out_cost_rate(rbd, working_nodes, broken_nodes)
 
     # Production lost while the *system* is down.
     if rbd.downtime_cost_rate:
@@ -224,6 +229,10 @@ def total_cost(
 ) -> Union[float, np.ndarray]:
     """See ``RepairableRBD.total_cost``."""
     _requirements._require_costs(rbd)
+    if rbd._upgrades:
+        # Its long-run rate is the one once upgraded, which the horizon
+        # from 0 (and the upgrade's capital cost) is not.
+        _requirements._require_no_plans(rbd)
     rate = _discount_rate(discount_rate)
     present = _present_horizon(
         _horizons(horizon, rate), rate, partial(_requirements._mean_lives, rbd)

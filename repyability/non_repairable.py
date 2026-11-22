@@ -172,6 +172,22 @@ class NonRepairable:
         What a replacement at a failure costs, at least 0, by name (``cu``):
         with ``planned_cost``, more than it. Either may be given alone:
         ``failures`` needs only this one. By default None: not given.
+    opportunity_cost : float, optional
+        What a planned replacement at an opportunity (a stop or shut,
+        [`Opportunity`][repyability.Opportunity]) costs, at least 0. By
+        default None: an opportunity is priced as any other day, at
+        ``planned_cost``.
+    job_duration : float or str, optional
+        How long replacing the part takes: an opportunity shorter than it
+        is not used for this part (the policy's ``prices`` say so). On
+        real dates text (``"6h"``) or a number of hours; in model time a
+        number in the life's unit. By default None: every opportunity is
+        used.
+    opportunity_costs : dict, optional
+        Prices at particular opportunities, overriding
+        ``opportunity_cost``: keyed by the opportunity's name or the
+        ``Opportunity`` itself. A policy refuses a key that names no
+        opportunity of its collection, listing the names it has.
 
     Attributes
     ----------
@@ -233,6 +249,9 @@ class NonRepairable:
         *,
         planned_cost=None,
         unplanned_cost=None,
+        opportunity_cost=None,
+        job_duration=None,
+        opportunity_costs=None,
     ):
         # A Bayesian fit is its posterior predictive.
         # A life at a usage rate is the distribution it is in hours.
@@ -283,7 +302,8 @@ class NonRepairable:
         elif by_functions(reliability):
             # Any other surpyval model with a life's functions (#93): a
             # Royston-Parmar fit, a regression at a unit's covariates
-            # (regression.at(Z)), a destructive degradation model. Its
+            # (regression.at(Z)), a destructive degradation model; or a
+            # NonRepairableRBD, a subassembly replaced whole. Its
             # survival is a smooth curve, as a distribution's.
             self.model_parameterization = "parametric"
             self.reliability_function = reliability.sf
@@ -321,7 +341,8 @@ class NonRepairable:
                 "mean: a distribution, a MixtureModel, a Bayesian fit, a "
                 "Royston-Parmar fit, a regression at one unit's covariates "
                 "with regression.at(Z), a degradation process), a surpyval "
-                "non-parametric estimate or a StandbyModel; got a "
+                "non-parametric estimate, a StandbyModel or a "
+                "NonRepairableRBD (a subassembly replaced whole); got a "
                 f"{type(reliability).__name__}" + _why_not(reliability)
             )
 
@@ -338,6 +359,29 @@ class NonRepairable:
         )
         self.__next_event_type = FAILURE
         self._set_costs(planned_cost, unplanned_cost)
+        self._set_opportunity_prices(
+            opportunity_cost=opportunity_cost,
+            job_duration=job_duration,
+            opportunity_costs=opportunity_costs,
+        )
+
+    def _set_opportunity_prices(
+        self, *, opportunity_cost, job_duration, opportunity_costs
+    ) -> None:
+        """Keep the part's prices at opportunities, checked (the keys of
+        ``opportunity_costs`` are checked against the opportunities when a
+        policy runs)."""
+        from repyability.maintenance._opportunities import (
+            check_part_prices,
+        )
+
+        (
+            self.opportunity_cost,
+            self.job_duration,
+            self.opportunity_costs,
+        ) = check_part_prices(
+            opportunity_cost, job_duration, opportunity_costs
+        )
 
     def _set_costs(self, planned, unplanned) -> None:
         """Keep the costs given to the constructor (``cp``, ``cu``): each
@@ -377,6 +421,8 @@ class NonRepairable:
             parts.append(f"planned_cost={self.cp:g}")
         if hasattr(self, "cu"):
             parts.append(f"unplanned_cost={self.cu:g}")
+        if getattr(self, "opportunity_cost", None) is not None:
+            parts.append(f"opportunity_cost={self.opportunity_cost:g}")
         return f"NonRepairable({', '.join(parts)})"
 
     def failures(self, t, age: float = 0.0) -> FailureForecast:
@@ -457,6 +503,35 @@ class NonRepairable:
             shaped(failures),
             None if cost is None else shaped(cost),
         )
+
+    def _failures_error(self, horizon: float, age: float = 0.0) -> float:
+        """How far ``failures``' expected count may be from the true one
+        anywhere in ``[0, horizon]``, from its age: the renewal count's
+        later units are worked out at a grid's points and taken linearly
+        between them, which is off by at most ``h**2 / 8`` times the
+        count's curvature, the largest second difference of the grid's
+        counts over 8. 0 where the count has no such grid (the first
+        unit's failures are its life's own CDF, exactly)."""
+        from repyability.rbd import _curves
+        from repyability.rbd.node_state import NodeState
+        from repyability.rbd.repairable_rbd import RepairableRBD
+
+        if not horizon > 0.0:
+            return 0.0
+        unit = RepairableRBD([("s", "unit"), ("unit", "t")], {"unit": self})
+        states = _curves._states(unit, {"unit": NodeState(age=age)}, set())
+        curves = _curves._availability_curves(
+            unit, float(horizon), set(), counts=True, state=states
+        )
+        events = getattr(curves.get("unit"), "unit_events", None)
+        later = getattr(events, "later", None)
+        if events is None or later is None or len(later) < 3:
+            return 0.0
+        times = np.asarray(events.times, dtype=float)
+        # The cells up to the horizon, with the one it falls in.
+        stop = int(np.searchsorted(times, horizon, side="left")) + 2
+        curvature = np.abs(np.diff(np.asarray(later, dtype=float)[:stop], 2))
+        return float(curvature.max()) / 8.0 if curvature.size else 0.0
 
     def set_costs_planned_and_unplanned(self, cp, cu):
         """Set the planned and unplanned replacement costs.
@@ -744,8 +819,9 @@ class NonRepairable:
     def _cost_rate_with_log_x(self, x):
         return self._cost_rate(np.exp(x))
 
-    def find_optimal_replacement(self):
-        """The replacement age that minimises the long-run cost rate.
+    def find_optimal_replacement(self, *, discount_rate=0.0):
+        """The replacement age that minimises the long-run cost rate, or,
+        with a discount rate, the equivalent annual cost.
 
         Minimises the age-replacement cost rate (see ``cost_rate``)
         ``(cp * R(t) + cu * (1 - R(t))) / integral_0^t R(u) du`` over the
@@ -788,6 +864,38 @@ class NonRepairable:
         stopped on the flattening curve. A replacement age must save more
         than one part in a million to count.
 
+        **With a discount rate** money spent later is worth less now, so
+        the age is chosen to make the present value of every replacement,
+        forever, the least (Fox, 1966); ``discount_rate`` times that value
+        is the equivalent annual cost (EAC), a steady cost per unit time
+        worth the same. With ``r`` the rate, ``R`` the reliability and
+        ``M(t)`` the integral of ``exp(-r u) R(u)`` from 0 to ``t``::
+
+            EAC(t) = [cu * (1 - exp(-r t) R(t) - r M(t))
+                      + cp * exp(-r t) R(t)] / M(t)
+
+        which is the cost rate above at ``r = 0``. Discounting puts off
+        the planned replacement's cost, so for a part that wears out the
+        best age is usually older than undiscounted. The cost is scanned
+        on a grid of ages (the trapezoidal rule) up to where the part has
+        all but surely failed or a cost is discounted to ``exp(-40)``, and
+        the cheapest age refined by a bounded search on the cost by
+        quadrature (a non-parametric estimate: its own grid, as above).
+        An exponential life, or a Weibull of shape ``<= 1``, still returns
+        ``inf`` at once; a limited failure population is searched, as
+        running to failure is no longer free when the failures to come
+        are discounted. ``inf`` is returned where no age beats running to
+        failure, whose EAC is ``cu * (1 - r M) / M`` with ``M`` the
+        integral to infinity.
+
+        Parameters
+        ----------
+        discount_rate : float, optional
+            The continuous discount rate per unit of the lifetime model's
+            time, by default 0 (undiscounted, the long-run cost rate). For
+            a yearly rate of 7% with a life in hours, ``math.log(1.07) /
+            8760``.
+
         Returns
         -------
         float
@@ -816,7 +924,25 @@ class NonRepairable:
         >>> unit.set_costs_planned_and_unplanned(cp=1, cu=5)
         >>> unit.find_optimal_replacement()
         inf
+
+        Discounted at 10% a year, with the life in hours, the best age is
+        a little older:
+
+        >>> import math
+        >>> unit = NonRepairable(surv.Weibull.from_params([1000, 2.5]))
+        >>> unit.set_costs_planned_and_unplanned(cp=1, cu=5)
+        >>> a_year = math.log(1.10) / 8760
+        >>> best = unit.find_optimal_replacement(discount_rate=a_year)
+        >>> round(float(best), 1)
+        493.4
         """
+        from repyability.maintenance._options import (
+            discount_rate as _discount_rate,
+        )
+
+        rate = _discount_rate(discount_rate)
+        if rate > 0.0:
+            return self._discounted_optimum(rate)[0]
         if self.model_parameterization == "parametric":
             if never_fails(self.reliability) > 0.0:
                 # Some units never fail: in the long run one of them is in
@@ -880,6 +1006,40 @@ class NonRepairable:
             optimal = float(ages[int(np.nanargmin(rates))])
         return optimal
 
+    def _memoryless(self) -> bool:
+        """Whether the life is one preventive replacement never improves,
+        discounted or not: an exponential, or a Weibull of shape at most
+        1, with no offset, zero-inflation or limited failure
+        population."""
+        if self.model_parameterization != "parametric":
+            return False
+        model = self.reliability
+        if (
+            getattr(model, "offset", False)
+            or getattr(model, "zi", False)
+            or getattr(model, "lfp", False)
+        ):
+            return False
+        if is_exponential(model):
+            return True
+        return distribution_name(model) == "Weibull" and model.params[1] <= 1
+
+    def _discounted_optimum(self, rate: float):
+        """The age-replacement age with the least equivalent annual cost at
+        ``rate`` (more than 0), and that cost (see
+        ``find_optimal_replacement``)."""
+        from repyability.maintenance._options import (
+            discounted_optimum,
+            discounted_run_to_failure,
+        )
+
+        if self._memoryless():
+            if self.cu is None:
+                return np.inf, np.nan
+            return np.inf, discounted_run_to_failure(self, rate, self.cu)
+        self._require_costs()
+        return discounted_optimum(self, rate, self.cp, self.cu)
+
     def _run_to_failure_rate(self) -> float:
         """The long-run cost rate with no preventive replacement,
         ``cu / MTTF``: 0 when some units never fail (a limited failure
@@ -927,7 +1087,9 @@ class NonRepairable:
         )
         return float(refined.x)
 
-    def optimal_replacement_policy(self) -> MaintenancePolicy:
+    def optimal_replacement_policy(
+        self, *, discount_rate=0.0
+    ) -> MaintenancePolicy:
         """The optimal age-replacement policy as a typed result.
 
         Finds the replacement age with ``find_optimal_replacement()`` (see
@@ -937,11 +1099,26 @@ class NonRepairable:
         interval is ``inf`` and the cost rate is the run-to-failure rate
         ``cu / MTTF``, or 0 when some units never fail.
 
+        With a discount rate the age is the one with the least equivalent
+        annual cost (EAC; Fox, 1966): the present value of every
+        replacement, forever, spread as a steady cost per unit time. The
+        result then carries that present value (``npv``) and ``eac``, and
+        ``cost_rate`` is still the undiscounted long-run cost rate of the
+        age chosen (of running to failure, where ``interval`` is ``inf``).
+
+        Parameters
+        ----------
+        discount_rate : float, optional
+            The continuous discount rate per unit of the lifetime model's
+            time, by default 0 (undiscounted). For a yearly rate of 7%
+            with a life in hours, ``math.log(1.07) / 8760``.
+
         Returns
         -------
         MaintenancePolicy
             ``interval`` is the cost-optimal replacement age and
-            ``cost_rate`` the long-run cost per unit time under it.
+            ``cost_rate`` the long-run cost per unit time under it; with a
+            discount rate, ``discount_rate``, ``npv`` and ``eac`` too.
 
         Raises
         ------
@@ -966,14 +1143,40 @@ class NonRepairable:
         >>> policy = unit.optimal_replacement_policy()
         >>> policy.interval, round(policy.cost_rate, 4)
         (inf, 0.05)
+
+        Discounted at 10% a year, the life in hours:
+
+        >>> import math
+        >>> unit = NonRepairable(surv.Weibull.from_params([1000, 2.5]))
+        >>> unit.set_costs_planned_and_unplanned(cp=1, cu=5)
+        >>> rate = math.log(1.1) / 8760
+        >>> policy = unit.optimal_replacement_policy(discount_rate=rate)
+        >>> round(policy.interval, 1), round(policy.eac * 8760, 2)
+        (493.4, 30.27)
         """
+        from repyability.maintenance._options import (
+            discount_rate as _discount_rate,
+        )
+
         self._require_costs()
-        interval = self.find_optimal_replacement()
+        discount = _discount_rate(discount_rate)
+        if discount > 0.0:
+            interval, eac = self._discounted_optimum(discount)
+        else:
+            interval = self.find_optimal_replacement()
         if np.isinf(interval):
             rate = self._run_to_failure_rate()
         else:
             rate = float(self._cost_rate(interval))
-        return MaintenancePolicy(interval=float(interval), cost_rate=rate)
+        if discount == 0.0:
+            return MaintenancePolicy(interval=float(interval), cost_rate=rate)
+        return MaintenancePolicy(
+            interval=float(interval),
+            cost_rate=rate,
+            discount_rate=discount,
+            npv=float(eac) / discount,
+            eac=float(eac),
+        )
 
     def optimal_next_replacement(
         self,
@@ -999,10 +1202,14 @@ class NonRepairable:
         until the part is replaced (at the failure price if it fails
         first), less the time the part serves until then, valued at the
         baseline: the long-run cost a unit of time of how the position is
-        run, ``policy.cost_rate``. By default that is the age
+        run, ``policy.cost_rate``. A policy chosen at a discount values it
+        at its equivalent annual cost instead, and each choice is
+        discounted at the policy's rate (its present value and the
+        policy's after it, Fox, 1966; ``discount_rate`` on the result).
+        By default that is the age
         replacement's (``optimal_replacement_policy().cost_rate``); where
         cheap shuts keep coming, give the calendar's policy
-        ([`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]),
+        ([`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy]),
         whose rate is lower, so a part is kept longer. The cheapest
         choice is the best. With no outages and the default baseline,
         replacing now is the best from the optimal replacement age.
@@ -1029,26 +1236,29 @@ class NonRepairable:
             The policy whose ``cost_rate`` is the baseline, by default
             ``optimal_replacement_policy()`` (with a site, the site's
             policy, worked out by its route).
-        site : Shutdowns, optional
-            On real dates: the site's shuts. The choices are then now,
-            each of the next two shuts of each kind, a planned replacement
-            on any other day (where the site allows one) and running to
-            failure, on the real dates, with the time beyond valued at the
-            policy's figure (its cost a year, or for a horizon its net
-            present cost spread evenly over its years). ``age`` may be
-            text in the part's unit (``"3,100 h"``).
+        site : Opportunities, optional
+            On real dates: the site's opportunities, priced for this part
+            as
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy]
+            prices them (a deprecated ``Shutdowns`` too). The choices are
+            then now, each of the next two shuts of each kind, a planned
+            replacement on any other day (where the site allows one) and
+            running to failure, on the real dates, with the time beyond
+            valued at the policy's figure (its cost a year, or for a
+            horizon its net present cost spread evenly over its years).
+            ``age`` may be text in the part's unit (``"3,100 h"``).
         plan : optional
             As for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         now : optional
             As for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         readings : optional
             As for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
         unit : optional
             As for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
 
         Returns
         -------
@@ -1095,9 +1305,15 @@ class NonRepairable:
         policy values a day of service at 0.990 rather than 1.117, and
         replacing now beats the outage in 150 days from a younger age:
 
-        >>> from repyability import Calendar, Opportunity
-        >>> shuts = bearing.optimal_calendar_policy(
-        ...     Calendar([Opportunity("shut", 100.0, period=180.0)])
+        >>> from repyability import Opportunities, Opportunity
+        >>> at_shuts = NonRepairable(
+        ...     surv.Weibull.from_params([365.0, 2.0]),
+        ...     planned_cost=150.0,
+        ...     unplanned_cost=400.0,
+        ...     opportunity_cost=100.0,
+        ... )
+        >>> shuts = at_shuts.optimal_opportunity_policy(
+        ...     Opportunities([Opportunity("shut", period=180.0)])
         ... )
         >>> found = bearing.optimal_next_replacement(
         ...     200.0,
@@ -1117,6 +1333,9 @@ class NonRepairable:
                     "With a site, the shuts and the price on any other day "
                     "come from it: give no now_cost or scheduled_outages."
                 )
+            from repyability.maintenance._opportunities import resolve
+
+            site, _ = resolve(self, site, on_dates=True)
             return next_on_dates(
                 self,
                 age,
@@ -1432,7 +1651,7 @@ class NonRepairable:
         ...     planned_cost=150.0,
         ...     unplanned_cost=400.0,
         ... )
-        >>> weekly = Opportunity("weekly", 0.0, period=7.0)
+        >>> weekly = Opportunity("weekly", period=7.0)
         >>> result = bearing.cost_of_waiting_for_visit(200.0, 10.0, weekly)
         >>> result.done_in, round(result.added_failure_probability, 4)
         (14.0, 0.0123)
@@ -1714,7 +1933,7 @@ class NonRepairable:
         block replacement (``resets=False``), as
         [`renewal_forecast`][repyability.NonRepairable.renewal_forecast]
         takes it, or a calendar policy (``calendar``, from
-        [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy]:
+        [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy]:
         at each opportunity, replace the part if it is at least that
         time's threshold age, at that opportunity's price); replacements
         take no time. Numerical by default (to the ``precision``
@@ -1985,10 +2204,11 @@ class NonRepairable:
             seed=seed,
         )
 
-    def optimal_calendar_policy(
+    def optimal_opportunity_policy(
         self,
-        calendar,
+        opportunities,
         *,
+        where=None,
         plan=None,
         now=None,
         readings=None,
@@ -2003,19 +2223,35 @@ class NonRepairable:
         mc_samples=64,
         seed=None,
         dated_until=None,
+        discount_rate=0.0,
     ):
-        """The long-run optimal replacement policy over a calendar of
-        opportunities: shuts at their own prices, a planned replacement on
-        any day at a dearer one (or none), and a failure at the dearest.
+        """The long-run optimal replacement policy of this part over
+        opportunities to replace it: stops and shuts at the part's price
+        there, a planned replacement on any day at a dearer one (or none),
+        and a failure at the dearest.
 
-        **A site's shuts on real dates.** Given a
-        [`Shutdowns`][repyability.Shutdowns] (the site's shuts as rules,
-        dates, plain periods or uses, each with its price, and the price on
-        any other day), it returns a
+        **The prices are the part's** (one
+        [`Opportunities`][repyability.Opportunities] serves every part): at
+        an opportunity, the part's ``opportunity_costs`` for it (by name or
+        object; a key naming no opportunity here is refused), else its
+        ``opportunity_cost``, else its ``planned_cost`` (an opportunity
+        priced as any other day); on any day (where the opportunities
+        allow it, ``any_day=True``) its ``planned_cost``; at a failure its
+        ``unplanned_cost``. An opportunity shorter than the part's
+        ``job_duration``, or (with ``where=``) one that does not take that
+        label down, is not used. The policy's ``prices``
+        ([`OpportunityPrices`][repyability.OpportunityPrices]) give each
+        price and where it came from, and each opportunity not used and
+        why. (The deprecated ``Calendar`` and ``Shutdowns``, with prices on
+        the opportunities, are taken as before: those prices are the
+        part's for those opportunities.)
+
+        **Opportunities on real dates.** Given opportunities on real dates
+        (rules, dates, plain periods or uses), it returns a
         [`ShutdownPolicy`][repyability.ShutdownPolicy], worked out by the
         route the shuts allow, which the result names in words
         (``route``, ``route_text``;
-        [`Shutdowns.route`][repyability.Shutdowns.route] says it
+        [`Opportunities.route`][repyability.Opportunities.route] says it
         beforehand):
 
         1. **exact**: the shuts repeat in the part's own clock on a short
@@ -2031,7 +2267,7 @@ class NonRepairable:
         4. ``horizon=`` and ``discount=``: the lowest net present cost on
            the real dates to the horizon.
 
-        **Fixed dates** (a ``Shutdown`` with ``dates=``, such as
+        **Fixed dates** (an ``Opportunity`` with ``dates=``, such as
         turnarounds) are never averaged. Without a horizon the policy is
         ``"dated_then_long_run"``: a dated window from now to the last
         fixed date (or to ``dated_until``), in which every shut, the
@@ -2051,8 +2287,8 @@ class NonRepairable:
         ``SlowSolverWarning`` where it takes over about 5 s). The guide's
         [shutdown policies](../guide/maintenance.md) has the examples.
 
-        **A calendar in model time** (a [`Calendar`][repyability.Calendar])
-        is worked out as before, returning a
+        **Opportunities in model time** (periods, or dates as numbers)
+        are worked out on the part's model time, returning a
         [`CalendarPolicy`][repyability.CalendarPolicy]:
 
         Age replacement
@@ -2084,7 +2320,23 @@ class NonRepairable:
           the seed; the threshold at a time is a solve over a window
           from it (deterministic).
         - ``"auto"``: ``"dp"``, or ``"sampling"`` for a periodic calendar
-          whose cycle is too long to sweep, with a warning that says so.
+          whose cycle is too long to sweep, with a ``FutureWarning``: from
+          0.21 that refuses, naming a ready ``horizon=`` (exact by
+          default, simulation on request: give ``horizon=`` or
+          ``method="sampling"``).
+
+        **Exact by default; refused where it can't be; a horizon never
+        refused.** Without ``horizon=`` the answer is the exact repeating
+        cycle's, with or without a discount. Where that can't be worked
+        out exactly (a cycle too long to sweep, given dates, shuts that
+        drift on real dates, a duty plan's clock), it is refused, and the
+        refusal names a ready horizon worked out from the inputs: with a
+        discount, the time past which costs count for under one part in a
+        billion; with none, the full cycle and three of the part's life
+        spans. ``horizon=`` (a model time here, a date on real dates)
+        sweeps backward from it over every opportunity as it falls: the
+        lowest net present cost to then (``npv``) and its equivalent
+        annual cost (``eac``), or with no discount the total to then.
 
         The grid's step is not an argument: it is a numerical setting,
         sized from the models (never in absolute time), not a choice of
@@ -2095,18 +2347,24 @@ class NonRepairable:
         of days, as dates turned into model time give) is laid at the
         grid time nearest it, with a warning.
 
-        A calendar with given dates (a plan) is extended past its last
-        date by ``tail``: ``"repeat"`` repeats the plan (from 0 to its
-        last date and its mean gap), ``"anytime"`` leaves only replacement
+        Without a horizon, a calendar with given dates (a plan) is
+        extended past its last date by ``tail``: ``"repeat"`` repeats the
+        plan (from 0 to its last date and its mean gap), ``"anytime"``
+        leaves only replacement
         on any day. Both are solved, and the policy says the first time
         they differ (``determined_until``); its cost rate is the repeated
         plan's.
 
         Parameters
         ----------
-        calendar : Shutdowns or Calendar
-            The site's shuts, or opportunities in model time (whose
-            ``"part"`` prices are this part's planned and unplanned costs).
+        opportunities : Opportunities
+            The opportunities, on real dates or in model time (a list of
+            ``Opportunity`` is taken as ``Opportunities`` of them; the
+            deprecated ``Calendar`` and ``Shutdowns`` too).
+        where : str, optional
+            A label (a line, a unit): only the opportunities that take it
+            down are used, those with no ``takes_down`` taking the whole
+            site down. By default None: every opportunity.
         plan : DutyPlan, optional
             With a site: how the equipment runs, turning dates into the
             part's clock; without, the part's clock is calendar time.
@@ -2127,7 +2385,23 @@ class NonRepairable:
             (as None), ``"dp"``, ``"integration"`` or ``"sampling"``.
         horizon, discount : optional
             With a site: the last day costs count to, and the yearly
-            discount rate (required with a horizon; 0 for the plain total).
+            discount rate as a fraction (0.07 for 7% a year; required with
+            a horizon, 0 for the plain total). With opportunities in model
+            time, ``horizon`` is a time in their own time (a number), with
+            ``discount_rate`` (0 for the plain total), and the policy is
+            the lowest net present cost to it (``basis="horizon"``).
+            ``discount`` without a horizon discounts the long run: the
+            policy minimises the present value of every replacement from
+            now on, forever, and
+            ``cost`` is its equivalent annual cost (EAC), the steady cost
+            a year worth the same, ``ln(1 + discount)`` times the present
+            value. A dated window is then discounted to its end, and the
+            recurring shuts' discounted long run values everything after
+            it. Only the routes that repeat exactly are discounted (the
+            exact routes, the dated window, and plain age replacement on
+            any day), with no duty plan (whose clock does not keep a steady
+            pace with the calendar); the others are refused with what to
+            give instead.
         failure_timing : str, optional
             With a site: ``"half_step"`` (the default) or ``"exact"``.
         dated_until : date or str, optional
@@ -2149,6 +2423,21 @@ class NonRepairable:
             methods take none.
         seed : int, optional
             Seeds the sampled times; the other methods draw nothing.
+        discount_rate : float, optional
+            With a calendar in model time: the continuous discount rate
+            per unit of the calendar's time, by default 0 (the long-run
+            average). Given, the thresholds minimise the present value at
+            time 0 of every replacement from a new part, forever (Fox,
+            1966; discounted value iteration over the cycle), and the
+            policy carries that value (``npv``) and ``discount_rate`` times
+            it, the equivalent annual cost (``eac``); ``cost_rate`` stays
+            the long-run (undiscounted) cost rate of the policy chosen. For
+            a yearly rate of 7% with a calendar in days,
+            ``math.log(1.07) / 365.25``. A periodic calendar of a short
+            cycle only (``"dp"`` or ``"integration"``): a long cycle, a
+            plan of given dates and ``"sampling"`` are refused with what to
+            give instead (a ready ``horizon=`` among it). A site takes
+            ``discount`` (a yearly rate) instead.
 
         Returns
         -------
@@ -2176,54 +2465,96 @@ class NonRepairable:
         planned cost, it is age replacement:
 
         >>> import surpyval as surv
-        >>> from repyability import Calendar, NonRepairable
+        >>> from repyability import NonRepairable, Opportunities
         >>> unit = NonRepairable(
         ...     surv.Weibull.from_params([1000, 2.5]),
         ...     planned_cost=1.0,
         ...     unplanned_cost=5.0,
         ... )
-        >>> policy = unit.optimal_calendar_policy(Calendar())
+        >>> policy = unit.optimal_opportunity_policy(Opportunities())
         >>> round(policy.cost_rate, 6)
         0.003462
         >>> round(policy.next_replacement(age=0.0).time, 1)
         493.3
         >>> round(unit.optimal_replacement_policy().interval, 1)
         493.0
+
+        One record of stops for two parts, each with its own prices:
+
+        >>> from repyability import Opportunity
+        >>> stops = Opportunities([Opportunity("stop", period=28.0)])
+        >>> seal = NonRepairable(
+        ...     surv.Weibull.from_params([1000, 2.5]),
+        ...     planned_cost=4.0, unplanned_cost=20.0, opportunity_cost=3.0,
+        ... )
+        >>> policy = seal.optimal_opportunity_policy(stops)
+        >>> policy.prices.price("stop"), policy.prices.row("stop").source
+        (3.0, 'opportunity_cost')
         """
+        from repyability.maintenance._opportunities import (
+            resolve,
+            site_given,
+            with_prices,
+        )
         from repyability.maintenance._replacement import (
             optimal_calendar_policy,
         )
         from repyability.maintenance._shutdowns import Shutdowns
         from repyability.maintenance._site_policy import find_policy
 
+        calendar, prices = resolve(
+            self,
+            opportunities,
+            where=where,
+            on_dates=site_given(
+                plan=plan,
+                now=now,
+                readings=readings,
+                unit=unit,
+                horizon=None if is_number(horizon) else horizon,
+                discount=discount,
+                dated_until=dated_until,
+                age=age,
+                failure_timing=failure_timing,
+            ),
+        )
         if isinstance(calendar, Shutdowns):
             if max_age is not None or tail != "repeat":
                 raise ValueError(
                     "max_age and tail are for a Calendar in model time; a "
                     "site's shuts take neither."
                 )
-            return find_policy(
-                self,
-                calendar,
-                plan=plan,
-                now=now,
-                readings=readings,
-                age=age,
-                unit=unit,
-                method=method,
-                horizon=horizon,
-                discount=discount,
-                failure_timing=failure_timing,
-                mc_samples=mc_samples,
-                seed=seed,
-                dated_until=dated_until,
+            if discount_rate != 0.0:
+                raise ValueError(
+                    "discount_rate is for a Calendar in model time (a "
+                    "continuous rate a unit of its time); a site takes "
+                    "discount=, a yearly rate such as 0.07."
+                )
+            return with_prices(
+                find_policy(
+                    self,
+                    calendar,
+                    plan=plan,
+                    now=now,
+                    readings=readings,
+                    age=age,
+                    unit=unit,
+                    method=method,
+                    horizon=horizon,
+                    discount=discount,
+                    failure_timing=failure_timing,
+                    mc_samples=mc_samples,
+                    seed=seed,
+                    dated_until=dated_until,
+                ),
+                prices,
             )
+        _model_horizon(horizon)
         _calendar_only(
             plan=plan,
             now=now,
             readings=readings,
             unit=unit,
-            horizon=horizon,
             discount=discount,
             dated_until=dated_until,
         )
@@ -2237,14 +2568,312 @@ class NonRepairable:
                 "failure_timing is for a site's shuts (Shutdowns); a Calendar "
                 "takes method='dp' or 'integration'."
             )
-        return optimal_calendar_policy(
-            self,
+        return with_prices(
+            optimal_calendar_policy(
+                self,
+                calendar,
+                max_age=max_age,
+                method="auto" if method is None else method,
+                tail=tail,
+                mc_samples=mc_samples,
+                seed=seed,
+                discount_rate=discount_rate,
+                horizon=horizon,
+            ),
+            prices,
+        )
+
+    def optimal_calendar_policy(
+        self,
+        calendar,
+        *,
+        plan=None,
+        now=None,
+        readings=None,
+        age=0.0,
+        unit=None,
+        method=None,
+        horizon=None,
+        discount=None,
+        failure_timing="half_step",
+        max_age=None,
+        tail="repeat",
+        mc_samples=64,
+        seed=None,
+        dated_until=None,
+        discount_rate=0.0,
+    ):
+        """**Deprecated** (removed in 0.21): renamed
+        [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy],
+        which takes the same arguments and gives the same policy.
+
+        Parameters
+        ----------
+        calendar : Opportunities, Calendar or Shutdowns
+            The opportunities.
+        plan : optional
+            As for ``optimal_opportunity_policy``.
+        now : optional
+            As for ``optimal_opportunity_policy``.
+        readings : optional
+            As for ``optimal_opportunity_policy``.
+        age : optional
+            As for ``optimal_opportunity_policy``.
+        unit : optional
+            As for ``optimal_opportunity_policy``.
+        method : optional
+            As for ``optimal_opportunity_policy``.
+        horizon : optional
+            As for ``optimal_opportunity_policy``.
+        discount : optional
+            As for ``optimal_opportunity_policy``.
+        failure_timing : optional
+            As for ``optimal_opportunity_policy``.
+        max_age : optional
+            As for ``optimal_opportunity_policy``.
+        tail : optional
+            As for ``optimal_opportunity_policy``.
+        mc_samples : optional
+            As for ``optimal_opportunity_policy``.
+        seed : optional
+            As for ``optimal_opportunity_policy``.
+        dated_until : optional
+            As for ``optimal_opportunity_policy``.
+        discount_rate : optional
+            As for ``optimal_opportunity_policy``.
+
+        Returns
+        -------
+        ShutdownPolicy or CalendarPolicy
+            As ``optimal_opportunity_policy`` returns.
+        """
+        from repyability.utils.deprecation import replaced
+
+        replaced(
+            "NonRepairable.optimal_calendar_policy",
+            "NonRepairable.optimal_opportunity_policy",
+            "the opportunities are one record for every part, on real "
+            "dates or in model time",
+        )
+        return self.optimal_opportunity_policy(
             calendar,
+            plan=plan,
+            now=now,
+            readings=readings,
+            age=age,
+            unit=unit,
+            method=method,
+            horizon=horizon,
+            discount=discount,
+            failure_timing=failure_timing,
             max_age=max_age,
-            method="auto" if method is None else method,
             tail=tail,
             mc_samples=mc_samples,
             seed=seed,
+            dated_until=dated_until,
+            discount_rate=discount_rate,
+        )
+
+    def opportunity_policy_cost(
+        self,
+        opportunities,
+        rule,
+        *,
+        where=None,
+        max_age=None,
+        plan=None,
+        now=None,
+        readings=None,
+        unit=None,
+        method=None,
+        horizon=None,
+        discount=None,
+        failure_timing="half_step",
+        mc_samples=64,
+        seed=None,
+        dated_until=None,
+        discount_rate=0.0,
+    ):
+        """The long-run average cost a unit of time of a given replacement
+        rule over a calendar of opportunities: to price simple policies
+        against
+        [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
+
+        The prices are the part's, laid on the opportunities as
+        [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy]
+        lays them (``where`` as there). On real dates, the rule
+        names the kinds of opportunity (and ``"any other day"``), it is
+        priced by the same route as the policy would be (``plan``,
+        ``now``, ``readings``, ``unit``, ``method``, ``horizon``,
+        ``discount``, ``failure_timing``, ``dated_until`` as there), and a
+        [`RuleCost`][repyability.RuleCost] comes back: the cost, its
+        measure, the route and words, and the replacements by kind. With
+        ``discount=`` and no horizon, the rule's discounted long run is
+        priced exactly where the shuts repeat (its equivalent annual cost,
+        as the policy's own is worked out, with the decisions fixed), and
+        refused with a ready horizon where they don't. Given opportunities
+        in model time it returns a float: the rate; with
+        ``discount_rate``, the equivalent cost a unit of time of the
+        rule's discounted long run (a periodic calendar of a short cycle;
+        otherwise refused with a ready ``horizon=``); with ``horizon`` (a
+        model time), the rule's net present cost to it.
+
+        The rule gives, for each kind of replacement it uses (an
+        opportunity's name, or ``"anytime"`` for any day), the age from
+        which it replaces the part; the kinds it leaves out never replace.
+        Where kinds coincide, the one with the youngest age replaces (the
+        cheapest, at a tie). Worked out as the optimal policy's cost rate
+        is, on the same grid, with the decisions fixed (a plan of given
+        dates repeated past its last date).
+
+        Parameters
+        ----------
+        opportunities : Opportunities
+            The opportunities.
+        rule : dict
+            The age, at least 0 (``inf`` for never), from which each kind
+            replaces: ``{"annual": 0.0}`` replaces at every annual shut,
+            ``{"anytime": 493.0}`` at age 493 on any day, ``{}`` runs to
+            failure.
+        where : str, optional
+            As for ``optimal_opportunity_policy``.
+        max_age : float, optional
+            The oldest age on the grid, as for ``optimal_calendar_policy``.
+        plan : optional
+            With a site: as for
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
+        now : optional
+            With a site: as for
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
+        readings : optional
+            With a site: as for
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
+        unit : optional
+            With a site: as for
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
+        method : optional
+            With a site: as for
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
+        horizon : optional
+            With a site: as for
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
+        discount : optional
+            With a site: as for
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
+        failure_timing : optional
+            With a site: as for
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
+        mc_samples : optional
+            With a site: as for
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
+        seed : optional
+            With a site: as for
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
+        dated_until : optional
+            With a site: as for
+            [`optimal_opportunity_policy`][repyability.NonRepairable.optimal_opportunity_policy].
+        discount_rate : float, optional
+            With opportunities in model time: the continuous discount rate
+            a unit of their time, by default 0.
+
+        Returns
+        -------
+        float or RuleCost
+            In model time the rule's long-run cost a unit of time (its
+            EAC with ``discount_rate``, its net present cost with
+            ``horizon``); on real dates a ``RuleCost``.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairable, Opportunities
+        >>> unit = NonRepairable(
+        ...     surv.Weibull.from_params([1000, 2.5]),
+        ...     planned_cost=1.0,
+        ...     unplanned_cost=5.0,
+        ... )
+        >>> rate = unit.opportunity_policy_cost(
+        ...     Opportunities(), {"anytime": 493.0}
+        ... )
+        >>> round(rate, 6)
+        0.003462
+        """
+        from repyability.maintenance._opportunities import (
+            resolve,
+            site_given,
+            with_prices,
+        )
+        from repyability.maintenance._replacement import (
+            calendar_policy_cost,
+        )
+        from repyability.maintenance._shutdowns import Shutdowns
+        from repyability.maintenance._site_policy import price_rule
+
+        calendar, prices = resolve(
+            self,
+            opportunities,
+            where=where,
+            on_dates=site_given(
+                plan=plan,
+                now=now,
+                readings=readings,
+                unit=unit,
+                horizon=None if is_number(horizon) else horizon,
+                discount=discount,
+                dated_until=dated_until,
+                failure_timing=failure_timing,
+                method=method,
+            ),
+        )
+        if isinstance(calendar, Shutdowns):
+            if max_age is not None:
+                raise ValueError("max_age is for a Calendar in model time.")
+            if discount_rate != 0.0:
+                raise ValueError(
+                    "discount_rate is for opportunities in model time (a "
+                    "continuous rate a unit of their time); a site takes "
+                    "discount=, a yearly rate such as 0.07."
+                )
+            return with_prices(
+                price_rule(
+                    self,
+                    calendar,
+                    rule,
+                    plan=plan,
+                    now=now,
+                    readings=readings,
+                    unit=unit,
+                    method=method,
+                    horizon=horizon,
+                    discount=discount,
+                    failure_timing=failure_timing,
+                    mc_samples=mc_samples,
+                    seed=seed,
+                    dated_until=dated_until,
+                ),
+                prices,
+            )
+        _model_horizon(horizon)
+        _calendar_only(
+            plan=plan,
+            now=now,
+            readings=readings,
+            unit=unit,
+            discount=discount,
+            method=method,
+            dated_until=dated_until,
+        )
+        if failure_timing != "half_step":
+            raise ValueError(
+                "failure_timing is for a site's shuts (Shutdowns)."
+            )
+        return calendar_policy_cost(
+            self,
+            calendar,
+            rule,
+            max_age=max_age,
+            discount_rate=discount_rate,
+            horizon=horizon,
         )
 
     def calendar_policy_cost(
@@ -2264,133 +2893,162 @@ class NonRepairable:
         mc_samples=64,
         seed=None,
         dated_until=None,
+        discount_rate=0.0,
     ):
-        """The long-run average cost a unit of time of a given replacement
-        rule over a calendar of opportunities: to price simple policies
-        against
-        [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
-
-        Given a site ([`Shutdowns`][repyability.Shutdowns]), the rule
-        names the site's kinds of shut (and ``"any other day"``), it is
-        priced by the same route as the policy would be (``plan``,
-        ``now``, ``readings``, ``unit``, ``method``, ``horizon``,
-        ``discount``, ``failure_timing``, ``dated_until`` as there), and a
-        [`RuleCost`][repyability.RuleCost] comes back: the cost, its
-        measure, the route and words, and the replacements by kind. Given
-        a [`Calendar`][repyability.Calendar] it returns the rate, a float,
-        as before.
-
-        The rule gives, for each kind of replacement it uses (an
-        opportunity's name, or ``"anytime"`` for any day), the age from
-        which it replaces the part; the kinds it leaves out never replace.
-        Where kinds coincide, the one with the youngest age replaces (the
-        cheapest, at a tie). Worked out as the optimal policy's cost rate
-        is, on the same grid, with the decisions fixed (a plan of given
-        dates repeated past its last date).
+        """**Deprecated** (removed in 0.21): renamed
+        [`opportunity_policy_cost`][repyability.NonRepairable.opportunity_policy_cost],
+        which takes the same arguments and gives the same cost.
 
         Parameters
         ----------
-        calendar : Calendar
-            The opportunities and prices.
+        calendar : Opportunities, Calendar or Shutdowns
+            The opportunities.
         rule : dict
-            The age, at least 0 (``inf`` for never), from which each kind
-            replaces: ``{"annual": 0.0}`` replaces at every annual shut,
-            ``{"anytime": 493.0}`` at age 493 on any day, ``{}`` runs to
-            failure.
-        max_age : float, optional
-            The oldest age on the grid, as for ``optimal_calendar_policy``.
+            As for ``opportunity_policy_cost``.
+        max_age : optional
+            As for ``opportunity_policy_cost``.
         plan : optional
-            With a site: as for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            As for ``opportunity_policy_cost``.
         now : optional
-            With a site: as for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            As for ``opportunity_policy_cost``.
         readings : optional
-            With a site: as for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            As for ``opportunity_policy_cost``.
         unit : optional
-            With a site: as for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            As for ``opportunity_policy_cost``.
         method : optional
-            With a site: as for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            As for ``opportunity_policy_cost``.
         horizon : optional
-            With a site: as for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            As for ``opportunity_policy_cost``.
         discount : optional
-            With a site: as for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            As for ``opportunity_policy_cost``.
         failure_timing : optional
-            With a site: as for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            As for ``opportunity_policy_cost``.
         mc_samples : optional
-            With a site: as for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            As for ``opportunity_policy_cost``.
         seed : optional
-            With a site: as for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            As for ``opportunity_policy_cost``.
         dated_until : optional
-            With a site: as for
-            [`optimal_calendar_policy`][repyability.NonRepairable.optimal_calendar_policy].
+            As for ``opportunity_policy_cost``.
+        discount_rate : optional
+            As for ``opportunity_policy_cost``.
 
         Returns
         -------
-        float
-            The rule's long-run cost a unit of time.
-
-        Examples
-        --------
-        >>> import surpyval as surv
-        >>> from repyability import Calendar, NonRepairable
-        >>> unit = NonRepairable(
-        ...     surv.Weibull.from_params([1000, 2.5]),
-        ...     planned_cost=1.0,
-        ...     unplanned_cost=5.0,
-        ... )
-        >>> rate = unit.calendar_policy_cost(Calendar(), {"anytime": 493.0})
-        >>> round(rate, 6)
-        0.003462
+        float or RuleCost
+            As ``opportunity_policy_cost`` returns.
         """
-        from repyability.maintenance._replacement import (
-            calendar_policy_cost,
-        )
-        from repyability.maintenance._shutdowns import Shutdowns
-        from repyability.maintenance._site_policy import price_rule
+        from repyability.utils.deprecation import replaced
 
-        if isinstance(calendar, Shutdowns):
-            if max_age is not None:
-                raise ValueError("max_age is for a Calendar in model time.")
-            return price_rule(
-                self,
-                calendar,
-                rule,
-                plan=plan,
-                now=now,
-                readings=readings,
-                unit=unit,
-                method=method,
-                horizon=horizon,
-                discount=discount,
-                failure_timing=failure_timing,
-                mc_samples=mc_samples,
-                seed=seed,
-                dated_until=dated_until,
-            )
-        _calendar_only(
+        replaced(
+            "NonRepairable.calendar_policy_cost",
+            "NonRepairable.opportunity_policy_cost",
+            "the opportunities are one record for every part, on real "
+            "dates or in model time",
+        )
+        return self.opportunity_policy_cost(
+            calendar,
+            rule,
+            max_age=max_age,
             plan=plan,
             now=now,
             readings=readings,
             unit=unit,
+            method=method,
             horizon=horizon,
             discount=discount,
-            method=method,
+            failure_timing=failure_timing,
+            mc_samples=mc_samples,
+            seed=seed,
             dated_until=dated_until,
+            discount_rate=discount_rate,
         )
-        if failure_timing != "half_step":
-            raise ValueError(
-                "failure_timing is for a site's shuts (Shutdowns)."
-            )
-        return calendar_policy_cost(self, calendar, rule, max_age=max_age)
+
+    @staticmethod
+    def opportunity_prices(
+        opportunities,
+        *,
+        replacement_cost,
+        replacement_duration,
+        failure_cost,
+        failure_duration,
+        downtime_cost,
+    ):
+        """A part's prices worked out from what a replacement costs and how
+        long the plant is down for it: one row per opportunity, then any
+        other day and a failure, each with its price and why.
+
+        - At an opportunity the job fits in: ``replacement_cost`` (the
+          plant is down anyway).
+        - On any other day: ``replacement_cost + downtime_cost *
+          replacement_duration``.
+        - At a failure: ``failure_cost + downtime_cost *
+          failure_duration``.
+        - At an opportunity shorter than ``replacement_duration``: not
+          used.
+
+        ``downtime_cost`` is the system's (what an hour of the plant down
+        costs), so it is not kept on the part: the result's ``apply(part)``
+        gives the part the prices it works out (``planned_cost``,
+        ``unplanned_cost``, ``opportunity_cost`` and ``job_duration``).
+
+        Parameters
+        ----------
+        opportunities : Opportunities
+            The opportunities.
+        replacement_cost : float
+            What the replacement itself costs (parts and labour).
+        replacement_duration : float or str
+            How long it takes: on real dates text (``"6h"``) or hours, the
+            downtime cost a unit of it being an hour's; in model time a
+            number in the life's unit.
+        failure_cost : float
+            What a replacement at a failure costs itself.
+        failure_duration : float or str
+            How long the plant is down at a failure, as
+            ``replacement_duration``.
+        downtime_cost : float
+            What the plant down costs a unit of duration.
+
+        Returns
+        -------
+        OpportunityPrices
+            The rows, and the part's prices to ``apply``.
+
+        Examples
+        --------
+        >>> from repyability import NonRepairable, Opportunities, Opportunity
+        >>> from repyability.schedule import Recurrence
+        >>> site = Opportunities([
+        ...     Opportunity("weekly stop", Recurrence.weekly("Sat"),
+        ...                 duration="8h"),
+        ...     Opportunity("shift change", Recurrence.weekly("Mon"),
+        ...                 duration="4h"),
+        ... ])
+        >>> prices = NonRepairable.opportunity_prices(
+        ...     site, replacement_cost=1_200, replacement_duration="6h",
+        ...     failure_cost=4_200, failure_duration="18h",
+        ...     downtime_cost=2_500,
+        ... )
+        >>> print(prices.describe())  # doctest: +NORMALIZE_WHITESPACE
+        weekly stop: $1,200 (replacement_cost alone: the plant is down
+        anyway)
+        shift change: not used (the 6 h job doesn't fit in the 4 h shift
+        change)
+        any day: $16,200 (1200 + 2500 x 6 h)
+        failure: $49,200 (4200 + 2500 x 18 h)
+        """
+        from repyability.maintenance._opportunities import (
+            opportunity_prices,
+        )
+
+        return opportunity_prices(
+            opportunities,
+            replacement_cost=replacement_cost,
+            replacement_duration=replacement_duration,
+            failure_cost=failure_cost,
+            failure_duration=failure_duration,
+            downtime_cost=downtime_cost,
+        )
 
     def reset(self):
         """Restart the event sequence with a working, as-new unit.
@@ -2456,6 +3114,17 @@ class NonRepairable:
         elif self.__next_event_type == REPLACE:
             self.__next_event_type = FAILURE
             return self.time_to_replace.random(1).item(), True
+
+
+def _model_horizon(horizon) -> None:
+    """Refuse a horizon on real dates given with opportunities in model
+    time, which take one in their own time."""
+    if horizon is not None and not is_number(horizon):
+        raise ValueError(
+            "These opportunities are in model time, so a horizon is a time "
+            f"in their own time (a number, such as 36500); got {horizon!r}. "
+            "A date is for opportunities on real dates."
+        )
 
 
 def _calendar_only(**given) -> None:

@@ -20,10 +20,12 @@ which applied.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
+from repyability.schedule import _discount
 from repyability.schedule._recurrence import (
     VERSION,
     Recurrence,
@@ -243,6 +245,17 @@ class TaskDue(_ScheduleResult):
         Plain words on what the rules left out or moved in the period
         (months with no fifth Saturday, excluded dates), and on the
         assumptions made.
+    discount : float or None
+        The yearly discount rate given (``due(..., discount=0.07)``);
+        None when none was.
+    npv : float or None
+        With a discount and a cost: what the period's costs are worth on
+        ``start``, each discounted from the date it is done, ``cost / (1
+        + discount) ** years`` with a year of 365.25 days.
+    eac : float or None
+        The equivalent annual cost: the steady cost a year over the
+        period worth ``npv`` (``cost`` over the period's years at a
+        discount of 0).
     """
 
     task: str
@@ -262,6 +275,57 @@ class TaskDue(_ScheduleResult):
     moments: Tuple[datetime, ...] = ()
     readings: Tuple[Optional[float], ...] = ()
     stops_after: Tuple[Optional[datetime], ...] = ()
+    discount: Optional[float] = None
+    npv: Optional[float] = None
+    eac: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class LongRunValue(_ScheduleResult):
+    """What a task repeating for ever is worth now: returned by
+    ``Task.long_run_value``.
+
+    Attributes
+    ----------
+    task : str
+        The task's name.
+    start : datetime.date
+        The date the costs are discounted to; the dates from it count.
+    discount : float
+        The yearly discount rate.
+    npv : float
+        The present value on ``start`` of the task's cost every time it
+        is done, for ever.
+    eac : float
+        The equivalent annual cost: the steady cost a year, for ever,
+        worth ``npv`` (``npv * ln(1 + discount)``).
+    method : str
+        ``"closed form"`` (a plain interval of days or weeks: a geometric
+        sum, exact) or ``"summed"`` (any other task: its dates to
+        ``summed_to``, one by one).
+    precision : float
+        The most the dates left out can add to ``npv``: 0 for a closed
+        form; for a sum, what a task done every day after ``summed_to``
+        would add, which no task exceeds.
+    summed_to : datetime.date or None
+        The last date summed to (None for a closed form).
+    count : int or None
+        How many times the task is done to ``summed_to`` (None for a
+        closed form).
+    notes : tuple of str
+        What was assumed.
+    """
+
+    task: str
+    start: date
+    discount: float
+    npv: float
+    eac: float
+    method: str
+    precision: float
+    summed_to: Optional[date]
+    count: Optional[int]
+    notes: Tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -291,6 +355,18 @@ class WorkByPeriod(_ScheduleResult):
     no_hours, no_cost : tuple of str
         The tasks with no duration (or no cost), left out of ``hours``
         (or ``cost``), so a total is not taken for all the work.
+    discount : float or None
+        The yearly discount rate given; None when none was.
+    npv : tuple of float or None
+        With a discount: what each period's ``cost`` is worth on the
+        first date, each task discounted from the date it is done.
+    total_npv : float or None
+        The periods' ``npv`` summed.
+    eac : float or None
+        The equivalent annual cost: the steady cost a year over the dates
+        asked for worth ``total_npv``.
+    notes : tuple of str
+        What the present values assumed (empty with no discount).
     """
 
     period: str
@@ -303,9 +379,32 @@ class WorkByPeriod(_ScheduleResult):
     tasks: Tuple[Tuple[Tuple[str, date], ...], ...]
     no_hours: Tuple[str, ...]
     no_cost: Tuple[str, ...]
+    discount: Optional[float] = None
+    npv: Optional[Tuple[float, ...]] = None
+    total_npv: Optional[float] = None
+    eac: Optional[float] = None
+    notes: Tuple[str, ...] = ()
 
 
 # ------------------------------------------------------------ task
+
+#: The years a long-run sum first runs to, before it is known how far it
+#: must go.
+_FIRST_YEARS = 25.0
+
+
+def _years(start: date, end: date) -> float:
+    """The length in years of a period that includes both its dates."""
+    return ((end - start).days + 1) / _discount.DAYS_A_YEAR
+
+
+def _present_value(
+    cost: float, discount: float, start: date, done: Sequence[date]
+) -> float:
+    """What ``cost`` on each date of ``done`` is worth on ``start``."""
+    return math.fsum(
+        cost * _discount.factor_on(discount, start, day) for day in done
+    )
 
 
 def _amount(value, name: str, what: str) -> Optional[float]:
@@ -462,7 +561,9 @@ class Task:
             text += f"; done at the visits ({self.visits.describe()})"
         return text
 
-    def due(self, start, end, usage=None) -> TaskDue:
+    def due(
+        self, start, end, usage=None, *, discount=None, escalation=None
+    ) -> TaskDue:
         """When the task falls due from ``start`` to ``end``, **both
         included**, assuming each time is done on its due date (or at its
         visit).
@@ -476,17 +577,52 @@ class Task:
             ([`DutyPlan.forecast`][repyability.schedule.DutyPlan.forecast]),
             which a limit by use (``Usage``) needs; it should cover the
             period.
+        discount : float, optional
+            A yearly discount rate (0.07 for 7% a year): the result then
+            has ``npv``, the costs' present value on ``start``, each
+            discounted from the date it is done, and ``eac``. By default
+            None: no present value.
+        escalation : float, optional
+            With ``discount``, the effective yearly rate every cost
+            escalates at from its price today (0.03 for 3% a year): the
+            present values (and ``eac``) take each cost grown to when it
+            falls, at the net yearly rate ``(1 + discount) / (1 + escalation)
+            - 1``. By default None: today's prices.
 
         Returns
         -------
         TaskDue
-        """
-        return self._due(start, end, {"usage": usage})
 
-    def _due(self, start, end, context: Dict[str, Any]) -> TaskDue:
+        Examples
+        --------
+        $250 every 30 days from 20 November 2026, at 7% a year, over the
+        first year:
+
+        >>> from repyability.schedule import Recurrence, Task
+        >>> task = Task(
+        ...     "grease bearings",
+        ...     every=Recurrence.every(30, "days", "2026-11-20"),
+        ...     cost=250.0,
+        ... )
+        >>> year = task.due("2026-11-20", "2027-11-19", discount=0.07)
+        >>> year.count, year.cost, round(year.npv, 2)
+        (13, 3250.0, 3144.1)
+        """
+        return self._due(start, end, {"usage": usage}, discount, escalation)
+
+    def _due(
+        self,
+        start,
+        end,
+        context: Dict[str, Any],
+        discount=None,
+        escalation=None,
+    ) -> TaskDue:
         """``due`` with what the limits need (a later release's usage
         forecast) in ``context``."""
         start, end = _period(start, end)
+        discount = _discount.yearly(discount)
+        given, discount = discount, _discount.net(discount, escalation)
         kinds = self._limits()
         limits = [limit.bind(self, start, end, context) for limit in kinds]
         last = None if self.last_done is None else _midnight(self.last_done)
@@ -556,6 +692,18 @@ class Task:
                 f"Overdue at {start}: due on {dates[0]}, after it was last "
                 f"done ({self.last_done}); assumed done on {start}.",
             )
+        npv = eac = None
+        if discount is not None:
+            if self.cost is None:
+                notes.append(
+                    "No present value: the task has no cost (give cost=)."
+                )
+            else:
+                npv = _present_value(self.cost, discount, start, done_on)
+                eac = _discount.equivalent_annual(
+                    npv, discount, _years(start, end)
+                )
+                notes.append(_discount.words(given, start, escalation))
         return TaskDue(
             task=self.name,
             start=start,
@@ -574,6 +722,234 @@ class Task:
             moments=tuple(moments),
             readings=tuple(readings),
             stops_after=tuple(stops),
+            discount=given,
+            npv=npv,
+            eac=eac,
+        )
+
+    def long_run_value(
+        self, start, discount, *, precision: float = 1e-9, escalation=None
+    ) -> LongRunValue:
+        """What the task is worth on ``start`` repeating for ever: the
+        present value of its cost every time it is done from ``start``
+        on, at a yearly discount rate.
+
+        A plain interval of days or weeks (no second limit, visits,
+        season or excluded dates) is a geometric sum, in closed form:
+        ``cost / (1 - (1 + discount) ** (-days / 365.25))`` from the
+        first time it is done. Any other task is summed date by date
+        until what is left cannot matter: a task is done once a day at
+        most, so the dates after any day are worth less than a task done
+        every day from then, and the sum stops where that is under
+        ``precision`` of the total.
+
+        Parameters
+        ----------
+        start : datetime.date or str
+            The date the costs are discounted to; the task's dates from
+            it count (an overdue task is done on it).
+        discount : float
+            The yearly discount rate, more than 0 (0.07 for 7% a year).
+        escalation : float, optional
+            The effective yearly rate the cost escalates at from its price
+            today (0.03 for 3% a year), below ``discount``: the value is
+            taken at the net yearly rate ``(1 + discount) / (1 +
+            escalation) - 1``. By default None: today's price.
+        precision : float, optional
+            For a task that is summed: the most the dates left out may
+            add, as a share of the value; by default 1e-9.
+
+        Returns
+        -------
+        LongRunValue
+
+        Raises
+        ------
+        ValueError
+            The task has no cost; ``discount`` is 0 (the costs add up
+            without end: ``due`` gives a period's); its dates end (given
+            dates: ``due`` to the last gives the whole value); a limit is
+            by use (``Usage``: it follows a usage forecast, which ends);
+            or the rate is too low for the sum to settle to ``precision``
+            by the year 9999.
+
+        Examples
+        --------
+        $250 every 30 days from 20 November 2026, at 7% a year:
+
+        >>> from repyability.schedule import Recurrence, Task
+        >>> task = Task(
+        ...     "grease bearings",
+        ...     every=Recurrence.every(30, "days", "2026-11-20"),
+        ...     cost=250.0,
+        ... )
+        >>> value = task.long_run_value("2026-11-20", 0.07)
+        >>> round(value.npv), value.method
+        (45112, 'closed form')
+        """
+        start = _date(start, "start")
+        discount = _discount.yearly(discount, required=True)
+        assert discount is not None
+        given, discount = discount, _discount.net(discount, escalation)
+        assert discount is not None
+        if escalation is not None and not discount > 0.0:
+            raise ValueError(
+                f"The cost escalates at {_discount.percent(escalation)} a "
+                f"year, no slower than the discount of "
+                f"{_discount.percent(given)}: repeating for ever, it is "
+                "worth without end. Ask for a period's value with "
+                "due(start, end, discount=, escalation=)."
+            )
+        if not (_is_number(precision) and 0.0 < float(precision) < 1.0):
+            raise ValueError(
+                "precision must be a share of the value, more than 0 and "
+                f"less than 1 (such as 1e-9); got {precision!r}."
+            )
+        self._check_for_ever(start, discount)
+        assert self.cost is not None
+        notes = [_discount.words(given, start, escalation)]
+        gap = self._plain_gap()
+        to: Optional[date] = None
+        count: Optional[int] = None
+        if self.cost == 0.0:
+            npv, method, left = 0.0, "closed form", 0.0
+            notes.append("The task costs nothing each time.")
+        elif gap is not None:
+            # The interval repeats exactly from the second time the task
+            # is done (the first may be an overdue one, done on start).
+            assert isinstance(self.every, Recurrence)
+            assert self.every.anchor is not None
+            known = max(start, self.every.anchor, self.last_done or start)
+            first, second = self._due(
+                start, known + timedelta(days=2 * gap), {}
+            ).done[:2]
+            npv = _present_value(self.cost, discount, start, [first])
+            npv += self.cost * _discount.perpetuity(
+                discount,
+                _discount.years_from(start, second),
+                gap / _discount.DAYS_A_YEAR,
+            )
+            method, left = "closed form", 0.0
+            notes.append(
+                f"Done on {first}, then every {gap} days from {second}, "
+                "for ever: a geometric sum."
+            )
+        else:
+            npv, left, to, count = self._summed(
+                start, discount, float(precision)
+            )
+            method = "summed"
+            notes.append(
+                f"Summed date by date to {to} ({count} times); a task done "
+                f"every day after it would add {left:.3g}, which this one "
+                "cannot exceed."
+            )
+        return LongRunValue(
+            task=self.name,
+            start=start,
+            discount=given,
+            npv=npv,
+            eac=_discount.equivalent_annual(npv, discount, math.inf),
+            method=method,
+            precision=left,
+            summed_to=to,
+            count=count,
+            notes=tuple(notes),
+        )
+
+    def _check_for_ever(self, start: date, discount: float) -> None:
+        """Refuse what has no long-run value, saying what to run."""
+        if self.cost is None:
+            raise ValueError(
+                f"Task {self.name!r} has no cost to value: give cost=."
+            )
+        if discount == 0.0:
+            raise ValueError(
+                "With no discount (discount=0) a task repeating for ever "
+                "costs without end: give a yearly rate above 0, or ask for "
+                "a period's cost with due(start, end)."
+            )
+        kinds = self._limits()
+        if not all(isinstance(kind, _CalendarLimit) for kind in kinds):
+            raise ValueError(
+                f"Task {self.name!r} has a limit by use, which follows a "
+                "usage forecast, and a forecast ends: ask for the present "
+                "value over the forecast with due(start, end, usage=..., "
+                "discount=...)."
+            )
+        ends = [k.rule.given[-1] for k in kinds if k.rule.rule == "on"]
+        if self.visits is not None and self.visits.rule == "on":
+            what = "is done at visits on given dates"
+            last = self.visits.given[-1]
+        elif len(ends) == len(kinds):
+            what, last = "is on given dates", max(ends)
+        else:
+            return
+        raise ValueError(
+            f"Task {self.name!r} {what}, which end on {last}: "
+            + (
+                "nothing is left of it from then."
+                if last < start
+                else f"due({start}, {last}, discount=...) gives its whole "
+                "present value."
+            )
+        )
+
+    def _plain_gap(self) -> Optional[int]:
+        """The days between a plain interval's dates (every so many days
+        or weeks, and nothing else that moves a date); None for any other
+        task."""
+        rule = self.every
+        if (
+            self.also is not None
+            or self.visits is not None
+            or not isinstance(rule, Recurrence)
+            or rule.rule != "every"
+            or rule.unit not in ("days", "weeks")
+            or rule.season is not None
+            or rule.excluding
+        ):
+            return None
+        return rule.every_n * (7 if rule.unit == "weeks" else 1)
+
+    def _summed(self, start: date, discount: float, precision: float):
+        """The task's present value summed date by date, to where a task
+        done every day after could add no more than ``precision`` of it:
+        the value, that bound, the last date summed to and the count."""
+        assert self.cost is not None
+        day = 1.0 / _discount.DAYS_A_YEAR
+        rate = _discount.continuous(discount)
+        latest = (date.max - start).days
+        days = min(int(_FIRST_YEARS * _discount.DAYS_A_YEAR), latest)
+        # The whole value is no more than a task every day from start, so
+        # the bound cannot be under the precision before this many days.
+        soonest = -math.log(precision) / rate * _discount.DAYS_A_YEAR - 1.0
+        while soonest <= latest:
+            end = start + timedelta(days=days)
+            done = self._due(start, end, {}).done
+            npv = _present_value(self.cost, discount, start, done)
+            # Every day after ``end``, for ever.
+            left = self.cost * _discount.perpetuity(
+                discount, (days + 1) * day, day
+            )
+            if npv > 0.0 and left <= precision * npv:
+                return npv, left, end, len(done)
+            if days == latest:
+                break
+            # Where the bound falls to the precision of what is summed so
+            # far (the whole value is no less); twice as far with nothing
+            # summed yet.
+            if npv > 0.0:
+                more = math.log(left / (precision * npv)) / rate
+                days = days + int(more * _discount.DAYS_A_YEAR) + 1
+            else:
+                days = 2 * days
+            days = min(days, latest)
+        raise ValueError(
+            f"At {_discount.percent(discount)} a year the sum does not "
+            f"settle to precision={precision:g} by the year 9999, as far "
+            "as dates go: give a looser precision=, or ask for a period's "
+            "present value with due(start, end, discount=...)."
         )
 
     def _notes(self, start: date, end: date) -> List[str]:
@@ -704,7 +1080,14 @@ def _periods(start: date, end: date, period: str):
 
 
 def work_by_period(
-    tasks: Sequence[Task], period, start, end, usage=None
+    tasks: Sequence[Task],
+    period,
+    start,
+    end,
+    usage=None,
+    *,
+    discount=None,
+    escalation=None,
 ) -> WorkByPeriod:
     """The work tasks need in each calendar period from ``start`` to
     ``end`` (both included): how many are done, their hours and cost,
@@ -722,6 +1105,17 @@ def work_by_period(
     usage : UsageForecast, optional
         The map from dates to meter readings, for tasks with a limit by
         use (see ``Task.due``).
+    discount : float, optional
+        A yearly discount rate (0.07 for 7% a year): the result then has
+        each period's ``npv`` (its costs' present value on ``start``, each
+        task discounted from the date it is done), ``total_npv`` and
+        ``eac``. By default None: no present values.
+    escalation : float, optional
+        With ``discount``, the effective yearly rate every cost
+        escalates at from its price today (0.03 for 3% a year): the
+        present values (and ``eac``) take each cost grown to when it
+        falls, at the net yearly rate ``(1 + discount) / (1 + escalation)
+        - 1``. By default None: today's prices.
 
     Returns
     -------
@@ -749,10 +1143,13 @@ def work_by_period(
             "Each task needs its own name, to be told apart in the result."
         )
     start, end = _period(start, end)
+    discount = _discount.yearly(discount)
+    given, discount = discount, _discount.net(discount, escalation)
     spans = _periods(start, end, period)
     firsts = [a for a, _ in spans]
     n = len(spans)
     count, hours, cost = [0] * n, [0.0] * n, [0.0] * n
+    worth: List[List[float]] = [[] for _ in range(n)]
     listed: List[List[Tuple[str, date]]] = [[] for _ in range(n)]
     by_task: Dict[str, Tuple[int, ...]] = {}
     for task in tasks:
@@ -767,7 +1164,26 @@ def work_by_period(
                 hours[index] += task.duration
             if task.cost is not None:
                 cost[index] += task.cost
+                if discount is not None:
+                    worth[index].append(
+                        task.cost * _discount.factor_on(discount, start, day)
+                    )
         by_task[task.name] = tuple(mine)
+    npv = total_npv = eac = None
+    notes: List[str] = []
+    if discount is not None:
+        npv = tuple(math.fsum(x) for x in worth)
+        total_npv = math.fsum(npv)
+        eac = _discount.equivalent_annual(
+            total_npv, discount, _years(start, end)
+        )
+        notes.append(_discount.words(given, start, escalation))
+        missing = [t.name for t in tasks if t.cost is None]
+        if missing:
+            notes.append(
+                "The present values leave out the tasks with no cost: "
+                f"{', '.join(missing)}."
+            )
     return WorkByPeriod(
         period=period,
         starts=tuple(firsts),
@@ -781,4 +1197,9 @@ def work_by_period(
         ),
         no_hours=tuple(t.name for t in tasks if t.duration is None),
         no_cost=tuple(t.name for t in tasks if t.cost is None),
+        discount=given,
+        npv=npv,
+        total_npv=total_npv,
+        eac=eac,
+        notes=tuple(notes),
     )

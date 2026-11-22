@@ -15,6 +15,35 @@ component that fails while a crew is free is never down, and one that waits
 comes back up the moment a crew reaches it. That crew then takes the next
 job.
 
+With a call-out crew (``call_when``, a ``RepairableRBD``'s ``call_out``),
+a job that makes that many wait brings one more crew, which takes the
+first waiting job at once; while it is engaged there is a crew more, and
+it leaves at the first end of a job that leaves a crew with none to take
+(the job it has then, if any, is finished by the crew that came free:
+the crews are alike). So it is engaged exactly in the states with a job
+more under repair than there are crews, and the chain needs no more of a
+state. ``calls`` is the rate at which it is called in each state and
+``engaged`` those states, for its fee and its rate while engaged.
+
+With common-cause groups (``shared``, #251), a shared cause strikes at its
+rate and fails the components it names that are up, at once, as the
+simulation's does (``_event_loop._strike``): they join the queue one after
+another in the cause's order, each as a failure of its own would. The
+simulation takes the first that way, and the others in the order its event
+queue releases events at one time, which is the cause's order for one
+other and not a rule for more: the chain takes causes of two components
+(``MAX_STRUCK``). A component of a group fails on its own at its own
+cause's rate, which is what ``failure_rates`` then holds.
+
+A component may stand for several alike copies (``copies``, for the
+redundancy allocation's designs): a state then says how many of them are
+under repair and waiting (the component as many times among those under
+repair and in the queue), not which, as the copies are alike in rates and
+priority. Each copy up fails at the component's rate and each under
+repair is repaired at its rate, so the chain is that of the copies told
+apart, with the states that differ only by which copy is where taken
+together.
+
 The chain is enumerated from the state with every component up, and its
 balance equations are solved directly: sparse equations for each other
 state's probability relative to that one's. They are eliminated from the
@@ -28,12 +57,24 @@ repairs are 1e4 times as fast as its failures.
 """
 
 import math
-from typing import Any, Dict, Hashable, List, NamedTuple, Sequence, Tuple
+from typing import (
+    Any,
+    Dict,
+    Hashable,
+    List,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import numpy as np
 
 #: The most states the chain is solved for.
 MAX_STATES = 15_000
+
+#: The most components a shared cause may strike (see the module docstring).
+MAX_STRUCK = 2
 
 #: A state: the components under repair (sorted), and those waiting, in the
 #: order the crews will take them.
@@ -51,7 +92,12 @@ class CrewChain(NamedTuple):
     ``_chain_transient``). ``transitions`` are its transitions one by one,
     ``(sources, targets, rates, components)``: each a component's failure
     or the end of its repair (with the jobs the crew then takes that are
-    done at once), labelled with that component's position.
+    done at once), labelled with that component's position, or a shared
+    cause's strike, labelled with ``len(nodes)`` plus its group's place
+    (``groups`` of them). ``calls`` is
+    the rate at which a call-out crew is called in each state, and
+    ``engaged`` whether it is engaged there (see the module docstring):
+    zeros without one.
     """
 
     nodes: Tuple[Hashable, ...]
@@ -60,6 +106,12 @@ class CrewChain(NamedTuple):
     states: Tuple[State, ...] = ()
     generator: Any = None
     transitions: Any = None
+    calls: Any = None
+    engaged: Any = None
+    groups: int = 0
+    #: How many of each component's copies are up in each state (1 or 0
+    #: without copies): ``up`` says whether any is.
+    working: Any = None
 
     def availability(self, node) -> float:
         """The long-run probability that ``node`` is up."""
@@ -70,9 +122,12 @@ class CrewChain(NamedTuple):
         """``Q_i v`` for each component ``i`` (columns), ``Q_i`` the part of
         the generator made of its transitions: ``Q = sum_i Q_i``, so that
         ``p(t) Q_i v`` is the part of ``d/dt p(t) v`` the component's
-        failures and repairs make."""
+        failures and repairs make; then a column for each common-cause
+        group, of its shared causes' strikes."""
         sources, targets, rates, components = self.transitions
-        out = np.zeros((len(self.probabilities), len(self.nodes)))
+        out = np.zeros(
+            (len(self.probabilities), len(self.nodes) + self.groups)
+        )
         vector = np.asarray(vector, dtype=float)
         np.add.at(
             out,
@@ -89,14 +144,21 @@ def _queues(r: int) -> int:
 
 
 def state_count(
-    priorities: Sequence[float], instant: Sequence[bool], crews: int
+    priorities: Sequence[float],
+    instant: Sequence[bool],
+    crews: int,
+    call_when: int = 0,
+    copies: Optional[Sequence[int]] = None,
 ) -> int:
     """The number of states of the chain, counted without building it.
 
     In a state either nothing waits, and at most ``crews`` of the components
     whose repairs take time are under repair; or every crew is busy with
     such a repair, and some of the other components wait, in any order
-    within each priority.
+    within each priority. With a call-out crew (``call_when``) or copies
+    of components (``copies``) the states are counted as they are
+    reached, up to ``MAX_STATES + 1``: more than that many are not told
+    apart.
 
     Parameters
     ----------
@@ -106,12 +168,30 @@ def state_count(
         Whether each component's repair is instant.
     crews : int
         The number of crews.
+    call_when : int, optional
+        How many waiting jobs call the call-out crew (0: there is none).
+    copies : Sequence[int], optional
+        How many alike copies each component stands for (one each, by
+        default).
 
     Returns
     -------
     int
         The number of states.
     """
+    if call_when or copies is not None:
+        return len(
+            _enumerate(
+                [1.0] * len(instant),
+                [math.inf if now else 1.0 for now in instant],
+                priorities,
+                crews,
+                call_when,
+                MAX_STATES + 1,
+                (),
+                copies,
+            )[0]
+        )
     timed = sum(1 for now in instant if not now)
     count = sum(math.comb(timed, k) for k in range(min(crews, timed) + 1))
     if timed < crews:
@@ -141,10 +221,22 @@ def _enumerate(
     repair_rates: Sequence[float],
     priorities: Sequence[float],
     crews: int,
-) -> Tuple[List[State], List[int], List[int], List[float], List[int]]:
+    call_when: int = 0,
+    limit: int = 0,
+    shared: Sequence[Tuple[Tuple[int, ...], float, int]] = (),
+    copies: Optional[Sequence[int]] = None,
+) -> Tuple[
+    List[State], List[int], List[int], List[float], List[int], List[int]
+]:
     """The states reached from the one with every component up, and the
-    transitions between them: sources, targets, rates, and the component
-    whose failure or repair each is."""
+    transitions between them: sources, targets, rates, the component
+    whose failure or repair each is (or, for a strike of one of the
+    ``shared`` causes, each ``(components struck, rate, group)``, the
+    number of components plus its group), and how many times it calls
+    the call-out crew (``call_when`` waiting jobs do; see the module
+    docstring). With a ``limit``, it stops once it has reached that many
+    states. With ``copies``, each component stands for that many alike
+    ones (see the module docstring)."""
     instant = [math.isinf(rate) for rate in repair_rates]
     start: State = ((), ())
     index = {start: 0}
@@ -153,8 +245,15 @@ def _enumerate(
     targets: List[int] = []
     rates: List[float] = []
     components: List[int] = []
+    calls: List[int] = []
 
-    def reach(source: int, state: State, rate: float, component: int) -> None:
+    def reach(
+        source: int,
+        state: State,
+        rate: float,
+        component: int,
+        call: int = 0,
+    ) -> None:
         target = index.get(state)
         if target is None:
             target = index[state] = len(states)
@@ -163,42 +262,74 @@ def _enumerate(
         targets.append(target)
         rates.append(rate)
         components.append(component)
+        calls.append(call)
 
+    def taken(serving: tuple, waiting: tuple) -> State:
+        """A crew takes the next waiting job, and an instant one is done
+        at once, so it goes on to the one after."""
+        while waiting:
+            head, waiting = waiting[0], waiting[1:]
+            if not instant[head]:
+                return tuple(sorted(serving + (head,))), waiting
+        return serving, waiting
+
+    def failed(state: State, i: int) -> Tuple[State, int]:
+        """The state once component ``i``, up in ``state``, has failed,
+        and whether that called the call-out crew."""
+        serving, queue = state
+        if len(serving) < crews:
+            if instant[i]:
+                return state, 0  # repaired at once: nothing changes
+            return (tuple(sorted(serving + (i,))), queue), 0
+        # Behind every waiting job of the same priority or higher.
+        place = len(queue)
+        while place and priorities[queue[place - 1]] < priorities[i]:
+            place -= 1
+        waiting = queue[:place] + (i,) + queue[place:]
+        if call_when and len(serving) == crews and len(waiting) >= call_when:
+            # The call-out crew comes, and takes the first of them.
+            return taken(serving, waiting), 1
+        return (serving, waiting), 0
+
+    count = len(failure_rates)
+    alike = [1] * count if copies is None else list(copies)
     source = 0
-    while source < len(states):
-        serving, queue = states[source]
-        down = set(serving).union(queue)
+    while source < len(states) and not (limit and len(states) >= limit):
+        state = states[source]
+        serving, queue = state
+        # How many of each component's copies are up.
+        up = list(alike)
+        for i in serving + queue:
+            up[i] -= 1
         for i, rate in enumerate(failure_rates):
-            if i in down:
+            if not up[i]:
                 continue
-            if len(serving) < crews:
-                if instant[i]:
-                    continue  # repaired at once: nothing changes
-                reach(source, (tuple(sorted(serving + (i,))), queue), rate, i)
-                continue
-            # Behind every waiting job of the same priority or higher.
-            place = len(queue)
-            while place and priorities[queue[place - 1]] < priorities[i]:
-                place -= 1
+            after, call = failed(state, i)
+            if after != state or call:
+                reach(source, after, up[i] * rate, i, call)
+        for struck, rate, group in shared:
+            # Those up fail one after another, in the cause's order.
+            after, called = state, 0
+            for i in struck:
+                if up[i]:
+                    after, call = failed(after, i)
+                    called += call
+            if after != state or called:
+                reach(source, after, rate, count + group, called)
+        for i in sorted(set(serving)):
+            # One of its copies under repair is done.
+            place = serving.index(i)
+            rest = serving[:place] + serving[place + 1 :]
+            # The crew takes the next job; with none, the call-out crew
+            # (engaged with a job more than the crews under repair) goes.
             reach(
                 source,
-                (serving, queue[:place] + (i,) + queue[place:]),
-                rate,
+                taken(rest, queue),
+                serving.count(i) * repair_rates[i],
                 i,
             )
-        for i in serving:
-            rest = tuple(j for j in serving if j != i)
-            waiting = queue
-            # The crew takes the next job, and an instant one is done at
-            # once, so it goes on to the one after.
-            while waiting:
-                head, waiting = waiting[0], waiting[1:]
-                if not instant[head]:
-                    rest = tuple(sorted(rest + (head,)))
-                    break
-            reach(source, (rest, waiting), repair_rates[i], i)
         source += 1
-    return states, sources, targets, rates, components
+    return states, sources, targets, rates, components, calls
 
 
 def solve(
@@ -207,6 +338,9 @@ def solve(
     repair_rates: Sequence[float],
     priorities: Sequence[float],
     crews: int,
+    call_when: int = 0,
+    shared: Sequence[Tuple[Tuple[int, ...], float, int]] = (),
+    copies: Optional[Sequence[int]] = None,
 ) -> CrewChain:
     """The chain of ``nodes`` with these failure and repair rates (``inf``
     for an instant repair) and priorities (higher first), sharing ``crews``
@@ -222,6 +356,17 @@ def solve(
         Each component's priority for a crew.
     crews : int
         The number of crews.
+    call_when : int, optional
+        How many waiting jobs call a call-out crew (0, the default: there
+        is none).
+    shared : sequence, optional
+        The common-cause groups' shared causes, each ``(positions of the
+        components it strikes, in its order; its rate; its group's
+        place)``; ``failure_rates`` are then the components' own causes'.
+    copies : Sequence[int], optional
+        How many alike copies each component stands for (one each, by
+        default): ``working`` then counts those up, and ``up`` says
+        whether any is. Not with ``shared`` causes.
 
     Returns
     -------
@@ -232,13 +377,35 @@ def solve(
     from scipy import sparse
     from scipy.sparse.linalg import splu
 
-    states, sources, targets, rates, components = _enumerate(
-        failure_rates, repair_rates, priorities, crews
+    states, sources, targets, rates, components, called = _enumerate(
+        failure_rates,
+        repair_rates,
+        priorities,
+        crews,
+        call_when,
+        0,
+        shared,
+        copies,
     )
     size = len(states)
-    up = np.ones((size, len(nodes)), dtype=bool)
+    groups = 1 + max((group for _, _, group in shared), default=-1)
+    calls = np.bincount(
+        np.array(sources, dtype=np.intp),
+        weights=np.array(rates, dtype=float) * np.array(called, dtype=float),
+        minlength=size,
+    )
+    engaged = np.array([len(serving) > crews for serving, _ in states])
+    working = np.tile(
+        (
+            np.ones(len(nodes), dtype=np.intp)
+            if copies is None
+            else np.asarray(copies, dtype=np.intp)
+        ),
+        (size, 1),
+    )
     for s, (serving, queue) in enumerate(states):
-        up[s, list(serving + queue)] = False
+        np.subtract.at(working[s], list(serving + queue), 1)
+    up = working > 0
     generator = sparse.csr_matrix(
         (np.array(rates, dtype=float), (sources, targets)), shape=(size, size)
     )
@@ -259,6 +426,10 @@ def solve(
             tuple(states),
             generator,
             transitions,
+            calls,
+            engaged,
+            groups,
+            working,
         )
     # The most components down first; within a level, by the queue. The
     # state with every component up, the only one with none down, is last.
@@ -290,5 +461,14 @@ def solve(
     probabilities = np.empty(size)
     probabilities[order] = weights / weights.sum()
     return CrewChain(
-        tuple(nodes), up, probabilities, tuple(states), generator, transitions
+        tuple(nodes),
+        up,
+        probabilities,
+        tuple(states),
+        generator,
+        transitions,
+        calls,
+        engaged,
+        groups,
+        working,
     )

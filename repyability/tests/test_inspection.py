@@ -74,6 +74,8 @@ def test_a_hidden_failure_is_down_until_the_next_inspection():
         "system_downtime": 0.0,
         "setup": 0.0,
         "shutdown": 0.0,
+        "crews": 0.0,
+        "capital": 0.0,
     }
 
 
@@ -483,7 +485,7 @@ def test_the_simulation_matches_the_exact_values():
         ({"interval": -5}, "positive, finite"),
         ({"interval": float("inf")}, "positive, finite"),
         ({"interval": "yearly"}, "positive, finite"),
-        ({"interval": 50, "duration": 3.0}, "time-to-test model"),
+        ({"interval": 50, "duration": -3.0}, "time-to-test model"),
         ({"interval": 50, "cost": -1.0}, "non-negative"),
     ],
 )

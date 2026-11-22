@@ -59,10 +59,14 @@ from repyability.rbd.results import (
     MaintenanceEffect,
     MaintenancePlan,
     NodeActionRates,
+    NPVComparison,
+    NPVDistribution,
+    NPVUncertainty,
     PFDBreakdown,
     PlanVsActual,
     RateBreakdown,
     ReplacementCycle,
+    SimulatedSwitchTime,
     SimulationSamples,
     SparesDemand,
     SparesStock,
@@ -80,11 +84,13 @@ from repyability.rbd import (
     _costs,
     _crews,
     _curves,
+    _downtime_risk,
     _event_loop,
     _first_failure,
     _intervals,
     _long_run,
     _npv,
+    _npv_runs,
     _plan_actual,
     _repairable_allocation,
     _repairable_capacity,
@@ -94,6 +100,7 @@ from repyability.rbd import (
     _runs,
     _shutdowns,
     _spec,
+    _switch_runs,
     _unplanned,
     _window_report,
     _windows,
@@ -190,11 +197,19 @@ class RepairableRBD(RBD):
           the component still fails, and any repair or replace cost is
           charged, but it is never down), plus optional costs.
           ``"repair_cost"`` and ``"replace_cost"`` are charged at every
-          failure of the component: each is a number, or a distribution of
+          failure of the component (``"replace_cost"`` is the replacement
+          on failure; a planned replacement is charged the
+          ``"preventive"`` task's ``"cost"`` instead, and the guide's
+          costs page has a table of which cost is charged when): each is
+          a number, or a distribution of
           the cost (anything with ``qf`` and ``mean``, such as a fitted
           surpyval model) drawn afresh at each failure. ``"downtime_cost"``
           is a number charged per unit time the component is down, whether
-          or not the system is. A cost left out, None or 0 prices nothing.
+          or not the system is, on top of ``downtime_cost_rate`` while the
+          system is down too: a component in series with
+          ``"downtime_cost": 500`` and ``downtime_cost_rate=1000`` costs
+          1,500 an hour down. Price lost output in one of them, not both.
+          A cost left out, None or 0 prices nothing.
           ``"preventive"`` schedules preventive maintenance: a dict with an
           ``"interval"`` and optional ``"policy"``, ``"duration"`` and
           ``"cost"``. Under ``"policy": "age"`` (the default) the unit is
@@ -202,9 +217,13 @@ class RepairableRBD(RBD):
           (at time 0, or at the end of a repair or of the last preventive
           action), unless it fails first; under ``"block"`` at every
           multiple of ``interval``, whatever its age, unless it is down
-          then. Under ``"condition"`` it is inspected at every multiple of
-          ``interval`` while it is up, in no time, and replaced if it is
-          then more likely than ``"threshold"`` (a probability) to fail
+          then; or, with ``"replace_at"`` in place of the interval, at
+          each of those times (increasing, from 0 in the diagram's time)
+          and after the last no more: a plan, valued over a horizon (it
+          has no long run). Under ``"condition"`` it is inspected at
+          every multiple of ``interval`` while it is up, in no time, and
+          replaced if it is then more likely than ``"threshold"`` (a
+          probability) to fail
           before the next inspection, given its age ``a``:
           ``1 - R(a + interval) / R(a)``; or, for a life that is a
           degradation process, with ``"level"`` in place of
@@ -213,7 +232,9 @@ class RepairableRBD(RBD):
           condition). Each inspection is charged
           ``"inspection_cost"``, a number or a distribution drawn afresh
           each time. The replacement takes a time drawn from ``"duration"``, a
-          time-to-maintain model, during which the unit is down (a planned
+          time-to-maintain model or a number (a fixed time, such as 8 for
+          eight hours with models in hours), during which the unit is down
+          (a planned
           outage); ``"instant"`` (the default) takes no time, renewing the
           unit in place. Each replacement is charged ``"cost"``, a number
           or a distribution drawn afresh each time. The unit comes back as
@@ -222,11 +243,18 @@ class RepairableRBD(RBD):
           ``"opportunity"`` (an age from 0 to ``interval``) renews the
           unit early, from that age, at a stop of its maintenance group
           (see ``"group"``), as its scheduled replacement would.
+          A ``"restore_to"`` (a virtual age, 0 or more) makes each task
+          leave the unit as if that old, whatever its age before (an
+          overhaul that leaves a pump as if 3,000 hours old; 0 renews it),
+          its next life drawn given that age from the end of the task;
+          simulated, as a ``"restoration"`` is, and not given with one.
           A ``"restoration"`` makes each task restore the unit only
           partly, by Kijima's virtual-age models, under the ``"age"``,
           ``"block"`` and ``"condition"`` policies: a dict of a
           ``"model"``, ``"kijima1"`` or ``"kijima2"``, and a restoration
-          factor ``"q"`` in [0, 1] (as ``"repair"`` takes them), or a
+          factor ``"q"`` of 0 or more (``"repair"`` takes it in [0,
+          1]; above 1, each task leaves the unit older than it was,
+          harmful or invasive maintenance), or a
           fitted surpyval ``GeneralizedRenewal``, whose Kijima model and
           restoration factor are taken. A task after the unit has
           operated ``x`` since its last action (a repair, a task, or put
@@ -271,7 +299,8 @@ class RepairableRBD(RBD):
           stays hidden until a full test, every ``"full_test"`` (required
           with a coverage below 1, a whole multiple of the interval, from
           the offset), which finds every failure. The test takes a time
-          drawn from ``"duration"``, a time-to-test model, during which the
+          drawn from ``"duration"``, a time-to-test model or a number (a
+          fixed time), during which the
           component is off-line (a planned outage) and does not age;
           ``"instant"`` (the default) takes no time. A failure found by a
           test is repaired once the test is done, and the repair and
@@ -283,7 +312,11 @@ class RepairableRBD(RBD):
           ``"acquisition_cost"`` is the one-off cost of buying the unit, a
           number: it is not a running cost, so it is left out of
           ``expected_cost_rate`` and the simulated costs, and counted by
-          ``total_cost`` and ``allocate_redundancy``. ``"priority"`` is the
+          ``total_cost`` and ``allocate_redundancy``. ``"salvage"``,
+          ``"escalation"`` and ``"retire_at"`` are the unit's own money,
+          which ``expected_npv`` takes as its arguments of the same names
+          for the node (a ``UnitPlan``'s fields of those names).
+          ``"priority"`` is the
           component's place in the queue for a repair crew (see
           ``repair_crews``): a number, higher first, by default 0.
           ``"group"`` names the component's maintenance group (see
@@ -326,8 +359,27 @@ class RepairableRBD(RBD):
           ``"full_test"``) go onto the clock divided by ``d``. The spec
           keeps them as given, for saving, the levers,
           ``with_intervals`` and the interval choices, which take and
-          give them in operating time. The life must be a surpyval
-          parametric distribution of a time.
+          give them in operating time. The life must be a model that
+          rescales its time (surpyval's ``rescale_time``; with surpyval
+          0.28, a parametric distribution of a time). With no duty, a
+          task in operating time counts the diagram's clock. ``"duty"``
+          may instead be a plan that changes over time, a
+          ``schedule.DutySchedule`` (``UsageForecast.schedule()``): each
+          unit's life is drawn in operating time and put on the clock
+          through the plan from when it is put into service, and a
+          preventive task in operating time falls when the plan reaches
+          it; only the simulations take such a block (see
+          ``schedule.CalendarContext``).
+          ``"upgrade"`` gives the component another life from a time: a
+          dict of ``"at"`` (the time, in the diagram's time from 0),
+          ``"reliability"`` (the life its units have from then: the unit
+          in service is replaced by one of it, in no time) and ``"cost"``
+          (the capital cost, charged then under ``"capital"``). Its
+          values over a horizon are worked out, and the long-run methods
+          give the long run once upgraded (the diagram with the new
+          life); it takes no maintenance or tests of its own but block
+          replacement yet (see the guide's "Upgrades, retirement and
+          salvage").
           ``"covariates"``, a surpyval ``StepSchedule``, runs a block
           whose ``"reliability"`` is a fitted surpyval regression model
           (proportional or additive hazards, accelerated failure time or
@@ -358,6 +410,11 @@ class RepairableRBD(RBD):
           ``"instant"`` repair. Its long-run values are exact from its
           Markov chain when its units' lives and repair times are
           exponential; it is simulated in Python.
+        - A [`UnitPlan`][repyability.UnitPlan]: one unit's life
+          and repair models, its tasks and its prices, of which the spec
+          dict above is the shorthand. The node is the node given
+          ``plan.spec()``; [`plans`][repyability.RepairableRBD.plans]
+          reads each spec node back as a plan.
         - A [`NonRepairable`][repyability.NonRepairable], pairing a
           reliability model with a time-to-replace model. Each node gets
           its own copy, so one object can be given for several identical
@@ -395,7 +452,10 @@ class RepairableRBD(RBD):
         The problems found are recorded in ``structure_check``.
     downtime_cost_rate : float, optional
         Cost per unit time the whole system is down (e.g. lost
-        production), by default 0.0 (not priced).
+        production), by default 0.0 (not priced). It adds to each down
+        component's own ``"downtime_cost"``, so lost output priced in
+        both is counted twice (a series component down an hour costs
+        both rates).
     capacity : dict[Hashable, float or dict], optional
         Each node's capacity, keyed by node name, by default None: the
         throughput it passes while it is up, a positive number in any unit
@@ -472,26 +532,74 @@ class RepairableRBD(RBD):
         group's chain followed from every member up. The simulations draw
         each cause as a Poisson process, failing the members it names that
         are up; they need exponential lives alone.
-    shutdowns : dict, optional
+    shutdowns : Opportunities or dict, optional
         Outages planned on a period or at given times that hold the whole
         system, or a named set of its nodes, off line for a fixed time
         (see [Shutdowns](../guide/system-maintenance.md#shutdowns)), by
-        default none: a name and a spec for each, of ``"period"`` and
+        default none: the site's
+        [`Opportunities`][repyability.Opportunities] in model time (each
+        opportunity a shutdown of its name, its ``takes_down`` the scope,
+        its ``idle_ageing`` and ``opportunistic`` as below, a duration of
+        None taking no time, and the record's ``shut_costs`` each shut's
+        cost; on real dates, ``Opportunities.on_diagram`` puts them on
+        the diagram's clock), or, as its shorthand, a name and a spec for
+        each, of ``"period"`` and
         ``"offset"`` (the first shut's start, in ``[0, period)``; 0 puts
         the first at ``period``) or ``"times"`` (the shuts' starts,
         increasing), ``"duration"`` (0 or more, shorter than the period or
         the gaps between the times), ``"scope"`` (a list of the diagram's
         nodes; None, the default, for the whole system), ``"cost"``
-        (charged at each shut) and ``"idle_ageing"`` (True, the default:
+        (charged at each shut), ``"idle_ageing"`` (True, the default:
         a block in scope not worked on keeps ageing; False: it stands
-        still until the shut ends). The work done at a shut is given on
-        the block: ``"preventive": {"shutdown": name}`` renews it at every
+        still until the shut ends) and ``"opportunistic"`` (``{node:
+        age}``, or one age for every block in scope under age
+        replacement: at each shut, such a block that is working and at
+        least that old is renewed as its own age replacement renews it,
+        at its cost and in its time, and its next replacement counts from
+        then; simulated, with the count renewed at each shut in
+        ``AvailabilityResult.outage_jobs``). The work done at a shut is given
+        on the block: ``"preventive": {"shutdown": name}`` renews it at every
         shut (with ``"older_than"``, only once that old; with ``"policy":
-        "condition"``, on its condition; with a ``"restoration"``,
-        partly), and ``"inspection": {"shutdown": name}`` tests it there;
-        either takes the shut's calendar and duration, and the block must
-        be in its scope. Shuts on a period are exact where the blocks fail
-        independently; the rest is simulated, in Python.
+        "condition"``, on its condition; with a ``"restoration"``, partly;
+        given a list of names, at every start of each, each renewal taking
+        its own shut's length, over a horizon only), and
+        ``"inspection": {"shutdown": name}`` tests it there; either takes the
+        shut's calendar and duration, and the block must be in its scope. Shuts
+        on a period are exact where the blocks fail independently, and so are
+        shuts at given times over a horizon (they have no long run) where the
+        blocks worked on in them are renewed; the rest is simulated, in Python.
+    crew_cost_rate : float, optional
+        What each repair crew costs per unit time, busy or not (its
+        salary), by default 0.0 (not priced). The ``repair_crews`` crews
+        cost ``repair_crews * crew_cost_rate`` per unit time from 0, the
+        same in every simulation: every cost result has it under the
+        category ``"crews"`` (over a window ``T``, ``n c T``; discounted
+        at a rate ``r``, ``n c (1 - exp(-r T)) / r``), and the long-run
+        cost rate ``n c``. It needs ``repair_crews``: as many crews as are
+        needed cannot be priced.
+    call_out : dict, optional
+        A call-out crew, one more crew that comes only when jobs wait, by
+        default None: ``{"when_waiting": k, "fee": f, "rate": c}``, with
+        ``k`` a whole number of jobs, 1 or more, and ``"fee"`` and
+        ``"rate"`` costs (0 if left out). The rule: when a job falls due,
+        finds every crew busy and is then the ``k``-th waiting, the
+        call-out crew comes at once and starts the waiting job the next
+        free crew would have taken. While it is engaged there is one crew
+        more, and a crew that finishes a job takes the next waiting one as
+        ever. It leaves at the first end of a job that leaves a crew with
+        no waiting job to take: the crews are alike, so the job the
+        call-out crew has then, if any, is finished by the crew that came
+        free. (It does not stay to finish its own job, and it is not sent
+        away while a job still waits.) It is one crew: jobs that wait
+        while it is engaged call no other. Each call-out costs ``f`` and
+        its time engaged ``c`` per unit time, under the category
+        ``"crews"``. With exponential lives and repairs the crews' Markov
+        chain has it exactly (the long-run values, those over time and the
+        discounted ones, as for ``repair_crews``); the simulations follow
+        the same rule, in Python. The same diagram without ``call_out``
+        gives what the contract is worth: the difference of the two costs
+        (or NPVs). It needs ``repair_crews``, and does nothing where no
+        job can wait.
 
 
     Attributes
@@ -514,6 +622,11 @@ class RepairableRBD(RBD):
         The capacities given, keyed by node name, as floats.
     repair_crews : int or None
         The number of repair crews (None: as many as are needed).
+    crew_cost_rate : float
+        What each repair crew costs per unit time (0.0: not priced).
+    call_out : dict or None
+        The call-out crew's ``"when_waiting"``, ``"fee"`` and ``"rate"``
+        (None: there is none).
     acquisition_costs : dict
         Node name -> the one-off cost of buying the unit, for the nodes that
         declare a non-zero ``"acquisition_cost"``.
@@ -539,9 +652,11 @@ class RepairableRBD(RBD):
         ``"threshold"`` and ``"inspection_cost"``, an ``"age"``
         policy's ``"opportunity"``, a ``"condition"`` policy's
         ``"level"``, a ``"calendar"`` policy's ``"calendar"``, and a
-        task's ``"restoration"``, ``"replace_every"`` and
+        task's ``"restoration"``, ``"restore_to"``, ``"replace_every"``
+        and
         ``"replacement_cost"``, a task's ``"shutdown"`` and
-        ``"older_than"``, and its times' ``"basis"``.
+        ``"older_than"``, its times' ``"basis"``, and ``"replace_at"``,
+        the times of a plan in place of an ``"interval"``.
     GROUP_KEYS : tuple[str, ...]
         The keys of a maintenance group's options: ``"setup_cost"`` and
         ``"system_down"``.
@@ -557,8 +672,8 @@ class RepairableRBD(RBD):
         ``"dormancy_factor"`` and ``"switching_probability"``.
     SHUTDOWN_KEYS : tuple[str, ...]
         The keys of a shutdown's spec: ``"period"``, ``"offset"``,
-        ``"times"``, ``"duration"``, ``"scope"``, ``"cost"`` and
-        ``"idle_ageing"``.
+        ``"times"``, ``"duration"``, ``"scope"``, ``"cost"``,
+        ``"idle_ageing"`` and ``"opportunistic"``.
 
     Raises
     ------
@@ -571,7 +686,9 @@ class RepairableRBD(RBD):
         below 0); if a ``"preventive"`` spec is not a dict of its keys with
         a positive ``interval``, a ``policy`` of ``"age"``, ``"block"`` or
         ``"condition"`` and a ``duration`` that is a model or
-        ``"instant"``; if an ``"inspection"`` spec is not a dict of its
+        ``"instant"``, or its ``"replace_at"`` is not positive, finite,
+        increasing times under the ``"block"`` policy with no interval;
+        if an ``"inspection"`` spec is not a dict of its
         keys with a positive, finite ``interval``, a ``duration`` that
         is a model or ``"instant"``, an ``offset`` from 0 to less than the
         interval, a ``coverage`` from 0 to 1 and, with a coverage below 1,
@@ -589,7 +706,10 @@ class RepairableRBD(RBD):
         ``"ignore"``; if the diagram is invalid and ``on_infeasible_rbd``
         is ``"raise"``; if a capacity is not a positive number or is for
         the input or output node or a node not in the diagram; if
-        ``repair_crews`` is not a whole number of at least 1, or a
+        ``repair_crews`` is not a whole number of at least 1, a
+        ``crew_cost_rate`` is not a finite, non-negative number or is
+        given without ``repair_crews``, a ``call_out`` is not such a dict
+        or is given without ``repair_crews``, or a
         ``"priority"`` is not a finite number; or if an ``"opportunity"``
         is not an age from 0 to an age policy's interval, is given to a
         component in no group, or a group's member has hidden failures or
@@ -719,9 +839,23 @@ class RepairableRBD(RBD):
         repair_crews: Optional[int] = None,
         maintenance_groups: Optional[dict[Any, dict]] = None,
         ccf_groups: Optional[Sequence[Any]] = None,
-        shutdowns: Optional[dict[Any, dict]] = None,
+        shutdowns: Any = None,
+        crew_cost_rate: float = 0.0,
+        call_out: Optional[dict] = None,
     ):
         _check_on_infeasible_rbd(on_infeasible_rbd)
+        # A unit's UnitPlan is the node given its spec (UC-63 of
+        # the maintenance README): the spec is the plan's shorthand.
+        from repyability.maintenance._plan import UnitPlan
+
+        components = {
+            name: (
+                component.spec()
+                if isinstance(component, UnitPlan)
+                else component
+            )
+            for name, component in dict(components).items()
+        }
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)
@@ -766,6 +900,9 @@ class RepairableRBD(RBD):
             for name, component in components.items()
         }
         ccf_groups = as_groups(ccf_groups) or None
+        # An Opportunities record is read as the dicts it stands for, which
+        # the diagram then keeps and saves.
+        shutdowns = _shutdowns.as_specs(shutdowns)
         self._init_args = {
             "edges": [tuple(e) for e in edges],
             "components": dict(components),
@@ -785,6 +922,10 @@ class RepairableRBD(RBD):
                 if isinstance(shutdowns, dict) and shutdowns
                 else shutdowns or None
             ),
+            "crew_cost_rate": crew_cost_rate,
+            "call_out": (
+                dict(call_out) if isinstance(call_out, dict) else call_out
+            ),
         }
         # Outages planned at given times, holding blocks off line (see
         # _shutdowns); their scopes are checked once the diagram is built.
@@ -800,8 +941,17 @@ class RepairableRBD(RBD):
         # _covariate_schedule); the spec as given keeps the regression
         # model and the schedule, for saving and drawing.
         components = _covariate_schedule.on_schedules(components)
-        components, self._operating_tasks = _on_duty(components)
+        components, self._operating_tasks, clocks = _on_duty(components)
         self.repair_crews = _validate_crews(repair_crews)
+        self.crew_cost_rate = _spec._validate_crew_cost(
+            crew_cost_rate, self.repair_crews
+        )
+        # A call-out crew (see _events._Crews): when it is called, its
+        # fee and its rate while engaged.
+        self._call_out = _spec._validate_call_out(call_out, self.repair_crews)
+        self.call_out = (
+            None if self._call_out is None else self._call_out._asdict()
+        )
         # Each component's place in the queue for a crew (higher first).
         self._priority: dict[Any, float] = {}
         self.downtime_cost_rate = _spec._validate_cost(
@@ -820,6 +970,9 @@ class RepairableRBD(RBD):
         self._standby: dict[Any, _Standby] = {}
         # One-off purchase costs, by node (only non-zero ones).
         self.acquisition_costs: dict[Any, float] = {}
+        # Each component's own money (its "salvage", "escalation" and
+        # "retire_at"), by node: what a valuation takes for it.
+        self._valuation: dict[Any, dict] = {}
         # Each component's maintenance group, by node (see _maintenance).
         self._member_group: dict[Any, Hashable] = {}
         # Components repaired imperfectly, by node (see _ImperfectComponent).
@@ -827,6 +980,8 @@ class RepairableRBD(RBD):
         # Components their preventive maintenance restores only partly, by
         # node (see _ImperfectComponent).
         self._restoring: dict[Any, _Restoration] = {}
+        # Components upgraded at a time, by node (see _spec._Upgrade).
+        self._upgrades: dict[Any, Any] = {}
         # The base class checks the names given components against the
         # edges; a component for a name in no edge is not part of the
         # diagram (the structure check reports it).
@@ -875,6 +1030,9 @@ class RepairableRBD(RBD):
                     )
                     if cost is not None:
                         node_costs["preventive_cost"] = cost
+                    if name in clocks:
+                        # Counted in operating time on a plan that changes.
+                        schedule = schedule._replace(clock=clocks[name])
                     if (
                         np.isfinite(schedule.interval)
                         or schedule.policy == "calendar"
@@ -922,6 +1080,25 @@ class RepairableRBD(RBD):
                         # A replacement in place of a task with a cost is
                         # priced, even at 0.
                         node_costs["replacement_cost"] = replacing
+                if component.get("upgrade") is not None:
+                    upgrade = _spec._validate_upgrade(name, component)
+                    self._upgrades[name] = upgrade
+                    # Its schedule: replaced at the upgrade's time, by a
+                    # unit of the new life (see _curves._plan_curve), as
+                    # one more of its block replacements if it has them.
+                    block = self._preventive.get(name)
+                    self._preventive[name] = (
+                        _Preventive(
+                            upgrade.at, "block", None, times=(upgrade.at,)
+                        )
+                        if block is None
+                        else block._replace(upgrade_at=upgrade.at)
+                    )
+                    if upgrade.cost:
+                        node_costs["capital_cost"] = upgrade.cost
+                own_money = _spec._validate_valuation(name, component)
+                if own_money:
+                    self._valuation[name] = own_money
                 if component.get("acquisition_cost") is not None:
                     acquisition = _spec._validate_cost(
                         name, "acquisition_cost", component["acquisition_cost"]
@@ -1174,6 +1351,20 @@ class RepairableRBD(RBD):
         return out
 
     @property
+    def plans(self) -> dict:
+        """Each node given as a spec dict or a plan, as the
+        [`UnitPlan`][repyability.UnitPlan] it states (UC-63 of
+        the maintenance README), by node; a fitted renewal process given
+        as a life reads as its life from new and its repairs."""
+        from repyability.maintenance._plan import UnitPlan
+
+        return {
+            name: UnitPlan.from_spec(component)
+            for name, component in self._init_args["components"].items()
+            if isinstance(component, dict)
+        }
+
+    @property
     def has_costs(self) -> bool:
         """Whether any cost has been declared (per-component or system-wide).
 
@@ -1183,7 +1374,7 @@ class RepairableRBD(RBD):
         distribution always counts), is
         on a ``"calendar"`` policy (charged its calendar's prices), a
         maintenance group has a set-up cost, a shutdown has a cost, or
-        ``downtime_cost_rate`` is
+        ``downtime_cost_rate`` or ``crew_cost_rate`` is
         non-zero: whether running the system costs anything. Costs of 0
         price nothing, costs declared inside a nested ``RepairableRBD`` do
         not count (a nested diagram that carries any is warned of when
@@ -1205,6 +1396,8 @@ class RepairableRBD(RBD):
         return (
             bool(self.costs)
             or bool(self.downtime_cost_rate)
+            or bool(getattr(self, "crew_cost_rate", 0.0))
+            or _crews._call_out_priced(self)
             or any(
                 group.setup_cost
                 for group in getattr(self, "_maintenance", {}).values()
@@ -1214,6 +1407,7 @@ class RepairableRBD(RBD):
             )
         )
 
+    @_long_run.follows_upgrades
     def expected_cost_rate(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -1229,6 +1423,7 @@ class RepairableRBD(RBD):
                + sum_i nu_i * preventive_cost_i
                + sum_i inspection_cost_i / tau_i
                + sum_i (1 - A_i) * downtime_cost_i
+               + repair_crews * crew_cost_rate
         ```
 
         where ``A_sys`` is the system's long-run availability
@@ -1269,7 +1464,8 @@ class RepairableRBD(RBD):
         With limited ``repair_crews``, ``A_sys``, ``A_i`` and ``omega_i``
         come from the crews' Markov chain (see ``mean_availability``): a
         component waiting for a crew is down, and pays its downtime cost,
-        and it fails at its constant rate while it is up.
+        and it fails at its constant rate while it is up. The crews'
+        salaries (``crew_cost_rate`` each) are paid whatever happens.
 
         Every cost is optional and defaults to 0, so any subset can be
         priced; with nothing priced, not even an acquisition cost (see
@@ -1737,6 +1933,8 @@ class RepairableRBD(RBD):
         max_units: Union[int, Dict[Hashable, int], None] = None,
         method: str = "exact",
         discount_rate: float = 0.0,
+        objective: str = "cost",
+        value_rate: float = 0.0,
     ) -> TotalCostAllocation:
         """Choose the redundancy with the lowest total cost of ownership.
 
@@ -1783,6 +1981,23 @@ class RepairableRBD(RBD):
         ``method="greedy"`` adds or removes one copy at a time while that
         lowers the total: fast, but not guaranteed optimal.
 
+        Redundancy is a capital decision: the copies are bought now, and
+        what they save comes later. ``objective="npv"`` chooses the design
+        with the highest net present value over the horizon, the value
+        the system earns while it works (``value_rate`` per unit time)
+        less its total cost, each at ``discount_rate``; the result gives
+        the ``npv``, its split into ``value``, ``acquisition_cost`` and
+        ``running_cost``, and the ``eac``, the same as a steady cost per
+        unit time. ``objective="eac"`` chooses by that, which over one
+        horizon is the same design. A value earned while the system works
+        is a cost of its downtime, so the search is the total cost's
+        with an hour down costing ``downtime_cost_rate + value_rate``,
+        and with no value the design is the total cost's. The running
+        costs, the downtime and the value are the long-run rates over
+        the horizon's present value, as ``total_cost`` counts them,
+        which the result's ``basis`` says: a system new at the start is
+        up a little more often at first.
+
         Parameters
         ----------
         horizon : float
@@ -1824,20 +2039,31 @@ class RepairableRBD(RBD):
             The continuous discount rate per unit time of the component
             models, by default 0 (undiscounted), as for ``total_cost``: the
             design with the lowest present value is chosen.
+        objective : str, optional
+            What the design is chosen by: ``"cost"`` (the default), the
+            lowest total cost; ``"npv"``, the highest net present value;
+            or ``"eac"``, the lowest equivalent annual cost less the
+            value earned.
+        value_rate : float, optional
+            The value earned per unit time while the system works, for
+            ``"npv"`` and ``"eac"``, by default 0.
 
         Returns
         -------
         TotalCostAllocation
             The chosen ``units`` per node and train, with the design's
             ``total_cost``, ``acquisition_cost``, ``cost_rate`` and
-            ``availability`` (see
+            ``availability``, and for ``"npv"`` and ``"eac"`` its
+            ``npv``, ``eac``, ``value`` and ``running_cost`` (see
             [`TotalCostAllocation`][repyability.TotalCostAllocation]).
 
         Raises
         ------
         ValueError
             If ``horizon``, ``nodes``, ``trains``, ``min_availability``,
-            ``max_units``, ``method`` or ``discount_rate`` is invalid; if
+            ``max_units``, ``method``, ``discount_rate``, ``objective``
+            or ``value_rate`` is invalid (a ``value_rate`` needs
+            ``"npv"`` or ``"eac"``); if
             no component has an acquisition cost and neither ``nodes`` nor
             ``trains`` is given;
             if a node's or train's copies cost nothing and are not capped;
@@ -1847,11 +2073,14 @@ class RepairableRBD(RBD):
             If a component is under block replacement with models its exact
             values do not cover (see ``node_availability``), or has hidden
             failures its numerical values do not cover (see
-            ``mean_availability``): its long-run values are not known. Or if
-            a component can wait for a repair crew (see ``repair_crews``):
-            the search assumes that none does. Or if a common-cause group's
-            chain does not cover it (see ``ccf_groups``), a member given
-            copies is in an ``MGL`` or ``AlphaFactor`` group (its
+            ``mean_availability``): its long-run values are not known. Or,
+            where a component can wait for a repair crew (see
+            ``repair_crews``): if the crews' Markov chain does not cover
+            the diagram, it has common-cause groups, maintenance groups
+            or shutdowns, ``trains`` are given, or the search needs a
+            design whose chain has too many states. Or if a common-cause
+            group's chain does not cover it (see ``ccf_groups``), a member
+            given copies is in an ``MGL`` or ``AlphaFactor`` group (its
             parameters are for its group's size), or a train holds a
             member.
 
@@ -1886,6 +2115,23 @@ class RepairableRBD(RBD):
 
         >>> rbd.allocate_redundancy(8760.0).units
         {'pump': 1}
+
+        At 30% a year the second pump does not pay on the lost production
+        alone, but it does if each hour of pumping also earns 400:
+
+        >>> import math
+        >>> rate = math.log(1.30) / 8760
+        >>> rbd.allocate_redundancy(87600.0, discount_rate=rate).units
+        {'pump': 1}
+        >>> best = rbd.allocate_redundancy(
+        ...     87600.0, objective="npv", discount_rate=rate, value_rate=400.0
+        ... )
+        >>> best.units, round(best.npv), round(best.eac, 2)
+        ({'pump': 2}, 12314518, -397.67)
+        >>> round(best.value), round(best.acquisition_cost)
+        (12385481, 40000)
+        >>> round(best.running_cost)
+        30964
 
         A station needing two of three pump trains, each a pump and its
         motor, when an hour without pumping costs 2,000: is a fourth train
@@ -1932,8 +2178,11 @@ class RepairableRBD(RBD):
             max_units=max_units,
             method=method,
             discount_rate=discount_rate,
+            objective=objective,
+            value_rate=value_rate,
         )
 
+    @_long_run.follows_upgrades
     def availability_allocation(
         self,
         target: float,
@@ -2068,6 +2317,7 @@ class RepairableRBD(RBD):
             feasibility=feasibility,
         )
 
+    @_long_run.follows_upgrades
     def mttf_mttr_allocation(
         self,
         target: float,
@@ -2264,6 +2514,14 @@ class RepairableRBD(RBD):
         min_availability: Optional[float] = None,
         max_cost_rate: Optional[float] = None,
         assume_unlimited_crews: bool = False,
+        objective: str = "cost",
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        horizon=None,
+        robust=False,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        n_draws: int = 200,
+        seed=None,
     ) -> MaintenancePlan:
         """Choose the age-replacement intervals for the system as a whole.
 
@@ -2312,6 +2570,44 @@ class RepairableRBD(RBD):
         every repair started at once. Simulate that plan with the crews,
         ``with_intervals(plan).cost()``, to see what the waiting costs.
 
+        At a discount rate, spending later is worth something, so the
+        best intervals are a little longer than the cost rate's.
+        ``objective="eac"`` chooses them for the lowest equivalent annual
+        cost in the long run: the steady cost per unit time worth the
+        same, at ``discount_rate``, as running the diagram for ever from
+        new, less ``value_rate`` for the time it works. Each component's
+        own costs are discounted over its renewal cycle, exactly (Fox,
+        1966), as ``NonRepairable.optimal_replacement_policy`` discounts
+        one unit's; the cost of the system's downtime and the value it
+        earns are taken at its long-run availability, an approximation
+        that the plan's ``basis`` states. At a rate of 0 it is the cost
+        rate, and the plan the same. ``objective="npv"`` chooses them for
+        the highest expected net present value over ``horizon`` from new
+        (``expected_npv``), which follows the system's availability over
+        time. That takes each plan's curves over the horizon, so it is
+        much slower, and a plan's value over a horizon has a local best
+        wherever a replacement falls just inside or outside it: without
+        ``allowed`` the search is a local one from the long run's best
+        plan, and with ``allowed`` every combination is valued (replacing
+        like units at different ages, so that they are not all down
+        together, can be worth more from new). The targets are kept
+        either way: ``min_availability`` and ``max_cost_rate`` bound the
+        long-run values, and the objective is minimised within them.
+
+        The intervals are the best for the models as fitted. With
+        ``robust``, the plan also says how robust that choice is to the
+        models' uncertainty (its ``robustness``, a ``PlanRobustness``):
+        the uncertain models are drawn ``n_draws`` times, as
+        ``mean_availability_uncertainty`` draws them, and under each draw
+        the choice is scored by the same objective against its
+        neighbours (each interval one step either way: the next of
+        ``allowed``, or a quarter longer or shorter), every plan under
+        the same draws; the share of draws in which it stays the best,
+        and the mean of what it loses where it does not (its regret),
+        follow. ``robust="reoptimise"`` chooses the intervals again under
+        each draw instead, which is slower. The models no draw changes
+        are listed in it as held fixed.
+
         Parameters
         ----------
         nodes : Collection[Hashable], optional
@@ -2334,12 +2630,44 @@ class RepairableRBD(RBD):
             With limited ``repair_crews``, choose the intervals as if every
             repair started at once (the plan's cost rate and availability
             are then those without waiting), by default False: refused.
+        objective : str, optional
+            What the intervals minimise: ``"cost"`` (the default), the
+            long-run cost rate, or with ``max_cost_rate`` the
+            unavailability; ``"eac"``, the equivalent annual cost in the
+            long run at ``discount_rate``, less the value earned; or
+            ``"npv"``, less the expected net present value over
+            ``horizon``.
+        discount_rate : float, optional
+            The continuous discount rate per unit time of the models, for
+            ``"eac"`` and ``"npv"``, by default 0 (an annual rate ``i``
+            with models in hours is ``math.log(1 + i) / 8760``).
+        value_rate : float, optional
+            The value earned per unit time while the system works, for
+            ``"eac"`` and ``"npv"``, by default 0.
+        horizon : float, optional
+            The time ``"npv"`` values, from new.
+        robust : bool or str, optional
+            Say how robust the choice is to the models' uncertainty:
+            ``True`` against its neighbours under each draw,
+            ``"reoptimise"`` against each draw's own best intervals. By
+            default False.
+        uncertainty : dict, optional
+            With ``robust``, the uncertain inputs, as for
+            ``mean_availability_uncertainty``: by default every fitted
+            model.
+        n_draws : int, optional
+            With ``robust``, the number of draws, by default 200.
+        seed : int, optional
+            With ``robust``, the seed of the draws.
 
         Returns
         -------
         MaintenancePlan
             The interval of each component in ``nodes`` (``inf`` for never),
-            and the system's cost rate and availability with them.
+            and the system's cost rate and availability with them; for
+            ``"eac"`` and ``"npv"``, the objective's value too
+            (``objective_value``) and what it is made of (``basis``);
+            with ``robust``, its ``robustness``.
 
         Raises
         ------
@@ -2352,7 +2680,12 @@ class RepairableRBD(RBD):
         NotImplementedError
             If the long-run values are not known exactly (see
             ``expected_cost_rate``), or a component can wait for a repair
-            crew and ``assume_unlimited_crews`` is not given.
+            crew and ``assume_unlimited_crews`` is not given; for
+            ``"eac"`` at a discount rate, if a priced component has no
+            renewal cycle of its own worked out here (a standby group,
+            block replacement, a common-cause group, a unit whose tests
+            or repairs take time, ...):
+            the message names ``objective="npv"``.
 
         Examples
         --------
@@ -2387,6 +2720,21 @@ class RepairableRBD(RBD):
 
         The pump alone in the line is replaced later than those with a
         standby: its replacements stop the plant too.
+
+        The plant earns 2000 an hour while it runs, so an hour down
+        loses 2500. At 10% a year, the intervals for the lowest
+        equivalent annual cost, net of what it earns:
+
+        >>> import math
+        >>> plan = plant.optimal_replacement_intervals(
+        ...     objective="eac",
+        ...     discount_rate=math.log(1.10) / 8760,
+        ...     value_rate=2000.0,
+        ... )
+        >>> {node: round(t) for node, t in plan.intervals.items()}
+        {'a': 621, 'b1': 517, 'b2': 517}
+        >>> round(plan.objective_value, 2)
+        -1940.55
         """
         _shutdowns.refuse(self, "optimal_replacement_intervals")
         return _intervals.optimal_replacement_intervals(
@@ -2396,6 +2744,14 @@ class RepairableRBD(RBD):
             min_availability=min_availability,
             max_cost_rate=max_cost_rate,
             assume_unlimited_crews=assume_unlimited_crews,
+            objective=objective,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            horizon=horizon,
+            robust=robust,
+            uncertainty=uncertainty,
+            n_draws=n_draws,
+            seed=seed,
         )
 
     def optimal_inspection_intervals(
@@ -2407,6 +2763,10 @@ class RepairableRBD(RBD):
         max_cost_rate: Optional[float] = None,
         assume_unlimited_crews: bool = False,
         offset_shares=None,
+        objective: str = "cost",
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        horizon=None,
     ) -> MaintenancePlan:
         """Choose the proof-test intervals of components with hidden
         failures, for the system as a whole.
@@ -2448,6 +2808,23 @@ class RepairableRBD(RBD):
         divide it, from ``allowed`` (which must) or, left out, from every
         one in range.
 
+        At a discount rate, the tests are paid for now and the failures
+        they find later. ``objective="eac"`` chooses the intervals for
+        the lowest equivalent annual cost in the long run at
+        ``discount_rate``, less ``value_rate`` for the time the system
+        works, and ``objective="npv"`` for the highest expected net
+        present value over ``horizon`` from new, as
+        ``optimal_replacement_intervals`` does (see it for what each is
+        made of, and what is approximate). A tested component starts
+        afresh at the test that finds it failed: its cycle is the tests
+        up to that one, each paid for when it is made, the failure when
+        it is found, and its own downtime from the failure to that test.
+        That is worked out for tests and repairs that take no time and
+        find every failure. The targets are kept: ``min_availability``
+        (the PFDavg limit) and ``max_cost_rate`` bound the long-run
+        values, and the objective is minimised within them. At a rate
+        of 0, ``"eac"`` is the cost rate, and the plan the same.
+
         Parameters
         ----------
         nodes : Collection[Hashable], optional
@@ -2478,13 +2855,30 @@ class RepairableRBD(RBD):
             one's tests stay from 0. Needs ``allowed``. By default each
             offset keeps its share of the interval. The plan's ``offsets``
             are the times they give (shares times the intervals).
+        objective : str, optional
+            What the intervals minimise: ``"cost"`` (the default), the
+            long-run cost rate, or with ``max_cost_rate`` the
+            unavailability; ``"eac"``, the equivalent annual cost in the
+            long run at ``discount_rate``, less the value earned; or
+            ``"npv"``, less the expected net present value over
+            ``horizon``.
+        discount_rate : float, optional
+            The continuous discount rate per unit time of the models, for
+            ``"eac"`` and ``"npv"``, by default 0.
+        value_rate : float, optional
+            The value earned per unit time while the system works, for
+            ``"eac"`` and ``"npv"``, by default 0.
+        horizon : float, optional
+            The time ``"npv"`` values, from new.
 
         Returns
         -------
         MaintenancePlan
             The interval of each component in ``nodes``, its ``offsets``
             (the time of its first test), and the system's cost rate and
-            availability (1 - PFDavg) with them.
+            availability (1 - PFDavg) with them; for ``"eac"`` and
+            ``"npv"``, the objective's value too (``objective_value``)
+            and what it is made of (``basis``).
 
         Raises
         ------
@@ -2503,7 +2897,11 @@ class RepairableRBD(RBD):
             If a component's hidden failures have no exact long-run values
             (see ``node_availability``), the intervals repeat together only
             after too many tests to average over, or a component can wait
-            for a repair crew and ``assume_unlimited_crews`` is not given.
+            for a repair crew and ``assume_unlimited_crews`` is not given;
+            for ``"eac"`` at a discount rate, if a priced component has no
+            renewal cycle of its own worked out here (tests or repairs
+            that take time, tests that can miss a failure, ...): the
+            message names ``objective="npv"``.
 
         Examples
         --------
@@ -2577,6 +2975,10 @@ class RepairableRBD(RBD):
             max_cost_rate=max_cost_rate,
             assume_unlimited_crews=assume_unlimited_crews,
             offset_shares=offset_shares,
+            objective=objective,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            horizon=horizon,
         )
 
     def with_intervals(self, intervals, offsets=None) -> "RepairableRBD":
@@ -2705,6 +3107,7 @@ class RepairableRBD(RBD):
             state=state,
         )
 
+    @_long_run.follows_upgrades
     def mean_unavailability(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -2843,6 +3246,7 @@ class RepairableRBD(RBD):
         """
         return _repairable_routes.analysis_routes(self)
 
+    @_long_run.follows_upgrades
     def mean_availability(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -3839,7 +4243,9 @@ class RepairableRBD(RBD):
             The number of simulations, as for
             [`cost`][repyability.RepairableRBD.cost].
         seed : int, optional
-            The random seed, as for `cost`.
+            The random seed, as for `cost`. By default None: one seed
+            drawn from numpy's global random number generator for every
+            window's run, so the windows still share their histories.
         engine : str, optional
             The simulation engine, as for `cost`.
         levels : array-like, optional
@@ -4105,6 +4511,12 @@ class RepairableRBD(RBD):
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
         state=None,
+        retire_at=None,
+        salvage=None,
+        rate_sensitivity: bool = False,
+        escalation: Optional[Dict[Hashable, float]] = None,
+        rates: str = "nominal",
+        inflation: Optional[float] = None,
     ) -> ExpectedNPV:
         """The expected net present value of running the system for
         ``horizon``, from new or from a state: what it earns while it
@@ -4149,9 +4561,11 @@ class RepairableRBD(RBD):
             models, as for ``total_cost``, by default 0 (undiscounted):
             for an annual rate ``i`` with models in hours,
             ``math.log(1 + i) / 8760``.
-        value_rate : float, optional
+        value_rate : float or ValueSchedule, optional
             What the system earns per unit time while it works, at least
-            0, by default 0 (costs alone). Constant in this version.
+            0, by default 0 (costs alone); or a
+            [`ValueSchedule`][repyability.ValueSchedule] of steps in
+            model time.
         periods : int or array-like, optional
             The periods of the cash-flow table: a number of equal periods
             across the horizon, or the increasing ends of the periods, the
@@ -4170,6 +4584,46 @@ class RepairableRBD(RBD):
             Start from the components' current states rather than new, as
             for ``expected_cost``. By default None: every component new at
             0.
+        retire_at : float, optional
+            Retire the system at this time, more than 0 and no later than
+            the horizon: nothing is earned or spent after it, and the
+            equivalent annual cost is over the time to it. By default
+            None: it runs to the horizon.
+        salvage : float or dict, optional
+            What is left is worth at the end (the retirement, or the
+            horizon), credited then and discounted from there: a number
+            for the system, or a dict of a number for each component (and
+            for None, the system); negative for a cost of disposal. A
+            component's may be a function of the age of its unit in
+            service (taking an array of ages), for a plain component from
+            new: its expected value over that age, a unit down then
+            credited nothing. By default None.
+        rate_sensitivity : bool, optional
+            Also work out how the NPV moves with the discount rate,
+            ``d npv / d r`` (the result's ``rate_sensitivity``), with an
+            estimate of its error: by Richardson's extrapolation of
+            differences of the NPV on steps of the rate of ``0.01`` and
+            ``0.02`` over the time valued (central, or one-sided from a
+            rate below the larger step), four more valuations. By default
+            False.
+        escalation : dict, optional
+            A growth rate per unit time (continuous, of either sign) for
+            some streams, by cost category (``"repair"``, ``"replace"``,
+            ``"preventive"``, ``"inspection"``, ``"component_downtime"``,
+            ``"system_downtime"``, ``"setup"``, ``"shutdown"``,
+            ``"crews"``), by component (over its categories), or
+            ``"value"`` and ``"salvage"``: an amount at ``t`` is its price
+            today times ``exp(g t)``, so it is discounted at the rate less
+            its growth. The acquisition cost is paid at 0. By default
+            None: every price as it is.
+        rates : str, optional
+            ``"nominal"`` (the default) or ``"real"``: what
+            ``discount_rate`` and the growths are in.
+        inflation : float, optional
+            With ``rates="real"``, the continuous inflation per unit time:
+            every amount is made nominal (the rate and each stream's
+            growth take it too), which leaves the present values as they
+            are and makes the undiscounted ones nominal.
 
         Returns
         -------
@@ -4183,10 +4637,13 @@ class RepairableRBD(RBD):
         ValueError
             If ``horizon``, ``discount_rate``, ``value_rate`` or
             ``periods`` is invalid; if nothing is priced and there is no
-            ``value_rate`` (as ``routes.Refused``); or as for
-            ``expected_cost``.
+            ``value_rate`` (as ``routes.Refused``); if ``retire_at`` is
+            past the horizon or a ``salvage`` is not a finite number or a
+            function of age; or as for ``expected_cost``.
         NotImplementedError
-            As for ``point_availability`` and ``expected_cost``.
+            As for ``point_availability`` and ``expected_cost``; for a
+            salvage by age of a component that is not a plain one from
+            new.
 
         Examples
         --------
@@ -4218,6 +4675,16 @@ class RepairableRBD(RBD):
         9155
         >>> len(result.cash_flows)
         11
+
+        How much a point more on the annual rate would take off it:
+
+        >>> result = rbd.expected_npv(
+        ...     5 * 8760.0, discount_rate=r, value_rate=10.0,
+        ...     rate_sensitivity=True,
+        ... )
+        >>> step = math.log(1.09) / 8760 - r
+        >>> round(result.rate_sensitivity * step)
+        -7376
         """
         return _npv.expected_npv(
             self,
@@ -4229,6 +4696,633 @@ class RepairableRBD(RBD):
             broken_nodes=broken_nodes,
             method=method,
             state=state,
+            retire_at=retire_at,
+            salvage=salvage,
+            rate_sensitivity=rate_sensitivity,
+            escalation=escalation,
+            rates=rates,
+            inflation=inflation,
+        )
+
+    def npv_distribution(
+        self,
+        horizon,
+        *,
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        hurdle: Optional[float] = None,
+        tail: float = 0.1,
+        engine: str = "auto",
+        state=None,
+        contract=None,
+        escalation=None,
+        rates: str = "nominal",
+        inflation=None,
+    ) -> NPVDistribution:
+        """The net present value of each of many simulated runs of the
+        system over ``horizon``, and their spread: percentiles, the chance
+        of ending below a hurdle, and the average of the worst runs
+        (CVaR). Simulated.
+
+        In plain terms:
+        [`expected_npv`][repyability.RepairableRBD.expected_npv] is the
+        average over every way the failures could fall, and hides
+        the risk; this simulates the runs themselves. Each run is a history
+        of [`simulate_timelines`][repyability.RepairableRBD.simulate_timelines]
+        (the same simulations, by seed), priced with the diagram's own
+        costs: each failure its repair and replace costs, each planned
+        outage its preventive cost, each component's and the system's
+        time down their downtime costs, each discounted at the time it
+        fell (``exp(-discount_rate * t)``), less the value earned while
+        the system was up, and the acquisition costs paid at the start.
+        A shutdown's cost is charged at each of its starts; a component
+        it holds off line is not charged for the hold, and what happens
+        to it in the shut (a failure, an opportunistic renewal) is
+        charged as anywhere else. A plan's own ``"retire_at"`` ends the
+        runs there, and its own ``"salvage"`` (a number) is credited to
+        every run at the end, as ``expected_npv`` credits them. The
+        runs' mean estimates ``expected_npv``'s value, within its
+        confidence interval. It
+        works for diagrams the exact methods refuse (repair crews with
+        other lives, maintenance groups, scheduled covariates,
+        opportunistic renewals at shutdowns), as the simulation does.
+
+        A cost charged at an event the histories do not record (a
+        standby group's units' failures, tests and inspections, planned
+        replacements that take no time, a calendar policy's prices, a
+        maintenance group's set-up) is not left out: the
+        method refuses the diagram, naming it. A cost given as a
+        distribution is charged at its mean (``priced_at_mean``).
+
+        Parameters
+        ----------
+        horizon : float
+            The length of time to value, more than 0, in the component
+            models' unit.
+        discount_rate : float, optional
+            The continuous discount rate per unit time, as for
+            ``expected_npv``, by default 0.
+        value_rate : float or ValueSchedule, optional
+            What the system earns per unit time while it works, at least
+            0, by default 0 (costs alone); or a
+            [`ValueSchedule`][repyability.ValueSchedule] of steps in
+            model time, each up span earning each step's rate over its
+            part of it.
+        mc_samples : int, optional
+            The number of runs, by default 10,000.
+        seed : int, optional
+            Seeds the runs, as for ``simulate_timelines``: the runs are
+            its simulations with this seed, on either engine. By default
+            one is drawn from numpy's global RNG (``np.random.seed`` makes
+            it repeatable), and kept in the result.
+        hurdle : float, optional
+            A value the NPV must reach: the result gives the share of runs
+            below it. By default None.
+        tail : float, optional
+            The share of the worst runs ``cvar`` averages, more than 0 and
+            at most 1, by default 0.1.
+        engine : str, optional
+            ``"auto"`` (the default), ``"python"`` or ``"numba"``, as for
+            ``simulate_timelines``; the runs are the same on each.
+        state : dict, optional
+            Start from the components' current states rather than new, as
+            for ``simulate_timelines``. By default every component new.
+        contract : AvailabilityContract, optional
+            Terms that pay on the system's availability in each period
+            (or their ``to_dict()``): each run's penalty or bonus in each
+            period, from the share of the period the system was up in
+            that run, paid at the period's end and added to its NPV as a
+            category of its own (``contract_samples``). By default None.
+        escalation : dict, optional
+            A growth rate per unit time for some streams, by cost
+            category, component, ``"value"`` (or ``"salvage"``), as for
+            ``expected_npv``: an amount at ``t`` is its price times
+            ``exp(g t)``. By default None.
+        rates : str, optional
+            ``"nominal"`` (the default) or ``"real"``, as for
+            ``expected_npv``.
+        inflation : float, optional
+            With ``rates="real"``, the continuous inflation per unit time,
+            as for ``expected_npv``.
+
+        Returns
+        -------
+        NPVDistribution
+            Each run's NPV, value and cost; the mean with
+            ``mean_interval()``, the value and cost split as in
+            ``ExpectedNPV``, ``p10``/``p50``/``p90`` (``percentile`` and
+            ``percentile_interval`` for others), the chance below the
+            hurdle and ``cvar``.
+
+        Raises
+        ------
+        ValueError
+            If ``horizon``, ``discount_rate``, ``value_rate``, ``hurdle``,
+            ``tail``, ``mc_samples`` or ``engine`` is invalid; if nothing
+            is priced and there is no ``value_rate`` (as
+            ``routes.Refused``); or as for ``simulate_timelines``.
+        NotImplementedError
+            If a cost is charged at events the histories do not record,
+            naming it; if a component has a salvage by age (of its unit
+            in service), or one of several components retires; or as for
+            ``simulate_timelines``.
+
+        Examples
+        --------
+        A pump earning 10 per hour while it works, repaired at 500 a
+        failure and bought for 20,000, over 5 years at 8% a year: the
+        spread around ``expected_npv``'s 321,975:
+
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "p"), ("p", "t")],
+        ...     {
+        ...         "p": {
+        ...             "reliability": surv.Exponential.from_params([1e-3]),
+        ...             "repairability": surv.Exponential.from_params([0.1]),
+        ...             "repair_cost": 500.0,
+        ...             "acquisition_cost": 20000.0,
+        ...         }
+        ...     },
+        ... )
+        >>> r = math.log(1.08) / 8760  # per hour
+        >>> runs = rbd.npv_distribution(
+        ...     5 * 8760.0, discount_rate=r, value_rate=10.0, mc_samples=2000,
+        ...     seed=1, hurdle=320_000,
+        ... )
+        >>> round(runs.mean), round(runs.p10), round(runs.p90)
+        (322045, 317651, 326267)
+        >>> round(runs.probability_below_hurdle, 3), round(runs.cvar)
+        (0.268, 315980)
+        """
+        return _npv_runs.npv_distribution(
+            self,
+            horizon,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            mc_samples=mc_samples,
+            seed=seed,
+            hurdle=hurdle,
+            tail=tail,
+            engine=engine,
+            state=state,
+            contract=contract,
+            escalation=escalation,
+            rates=rates,
+            inflation=inflation,
+        )
+
+    def compare_npv(
+        self,
+        other: "RepairableRBD",
+        horizon,
+        *,
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        contract=None,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        confidence: float = 0.95,
+        engine: str = "auto",
+        state=None,
+        escalation=None,
+        rates: str = "nominal",
+        inflation=None,
+    ) -> NPVComparison:
+        """How much more this plan is worth than ``other``, run by run:
+        both simulated on the same random numbers, the distribution of
+        the difference in their net present values. Simulated.
+
+        In plain terms: a choice between two plans (another maintenance
+        interval, a spare, a second pump) is about the difference, and
+        the difference is what this pins down. Both plans' runs are
+        [`npv_distribution`][repyability.RepairableRBD.npv_distribution]'s,
+        from one seed, and a component in the same place in both (the
+        same node name, and the same names down through nested RBDs)
+        draws the same random numbers in both, as for
+        [`compare`][repyability.RepairableRBD.compare]: the same
+        failures and repairs where it is modelled the same way, matching
+        ones where it is not. Each run's difference then comes from how
+        the plans differ rather than from chance, so its mean is known
+        far more precisely than either plan's NPV. Identical plans differ
+        by exactly 0 in every run.
+
+        Parameters
+        ----------
+        other : RepairableRBD
+            The plan to compare with.
+        horizon : float
+            The length of time to value, as for ``npv_distribution``.
+        discount_rate : float, optional
+            The continuous discount rate per unit time, by default 0.
+        value_rate : float or ValueSchedule, optional
+            What either system earns per unit time while it works (a
+            number or a [`ValueSchedule`][repyability.ValueSchedule]),
+            by default 0.
+        contract : AvailabilityContract, optional
+            Terms that pay on availability, applied to both plans, as for
+            ``npv_distribution``. By default None.
+        mc_samples : int, optional
+            The number of runs of each plan, by default 10,000.
+        seed : int, optional
+            Seeds both plans' runs; by default one is drawn from numpy's
+            global RNG (``np.random.seed`` makes it repeatable), and kept
+            in the result.
+        confidence : float, optional
+            The confidence level of the mean difference's interval, by
+            default 0.95.
+        engine : str, optional
+            ``"auto"`` (the default), ``"python"`` or ``"numba"``, as for
+            ``simulate_timelines``.
+        state : dict, optional
+            The components' states at the start, in both plans, as for
+            ``simulate_timelines``. By default every component new.
+        escalation : dict, optional
+            A growth rate per unit time for some streams, by cost
+            category, component, ``"value"`` (or ``"salvage"``), as for
+            ``expected_npv``: an amount at ``t`` is its price times
+            ``exp(g t)``. By default None.
+        rates : str, optional
+            ``"nominal"`` (the default) or ``"real"``, as for
+            ``expected_npv``.
+        inflation : float, optional
+            With ``rates="real"``, the continuous inflation per unit time,
+            as for ``expected_npv``.
+
+        Returns
+        -------
+        NPVComparison
+            Each run's difference (this plan's NPV less the other's),
+            their mean with a confidence interval, the chance the other
+            plan is better, the standard error two independent runs would
+            have given, and both plans' ``NPVDistribution``.
+
+        Raises
+        ------
+        ValueError
+            If an argument is invalid, or as for ``npv_distribution``.
+        TypeError
+            If ``other`` is not a ``RepairableRBD``.
+        NotImplementedError
+            If a plan's runs cannot be priced from their histories (as for
+            ``npv_distribution``), or a plan's components draw numbers
+            that cannot be matched with the other's (a model sampled its
+            own way), naming them.
+
+        Examples
+        --------
+        A pump earning 10 an hour while it works, repaired in 10 hours on
+        average, against the same pump repaired in 5, over a year at 8%:
+
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> def pump(mttr):
+        ...     return RepairableRBD(
+        ...         [("s", "p"), ("p", "t")],
+        ...         {
+        ...             "p": {
+        ...                 "reliability": E([1e-3]),
+        ...                 "repairability": E([1 / mttr]),
+        ...                 "repair_cost": 500.0,
+        ...             }
+        ...         },
+        ...     )
+        >>> r = math.log(1.08) / 8760
+        >>> gain = pump(5.0).compare_npv(
+        ...     pump(10.0), 8760.0, discount_rate=r, value_rate=10.0,
+        ...     mc_samples=2000, seed=1,
+        ... )
+        >>> round(gain.mean), round(gain.interval.standard_error, 1)
+        (393, 4.9)
+
+        Two independent runs of the same size would have pinned it down
+        ten times less precisely:
+
+        >>> round(gain.independent_standard_error, 1)
+        52.7
+        """
+        return _npv_runs.compare_npv(
+            self,
+            other,
+            horizon,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            contract=contract,
+            mc_samples=mc_samples,
+            seed=seed,
+            confidence=confidence,
+            engine=engine,
+            state=state,
+            escalation=escalation,
+            rates=rates,
+            inflation=inflation,
+        )
+
+    def least_spend_for_downtime(
+        self,
+        horizon: float,
+        limit: float,
+        *,
+        level: float = 0.95,
+        objective: str = "var",
+        measure: str = "hours",
+        downtime: str = "all",
+        redundancy: Optional[Mapping] = None,
+        intervals: Optional[Mapping] = None,
+        max_units: Optional[Mapping] = None,
+        budget: Optional[float] = None,
+        value_rate: float = 0.0,
+        confidence: float = 0.95,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        engine: str = "auto",
+    ):
+        """The least spend that keeps a bad run's downtime under
+        ``limit``: "I want to be 95% sure I don't lose more than this on
+        downtime over the horizon; what is the least I need to pay?".
+        Simulated.
+
+        In plain terms: the target is the system's downtime over
+        ``horizon``, in hours or its cost (each hour down at the
+        ``downtime_cost_rate`` and ``value_rate``), all of it or only the
+        unplanned part (``downtime=``). A design meets the limit when an
+        upper confidence bound on the downtime's quantile at ``level``
+        (``objective="var"``, an order statistic, exact) or on the mean of
+        the worst share beyond it (``"cvar"``, approximate) is under it.
+        The levers are each at their own price, and spend is unbounded
+        unless ``budget`` is given: ``redundancy`` (copies of a node in
+        parallel with it, at a price each) and ``intervals`` (a node's
+        preventive interval, through the candidates given, at its tasks'
+        expected cost). The search takes, step by step, the move that
+        lowers the bad run's downtime most per extra spend, every design
+        on the same seed, until one meets the limit; its designs are the
+        frontier. If the levers stop short, ``stopped`` says what stopped
+        them (the budget, their caps, or planned task downtime no lever
+        lowers). Every design reports both its planned and its unplanned
+        downtime, the mean and the quantile at ``level``, in hours and
+        in cost. The guide's "Downtime you can be sure of" explains.
+
+        Parameters
+        ----------
+        horizon : float
+            The length of time valued, more than 0.
+        limit : float
+            The downtime (hours, or cost) a bad run must stay under.
+        level : float, optional
+            The share of runs that must stay under it, by default 0.95.
+        objective : str, optional
+            ``"var"`` (the default) or ``"cvar"``.
+        measure : str, optional
+            ``"hours"`` (the default) or ``"cost"``.
+        downtime : str, optional
+            ``"all"`` (the default) or ``"unplanned"``.
+        redundancy : dict, optional
+            ``{node: price of a copy}``: the nodes that may be given
+            copies in parallel.
+        intervals : dict, optional
+            ``{node: intervals to try, in order}`` for nodes with a
+            preventive task.
+        max_units : dict, optional
+            ``{node: most copies}``; by default none.
+        budget : float, optional
+            The most the levers may cost; by default no bound.
+        value_rate : float, optional
+            The value lost per unit time down, added to the
+            ``downtime_cost_rate`` for ``measure="cost"``, by default 0.
+        confidence : float, optional
+            The level of the bound, by default 0.95.
+        mc_samples : int, optional
+            Each design's runs, by default 2,000.
+        seed : int, optional
+            Seeds every design's runs; by default one is drawn from
+            numpy's global RNG (``np.random.seed`` makes it repeatable),
+            and kept.
+        engine : str, optional
+            ``"auto"``, ``"python"`` or ``"numba"``, as for
+            ``availability``.
+
+        Returns
+        -------
+        DowntimeRiskResult
+            ``met``, the ``design`` (the cheapest that meets the limit, or
+            the best found), the ``frontier``, and ``floor`` and
+            ``stopped`` when the limit is not met.
+
+        Raises
+        ------
+        ValueError
+            If an argument is invalid, or a lever's node cannot take it.
+        NotImplementedError
+            If a redundancy node is in a maintenance or common-cause
+            group, or as for ``availability``.
+
+        Examples
+        --------
+        A pump down about 5% of the time, 50 hours a repair: a second
+        pump at 5,000 keeps a bad year's downtime under 100 hours:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> pump = RepairableRBD(
+        ...     [("s", "p"), ("p", "t")],
+        ...     {"p": {"reliability": E([1e-3]),
+        ...            "repairability": E([0.02])}},
+        ... )
+        >>> found = pump.least_spend_for_downtime(
+        ...     8760.0, 100.0, redundancy={"p": 5000.0},
+        ...     mc_samples=1000, seed=1,
+        ... )
+        >>> found.met, found.design.copies, found.design.spend
+        (True, {'p': 1}, 5000.0)
+        """
+        return _downtime_risk.least_spend_for_downtime(
+            self,
+            horizon,
+            limit,
+            level=level,
+            objective=objective,
+            measure=measure,
+            downtime=downtime,
+            redundancy=redundancy,
+            intervals=intervals,
+            max_units=max_units,
+            budget=budget,
+            value_rate=value_rate,
+            confidence=confidence,
+            mc_samples=mc_samples,
+            seed=seed,
+            engine=engine,
+        )
+
+    def best_switch_time(
+        self,
+        covariates,
+        value_rates,
+        horizon,
+        *,
+        discount_rate: float = 0.0,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        scan: int = 11,
+        engine: str = "auto",
+        state=None,
+        escalation=None,
+        rates: str = "nominal",
+        inflation=None,
+    ) -> SimulatedSwitchTime:
+        """The best time to switch blocks of the system from one way of
+        running them to another (a load, a speed, a temperature): the
+        switch time that maximises the simulated net present value of the
+        whole system. Simulated.
+
+        In plain terms: running harder can earn more but wears the
+        blocks out faster. Each block in ``covariates`` runs on a
+        covariate schedule (a regression life, see the guide's [load
+        schedule](../guide/condition-based.md#is-it-worth-running-hot)
+        section); it runs at its first row of covariates until the switch
+        and at its second after, and the system earns the first of
+        ``value_rates`` per unit of time up before the switch and the
+        second after. Switching at 0 runs the second way from the start,
+        and at the horizon never switches; the answer says which time is
+        best, and how sure it is better than each end
+        (``difference_interval``). For one unit the same question is
+        worked out numerically by
+        [`best_switch_time`][repyability.best_switch_time].
+
+        Each candidate switch time is the diagram with those schedules,
+        simulated and priced as
+        [`npv_distribution`][repyability.RepairableRBD.npv_distribution]
+        prices its runs, every candidate from the same seed (common
+        random numbers), so the differences between candidates are much
+        less noisy than their values. The NPV is scanned at ``scan``
+        times from 0 to the horizon and at 6 more between the best's
+        neighbours; the scan is returned to audit the answer, as the NPV
+        need not have one peak. The other blocks run as the diagram says.
+
+        Parameters
+        ----------
+        covariates : dict
+            For each block that switches, its two rows of covariates:
+            before the switch and after (two numbers for a model with one
+            covariate), e.g. ``{"pump": [[60.0], [85.0]]}``. Each must be a
+            block built on a covariate schedule (its spec's
+            ``"covariates"``), which this replaces.
+        value_rates : array_like
+            What the system earns per unit of time up before the switch,
+            and after, each at least 0.
+        horizon : float
+            The length of time to value, more than 0, in the component
+            models' unit.
+        discount_rate : float, optional
+            The continuous discount rate per unit time, as for
+            ``expected_npv``, by default 0.
+        mc_samples : int, optional
+            The runs at each switch time, by default 1,000.
+        seed : int, optional
+            Seeds the runs; every switch time's runs share it. By default
+            one is drawn from numpy's global RNG (``np.random.seed`` makes
+            it repeatable), and kept in the result.
+        scan : int, optional
+            The switch times scanned from 0 to the horizon, ends included,
+            at least 3, by default 11.
+        engine : str, optional
+            ``"auto"`` (the default), ``"python"`` or ``"numba"``, as for
+            ``simulate_timelines``.
+        state : dict, optional
+            Start from the components' current states rather than new, as
+            for ``simulate_timelines``.
+        escalation : dict, optional
+            A growth rate per unit time for some streams, by cost
+            category, component, ``"value"`` (or ``"salvage"``), as for
+            ``expected_npv``: an amount at ``t`` is its price times
+            ``exp(g t)``. By default None.
+        rates : str, optional
+            ``"nominal"`` (the default) or ``"real"``, as for
+            ``expected_npv``.
+        inflation : float, optional
+            With ``rates="real"``, the continuous inflation per unit time,
+            as for ``expected_npv``.
+
+        Returns
+        -------
+        SimulatedSwitchTime
+            The best switch time, its choice and mean NPV, the NPVs of
+            never switching and of switching at once, the runs of each,
+            and the scan.
+
+        Raises
+        ------
+        ValueError
+            If no block runs on a covariate schedule (as
+            ``routes.Refused``); if a block in ``covariates`` does not, or
+            its rows, ``value_rates``, ``horizon``, ``discount_rate``,
+            ``mc_samples``, ``scan`` or ``engine`` is invalid; or as for
+            ``npv_distribution``.
+        NotImplementedError
+            As for ``npv_distribution``.
+
+        Examples
+        --------
+        A pump whose life wears out (Weibull, under proportional hazards
+        on its load), replaced at 80 a failure, run hot (load 1.5, earning
+        1.5 an hour) or cool (load 1, earning 1) over 200 hours. Running
+        hot while it is new and then cool beats either way throughout:
+
+        >>> import numpy as np
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rng = np.random.default_rng(3)
+        >>> load = np.repeat([1.0, 2.0], 40)
+        >>> x = 100.0 * rng.weibull(3.0, load.size) / load**2
+        >>> model = surv.WeibullPH.fit(x, Z=load[:, None])
+        >>> rbd = RepairableRBD(
+        ...     [("s", "pump"), ("pump", "t")],
+        ...     {
+        ...         "pump": {
+        ...             "reliability": model,
+        ...             "repairability": surv.Exponential.from_params([1.0]),
+        ...             "replace_cost": 80.0,
+        ...             "covariates": surv.StepSchedule.from_changepoints(
+        ...                 [0.0], [[1.0]]
+        ...             ),
+        ...         }
+        ...     },
+        ... )
+        >>> best = rbd.best_switch_time(
+        ...     {"pump": [[1.5], [1.0]]}, [1.5, 1.0], 200.0,
+        ...     mc_samples=200, seed=1, scan=5,
+        ... )
+        >>> best.choice, round(best.switch_time, 1)
+        ('switch', 28.6)
+        >>> round(best.npv), round(best.switch_at_once_npv)
+        (52, 46)
+        >>> round(best.never_switch_npv)
+        -27
+        >>> gain = best.difference_interval("switch at once")
+        >>> round(gain.lower, 1), round(gain.upper, 1)
+        (2.2, 9.1)
+        """
+        return _switch_runs.best_switch_time(
+            self,
+            covariates,
+            value_rates,
+            horizon,
+            discount_rate=discount_rate,
+            mc_samples=mc_samples,
+            seed=seed,
+            scan=scan,
+            engine=engine,
+            state=state,
+            escalation=escalation,
+            rates=rates,
+            inflation=inflation,
         )
 
     def plan_vs_actual(
@@ -4243,6 +5337,9 @@ class RepairableRBD(RBD):
         method: str = "p",
         state=None,
         start_state=None,
+        escalation=None,
+        rates: str = "nominal",
+        inflation=None,
     ) -> PlanVsActual:
         """A plan against what happened: the plan's expected cash flows so
         far beside those the outage log implies, where the two differ, and
@@ -4284,9 +5381,10 @@ class RepairableRBD(RBD):
         discount_rate : float, optional
             The continuous discount rate per unit time, as for
             ``expected_npv``, by default 0.
-        value_rate : float, optional
-            What the system earns per unit time while it works, by
-            default 0.
+        value_rate : float or ValueSchedule, optional
+            What the system earns per unit time while it works (a number
+            or a [`ValueSchedule`][repyability.ValueSchedule] of steps on
+            the plan's clock), by default 0.
         periods : int or array-like, optional
             The periods of the tables over the whole horizon, as for
             ``expected_npv``; a period that ``now`` falls in is split in
@@ -4302,6 +5400,17 @@ class RepairableRBD(RBD):
         start_state : dict, optional
             The components' states at the start of the plan, as for
             ``expected_npv``'s ``state``. By default every component new.
+        escalation : dict, optional
+            A growth rate per unit time for some streams, by cost
+            category, component, ``"value"`` (or ``"salvage"``), as for
+            ``expected_npv``: an amount at ``t`` is its price times
+            ``exp(g t)``. By default None.
+        rates : str, optional
+            ``"nominal"`` (the default) or ``"real"``, as for
+            ``expected_npv``.
+        inflation : float, optional
+            With ``rates="real"``, the continuous inflation per unit time,
+            as for ``expected_npv``.
 
         Returns
         -------
@@ -4360,6 +5469,9 @@ class RepairableRBD(RBD):
             method=method,
             state=state,
             start_state=start_state,
+            escalation=escalation,
+            rates=rates,
+            inflation=inflation,
         )
 
     @contextmanager
@@ -4379,6 +5491,7 @@ class RepairableRBD(RBD):
         finally:
             self._curve_memo = None
 
+    @_long_run.follows_upgrades
     def capacity_distribution(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -4675,6 +5788,10 @@ class RepairableRBD(RBD):
         ``_standby_long_run``), and the nodes stay independent."""
         if not _crews._crews_limited(self):
             return False
+        if _crews._call_when(self):
+            # A call-out crew ties the jobs together whoever owns them
+            # (a standby group's own chain does not count it).
+            return True
         owners = {
             key.node if isinstance(key, _Unit) else key
             for key in _crews._crew_served(self)
@@ -6031,6 +7148,7 @@ class RepairableRBD(RBD):
             conditional=conditional,
         )
 
+    @_long_run.follows_upgrades
     def node_availability(self) -> dict[Hashable, float]:
         """Returns each node's long-run (steady-state) availability.
 
@@ -6108,6 +7226,7 @@ class RepairableRBD(RBD):
         """
         return _long_run.node_availability(self)
 
+    @_long_run.follows_upgrades
     def node_action_rates(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -6280,6 +7399,7 @@ class RepairableRBD(RBD):
         _shutdowns.refuse(self, "crew_states")
         return _crews.crew_states(self, working_nodes, broken_nodes)
 
+    @_long_run.follows_upgrades
     def replacement_cycle(self, node: Hashable) -> ReplacementCycle:
         """The renewal cycle of a component under block replacement or
         replaced on condition, in the long run.
@@ -6424,6 +7544,7 @@ class RepairableRBD(RBD):
             entropy=entropy,
         )
 
+    @_long_run.follows_upgrades
     def system_failure_frequency(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -6508,6 +7629,7 @@ class RepairableRBD(RBD):
             self, working_nodes=working_nodes, broken_nodes=broken_nodes
         )
 
+    @_long_run.follows_upgrades
     def mean_time_between_failures(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -6568,6 +7690,7 @@ class RepairableRBD(RBD):
             self, working_nodes=working_nodes, broken_nodes=broken_nodes
         )
 
+    @_long_run.follows_upgrades
     def mean_up_time(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -6628,6 +7751,7 @@ class RepairableRBD(RBD):
             self, working_nodes=working_nodes, broken_nodes=broken_nodes
         )
 
+    @_long_run.follows_upgrades
     def mean_down_time(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -6689,6 +7813,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def birnbaum_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -6814,6 +7939,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def improvement_potential(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -6906,6 +8032,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def risk_achievement_worth(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -7004,6 +8131,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def risk_reduction_worth(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -7100,6 +8228,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def criticality_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -7226,6 +8355,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def fussell_vesely(
         self,
         fv_type: str = "c",
@@ -7602,6 +8732,7 @@ class RepairableRBD(RBD):
         """
         return _sensitivity.with_levers(self, values)
 
+    @_long_run.follows_upgrades
     def mean_availability_uncertainty(
         self,
         uncertainty: Optional[Dict[Hashable, Any]] = None,
@@ -7844,6 +8975,7 @@ class RepairableRBD(RBD):
             state=state,
         )
 
+    @_long_run.follows_upgrades
     def expected_cost_rate_uncertainty(
         self,
         uncertainty: Optional[Dict[Hashable, Any]] = None,
@@ -7889,6 +9021,142 @@ class RepairableRBD(RBD):
             sampling=sampling,
         )
 
+    def expected_npv_uncertainty(
+        self,
+        horizon,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        discount_rate: float = 0.0,
+        value_rate: float = 0.0,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+        state=None,
+        retire_at=None,
+        salvage=None,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+        shares: bool = True,
+    ) -> NPVUncertainty:
+        """The expected net present value over plausible models of the
+        components: how unsure the NPV is because the fitted models are
+        estimates. Each draw gives the uncertain components plausible
+        models, as ``mean_availability_uncertainty`` draws them, and values
+        the plan exactly as
+        [`expected_npv`][repyability.RepairableRBD.expected_npv] does.
+
+        The models no input draws (a model given by hand, with no fit
+        behind it, or one left out of ``uncertainty``) are held as they
+        are in every draw, and listed in the result's ``held_fixed``: the
+        spread leaves out their uncertainty. Each input's share of the
+        NPV's variance is worked out by the delta method (the NPV's
+        derivatives in the input's parameters, by central differences of
+        1% of each, against their covariance), as
+        ``uncertainty_importance(method="delta")`` splits the other
+        quantities'.
+
+        Parameters
+        ----------
+        horizon : float
+            The length of time to value, as for ``expected_npv``.
+        uncertainty : dict, optional
+            The uncertain inputs, as for
+            ``mean_availability_uncertainty``. By default every fitted
+            model.
+        discount_rate : float, optional
+            As for ``expected_npv``.
+        value_rate : float, optional
+            As for ``expected_npv``.
+        working_nodes : Collection[Hashable], optional
+            As for ``expected_npv``.
+        broken_nodes : Collection[Hashable], optional
+            As for ``expected_npv``.
+        method : str, optional
+            As for ``expected_npv``.
+        state : dict or str, optional
+            As for ``expected_npv``.
+        retire_at : float, optional
+            As for ``expected_npv``.
+        salvage : float or dict, optional
+            As for ``expected_npv``.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seed for the draws.
+        sampling : str, optional
+            ``"random"`` (the default) or ``"sobol"``.
+        shares : bool, optional
+            Split the variance among the inputs (``variance_shares``), by
+            default True: two more valuations for each parameter drawn.
+
+        Returns
+        -------
+        NPVUncertainty
+            The NPV of every draw, the ``nominal`` NPV, the intervals
+            (``interval(level)``), each input's share of the variance and
+            the models held fixed.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``mean_availability_uncertainty`` and
+            ``expected_npv``.
+
+        Examples
+        --------
+        A pump whose life was fitted to 30 failures, earning 10 an hour
+        while it works, over 5 years at 8% a year:
+
+        >>> import math
+        >>> import numpy as np
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> life = surv.Weibull.fit(np.linspace(400.0, 1800.0, 30))
+        >>> rbd = RepairableRBD(
+        ...     [("s", "p"), ("p", "t")],
+        ...     {
+        ...         "p": {
+        ...             "reliability": life,
+        ...             "repairability": surv.Exponential.from_params([0.1]),
+        ...             "repair_cost": 500.0,
+        ...         }
+        ...     },
+        ... )
+        >>> result = rbd.expected_npv_uncertainty(
+        ...     5 * 8760.0,
+        ...     discount_rate=math.log(1.08) / 8760,
+        ...     value_rate=10.0,
+        ...     n_draws=50,
+        ...     seed=1,
+        ... )
+        >>> lower, upper = result.interval(0.9)
+        >>> round(result.nominal), round(lower), round(upper)
+        (344241, 342538, 345967)
+        >>> result.variance_shares
+        {'p': 1.0}
+        >>> result.held_fixed
+        [{'node': 'p', 'role': 'repairability'}]
+        """
+        return _repairable_uncertainty.expected_npv_uncertainty(
+            self,
+            horizon,
+            uncertainty,
+            n_draws=n_draws,
+            seed=seed,
+            sampling=sampling,
+            shares=shares,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            method=method,
+            state=state,
+            retire_at=retire_at,
+            salvage=salvage,
+        )
+
+    @_long_run.follows_upgrades
     def uncertainty_importance(
         self,
         x=None,
@@ -8019,6 +9287,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def differential_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -8301,6 +9570,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first("window")
+    @_long_run.follows_upgrades
     def barlow_proschan_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -8396,6 +9666,7 @@ class RepairableRBD(RBD):
             state=state,
         )
 
+    @_long_run.follows_upgrades
     def pfd_breakdown(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -8487,6 +9758,7 @@ class RepairableRBD(RBD):
         )
 
     @_times_first()
+    @_long_run.follows_upgrades
     def joint_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,

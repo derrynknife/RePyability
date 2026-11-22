@@ -82,6 +82,7 @@ from repyability.utils.checks import (
 )
 from repyability.utils.checks import seed as checked_seed
 from repyability.utils.checks import simulation_options, whole_number
+from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.wrappers import outside_level
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -297,6 +298,7 @@ def _sort_key(s: frozenset) -> tuple:
     return (len(s), sorted(map(str, s)))
 
 
+@refuse_removed_names
 class FaultTree:
     """A fault tree: gates over basic events.
 

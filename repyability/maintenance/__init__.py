@@ -6,7 +6,9 @@ rules, operating schedules) is ``repyability.schedule``.
 ``README.md`` in this package records the use cases, the question each
 answers and how it is solved."""
 
+import math
 from dataclasses import dataclass
+from typing import Any, Mapping, Optional, Union
 
 from repyability.rbd.results import _ResultMapping
 
@@ -32,9 +34,20 @@ class MaintenancePolicy(_ResultMapping):
         the overhaul interval for a repairable component. ``inf`` when
         preventive action never pays (run to failure / never overhaul).
     cost_rate : float
-        The long-run expected cost per unit time under the policy. When
-        ``interval`` is ``inf`` this is the limiting cost rate of running
-        without preventive action.
+        The long-run expected cost per unit time under the policy,
+        undiscounted (also when the policy was chosen with a discount
+        rate). When ``interval`` is ``inf`` this is the limiting cost rate
+        of running without preventive action.
+    discount_rate : float
+        The continuous discount rate per unit of time the policy was
+        chosen at, 0 for none.
+    npv : float
+        The present value of every replacement from a new unit, forever,
+        under the policy (Fox, 1966); ``inf`` with no discounting.
+    eac : float
+        The equivalent annual cost: the steady cost per unit time worth
+        the same as ``npv``, ``discount_rate * npv``. With no discounting
+        it is ``cost_rate``.
 
     Examples
     --------
@@ -49,6 +62,13 @@ class MaintenancePolicy(_ResultMapping):
 
     interval: float
     cost_rate: float
+    discount_rate: float = 0.0
+    npv: float = math.inf
+    eac: Optional[float] = None
+
+    def __post_init__(self):
+        if self.eac is None:
+            object.__setattr__(self, "eac", self.cost_rate)
 
 
 @dataclass(frozen=True)
@@ -77,7 +97,7 @@ class FailureLimitPolicy(_ResultMapping):
     >>> import surpyval as surv
     >>> from surpyval.recurrent import GeneralizedRenewal
     >>> from repyability import Repairable
-    >>> grp = GeneralizedRenewal.fit_from_parameters(
+    >>> grp = GeneralizedRenewal.from_params(
     ...     [100.0, 2.0], 0.4, kijima="i", dist=surv.Weibull
     ... )
     >>> unit = Repairable(grp)
@@ -99,23 +119,44 @@ class OverhaulReplacePolicy(_ResultMapping):
 
     Returned by the ``optimal_overhaul_replace_policy()`` method of
     [`Repairable`][repyability.Repairable]: failures are repaired minimally,
-    the unit is overhauled every ``interval`` (an overhaul takes off part of
-    its age) and replaced by a new unit after ``cycles`` such periods. It is
-    an immutable (frozen) dataclass, read as a mapping too, with
-    ``to_dict()`` for JSON.
+    and the cheapest of four plans is kept: overhaul every ``interval``
+    (an overhaul takes off part of the unit's age) and replace by a new
+    unit after ``cycles`` such periods; overhaul only, never replacing;
+    replace only, with no overhauls; or replace at the
+    ``failure_count``-th failure. It is an immutable (frozen) dataclass,
+    read as a mapping too, with ``to_dict()`` for JSON.
 
     Attributes
     ----------
     interval : float
-        The time between overhauls, in the time units of the component's
-        model. ``inf`` when overhauling never pays.
-    cycles : int
+        The time between overhauls (between replacements for ``"replace
+        only"``), in the time units of the component's model. ``inf`` when
+        there is no planned overhaul or replacement (``"failure limit"``
+        and ``"run to failure"``).
+    cycles : int or float
         The number of periods of ``interval`` between replacements: the
         unit is overhauled ``cycles - 1`` times, and replaced at the end of
         the ``cycles``-th period. ``1`` means no overhaul: replace every
-        ``interval``.
+        ``interval``. ``inf`` for ``"overhaul only"``: never replace.
     cost_rate : float
         The long-run expected cost per unit time under the policy.
+    plan : str
+        The plan that won: ``"overhaul and replace"``, ``"overhaul
+        only"``, ``"replace only"``, ``"failure limit"``, or ``"run to
+        failure"`` when the unit does not wear out, so that nothing pays.
+    failure_count : int or None
+        For ``"failure limit"``, the failure at which the unit is replaced
+        (the earlier ones are repaired); otherwise None.
+    alternatives : dict
+        Each plan compared, by name, with its cost rate and its best
+        ``interval``, ``cycles`` or ``failure_count``.
+    saving : float
+        How much less the winner costs per unit time than the next best
+        plan; 0 when nothing else was compared.
+    cycles_limit_reached : bool
+        True when the best ``"overhaul and replace"`` plan used the most
+        periods searched (``max_cycles``): more might pay, and they tend
+        towards ``"overhaul only"``.
 
     Examples
     --------
@@ -126,20 +167,25 @@ class OverhaulReplacePolicy(_ResultMapping):
     >>> policy = unit.optimal_overhaul_replace_policy(
     ...     overhaul_factor=0.6, replacement_cost=20.0, max_cycles=5
     ... )
-    >>> policy.cycles, round(policy.interval, 1), round(policy.cost_rate, 4)
-    (2, 177.7, 0.1172)
+    >>> policy.plan, policy.cycles, round(policy.interval, 1)
+    ('overhaul only', inf, 73.8)
+    >>> sorted(policy.alternatives)  # doctest: +NORMALIZE_WHITESPACE
+    ['failure limit', 'overhaul and replace', 'overhaul only',
+     'replace only']
     """
 
     interval: float
-    cycles: int
+    cycles: Union[int, float]
     cost_rate: float
+    plan: str = "overhaul and replace"
+    failure_count: Optional[int] = None
+    alternatives: Optional[Mapping[str, Mapping[str, Any]]] = None
+    saving: float = 0.0
+    cycles_limit_reached: bool = False
 
 
 # After the policies, which the modules it imports may import from here.
-from repyability.maintenance._calendar import (  # noqa: E402
-    Calendar,
-    Opportunity,
-)
+from repyability.maintenance._calendar import Opportunity  # noqa: E402
 from repyability.maintenance._decisions import (  # noqa: E402
     FailureFinding,
     OnCondition,
@@ -152,6 +198,10 @@ from repyability.maintenance._decisions import (  # noqa: E402
     run_to_failure,
     scheduled_replacement,
 )
+from repyability.maintenance._finding_window import (  # noqa: E402
+    FailureFindingWindow,
+    failure_finding_window,
+)
 from repyability.maintenance._next import (  # noqa: E402
     NextReplacement,
     ReplacementChoice,
@@ -162,6 +212,14 @@ from repyability.maintenance._operating import (  # noqa: E402
     best_switch_time,
     operating_schedule_value,
 )
+from repyability.maintenance._opportunities import (  # noqa: E402
+    Calendar,
+    Opportunities,
+    OpportunityPrice,
+    OpportunityPrices,
+    Shutdown,
+    Shutdowns,
+)
 from repyability.maintenance._options import (  # noqa: E402
     AgeReplacementValue,
     DelayEffect,
@@ -169,6 +227,19 @@ from repyability.maintenance._options import (  # noqa: E402
     RenewalForecast,
     ReplacementComparison,
     SlackEffect,
+)
+from repyability.maintenance._plan import (  # noqa: E402
+    AgePolicy,
+    AtShutdown,
+    BlockPolicy,
+    CalendarReplacement,
+    ConditionPolicy,
+    ImperfectRepair,
+    Inspection,
+    Prices,
+    Restoration,
+    UnitPlan,
+    Upgrade,
 )
 from repyability.maintenance._repair_or_replace import (  # noqa: E402
     RepairOrReplace,
@@ -180,9 +251,7 @@ from repyability.maintenance._replacement import (  # noqa: E402
     PlannedReplacement,
 )
 from repyability.maintenance._shutdowns import (  # noqa: E402
-    Shutdown,
     ShutdownRoute,
-    Shutdowns,
     SlowSolverWarning,
 )
 from repyability.maintenance._site_policy import (  # noqa: E402

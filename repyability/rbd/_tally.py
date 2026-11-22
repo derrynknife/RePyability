@@ -33,6 +33,7 @@ from repyability.rbd import (
     _timeline_runs,
     _windows,
 )
+from repyability.rbd._common import _crew_salaries
 from repyability.rbd._exact import (
     ExactSum,
     add_columns,
@@ -48,6 +49,7 @@ from repyability.rbd.results import (
     ControlVariate,
     CostResult,
 )
+from repyability.value._categories import CATEGORIES as _CATEGORIES
 
 if TYPE_CHECKING:
     from repyability.rbd.repairable_rbd import RepairableRBD
@@ -187,6 +189,9 @@ class _ModuleRun:
         T = simulation_window(t_simulation)
         self.rbd = rbd
         self.T = T
+        # The crews' salaries over the window, the same in every
+        # simulation: the system's, not the modules' or the other nodes'.
+        self.salaries = _crew_salaries(rbd) * T
         self.working, self.broken, self.method = working, broken, method
         self.antithetic, self.n_jobs = antithetic, n_jobs
         states = _curves._simulation_states(rbd, state, working | broken)
@@ -320,13 +325,15 @@ class _ModuleRun:
                 if self.priced
                 else None
             )
+        # (The diagram worked out given the modules may have no crews to
+        # pay: their salaries are added on their own.)
         self.others = (
             0.0
             if self.exact_cost is None
             else math.fsum(
                 float(np.ravel(value)[0])
                 for key, value in self.exact_cost.by_category.items()
-                if key != "system_downtime"
+                if key not in ("system_downtime", "crews")
             )
         )
         self.x = _conditional.grid(
@@ -465,13 +472,14 @@ class _ModuleRun:
 
     def costs(self) -> np.ndarray:
         """Each simulation's expected cost given its modules: their own
-        costs, the other nodes' expected costs, and the system's expected
-        down time's."""
-        return (
+        costs, the other nodes' expected costs, the system's expected
+        down time's and the crews' salaries."""
+        costs = (
             np.concatenate(self.own_costs)
             + self.others
             + self.rbd.downtime_cost_rate * (self.T - self.uptimes())
         )
+        return costs + self.salaries if self.salaries else costs
 
     def breakdown(self) -> _Breakdown:
         """The expected cost of a window given the modules' histories (the
@@ -484,7 +492,7 @@ class _ModuleRun:
             key: self.own_categories[key] / n
             + (
                 0.0
-                if key == "system_downtime"
+                if key in ("system_downtime", "crews")
                 else float(np.ravel(exact_cost.by_category.get(key, 0.0))[0])
             )
             for key in _CATEGORIES
@@ -492,6 +500,8 @@ class _ModuleRun:
         by_category["system_downtime"] = float(
             np.mean(self.rbd.downtime_cost_rate * (self.T - self.uptimes()))
         )
+        # (A call-out crew's costs are among the modules' own.)
+        by_category["crews"] = self.own_categories["crews"] / n + self.salaries
         by_component = {
             node: float(np.ravel(value)[0])
             for node, value in exact_cost.by_component.items()
@@ -778,21 +788,6 @@ def _shard_bytes(template: dict, start: int, stop: int) -> bytes:
     return json.dumps({**template, "start": start, "stop": stop}).encode()
 
 
-#: The cost categories, in the order ``CostResult.by_category`` lists them.
-_CATEGORIES = (
-    "repair",
-    "replace",
-    "preventive",
-    "inspection",
-    "component_downtime",
-    "system_downtime",
-    "setup",
-    # Appended: the categories' places index the engines'
-    # arrays and seeded costs, so a new one goes at the end.
-    "shutdown",
-)
-
-
 # The category of a repair's own cost (all an imperfect repair is charged).
 _REPAIR = _CATEGORIES.index("repair")
 # The category of a shutdown's own cost, charged at each of its starts.
@@ -839,6 +834,7 @@ class _Replication:
         "delivered",
         "replacements",
         "opportunistic",
+        "outage_jobs",
         "history",
     )
     uptime: float
@@ -860,6 +856,7 @@ class _Replication:
     delivered: Optional[float]
     replacements: List[int]
     opportunistic: List[int]
+    outage_jobs: Optional[List[int]]
     history: Optional[tuple]
 
 
@@ -920,6 +917,8 @@ class _Tally:
         # each simulation's until it is folded in.
         self.system_unplanned: Optional[ExactSum] = None
         self._unplanned_rows: list = []
+        # Each simulation's time down unplanned, in order (as uptimes).
+        self.unplanned_times: list = []
         self.node_uptime = [ExactSum() for _ in range(n)]
         self.node_downtime = [ExactSum() for _ in range(n)]
         self.intersection_uptime = [ExactSum() for _ in range(n)]
@@ -966,6 +965,11 @@ class _Tally:
         self.replacements: Optional[List[List[int]]] = None
         # Per node: its early renewals at stops of its maintenance group.
         self.opportunistic = [0] * n
+        # Per start of a shutdown that renews components opportunistically
+        # (see _event_loop.outage_starts): the renewals made there, summed
+        # over the simulations, and their squares summed; None with none.
+        self.outage_jobs: Optional[List[int]] = None
+        self.outage_squares: Optional[List[int]] = None
         # The simulations' histories, when asked for (see
         # RepairableRBD.simulate_timelines): kept, in order, in place of
         # every total.
@@ -1024,6 +1028,22 @@ class _Tally:
         for c, count in enumerate(rec.opportunistic):
             if count:
                 self.opportunistic[c] += count
+        self._add_outage_jobs(
+            rec.outage_jobs, [c * c for c in rec.outage_jobs or ()]
+        )
+
+    def _add_outage_jobs(self, jobs, squares) -> None:
+        """Add renewals at the outages (see ``outage_jobs``), and their
+        squares."""
+        if jobs is None:
+            return
+        if self.outage_jobs is None:
+            self.outage_jobs = [0] * len(jobs)
+            self.outage_squares = [0] * len(jobs)
+        assert self.outage_squares is not None
+        for k, (count, square) in enumerate(zip(jobs, squares)):
+            self.outage_jobs[k] += count
+            self.outage_squares[k] += square
 
     def add_changes(self, times: np.ndarray, deltas: np.ndarray) -> None:
         """Add simulations' changes of state (times, and +1 or -1), as an
@@ -1174,6 +1194,7 @@ class _Tally:
         if self.system_unplanned is None:
             self.system_unplanned = ExactSum()
         self.system_unplanned.add(values)
+        self.unplanned_times.extend(np.ravel(values).tolist())
 
     def unplanned_downtime(self) -> ExactSum:
         """The time the systems were down unplanned, exactly: all their
@@ -1194,6 +1215,17 @@ class _Tally:
             ],
             table,
         )
+
+    def charge_crews(self, count: int, amount: float) -> None:
+        """Charge each of the last ``count`` simulations ``amount``, the
+        repair crews' salaries over the window (see ``_crew_salaries``),
+        which are the same in every simulation, under ``"crews"``."""
+        if not (amount and count):
+            return
+        samples = self.cost_samples
+        first = len(samples) - count
+        samples[first:] = [cost + amount for cost in samples[first:]]
+        self.cost_by_category["crews"].add(np.full(count, amount))
 
     def state_changes(self) -> Tuple[np.ndarray, np.ndarray]:
         """Every time a simulated system changed state (``-0.0`` made
@@ -1285,7 +1317,12 @@ class _Tally:
         self.system_uptime.add(other.system_uptime)
         self.system_downtime.add(other.system_downtime)
         if other.system_unplanned is not None:
-            self.add_unplanned(other.system_unplanned)
+            # The exact total, and each simulation's time after this
+            # tally's, in order (as uptimes).
+            if self.system_unplanned is None:
+                self.system_unplanned = ExactSum()
+            self.system_unplanned.add(other.system_unplanned)
+            self.unplanned_times.extend(other.unplanned_times)
         for name in self._COUNTS:
             setattr(self, name, getattr(self, name) + getattr(other, name))
         for name in self._NODE_SUMS:
@@ -1296,6 +1333,7 @@ class _Tally:
                 totals[c] += count
         for c, count in enumerate(other.opportunistic):
             self.opportunistic[c] += count
+        self._add_outage_jobs(other.outage_jobs, other.outage_squares)
         if self.binned is not None:
             assert other.binned is not None  # chunks of one run
             self.binned += other.binned
@@ -1351,6 +1389,7 @@ class _Tally:
                 for name in self._NODE_SUMS
             },
             "uptimes": list(self.uptimes),
+            "unplanned_times": list(self.unplanned_times),
             "cost_samples": list(self.cost_samples),
             "cost_by_category": {
                 key: amount.partials
@@ -1386,6 +1425,11 @@ class _Tally:
             ),
             "delivered": list(self.delivered),
             "opportunistic": list(self.opportunistic),
+            "outage_jobs": (
+                None
+                if self.outage_jobs is None
+                else [list(self.outage_jobs), list(self.outage_squares or ())]
+            ),
         }
 
     @classmethod
@@ -1419,6 +1463,9 @@ class _Tally:
         for name in cls._NODE_SUMS:
             setattr(tally, name, [_exact_total(v) for v in data[name]])
         tally.uptimes = [float(v) for v in data["uptimes"]]
+        tally.unplanned_times = [
+            float(v) for v in data.get("unplanned_times", ())
+        ]
         tally.cost_samples = [float(v) for v in data["cost_samples"]]
         tally.cost_by_category.update(
             {
@@ -1450,6 +1497,11 @@ class _Tally:
             )
         tally.delivered = [float(v) for v in data["delivered"]]
         tally.opportunistic = [int(c) for c in data["opportunistic"]]
+        if data.get("outage_jobs") is not None:
+            jobs, squares = data["outage_jobs"]
+            tally._add_outage_jobs(
+                [int(c) for c in jobs], [int(c) for c in squares]
+            )
         return tally
 
     def criticality_counts(self) -> Tuple[dict, dict]:

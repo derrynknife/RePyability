@@ -111,6 +111,7 @@ NONREPAIRABLE_CALLS = {
     "cs": lambda rbd: rbd.cs(X, 10.0),
     "time_to_reliability": lambda rbd: rbd.time_to_reliability(0.5),
     "bx_life": lambda rbd: rbd.bx_life(10),
+    "qf": lambda rbd: rbd.qf(0.5),
     "remaining_life": lambda rbd: rbd.remaining_life(0.5, state={}),
     "mean_residual_life": lambda rbd: rbd.mean_residual_life(state={}),
     "sf_given_state": lambda rbd: rbd.sf_given_state(X, state={}),
@@ -279,6 +280,18 @@ REPAIRABLE_CALLS = {
     "plan_vs_actual": lambda rbd: rbd.plan_vs_actual(
         quiet_logs(rbd), 100.0, 200.0, discount_rate=0.01, value_rate=1.0
     ),
+    "npv_distribution": lambda rbd: rbd.npv_distribution(
+        200.0, discount_rate=0.01, value_rate=1.0, mc_samples=20, seed=1
+    ),
+    "best_switch_time": lambda rbd: rbd.best_switch_time(
+        {"a": [[1.0], [2.0]]}, [1.0, 2.0], 200.0, mc_samples=20, seed=1, scan=3
+    ),
+    "least_spend_for_downtime": lambda rbd: rbd.least_spend_for_downtime(
+        200.0, 10.0, mc_samples=20, seed=1
+    ),
+    "compare_npv": lambda rbd: rbd.compare_npv(
+        rbd, 200.0, discount_rate=0.01, value_rate=1.0, mc_samples=20, seed=1
+    ),
     "expected_events_by_window": lambda rbd: rbd.expected_events_by_window(
         width=100.0, count=2
     ),
@@ -316,6 +329,16 @@ REPAIRABLE_CALLS = {
     "expected_cost_rate_uncertainty": (
         lambda rbd: rbd.expected_cost_rate_uncertainty(
             uncertain(rbd), n_draws=2, seed=1
+        )
+    ),
+    "expected_npv_uncertainty": (
+        lambda rbd: rbd.expected_npv_uncertainty(
+            200.0,
+            uncertain(rbd),
+            discount_rate=0.01,
+            value_rate=1.0,
+            n_draws=2,
+            seed=1,
         )
     ),
     "uncertainty_importance": lambda rbd: rbd.uncertainty_importance(
@@ -938,8 +961,15 @@ def test_the_readme_says_what_is_simulated():
             (nonrepairable["nested"], "sf", "refused"),
             (nonrepairable["nested"], "random", "simulated"),
         ],
-        "Common-cause groups: analyses given ages, and the MTTF of a group "
-        "splitting a failure probability": [
+        "Common-cause groups: analyses given ages for members of different "
+        "ages or a group splitting a failure probability, and the MTTF of "
+        "such a group": [
+            (nonrepairable["common cause by rate"], "sf_given_state", "exact"),
+            (
+                nonrepairable["common cause by rate"],
+                "remaining_life",
+                "numerical",
+            ),
             (ccf, "sf", "exact"),
             (ccf, "birnbaum_importance", "exact"),
             (ccf, "fussell_vesely", "exact"),
@@ -975,6 +1005,10 @@ def test_the_readme_says_what_is_simulated():
             (repairable["too meshed"], "point_availability", "refused"),
         ],
         "Common-cause groups in a repairable diagram": [
+            (repairable["shocks, revealed"], "availability", "simulated"),
+            (repairable["shocks, revealed"], "mean_availability", "refused"),
+            (repairable["shocks, tested"], "availability", "simulated"),
+            (repairable["shocks, tested"], "point_availability", "refused"),
             (timed_group, "mean_availability", "numerical"),
             (timed_group, "birnbaum_importance", "numerical"),
             (timed_group, "point_availability", "numerical"),
@@ -1008,8 +1042,19 @@ def test_the_readme_says_what_is_simulated():
             (crew, "point_availability", "numerical"),
             (crew, "expected_cost", "numerical"),
             (crew, "point_capacity", "numerical"),
+            (crew, "allocate_redundancy", "exact"),
             (crew, "availability_allocation", "refused"),
             (repairable["one repair crew"], "mean_availability", "refused"),
+            (
+                repairable["common cause, one repair crew"],
+                "mean_availability",
+                "exact",
+            ),
+            (
+                repairable["common cause, one repair crew"],
+                "point_availability",
+                "numerical",
+            ),
         ],
         "Standby groups (a duty unit and its spares, repaired)": [
             (group, "mean_availability", "exact"),
@@ -1109,6 +1154,16 @@ def test_the_readme_says_what_is_simulated():
                     "refused",
                 ),
                 ("shutdowns at given times, restoring", "cost", "simulated"),
+                (
+                    "outages at given times, renewing",
+                    "expected_npv",
+                    "numerical",
+                ),
+                (
+                    "outages at given times, renewing",
+                    "mean_availability",
+                    "refused",
+                ),
             )
         ],
         "Planned against unplanned downtime, and the failures a plan "
@@ -1137,6 +1192,11 @@ def test_the_readme_says_what_is_simulated():
                 repairable["shutdowns at given times, restoring"],
                 "maintenance_effect",
                 "simulated",
+            ),
+            (
+                repairable["outages at given times, renewing"],
+                "maintenance_effect",
+                "numerical",
             ),
         ],
         "Replacement on condition by a measured degradation level": [

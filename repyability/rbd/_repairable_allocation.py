@@ -31,11 +31,13 @@ from scipy.special import expit, logit, logsumexp, softmax
 from repyability.rbd import (
     _ccf_groups,
     _costs,
+    _crew_allocation,
     _crews,
     _long_run,
     _requirements,
 )
 from repyability.rbd._common import (
+    _crew_salaries,
     _discount_rate,
     _horizons,
     _present_horizon,
@@ -61,10 +63,27 @@ from repyability.utils.wrappers import outside_level
 if TYPE_CHECKING:
     from repyability.rbd.repairable_rbd import RepairableRBD
 
+#: What the allocations of availability targets say of limited crews:
+#: they move components' own availabilities, which the crews' queue ties
+#: together (``allocate_redundancy`` works its copies out with the crews).
 _ALLOCATION_CREWS = (
-    "the allocations assume",
-    "Compare designs by their long-run values, or simulate them with "
-    "compare().",
+    "the allocations of availability targets assume",
+    "allocate_redundancy chooses copies with the crews; compare other "
+    "designs by their long-run values, or simulate them with compare().",
+)
+
+
+#: What ``allocate_redundancy`` can choose a design by.
+OBJECTIVES = ("cost", "npv", "eac")
+
+#: What a design's net present value is made of (``basis``).
+_VALUED = (
+    "The copies are bought at the start; the running costs, the cost of "
+    "the system's downtime and the value earned are their long-run rates "
+    "over the horizon's present value, as total_cost counts them. "
+    "Approximate: a system new at 0 fails less and is up more often at "
+    "first than in the long run; expected_npv values a design drawn out "
+    "from new."
 )
 
 
@@ -152,11 +171,27 @@ def allocate_redundancy(
     max_units: Union[int, Dict[Hashable, int], None],
     method: str,
     discount_rate: float,
+    objective: str,
+    value_rate: float,
 ) -> TotalCostAllocation:
     """See ``RepairableRBD.allocate_redundancy``."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     rate = _discount_rate(discount_rate)
+    one_of("objective", objective, OBJECTIVES)
+    worth = number_or_nan(value_rate)
+    if not (math.isfinite(worth) and worth >= 0.0):
+        raise ValueError(
+            "value_rate must be a finite number, at least 0 (the value "
+            f"earned per unit time while the system works); got "
+            f"{value_rate!r}."
+        )
+    if worth and objective == "cost":
+        raise ValueError(
+            "value_rate needs an objective that takes it: "
+            'objective="npv" (the net present value over the horizon) or '
+            'objective="eac" (the same as a steady cost per unit time).'
+        )
     if np.ndim(horizon) != 0:
         raise ValueError(
             f"horizon must be a number for allocate_redundancy, got "
@@ -210,8 +245,27 @@ def allocate_redundancy(
             )
         max_unavailability = 1.0 - target
 
-    # Adding copies adds jobs for the crews: the search assumes none waits.
-    _crews._require_unlimited_crews(rbd, *_ALLOCATION_CREWS)
+    if rbd._crews_couple():
+        # Adding copies adds jobs for the crews: each design is worked
+        # out whole, from the crews' chain (see _crew_allocation).
+        _require_crewed_redundancy(rbd, bool(drawn))
+        counts, design = _crew_allocation.search(
+            rbd, chosen, caps, max_unavailability, method, present, worth
+        )
+        return _redundancy_result(
+            dict(zip(chosen, counts)),
+            design.acquisition,
+            design.cost_rate,
+            design.unavailability,
+            present,
+            horizon,
+            method,
+            discount_rate,
+            objective,
+            worth,
+            drawn,
+            _crew_allocation.BASIS,
+        )
     grouped = _require_groups_allocated(rbd, chosen, drawn)
     # Every node's availability (and unavailability) over the times the
     # long-run values average over, and each component's own cost.
@@ -387,10 +441,21 @@ def allocate_redundancy(
         # theirs times the rest's: the exact search is then a dynamic
         # program over the nodes.
         series = [(lambda n, q=float(down[node][0]): q**n) for node in chosen]
+    # A value earned while the system works is a cost of its downtime:
+    # worth ``v`` a unit time up, a design earns ``v * present * (1 - U)``,
+    # the same for every design but for ``v * present * U``. So the design
+    # with the highest net present value (and, over one horizon, the
+    # lowest equivalent annual cost) is the total cost's with the downtime
+    # costing ``downtime_cost_rate + v``, and the search's two bounds,
+    # which hold for any downtime cost, hold as they are: a copy's cost
+    # is not changed by the value, and its gain is its fall in the
+    # unavailability times that cost. Discounting changes neither: the
+    # copies are bought at 0, and every running term is its long-run
+    # rate times the one ``present`` (which only shrinks with the rate).
     counts, _, u = lowest_total_cost(
         unavailability,
         item_cost,
-        present * rbd.downtime_cost_rate,
+        present * (rbd.downtime_cost_rate + worth),
         [gain(node) for node in chosen]
         + [train_gain(train) for train in drawn],
         caps,
@@ -416,10 +481,89 @@ def allocate_redundancy(
             for node in rbd.components
         )
         + rbd.downtime_cost_rate * u
+        # The crews' salaries, which the copies do not change.
+        + _crew_salaries(rbd)
     )
+    return _redundancy_result(
+        units,
+        acquisition,
+        cost_rate,
+        u,
+        present,
+        horizon,
+        method,
+        discount_rate,
+        objective,
+        worth,
+        drawn,
+    )
+
+
+def _require_crewed_redundancy(rbd, trains: bool = False) -> None:
+    """Raise unless the redundancy allocation is worked out with limited
+    repair crews (see ``_crew_allocation``): the crews' chain covers the
+    diagram, which has no common-cause groups, maintenance groups or
+    shutdowns, and no ``trains`` are asked for."""
+    advice = (
+        " Compare designs by their long-run values, or simulate them "
+        "with compare()."
+    )
+    for found, what in (
+        (trains, "copies of whole trains"),
+        (
+            rbd.ccf_groups,
+            "copies of the diagram's common-cause groups' members, which "
+            "would join their groups",
+        ),
+        (rbd._maintenance, "the diagram's maintenance groups"),
+        (rbd._shutdowns, "the diagram's shutdowns"),
+    ):
+        if found:
+            raise NotImplementedError(
+                f"With {rbd.repair_crews} repair crew(s) a copy is one "
+                "more job that can wait for a crew, so each design is "
+                "worked out from the crews' Markov chain, which does not "
+                f"take {what}." + advice
+            )
+    _crews._require_crew_chain(rbd)
+
+
+def _redundancy_result(
+    units: Dict[Hashable, int],
+    acquisition: float,
+    cost_rate: float,
+    u: float,
+    present: float,
+    horizon: float,
+    method: str,
+    discount_rate: float,
+    objective: str,
+    worth: float,
+    drawn: list,
+    basis: Optional[str] = None,
+) -> TotalCostAllocation:
+    """``allocate_redundancy``'s result, from the design found: its
+    copies, what they cost to buy, its running cost per unit time (the
+    system's downtime's in it) and its unavailability. ``basis`` says how
+    the designs were worked out, where that is not from independent
+    components."""
+    total = acquisition + present * cost_rate
+    valued: Dict[str, Any] = {"basis": basis} if basis else {}
+    if objective != "cost":
+        value = worth * present * (1.0 - u)
+        valued = dict(
+            objective=objective,
+            value_rate=worth,
+            value=value,
+            running_cost=present * cost_rate,
+            npv=value - total,
+            # (Over no time at all, there is no rate to spread it at.)
+            eac=(total - value) / present if present else math.nan,
+            basis=_VALUED if basis is None else f"{_VALUED} {basis}",
+        )
     return TotalCostAllocation(
         units=units,
-        total_cost=acquisition + present * cost_rate,
+        total_cost=total,
         acquisition_cost=acquisition,
         cost_rate=cost_rate,
         availability=1.0 - u,
@@ -431,6 +575,7 @@ def allocate_redundancy(
             if drawn
             else None
         ),
+        **valued,
     )
 
 

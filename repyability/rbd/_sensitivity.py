@@ -72,6 +72,24 @@ _MOVES_BREAKS = {
 }
 
 
+#: The levers of a plan's times (``preventive.replace_at.0``, ...), which
+#: move its curve's breaks too.
+_PLAN_TIME = "preventive.replace_at."
+
+
+#: The lever of an upgrade's time, which moves its curve's breaks too.
+_UPGRADE_TIME = "upgrade.at"
+
+
+def _moves_breaks(name: str) -> bool:
+    """Whether the lever ``name`` moves its component's curve's breaks."""
+    return (
+        name in _MOVES_BREAKS
+        or name.startswith(_PLAN_TIME)
+        or name == _UPGRADE_TIME
+    )
+
+
 #: The range of a probability, a fraction or a share.
 _UNIT = (0.0, 1.0)
 
@@ -222,6 +240,27 @@ def _spec_levers(spec: dict) -> List[tuple]:
                     float(value),
                 )
             )
+        plan = options.get("replace_at") if key == "preventive" else None
+        if plan is not None:
+            # Each time of a plan, between the times either side of it.
+            times = [float(t) for t in np.atleast_1d(plan)]
+            edges = [0.0] + times + [math.inf]
+            for k, time in enumerate(times):
+
+                def moved_time(v, k=k, times=times, key=key, options=options):
+                    changed = times[:k] + [float(v)] + times[k + 1 :]  # noqa
+                    return {**spec, key: {**options, "replace_at": changed}}
+
+                out.append(
+                    (
+                        f"{_PLAN_TIME}{k}",
+                        time,
+                        moved_time,
+                        False,
+                        (edges[k], edges[k + 2]),
+                        time,
+                    )
+                )
         restoration = options.get("restoration")
         if isinstance(restoration, dict) and "q" in restoration:
             # The restoration factor of a task that restores partly.
@@ -232,7 +271,15 @@ def _spec_levers(spec: dict) -> List[tuple]:
 
             q = float(restoration["q"])
             out.append(
-                (f"{key}.restoration.q", q, moved_restoration, False, _UNIT, q)
+                (
+                    f"{key}.restoration.q",
+                    q,
+                    moved_restoration,
+                    False,
+                    # Above 1, a task that ages the unit (harmful).
+                    (0.0, math.inf),
+                    q,
+                )
             )
         duration = options.get("duration")
         if duration is not None and not isinstance(duration, str):
@@ -245,6 +292,17 @@ def _spec_levers(spec: dict) -> List[tuple]:
                 },
             ):
                 out.append((name, value, moved, False, bounds, scale))
+    upgrade = spec.get("upgrade")
+    if isinstance(upgrade, dict) and is_number(upgrade.get("at")):
+        # When the component is upgraded.
+
+        def moved_upgrade(v, upgrade=upgrade):
+            return {**spec, "upgrade": {**upgrade, "at": v}}
+
+        at = float(upgrade["at"])
+        out.append(
+            (_UPGRADE_TIME, at, moved_upgrade, False, (0.0, math.inf), at)
+        )
     standby = spec.get("standby")
     if isinstance(standby, dict):
         for option in ("dormancy_factor", "switching_probability"):
@@ -307,6 +365,7 @@ def _levers(rbd) -> List[_Lever]:
     of its components, then its common-cause groups and its repair
     crews."""
     from .ccf import CCFGroup
+    from .ccf import parameter_bounds as ccf_parameter_bounds
     from .ccf import parameters as ccf_parameters
     from .ccf import with_parameters as with_ccf_parameters
 
@@ -423,7 +482,7 @@ def _levers(rbd) -> List[_Lever]:
                     False,
                     build_ccf,
                     None,
-                    _UNIT,
+                    ccf_parameter_bounds(group.model, letter),
                     value,
                 )
             )
@@ -1007,7 +1066,7 @@ def sensitivity(
                 quantity == "availability"
                 and alone is not None
                 and lever.node is not None
-                and (x is not None or lever.name not in _MOVES_BREAKS)
+                and (x is not None or not _moves_breaks(lever.name))
             ):
                 at = alone.at(lever)
                 change = _difference(at, lever, rel_step, at(lever.value))

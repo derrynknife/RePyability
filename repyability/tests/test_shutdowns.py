@@ -308,19 +308,268 @@ def test_the_npv_discounts_each_shut_at_its_time():
 # -- routes and engines -------------------------------------------------------
 
 
-def test_shuts_at_given_times_are_simulated():
+NO_LONG_RUN = (
+    "Shutdown 'line' is at given times, which end, so the diagram has no "
+    "long run with it: ask for its values over a horizon "
+    "(expected_npv(horizon), expected_cost(T), mission_availability(T), "
+    "point_availability(t)), or give the shutdown a period for the long "
+    "run."
+)
+
+
+def test_shuts_at_given_times_have_no_long_run_and_are_simulated_too():
     rbd = one(shutdown={"times": [20.0, 250.0], "duration": D, "cost": 1.0})
     report = rbd.analysis_routes()
     assert report["mean_availability"].route == routes.REFUSED
-    assert "on a period" in report["mission_availability"].reason
-    with pytest.raises(NotImplementedError, match="on a period"):
-        rbd.mission_availability(100.0)
+    assert report["mean_availability"].reason == NO_LONG_RUN
+    assert report["expected_cost_rate"].reason == NO_LONG_RUN
+    with pytest.raises(NotImplementedError) as error:
+        rbd.mean_availability()
+    assert str(error.value) == NO_LONG_RUN
+    assert report["mission_availability"].route in ("exact", "numerical")
     run = rbd.availability(300.0, mc_samples=200, seed=1)
     assert run.shutdowns == 2
     assert run.cost.by_category["shutdown"] == pytest.approx(2.0)
     # The block's own process keeps going: down only for the two shuts and
     # its repairs.
     assert run.mean_availability_interval().estimate < 1.0 - 2 * D / 300.0
+
+
+# -- outages at given times, over a horizon -----------------------------------
+
+
+def test_an_outage_holds_a_block_down_in_its_window_at_any_time():
+    # The block's own process goes on through the outages (idle ageing):
+    # its own availability, but none inside a window.
+    times = [20.0, 250.0, 270.0]
+    rbd = one(shutdown={"times": times, "duration": D, "cost": 25.0})
+    t = np.array([0.0, 19.0, 20.0, 29.9, 30.0, 100.0, 255.0, 265.0, 275.0])
+    held = np.zeros(t.shape, dtype=bool)
+    for start in times:
+        held |= (t >= start) & (t < start + D)
+    np.testing.assert_allclose(
+        rbd.point_availability(t), np.where(held, 0.0, own(t)), atol=1e-9
+    )
+    # Each outage is charged at its start, and discounted from there.
+    rate = 2e-3
+    cost = rbd.expected_cost(300.0, discount_rate=rate)
+    assert cost.by_category["shutdown"] == pytest.approx(
+        sum(25.0 * math.exp(-rate * start) for start in times), rel=1e-8
+    )
+    assert rbd.expected_events(260.0).shutdowns == 2
+
+
+@pytest.mark.parametrize(
+    "more",
+    [
+        {},
+        {"scope": ["a"]},
+        {"scope": ["a", "b"], "idle_ageing": False},
+    ],
+)
+def test_outages_at_a_period_s_times_are_the_shutdown_on_that_period(more):
+    def build(calendar):
+        return RepairableRBD(
+            [("s", "a"), ("a", "b"), ("b", "t")],
+            {
+                "a": {
+                    "reliability": W([400, 2.0]),
+                    "repairability": E([0.1]),
+                    "repair_cost": 7.0,
+                    "preventive": {"shutdown": "line", "cost": 3.0},
+                },
+                "b": {
+                    "reliability": W([900, 1.5]),
+                    "repairability": E([0.2]),
+                    "repair_cost": 5.0,
+                },
+            },
+            shutdowns={
+                "line": {"duration": 12.0, "cost": 100.0, **calendar, **more}
+            },
+            downtime_cost_rate=2.0,
+        )
+
+    on_period = build({"period": 250.0})
+    given = build({"times": [250.0, 500.0, 750.0, 1000.0]})
+    t = np.linspace(0.0, 900.0, 181)
+    np.testing.assert_allclose(
+        given.point_availability(t),
+        on_period.point_availability(t),
+        rtol=0,
+        atol=1e-10,
+    )
+    for T in (240.0, 262.0, 900.0):
+        assert given.expected_cost(T).mean == pytest.approx(
+            on_period.expected_cost(T).mean, rel=1e-10
+        )
+    mine = given.expected_npv(900.0, discount_rate=1e-3, value_rate=4.0)
+    theirs = on_period.expected_npv(900.0, discount_rate=1e-3, value_rate=4.0)
+    assert mine.npv == pytest.approx(theirs.npv, rel=1e-10)
+    events, others = given.expected_events(900.0), on_period.expected_events(
+        900.0
+    )
+    assert events.node_preventive["a"] == pytest.approx(
+        others.node_preventive["a"], abs=1e-10
+    )
+    assert events.system_planned_downtime == pytest.approx(
+        others.system_planned_downtime, abs=1e-9
+    )
+
+
+def test_one_outage_renewing_a_unit_is_its_replacement_there_and_the_shut():
+    # The block renewed at the outage is the block replaced at that time,
+    # taking the outage's length; the outage adds its own cost, and holds
+    # the other block down for its length.
+    life, repair, T, d = W([300, 2.2]), E([0.05]), 180.0, 9.0
+    other = {"reliability": E([1e-3]), "repairability": E([0.2])}
+    edges = [("s", "a"), ("a", "b"), ("b", "t")]
+    outage = RepairableRBD(
+        edges,
+        {
+            "a": {
+                "reliability": life,
+                "repairability": repair,
+                "repair_cost": 6.0,
+                "preventive": {"shutdown": "o", "cost": 40.0},
+            },
+            "b": other,
+        },
+        shutdowns={"o": {"times": [T], "duration": d, "cost": 500.0}},
+    )
+    task = {"replace_at": [T], "duration": FIXED([d]), "cost": 40.0}
+    alone = RepairableRBD(
+        EDGES,
+        {
+            "a": {
+                "reliability": life,
+                "repairability": repair,
+                "repair_cost": 6.0,
+                "preventive": task,
+            }
+        },
+    )
+    t = np.array([50.0, 179.0, 180.0, 185.0, 188.9, 190.0, 260.0, 400.0])
+    total = 1e-3 + 0.2
+    b_up = 0.2 / total + 1e-3 / total * np.exp(-total * t)
+    held = (t >= T) & (t < T + d)
+    np.testing.assert_allclose(
+        outage.point_availability(t),
+        np.where(held, 0.0, alone.point_availability(t) * b_up),
+        atol=1e-9,
+    )
+    rate = 1e-3
+    mine = outage.expected_cost(400.0, discount_rate=rate)
+    theirs = alone.expected_cost(400.0, discount_rate=rate)
+    assert mine.by_component["a"] == pytest.approx(theirs.mean, rel=1e-10)
+    assert mine.by_category["shutdown"] == pytest.approx(
+        500.0 * math.exp(-rate * T), rel=1e-8
+    )
+    assert outage.expected_events(400.0).shutdowns == 1
+
+
+def outages():
+    """Three blocks, two outages lists: the line's (renewing a) and a
+    unit's own (renewing c, standing it still)."""
+    return RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")],
+        {
+            "a": {
+                "reliability": W([300, 2.0]),
+                "repairability": E([0.08]),
+                "repair_cost": 60.0,
+                "preventive": {"shutdown": "line", "cost": 25.0},
+            },
+            "b": {
+                "reliability": W([250, 1.5]),
+                "repairability": E([0.1]),
+                "repair_cost": 40.0,
+            },
+            "c": {
+                "reliability": W([900, 3.0]),
+                "repairability": E([0.15]),
+                "repair_cost": 200.0,
+                "preventive": {"shutdown": "unit", "cost": 80.0},
+            },
+        },
+        shutdowns={
+            "line": {
+                "times": [0.0, 140.0, 520.0],
+                "duration": 10.0,
+                "cost": 300.0,
+            },
+            "unit": {
+                "times": [330.0],
+                "duration": 6.0,
+                "scope": ["c"],
+                "cost": 50.0,
+                "idle_ageing": False,
+            },
+        },
+        downtime_cost_rate=5.0,
+    )
+
+
+def test_outages_at_given_times_agree_with_the_simulation():
+    rbd, T = outages(), 800.0
+    run = rbd.availability(T, mc_samples=20_000, seed=7, **plain())
+    interval = run.mean_availability_interval()
+    exact = rbd.mission_availability(T)
+    assert abs(interval.estimate - exact) <= Z * interval.standard_error
+    assert interval.standard_error < 5e-4
+    cost = rbd.expected_cost(T)
+    assert abs(run.cost.sample_mean - cost.mean) <= Z * run.cost.sample_se
+    assert run.cost.sample_se < 0.005 * cost.mean
+    assert run.shutdowns == 4 == rbd.expected_events(T).shutdowns
+    # From a state, the outages are counted from now.
+    state = {"a": NodeState(age=200.0), "c": NodeState(alive=False)}
+    run = rbd.availability(
+        T, mc_samples=20_000, seed=8, state=state, **plain()
+    )
+    interval = run.mean_availability_interval()
+    exact = rbd.mission_availability(T, state=state)
+    assert abs(interval.estimate - exact) <= Z * interval.standard_error
+
+
+def test_what_the_exact_values_do_not_take_at_given_times_says_so():
+    calendar = {"times": [20.0, 250.0], "duration": D}
+    tested = one({"inspection": {"shutdown": "line"}}, shutdown=calendar)
+    message = (
+        "Component 'a' is tested at each shut of shutdown 'line', which is "
+        "at given times; the exact methods follow such a block at shuts on "
+        "a period (and a block renewed, or kept unless it is due, at every "
+        "shut at given times too). Estimate its values by simulation, with "
+        "availability() or cost()."
+    )
+    with pytest.raises(NotImplementedError) as error:
+        tested.mission_availability(300.0)
+    assert str(error.value) == message
+    assert tested.analysis_routes()["expected_npv"].reason == message
+    kept = one(
+        {
+            "reliability": W([200, 2.0]),
+            "preventive": {"shutdown": "line", "older_than": 100.0},
+        },
+        shutdown=calendar,
+    )
+    # A block kept unless it is due there is worked out stretch by
+    # stretch (see test_kept_at_given_times.py).
+    assert 0.0 < kept.mission_availability(300.0) < 1.0
+    # A job that restores part-way is simulated.
+    restored = one(
+        {
+            "reliability": W([200, 2.0]),
+            "preventive": {
+                "shutdown": "line",
+                "restoration": {"model": "kijima1", "q": 0.5},
+            },
+        },
+        shutdown=calendar,
+    )
+    with pytest.raises(NotImplementedError, match="by simulation"):
+        restored.mission_availability(300.0)
+    run = restored.availability(300.0, mc_samples=50, seed=1)
+    assert run.shutdowns == 2
 
 
 def test_what_does_not_take_shutdowns_refuses_them():

@@ -23,6 +23,13 @@ from repyability import (
 from repyability.maintenance._site_policy import _Averaged
 from repyability.schedule import DutyPlan, Rate, Recurrence, Shifts, Usage
 
+# The 0.14 and 0.19 forms (Calendar, Shutdown, Shutdowns, prices on the
+# opportunities, optimal_calendar_policy) still work, deprecated: these
+# tests keep them unchanged, and test_opportunities.py the new forms.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:.*(is deprecated|puts a price on the opportunities):FutureWarning"
+)
+
 LIFE = surv.Weibull.from_params([1000.0, 2.5])
 NOW = "2026-11-16"
 
@@ -585,7 +592,7 @@ DATED = Shutdowns(
         ({"method": "exact"}, "no repeating cycle to be exact over"),
         ({"method": "sampling"}, "no repeating cycle to sample"),
         ({"horizon": "2036-11-16"}, "needs discount= too"),
-        ({"discount": 0.07}, "goes with horizon="),
+        ({"discount": 0.07}, "discounted long run needs shuts that repeat"),
         (
             {"horizon": "2036-11-16", "discount": 0.07, "method": "averaged"},
             "its own route",
@@ -692,6 +699,8 @@ def test_the_model_time_calendar_is_unchanged():
     part = textbook()
     with warnings.catch_warnings():
         warnings.simplefilter("error")
+        # The 0.14 and 0.19 forms warn that they are deprecated.
+        warnings.simplefilter("ignore", FutureWarning)
         policy = part.optimal_calendar_policy(Calendar())
     assert policy.cost_rate == pytest.approx(0.003462, abs=5e-7)
     with pytest.raises(ValueError, match="for a site"):

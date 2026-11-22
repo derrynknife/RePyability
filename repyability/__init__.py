@@ -31,24 +31,36 @@ https://derrynknife.github.io/RePyability/
 from repyability._version import __version__
 from repyability.fault_tree import FaultTree
 from repyability.maintenance import (
+    AgePolicy,
     AgeReplacementValue,
+    AtShutdown,
+    BlockPolicy,
     Calendar,
     CalendarPolicy,
+    CalendarReplacement,
+    ConditionPolicy,
     CostDistribution,
     DatedChoice,
     DatedReplacement,
     DelayEffect,
     FailureFinding,
+    FailureFindingWindow,
     FailureLimitPolicy,
+    ImperfectRepair,
+    Inspection,
     LayeredVisits,
     MaintenancePolicy,
     NextReplacement,
     NextReplacementOnDates,
     OnCondition,
+    Opportunities,
     Opportunity,
+    OpportunityPrice,
+    OpportunityPrices,
     OptionValue,
     OverhaulReplacePolicy,
     PlannedReplacement,
+    Prices,
     RatioChoice,
     RenewalForecast,
     RepairOrReplace,
@@ -56,6 +68,7 @@ from repyability.maintenance import (
     ReplacementChoice,
     ReplacementComparison,
     ReplacementRule,
+    Restoration,
     RuleCost,
     RunToFailure,
     ScheduledReplacement,
@@ -69,9 +82,12 @@ from repyability.maintenance import (
     SlowSolverWarning,
     SwitchTime,
     UnitDecision,
+    UnitPlan,
+    Upgrade,
     WindowCosts,
     best_switch_time,
     failure_finding,
+    failure_finding_window,
     layered_cost_rate,
     on_condition,
     operating_schedule_value,
@@ -84,6 +100,7 @@ from repyability.maintenance import (
 from repyability.network import Network
 from repyability.non_repairable import NonRepairable
 from repyability.rbd._bayesian_life import PosteriorPredictive
+from repyability.rbd._contract import value_plan
 from repyability.rbd._mission_results import (
     MissionDrivers,
     MissionPhaseSummary,
@@ -92,8 +109,15 @@ from repyability.rbd._mission_results import (
 from repyability.rbd._mission_settings import BlockSetting, MissionPhase
 from repyability.rbd._model_utils import model_parameters
 from repyability.rbd._streams import seed_entropy
-from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor, CCFGroup
+from repyability.rbd.ccf import (
+    MGL,
+    AlphaFactor,
+    BetaFactor,
+    CCFGroup,
+    Shocks,
+)
 from repyability.rbd.chunks import SimulationChunk
+from repyability.rbd.contracts import AvailabilityContract
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
     PerfectReliability,
@@ -124,6 +148,8 @@ from repyability.rbd.results import (
     CrewJob,
     CrewStates,
     Criticalities,
+    DowntimeDesign,
+    DowntimeRiskResult,
     EventsByWindow,
     ExpectedCost,
     ExpectedEvents,
@@ -135,7 +161,11 @@ from repyability.rbd.results import (
     MaintenancePlan,
     ModelParameters,
     NodeActionRates,
+    NPVComparison,
+    NPVDistribution,
+    NPVUncertainty,
     PFDBreakdown,
+    PlanRobustness,
     PlanVsActual,
     PrimeImplicant,
     RateBreakdown,
@@ -143,6 +173,7 @@ from repyability.rbd.results import (
     ReliabilityRedundancyAllocation,
     ReplacementCycle,
     RestorationCriticalityIndex,
+    SimulatedSwitchTime,
     SimulationSamples,
     SparesDemand,
     SparesStock,
@@ -157,16 +188,19 @@ from repyability.rbd.results import (
 )
 from repyability.rbd.routes import AnalysisRoute, AnalysisRoutes
 from repyability.rbd.shards import run_shard
+from repyability.rbd.shocks import shock_nodes
 from repyability.rbd.standby_node import StandbyModel
 from repyability.repairable import (
     Repairable,
     minimal_repair_time_to_nth_failure,
 )
+from repyability.schemas import npv_schema
 from repyability.stress_strength import (
     stress_strength,
     stress_strength_over_time,
 )
 from repyability.timelines import Timeline, Timelines
+from repyability.value import ValueSchedule
 
 __all__ = [
     "__version__",
@@ -202,6 +236,8 @@ __all__ = [
     "MGL",
     "AlphaFactor",
     "CCFGroup",
+    "Shocks",
+    "shock_nodes",
     "minimal_repair_time_to_nth_failure",
     "ComponentOption",
     # Stress-strength interference
@@ -209,6 +245,9 @@ __all__ = [
     "stress_strength_over_time",
     # Maintenance planning
     "Opportunity",
+    "Opportunities",
+    "OpportunityPrices",
+    "OpportunityPrice",
     "Calendar",
     "Shutdown",
     "Shutdowns",
@@ -228,6 +267,14 @@ __all__ = [
     "ExpectedCost",
     "ExpectedEvents",
     "ExpectedNPV",
+    "NPVDistribution",
+    "SimulatedSwitchTime",
+    "DowntimeDesign",
+    "DowntimeRiskResult",
+    "NPVComparison",
+    "NPVUncertainty",
+    "AvailabilityContract",
+    "ValueSchedule",
     "MaintenanceEffect",
     "PlanVsActual",
     "EventsByWindow",
@@ -255,6 +302,18 @@ __all__ = [
     "FailureCriticalityIndex",
     "RestorationCriticalityIndex",
     "MaintenancePolicy",
+    # A unit's maintenance plan and its parts (UC-63)
+    "AgePolicy",
+    "AtShutdown",
+    "BlockPolicy",
+    "CalendarReplacement",
+    "ConditionPolicy",
+    "ImperfectRepair",
+    "Inspection",
+    "UnitPlan",
+    "Prices",
+    "Restoration",
+    "Upgrade",
     "FailureLimitPolicy",
     "OverhaulReplacePolicy",
     "RepairOrReplacePolicy",
@@ -276,10 +335,12 @@ __all__ = [
     "RunToFailure",
     "ScheduledReplacement",
     "FailureFinding",
+    "FailureFindingWindow",
     "OnCondition",
     "run_to_failure",
     "scheduled_replacement",
     "failure_finding",
+    "failure_finding_window",
     "optimal_failure_finding_interval",
     "on_condition",
     "optimal_on_condition_interval",
@@ -299,6 +360,7 @@ __all__ = [
     "operating_schedule_value",
     "best_switch_time",
     "MaintenancePlan",
+    "PlanRobustness",
     "RateBreakdown",
     "PFDBreakdown",
     "AvailabilityAllocation",
@@ -307,6 +369,8 @@ __all__ = [
     "TimelineSimulation",
     "SimulationChunk",
     "run_shard",
+    "value_plan",
+    "npv_schema",
     "seed_entropy",
     "model_parameters",
 ]

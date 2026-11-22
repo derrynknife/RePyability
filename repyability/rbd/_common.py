@@ -1,21 +1,21 @@
-"""Small helpers the ``RepairableRBD`` modules share: the checks of a
-horizon and a discount rate, a model's mean, survival and cumulative
-distribution as arrays, a constant failure rate, the common period of
-inspection intervals, and the shapes results take.
+"""Small helpers the ``RepairableRBD`` modules share: the check of a
+horizon (the discount checks are ``repyability.value``'s), a model's
+mean, survival and cumulative distribution as arrays, a constant
+failure rate, the common period of inspection intervals, the repair
+crews' salaries, and the shapes results take.
 """
 
 import functools
 import math
 import numbers
-import warnings
 import weakref
 from fractions import Fraction
 from typing import (
     Any,
     Callable,
     Iterable,
-    List,
     Optional,
+    Tuple,
 )
 
 import numpy as np
@@ -26,9 +26,14 @@ from repyability.rbd._model_utils import (
 )
 from repyability.utils.checks import (
     number_or_nan,
-    real_array,
 )
-from repyability.utils.wrappers import outside_level
+from repyability.value import _rates
+
+# The discount checks are the money module's (``repyability.value``),
+# kept under the names the diagram's modules import.
+_discount_rate = _rates.discount_rate
+_horizons = _rates.horizons
+_present_horizon = _rates.present_horizon
 
 
 def _keeps_virtual_age(rbd, node) -> bool:
@@ -252,91 +257,6 @@ def _horizon(horizon) -> float:
     return value
 
 
-def _discount_rate(discount_rate) -> float:
-    """``discount_rate`` as a float: a ValueError unless it is a finite,
-    non-negative number (#184)."""
-    number = isinstance(
-        discount_rate, (int, float, np.integer, np.floating)
-    ) and not isinstance(discount_rate, bool)
-    rate = float(discount_rate) if number else float("nan")
-    if not (np.isfinite(rate) and rate >= 0.0):
-        raise ValueError(
-            "discount_rate must be a finite, non-negative number (a "
-            "continuous rate per unit time of the component models), got "
-            f"{discount_rate!r}."
-        )
-    return rate
-
-
-def _horizons(horizon, rate: float) -> np.ndarray:
-    """``horizon``, a number or an array of them, as an array of
-    non-negative floats: finite, unless costs are discounted at ``rate``
-    (#231), where an endless horizon is worth ``1 / rate`` of a steady
-    cost rate. Else a ValueError."""
-    try:
-        values = real_array(horizon, "horizon")
-    except (TypeError, ValueError):
-        values = np.array(np.nan)
-    if values.size and np.all(values >= 0.0) and np.all(values < np.inf):
-        return values
-    if values.size and np.all(values >= 0.0):
-        if rate > 0.0:
-            return values
-        raise ValueError(
-            "horizon must be finite without a discount_rate: an undiscounted "
-            f"cost over an endless horizon is endless; got {horizon!r}."
-        )
-    raise ValueError(
-        "horizon must be a finite, non-negative number (or an array of "
-        f"them; inf with a discount_rate), got {horizon!r}."
-    )
-
-
-#: A discount rate times the shortest of the components' mean lives
-#: beyond which their failures' costs are discounted to almost nothing
-#: (``exp(-20)``, 2e-9), and times a horizon beyond which the whole time
-#: scale is: a rate given per year with the models in hours, say (#231).
-#: A long horizon is no mistake in itself.
-_DISCOUNTED_AWAY = 20.0
-
-
-_HORIZON_AWAY = 1000.0
-
-
-def _present_horizon(
-    horizons: np.ndarray,
-    rate: float,
-    lives: Callable[[], List[float]] = list,
-) -> np.ndarray:
-    """What a unit cost rate over ``[0, horizon)`` is worth at the start,
-    discounted continuously at ``rate`` per unit time (#184): ``(1 -
-    exp(-rate * horizon)) / rate``, the horizon itself undiscounted, and
-    ``1 / rate`` for an endless one; for each of ``horizons``. Warns where
-    the rate discounts the costs away (#231): times the shortest of the
-    components' mean ``lives`` more than ``_DISCOUNTED_AWAY``, or times a
-    horizon more than ``_HORIZON_AWAY``."""
-    if rate == 0.0:
-        return horizons
-    known = [life for life in lives() if 0.0 < life < math.inf]
-    finite = horizons[np.isfinite(horizons)]
-    span, what = 0.0, ""
-    if known and rate * min(known) > _DISCOUNTED_AWAY:
-        span, what = min(known), "the components' shortest mean life"
-    elif finite.size and rate * float(finite.max()) > _HORIZON_AWAY:
-        span, what = float(finite.max()), "the horizon"
-    if what:
-        warnings.warn(
-            f"discount_rate {rate:g} discounts the costs at {what} "
-            f"({span:g}) by a factor of exp(-{rate * span:.3g}), to "
-            "almost nothing: it is a continuous rate per unit time of the "
-            "component models. For an annual rate i with models in hours, "
-            "give math.log(1 + i) / 8760 (7% a year: "
-            f"{math.log(1.07) / 8760:.3g} an hour).",
-            stacklevel=outside_level(),
-        )
-    return -np.expm1(-rate * horizons) / rate
-
-
 #: How closely a discounted expected cost from new is worked out (#231):
 #: its integral by parts, to this share of itself.
 _DISCOUNT_TOLERANCE = 1e-8
@@ -347,6 +267,25 @@ _DISCOUNT_TOLERANCE = 1e-8
 _DISCOUNT_ROUNDS = 60
 
 
+def _crew_salaries(rbd) -> float:
+    """The repair crews' salaries per unit time: ``repair_crews`` crews at
+    ``crew_cost_rate`` each, a cost of the system that does not depend on
+    what happens in it; 0.0 when the crews are not priced."""
+    rate = getattr(rbd, "crew_cost_rate", 0.0)
+    return float(rbd.repair_crews) * rate if rate else 0.0
+
+
+def _crew_salaries_to(rbd, ends, rate: float = 0.0) -> np.ndarray:
+    """The crews' salaries from 0 to each of ``ends``, discounted at
+    ``rate``: ``n c T``, or ``n c (1 - exp(-r T)) / r`` (see
+    ``_crew_salaries``)."""
+    ends = np.asarray(ends, dtype=float)
+    paid = _crew_salaries(rbd)
+    if not rate:
+        return paid * ends
+    return paid * -np.expm1(-rate * ends) / rate
+
+
 def _discount_pieces(ends: np.ndarray, horizon: float):
     """The first pieces of a discounted cost's integral (see
     ``RepairableRBD._discounted_cost``): from 0 to ``horizon`` in 32,
@@ -355,6 +294,69 @@ def _discount_pieces(ends: np.ndarray, horizon: float):
         np.concatenate(([0.0], ends, np.linspace(0.0, horizon, 33)))
     )
     return edges[:-1], edges[1:]
+
+
+def _discounted_accrual(
+    values: Callable[[np.ndarray], np.ndarray],
+    ends: np.ndarray,
+    rate: float,
+    pieces: Tuple[np.ndarray, np.ndarray],
+    tolerance: float = _DISCOUNT_TOLERANCE,
+):
+    """The present value at 0, at the continuous ``rate``, of a cost that
+    accrues as ``C``, to each of ``ends``: ``exp(-r T) C(T) + r *
+    integral_0^T exp(-r s) C(s) ds``, the one design of an accrued
+    cost's present value, for a diagram's expected cost (#231) and a
+    schedule's forecast alike. ``values(times)`` is ``C`` at ``times``,
+    as rows (several costs at once). The integral is taken by the
+    Gauss-Kronrod (7, 15) rule on ``pieces`` (``(starts, stops)``, with
+    every one of ``ends`` among the stops), and the pieces whose two
+    rules differ most are halved until the first row's differences add
+    up to ``tolerance`` of its integral, for at most
+    ``_DISCOUNT_ROUNDS`` rounds: ``C`` may jump (at a scheduled event)
+    or bend, where a piece's error only shrinks with it. Returns the
+    present values (rows by ``ends``) and the first row's error, ``r``
+    times the rules' differences (a bound on the integral's error)."""
+    from ._mean_lifetime import _G7_W, _GK_W, _GK_X
+
+    at_ends = values(ends)
+
+    def rules(a: np.ndarray, b: np.ndarray):
+        """The pieces' integrals of ``exp(-r s) C(s)`` by the Kronrod
+        rule, as rows, and the first row's error, against the Gauss
+        rule."""
+        half = 0.5 * (b - a)
+        x = (0.5 * (a + b))[:, None] + half[:, None] * _GK_X
+        g = np.exp(-rate * x) * values(x.ravel()).reshape(-1, *x.shape)
+        kronrod = (g @ _GK_W) * half
+        return kronrod, np.abs(kronrod[0] - (g[0] @ _G7_W) * half)
+
+    a, b = pieces
+    found, error = rules(a, b)
+    for _ in range(_DISCOUNT_ROUNDS):
+        budget = tolerance * abs(float(found[0].sum()))
+        if error.sum() <= budget:
+            break
+        # Halve the pieces over their share of the error allowed.
+        split = error > budget / error.size
+        middle = 0.5 * (a + b)[split]
+        halves, errors = rules(
+            np.concatenate([a[split], middle]),
+            np.concatenate([middle, b[split]]),
+        )
+        a = np.concatenate([a[~split], a[split], middle])
+        b = np.concatenate([b[~split], middle, b[split]])
+        found = np.concatenate([found[:, ~split], halves], axis=1)
+        error = np.concatenate([error[~split], errors])
+    order = np.argsort(b, kind="stable")
+    running = np.concatenate(
+        [np.zeros((len(at_ends), 1)), np.cumsum(found[:, order], axis=1)],
+        axis=1,
+    )
+    # Every end is a piece's end: the pieces up to it are within it.
+    upto = np.searchsorted(b[order], ends, side="right")
+    present = np.exp(-rate * ends) * at_ends + rate * running[:, upto]
+    return present, abs(rate) * float(error.sum())
 
 
 def _common_period(intervals: Iterable[float]) -> float:

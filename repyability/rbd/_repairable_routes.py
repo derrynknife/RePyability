@@ -6,6 +6,7 @@ checks it against the methods on every catalogue diagram.
 """
 
 import dataclasses
+import math
 from functools import partial
 from typing import (
     Dict,
@@ -21,6 +22,8 @@ from repyability.rbd import (
     _first_failure,
     _intervals,
     _long_run,
+    _npv,
+    _npv_runs,
     _plan_actual,
     _repairable_allocation,
     _repairable_capacity,
@@ -30,10 +33,12 @@ from repyability.rbd import (
     _runs,
     _shutdowns,
     _spares,
+    _switch_runs,
     _timeline_runs,
     _unplanned,
 )
 from repyability.rbd._bayesian_life import PosteriorPredictive
+from repyability.rbd._covariate_schedule import on_clock
 from repyability.rbd._runs import (  # noqa: E402,F401
     _UNSTREAMED,
     failure_criticality_index_per_component_failures,
@@ -126,9 +131,17 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             )
         ),
     )
-    # The allocations assume independent components, which limited
-    # repair crews make them not; the common-cause groups' chains take
-    # theirs in.
+    # The allocations of targets assume independent components, which
+    # limited repair crews make them not (the redundancy allocation works
+    # each design out from the crews' chain); the common-cause groups'
+    # chains take theirs in.
+    redundancy = (
+        r.refusal(
+            partial(_repairable_allocation._require_crewed_redundancy, rbd)
+        )
+        if rbd._crews_couple()
+        else r.refusal(partial(_ccf_groups._require_ccf_long_run, rbd))
+    )
     allocation = r.refusal(
         partial(
             _crews._require_unlimited_crews,
@@ -176,7 +189,7 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                     "The system's availability given each of the pair up "
                     "and down, a common-cause group's members conditioned "
                     "on their states through the groups' chains. "
-                    if rbd.ccf_groups
+                    if _ccf_groups._own_chains(rbd)
                     else "Each component's Birnbaum importance with the "
                     "other held up, less with it held down. "
                 )
@@ -362,6 +375,11 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         )
     else:
         out["expected_npv"] = uptime
+    retiring = r.refusal(
+        lambda: _npv.own_terms(rbd, math.inf, None, None, None)
+    )
+    if retiring is not None:
+        out["expected_npv"] = r.refused(retiring, tuple(rbd._valuation))
     out["plan_vs_actual"] = _plan_actual.route(rbd, out["expected_npv"])
     # A group's members' MTTF and MTTR are their group's: the
     # availability allocations hold them, and a member's copies join its
@@ -373,11 +391,18 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         else ""
     )
     out["allocate_redundancy"] = (
-        r.refused(allocation)
-        if allocation
+        r.refused(redundancy)
+        if redundancy
         else from_long_run(
             r.EXACT,
             "A search over the exact long-run values of the candidates."
+            + (
+                " With limited repair crews each candidate's come from "
+                "the crews' Markov chain of its components and their "
+                "copies, which queue for the crews together."
+                if rbd._crews_couple()
+                else ""
+            )
             + (
                 " A common-cause group member's copies join its group, "
                 "whose chain takes them in: a BetaFactor group's (an MGL "
@@ -439,7 +464,10 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         else from_long_run(
             r.NUMERICAL,
             "An optimiser over the age-replacement intervals, with the "
-            "exact long-run values at each.",
+            'exact long-run values at each (objective="eac": each '
+            "component's renewal cycle discounted too, the system's "
+            'terms at its long-run availability; objective="npv": '
+            "expected_npv over the horizon at each).",
         )
     )
     refusal = (
@@ -471,7 +499,10 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         else from_long_run(
             r.NUMERICAL,
             "An optimiser over the inspection interval, with the exact "
-            "long-run values at each.",
+            'long-run values at each (objective="eac": each '
+            "component's renewal cycle discounted too, the system's "
+            'terms at its long-run availability; objective="npv": '
+            "expected_npv over the horizon at each).",
         )
     )
     # Spares: each component's replacements, counted as a renewal
@@ -589,6 +620,22 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             "as timelines: recorded by the event loop as it runs." + paired,
             engine=engine,
             engine_reason=why,
+        )
+    )
+    out["npv_distribution"] = _npv_runs.route(rbd, out["simulate_timelines"])
+    out["best_switch_time"] = _switch_runs.route(rbd, out["npv_distribution"])
+    out["compare_npv"] = _npv_runs.compare_route(out["npv_distribution"], rbd)
+    out["least_spend_for_downtime"] = (
+        out["availability"]
+        if out["availability"].route == r.REFUSED
+        else r.AnalysisRoute(
+            r.SIMULATED,
+            "Each design's availability runs on one seed, its downtime per "
+            "run (planned and unplanned) taken against the limit by an "
+            "upper bound on its risk measure; a greedy search over the "
+            "levers.",
+            engine=out["availability"].engine,
+            engine_reason=out["availability"].engine_reason,
         )
     )
     engine, why = _runs._engine_choice(rbd, capacity=False)
@@ -732,12 +779,22 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             "simulate_chunk",
             "availability_from_chunks",
             "shards",
+            # Each design's availability runs.
+            "least_spend_for_downtime",
         ):
             out[name] = r.refused(meshed)
     # A run of windows: the exact values over time (the window's own
     # route), and for the cost its spread simulated from one seeded run.
     out["expected_events_by_window"] = out["expected_events"]
-    if out["expected_cost"].route not in (r.EXACT, r.NUMERICAL):
+    if on_clock(rbd) and out["cost"].route == r.SIMULATED:
+        out["cost_by_window"] = dataclasses.replace(
+            out["cost"],
+            reason="A life on the diagram's clock has no exact values: each "
+            "window's mean and spread come from the simulations cost runs, "
+            "one seeded set of histories cut at every window's end.",
+            twin="",
+        )
+    elif out["expected_cost"].route not in (r.EXACT, r.NUMERICAL):
         out["cost_by_window"] = out["expected_cost"]
     elif out["cost"].route == r.REFUSED:
         out["cost_by_window"] = out["cost"]
@@ -789,6 +846,7 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         ("point_availability_uncertainty", "point_availability"),
         ("mission_availability_uncertainty", "mission_availability"),
         ("expected_cost_rate_uncertainty", "expected_cost_rate"),
+        ("expected_npv_uncertainty", "expected_npv"),
     ):
         own = out[method]
         out[name] = (
@@ -893,4 +951,18 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
     # What the plan does (planned against unplanned, failures avoided):
     # from the routes above, the plan's and running to failure's.
     out["maintenance_effect"] = _unplanned.effect_route(rbd, out)
+    if rbd._upgrades:
+        # The long run is the diagram's after its upgrades: its methods
+        # are asked of it (see _long_run.follows_upgrades).
+        after = _long_run.after_upgrades(rbd).analysis_routes()
+        for name in _long_run.ROUTED_AFTER_UPGRADES:
+            route = after[name]
+            if route.route != r.REFUSED:
+                route = dataclasses.replace(
+                    route,
+                    reason="The long run once upgraded (each upgraded "
+                    "component with its new life, the time before its "
+                    f"upgrade ignored): {route.reason}",
+                )
+            out[name] = route
     return r.AnalysisRoutes(sorted(out.items()))

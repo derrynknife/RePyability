@@ -2209,6 +2209,126 @@ class ShiftedCurve:
         return Atoms(*kept)
 
 
+class PlanCurve:
+    """A unit replaced at the times of a plan (its spec's
+    ``"replace_at"``), and after the last no more: ``stretches``, one
+    ``BlockCurve`` of a single interval for each stretch from one time to
+    the next (see ``_block_replacement.plan_availability``), the first
+    from 0 and the ``k``-th from ``starts[k]``. The last stretch reaches
+    as far as the curve was asked for; past its end the curve holds its
+    value there."""
+
+    #: Replaced no more after its plan's last time, it has no period, and
+    #: is followed as far as it is asked for.
+    settle = np.inf
+    period = None
+
+    def __init__(self, stretches: list, starts):
+        self.stretches = stretches
+        self.starts = np.asarray(starts, dtype=float)
+        self.lengths = np.array([s.interval for s in stretches])
+        self.end = float(self.starts[-1] + self.lengths[-1])
+        # Each stretch's events by its end, and all those before it.
+        totals = [s.events(np.array([s.interval])) for s in self.stretches]
+        self._before = {
+            key: np.concatenate(
+                [[0.0], np.cumsum([float(t[key][0]) for t in totals])]
+            )
+            for key in totals[0]
+        }
+
+    def _each(self, x: np.ndarray, value: Callable) -> np.ndarray:
+        """``value(stretch, s, k)`` for the times ``x`` in each stretch,
+        ``s`` after its start (short of its end, where the next begins)."""
+        x = np.asarray(x, dtype=float)
+        out = np.empty(x.shape)
+        last = len(self.stretches) - 1
+        k = np.clip(np.searchsorted(self.starts, x, side="right") - 1, 0, last)
+        for index in np.unique(k):
+            inside = k == index
+            length = self.lengths[index]
+            s = np.clip(
+                x[inside] - self.starts[index], 0.0, np.nextafter(length, 0.0)
+            )
+            out[inside] = value(self.stretches[index], s, index)
+        return out
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        return self._each(x, lambda stretch, s, _: stretch.at(s))
+
+    def failed_at(self, x: np.ndarray) -> np.ndarray:
+        """Each stretch's probability of being in a repair."""
+        return self._each(x, lambda stretch, s, _: stretch.failed_at(s))
+
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """Each stretch's rate of change (see ``BlockCurve.derivative``)."""
+        return self._each(
+            x, lambda stretch, s, _: stretch.derivative(s, scale)
+        )
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The unit's expected events before each time ``x`` (see
+        ``GridCurve.events``): those of the stretches before its own, and
+        its own stretch's up to it (the replacement at a time of the plan
+        is its stretch's first event, counted after that time)."""
+        x = np.minimum(np.asarray(x, dtype=float), self.end)
+        last = len(self.stretches) - 1
+        k = np.clip(np.searchsorted(self.starts, x, side="right") - 1, 0, last)
+        out = {key: before[k] for key, before in self._before.items()}
+        for index in np.unique(k):
+            inside = k == index
+            s = np.clip(
+                x[inside] - self.starts[index], 0.0, self.lengths[index]
+            )
+            own = self.stretches[index].events(s)
+            for key in out:
+                out[key][inside] += own[key]
+        return out
+
+    def atoms(self, stop: float) -> Atoms:
+        """The replacements at the plan's times before ``stop`` (see
+        ``Atoms``)."""
+        parts = [
+            Atoms(own.times + start, *own[1:])
+            for own, start in (
+                (stretch.atoms(min(stop - start, stretch.interval)), start)
+                for stretch, start in zip(self.stretches, self.starts)
+                if start < stop
+            )
+        ]
+        if not parts:
+            return Atoms.none()
+        return Atoms(*(np.concatenate(column) for column in zip(*parts)))
+
+    def _joined(self, start: float, stop: float, times_of) -> np.ndarray:
+        """``times_of(stretch, a, b)`` of each stretch within ``[start,
+        stop]``, with the plan's times."""
+        parts = [self.starts, np.array([self.end])]
+        for stretch, begin in zip(self.stretches, self.starts):
+            a = max(start - begin, 0.0)
+            b = min(stop - begin, stretch.interval)
+            if a <= b:
+                parts.append(times_of(stretch, a, b) + begin)
+        times = np.concatenate(parts)
+        return times[(times >= start) & (times <= stop)]
+
+    def knots(self, start: float, stop: float) -> np.ndarray:
+        return self._joined(start, stop, lambda curve, a, b: curve.knots(a, b))
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        return self._joined(start, stop, curve_breaks)
+
+    def grids(self) -> list:
+        """Each stretch's grid, to its end (see ``curve_grids``), the
+        earliest last (``_rates.differences`` takes the last that
+        applies)."""
+        ends = self.starts + self.lengths
+        return [
+            (stretch.step, float(end))
+            for stretch, end in zip(self.stretches[::-1], ends[::-1])
+        ]
+
+
 class StartedBlockCurve:
     """A unit under block replacement started from a state: ``head``, its
     own curve up to its first block time, ``length`` after the start, and

@@ -1950,6 +1950,7 @@ def _replacements(rbd, node, long_run: bool = False):
         "spares_demand(method='simulate')."
     )
     _requirements._require_reliabilities(rbd, node)
+    _requirements._require_own_failures(rbd, node, simulate)
     if node in rbd._standby:
         raise NotImplementedError(
             f"Component {node!r} is a standby group, whose units' "
@@ -1966,6 +1967,19 @@ def _replacements(rbd, node, long_run: bool = False):
             f"{simulate}"
         )
     schedule = rbd._preventive.get(node)
+    if node in rbd._upgrades:
+        raise NotImplementedError(
+            f"Component {node!r} is upgraded at a time, from which its "
+            "units have another life, which its replacements are not "
+            "counted across yet: count its failures over a horizon with "
+            "expected_events(T)."
+        )
+    if schedule is not None and schedule.plan is not None:
+        raise NotImplementedError(
+            f"Component {node!r} is replaced at the times of a plan "
+            "(replace_at), not on a period, which its replacements are "
+            f"not counted for exactly yet: {simulate}"
+        )
     if schedule is not None and schedule.policy == "block":
         component = rbd.components[node]
         duration = schedule.duration

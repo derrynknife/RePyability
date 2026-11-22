@@ -42,6 +42,18 @@
 
 ::: repyability.ExpectedNPV
 
+::: repyability.NPVDistribution
+
+::: repyability.SimulatedSwitchTime
+
+::: repyability.NPVComparison
+
+::: repyability.DowntimeRiskResult
+
+::: repyability.DowntimeDesign
+
+::: repyability.NPVUncertainty
+
 ::: repyability.MaintenanceEffect
 
 ::: repyability.PlanVsActual
@@ -80,6 +92,8 @@
 
 ::: repyability.MaintenancePlan
 
+::: repyability.PlanRobustness
+
 ::: repyability.Lever
 
 ::: repyability.StressStrengthResult
@@ -97,6 +111,10 @@
 ::: repyability.TimelineSimulation
 
 ::: repyability.run_shard
+
+::: repyability.value_plan
+
+::: repyability.npv_schema
 
 ::: repyability.MaintenancePolicy
 
@@ -138,6 +156,8 @@
 
 ::: repyability.FailureFinding
 
+::: repyability.FailureFindingWindow
+
 ::: repyability.OnCondition
 
 ::: repyability.NextReplacement
@@ -145,6 +165,10 @@
 ::: repyability.ReplacementChoice
 
 ::: repyability.CalendarPolicy
+
+::: repyability.OpportunityPrices
+
+::: repyability.OpportunityPrice
 
 ::: repyability.PlannedReplacement
 

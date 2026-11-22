@@ -12,9 +12,10 @@ step at most and the dates of a period keep no drift.
 
 import math
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from datetime import date
 from fractions import Fraction
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import numpy as np
 
@@ -61,64 +62,312 @@ def _price(value, name: str) -> float:
     return float(value)
 
 
-@dataclass(frozen=True)
-class Opportunity:
-    """A kind of scheduled opportunity to replace a part: a shut (weekly,
-    quarterly, annual, ...) at which replacing it costs ``cost``.
+#: The names that are no opportunity's: a planned replacement on any day,
+#: and a failure (on real dates, the words results use for them).
+_NOT_NAMES = (ANYTIME,)
+_NOT_NAMES_ON_DATES = (ANYTIME, "failure", "any other day", "any day")
 
-    Its times are either every ``period`` from ``offset`` (on and on, both
-    ways: ``offset + k * period`` for every whole ``k``), or the given
-    ``dates``. Times are in the life model's unit, from 0.
+
+def _price_deprecated(where: str) -> None:
+    """Warn that a price was put on an opportunity (``where`` says how)."""
+    from repyability.utils.deprecation import price_on_part
+
+    price_on_part(where)
+
+
+@dataclass(frozen=True, init=False, repr=False)
+class Opportunity:
+    """A kind of opportunity to replace a part: a stop or shut (weekly,
+    quarterly, annual, a turnaround, a service) that says when it happens,
+    how long it lasts and what it takes down. It carries no price: an
+    opportunity applies to every part, and each part brings its own
+    (`NonRepairable`'s ``opportunity_cost`` and ``opportunity_costs``).
+    Opportunities are collected in
+    [`Opportunities`][repyability.Opportunities].
+
+    It is either in **model time** (numbers in the life's unit, from 0):
+
+    - every ``period`` from ``offset`` (on and on, both ways:
+      ``offset + k * period`` for every whole ``k``), or
+    - ``dates`` given as numbers;
+
+    or on **real dates**:
+
+    - a ``rule`` (a [`Recurrence`][repyability.schedule.Recurrence]:
+      every Saturday, the first Tuesday of November),
+    - ``dates`` given as dates (with ``then_every`` they recur at that gap
+      after the last), or
+    - ``every``, a plain period (``"30 days"``; a number is that many of
+      the part's own units) or a use (``Usage(15_000, "km")``), with
+      ``also_every`` a calendar limit, whichever comes first.
 
     Parameters
     ----------
     name : str
-        The opportunity's name, as the policy's schedule lists it (not
-        ``"anytime"``, which names a replacement on any day).
-    cost : float
-        What replacing the part at it costs, at least 0.
+        Its name, as results list it (not ``"anytime"``, which names a
+        replacement on any day; on real dates not ``"failure"``,
+        ``"any day"`` or ``"any other day"`` either).
+    rule : Recurrence, optional
+        When it happens, on real dates.
+    dates : list of float, or of date or str, optional
+        Its times: numbers in model time, or dates (``"2027-03-03"``).
     period : float, optional
-        The time from one to the next, more than 0.
+        In model time: the time from one to the next, more than 0.
     offset : float, optional
-        The time of one of them, by default 0. Only with ``period``.
-    dates : array_like, optional
-        Its times, instead of ``period``: finite numbers, put in order.
+        In model time: the time of one of them, by default 0. Only with
+        ``period``.
+    then_every : str, optional
+        On real dates, with ``dates``: the gap at which it recurs after
+        its last date (``"4 years"``, ``"18 months"``; whole numbers).
+    every : str, float or Usage, optional
+        On real dates: a plain period or a use, instead of a rule or
+        dates.
+    also_every : str, optional
+        With ``every=Usage(...)``: a plain period, whichever comes first.
+    duration : float or str, optional
+        How long it lasts. In model time a number in the life's unit; on
+        real dates text (``"8h"``, ``"3d"``) or a number of hours. A part
+        whose ``job_duration`` is longer does not use it; a diagram takes
+        it as the outage. None (the default): not said, and every part
+        may use it.
+    at : str, optional
+        On real dates: the clock time it starts (``"21:00"``), by default
+        midnight. Not with a use.
+    takes_down : list of str, optional
+        The labels (lines, units, areas) it takes down; by default None,
+        the whole site. A policy given ``where=`` uses only the
+        opportunities that take that label down. On a diagram
+        (``RepairableRBD(shutdowns=Opportunities(...))``) the labels are
+        the nodes it holds off line.
+    idle_ageing : bool, optional
+        On a diagram: whether the blocks it holds off line and does not
+        work on keep ageing through it (True, the default) or stand still
+        until it ends. A part's policy does not use it.
+    opportunistic : float or dict, optional
+        On a diagram: the components it renews if they are at least so
+        old, as a diagram's shutdown's ``"opportunistic"`` (an age for
+        every component in its scope under age replacement, or a dict of
+        an age by component). A part's policy does not use it.
+    cost : float, optional
+        **Deprecated** (also as the second argument, the 0.14 form
+        ``Opportunity(name, cost, period=...)``): a price on the
+        opportunity, applied to the part being solved as its override
+        for this opportunity. Give the part ``opportunity_cost`` or
+        ``opportunity_costs`` instead.
 
     Examples
     --------
     >>> from repyability import Opportunity
-    >>> weekly = Opportunity("weekly", 3.0, period=7.0)
-    >>> annual = Opportunity("annual", 1.0, period=364.0, offset=182.0)
-    >>> turnarounds = Opportunity("turnaround", 0.5, dates=[400.0, 1130.0])
+    >>> from repyability.schedule import Recurrence
+    >>> weekly = Opportunity("weekly", period=7.0)
+    >>> annual = Opportunity("annual", period=364.0, offset=182.0)
+    >>> turnarounds = Opportunity("turnaround", dates=[400.0, 1130.0])
     >>> weekly.times(0.0, 30.0).tolist()
     [0.0, 7.0, 14.0, 21.0, 28.0]
+    >>> stop = Opportunity("weekly stop", Recurrence.weekly("Sat"),
+    ...                    duration="8h")
+    >>> stop.model_time, stop.describe()
+    (False, 'weekly stop (every Saturday, 8 h)')
+    >>> Opportunity("turnaround", dates=["2027-03-03", "2028-09-09"],
+    ...             duration="21d", takes_down=["Line 2"]).describe()
+    'turnaround (3 Mar 2027, 9 Sep 2028, 504 h, takes down Line 2)'
     """
 
     name: str
-    cost: float
+    cost: Optional[float] = None
     period: Optional[float] = None
     offset: float = 0.0
-    dates: Optional[Tuple[float, ...]] = None
+    dates: Optional[Tuple[Any, ...]] = None
+    rule: Any = None
+    then_every: Optional[str] = None
+    every: Any = None
+    also_every: Optional[str] = None
+    duration: Optional[float] = None
+    at: Any = None
+    takes_down: Optional[Tuple[str, ...]] = None
+    idle_ageing: bool = True
+    opportunistic: Any = None
 
-    def __post_init__(self):
+    def __init__(
+        self,
+        name,
+        rule=None,
+        *legacy,
+        dates=None,
+        period=None,
+        offset=None,
+        then_every=None,
+        every=None,
+        also_every=None,
+        duration=None,
+        at=None,
+        takes_down=None,
+        cost=None,
+        idle_ageing=True,
+        opportunistic=None,
+    ):
+        if checks.is_number(rule):
+            # The 0.14 form, Opportunity(name, cost, period, offset, dates).
+            if cost is not None:
+                raise TypeError(
+                    "Opportunity() got the price twice: as its second "
+                    "argument and as cost=."
+                )
+            if len(legacy) > 3:
+                raise TypeError(
+                    "Opportunity(name, cost, period, offset, dates) takes "
+                    f"at most 5 arguments; got {2 + len(legacy)}."
+                )
+            cost, rule = rule, None
+            given = dict(zip(("period", "offset", "dates"), legacy))
+            for key, value in given.items():
+                if {"period": period, "offset": offset, "dates": dates}[
+                    key
+                ] is not None:
+                    raise TypeError(f"Opportunity() got {key} twice.")
+            period = given.get("period", period)
+            offset = given.get("offset", offset)
+            dates = given.get("dates", dates)
+            _price_deprecated("Opportunity(name, cost, ...)")
+        elif legacy:
+            raise TypeError(
+                "Opportunity() takes the name and a rule as its only "
+                "positional arguments; give the rest by name (dates=, "
+                "period=, duration=, ...)."
+            )
+        elif cost is not None:
+            _price_deprecated("Opportunity(..., cost=)")
+        for key, value in (
+            ("name", name),
+            ("cost", cost),
+            ("period", period),
+            ("offset", offset),
+            ("dates", dates),
+            ("rule", rule),
+            ("then_every", then_every),
+            ("every", every),
+            ("also_every", also_every),
+            ("duration", duration),
+            ("at", at),
+            ("takes_down", takes_down),
+            ("idle_ageing", idle_ageing),
+            ("opportunistic", opportunistic),
+        ):
+            object.__setattr__(self, key, value)
+        self._check()
+
+    def __repr__(self) -> str:
+        shown = [repr(self.name)]
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if f.name == "name" or value is None:
+                continue
+            if f.name == "offset" and value == 0.0:
+                continue
+            if f.name == "idle_ageing" and value is True:
+                continue
+            shown.append(f"{f.name}={value!r}")
+        return f"Opportunity({', '.join(shown)})"
+
+    def _check(self) -> None:
         if not isinstance(self.name, str) or not self.name:
             raise TypeError(
                 f"An opportunity's name must be text; got {self.name!r}."
             )
         if self.name == ANYTIME:
             raise ValueError(
-                f"{ANYTIME!r} names a planned replacement on any day (the "
-                "calendar's anytime price): give the opportunity another "
-                "name."
+                f"{ANYTIME!r} names a planned replacement on any day: give "
+                "the opportunity another name."
+            )
+        if self.cost is not None:
+            object.__setattr__(
+                self, "cost", _price(self.cost, f"The cost of {self.name!r}")
+            )
+        on_dates = (
+            self.rule is not None
+            or self.every is not None
+            or (self.dates is not None and not _numbers(self.dates))
+        )
+        in_model = self.period is not None or (
+            self.dates is not None and _numbers(self.dates)
+        )
+        if on_dates and self.period is not None:
+            raise ValueError(
+                f"Opportunity {self.name!r}: period= is for model time, and "
+                "a rule, dates or every= for real dates: give one of the "
+                "two."
+            )
+        if not (on_dates or in_model):
+            raise ValueError(
+                f"Opportunity {self.name!r}: say when it happens, one of: a "
+                "period (with an offset) or dates as numbers, in model "
+                "time; or a rule (a Recurrence), dates or every=, on real "
+                "dates."
+            )
+        if in_model:
+            self._check_model_time()
+        else:
+            self._check_dates()
+        takes_down = self.takes_down
+        if takes_down is not None:
+            if isinstance(takes_down, str):
+                takes_down = (takes_down,)
+            takes_down = tuple(takes_down)
+            if not takes_down or not all(
+                isinstance(t, str) and t for t in takes_down
+            ):
+                raise ValueError(
+                    f"Opportunity {self.name!r}: takes_down must be a list "
+                    "of labels (text), at least one, or None for the whole "
+                    f"site; got {self.takes_down!r}."
+                )
+            object.__setattr__(self, "takes_down", takes_down)
+        self._check_diagram_options()
+
+    def _check_diagram_options(self) -> None:
+        """``idle_ageing`` and ``opportunistic``, which only a diagram
+        uses: checked here for their kind, and by the diagram against its
+        nodes."""
+        if not isinstance(self.idle_ageing, (bool, np.bool_)):
+            raise ValueError(
+                f"Opportunity {self.name!r}: idle_ageing must be True (the "
+                "blocks not worked on keep ageing) or False (they stand "
+                f"still), got {self.idle_ageing!r}."
+            )
+        object.__setattr__(self, "idle_ageing", bool(self.idle_ageing))
+        given = self.opportunistic
+        if given is None:
+            return
+        if isinstance(given, tuple) and all(
+            isinstance(pair, tuple) and len(pair) == 2 for pair in given
+        ):
+            given = dict(given)
+        ages = list(given.values()) if isinstance(given, dict) else [given]
+        if not ages or not all(
+            checks.is_number(a) and float(a) >= 0.0 for a in ages
+        ):
+            raise ValueError(
+                f"Opportunity {self.name!r}: opportunistic must be an age, "
+                "0 or more (inf for never), or a dict of an age by "
+                f"component, at least one; got {given!r}."
             )
         object.__setattr__(
-            self, "cost", _price(self.cost, f"The cost of {self.name!r}")
+            self,
+            "opportunistic",
+            (
+                tuple((node, float(a)) for node, a in given.items())
+                if isinstance(given, dict)
+                else float(given)
+            ),
         )
-        if (self.period is None) == (self.dates is None):
-            raise ValueError(
-                f"Opportunity {self.name!r}: give a period (with an "
-                "offset) or dates, one of the two."
-            )
+
+    def _check_model_time(self) -> None:
+        for key in ("then_every", "also_every", "at"):
+            if getattr(self, key) is not None:
+                raise ValueError(
+                    f"Opportunity {self.name!r}: {key}= is for real dates; "
+                    "this one is in model time."
+                )
         if self.period is not None:
             if not (
                 checks.is_number(self.period)
@@ -128,22 +377,26 @@ class Opportunity:
                     f"Opportunity {self.name!r}: the period must be a "
                     f"number, more than 0; got {self.period!r}."
                 )
-            if not (
-                checks.is_number(self.offset)
-                and math.isfinite(float(self.offset))
-            ):
+            if self.dates is not None:
+                raise ValueError(
+                    f"Opportunity {self.name!r}: give a period (with an "
+                    "offset) or dates, one of the two."
+                )
+            offset = 0.0 if self.offset is None else self.offset
+            if not (checks.is_number(offset) and math.isfinite(offset)):
                 raise ValueError(
                     f"Opportunity {self.name!r}: the offset must be a "
                     f"finite number; got {self.offset!r}."
                 )
             object.__setattr__(self, "period", float(self.period))
-            object.__setattr__(self, "offset", float(self.offset))
+            object.__setattr__(self, "offset", float(offset))
         else:
-            if self.offset != 0.0:
+            if self.offset not in (None, 0.0):
                 raise ValueError(
                     f"Opportunity {self.name!r}: an offset applies only to "
                     "a period; dates give the times themselves."
                 )
+            object.__setattr__(self, "offset", 0.0)
             dates = checks.real_array(self.dates, "dates")
             if dates.ndim != 1 or dates.size == 0:
                 raise ValueError(
@@ -158,20 +411,166 @@ class Opportunity:
             object.__setattr__(
                 self, "dates", tuple(float(d) for d in np.unique(dates))
             )
+        if self.duration is not None:
+            if not (
+                checks.is_number(self.duration)
+                and 0.0 < float(self.duration) < math.inf
+            ):
+                raise ValueError(
+                    f"Opportunity {self.name!r}: in model time a duration "
+                    "is a number in the life's unit, more than 0; got "
+                    f"{self.duration!r}."
+                )
+            object.__setattr__(self, "duration", float(self.duration))
+
+    def _check_dates(self) -> None:
+        from repyability.maintenance._shutdowns import _duration, check_when
+
+        if self.name in _NOT_NAMES_ON_DATES:
+            raise ValueError(
+                f"{self.name!r} names what is not an opportunity (a planned "
+                "replacement on any other day, or a failure): give the "
+                "opportunity another name."
+            )
+        if self.offset not in (None, 0.0):
+            raise ValueError(
+                f"Opportunity {self.name!r}: an offset is for a period in "
+                "model time."
+            )
+        object.__setattr__(self, "offset", 0.0)
+        dates, every, at = check_when(
+            f"Opportunity {self.name!r}",
+            self.name,
+            rule=self.rule,
+            dates=self.dates,
+            then_every=self.then_every,
+            every=self.every,
+            also_every=self.also_every,
+            at=self.at,
+        )
+        object.__setattr__(self, "dates", dates)
+        object.__setattr__(self, "every", every)
+        object.__setattr__(self, "at", at)
+        object.__setattr__(self, "duration", _duration(self.duration))
+
+    # -- made inside the package ---------------------------------------
+
+    def _replaced(self, **changes) -> "Opportunity":
+        """A copy with ``changes`` (fields already checked), made without
+        the deprecation the public form of a price warns of."""
+        new = object.__new__(Opportunity)
+        for f in fields(Opportunity):
+            object.__setattr__(
+                new, f.name, changes.get(f.name, getattr(self, f.name))
+            )
+        return new
+
+    @classmethod
+    def _at_price(
+        cls, name, cost, *, period=None, offset=0.0, dates=None
+    ) -> "Opportunity":
+        """An opportunity in model time with a price, as the solvers take
+        it (no deprecation: the price is the part's, worked out here)."""
+        return cls(name, period=period, offset=offset, dates=dates)._replaced(
+            cost=_price(cost, f"The cost of {name!r}")
+        )
+
+    @classmethod
+    def _from_shutdown(cls, shut) -> "Opportunity":
+        """A shut of the 0.19 form (``Shutdown``) as an opportunity on real
+        dates, its ``replace_cost`` kept as the (deprecated) price."""
+        return cls(
+            shut.name,
+            shut.rule,
+            dates=shut.dates,
+            then_every=shut.then_every,
+            every=shut.every,
+            also_every=shut.also_every,
+            duration=shut.duration,
+            at=shut.at,
+        )._replaced(cost=float(shut.replace_cost))
+
+    def _shutdown(self, price: float):
+        """This opportunity (on real dates) as the site solvers take it: a
+        shut at ``price``."""
+        from repyability.maintenance._shutdowns import Shutdown
+
+        return Shutdown(
+            self.name,
+            self.rule,
+            dates=self.dates,
+            then_every=self.then_every,
+            every=self.every,
+            also_every=self.also_every,
+            replace_cost=price,
+            duration=self.duration,
+            at=self.at,
+        )
+
+    # -- what it is ----------------------------------------------------
+
+    @property
+    def model_time(self) -> bool:
+        """Whether it is in model time (a period, or dates as numbers);
+        False on real dates."""
+        return self.period is not None or (
+            self.dates is not None and isinstance(self.dates[0], float)
+        )
+
+    @property
+    def periodic(self) -> bool:
+        """Whether its times are on a period in model time (not given
+        dates)."""
+        return self.period is not None
+
+    @property
+    def by_use(self) -> bool:
+        """Whether it recurs by use (``every=Usage(...)``)."""
+        from repyability.schedule import Usage
+
+        return isinstance(self.every, Usage)
+
+    def when(self) -> str:
+        """When it happens, in words."""
+        if self.model_time:
+            if self.period is not None:
+                text = f"every {self.period:g}"
+                return text + (f" from {self.offset:g}" if self.offset else "")
+            return "at " + ", ".join(f"{d:g}" for d in self.dates or ())
+        return self._shutdown(0.0).when()
+
+    def describe(self) -> str:
+        """It in a few words: ``"weekly stop (every Saturday, 8 h)"``."""
+        from repyability.maintenance._shutdowns import _money, _number
+
+        words = [self.when()]
+        if self.duration is not None:
+            words.append(
+                f"{self.duration:g} long"
+                if self.model_time
+                else f"{_number(self.duration)} h"
+            )
+        if self.takes_down is not None:
+            words.append("takes down " + ", ".join(self.takes_down))
+        if self.cost is not None:
+            words.append(_money(self.cost))
+        return f"{self.name} ({', '.join(words)})"
 
     @classmethod
     def from_recurrence(
         cls,
         name: str,
-        cost: float,
         rule,
         start,
-        end,
-        *,
+        end=None,
+        *legacy,
         unit: str = "hours",
         usage=None,
         at=None,
         time_zone: Optional[str] = None,
+        duration=None,
+        takes_down=None,
+        cost=None,
     ) -> "Opportunity":
         """An opportunity at a rule's dates, laid on the part's model time.
 
@@ -182,14 +581,13 @@ class Opportunity:
         operating time since the forecast's start, for a life in operating
         hours; without, the real time since ``start``'s midnight, for a
         life in calendar time. Dates at one operating time (shuts while
-        the plant is idle) become one time.
+        the plant is idle) become one time. (To keep the rule on real
+        dates, give it to ``Opportunity`` itself.)
 
         Parameters
         ----------
         name : str
             The opportunity's name.
-        cost : float
-            What replacing the part at it costs.
         rule : Recurrence
             When the shuts are
             ([`repyability.schedule.Recurrence`][repyability.schedule.Recurrence]).
@@ -206,6 +604,14 @@ class Opportunity:
             The clock time each shut starts, by default midnight.
         time_zone : str, optional
             The site's IANA zone with no ``usage`` (with one, its zone).
+        duration : float, optional
+            How long each lasts, in the life's unit.
+        takes_down : list of str, optional
+            What it takes down, as for ``Opportunity``.
+        cost : float, optional
+            **Deprecated** (also as the second argument, the 0.14 form
+            ``from_recurrence(name, cost, rule, start, end)``): a price on
+            the opportunity; give the part ``opportunity_cost`` instead.
 
         Returns
         -------
@@ -219,7 +625,7 @@ class Opportunity:
         >>> from repyability import Opportunity
         >>> from repyability.schedule import Recurrence
         >>> overhaul = Opportunity.from_recurrence(
-        ...     "overhaul", 1.0,
+        ...     "overhaul",
         ...     Recurrence.yearly(month=11, weekday="Tuesday", nth=1),
         ...     "2026-11-14", "2029-12-31", unit="days",
         ... )
@@ -228,6 +634,26 @@ class Opportunity:
         """
         from repyability.schedule._forecast import opportunity_times
 
+        if checks.is_number(rule):
+            # The 0.14 form, from_recurrence(name, cost, rule, start, end).
+            if cost is not None or len(legacy) != 1:
+                raise TypeError(
+                    "Opportunity.from_recurrence(name, cost, rule, start, "
+                    "end) takes the price once and all five arguments."
+                )
+            cost, rule, start, end = rule, start, end, legacy[0]
+            _price_deprecated("Opportunity.from_recurrence(name, cost, ...)")
+        elif legacy:
+            raise TypeError(
+                "Opportunity.from_recurrence takes name, rule, start and "
+                "end; give the rest by name."
+            )
+        elif cost is not None:
+            _price_deprecated("Opportunity.from_recurrence(..., cost=)")
+        if end is None:
+            raise TypeError(
+                "Opportunity.from_recurrence needs the last date: end=."
+            )
         times = opportunity_times(
             rule,
             start,
@@ -242,15 +668,20 @@ class Opportunity:
                 f"Opportunity {name!r}: the rule ({rule.describe()}) gives "
                 f"no dates from {start} to {end}."
             )
-        return cls(name, cost, dates=tuple(float(t) for t in times))
-
-    @property
-    def periodic(self) -> bool:
-        """Whether its times are on a period (not given dates)."""
-        return self.period is not None
+        made = cls(
+            name,
+            dates=tuple(float(t) for t in times),
+            duration=duration,
+            takes_down=takes_down,
+        )
+        return (
+            made
+            if cost is None
+            else made._replaced(cost=_price(cost, f"The cost of {name!r}"))
+        )
 
     def times(self, start: float, end: float) -> np.ndarray:
-        """Its times from ``start`` up to ``end``.
+        """Its times from ``start`` up to ``end``, in model time.
 
         Parameters
         ----------
@@ -264,6 +695,12 @@ class Opportunity:
         numpy.ndarray
             Its times, in order.
         """
+        if not self.model_time:
+            raise ValueError(
+                f"Opportunity {self.name!r} is on real dates: its times in "
+                "model time come from a part's clock (a policy lays them "
+                "there); give dates in model time, or a period."
+            )
         if self.period is None:
             dates = np.asarray(self.dates, float)
             return dates[(dates >= start) & (dates < end)]
@@ -272,15 +709,138 @@ class Opportunity:
         times = self.offset + np.arange(first, last) * self.period
         return times[(times >= start) & (times < end)]
 
+    # -- saving --------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """The opportunity as plain data, ready for ``json.dumps``
+        (``"kind"`` ``"opportunity"``)."""
+        from repyability.schedule import Usage
+
+        out: dict = {"kind": "opportunity", "name": self.name}
+        if self.model_time:
+            out.update(
+                time="model",
+                period=self.period,
+                offset=self.offset,
+                dates=None if self.dates is None else list(self.dates),
+                duration=self.duration,
+            )
+        else:
+            every: Any = self.every
+            if isinstance(every, Usage):
+                every = every.to_dict()
+            out.update(
+                time="dates",
+                rule=None if self.rule is None else self.rule.to_dict(),
+                dates=(
+                    None
+                    if self.dates is None
+                    else [d.isoformat() for d in self.dates]
+                ),
+                then_every=self.then_every,
+                every=every,
+                also_every=self.also_every,
+                duration_hours=self.duration,
+                at=None if self.at is None else self.at.strftime("%H:%M"),
+            )
+        out["takes_down"] = (
+            None if self.takes_down is None else list(self.takes_down)
+        )
+        if self.cost is not None:
+            out["cost"] = self.cost
+        if not self.idle_ageing:
+            out["idle_ageing"] = False
+        if self.opportunistic is not None:
+            out["opportunistic"] = (
+                [[node, age] for node, age in self.opportunistic]
+                if isinstance(self.opportunistic, tuple)
+                else self.opportunistic
+            )
+        return out
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Opportunity":
+        """An opportunity from its ``to_dict()``.
+
+        Parameters
+        ----------
+        data : dict
+            What ``to_dict()`` gave.
+
+        Returns
+        -------
+        Opportunity
+        """
+        from repyability.schedule import Recurrence, Usage
+
+        if not isinstance(data, dict) or data.get("kind") != "opportunity":
+            raise ValueError(
+                "Not a saved Opportunity: its kind must be 'opportunity'; "
+                f"got {data!r:.80}."
+            )
+        if data.get("time") == "model":
+            made = cls(
+                data["name"],
+                period=data.get("period"),
+                offset=data.get("offset") if data.get("period") else None,
+                dates=data.get("dates"),
+                duration=data.get("duration"),
+                takes_down=data.get("takes_down"),
+            )
+        else:
+            every = data.get("every")
+            if isinstance(every, dict):
+                every = Usage.from_dict(every)
+            rule = data.get("rule")
+            made = cls(
+                data["name"],
+                None if rule is None else Recurrence.from_dict(rule),
+                dates=data.get("dates"),
+                then_every=data.get("then_every"),
+                every=every,
+                also_every=data.get("also_every"),
+                duration=data.get("duration_hours"),
+                at=data.get("at"),
+                takes_down=data.get("takes_down"),
+            )
+        if data.get("cost") is not None:
+            made = made._replaced(cost=_price(data["cost"], "cost"))
+        opportunistic = data.get("opportunistic")
+        if isinstance(opportunistic, list):
+            opportunistic = {node: age for node, age in opportunistic}
+        if opportunistic is not None or "idle_ageing" in data:
+            made = made._replaced(
+                idle_ageing=data.get("idle_ageing", True),
+                opportunistic=opportunistic,
+            )
+            made._check_diagram_options()
+        return made
+
+
+def _numbers(values) -> bool:
+    """Whether ``values`` (dates, as given) are numbers (model time), not
+    dates."""
+    if isinstance(values, (str, date)):
+        return False
+    try:
+        listed = list(values)
+    except TypeError:
+        return checks.is_number(values)
+    return all(checks.is_number(v) for v in listed)
+
 
 class Calendar:
-    """The prices of replacing a part over time: its scheduled
-    opportunities, a planned replacement on any day, and a failure.
+    """The prices of replacing a part over time, as the model-time solvers
+    take them: its opportunities, each with the part's price, a planned
+    replacement on any day, and a failure. A policy lays a part's prices
+    on [`Opportunities`][repyability.Opportunities] as one of these;
+    ``repyability.Calendar``, which a caller builds with the prices on the
+    opportunities, is deprecated.
 
     Parameters
     ----------
     opportunities : list of Opportunity
-        The scheduled opportunities, each with its own name.
+        The opportunities in model time, each with its own name and price.
     failure : float or "part", optional
         What a replacement at a failure costs. By default ``"part"``: the
         part's ``unplanned_cost``.
@@ -292,11 +852,11 @@ class Calendar:
 
     Examples
     --------
-    >>> from repyability import Calendar, Opportunity
+    >>> from repyability.maintenance._calendar import Calendar, Opportunity
     >>> calendar = Calendar(
     ...     [
-    ...         Opportunity("weekly", 3.0, period=7.0),
-    ...         Opportunity("annual", 1.0, period=364.0),
+    ...         Opportunity._at_price("weekly", 3.0, period=7.0),
+    ...         Opportunity._at_price("annual", 1.0, period=364.0),
     ...     ],
     ...     failure=40.0,
     ...     anytime=4.0,
@@ -316,6 +876,19 @@ class Calendar:
                 raise TypeError(
                     "A calendar's opportunities must each be an "
                     f"Opportunity; got {opportunity!r}."
+                )
+            if not opportunity.model_time:
+                raise ValueError(
+                    f"Opportunity {opportunity.name!r} is on real dates, "
+                    "and a Calendar is in model time: give the "
+                    "opportunities to Opportunities."
+                )
+            if opportunity.cost is None:
+                raise ValueError(
+                    f"Opportunity {opportunity.name!r} has no price, and a "
+                    "Calendar (deprecated) takes each opportunity's own: "
+                    "give the opportunities to Opportunities, which takes "
+                    "the prices from the part (its opportunity_cost)."
                 )
         names = [o.name for o in opportunities]
         repeated = sorted({n for n in names if names.count(n) > 1})

@@ -37,15 +37,12 @@ from repyability.maintenance._shutdowns import (
     _Layout,
     _money,
 )
+from repyability.value._rates import continuous as _rate
+from repyability.value._rates import equivalent as _equivalent
 
 #: The horizon is moved on by at least this many years to see which
 #: decisions depend on where it ends.
 LATER_YEARS = 5.0
-
-
-def _rate(discount: float) -> float:
-    """A yearly discount rate as a continuous one."""
-    return math.log1p(float(discount))
 
 
 def _grid_setup(layout: _Layout, end: float):
@@ -74,27 +71,40 @@ def _betas(
     return np.exp(-_rate(discount) * np.diff(years))
 
 
-def _grid_solve(layout: _Layout, end: float, discount: float, rule=None):
-    """The backward sweep to model time ``end``: the values at the first
-    step by age, each step's first replacing age index and kind, the
-    prices, and the grid."""
+def backward(grid, ages, failure, n: int, beta, rule=None):
+    """The backward sweep over the first ``n`` steps of ``grid`` with
+    nothing counted after them (``_replacement._sweep`` from zero
+    values), each step discounted by ``beta`` (a number, or one a step):
+    the values at the first step by age, each step's first replacing age
+    index and kind, the prices, and whether the replacing ages were
+    thresholds. ``rule`` fixes the decisions (the age from which each
+    kind replaces, by name). The horizon route's sweep, on a site's real
+    dates and in model time alike."""
     from repyability.maintenance import _replacement as R
     from repyability.maintenance._site_policy import _rule_kinds
 
-    grid, ages, failure, step = _grid_setup(layout, end)
-    n = max(int(math.ceil(end / step - 1e-9)), 1)
-    beta = _betas(layout, n, step, discount)
     if rule is None:
         costs, kinds = grid.prices(0, n)
-        v, first, _ = R._sweep(
+        v, first, upper = R._sweep(
             np.zeros(ages.size + 1), costs, ages.p, failure, beta
         )
     else:
         costs, first = R._rule_prices(grid, rule, 0, n)
         kinds = _rule_kinds(grid, rule, n)
-        v, first, _ = R._sweep(
+        v, first, upper = R._sweep(
             np.zeros(ages.size + 1), costs, ages.p, failure, beta, fixed=first
         )
+    return v, first, kinds, costs, upper
+
+
+def _grid_solve(layout: _Layout, end: float, discount: float, rule=None):
+    """The backward sweep to model time ``end``: the values at the first
+    step by age, each step's first replacing age index and kind, the
+    prices, and the grid."""
+    grid, ages, failure, step = _grid_setup(layout, end)
+    n = max(int(math.ceil(end / step - 1e-9)), 1)
+    beta = _betas(layout, n, step, discount)
+    v, first, kinds, costs, _ = backward(grid, ages, failure, n, beta, rule)
     return v, first, kinds, costs, grid, ages, failure, step
 
 
@@ -508,9 +518,11 @@ def horizon_policy(layout: _Layout, decision: _Decision, age: float, life):
         settings = {"step": step, "steps": int(first.size)}
     per_year = {k: x / years for k, x in counts.items()}
     when = _day_text(layout.clock.local_naive(end_moment).date())
+    eac = _equivalent(npc, _rate(discount), years)
     text = (
         f"Lowest net present cost to {when} at {discount:.0%} a year: "
-        f"{_money(round(npc, 2)) if npc >= 0.01 else f'${npc:.3g}'}."
+        f"{_cents(npc)} (an equivalent annual cost of {_cents(eac)} a "
+        "year)."
     )
     if depends is not None:
         moment = layout.moment_at([depends])[0]
@@ -566,7 +578,12 @@ def horizon_policy(layout: _Layout, decision: _Decision, age: float, life):
         notes=tuple(layout.notes),
         settings=settings,
         life=life,
+        eac=eac,
     )._bind(engine, layout, decision)
+
+
+def _cents(value: float) -> str:
+    return _money(round(value, 2)) if value >= 0.01 else f"${value:.3g}"
 
 
 def horizon_rule_cost(layout: _Layout, decision: _Decision, rule, name):
@@ -599,6 +616,7 @@ def horizon_rule_cost(layout: _Layout, decision: _Decision, rule, name):
         counts = {_label(k): x for k, x in counted.items()}
         if layout.site.any_day is None:
             counts.pop(ANY_DAY, None)
+    eac = _equivalent(npc, _rate(discount), years)
     return RuleCost(
         name=name,
         rule=dict(rule),
@@ -606,11 +624,16 @@ def horizon_rule_cost(layout: _Layout, decision: _Decision, rule, name):
         measure="net present cost",
         cost_se=None,
         route="horizon",
-        route_text=f"{name}: net present cost {_money(round(npc, 2))}",
+        route_text=(
+            f"{name}: net present cost {_money(round(npc, 2))} (an "
+            f"equivalent annual cost of {_cents(eac)} a year)"
+        ),
         solver=decision.solver or "",
         failure_timing=decision.failure_timing,
         replacements_by_kind={k: x / years for k, x in counts.items()},
         cost_rate=None,
+        npv=npc,
+        eac=eac,
     )
 
 
@@ -731,3 +754,232 @@ def sampled_quadrature(
         life=life,
     )
     return policy._bind(table, names + [ANYTIME], None, oldest)
+
+
+# ------------------------------------------------------ a ready horizon
+
+#: A ready horizon (what a refusal offers in its place): costs past it,
+#: discounted, count for under this share of the total.
+READY_SHARE = 1e-9
+#: Undiscounted, a ready horizon is the full cycle and this many of the
+#: part's life spans (the age it outlives with a chance of 1e-3) past it.
+READY_SPANS = 3
+#: ... but no more than this many steps of the grid (about a minute's
+#: sweep), where the full cycle is longer (co-prime periods).
+READY_STEPS = 2_000_000
+
+
+def ready_years(discount: float) -> int:
+    """The whole years past which costs at the yearly ``discount`` (more
+    than 0) are discounted to under ``READY_SHARE``."""
+    return int(
+        math.ceil(math.log(1.0 / READY_SHARE) / math.log1p(float(discount)))
+    )
+
+
+def _rounded_up(value: float) -> float:
+    """``value`` rounded up to three significant figures."""
+    if not value > 0.0:
+        return value
+    scale = 10.0 ** (math.floor(math.log10(value)) - 2)
+    return float(math.ceil(value / scale - 1e-9) * scale)
+
+
+def _literal(value: float) -> str:
+    """A model time as it would be typed: ``112000``, ``2.5``."""
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:.6g}"
+
+
+def ready_model_horizon(
+    rate: float, span: float, cycle=None, end=None, step=None
+):
+    """A horizon in model time that works for a calendar a long run
+    refuses: with a continuous discount ``rate`` a unit of time, where
+    costs are discounted to under ``READY_SHARE``; with none, the full
+    ``cycle`` and ``READY_SPANS`` life spans past it, but at most
+    ``READY_STEPS`` of the grid's ``step``. At least a plan's last date
+    (``end``) and the spans past it. Rounded up to three significant
+    figures; with the reason in words."""
+    if rate > 0.0:
+        value = math.log(1.0 / READY_SHARE) / rate
+        why = (
+            "at this rate, costs past then are discounted to under one part "
+            "in a billion"
+        )
+    else:
+        value = (cycle or 0.0) + READY_SPANS * span
+        why = (
+            "the full cycle and three of the part's life spans past it"
+            if cycle
+            else "three of the part's life spans"
+        )
+        if step is not None and value > READY_STEPS * step:
+            value = READY_STEPS * step
+            why = (
+                f"{READY_STEPS:,} steps of the grid, about a minute's work: "
+                "the full cycle is longer than is worth sweeping"
+            )
+    if end is not None:
+        value = max(value, float(end) + READY_SPANS * span)
+    return _rounded_up(value), why
+
+
+def ready_model_text(
+    rate: float, span: float, cycle=None, end=None, step=None
+) -> str:
+    """``horizon=<value>`` and why, for a refusal in model time."""
+    value, why = ready_model_horizon(rate, span, cycle, end, step)
+    return f"horizon={_literal(value)} (in the calendar's time; {why})"
+
+
+def _years_after(day, years: int):
+    try:
+        return day.replace(year=day.year + years)
+    except ValueError:  # 29 February
+        return day.replace(year=day.year + years, day=28)
+
+
+def ready_site_text(
+    layout: _Layout, discount, cycle_years=None, step=None
+) -> str:
+    """``horizon='<date>'`` with ``discount=``, and why, for a refusal at
+    a site: with a yearly ``discount`` the day past which costs are
+    discounted to under ``READY_SHARE``; with none, the full cycle of the
+    shuts' dates (``cycle_years``, by default the 28 years after which
+    weekdays fall on the same dates again) and ``READY_SPANS`` life spans
+    past it."""
+    from repyability.maintenance._shutdowns import (
+        SPAN_YEARS,
+        _life_scale,
+        _percent,
+    )
+
+    rate = float(discount or 0.0)
+    if rate > 0.0:
+        years = ready_years(rate)
+        why = (
+            f"at {_percent(rate)} a year, costs past then are discounted to "
+            "under one part in a billion"
+        )
+    else:
+        cycle = float(cycle_years if cycle_years is not None else SPAN_YEARS)
+        pace = layout.pace()
+        spans = 0.0
+        if pace:
+            spans = READY_SPANS * _life_scale(layout.part)[2] / pace
+        why = (
+            "the full cycle of the shuts' dates and three of the part's "
+            "life spans past it"
+        )
+        if (
+            pace
+            and step is not None
+            and cycle + spans > (READY_STEPS * step / pace)
+        ):
+            cycle, spans = READY_STEPS * step / pace, 0.0
+            why = (
+                f"{READY_STEPS:,} steps of the grid, about a minute's work: "
+                "the full cycle is longer than is worth sweeping"
+            )
+        years = int(math.ceil(cycle + spans - 1e-9))
+    given = f"discount={rate:g}"
+    if layout.now is None:
+        return (
+            f"now= and a horizon= {years} years after it, with {given} "
+            f"({why})"
+        )
+    day = _years_after(layout.now, years)
+    return f"horizon='{day.isoformat()}' with {given} ({why})"
+
+
+# ----------------------------------------------------- in model time
+
+
+def _model_solve(
+    part, calendar, anytime, failure, step, max_age, end, rate, rule=None
+):
+    """The backward sweep in model time to ``end``, from a new part at 0,
+    each step discounted by ``exp(-rate * step)`` (1 at 0): the given
+    dates as they are (no tail), periods as they fall."""
+    from repyability.maintenance import _replacement as R
+
+    ages = R._Ages(part, step, max_age)
+    grid = R._Grid(calendar, anytime, step, tail=None)
+    n = max(int(math.ceil(end / step - 1e-9)), 1)
+    beta = math.exp(-rate * step)
+    v, first, kinds, costs, upper = backward(
+        grid, ages, failure, n, beta, rule
+    )
+    return v, first, kinds, costs, upper, grid, ages, n
+
+
+def model_horizon_policy(
+    part, calendar, anytime, failure, step, max_age, horizon, rate, life
+):
+    """A policy in model time to a horizon: the lowest net present cost
+    of a new part at 0 and its successors to ``horizon``, at the
+    continuous ``rate`` a unit of time (0: the plain total), on every
+    opportunity as it falls (given dates as they are, nothing assumed
+    past them). Its ``npv`` is that cost and ``eac`` the steady cost a
+    unit of time worth it; ``cost_rate`` and the rates by kind are the
+    rule's undiscounted average to the horizon, from a new part.
+    ``determined_until`` is the first time a decision changes when the
+    horizon is moved later (a settling length on)."""
+    from repyability.maintenance import _replacement as R
+    from repyability.maintenance._site_policy import _FixedTable
+
+    v, first, kinds, costs, upper, grid, ages, n = _model_solve(
+        part, calendar, anytime, failure, step, max_age, horizon, rate
+    )
+    length = n * step
+    npc = float(v[0])
+    later = length + R._settle(grid, ages) * step
+    _, first2, kinds2, *_ = _model_solve(
+        part, calendar, anytime, failure, step, max_age, later, rate
+    )
+    differ = np.flatnonzero((first != first2[:n]) | (kinds != kinds2[:n]))
+    until = float(differ[0] * step) if differ.size else length
+    new = np.zeros(ages.size + 1)
+    new[0] = 1.0
+    _, replaced, failures = R._propagate(new, first, ages.p)
+    rates, spent = R._summary(
+        grid.names, anytime, kinds, costs, replaced, failures, failure, length
+    )
+    R._warn_not_threshold(upper)
+    policy = R.CalendarPolicy(
+        cost_rate=float(sum(spent.values())),
+        cost_rate_se=None,
+        replacement_rates=rates,
+        cost_rates=spent,
+        method="dp",
+        basis="horizon",
+        step=step,
+        period=None,
+        determined_until=until,
+        threshold_only=upper,
+        settings={
+            "horizon": length,
+            "steps": int(n),
+            "table_until": length,
+            "max_age": ages.size * step,
+        },
+        life=life,
+        discount_rate=rate,
+        npv=npc,
+        eac=_equivalent(npc, rate, length),
+    )
+    table = _FixedTable(first, kinds, replaced)
+    return policy._bind(table, grid.names, grid, ages.size * step)
+
+
+def model_horizon_rule_cost(
+    part, calendar, anytime, failure, step, max_age, rule, horizon, rate
+) -> float:
+    """A fixed rule's net present cost (the plain total at ``rate`` 0) in
+    model time to ``horizon``, from a new part at 0."""
+    v, *_ = _model_solve(
+        part, calendar, anytime, failure, step, max_age, horizon, rate, rule
+    )
+    return float(v[0])

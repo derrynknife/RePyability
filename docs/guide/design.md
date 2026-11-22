@@ -275,11 +275,19 @@ unsure.strategy["pump"]   # 'cold'
 unsure.reliability        # -> 0.955
 ```
 
+A failed switch ends the arrangement. When a spare that fails to start
+should be skipped and the next one tried instead, which is what a standby
+block's `start_probability` means, give **`start_probability`** (a number, or
+a dict by node) in its place: the search then scores each cold design as the
+`StandbyModel(..., start_probability=...)` it fits, so the reliability it
+reports is the diagram's once the design is applied. Give one or the other,
+not both. Spares that may not start work with any number of units required.
+
 Cold standby needs lifetime models (not fixed probabilities). Its reliability
 comes from `StandbyModel`: exact for identical Exponential units, a numerical
 convolution (accurate to about 1e-6) for one unit required, and simulated
 (seeded, so reproducible) otherwise; imperfect switching needs one unit
-required. Each cold design is evaluated this way, which is slower than active
+required (`start_probability` does not). Each cold design is evaluated this way, which is slower than active
 copies, so give cheap cold-standby nodes a `max_units`. A node without spares
 (only the copies it requires) is the same either way, and is reported as
 active.

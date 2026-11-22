@@ -23,11 +23,19 @@ ends.
   map (the existing model-time methods, labelled with dates);
   ``shutdown_spec`` puts shuts on dates on a diagram, and
   ``Opportunity.from_recurrence`` lays them on a part's model time.
+- ``task_value``: what a task is worth against not doing it (with
+  ``Replaces(part)``: block replacement on its dates against running to
+  failure; with ``Finds(device, ...)``: tests of a hidden failure on its
+  dates against never testing; with ``Services(plan, effect=)``: a
+  service, by default an accepted cost with no effect on the life, or
+  with a stated ``Restoration`` or fitted ``Condition``, simulated), by
+  calendar period, as present values with a ``discount``.
 
 ``README.md`` in this package records the use cases, the question each
 answers and how it is solved.
 """
 
+from repyability.schedule._calendar import CalendarContext
 from repyability.schedule._duty import (
     Continuous,
     DutyPlan,
@@ -49,6 +57,7 @@ from repyability.schedule._recurrence import (
     Season,
 )
 from repyability.schedule._task import (
+    LongRunValue,
     Task,
     TaskDue,
     WorkByPeriod,
@@ -64,8 +73,17 @@ from repyability.schedule._usage import (
     UsageDue,
     UsageForecast,
 )
+from repyability.schedule._value import (
+    Condition,
+    Finds,
+    Replaces,
+    Services,
+    TaskValue,
+    task_value,
+)
 
 __all__ = [
+    "CalendarContext",
     "Continuous",
     "Crossing",
     "DutyPlan",
@@ -87,9 +105,16 @@ __all__ = [
     "Season",
     "Task",
     "TaskDue",
+    "LongRunValue",
+    "Condition",
+    "Finds",
+    "Replaces",
+    "Services",
+    "TaskValue",
     "WorkByPeriod",
     "work_by_period",
     "events_by_period",
     "failures_by_period",
     "shutdown_spec",
+    "task_value",
 ]

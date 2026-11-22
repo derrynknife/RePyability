@@ -39,6 +39,7 @@ from repyability.rbd import (
 from repyability.rbd._block_replacement import (
     BlockHead,
     block_availability,
+    plan_availability,
 )
 from repyability.rbd._common import (
     _common_period,
@@ -50,6 +51,7 @@ from repyability.rbd._common import (
 from repyability.rbd._condition_replacement import (
     ConditionHead,
     condition_availability,
+    condition_plan_availability,
 )
 from repyability.rbd._covariate_schedule import scheduled
 from repyability.rbd._hidden_life import (
@@ -74,6 +76,7 @@ from repyability.rbd._point_availability import (
     InspectionCurve,
     MinimalRepairCurve,
     PartialTestCurve,
+    PlanCurve,
     ShiftedCurve,
     StartedBlockCurve,
     SteadyCurve,
@@ -294,6 +297,13 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
             "followed from one shut to the next on a grid, the units kept "
             "by age",
         )
+    if calendar and schedule.shuts is not None:  # type: ignore
+        return (
+            r.NUMERICAL,
+            "block replacement at the starts of several shutdowns: "
+            "followed from one start to the next on a grid, each renewal "
+            "taking its own shut's length",
+        )
     if calendar and schedule.policy == "condition":  # type: ignore
         return (
             r.NUMERICAL,
@@ -325,7 +335,7 @@ def _over_time(
     ``_crew_over_time``)."""
     from repyability.rbd import routes as r
 
-    refusal = r.refusal(partial(_shutdowns.require_exact, rbd))
+    refusal = r.refusal(partial(_shutdowns.require_over_time, rbd))
     if refusal:
         return r.refused(refusal)
     if rbd._crews_couple():
@@ -438,11 +448,10 @@ def _require_crew_over_time(
     rbd, forced=frozenset(), kind: str = "availability"
 ) -> list:
     """Raise what the crews' chain over time refuses, in the order the
-    methods check it: common-cause groups, what the chain does not
-    cover (see ``_require_crew_chain``), and too many nested RBDs (see
-    ``_crew_nested``). Return the nested RBDs, less those in
-    ``forced``."""
-    _ccf_groups._require_ccf_long_run(rbd)
+    methods check it: what the chain does not cover, of the components
+    and their common-cause groups (see ``_require_crew_chain``), and too
+    many nested RBDs (see ``_crew_nested``). Return the nested RBDs, less
+    those in ``forced``."""
     _crews._require_crew_chain(rbd)
     return _crew_nested(rbd, forced)
 
@@ -755,6 +764,7 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
     schedule = rbd._preventive.get(node)
     inspection = rbd._inspection.get(node)
     _shutdowns.check_state(rbd, node, state)
+    _requirements._check_plan_state(rbd, node, state)
     if state.virtual_age is not None and not _keeps_virtual_age(rbd, node):
         raise ValueError(
             f"Component {node!r} is not repaired imperfectly (it has no "
@@ -1273,43 +1283,83 @@ def _crew_vectors(
 ) -> Tuple[np.ndarray, dict]:
     """Over the states of the crews' ``chain``, with the other nodes'
     probabilities ``values`` (arrays, one entry per state): whether the
-    system is up, and each node's Birnbaum importance."""
+    system is up, and each node's Birnbaum importance (with, under
+    ``_STRIKES``, the rate of the system's failures by each common-cause
+    group's shared causes, see ``_crew_strikes``)."""
     size = len(chain.probabilities)
     own = {
         node: chain.up[:, k].astype(float)
         for k, node in enumerate(chain.nodes)
     }
     own.update(values)
-    importance, works, fails, _, _ = rbd._importances(
-        _windows._filled(rbd, own, size, working_nodes, broken_nodes)
-    )
+    filled = _windows._filled(rbd, own, size, working_nodes, broken_nodes)
+    importance, works, fails, _, _ = rbd._importances(filled)
     up = works if structure_method(method) == "p" else 1.0 - fails
+    importance = {**importance, _STRIKES: _crew_strikes(rbd, chain, filled)}
     return np.asarray(up, dtype=float), importance
+
+
+class _Strikes:
+    """The key of the shared causes' part among a chain's importances
+    (equal to no node name)."""
+
+
+_STRIKES = _Strikes()
+
+
+def _crew_strikes(rbd, chain, filled: dict) -> np.ndarray:
+    """The rate of the system's failures by each common-cause group's
+    shared causes (columns) in each state of the crews' ``chain`` (#251),
+    the nodes up with the probabilities ``filled`` there: a cause strikes
+    at its rate, and takes the system down where it is up, and down with
+    the members it strikes down (as ``_ccf_groups._ccf_outage_terms`` has
+    it)."""
+    out = np.zeros((len(chain.probabilities), len(rbd.ccf_groups)))
+    if not rbd.ccf_groups:
+        return out
+    down = np.asarray(rbd._system_unreliability(filled), dtype=float)
+    zero = np.zeros(len(chain.probabilities))
+    for struck, rate, g in _crews._crew_causes(rbd, chain.nodes)[1]:
+        hit = {**filled, **{chain.nodes[k]: zero for k in struck}}
+        out[:, g] += rate * (
+            np.asarray(rbd._system_unreliability(hit), dtype=float) - down
+        )
+    return out
+
+
+def _crew_failing_each(rbd, chain, importance: dict) -> np.ndarray:
+    """The rate of the system's failures by each of the chain's
+    components (columns) in each of its states (#199): a component that
+    is up fails at its rate (its own cause's, in a common-cause group),
+    and takes the system down where it is critical (its Birnbaum
+    ``importance`` there, 1 or 0), as ``system_failure_frequency`` has
+    it; then by each common-cause group's shared causes (see
+    ``_crew_strikes``)."""
+    rates = _crews._crew_chain_rates(rbd)
+    own = _crews._crew_causes(rbd, chain.nodes)[0] if rbd.ccf_groups else {}
+    return np.column_stack(
+        [
+            importance[node] * chain.up[:, k] * own.get(node, rates[node][0])
+            for k, node in enumerate(chain.nodes)
+        ]
+        + [importance[_STRIKES]]
+    )
 
 
 def _crew_failing(rbd, chain, importance: dict) -> np.ndarray:
     """The rate of the system's failures in each state of the crews'
-    ``chain``: a component that is up fails at its rate, and takes the
-    system down where it is critical (its Birnbaum ``importance``
-    there, 1 or 0), as ``system_failure_frequency`` has it."""
-    rates = _crews._crew_chain_rates(rbd)
-    failing = np.zeros(len(chain.probabilities))
-    for k, node in enumerate(chain.nodes):
-        failing += importance[node] * chain.up[:, k] * rates[node][0]
-    return failing
+    ``chain``: by any of its components or shared causes (see
+    ``_crew_failing_each``)."""
+    return _crew_failing_each(rbd, chain, importance).sum(axis=1)
 
 
-def _crew_failing_each(rbd, chain, importance: dict) -> np.ndarray:
-    """``_crew_failing`` by component: the rate of the system's failures
-    by each of the chain's components (columns) in each of its states
-    (#199)."""
-    rates = _crews._crew_chain_rates(rbd)
-    return np.column_stack(
-        [
-            importance[node] * chain.up[:, k] * rates[node][0]
-            for k, node in enumerate(chain.nodes)
-        ]
-    )
+def _cause_keys(rbd, chain) -> list:
+    """Whose the columns of ``_crew_failing_each`` are: the chain's
+    components, then each common-cause group, as the tuple of its
+    members."""
+    return list(chain.nodes) + [
+        tuple(group.members) for group in rbd.ccf_groups
+    ]
 
 
 def _crew_each(rbd, chain, nested: list, working, broken, method: str) -> list:
@@ -1526,12 +1576,19 @@ def _crew_window(
     ``system_failure_frequency`` has it), and each component's down
     time and failures (at its rate while it is up), each a repair. No
     component has scheduled maintenance or tests, and none fails at the
-    same instant as another."""
+    same instant as another. A call-out crew that costs anything is
+    counted too (``"call_out"``: what it has cost by each end), from the
+    chain's last vector, the rate at which it costs in each state."""
     working, broken = set(working_nodes), set(broken_nodes)
     forced = working | broken
     nested = _require_crew_over_time(rbd, frozenset(forced), "window")
     chain = _crews._crew_chain(rbd, frozenset(forced))
     rates = _crews._crew_chain_rates(rbd)
+    called = (
+        [_crews._call_out_vector(rbd, chain)]
+        if _crews._call_out_priced(rbd)
+        else []
+    )
     if nested:
         # The nested RBDs, independent of the chain, counted as nodes,
         # with the system worked out over the chain (#162).
@@ -1549,10 +1606,14 @@ def _crew_window(
                 _crew_patterns(rbd, chain, nested, working, broken, method)
                 + [chain.up.astype(float)]
                 + each
+                + called
             ),
         )
         system = _chain_transient.CrewSystem(
-            uniformized, nested, chain.nodes, causes
+            uniformized,
+            nested,
+            chain.nodes,
+            _cause_keys(rbd, chain) if causes else (),
         )
         horizon = float(np.max(ends)) if len(ends) else 0.0
         curves = {
@@ -1581,6 +1642,10 @@ def _crew_window(
             curves[node] = _chain_transient.CrewNodeEvents(
                 uniformized, column + k, rates[node][0]
             )
+        if called:
+            totals["call_out"] = np.maximum(
+                uniformized.integrals(ends)[:, -1], 0.0
+            )
         return curves, totals
     up, importance = _crew_vectors(rbd, chain, {}, working, broken, method)
     failing = _crew_failing(rbd, chain, importance)
@@ -1590,7 +1655,7 @@ def _crew_window(
         chain.generator,
         _crew_start(rbd, chain, states),
         chain.probabilities,
-        np.column_stack([up, failing, chain.up.astype(float)] + each),
+        np.column_stack([up, failing, chain.up.astype(float)] + each + called),
     )
     totals = uniformized.integrals(ends)
     zero = np.zeros(len(ends))
@@ -1601,11 +1666,13 @@ def _crew_window(
         "downtime": {},
         "overlaps": {name: zero for name in groups or {}},
     }
+    if called:
+        counts["call_out"] = np.maximum(totals[:, -1], 0.0)
     if causes:
         base = 2 + len(chain.nodes)
         counts["caused"] = {
-            node: np.maximum(totals[:, base + k], 0.0)
-            for k, node in enumerate(chain.nodes)
+            key: np.maximum(totals[:, base + k], 0.0)
+            for k, key in enumerate(_cause_keys(rbd, chain))
         }
     curves = {}
     for k, node in enumerate(chain.nodes):
@@ -1887,6 +1954,18 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     level (``y0`` if new), which its first inspection reads."""
     component = rbd.components[node]
     schedule = rbd._preventive[node]
+    if (
+        schedule.policy == "block"
+        and (
+            schedule.times is not None
+            or schedule.shuts is not None
+            or schedule.upgrade_at is not None
+        )
+    ) or (schedule.policy == "condition" and schedule.times is not None):
+        # Its own plan's times, a shutdown's given times (renewed there,
+        # or inspected and kept unless due), or the starts of several
+        # shutdowns.
+        return _plan_curve(rbd, node, horizon, start)
     duration = schedule.duration
     stationary = start is not None and start.stationary
     knots = np.empty(0) if duration is None else point_knots(duration)
@@ -1971,6 +2050,159 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
         # before 0.
         since = schedule.interval - schedule.offset
     return ShiftedCurve(curve, curve.settle + since)
+
+
+def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
+    """A component's point availability over ``[0, horizon]``, replaced
+    at the times of its plan (its ``"replace_at"``, or those of the
+    shutdown it is renewed at) if it is up at them and after the last no
+    more: followed stretch by stretch, each from
+    one of the times to the next (see
+    ``_block_replacement.plan_availability``). From new, the first
+    stretch starts new at 0; from a state, the unit's own curve reaches
+    the first time and the plan is followed from there (as
+    ``_block_curve`` starts block replacement). The stretch after the last
+    time is as long as the longest of the others, doubled until it
+    reaches the horizon, so that nearby horizons are worked out on the
+    same grid, with that stretch's step."""
+    if not math.isfinite(horizon):
+        _requirements._require_no_plans(rbd)
+    component = rbd.components[node]
+    schedule = rbd._preventive[node]
+    duration = schedule.duration
+    times, taken = _plan_times(schedule, horizon)
+    # A shut at 0 does not replace the unit, new or as its state says
+    # then: the simulation's tasks fall due after 0 (_Preventive.due).
+    taken = [d for t, d in zip(times, taken) if t > 0.0]
+    times = times[times > 0.0]
+    if not times.size:
+        return _unit_curve(
+            rbd, node, horizon, counts=True, start=start, unscheduled=True
+        )
+    edges = np.concatenate(([0.0], times))
+    gaps = np.diff(edges)
+    started = start is not None and not start.new
+    # The stretches that start by the horizon (from a state, the one
+    # after the head at least).
+    used = max(
+        int(np.searchsorted(times, max(horizon, 0.0), side="right")),
+        1 if started else 0,
+    )
+    lengths = list(gaps[: used + 1])
+    like = None
+    if used == len(times):
+        like = last = float(gaps.max())
+        while last < horizon - times[-1]:
+            last *= 2.0
+        lengths.append(last)
+    models = (component.reliability, component.time_to_replace, duration)
+    # After an upgrade, the units put into service have its life.
+    upgrade = rbd._upgrades.get(node)
+    lives = None
+    if upgrade is not None:
+        lives = [
+            upgrade.life if begin >= upgrade.at else component.reliability
+            for begin in edges[: len(lengths)]
+        ]
+
+    # The time each stretch's replacement takes, where they differ (the
+    # first's, from new, starts no replacement: it shares the next one's
+    # grid).
+    durations = None
+    if schedule.shuts is not None:
+        durations = ([taken[0]] + taken)[: len(lengths)]
+
+    def curve(results, starts):
+        return PlanCurve(
+            [BlockCurve(r, _knots(r.replace.model)) for r in results],
+            starts,
+        )
+
+    def followed(lengths, head=None):
+        if schedule.policy == "condition":
+            # Inspected at each time and kept unless due.
+            return condition_plan_availability(
+                *models,
+                lengths,
+                float(schedule.threshold),
+                node,
+                head,
+                older_than=schedule.older_than,
+                last_like=like,
+            )
+        return plan_availability(
+            *models,
+            lengths,
+            node,
+            head,
+            like,
+            None if lives is None else lives[-len(lengths) :],  # noqa
+            None if durations is None else durations[-len(lengths) :],  # noqa
+        )
+
+    if not started:
+        return curve(followed(lengths), edges[: len(lengths)])
+    assert start is not None
+    length = float(times[0])
+    head = _unit_curve(
+        rbd, node, length, counts=True, start=start, unscheduled=True
+    )
+    down_sf = None
+    if not start.alive:
+        down_sf = _first_unit(rbd, node, start, None, (), None, None).down_sf
+
+    def failures(u):
+        return head.events(np.asarray(u, dtype=float))["failures"]
+
+    up = float(head.at(np.array([length]))[0])
+    reached: Any
+    if schedule.policy == "condition":
+        first = None
+        if start.alive:
+            # The unit in service now, if unfailed by the first
+            # inspection, and its age there.
+            ages = float(start.age) + np.array([0.0, length])
+            alive = _sf_values(component.reliability.sf, ages)
+            first = (float(alive[1] / alive[0]), float(ages[1]))
+        reached = ConditionHead(length, up, failures, down_sf, first)
+    else:
+        reached = BlockHead(length, up, failures, down_sf)
+    results = followed(lengths[1:], reached)
+    tail = curve(results, edges[1 : len(lengths)] - length)  # noqa: E203
+    return StartedBlockCurve(head, tail, length)
+
+
+def _knots(duration) -> np.ndarray:
+    """The knots of a replacement's time (none for none)."""
+    return np.empty(0) if duration is None else point_knots(duration)
+
+
+def _plan_times(schedule, horizon: float):
+    """The times a component replaced at given times is replaced at,
+    and the model of the time each takes: its plan's (or a shutdown's)
+    times, each its ``duration``; at several shutdowns (``shuts``), the
+    starts of each in order up to the first after ``horizon`` (enough for
+    the stretches that cover it), each its own shut's."""
+    if schedule.upgrade_at is not None:
+        # Block replacement on its interval, up to the first time after
+        # the horizon, and at the upgrade.
+        T = float(schedule.interval)
+        last = math.floor(max(horizon, 0.0) / T) + 1
+        times = np.union1d(T * np.arange(1, last + 1), [schedule.upgrade_at])
+        return times, [schedule.duration] * len(times)
+    if schedule.shuts is None:
+        times = np.asarray(schedule.times, dtype=float)
+        return times, [schedule.duration] * len(times)
+    stop = max(horizon, 0.0)
+    starts, models = [], []
+    for shut, model in schedule.shuts:
+        # Up to and including its first start after the horizon.
+        own = shut.starts(np.nextafter(shut.due(stop), np.inf))
+        starts.append(own)
+        models.extend([model] * len(own))
+    times = np.concatenate(starts)
+    order = np.argsort(times, kind="stable")
+    return times[order], [models[i] for i in order]
 
 
 def _first_unit(

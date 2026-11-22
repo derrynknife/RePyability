@@ -55,6 +55,7 @@ from repyability.rbd.regression_node import RegressionNode
 from repyability.rbd.repeated_node import PARALLEL, RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.standby_node import StandbyModel
+from repyability.utils.checks import is_number
 
 #: Whether every model must load back as the class it is (see
 #: ``exactly``).
@@ -171,11 +172,23 @@ def _serialise_model(model: Any) -> dict:
             ),
         }
     if isinstance(model, NonRepairable):
-        return {
+        out = {
             "kind": "non_repairable",
             "reliability": serialise_model(model.reliability),
             "time_to_replace": serialise_model(model.time_to_replace),
         }
+        # The prices at opportunities, where given (an Opportunity key
+        # saved by its name, which the policies match it by too).
+        if model.opportunity_cost is not None:
+            out["opportunity_cost"] = model.opportunity_cost
+        if model.job_duration is not None:
+            out["job_duration"] = model.job_duration
+        if model.opportunity_costs:
+            out["opportunity_costs"] = {
+                getattr(k, "name", k): v
+                for k, v in model.opportunity_costs.items()
+            }
+        return out
     if isinstance(model, RegressionNode):
         return {"kind": "regression_node", **model.to_dict()}
     if isinstance(as_node(model), JointNode):
@@ -303,6 +316,9 @@ def deserialise_model(d: dict) -> Any:
         return NonRepairable(
             deserialise_model(d["reliability"]),
             deserialise_model(d["time_to_replace"]),
+            opportunity_cost=d.get("opportunity_cost"),
+            job_duration=d.get("job_duration"),
+            opportunity_costs=d.get("opportunity_costs"),
         )
     if kind == "regression_node":
         return RegressionNode.from_dict(d)
@@ -398,7 +414,11 @@ def _serialise_component(value) -> dict:
         if value.get("replace_after") is not None:
             out["replace_after"] = int(value["replace_after"])
         if value.get("duty") is not None:
-            out["duty"] = float(value["duty"])
+            duty = value["duty"]
+            # A share, or a duty plan that changes over time (its dict).
+            out["duty"] = (
+                float(duty) if is_number(duty) else _duty_plan_dict(duty)
+            )
         if value.get("covariates") is not None:
             from repyability.rbd._covariate_schedule import schedule_to_dict
 
@@ -406,6 +426,28 @@ def _serialise_component(value) -> dict:
         for key in ("preventive", "inspection"):
             if value.get(key) is not None:
                 out[key] = _serialise_schedule(value[key])
+        if value.get("upgrade") is not None:
+            # An upgrade: its time, the new life and the capital cost.
+            upgrade = value["upgrade"]
+            out["upgrade"] = {
+                "at": float(upgrade["at"]),
+                "reliability": serialise_model(upgrade["reliability"]),
+            }
+            if upgrade.get("cost"):
+                out["upgrade"]["cost"] = float(upgrade["cost"])
+        for key in ("salvage", "escalation", "retire_at"):
+            # The unit's own money: numbers (a salvage by age is a
+            # function, which is not saved).
+            own = value.get(key)
+            if own is None:
+                continue
+            if callable(own):
+                raise NotImplementedError(
+                    f"Cannot save a {key!r} given as a function (a salvage "
+                    "by age): save the diagram with the salvage as a "
+                    "number, or without it, and give the function again."
+                )
+            out[key] = float(own)
         if value.get("standby") is not None:
             # A standby group: numbers only.
             out["standby"] = {
@@ -433,6 +475,9 @@ def _serialise_schedule(spec: dict) -> dict:
         out["shutdown"] = spec["shutdown"]
         if spec.get("older_than") is not None:
             out["older_than"] = float(spec["older_than"])
+    elif spec.get("replace_at") is not None:
+        # Replaced at the times of a plan, in place of an interval.
+        out["replace_at"] = [float(t) for t in spec["replace_at"]]
     else:
         out["interval"] = float(spec["interval"])
     if spec.get("basis") is not None:
@@ -472,6 +517,8 @@ def _serialise_schedule(spec: dict) -> dict:
             "model": spec["restoration"]["model"],
             "q": float(spec["restoration"]["q"]),
         }
+    if spec.get("restore_to") is not None:
+        out["restore_to"] = float(spec["restore_to"])
     if spec.get("replace_every") is not None:
         out["replace_every"] = int(spec["replace_every"])
     cost = spec.get("replacement_cost")
@@ -526,7 +573,16 @@ def _deserialise_component(d: dict) -> Any:
         if "replace_after" in d:
             out["replace_after"] = d["replace_after"]
         if "duty" in d:
-            out["duty"] = d["duty"]
+            duty = d["duty"]
+            if isinstance(duty, dict):
+                from repyability.schedule import DutySchedule
+
+                duty = DutySchedule(
+                    str(duty.get("unit", "hours")),
+                    tuple(float(t) for t in duty["times"]),
+                    tuple(float(x) for x in duty["shares"]),
+                )
+            out["duty"] = duty
         if "covariates" in d:
             from repyability.rbd._covariate_schedule import (
                 schedule_from_dict,
@@ -536,8 +592,16 @@ def _deserialise_component(d: dict) -> Any:
         for key in ("preventive", "inspection"):
             if key in d:
                 out[key] = _deserialise_schedule(d[key])
+        if "upgrade" in d:
+            out["upgrade"] = {
+                **d["upgrade"],
+                "reliability": deserialise_model(d["upgrade"]["reliability"]),
+            }
         if "standby" in d:
             out["standby"] = dict(d["standby"])
+        for key in ("salvage", "escalation", "retire_at"):
+            if key in d:
+                out[key] = d[key]
         return out
     return deserialise_model(d)
 
@@ -594,7 +658,7 @@ def _capacity_from_list(capacity_list):
 
 
 def _ccf_to_list(ccf_groups):
-    from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor
+    from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor, Shocks
 
     if not ccf_groups:
         return None
@@ -610,6 +674,19 @@ def _ccf_to_list(ccf_groups):
                 "alphas": list(group.model.alphas),
                 "testing": group.model.testing,
             }
+        elif isinstance(group.model, Shocks):
+            out.append(
+                {
+                    "members": list(group.members),
+                    "model": {
+                        "kind": "shocks",
+                        "rate": group.model.rate,
+                        "p": group.model.p,
+                        "lethal_rate": group.model.lethal_rate,
+                    },
+                }
+            )
+            continue
         else:
             raise NotImplementedError(
                 f"Cannot serialise CCF model {type(group.model).__name__}."
@@ -625,7 +702,13 @@ def _ccf_to_list(ccf_groups):
 
 
 def _ccf_from_list(ccf_list):
-    from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor, CCFGroup
+    from repyability.rbd.ccf import (
+        MGL,
+        AlphaFactor,
+        BetaFactor,
+        CCFGroup,
+        Shocks,
+    )
 
     if not ccf_list:
         return None
@@ -634,8 +717,14 @@ def _ccf_from_list(ccf_list):
         model_dict = entry["model"]
         kind = model_dict["kind"]
         basis = model_dict.get("basis", "probability")
-        if kind == "beta_factor":
-            model: object = BetaFactor(model_dict["beta"], basis=basis)
+        if kind == "shocks":
+            model: object = Shocks(
+                model_dict["rate"],
+                model_dict["p"],
+                model_dict["lethal_rate"],
+            )
+        elif kind == "beta_factor":
+            model = BetaFactor(model_dict["beta"], basis=basis)
         elif kind == "mgl":
             model = MGL(
                 *model_dict["letters"],
@@ -658,7 +747,9 @@ def _ccf_from_list(ccf_list):
 
 def rbd_to_dict(rbd: RBD) -> dict:
     """Serialise an RBD (NonRepairableRBD or RepairableRBD) to a dict."""
-    args = rbd._init_args
+    # As given: a diagram with shock groups keeps them, not the causes
+    # it wrote into its structure.
+    args = getattr(rbd, "_given_args", rbd._init_args)
     out = {
         "repyability_version": __version__,
         "type": type(rbd).__name__,
@@ -681,6 +772,10 @@ def rbd_to_dict(rbd: RBD) -> dict:
         out["downtime_cost_rate"] = args.get("downtime_cost_rate", 0.0)
         if args.get("repair_crews") is not None:
             out["repair_crews"] = int(args["repair_crews"])
+        if getattr(rbd, "crew_cost_rate", 0.0):
+            out["crew_cost_rate"] = rbd.crew_cost_rate
+        if getattr(rbd, "call_out", None) is not None:
+            out["call_out"] = dict(rbd.call_out)
         if args.get("maintenance_groups"):
             # Each group's options, by name (a name may not be a JSON key).
             out["maintenance_groups"] = [
@@ -719,6 +814,9 @@ def _shutdown_spec(spec: dict) -> dict:
             out[key] = None if value is None else list(value)
         elif key == "idle_ageing":
             out[key] = bool(value)
+        elif key == "opportunistic" and isinstance(value, dict):
+            # By component, as pairs (a name may not be a JSON key).
+            out[key] = [[node, float(age)] for node, age in value.items()]
         elif value is not None:
             out[key] = float(value)
     return out
@@ -755,7 +853,11 @@ def rbd_from_dict(d: dict) -> RBD:
                 key: (
                     [_node_name(n) for n in value]
                     if key == "scope" and value is not None
-                    else value
+                    else (
+                        {_node_name(n): age for n, age in value}
+                        if key == "opportunistic" and isinstance(value, list)
+                        else value
+                    )
                 )
                 for key, value in e.items()
                 if key != "shutdown"
@@ -767,6 +869,8 @@ def rbd_from_dict(d: dict) -> RBD:
             components,
             downtime_cost_rate=d.get("downtime_cost_rate", 0.0),
             repair_crews=d.get("repair_crews"),
+            crew_cost_rate=d.get("crew_cost_rate", 0.0),
+            call_out=d.get("call_out"),
             maintenance_groups=groups or None,
             ccf_groups=_ccf_from_list(d.get("ccf_groups")),
             shutdowns=shutdowns or None,
@@ -794,3 +898,21 @@ def rbd_to_json(rbd: RBD, **json_kwargs) -> str:
 def rbd_from_json(s: str) -> RBD:
     """Reconstruct an RBD from a JSON string."""
     return rbd_from_dict(json.loads(s))
+
+
+def _duty_plan_dict(plan) -> dict:
+    """A duty plan that changes over time (a ``DutySchedule``, or its
+    dict) as JSON."""
+    if isinstance(plan, dict):
+        unit, times, shares = (
+            plan.get("unit", "hours"),
+            plan["times"],
+            plan["shares"],
+        )
+    else:
+        unit, times, shares = plan.unit, plan.times, plan.shares
+    return {
+        "unit": str(unit),
+        "times": [float(t) for t in times],
+        "shares": [float(x) for x in shares],
+    }

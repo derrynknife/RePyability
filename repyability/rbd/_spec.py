@@ -12,6 +12,7 @@ from typing import (
     Any,
     Dict,
     Hashable,
+    NamedTuple,
     Optional,
     Tuple,
 )
@@ -36,11 +37,14 @@ from repyability.rbd._events import (
     _Preventive,
     _Restoration,
     _Standby,
+    _Upgrade,
 )
 from repyability.utils.checks import (
     is_number,
     number_or_nan,
+    real_array,
     unfitted_distribution,
+    whole_number,
 )
 from repyability.utils.wrappers import outside_level
 
@@ -66,8 +70,19 @@ COMPONENT_SPEC_KEYS = (
         "replace_after",
         "duty",
         "covariates",
+        "upgrade",
+        "salvage",
+        "escalation",
+        "retire_at",
     )
 )
+
+#: The keys of a component's own money, taken by a valuation
+#: (``expected_npv``) as its arguments of the same names for the node.
+VALUATION_KEYS = ("salvage", "escalation", "retire_at")
+
+#: The keys of a component's ``"upgrade"`` spec.
+UPGRADE_KEYS = ("at", "reliability", "cost")
 
 #: The models of imperfect repair a spec's ``"repair"`` can name.
 REPAIR_MODELS = ("kijima1", "kijima2")
@@ -84,16 +99,23 @@ PREVENTIVE_KEYS = (
     "level",
     "calendar",
     "restoration",
+    "restore_to",
     "replace_every",
     "replacement_cost",
     "shutdown",
     "older_than",
     "basis",
+    "replace_at",
 )
 
 #: The keys of a ``"preventive"`` spec that make its task restore the unit
 #: only partly (Kijima), and replace it as new at every so many tasks.
-RESTORATION_KEYS = ("restoration", "replace_every", "replacement_cost")
+RESTORATION_KEYS = (
+    "restoration",
+    "restore_to",
+    "replace_every",
+    "replacement_cost",
+)
 
 #: The policies a ``"preventive"`` spec can name: replacement at an
 #: age, on a calendar (block), on the condition an inspection finds, or
@@ -229,6 +251,7 @@ def _validate_ccf_groups(rbd, ccf_groups) -> list:
             "must be identical components, with the same life and "
             "repair models."
         ),
+        shocks=True,
     )
 
 
@@ -282,6 +305,7 @@ def _validate_imperfect(rbd, node, spec: dict) -> Optional[_Imperfect]:
     if process is not None:
         if isinstance(preventive, dict) and (
             preventive.get("restoration") is not None
+            or preventive.get("restore_to")
         ):
             raise ValueError(
                 f"Component {node!r} is repaired by its fitted "
@@ -342,12 +366,15 @@ def _validate_process(node, spec: dict):
 
 
 def _kijima_factor(
-    node, given, what: str, at_one: str, also: str = ""
+    node, given, what: str, at_one: str, also: str = "", harmful=False
 ) -> Tuple[str, float]:
     """A Kijima ``(model, q)`` given as a dict of a ``"model"`` and its
-    restoration factor ``"q"`` in [0, 1], checked: ``what`` names it
-    ("repair", "the preventive restoration"), ``at_one`` says what
-    ``q = 1`` is, and ``also`` what else it may be given as."""
+    restoration factor ``"q"``, checked: ``what`` names it ("repair",
+    "the preventive restoration"), ``at_one`` says what ``q = 1`` is,
+    and ``also`` what else it may be given as. ``q`` is in [0, 1], or,
+    with ``harmful`` (a preventive task's restoration), any finite number
+    from 0: above 1, a task that leaves the unit older than it was
+    (harmful or invasive maintenance)."""
     if (
         not isinstance(given, dict)
         or set(given) != {"model", "q"}
@@ -359,17 +386,45 @@ def _kijima_factor(
             f"and its restoration factor 'q'{also}, got {given!r}."
         )
     q = given["q"]
-    if (
-        isinstance(q, bool)
-        or not isinstance(q, (int, float, np.number))
-        or not 0.0 <= float(q) <= 1.0
-    ):
+    number = not isinstance(q, bool) and isinstance(q, (int, float, np.number))
+    most = math.inf if harmful else 1.0
+    if not (number and 0.0 <= float(q) <= most and math.isfinite(float(q))):
+        if harmful:
+            raise ValueError(
+                f"Component {node!r}: the restoration factor q must be "
+                f"a finite number, 0 or more (0 renews the unit, 1 "
+                f"{at_one}, above 1 leaves it older: harmful "
+                f"maintenance), got {q!r}."
+            )
         raise ValueError(
             f"Component {node!r}: the restoration factor q must be "
             f"a number in [0, 1] (0 renews the unit, 1 {at_one}), "
-            f"got {q!r}."
+            f"got {q!r}. Only a preventive task's restoration may be "
+            "above 1 (harmful maintenance): a repair cannot leave a unit "
+            "older than it was."
         )
     return given["model"], float(q)
+
+
+#: A ``_Restoration``'s ``kijima`` for a task that restores the unit to
+#: a virtual age (``"restore_to"``), whose ``q`` is the age.
+TO_AGE = "to_age"
+
+
+def _restore_to(node, preventive: dict) -> Optional[float]:
+    """A ``"preventive"`` spec's ``"restore_to"``, checked: the virtual
+    age a task leaves the unit at (0 renews it), or None."""
+    to = preventive.get("restore_to")
+    if to is None:
+        return None
+    age = number_or_nan(to)
+    if not (age >= 0.0 and math.isfinite(age)):
+        raise ValueError(
+            f"Component {node!r}: restore_to is the virtual age a task "
+            "leaves the unit at, in the models' unit: a finite number, 0 "
+            f"or more (0 renews it); got {to!r}."
+        )
+    return age
 
 
 def _validate_restoration(
@@ -391,6 +446,16 @@ def _validate_restoration(
     given = preventive.get("restoration")
     every = preventive.get("replace_every")
     cost = preventive.get("replacement_cost")
+    to = _restore_to(node, preventive)
+    if to is not None and given is not None:
+        raise ValueError(
+            f"Component {node!r}: a task restores the unit by a Kijima "
+            "factor ('restoration') or to an age ('restore_to'), not both: "
+            "give one."
+        )
+    if to:
+        # To a virtual age (0 renews the unit: the default, below).
+        given = to
     if cost is not None and every is None:
         raise ValueError(
             f"Component {node!r}: a replacement_cost is the cost of the "
@@ -404,13 +469,17 @@ def _validate_restoration(
                 "anyway."
             )
         return None, None
-    model, q = _kijima_factor(
-        node,
-        given,
-        "the preventive restoration",
-        "leaves it as old as it was",
-        ", or a fitted surpyval GeneralizedRenewal (Kijima I or II)",
-    )
+    if to:
+        model, q = TO_AGE, to
+    else:
+        model, q = _kijima_factor(
+            node,
+            given,
+            "the preventive restoration",
+            "leaves it as old as it was",
+            ", or a fitted surpyval GeneralizedRenewal (Kijima I or II)",
+            harmful=True,
+        )
     if every is not None:
         if (
             isinstance(every, bool)
@@ -738,12 +807,20 @@ def _validate_preventive(
     if spec.get("shutdown") is not None:
         from repyability.rbd import _shutdowns
 
+        if spec.get("replace_at") is not None:
+            raise ValueError(
+                f"Component {node!r}: its preventive task is done at "
+                f"shutdown {spec['shutdown']!r}, whose times apply, so it "
+                "takes no replace_at: give the times to the shutdown."
+            )
         spec, bound = _shutdowns.bound_preventive(node, spec, shutdowns or {})
     elif spec.get("older_than") is not None:
         raise ValueError(
             f"Component {node!r}: older_than replaces the unit at a "
             "shutdown if it is that old, so it needs a shutdown."
         )
+    if spec.get("replace_at") is not None:
+        spec, bound = _replaced_at(node, spec)
     policy = spec.get("policy", "age")
     if policy not in PREVENTIVE_POLICIES:
         raise ValueError(
@@ -818,15 +895,9 @@ def _validate_preventive(
                 f"{within}, got {opportunity!r}."
             )
         opportunity = float(opportunity)
-    duration = spec.get("duration", "instant")
-    if isinstance(duration, str) and duration == "instant":
-        duration = None
-    elif not hasattr(duration, "random"):
-        raise ValueError(
-            f"Component {node!r}: the preventive duration must be a "
-            "time-to-maintain model (such as a fitted surpyval "
-            f"distribution) or 'instant', got {duration!r}."
-        )
+    duration = _duration(
+        node, "preventive", "time-to-maintain", spec.get("duration")
+    )
     costs = []
     for key, name in (
         ("cost", "preventive_cost"),
@@ -849,6 +920,51 @@ def _validate_preventive(
         **bound,
     )
     return schedule, costs[0], costs[1]
+
+
+def _replaced_at(node, spec: dict) -> Tuple[dict, dict]:
+    """A ``"preventive"`` spec with a plan (its ``"replace_at"``: the
+    times, from 0, at which the unit is replaced if it is up, and after
+    the last no more), checked, as the block replacement it is: the spec
+    with that policy and an interval (the shortest gap between the times,
+    which only sizes the simulation's streams: the times place the
+    replacements), and the ``_Preventive``'s ``times``."""
+    given = spec["replace_at"]
+    policy = spec.get("policy", "block")
+    if policy != "block":
+        raise ValueError(
+            f"Component {node!r}: replace_at replaces the unit at each of "
+            "its times if it is up, which is the 'block' policy at given "
+            f"times, so its policy cannot be {policy!r}: leave the policy "
+            "out, or give that policy an interval and no replace_at."
+        )
+    if spec.get("interval") is not None:
+        raise ValueError(
+            f"Component {node!r}: give its preventive task an interval "
+            "(replaced every so often, for ever) or replace_at (replaced "
+            "at those times and no more), not both."
+        )
+    try:
+        times = np.atleast_1d(real_array(given, "replace_at"))
+    except (TypeError, ValueError):
+        times = np.array([math.nan])
+    if (
+        times.ndim != 1
+        or not times.size
+        or not np.all(np.isfinite(times))
+        or not times[0] > 0.0
+        or np.any(np.diff(times) <= 0.0)
+    ):
+        raise ValueError(
+            f"Component {node!r}: replace_at must be the times at which "
+            "the unit is replaced, in the diagram's time from 0: positive, "
+            f"finite and increasing, got {given!r}."
+        )
+    gaps = np.diff(np.concatenate(([0.0], times)))
+    view = {key: value for key, value in spec.items() if key != "replace_at"}
+    view["policy"] = policy
+    view["interval"] = float(gaps.min())
+    return view, {"times": tuple(float(t) for t in times)}
 
 
 def _validate_level(node, spec: dict, policy: str, life) -> Optional[float]:
@@ -885,6 +1001,91 @@ def _validate_level(node, spec: dict, policy: str, life) -> Optional[float]:
             f"{float(life.threshold):g}, got {spec['level']!r}."
         )
     return level
+
+
+def _validate_upgrade(node, spec: dict) -> _Upgrade:
+    """A component spec's ``"upgrade"``, validated: the time (in the
+    diagram's time from 0) from which its units have another life, that
+    life, and the capital cost charged then. An upgraded component is a
+    plain one: its schedule is the upgrade."""
+    from repyability.utils.checks import no_distribution
+
+    upgrade = spec["upgrade"]
+    if not isinstance(upgrade, dict):
+        raise ValueError(
+            f"Component {node!r}: upgrade must be a dict of "
+            f"{', '.join(UPGRADE_KEYS)}, got {upgrade!r}."
+        )
+    unknown = set(upgrade) - set(UPGRADE_KEYS)
+    if unknown:
+        raise ValueError(
+            f"Component {node!r}: unknown upgrade key(s) "
+            f"{sorted(map(str, unknown))}; it takes "
+            f"{', '.join(UPGRADE_KEYS)}."
+        )
+    task = spec.get("preventive")
+    if task is not None and not (
+        isinstance(task, dict)
+        and task.get("policy") == "block"
+        and not any(
+            task.get(key) is not None
+            for key in (
+                "shutdown",
+                "replace_at",
+                "restoration",
+                "restore_to",
+                "replace_every",
+                "basis",
+            )
+        )
+    ):
+        raise ValueError(
+            f"Component {node!r} has an upgrade and a preventive task "
+            "other than block replacement on its own interval ('policy': "
+            "'block'), which are not taken together yet: give it block "
+            "replacement, or one or the other."
+        )
+    for key, what in (
+        ("inspection", "an inspection"),
+        ("standby", "standby units"),
+        ("repair", "an imperfect repair"),
+        ("replace_after", "an imperfect repair"),
+        ("group", "a maintenance group"),
+        ("duty", "a duty"),
+        ("covariates", "a covariate schedule"),
+    ):
+        if spec.get(key) is not None:
+            raise ValueError(
+                f"Component {node!r} has an upgrade and {what} ({key!r}), "
+                "which are not taken together yet: give it one or the "
+                "other."
+            )
+    for key in ("at", "reliability"):
+        if key not in upgrade:
+            raise ValueError(
+                f"Component {node!r}: an upgrade needs {key!r}: the time "
+                "from which its units have the new life (at), and that "
+                "life (reliability)."
+            )
+    at = number_or_nan(upgrade["at"])
+    if not (at > 0.0 and math.isfinite(at)):
+        raise ValueError(
+            f"Component {node!r}: the upgrade's time (at) must be a "
+            "positive, finite number, in the diagram's time from 0, got "
+            f"{upgrade['at']!r}."
+        )
+    life = upgrade["reliability"]
+    no_distribution(life, f"Component {node!r}: the upgrade's reliability")
+    if not (hasattr(life, "sf") and hasattr(life, "ff")):
+        raise ValueError(
+            f"Component {node!r}: the upgrade's reliability must be a "
+            "lifetime model (such as a fitted surpyval distribution), got "
+            f"{life!r}."
+        )
+    cost = 0.0
+    if upgrade.get("cost") is not None:
+        cost = _validate_cost(node, "the upgrade's cost", upgrade["cost"])
+    return _Upgrade(at, life, cost)
 
 
 def _validate_standby(node, spec: dict) -> _Standby:
@@ -991,15 +1192,9 @@ def _validate_inspection(
             f"positive, finite number, got {spec['interval']!r}. (A "
             "hidden failure is found only by an inspection.)"
         )
-    duration = spec.get("duration", "instant")
-    if isinstance(duration, str) and duration == "instant":
-        duration = None
-    elif not hasattr(duration, "random"):
-        raise ValueError(
-            f"Component {node!r}: the inspection duration must be a "
-            "time-to-test model (such as a fitted surpyval distribution) "
-            f"or 'instant', got {duration!r}."
-        )
+    duration = _duration(
+        node, "inspection", "time-to-test", spec.get("duration")
+    )
     cost = spec.get("cost")
     if cost is not None:
         cost = _validate_component_cost(node, "inspection_cost", cost)
@@ -1054,6 +1249,79 @@ def _validate_inspection(
     return schedule, cost
 
 
+def _duration(node, task: str, model: str, duration):
+    """A preventive or inspection task's ``duration``: ``None`` for
+    ``'instant'`` (the default) or 0, a fixed time for a number (a point
+    mass, surpyval's ``ExactEventTime``), else a model of the time."""
+    if duration is None or (
+        isinstance(duration, str) and duration == "instant"
+    ):
+        return None
+    if isinstance(duration, (int, float, np.number)) and not isinstance(
+        duration, (bool, np.bool_)
+    ):
+        value = float(duration)
+        if not (math.isfinite(value) and value >= 0.0):
+            raise ValueError(
+                f"Component {node!r}: the {task} duration must be a time "
+                f"0 or more (a fixed time in the models' unit), a {model} "
+                f"model, or 'instant'; got {duration!r}."
+            )
+        if value == 0.0:
+            return None
+        from surpyval import ExactEventTime
+
+        return ExactEventTime.from_params([value])
+    if not hasattr(duration, "random"):
+        raise ValueError(
+            f"Component {node!r}: the {task} duration must be a {model} "
+            "model (such as a fitted surpyval distribution), a fixed time "
+            f"(a number), or 'instant', got {duration!r}."
+        )
+    return duration
+
+
+def _validate_valuation(node, spec: dict) -> Dict[str, Any]:
+    """A component's own money (``VALUATION_KEYS``), checked: a salvage a
+    finite number or a function of age, an escalation a finite growth
+    rate, a retirement a time more than 0."""
+    out: Dict[str, Any] = {}
+    salvage = spec.get("salvage")
+    if salvage is not None:
+        if not callable(salvage):
+            number = number_or_nan(salvage)
+            if not math.isfinite(number):
+                raise ValueError(
+                    f"The salvage of component {node!r} must be a finite "
+                    "number (what the unit is worth at the end; negative "
+                    "for a cost of disposal) or a function of its age; got "
+                    f"{salvage!r}."
+                )
+            salvage = number
+        out["salvage"] = salvage
+    escalation = spec.get("escalation")
+    if escalation is not None:
+        number = number_or_nan(escalation)
+        if not math.isfinite(number):
+            raise ValueError(
+                f"The escalation of component {node!r} must be a finite "
+                "growth rate per unit time of the models (continuous; 3% "
+                "a year with models in hours is math.log(1.03) / 8760); "
+                f"got {escalation!r}."
+            )
+        out["escalation"] = number
+    retire_at = spec.get("retire_at")
+    if retire_at is not None:
+        number = number_or_nan(retire_at)
+        if not (math.isfinite(number) and number > 0.0):
+            raise ValueError(
+                f"The retire_at of component {node!r} must be a time more "
+                f"than 0 (when the unit is retired); got {retire_at!r}."
+            )
+        out["retire_at"] = number
+    return out
+
+
 def _validate_cost(node, key: str, value) -> float:
     """Coerce a cost to a finite, non-negative float."""
     if hasattr(value, "qf"):
@@ -1072,6 +1340,67 @@ def _validate_cost(node, key: str, value) -> float:
             f"{value!r}."
         )
     return cost
+
+
+def _validate_crew_cost(value, crews: Optional[int]) -> float:
+    """``crew_cost_rate``, validated: a finite, non-negative number, and
+    above 0 only with a number of ``crews`` to pay."""
+    rate = _validate_cost("<system>", "crew_cost_rate", value)
+    if rate and crews is None:
+        raise ValueError(
+            f"crew_cost_rate ({rate:g}) prices each repair crew per unit "
+            "time, but repair_crews is None: as many crews as are needed, "
+            "which cannot be priced. Give repair_crews, the number of "
+            "crews paid, or leave crew_cost_rate out."
+        )
+    return rate
+
+
+#: The keys of a ``call_out`` (see ``RepairableRBD``).
+CALL_OUT_KEYS = ("when_waiting", "fee", "rate")
+
+
+class _CallOut(NamedTuple):
+    """A call-out crew: how many waiting jobs call it, its fee each time
+    it comes and its cost per unit time while engaged."""
+
+    when_waiting: int
+    fee: float
+    rate: float
+
+
+def _validate_call_out(value, crews: Optional[int]) -> Optional[_CallOut]:
+    """``call_out``, validated: None, or a dict with ``"when_waiting"``
+    (a whole number of jobs, 1 or more) and optionally a ``"fee"`` and a
+    ``"rate"`` (finite, non-negative numbers), given with a number of
+    ``crews`` for jobs to wait for."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(
+            "call_out must be a dict with the keys "
+            f"{', '.join(map(repr, CALL_OUT_KEYS))}, or None; got {value!r}."
+        )
+    unknown = [key for key in value if key not in CALL_OUT_KEYS]
+    if unknown or "when_waiting" not in value:
+        raise ValueError(
+            "call_out takes 'when_waiting' (how many waiting jobs call the "
+            "crew) and optionally 'fee' and 'rate'; got the keys "
+            f"{sorted(map(str, value))}."
+        )
+    when = whole_number(value["when_waiting"], "call_out's 'when_waiting'")
+    fee = _validate_cost("<system>", "call_out's 'fee'", value.get("fee", 0.0))
+    rate = _validate_cost(
+        "<system>", "call_out's 'rate'", value.get("rate", 0.0)
+    )
+    if crews is None:
+        raise ValueError(
+            "call_out brings a crew more when jobs wait for the "
+            "repair_crews crews, but repair_crews is None: as many crews "
+            "as are needed, so that no job waits. Give repair_crews, or "
+            "leave call_out out."
+        )
+    return _CallOut(when, fee, rate)
 
 
 def _validate_component_cost(node, key: str, value):

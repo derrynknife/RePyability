@@ -246,7 +246,11 @@ eye.
     then take every age from the youngest, so they no longer sum exactly
     to the cost rate.
 20. **The NPV hook.** `_sweep` takes `beta`, a discount per step that
-    defaults to 1. There is no public API yet, as the brief asks.
+    defaults to 1. Discounting now reaches the long run (UC-44):
+    `optimal_calendar_policy(discount_rate=)` on a periodic calendar of a
+    short cycle (dp and integration), and a site's `discount=` without a
+    horizon, the dated window's run-on included; the other routes refuse
+    a rate, saying what to give instead.
 
 ## D. Phase 2 (integration)
 
@@ -364,3 +368,120 @@ eye.
     - `test_api_docstrings` had been failing for the cost parameters of
       `NonRepairable`, `ReplacementPlan` and `replacement_policies`; this was
       fixed in #340.
+
+## G. Prices with the part (16 Nov 2026, UC-45)
+
+31. **★ The decision.** The maintainer, 16 Nov 2026: a replacement's
+    price "must come with the part", as an opportunity (a stop or shut)
+    applies to every part; and there should be one name for the two ways
+    of describing opportunities (`Calendar` in model time, 0.14, and
+    `Shutdowns` on real dates, 0.19; the word "Shutdowns" was not liked).
+    Done:
+    - **Names:** `Opportunity` says when, how long and what it takes down
+      (`takes_down`, by default the whole site), with no price;
+      `Opportunities([...], any_day=True|False, time_zone=None)` collects
+      them, in model time or on real dates by what they are (a mix is
+      refused). `optimal_opportunity_policy` and `opportunity_policy_cost`
+      replace `optimal_calendar_policy` and `calendar_policy_cost`, with
+      every keyword unchanged, and `where=` added.
+    - **Prices with the part:** `NonRepairable`'s `planned_cost` (any
+      day), `unplanned_cost` (a failure), and new `opportunity_cost` (at
+      an opportunity; without one, an opportunity is priced as any other
+      day, at `planned_cost`) and `opportunity_costs` (per opportunity).
+    - **Overrides by name or object, checked:** a key of
+      `opportunity_costs` is an opportunity's name or the `Opportunity`
+      itself; when the policy runs, a key that matches no opportunity of
+      the collection is refused, listing the names it has. Never ignored.
+    - **Jobs that don't fit are skipped:** an opportunity shorter than the
+      part's `job_duration` is not used for that part, and the policy's
+      `prices` say so ("the 6 h job doesn't fit in the 4 h stop"); with
+      either length unsaid it is used. In model time both are numbers in
+      the life's unit; on real dates text or hours.
+    - **Shown:** the policy's `prices` (`OpportunityPrices`) give each
+      opportunity's price and its source (an override, `opportunity_cost`,
+      `planned_cost`, a deprecated price, or not used and why), the any-day
+      and the failure prices.
+32. **The old forms keep their numbers.** `Calendar(failure=, anytime=)`,
+    `Opportunity(name, cost, ...)`, `Shutdown(replace_cost=)` and
+    `Shutdowns(any_day=<price>)` still work and warn (a `FutureWarning`,
+    as CONTRIBUTING has deprecations warn, naming the replacement), for
+    removal in 0.21. A price on an opportunity is the part's override for
+    it (the part's own `opportunity_costs` wins where both are given);
+    `failure=` the failure's price and `anytime=`/`any_day=` the any-day
+    price, exactly as before. The prices are laid on the opportunities as
+    the solvers' own `Calendar` or site, so no numerical method changed:
+    `test_opportunities.py` checks old against new bit for bit.
+33. **Choices made here.** `Opportunities(any_day=)` defaults to True (a
+    planned replacement on any other day, at the part's `planned_cost`;
+    as `Calendar`'s `anytime="part"` did; `Shutdowns` defaulted to none).
+    An empty collection with no time zone is in model time, unless the
+    policy is given a site's arguments (`now=`, `unit=`, `plan=`, ...).
+    The helper is a static method,
+    `NonRepairable.opportunity_prices(opportunities, *, replacement_cost,
+    replacement_duration, failure_cost, failure_duration, downtime_cost)`,
+    returning `OpportunityPrices` whose `apply(part)` gives the part its
+    `planned_cost`, `unplanned_cost`, `opportunity_cost` and
+    `job_duration`; the downtime cost is the system's and is not kept on
+    the part. Saving a part keeps its opportunity prices, an `Opportunity`
+    key by its name. The results keep their names (`ShutdownPolicy`,
+    `ShutdownRoute`).
+34. **Left for later.** A diagram does not read `takes_down` yet (a
+    shut's `scope` is still given to `on_diagram`). Refusals and the
+    horizon were parked here and decided next (H).
+
+## H. Exact by default, or a horizon (16 Nov 2026, UC-44)
+
+35. **★ The decision.** The maintainer, 16 Nov 2026: **"Exact by
+    default; refuse what can't be done exactly; `horizon=` never
+    refuses."** Done:
+    - **Default:** the exact repeating cycle's answer, discounted or
+      not, where the opportunities repeat within `MAX_CYCLE`: the exact
+      routes, their numbers unchanged bit for bit.
+    - **Refused, with a ready answer:** a cycle longer than `MAX_CYCLE`,
+      given dates in model time, shuts that drift on real dates and a
+      duty plan's clock, each with a discount (and pricing a rule there).
+      The message names a horizon worked out from the inputs
+      (`_horizon.ready_model_text`, `ready_site_text`): with a discount,
+      where costs are discounted to under one part in a billion
+      (`horizon='2333-11-16'` at 7% from 16 Nov 2026; `horizon=112000`
+      days in model time); with none, the full cycle and three life
+      spans. `method='sampling'` is named where it applies
+      (undiscounted).
+    - **`horizon=` never refuses for those reasons:** the backward sweep
+      (`_horizon.backward`, shared by real dates and model time), with
+      the net present cost and an EAC, or undiscounted the total.
+      Model time takes it too (a number, with `discount_rate=`).
+    - **Silent sampling stops:** `method="auto"` sampling a long cycle
+      warns with a `FutureWarning` (`deprecation.refuses_from`) and
+      refuses from 0.21; `test_auto_sampling_refuses_in_0_21` reminds.
+    - **A given rule's discounted long run** is priced exactly, the
+      optimiser's value iteration with the decisions fixed;
+      `compare()` follows. `optimal_next_replacement` discounts its own
+      choices at the policy's rate.
+36. **Choices made here.**
+    - **"One part in a billion"** is `exp(-r H) < 1e-9`, the share of a
+      steady cost's present value past `H`: 307 whole years at 7% (the
+      decision's example said 300, which leaves 1.5e-9). Model-time
+      values are rounded up to three significant figures.
+    - **Undiscounted, at most two million grid steps** (`READY_STEPS`,
+      about a minute's sweep): a co-prime calendar's full cycle can be
+      hundreds of millions of steps, a horizon nobody could run; the
+      message then says the cycle is longer than is worth sweeping.
+    - **A model-time horizon ignores `tail`:** it takes the given dates
+      as they are and assumes nothing after them; any other day's price
+      still applies throughout.
+    - **The horizon's EAC is continuous**, `r NPC / (1 - exp(-r H))` with
+      `r = ln(1 + d)`, matching the long run's `ln(1 + d)` times `npv`;
+      `optimal_next_replacement` with a horizon policy used `d` in place
+      of `ln(1 + d)` before.
+    - **A horizon policy's `cost_rate`** (model time) is the rule's
+      undiscounted average to the horizon from a new part, and its
+      schedule's chances are from that part.
+37. **Left for later.** The repairable unit's overhaul, failure-limit and
+    overhaul-replace policies, failure-finding and on-condition
+    intervals, and `RepairableRBD.optimal_replacement_intervals` are not
+    discounted. A site's horizon grid is sized from the life alone (the
+    shuts laid at the nearest step), so it agrees with the exact route
+    to about 1.5e-5, not 1e-9; laying it on the shuts would change the
+    horizon's published numbers. A rule's undiscounted price over a long
+    cycle in model time is still a long finite horizon differenced.

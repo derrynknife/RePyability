@@ -104,6 +104,7 @@ nav:
       - Condition-based evaluation: guide/condition-based.md
       - Redundancy models: guide/redundancy-models.md
       - Common-cause failures: guide/common-cause.md
+      - Common causes with wear-out lives and ages: guide/common-cause-ages.md
       - Repairable systems: guide/repairable.md
       - System capacity: guide/capacity.md
       - Costs: guide/costs.md
@@ -125,6 +126,7 @@ nav:
       - Fault trees, missions, networks: api/other-systems.md
       - Node models: api/nodes.md
       - Components and maintenance: api/components.md
+      - Unit plans: api/unit-plans.md
       - Stress-strength interference: api/stress-strength.md
       - Timelines: api/timelines.md
       - Schedules: api/schedule.md

@@ -21,6 +21,24 @@ moved out with the calendar side in October 2026, and return here under
 their own numbers with the answers recorded for them. The use cases in
 model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
 
+## Layers
+
+This module is the calendar layer (`CLAUDE.md`, Architecture). It turns
+dates into model time and back, and it says what each unit's duty is.
+It leaves money to `repyability.value`, a unit's plan to
+`repyability.maintenance` and the system to `RepairableRBD`:
+
+| Question | Where | Use cases |
+|---|---|---|
+| Which dates does a rule give? | `Recurrence` (its `dates`) | UC-2, UC-3, UC-4 |
+| How many operating hours by when? | `DutyPlan`, `UsageForecast` | UC-10 |
+| The calendar an analysis runs on, and each unit's duty plan | `CalendarContext` (taken by `events_by_period` and by `UnitPlan`'s methods as `calendar=`) | UC-64 |
+| A part's failures and costs by month | `failures_by_period` (a `NonRepairable`), or `UnitPlan.failures_by_period` (the diagram's engine) | UC-48 |
+| A system's events and costs by month | `events_by_period` (a `RepairableRBD`) | UC-39, UC-64 |
+
+The duty plan belongs to the analysis: the same diagram or plan runs on
+another site's calendar with other plans.
+
 ## Conventions
 
 - **Dates are whole local dates** (a `datetime.date`, or ISO text such as
@@ -40,6 +58,18 @@ model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
 - **Results are plain data** (`_ResultMapping`s with `to_dict()`, dates as
   ISO text); rules and tasks have `to_dict()` and `from_dict()` with a
   `"kind"` and a `"version"`.
+- **`discount=` is the effective yearly rate** (0.07 is 7% a year), the
+  one convention of the dated replacement policies
+  (`repyability.maintenance`): an amount `y` years after the date it is
+  discounted to is worth `(1 + discount)^(-y)`, a year being 365.25
+  days; the continuous rate a year is `ln(1 + discount)`. Money is
+  discounted to the forecast's first date (the caller's "today"). Every
+  present value here goes through `_discount.py`, whose arithmetic is
+  the money module's (`repyability.value`): the one convention of
+  RePyability, continuous discounting at a rate per unit of the clock
+  the money falls on, with a yearly rate converted to it there and
+  nowhere else. With no `discount` nothing is discounted and every result is
+  as it was.
 
 ## The use cases, by number
 
@@ -53,6 +83,13 @@ model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
 | UC-29 | The first, or the fifth, Saturday of each month, and the months without one | **Built**: `Recurrence.monthly(nth=)`, `Recurrence.notes` |
 | UC-30 | Two limits, whichever comes first, and a task waiting for the crew's visit | **Built**: `Task(also=, visits=, tolerance=, last_done=)` |
 | UC-31 | The work in each month: how many tasks, hours and cost | **Built**: `work_by_period` |
+| UC-47 | $250 every 30 days at 7% a year: what is it worth this year, and for ever? | **Built**: `Task.due(discount=)`, `work_by_period(discount=)`, `Task.long_run_value` |
+| UC-48 | The wear ring's expected failure costs by month, as present values | **Built**: `failures_by_period(discount=)` (to a stated precision; a window, not the long run) |
+| UC-49 | A system's expected costs by month, as present values | **Built**: `events_by_period(cost=True, discount=)` (exact) |
+| UC-50 | Is replacing the wear ring at every 6-monthly service worth it, at 7% a year? | **Built**: `task_value(task, Replaces(part), usage, discount=)` |
+| UC-54 | Is the 6-monthly trip test worth it, at 7% a year? | **Built**: `task_value` with `Finds(device, demand_rate=, consequence_cost=, repair_cost=)` |
+| UC-67 | The gearbox is serviced every 3 months: what is the service worth at 7%, with no effect on its life (the default), as new, or with the fit's restoration factor? | **Built**: `task_value` with `Services(plan, effect=)`: no effect exact; a `Restoration`, or a fitted `Condition`, simulated on common random numbers with a 90% interval |
+| UC-57 | The same present values with costs escalating at a yearly rate | **Built**: `escalation=` beside `discount=` (the maintenance README's UC-57; the costs by period stay at today's prices) |
 | UC-32 | A pump on weekday shifts: its hours by month, and its 2,000-hour service on dates | **Built**: `DutyPlan`, `UsageForecast` |
 | UC-33 | A concrete run: when is the 500-hour check due? | **Built**: `Runs`, a crossing's stops |
 | UC-34 | About 3 h a day, or 2 to 4: when are the 250-hour inspections? | **Built**: `Rate`, ranges |
@@ -62,7 +99,7 @@ model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
 | UC-38 | The wear ring on the weekday pump: expected failures and cost by month, and the range | **Built**: `failures_by_period` |
 | UC-39 | A system's events by calendar month | **Built**: `events_by_period` |
 | UC-40 | Shuts on dates as opportunities on the part's clock | **Built**: `Opportunity.from_recurrence` |
-| UC-41 | The annual overhaul on the first Tuesday of November, as a diagram's shutdown | **Built**: `shutdown_spec` (simulated; the exact methods take shuts on a period) |
+| UC-41 | The annual overhaul on the first Tuesday of November, as a diagram's shutdown | **Built**: `shutdown_spec` (worked out over a horizon where the blocks worked on are renewed, and simulated; no long run) |
 | UC-43 | A site's shuts on real dates, one record for policies and diagrams | **Built** in `repyability.maintenance` (`Shutdowns`; its README's UC-43), laid on the part's clock through this module's rules, plans and forecasts |
 | UC-42 | Starts per operating hour for a life on two clocks | **Built**: `UsageForecast.life_at_usage` (needs surpyval 0.28) |
 
@@ -259,6 +296,71 @@ model time (UC-1, UC-5 to UC-27) stay in `repyability/maintenance/README.md`.
   for the periods module.
 - **Checks:** the counts above; the periods add up to each task's whole;
   the periods cover the dates asked with no gap.
+
+### UC-47: "I have a $250 task every 30 days from today. At 7% a year, what is it worth this year, and if it goes on for ever?"
+
+- **Status:** built: `Task.due(start, end, discount=)` (`TaskDue.npv`,
+  `eac`), `work_by_period(..., discount=)` (`WorkByPeriod.npv`,
+  `total_npv`, `eac`) and `Task.long_run_value(start, discount)`
+  returning a `LongRunValue`.
+- **Who asks:** the owner of a maintenance budget comparing a recurring
+  task with a one-off spend (a modification that removes the task), who
+  has the NPV of replacement policies in model time and asks whether the
+  scheduled work ties into it.
+- **What they know:** the task, its rule and its cost each time; today's
+  date (20 November 2026 here); the yearly discount rate.
+- **The answer, by hand:** from 20 November 2026 to 19 November 2027 the
+  task is done on days 0, 30, 60, ..., 360: **13 times, $3,250**. Each is
+  worth `250 / 1.07^(days / 365.25)` today: 250.00, 248.61, 247.24,
+  245.87, 244.50, 243.15, 241.80, 240.46, 239.13, 237.80, 236.49, 235.18
+  and 233.87, **$3,144.10** in all. By quarter (the first and last cut to
+  the dates): 2, 3, 3, 3 and 2 tasks; $498.61, $737.61, $725.41, $713.42
+  and $469.05. Repeating for ever it is a geometric sum, `250 / (1 -
+  1.07^(-30 / 365.25))` = `250 / 0.0055417` = **$45,112**. The equivalent
+  annual cost of the perpetuity is `45,112 × ln(1.07)` = $3,052 a year
+  (a little more than 12.175 tasks a year at $250, $3,044, because each
+  interval's task is paid at its start).
+- **How it is solved:** the dates a task is done on are known, so a
+  period's present value is a finite sum, each cost discounted from the
+  date the task is done (after its visit), in the period it is counted
+  in. For ever: a plain interval of days or weeks (no second limit,
+  visits, season or excluded dates) repeats exactly from the second time
+  it is done, so the first is discounted on its own and the rest are the
+  geometric sum above (`method="closed form"`). Any other task (the first
+  Tuesday of the month, every 3 months, a task waiting for visits, two
+  limits) is summed date by date (`method="summed"`): a task is done at
+  most once a day, so the dates after day `T` are worth less than `cost ×
+  v^(T+1) / (1 - v)` with `v = 1.07^(-1 / 365.25)`, and the sum stops
+  where that bound is under `precision` (1e-9 by default) of what is
+  summed, reporting the bound. At 7% that is some 360 years of dates. The
+  first Tuesday of every month at $250 is worth **$44,350.51** (12 a
+  year, the first on 1 December).
+- **Decisions (defaults):**
+  - `discount` is the yearly effective rate, discounted to `start`.
+  - `eac` is the steady cost **a year** over the period (both dates
+    included) worth the present value, as the dated policies' `eac`; at a
+    discount of 0 it is the cost over the period's years.
+  - Tasks with no cost stay named in `no_cost`, and a note says the
+    present values leave them out; a task with no cost has no `npv`.
+  - **Refused, saying what to run:** a long-run value at `discount=0`
+    (the costs add up without end); a task on given dates, or done at
+    visits on given dates (they end: `due` to the last date is the whole
+    value); a limit by use (`Usage` follows a usage forecast, which
+    ends); a rate so low that the sum does not settle to `precision` by
+    the year 9999, where dates stop (under about 0.3% a year at 1e-9).
+  - A date far from a rule's anchor is now found without walking to it
+    from the anchor (`Recurrence._counted_from`): the same dates, in a
+    time that no longer grows with the distance.
+- **Checks:** `test_uc47_thirty_day_task_this_year_and_for_ever` (the
+  numbers above to the cent), `test_long_run_against_100000_dates`,
+  `test_a_pattern_for_ever_against_2000_years_of_dates` (the first
+  Tuesdays worked out without `Recurrence`),
+  `test_no_discount_leaves_results_as_they_were`,
+  `test_discount_of_zero_is_the_plain_total`,
+  `test_periods_present_values_add_up`,
+  `test_long_run_with_visits_and_overdue`,
+  `test_what_has_no_long_run_value_is_refused` and
+  `test_far_dates_are_the_anchors_own`.
 
 ## Duty plans and the date ↔ usage map
 
@@ -479,6 +581,361 @@ in `test_schedule_forecast.py`.
   `test_cost_by_month_is_exact_on_average`,
   `test_uc1_diagram_by_calendar_month_sums_to_the_year`.
 
+### UC-48: "What are the wear ring's expected failure costs worth today, month by month?"
+
+- **Status:** built: `failures_by_period(..., discount=, npv_tolerance=)`
+  (`FailuresByPeriod.expected_npv`, `npv`, `npv_precision`, `eac`).
+- **Who asks:** UC-38's planner, whose budget is in present values.
+- **What they know:** UC-38's ring and pump; 7% a year.
+- **The answer, by hand:** UC-38's months cost $105, $227, $217, $214,
+  $252, $247, $239, $252, $253, $252, $250, $236 and $244, $2,988 in
+  all. A month's cost falls somewhere inside it, so it is worth at most
+  its cost discounted from the month's start and at least from its end
+  (the months end 0.041, 0.126, 0.211, 0.287, 0.372, 0.455, 0.539,
+  0.622, 0.706, 0.791, 0.873, 0.958 and 1.040 years on): **between
+  $2,874.75 and $2,890.71**, so $2,882.73 give or take $7.98. Each
+  failure's cost discounted from when it is expected to fall (the
+  integral below), the value is **$2,882.74**, to within $0.016 at the
+  default tolerance (and $2,882.741 to within $0.0007 at
+  `npv_tolerance=1e-5`); by month $104.40, $226.20, $214.53, $210.05,
+  $246.83, $239.74, $230.71, $242.24, $241.48, $239.51, $236.52,
+  $222.18 and $228.36. The equivalent annual cost over the 1.04 years
+  is $2,869.51. (Until #604, short windows each discounted at their
+  middle gave $2,882.77 give or take $2.47, and an EAC of $2,869.53.)
+- **How it is solved:** an expected cost accrues as the part runs, so
+  discounting it needs the dates inside each period. With `C(s)` the
+  expected cost by the calendar time `s` (the part's expected cost to
+  the operating time the duty plan has run by `s`), the present value
+  to `T` is `exp(-r T) C(T) + r ∫ exp(-r s) C(s) ds`, each cost
+  discounted from when it is expected to fall. It is the diagram's own
+  discounting (`_common._discounted_accrual`, the one design of an
+  accrued cost's present value): the integral by the Gauss-Kronrod (7,
+  15) rule on pieces from the start (32 equal ones, cut again at the
+  periods' ends), the pieces whose two rules differ most halved until
+  the differences, times `r`, are within `npv_tolerance` of the value.
+  `npv_precision` is that error estimate plus what the error of `C`
+  itself can move the value: run to failure, `failures`' count is
+  worked out at a grid's points and taken linearly between them, off
+  by at most an eighth of the grid's largest second difference, and at
+  most that times `exp(-r T) + |1 - exp(-r T)|` in the present value.
+  `C` comes from `failures` run to failure, and from `cost_by_window`'s means under a policy
+  (every policy it takes, with no new renewal maths). Days with no
+  running add nothing.
+- **Decisions (defaults):**
+  - `npv_tolerance` is 1e-3 (ten cents in a hundred dollars). The
+    rules' difference is a cautious estimate: the ring's value at 1e-3
+    is within $0.002 of the one at 1e-5. A duty plan's shifts bend `C`
+    at every start and stop, which the halving closes in on; at most
+    60 rounds are worked out, and a forecast that falls short of the
+    tolerance says so in its notes, with what it reached.
+  - The ranges (5th to 95th percentile) stay undiscounted, and the notes
+    say so: a discounted distribution of a part's cost is a later item.
+  - At `discount=0` the present values are the expected costs
+    themselves, with a precision of 0.
+  - A part with no cost has no present value (a note); a part whose
+    replacement takes time (run to failure with `NonRepairable.failures`)
+    is discounted the same way from `failures`' expected counts.
+  - A window only: the value of the part for ever on dates is not built
+    (see below).
+- **Checks:** `test_uc48_wear_ring_present_value_by_month` (the numbers
+  above, inside the hand bracket by month),
+  `test_constant_rate_in_calendar_time_against_the_closed_form` (rate ×
+  cost × the integral of the discount factor, inside the bracket),
+  `test_the_bracket_narrows_and_holds_a_simulation` (tolerances from 5e-3 to 1e-4;
+  400,000 seeded rings on the duty plan, within four standard errors
+  and the bracket), `test_nothing_accrues_while_idle`,
+  `test_a_policy_as_a_present_value`,
+  `test_a_part_with_no_cost_has_no_present_value`,
+  `test_a_forecast_short_of_the_tolerance_says_so`.
+
+### UC-49: "And the system's expected costs, month by month, as present values?"
+
+- **Status:** built: `events_by_period(..., cost=True, discount=)`
+  (`EventsByPeriod.expected_npv`, `npv`, `eac`).
+- **Who asks:** UC-39's planner.
+- **What they know:** UC-39's pump (a failure per 2,000 h on average,
+  repaired at once), $1,000 a repair; the months of 2027; 7% a year.
+- **The answer, by hand:** costs come at $0.50 an hour, so a span to `T`
+  hours is worth `0.5 × (1 - e^(-r T)) / r` with `r = ln(1.07) / 8,766`
+  an hour: January (744 h) **$370.93**, to the end of February (1,416 h)
+  $704.15, so February $333.21, and the year (8,760 h) **$4,235.21**
+  against $4,380 undiscounted. The equivalent annual cost is $4,383 a
+  year of 365.25 days: the cost rate itself, as it should be for costs
+  at a constant rate.
+- **How it is solved:** a diagram's clock is calendar time, so the
+  yearly rate is one continuous rate per unit of it (`ln(1 + discount)`
+  over the units in a year of 365.25 days), which
+  `RepairableRBD.expected_cost(t, discount_rate=)` takes: each period's
+  present value is its difference at the period's ends. Exact, as
+  `expected_cost` is, with each event discounted at its own time (a
+  block replacement at its instant, not the middle of a month).
+- **Decisions (defaults):** `discount=` needs `cost=True` (refused
+  otherwise, saying so); the range stays undiscounted (a diagram's
+  discounted spread is `npv_distribution`'s, in model time); an
+  acquisition cost, paid at the start, is not in the periods, as it is
+  not in `cost_by_window`'s.
+- **Checks:** `test_uc49_constant_rate_by_month_as_present_values`,
+  `test_events_present_value_is_expected_npvs_cost`,
+  `test_events_discount_needs_cost`.
+
+### UC-50: "Is replacing the wear ring at every 6-monthly service worth it, at 7% a year?"
+
+- **Status:** built: `task_value(task, Replaces(part), usage, age=,
+  discount=, period=)` returning a `TaskValue`.
+- **Who asks:** UC-48's planner, who has the ring's failure costs as
+  present values and a task that costs money each time: does the task pay
+  for itself?
+- **What they know:** UC-38's ring (Weibull, scale 9,000 operating hours,
+  shape 2.5), 5,200 h old on Monday 16 November 2026, $4,800 when it
+  fails; the pump of UC-32 (Mon–Fri 06:00–22:00, forecast to 1 December
+  2027); the 6-monthly service (`Recurrence.every(6, "months",
+  "2026-12-01")`), at which a new ring costs $600; 7% a year.
+- **The answer, by hand:** the service is done on 1 December 2026 and 1
+  June 2027 (1 December 2027 is the forecast's end, not in it). At
+  midnight those are **176 h and 2,256 h** of running from the start
+  (UC-32's months), and the forecast is 4,352 h. *With the task* the ring
+  is new at each, whatever its age, and a failure in between is replaced
+  too without moving the dates: the old ring runs 176 h from 5,200 h
+  (renewal count 0.02178), a new one 2,080 h (0.02541) and another 2,096
+  h (0.02590), **0.0731 failures, $350.82**, and two planned rings,
+  $1,200: **$1,550.82**. *Without the task* (run to failure from the same
+  age over the same dates) it is UC-38's **0.6224 failures, $2,987.56**.
+  The task saves **$1,436.74** and avoids **0.549 failures**. By month,
+  with the task: 0.0218 failures in November (the old ring's 176 h), then
+  0.0003, 0.0014, 0.0026, 0.0050, 0.0070 and 0.0090 (the new ring ageing),
+  0.0003 again in June, ... At 7% a year, the planned rings are worth
+  $600 × 1.07^(-15/365.25) + $600 × 1.07^(-197/365.25) = $598.34 +
+  $578.50 = **$1,176.83**. Each month's failure cost discounted at its
+  start and at its end brackets the rest, as in UC-48: with the task the
+  failures are worth $339.39 to $341.00, so **$1,516.22 to $1,517.84** in
+  all; without, UC-48's **$2,874.75 to $2,890.71**; the task's present
+  value is **between $1,356.92 and $1,374.49**. The service pays, mostly
+  by putting a new ring in for an old one at once.
+- **How it is solved:** the task's dates come from `Task.due` over the
+  forecast; each is done at midnight of its date (a limit by use: when the
+  meter reaches its reading), which `usage.model_time` puts on the part's
+  clock. Between two of them the ring is a renewal process from new (from
+  `age` before the first), so its expected failures to any time are a
+  sum of `NonRepairable.failures` over the stretches (its renewal
+  count, to about 1e-6; no new renewal maths). Without the task they are `failures` from `age`. Each
+  side's failure cost is discounted as UC-48's (from when it is
+  expected to fall, the integral's error estimate the precision); a
+  planned replacement is discounted from its own instant.
+  `value = without − with`, by period and in all.
+- **Decisions (defaults):**
+  - **Block replacement on dates:** a failure between two services does
+    not move the next; the task's dates are its own (`Task.due`, with its
+    visits, second limit and `resets`).
+  - **"Without" is run to failure** from the same age over the same
+    dates, not the best other policy (`NonRepairable.renewal_forecast`
+    and the optimal policies answer that in model time).
+  - **One price:** the task's `cost` is the planned ring's. A task with
+    no cost takes the part's `planned_cost`; given both, they must agree,
+    or it refuses naming the two numbers. The part needs an
+    `unplanned_cost` (without it the task saves nothing to set against its
+    cost).
+  - A planned replacement takes no time on the part's clock (its
+    `time_to_replace` is a failure's, which `failures` counts).
+  - Only a replacement is valued here (`Replaces`); a test of a hidden
+    failure is UC-54's (`Finds`), and a service UC-67's (`Services`).
+  - The `calendar=` of `cost_by_window` is an optimised policy's
+    thresholds, so it does not say "replace at every date, whatever the
+    age"; `every=` says it only for even gaps in model time, which
+    months on a duty plan are not. The stretches between the dates say
+    it for any dates.
+- **Checks:** `test_uc50_wear_ring_six_monthly_service` (the numbers
+  above, inside the hand bracket by month),
+  `test_even_dates_match_renewal_forecast` (a discount of 0 against
+  `renewal_forecast`'s plan and run-to-failure costs),
+  `test_constant_rate_task_only_costs` (exponential: the value is minus
+  the task's own present value), `test_wear_out_against_a_simulation`
+  (both plans simulated from a seed, within four standard errors),
+  `test_periods_add_up`, `test_one_price`,
+  `test_what_is_not_a_replacement_is_refused`,
+  `test_a_task_by_use_matches_block_replacement_in_model_time`.
+
+### UC-54: "Is the 6-monthly trip test worth it, at 7% a year?"
+
+- **Status:** built: `task_value(task, Finds(device, demand_rate=,
+  consequence_cost=, repair_cost=), usage, age=, discount=, period=)`
+  returning a `TaskValue`.
+- **Who asks:** UC-50's planner, about a task that replaces nothing: a
+  test of a protective device (a trip, a relief valve, a standby pump's
+  start). A test prevents no failure; what it is worth is the time the
+  device would otherwise sit failed with nobody knowing.
+- **What they know:** a trip failing hidden at a constant 0.1 a year,
+  working on Monday 16 November 2026; a test on 1 January and 1 July
+  (`Recurrence.every(6, "months", "2027-01-01")`), $400 each; a failure
+  repaired as new for $3,000; the protected event once in 2 years (0.5 a
+  year), which costs $250,000 if it meets the trip failed and shows the
+  failure, repaired then; three years, to 16 November 2029; 7% a year.
+- **The answer, by hand:** the trip's life is in calendar time, so its
+  clock is the calendar's: the six tests are 46, 227, 411, 593, 777 and
+  958 days from the start (0.126, 0.621, 1.125, 1.624, 2.127 and 2.623
+  years), and the forecast 1,096 days (3.0007 years). As UC-53 of the
+  maintenance README: from a test (or the start) the chance the trip is
+  failed after `s` years is `0.1 / 0.6 (1 - exp(-0.6 s))`. *With the
+  task* the tests find it failed with chances 0.0121, 0.0429, 0.0435,
+  0.0431, 0.0435 and 0.0429 (**0.2279 failures found**); it is failed
+  for 0.0640 years (a mean unavailability of **0.0213**), so **0.0320
+  demands** meet it failed: tests $2,400, repairs $3,000 x (0.2279 +
+  0.0320) = $779.60, consequences $250,000 x 0.0320 = $7,995.30:
+  **$11,174.90**. *Without the task* (never tested; a failure stays
+  until a demand shows it) it is failed for 0.2682 years (**0.0894**),
+  **0.1341 demands** meet it failed: $253,000 x 0.1341 = **$33,931.58**.
+  The tests save **$22,756.68**. At 7% a year (the calendar's clock is
+  the trip's, so the closed form discounts exactly, at `ln 1.07` a
+  year): the tests are worth $400 x sum 1.07^(-t) = $2,190.54, with the
+  task **$10,087.23**, without **$29,936.76**: the task's present value
+  is **$19,849.53**.
+- **How it is solved:** the task's dates come from `Task.due` and are
+  laid on the device's clock as UC-50's are. With them as the tests'
+  times, the device's chance of being failed over time is UC-53's
+  (`maintenance._finding_window`), from `age`, working at the start;
+  without the task it is the same with no tests. Each side's demands on
+  a failed device accrue with the device's operating time (the demand
+  rate times the failed time), so they go by period and are discounted
+  exactly as UC-50's failures are (`_accrued_npv`'s integral, its error
+  estimate in `precision`, with the grid's own error);
+  a test's cost and the repair of what it finds are discounted from the
+  instant the task is done. `value = without - with`. The result is
+  UC-50's `TaskValue`: its "failures" are the demands that meet the
+  device failed, and it adds `found` (the failures the tests find) and
+  `unavailability_with` and `unavailability_without` (the device's mean
+  unavailability in each period, and over the forecast in `total`).
+- **Decisions (defaults):**
+  - **A demand that meets the device failed shows the failure**, which
+    is repaired then at `repair_cost`, with the task and without it
+    (`demands_reveal=False` on `Finds` turns it off on both sides: only
+    a test finds a failure, as `failure_finding` has it, and never
+    tested a failure is for good).
+  - **Tests and repairs take no time and a test never misses**, as
+    `failure_finding` assumes.
+  - **The caller gives the demand rate and the consequence's cost**; a
+    `Task` does not carry them, and a diagram's system-level consequence
+    is not worked out here. The demand rate is per unit of the device's
+    own time, so demands come only while it runs.
+  - The task's `cost` is one test's; a task with no cost is refused
+    (0.0 for a free test). The device's own costs are not used.
+  - Tests at one time on the device's clock (two dates with no running
+    between them) are one test of the device: each costs, and the first
+    finds what there is to find.
+  - "Without" is never tested, not the best other interval
+    (`optimal_failure_finding_interval` answers that in the long run).
+- **Checks** (`test_schedule_finds.py`):
+  `test_uc54_six_monthly_trip_test` (the numbers above, undiscounted to
+  1e-9 and discounted within `precision`),
+  `test_only_tests_find_a_failure`,
+  `test_matches_the_model_time_calculation` (a Weibull device 1,000 h
+  old tested every 30 days against `failure_finding_window`, with and
+  without a discount), `test_uneven_dates_under_a_duty_plan` (the first
+  Tuesday of each month on a pump on weekday shifts, against the closed
+  form on the pump's clock, each day's cost discounted at its start and
+  its end by hand), `test_tests_while_the_device_does_not_run`,
+  `test_the_value_follows_the_prices` (rising with the consequence,
+  falling with the test's cost, zero at the break-even price),
+  `test_periods_add_up`, `test_refusals`.
+
+### UC-67: "The gearbox is serviced every 3 months, and the fit says a service takes off 40% of its age. What is the service worth at 7%?"
+
+- **Status:** built: `task_value(task, Services(plan, effect=), usage,
+  age=, discount=, period=, mc_samples=, seed=, confidence=)` returning
+  a `TaskValue` whose `method` says `"exact"` or `"simulated"`.
+- **Who asks:** UC-50's planner, about a task that neither replaces
+  nor tests: a service (lubricate, adjust, clean, overhaul). Most of a
+  plan's recurring tasks are services, and what a service does to the
+  failure rate is not known from the task.
+- **What they know:** the gearbox's plan (`UnitPlan`): its life
+  (Weibull, scale 8,760 h, shape 3), each failure repaired as new in no
+  time at 12,000; it runs around the clock (`UsageForecast.calendar`),
+  4,000 h old on 1 January 2027; the service every 3 months from 1 April
+  (`Recurrence.every(3, "months", "2027-04-01")`), 800 each; a year, to
+  1 January 2028; 7% a year. What a service does, if they say: the fit
+  of the gearbox's history (surpyval's `GeneralizedRenewal`) gives a
+  Kijima II factor of 0.6 (a service leaves 60% of its virtual age).
+- **What they want back:** the service's value against not doing it,
+  by quarter and in all, and how sure that is.
+- **Decisions (the owner's, 21 Nov 2026):**
+  - **By default a service has no effect on the life**: it is an
+    accepted cost. RePyability never invents a benefit. Its value is
+    then minus the present value of its own cost, exactly, and the
+    answer says the effect was taken as none.
+  - A benefit is credited only through an effect the caller states:
+    a **restoration factor** (`maintenance.Restoration`, Kijima I or
+    II, the factor from 0 up: 0 is as new under Kijima II, 1 no effect,
+    above 1 a service that does harm, UC-62), a virtual age to restore
+    to, a fitted surpyval process, or a **fitted condition**
+    (`Condition(life, fresh=, stale=, lasts=)`: a regression life fitted
+    with a "serviced or overdue" covariate, at `fresh` for `lasts` after
+    each service and at `stale` otherwise, as a covariate schedule on
+    the diagram's clock, UC-41's `ScheduledLife`).
+- **The answer, by hand:** the services are on 1 April, 1 July and 1
+  October, 2,160, 4,344 and 6,552 h from the start (the forecast is
+  8,760 h). Their present value is 800 × (1.07^(-90/365.25) +
+  1.07^(-181/365.25) + 1.07^(-273/365.25)) = 786.77 + 773.62 + 760.55 =
+  **2,320.95** (2,400 undiscounted).
+  - *No effect (the default):* the value is **-2,320.95** (-786.77,
+    -773.62 and -760.55 in the second, third and fourth quarters, 0 in
+    the first), exactly. A factor of 1 (Kijima I or II) leaves the
+    gearbox as old as it was, which is the same statement: -2,320.95,
+    exactly.
+  - *As new (Kijima II, factor 0):* each service renews the gearbox,
+    and a failure in between is renewed too, so the plan is UC-50's
+    block replacement on the dates: from `NonRepairable.failures`, 0.271
+    failures with the service against 1.149 without (renewal from 4,000
+    h), 0.878 avoided, a value of **8,135.54** undiscounted (with
+    5,652.28 against without 13,787.83) and **7,794.48** at 7% (within
+    15.81, UC-50's bracket).
+  - *Factor 0.6:* no closed form: the simulation's value lies between
+    the two (checked: the value falls as the factor rises).
+- **How it is solved:** the service's dates come from `Task.due` and
+  are laid on the diagram's clock (real time from the forecast's start,
+  in the plan's unit), as UC-50's are. With no effect, the value is the
+  task's cost at each instant, discounted through `repyability.value`,
+  and nothing else is worked out: the unit's own costs are the same with
+  and without the service and are left out of both sides. With an
+  effect, the plan's one-node diagram (`UnitPlan.diagram`, on a
+  `CalendarContext` giving the node its duty) runs twice from one seed:
+  with the service as a task of no duration at the dated times
+  (`BlockPolicy(times=, restoration=)`, or the covariate schedule its
+  dates give) and without it. The node is named alike in both, so it
+  draws the same random numbers in both (`compare_npv`'s common random
+  numbers) and each run's difference comes from the service. Each run's
+  history is priced with the plan's own prices by
+  `_npv_runs.priced_chunk` (the money module's `Ledger`), by calendar
+  period, discounted at the yearly rate per unit of the diagram's
+  clock; the service's own cost is the exact one of the default, added
+  to the with side. The value by period and in all is the mean
+  difference, with a two-sided interval (90% by default) from the runs'
+  spread.
+- **Decisions (defaults):**
+  - A service takes no time, as UC-50's replacement and UC-54's test.
+  - A service due at the forecast's start is done then: its effect is
+    the start's (the gearbox's age taken as having had no action since
+    new, so a Kijima factor `q` leaves `q × age`).
+  - The plan holds no preventive task of its own (it holds one at most,
+    which the service would be); a plan that does is refused, saying to
+    value the service on the plan without it.
+  - 4,000 runs by default; a seed is drawn and kept when none is given.
+  - What the engine does not follow is refused with its own reason: a
+    virtual age on a duty plan that changes over time, a covariate
+    schedule with a duty, a state with imperfect repair.
+- **Checks** (`test_schedule_services.py`): the default against the hand
+  numbers to the cent; factor 1 equal to the default exactly; as new
+  (factor 0) against UC-50's `Replaces` values within four standard
+  errors (bound fixed before the run); as new with minimal repairs
+  from new against the overhaul's closed form, the failures with
+  services every `T` being `H(T)` a stretch; seeded runs repeat; the
+  interval narrows with more runs; the value falls as the factor rises
+  (0, 0.6, 1.2); an exponential life gains nothing at any factor (the
+  interval holds minus the task's cost); a fitted condition's value
+  follows its covariate's effect; refusals.
+- **Learned:** valuing a service needed no new engine: a dated task
+  with a restoration was already a plan's task, and the runs' pricing
+  already the money module's. The default of no effect is the honest
+  one: it states that the service is a cost until someone says what it
+  does.
+
 ### UC-40: "Replacing the part is cheap at the annual overhaul, the first Tuesday of November. Can the calendar policy use the real dates?"
 
 - **Status:** built: `Opportunity.from_recurrence(name, cost, rule,
@@ -510,10 +967,11 @@ in `test_schedule_forecast.py`.
   Sydney the first is the same 8,478 h: both ends are in daylight saving.
 - **How it is solved:** as UC-40, on the diagram's clock (calendar
   time), as the shutdown's `"times"`.
-- **Not built:** the exact methods (`expected_events`, `expected_cost`,
-  and so `events_by_period`) take shuts on a period only; a diagram with
-  shuts at given times is simulated (`cost()`, `availability()`), and
-  `events_by_period` refuses it with the diagram's own message.
+- **Over a horizon:** `expected_events`, `expected_cost` and
+  `expected_npv` (and so `events_by_period`) take shuts at given times
+  where the blocks worked on in them are renewed; the simulations
+  (`cost()`, `availability()`) take any. They end, so the long-run
+  methods refuse such a diagram with a message that says so.
 - **Checks:** `test_uc41_shutdown_spec_on_dates`,
   `test_uc41_a_diagram_takes_the_dated_shuts` (two shuts in two years,
   $40,000, simulated).
@@ -534,19 +992,89 @@ in `test_schedule_forecast.py`.
   model); `test_uc42_with_surpyval_equivalence`, skipped before surpyval
   0.28 (run by hand against surpyval's `dev`: it passes).
 
+### UC-64: "Our line has two pumps in parallel: one runs weekday shifts, the other around the clock. The first has its seal changed every 4,000 running hours, the second at a check on the first Monday of each quarter. What failures, services and costs come each month?"
+
+- **Status:** built: `CalendarContext(usage, duty={node: forecast or
+  share}, unit=)`, taken by `events_by_period`; a block's `"duty"`
+  takes a share or a `DutySchedule` (`UsageForecast.schedule()`); a
+  task on a rule is replaced at `CalendarContext.rule_times(rule, at)`
+  (its `"replace_at"`).
+- **Who asks:** UC-39's planner, whose pumps do not run alike: one on
+  Monday to Friday 06:00 to 22:00 (80 h a week), one 24/7.
+- **What they know:** one diagram (the two pumps, each life in operating
+  hours, Weibull scale 3,000 h and shape 2, repairs of about 8 h); the
+  shift pump's 4-hour seal change every 4,000 operating hours, the 24/7
+  pump's at the check on the first Monday of each quarter (06:00); each
+  pump's duty plan; the months of 2027.
+- **The answer, by hand:** each pump runs its own clock `D(t)`, the
+  operating hours from 1 January to `t`. The shift pump runs 4,176 h in
+  2027 and reaches 4,000 h at the end of the shift on **Thursday 16
+  December, 22:00** (`usage.moment(4000)`), so its one seal change falls
+  in December (the plan's hours, whatever repairs the pump has: the
+  service is on the plan). The 24/7 pump's seal
+  is changed on **4 January, 5 April, 5 July and 4 October** at 06:00
+  (the rule's dates). With repairs in no time, a pump is its operating-time
+  process seen through `D`: its expected failures by `t` are `M(D(t))`,
+  `M` the renewal count (with its block service) in operating time, from
+  the one-node diagram with no duty; the simulation on the calendar
+  agrees within its error (`test_a_unit_is_its_operating_process_seen_through_its_plan`).
+- **How it is solved:** the engine always runs on calendar time. The
+  analysis, not the plan, says each unit's duty: `CalendarContext.diagram`
+  gives each node its plan as its `"duty"`. A plan of one share is the
+  constant share it always was (the model rescaled, exact). A plan that
+  changes is a life on the diagram's clock (`_duty.PlannedLife`): a unit
+  put in at `t0` fails at `D⁻¹(D(t0) + L)`, `L` drawn from the model's own
+  quantile function in operating hours, and a task counted in operating
+  time falls when `D` reaches it (`_Preventive.clock`). Its reliability
+  from new, `R(D(t))`, is the model's own `sf`; a unit put in later has
+  another, so it is no renewal process, and the Python simulation counts
+  it (the compiled engine hands it over). `events_by_period` then counts
+  each month's events in the histories and takes the cost's mean and
+  range from the same runs, each cost discounted from when it falls.
+- **Decisions (defaults):** a plan belongs to the analysis
+  (`CalendarContext.duty`), not to the unit's plan; a task in operating
+  time on a block with no duty counts the diagram's clock as its
+  operating time (as a model without a calendar runs from 0); a plan
+  holds its last share past its end (the calendar refuses a forecast
+  that ends first); on a plan that changes, a unit starts new (a state
+  other than new, a virtual age, replacement on condition, tests counted
+  in operating time and standby groups are refused, saying so).
+- **Checks:** `test_duty_plans.py`: a plan of one share is the duty share
+  to the bit; the simulation against `M(D(t))` for run to failure, block
+  and age replacement; a usage task's dates equal the forecast's
+  `moment`s; a rule's dates; saving; the refusals. A rule as a spec of
+  its own (resolved by the calendar) is not built: the diagram must
+  stand without a calendar, and a rule's dates need one.
+
 ### What is not built yet
 
+- **A part's expected failure costs for ever, on dates.**
+  `failures_by_period(discount=)` values a forecast's window. "The dated
+  window, then the discounted long run" (as `maintenance/_dated.py` does
+  for the policies on dates, with `discounted_run_to_failure` and
+  `age_replacement_value` where the usage keeps a steady pace) is not
+  joined to it yet; a task's long run is (`Task.long_run_value`).
+- **A service on what the engine does not follow yet.** UC-67's
+  simulated effects keep the engine's limits: a virtual age is not
+  followed on a duty plan that changes, nor from a state with imperfect
+  repairs; a covariate of the time since the service (a ramp, not a
+  step) is not a schedule the engine takes.
+- A test that can miss a failure or that takes the device off line, and
+  an inspection that finds a warning before the failure (on condition),
+  are not valued on dates yet either.
+- **A task's value for ever.** `task_value` values the forecast's window;
+  the long run beyond it is not joined to it (as for the part's own
+  failure costs above).
+- **Discounted ranges.** The 5th to 95th percentiles stay undiscounted.
 - **Utilisation as whole runs lost.** `utilisation=0.9` counts each
   planned hour and start as 0.9, an expected value. The dates when 90%
   of runs go ahead (the nth run to go ahead follows a negative binomial)
   are not worked out yet.
-- **A duty that changes inside a `RepairableRBD`.** `schedule()` gives
-  the duty as steps over calendar time, for that later work; today a
-  block takes one average share, `duty()`.
-- **Shuts at given times in the exact methods.** `shutdown_spec` puts
-  dated shuts on a diagram, which the simulations take; the exact
-  `expected_events` and `expected_cost` (and so `events_by_period`) take
-  shuts on a period only.
+- **Exact values on a duty plan that changes.** A unit on such a plan
+  is simulated (UC-64). Where its repairs and tasks take no time it is
+  its operating-time process seen through `D`, so its exact curves could
+  be the operating-time ones at `D(t)`; not built yet. Nor are tests
+  counted in operating time on such a plan, or a start other than new.
 
 ## Candidates
 

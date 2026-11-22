@@ -230,7 +230,7 @@ class Repairable:
         - ``mcf(t, items=..., random_state=...)``: a simulation-estimated mean
           cumulative function (imperfect repair), e.g. a surpyval
           ``GeneralizedRenewal`` (Kijima I/II) model, fitted or built with
-          ``fit_from_parameters``.
+          ``from_params``.
 
         If both are present ``cif`` is used (analytic, exact). For a
         simulation-backed model the failure-count methods
@@ -275,7 +275,7 @@ class Repairable:
 
     >>> import surpyval as surv
     >>> from surpyval.recurrent import GeneralizedRenewal
-    >>> grp = GeneralizedRenewal.fit_from_parameters(
+    >>> grp = GeneralizedRenewal.from_params(
     ...     [100.0, 2.0], 0.5, kijima="i", dist=surv.Weibull
     ... )
     >>> unit = Repairable(grp)
@@ -773,7 +773,7 @@ class Repairable:
 
         >>> import surpyval as surv
         >>> from surpyval.recurrent import GeneralizedRenewal
-        >>> grp = GeneralizedRenewal.fit_from_parameters(
+        >>> grp = GeneralizedRenewal.from_params(
         ...     [100.0, 2.0], 1.0, kijima="i", dist=surv.Weibull
         ... )
         >>> unit = Repairable(grp)
@@ -1011,7 +1011,7 @@ class Repairable:
         >>> from surpyval.recurrent import GeneralizedRenewal
         >>> from repyability import Repairable
         >>> from repyability import minimal_repair_time_to_nth_failure
-        >>> grp = GeneralizedRenewal.fit_from_parameters(
+        >>> grp = GeneralizedRenewal.from_params(
         ...     [100.0, 2.0], 1.0, kijima="i", dist=surv.Weibull
         ... )
         >>> unit = Repairable(grp)
@@ -1108,7 +1108,7 @@ class Repairable:
         >>> import surpyval as surv
         >>> from surpyval.recurrent import GeneralizedRenewal
         >>> from repyability import Repairable
-        >>> grp = GeneralizedRenewal.fit_from_parameters(
+        >>> grp = GeneralizedRenewal.from_params(
         ...     [100.0, 2.0], 0.4, kijima="i", dist=surv.Weibull
         ... )
         >>> unit = Repairable(grp)
@@ -1167,7 +1167,7 @@ class Repairable:
         >>> import surpyval as surv
         >>> from surpyval.recurrent import GeneralizedRenewal
         >>> from repyability import Repairable
-        >>> grp = GeneralizedRenewal.fit_from_parameters(
+        >>> grp = GeneralizedRenewal.from_params(
         ...     [100.0, 2.0], 0.4, kijima="i", dist=surv.Weibull
         ... )
         >>> unit = Repairable(grp)
@@ -1274,22 +1274,55 @@ class Repairable:
         overhaul_factor: float,
         replacement_cost: float,
         max_cycles: int = _cycles.DEFAULT_MAX_CYCLES,
+        max_failures: int = _DEFAULT_MAX_FAILURES,
     ) -> OverhaulReplacePolicy:
-        """The best overhaul interval and number of periods between
-        replacements.
+        """The cheapest way to repair, overhaul and replace a wearing unit.
 
-        For each number of periods ``K`` from 1 to ``max_cycles`` the
-        interval that minimises the long-run cost rate of
-        [`overhaul_replace_cost_rate`][repyability.Repairable.overhaul_replace_cost_rate]
-        is found (a grid search, then a bounded refinement), and the best
-        ``K`` is kept (the fewer on a tie). The cost rate need not fall
-        steadily with ``K``: it can have a local minimum at a few periods
-        and a slightly lower value much further out, so read the result
-        with ``max_cycles`` in mind (compare a few limits). A result with
-        ``cycles`` equal
-        to ``max_cycles`` may mean more periods would pay: raise the
-        limit. ``interval`` is ``inf`` when the unit does not wear out, so
-        that neither overhauls nor replacements pay.
+        In plain words: four plans are priced, each at its own best
+        setting, and the cheapest is returned with the others beside it.
+
+        - ``"overhaul and replace"``: overhaul every ``interval`` and
+          replace after ``cycles`` periods (2 to ``max_cycles``), as
+          [`overhaul_replace_cost_rate`][repyability.Repairable.overhaul_replace_cost_rate]
+          prices it;
+        - ``"overhaul only"``: overhaul every ``interval`` and never
+          replace (``cycles`` is ``inf``);
+        - ``"replace only"``: replace every ``interval``, with no
+          overhauls (``cycles`` is 1);
+        - ``"failure limit"``: no overhauls; repair the first failures and
+          replace at the ``failure_count``-th (up to ``max_failures``),
+          at ``replacement_cost``.
+
+        An overhaul that keeps part of the unit's age lets the age build
+        up to a ceiling, so a replacement does not always pay: often the
+        unit is best overhauled for ever, and often best replaced at a
+        failure count. The result's ``plan`` names the winner,
+        ``alternatives`` holds every plan's cost rate and settings, and
+        ``saving`` is how much less per unit time the winner costs than the
+        next best.
+
+        Formally, failures are a non-homogeneous Poisson process with
+        cumulative intensity ``L(a)``, and an overhaul keeps the share
+        ``f`` of the age. Never replacing, the age at the start of a period
+        settles at ``v* = f T / (1 - f)``, where an overhaul takes off what
+        the period added, so the long-run cost rate is ``g_inf(T) = (cr *
+        [L(v* + T) - L(v*)] + co) / T``, the limit of ``g(T, K)`` as ``K``
+        grows. The failure limit's is ``(cr (n - 1) + replacement_cost) /
+        E[T_n]``, with ``E[T_n]`` exact (see
+        ``optimal_failure_limit_policy``, which prices the replacement at
+        ``co``). Each interval is found by a grid search and a bounded
+        refinement; for ``"overhaul and replace"`` the best ``K`` is kept
+        (the fewer on a tie). Its rate need not fall steadily with ``K``;
+        ``cycles_limit_reached`` says the best ``K`` was ``max_cycles``, so
+        more periods might pay (they tend towards ``"overhaul only"``,
+        which is priced anyway). A ``failure_count`` equal to
+        ``max_failures`` may likewise mean a higher count pays. A unit that
+        does not wear out is run to failure: ``plan`` is ``"run to
+        failure"``, ``interval`` is ``inf`` and ``cycles`` 1.
+
+        On a tie the plan earlier in the list ``"replace only"``,
+        ``"overhaul and replace"``, ``"overhaul only"``, ``"failure
+        limit"`` wins.
 
         Parameters
         ----------
@@ -1300,36 +1333,55 @@ class Repairable:
             The cost of replacing the unit.
         max_cycles : int, optional
             The most periods per replacement cycle searched (default 20).
+        max_failures : int, optional
+            The highest failure count searched for the failure limit
+            (default 30).
 
         Returns
         -------
         OverhaulReplacePolicy
-            The ``interval``, ``cycles`` and ``cost_rate``.
+            The winning ``plan`` with its ``interval``, ``cycles``,
+            ``failure_count`` and ``cost_rate``, plus ``alternatives``,
+            ``saving`` and ``cycles_limit_reached``.
 
         Raises
         ------
         ValueError, NotImplementedError
             As for
-            [`overhaul_replace_cost_rate`][repyability.Repairable.overhaul_replace_cost_rate].
+            [`overhaul_replace_cost_rate`][repyability.Repairable.overhaul_replace_cost_rate];
+            ``ValueError`` also for a ``max_failures`` below 1.
 
         Examples
         --------
         A wearing-out unit (failures grow with the 2.5th power of its age),
-        repaired for 1, overhauled for 5, and replaced for 20; an overhaul
-        takes off 40% of its age:
+        repaired for 1, overhauled for 5, and replaced for 20. An overhaul
+        that takes off only 10% of its age does little, so replacing pays,
+        and the cheapest way is to replace at the 13th failure:
 
         >>> from surpyval.recurrent import CrowAMSAA
         >>> from repyability import Repairable
         >>> unit = Repairable(CrowAMSAA.from_params([100.0, 2.5]))
         >>> unit.set_repair_and_overhaul_costs(cr=1.0, co=5.0)
         >>> policy = unit.optimal_overhaul_replace_policy(
+        ...     0.9, 20.0, max_cycles=5
+        ... )
+        >>> policy.plan, policy.failure_count, round(policy.cost_rate, 4)
+        ('failure limit', 13, 0.1158)
+        >>> round(policy.alternatives["replace only"]["cost_rate"], 4)
+        0.1183
+
+        An overhaul that takes off 40% of the age holds it at a ceiling,
+        so the unit is best overhauled every 73.8 and never replaced,
+        saving 0.0028 per unit time on the next best plan:
+
+        >>> policy = unit.optimal_overhaul_replace_policy(
         ...     0.6, 20.0, max_cycles=5
         ... )
-        >>> policy.cycles, round(policy.interval, 1)
-        (2, 177.7)
-        >>> round(policy.cost_rate, 4)
-        0.1172
+        >>> policy.plan, policy.cycles, round(policy.interval, 1)
+        ('overhaul only', inf, 73.8)
+        >>> round(policy.cost_rate, 4), round(policy.saving, 4)
+        (0.1129, 0.0028)
         """
         return _cycles.optimal_policy(
-            self, overhaul_factor, replacement_cost, max_cycles
+            self, overhaul_factor, replacement_cost, max_cycles, max_failures
         )

@@ -311,12 +311,89 @@ def test_the_orders_are_topological():
         number = {**index, "s": -1, "t": -2}
         p = {number[n]: {number[u] for u in us} for n, us in pred.items()}
         s = {number[n]: {number[u] for u in us} for n, us in succ.items()}
-        for sequence in (
-            bdd.order(index.values(), p, s, -1, -2),
-            bdd._breadth_first(sorted(index.values()), p, s, -1),
-            bdd._greedy(sorted(index.values()), p, s, -1, -2),
-        ):
+        candidates = [
+            candidate(sorted(index.values()), p, s, -1, -2)
+            for candidate in bdd.CANDIDATES.values()
+        ]
+        chosen = bdd.order(index.values(), p, s, -1, -2)
+        costs = [bdd._cost(c, p, s, -1, -2) for c in candidates]
+        # The cheapest is kept, the earliest of equals.
+        assert chosen == candidates[costs.index(min(costs))]
+        for sequence in candidates:
             assert sorted(sequence) == sorted(index.values())
             position = {v: i for i, v in enumerate(sequence)}
             for v in sequence:
                 assert all(u == -1 or position[u] < position[v] for u in p[v])
+
+
+def meshed(n, seed, p=0.2):
+    """A random acyclic diagram of ``n`` nodes, each joined to each later
+    one with probability ``p``."""
+    rng = np.random.default_rng(seed)
+    edges = {
+        (i, j) for i in range(n) for j in range(i + 1, n) if rng.random() < p
+    }
+    for i in range(n):
+        if not any(a == i for a, _ in edges):
+            edges.add((i, "t"))
+        if not any(b == i for _, b in edges):
+            edges.add(("s", i))
+    return sorted(edges, key=str)
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_every_order_decides_the_same_structure(seed, monkeypatch):
+    # A meshed core built in each candidate order: other plans, one
+    # structure (its probabilities, gradients, path and cut sets).
+    rng = np.random.default_rng(seed)
+    edges = meshed(18, seed)
+    nodes = sorted({n for e in edges for n in e} - {"s", "t"})
+    k = {n: 2 for n in nodes[seed::5]}
+    rbd = RBD(edges, k=k, on_infeasible_rbd="ignore")
+    p = {n: float(rng.uniform(0.2, 0.95)) for n in nodes}
+    q = {n: 1.0 - v for n, v in p.items()}
+    plans, results = set(), []
+    for name, candidate in bdd.CANDIDATES.items():
+        monkeypatch.setattr(bdd, "CANDIDATES", {name: candidate})
+        graph = decompose(rbd.G, "s", "t", core="bdd")
+        assert graph.from_graph
+        plans.add(repr(graph.core_plan()))
+        results.append(
+            (
+                graph.value_and_gradient(p, q),
+                graph.path_sets(),
+                graph.cut_sets(),
+            )
+        )
+        monkeypatch.undo()
+    assert len(plans) > 1
+    (works, fails, gradient), paths, cuts = results[0]
+    for (w, f, g), other_paths, other_cuts in results[1:]:
+        assert w == pytest.approx(works, rel=1e-15, abs=1e-15)
+        assert f == pytest.approx(fails, rel=1e-15, abs=1e-15)
+        assert set(g) == set(gradient)
+        for n in g:
+            assert g[n] == pytest.approx(gradient[n], rel=1e-13, abs=1e-15)
+        assert other_paths == paths and other_cuts == cuts
+
+
+def test_looking_ahead_narrows_the_frontier():
+    # On meshed diagrams the order that looks a vertex ahead is never
+    # costlier than the plain greedy one here, and is cheaper on most.
+    cheaper = 0
+    for seed in range(2, 8):
+        rbd = RBD(meshed(50, seed, 0.15))
+        reduction = modular._Reduction(rbd.G, "s", "t")
+        reduction.run()
+        args = (
+            sorted(reduction.alive),
+            reduction.pred,
+            reduction.succ,
+            modular._SOURCE,
+            modular._SINK,
+        )
+        plain = bdd._cost(bdd._greedy(*args), *args[1:])
+        ahead = bdd._cost(bdd._look_ahead(*args), *args[1:])
+        assert ahead <= plain
+        cheaper += ahead < plain
+    assert cheaper >= 4

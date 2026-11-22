@@ -20,7 +20,7 @@ from repyability import (
     RepairableRBD,
     Timeline,
 )
-from repyability.rbd import _npv, _plan_actual
+from repyability.rbd import _npv, _plan_actual, _pricing
 
 E = surv.Exponential.from_params
 W = surv.Weibull.from_params
@@ -289,15 +289,15 @@ def test_each_kind_of_cost_left_out_says_why():
     )
     reasons = {
         (category, node): why
-        for category, node, why in _plan_actual._not_compared(rbd)
+        for category, node, why in _pricing.unrecorded(rbd)
     }
     assert reasons == {
-        ("repair", "a"): _plan_actual._UNITS,
-        ("replace", "a"): _plan_actual._UNITS,
-        ("preventive", "b"): _plan_actual._INSTANT,
-        ("inspection", "c"): _plan_actual._INSPECTIONS,
-        ("replace", "d"): _plan_actual._REPLACED,
-        ("setup", None): _plan_actual._SETUP,
+        ("repair", "a"): _pricing._UNITS,
+        ("replace", "a"): _pricing._UNITS,
+        ("preventive", "b"): _pricing._INSTANT,
+        ("inspection", "c"): _pricing._INSPECTIONS,
+        ("replace", "d"): _pricing._REPLACED,
+        ("setup", None): _pricing._SETUP,
     }
 
 
@@ -449,7 +449,7 @@ def priced(rbd, sim, ends, rate, value_rate):
     for i in range(n):
         logs = {node: sim.components[node][i] for node in rbd.components}
         for r in _plan_actual._priced_log(
-            rbd, logs, ends, rate, value_rate, set()
+            rbd, logs, ends, _npv.Money(rbd, rate, value_rate), set()
         ):
             key = (r["period"], r["category"], r["component"])
             out.setdefault(key, np.zeros(n))[i] = r["present_value"]
@@ -557,7 +557,7 @@ def test_so_far_and_the_rest_from_each_state_average_to_the_plan(make, n):
             so_far[i] = sum(
                 r["present_value"]
                 for r in _plan_actual._priced_log(
-                    rbd, logs, ends[:1], rate, value, set()
+                    rbd, logs, ends[:1], _npv.Money(rbd, rate, value), set()
                 )
             )
             states, _ = _plan_actual._states_now(rbd, logs, now, {}, None)
@@ -699,8 +699,8 @@ def test_each_kind_whose_state_the_log_does_not_give_is_named(
     reason = _plan_actual._log_state_refusal(rbd, "a")
     assert words in reason and "'a'" in reason and "state=" in reason
     if kind == "replaced on a calendar policy":
-        assert ("preventive", "a", _plan_actual._CALENDAR) in (
-            _plan_actual._not_compared(rbd)
+        assert ("preventive", "a", _pricing._CALENDAR) in (
+            _pricing.unrecorded(rbd)
         )
 
 

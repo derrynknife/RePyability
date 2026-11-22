@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/derrynknife/RePyability/schemas/npv-1.json",
+  "title": "RePyability value_plan, schema 1",
+  "description": "A request to value a plan (value_plan) and its answer.",
+  "$defs": {
+    "diagram": {
+      "description": "A RepairableRBD as its to_dict() saves it, or a UnitPlan as its to_dict() saves it (valued as its one-node diagram, UnitPlan.diagram()).",
+      "type": "object"
+    },
+    "number": {
+      "description": "A number; one that is not finite is written as text.",
+      "oneOf": [
+        {"type": "number"},
+        {"enum": ["inf", "-inf", "nan"]}
+      ]
+    },
+    "analysis": {
+      "enum": [
+        "expected_npv",
+        "expected_npv_uncertainty",
+        "npv_distribution",
+        "compare_npv",
+        "plan_vs_actual"
+      ]
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "schema": {"const": 1},
+        "diagram": {"$ref": "#/$defs/diagram"},
+        "analysis": {"$ref": "#/$defs/analysis"},
+        "inputs": {
+          "description": "The analysis's inputs, by its argument names.",
+          "type": "object",
+          "properties": {
+            "horizon": {"type": "number", "exclusiveMinimum": 0},
+            "discount_rate": {"type": "number"},
+            "value_rate": {
+              "oneOf": [
+                {"type": "number"},
+                {
+                  "type": "object",
+                  "properties": {
+                    "times": {"type": "array", "items": {"type": "number"}},
+                    "rates": {"type": "array", "items": {"type": "number"}}
+                  },
+                  "required": ["rates"],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "periods": {
+              "oneOf": [
+                {"type": "integer", "minimum": 1},
+                {"type": "array", "items": {"type": "number"}}
+              ]
+            },
+            "escalation": {
+              "type": "object",
+              "additionalProperties": {"type": "number"}
+            },
+            "rates": {"enum": ["nominal", "real"]},
+            "inflation": {"type": ["number", "null"]},
+            "retire_at": {"type": ["number", "null"]},
+            "salvage": {
+              "oneOf": [
+                {"type": "number"},
+                {"type": "object", "additionalProperties": {"type": "number"}},
+                {"type": "null"}
+              ]
+            },
+            "state": {
+              "type": "object",
+              "additionalProperties": {"type": "object"}
+            },
+            "start_state": {
+              "type": "object",
+              "additionalProperties": {"type": "object"}
+            },
+            "timelines": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "required": ["end"]
+              }
+            },
+            "seed": {"type": ["integer", "null"]},
+            "mc_samples": {"type": ["integer", "null"], "minimum": 1}
+          }
+        },
+        "other": {"$ref": "#/$defs/diagram"}
+      },
+      "required": ["schema", "diagram", "analysis"],
+      "additionalProperties": false
+    },
+    "answer": {
+      "type": "object",
+      "properties": {
+        "schema": {"const": 1},
+        "analysis": {"$ref": "#/$defs/analysis"},
+        "request": {"$ref": "#/$defs/request"},
+        "units": {
+          "type": "object",
+          "properties": {
+            "time": {"type": ["string", "null"]},
+            "money": {"const": "cost units"}
+          },
+          "required": ["time", "money"]
+        },
+        "route": {
+          "type": "object",
+          "properties": {
+            "route": {"enum": ["exact", "numerical", "simulated", "refused"]},
+            "reason": {"type": "string"}
+          },
+          "required": ["route", "reason"]
+        },
+        "result": {
+          "description": "The analysis's result, its to_dict().",
+          "type": "object",
+          "properties": {
+            "npv": {"$ref": "#/$defs/number"},
+            "mean": {"$ref": "#/$defs/number"}
+          }
+        },
+        "refused": {
+          "type": "object",
+          "properties": {
+            "reason": {"type": "string"},
+            "routes": {
+              "type": "object",
+              "additionalProperties": {"type": "string"}
+            }
+          },
+          "required": ["reason", "routes"]
+        }
+      },
+      "required": ["schema", "analysis", "request", "units", "route"],
+      "oneOf": [
+        {"required": ["result"]},
+        {"required": ["refused"]}
+      ]
+    }
+  }
+}

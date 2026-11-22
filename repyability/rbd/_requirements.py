@@ -28,7 +28,7 @@ from repyability.rbd._common import (
     _constant_rate,
     _sf_values,
 )
-from repyability.rbd._covariate_schedule import ScheduledLife
+from repyability.rbd._covariate_schedule import ClockLife
 from repyability.rbd._hidden_life import (
     TestedLife,
 )
@@ -91,7 +91,8 @@ def _require_costs(rbd) -> None:
             "Nothing is priced: give the components a repair_cost, "
             "replace_cost, downtime_cost or acquisition_cost, their "
             "maintenance or tests a cost, a maintenance group a "
-            "setup_cost, or the system a downtime_cost_rate."
+            "setup_cost, the system a downtime_cost_rate, or its repair "
+            "crews a crew_cost_rate or a call_out with a fee or a rate."
         )
 
 
@@ -134,7 +135,7 @@ def _require_reliabilities(rbd, node) -> None:
         getattr(component, "time_to_replace", None),
     ):
         if (
-            isinstance(model, (StandbyModel, LoadSharingModel, ScheduledLife))
+            isinstance(model, (StandbyModel, LoadSharingModel, ClockLife))
             and model.is_simulated
         ):
             raise model._no_reliability()
@@ -165,6 +166,22 @@ def _require_times(rbd, node) -> None:
                 "availability over time: a unit fails at once with that "
                 "probability, or never. Estimate the system by "
                 "simulation, with availability()."
+            )
+
+
+def _require_own_failures(rbd, node, simulate: str) -> None:
+    """Raise if a component also fails at shocks of a ``Shocks`` group:
+    its own models do not give its failures, which the group's shocks
+    add to. ``simulate`` says what to run instead."""
+    from repyability.rbd.ccf import Shocks
+
+    for group in rbd.ccf_groups:
+        if node in group.members and isinstance(group.model, Shocks):
+            raise NotImplementedError(
+                f"Component {node!r} is in common-cause group "
+                f"{list(group.members)}, whose shocks fail it too, at a "
+                "rate of their own, so its own life does not give its "
+                f"failures: {simulate}"
             )
 
 
@@ -206,8 +223,11 @@ def _repairs_take_time(component) -> bool:
 def _restoration_phrase(rbd, node) -> str:
     """How a component's preventive maintenance restores it, in words."""
     restoration = rbd._restoring[node]
-    kind = "I" if restoration.kijima == "kijima1" else "II"
-    phrase = f"Kijima {kind}, q = {restoration.q:g}"
+    if restoration.kijima == "to_age":
+        phrase = f"to a virtual age of {restoration.q:g}"
+    else:
+        kind = "I" if restoration.kijima == "kijima1" else "II"
+        phrase = f"Kijima {kind}, q = {restoration.q:g}"
     if restoration.replace_every is not None:
         phrase += (
             f", replaced at task {restoration.replace_every} since it was "
@@ -300,7 +320,7 @@ def _minimal_cycle_blocker(rbd, node) -> Optional[str]:
     life = component.reliability
     if (
         is_mixture(life)
-        or isinstance(life, ScheduledLife)
+        or isinstance(life, ClockLife)
         or not callable(getattr(life, "Hf", None))
     ):
         return "its life has no cumulative hazard to count its failures by"
@@ -461,6 +481,79 @@ def _on_a_clock(rbd, node) -> bool:
         return False
     survives = rbd.components[node].reliability_function(schedule.interval)
     return bool(np.ravel(survives)[0] >= 1.0)
+
+
+def _planned(rbd) -> list:
+    """The components replaced at the times of a plan (a
+    ``"replace_at"``)."""
+    return [
+        node
+        for node, schedule in rbd._preventive.items()
+        if schedule.plan is not None
+    ]
+
+
+def _upgraded(rbd) -> str:
+    """The first upgraded component, in words, for a refusal."""
+    node, upgrade = next(iter(rbd._upgrades.items()))
+    return f"Component {node!r} is upgraded at {upgrade.at:g}"
+
+
+def _require_no_plans(rbd) -> None:
+    """Raise if a component is replaced at the times of a plan, which
+    ends, or upgraded at a time: the diagram has then no long run (nor a
+    long-run state)."""
+    if rbd._upgrades:
+        raise NotImplementedError(
+            f"{_upgraded(rbd)} (its units have another life from then), "
+            "so the diagram has no long run with it: ask for its values "
+            "over a horizon (expected_npv(horizon), expected_cost(T), "
+            "mission_availability(T), point_availability(t)); the "
+            "long-run methods (mean_availability(), expected_cost_rate() "
+            "and the others) give the long run once upgraded."
+        )
+    from ._shutdowns import require_no_several
+
+    require_no_several(rbd)
+    planned = _planned(rbd)
+    if planned:
+        raise NotImplementedError(
+            f"Component {planned[0]!r} is replaced at the times of a plan "
+            "(replace_at), which ends, so the diagram has no long run "
+            "with it: ask for its values over a horizon "
+            "(expected_npv(horizon), expected_cost(T), "
+            "mission_availability(T), point_availability(t)), or give the "
+            "component an interval, block replacement for ever, for the "
+            "long run."
+        )
+
+
+def _check_plan_state(rbd, node, state) -> None:
+    """Refuse a state that a component replaced at the times of a plan
+    cannot be given: a ``since_scheduled`` (its plan's times, from now,
+    place its replacements) and the long-run state (it has none)."""
+    schedule = rbd._preventive.get(node)
+    if schedule is None or (
+        schedule.plan is None and node not in rbd._upgrades
+    ):
+        return
+    what = "is replaced at the times of a plan (replace_at), which ends"
+    whose = "is replaced at the times of its plan (replace_at)"
+    places = "which place its replacements"
+    if node in rbd._upgrades:
+        what = "is upgraded at a time"
+        whose = "is upgraded at the time of its upgrade (at)"
+        places = "which places it"
+    if state.stationary:
+        raise ValueError(
+            f"Component {node!r} {what}, so it has no long-run state: give "
+            "its age now (NodeState(age=...)), or leave it out (new)."
+        )
+    if state.since_scheduled is not None:
+        raise ValueError(
+            f"Component {node!r} {whose}, counted from now, {places}: "
+            "leave its since_scheduled out."
+        )
 
 
 def _require_block_models(rbd, node) -> None:

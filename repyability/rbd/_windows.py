@@ -32,10 +32,11 @@ from repyability.rbd import (
     _unplanned,
 )
 from repyability.rbd._common import (
-    _DISCOUNT_ROUNDS,
-    _DISCOUNT_TOLERANCE,
+    _crew_salaries,
+    _crew_salaries_to,
     _discount_pieces,
     _discount_rate,
+    _discounted_accrual,
     _horizons,
     _matched,
     _present_horizon,
@@ -56,8 +57,6 @@ from repyability.utils.checks import (
     nonnegative_times,
     structure_method,
 )
-
-from ._mean_lifetime import _G7_W, _GK_W, _GK_X
 
 if TYPE_CHECKING:
     pass
@@ -127,7 +126,7 @@ def _system_at(
     over ``[0, horizon]``, as a function of the times; the curves whose
     bends its integral's pieces follow; and the crews' curve, where a
     component can wait for a crew (else None)."""
-    _shutdowns.require_exact(rbd)
+    _shutdowns.require_over_time(rbd)
     if rbd._crews_couple():
         crew = _curves._crew_curve(
             rbd, horizon, working_nodes, broken_nodes, method, states
@@ -347,7 +346,7 @@ def _window(
     ``causes``, the system failures each node (or common cause)
     causes."""
     method = structure_method(method)
-    _shutdowns.require_exact(rbd)
+    _shutdowns.require_over_time(rbd)
     windows = nonnegative_times(t)
     working, broken = rbd._held_nodes(working_nodes, broken_nodes)
     forced = working | broken
@@ -562,6 +561,11 @@ def expected_cost(
                             _mean_cost(node_costs[key]) * events[kind],
                         )
                     )
+        if "capital_cost" in node_costs:
+            # An upgrade's capital cost, charged at its time whatever the
+            # unit's state.
+            paid = ends > rbd._upgrades[node].at
+            charges.append(("capital", node_costs["capital_cost"] * paid))
         rate = node_costs.get("downtime_cost", 0.0)
         if rate:
             down = (
@@ -584,6 +588,13 @@ def expected_cost(
     if rbd._shutdowns:
         # Each shut's cost, at its start (see _shutdowns).
         categories["shutdown"] = _shutdowns.cost_before(rbd, ends)
+    if _crew_salaries(rbd):
+        # The repair crews' salaries, paid from 0 whatever happens.
+        categories["crews"] = _crew_salaries_to(rbd, ends)
+    if "call_out" in counts:
+        # A call-out crew's fees and its rate while engaged, from the
+        # crews' chain (see _curves._crew_window).
+        categories["crews"] = categories["crews"] + counts["call_out"]
     for name, spec in rbd._maintenance.items():
         if not spec.setup_cost:
             continue
@@ -629,9 +640,11 @@ def _discounted_cost(
     The pieces whose two rules differ most are halved until the
     differences add up to ``_DISCOUNT_TOLERANCE`` of the integral:
     ``C`` jumps at scheduled events (tests, block replacements), where
-    a piece's error only halves with it."""
+    a piece's error only halves with it. The crews' salaries, paid at a
+    steady rate, are discounted in closed form, outside the integral."""
     windows = nonnegative_times(t)
     ends = windows.ravel()
+    salaries = _crew_salaries(rbd)
     horizon = float(ends.max()) if ends.size else 0.0
     keys: list = []
     cell_keys: list = []
@@ -657,6 +670,14 @@ def _discounted_cost(
                 cell_keys.extend(own)
         rows = [got.mean]
         rows += [got.by_category[category] for category in _CATEGORIES]
+        if salaries:
+            # (Their present value is added in closed form below.)
+            # (A call-out crew's costs, in the same category, vary with
+            # the time, and are discounted with the others.)
+            paid = _crew_salaries_to(rbd, np.append(times, horizon))
+            crews = 1 + _CATEGORIES.index("crews")
+            rows[0] = rows[0] - paid
+            rows[crews] = rows[crews] - paid
         rows += [got.by_component[node] for node in keys]
         if own is not None:
             rows += [
@@ -664,45 +685,17 @@ def _discounted_cost(
             ]
         return np.vstack([np.ravel(row)[:-1] for row in rows])
 
-    def rules(a: np.ndarray, b: np.ndarray):
-        """The pieces' integrals of ``exp(-r s) C(s)`` by the Kronrod
-        rule, as rows, and the mean's error, against the Gauss rule."""
-        half = 0.5 * (b - a)
-        x = (0.5 * (a + b))[:, None] + half[:, None] * _GK_X
-        g = np.exp(-rate * x) * values(x.ravel()).reshape(-1, *x.shape)
-        kronrod = (g @ _GK_W) * half
-        return kronrod, np.abs(kronrod[0] - (g[0] @ _G7_W) * half)
-
     with rbd._sharing_curves():
-        at_ends = values(ends)
-        a, b = _discount_pieces(ends, horizon)
-        pieces, error = rules(a, b)
-        for _ in range(_DISCOUNT_ROUNDS):
-            budget = _DISCOUNT_TOLERANCE * abs(float(pieces[0].sum()))
-            if error.sum() <= budget:
-                break
-            # Halve the pieces over their share of the error allowed.
-            split = error > budget / error.size
-            middle = 0.5 * (a + b)[split]
-            halves, errors = rules(
-                np.concatenate([a[split], middle]),
-                np.concatenate([middle, b[split]]),
-            )
-            a = np.concatenate([a[~split], a[split], middle])
-            b = np.concatenate([b[~split], middle, b[split]])
-            pieces = np.concatenate([pieces[:, ~split], halves], axis=1)
-            error = np.concatenate([error[~split], errors])
-    order = np.argsort(b, kind="stable")
-    running = np.concatenate(
-        [np.zeros((len(at_ends), 1)), np.cumsum(pieces[:, order], axis=1)],
-        axis=1,
-    )
-    # Every window is a piece's end: the pieces up to it are within it.
-    upto = np.searchsorted(b[order], ends, side="right")
-    present = np.exp(-rate * ends) * at_ends + rate * running[:, upto]
+        present, _ = _discounted_accrual(
+            values, ends, rate, _discount_pieces(ends, horizon)
+        )
     rows = iter(present)
     mean = next(rows)
     categories = {category: next(rows) for category in _CATEGORIES}
+    if salaries:
+        paid = _crew_salaries_to(rbd, ends, rate)
+        categories["crews"] = categories["crews"] + paid
+        mean = mean + paid
     components = {node: next(rows) for node in keys}
     if cells is not None:
         cells.update({k: next(rows) for k in cell_keys})

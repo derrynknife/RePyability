@@ -27,7 +27,7 @@ from repyability._version import __version__
 from repyability.rbd.ccf import with_parameters
 from repyability.rbd.uncertainty import draw_ccf_models
 from repyability.utils import deprecation
-from repyability.utils.deprecation import NEXT_REMOVAL
+from repyability.utils.deprecation import NEXT_REMOVAL, REMOVED_IN_0_22
 
 W, E = surv.Weibull.from_params, surv.Exponential.from_params
 F = FixedEventProbability.from_params
@@ -192,12 +192,15 @@ def test_the_spares_demand_values_are_properties():
     assert demand.std == pytest.approx(np.sqrt(10.0), rel=1e-4)
 
 
-def test_what_0_19_deprecates_goes_in_0_20():
-    # 0.19 and 0.19.1 deprecate nothing; a deprecation in 0.20's
-    # development goes in NEXT_REMOVAL (0.20), and this fails as a
-    # reminder once the version reaches it.
+def test_what_0_20_deprecates_goes_in_0_21():
+    # 0.19 deprecated nothing, so 0.20 removes nothing. What 0.20
+    # deprecates goes in NEXT_REMOVAL (0.21; test_opportunities.py and
+    # test_exact_or_horizon.py remind of each), and a deprecation in
+    # 0.21's development in REMOVED_IN_0_22. This fails as a reminder
+    # once the version reaches the next removal.
     version = tuple(map(int, __version__.split(".")))
     assert version < tuple(map(int, NEXT_REMOVAL.split(".")))
+    assert NEXT_REMOVAL == "0.21" and REMOVED_IN_0_22 == "0.22"
 
 
 def test_a_deprecation_warns_until_the_next_removal():
