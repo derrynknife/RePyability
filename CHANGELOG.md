@@ -12,6 +12,14 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Added: `allocate_redundancy` and `redundancy_front` take
+  `start_probability` (a number, or a dict by node) for cold standby: a
+  spare that fails to start is skipped, and the next one is tried, as a
+  `StandbyModel`'s `start_probability` and a standby block's mean. Each
+  cold design is scored as the `StandbyModel` it fits, so with two or
+  more spares the reliability the search reports is the diagram's once
+  the design is applied (with `switching_probability`, a failed switch
+  ends the arrangement, which is lower). Giving both is refused.
 - Added: `npv_distribution` and `compare_npv` take a unit's own
   `retire_at` and `salvage` (a `UnitPlan`'s, or a component spec's),
   which they refused: the runs end at the retirement, and each run is

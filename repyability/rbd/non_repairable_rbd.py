@@ -3115,6 +3115,7 @@ class NonRepairableRBD(RBD):
         required: Union[int, Dict[Hashable, int], None] = None,
         strategy: Union[str, Dict[Hashable, str]] = "active",
         switching_probability: Union[float, Dict[Hashable, float]] = 1.0,
+        start_probability: Union[float, Dict[Hashable, float]] = 1.0,
         mixing: bool = True,
         method: str = "exact",
     ) -> RedundancyAllocation:
@@ -3222,8 +3223,17 @@ class NonRepairableRBD(RBD):
         switching_probability : float or dict, optional
             For cold standby, the probability that switching onto a spare
             succeeds, for every cold node (a number) or particular ones (a
-            dict). By default 1.0 (perfect switching). Imperfect switching
-            is supported with one unit required.
+            dict). By default 1.0 (perfect switching). A failed switch
+            ends the arrangement. Imperfect switching is supported with one
+            unit required.
+        start_probability : float or dict, optional
+            For cold standby, the probability that a spare starts once
+            switched in, for every cold node (a number) or particular ones
+            (a dict): a spare that fails to start is skipped, and the next
+            one is tried, as a
+            [`StandbyModel`][repyability.StandbyModel]'s
+            ``start_probability`` (and a standby block's) means. By default
+            1.0. Give it or ``switching_probability``, not both.
         mixing : bool, optional
             For nodes with options: whether their copies may be of
             different types (the default), or must all be of one type.
@@ -3264,7 +3274,8 @@ class NonRepairableRBD(RBD):
             number with several resources; a node nothing limits (see
             ``max_units``); an invalid ``max_units``, ``minimise``,
             ``mixing``, ``required`` (or one above ``max_units``),
-            ``strategy`` or ``switching_probability``; cold standby of a
+            ``strategy``, ``switching_probability`` or
+            ``start_probability`` (or both of the last two); cold standby of a
             fixed probability; ``t`` missing for a time-varying RBD or not a
             single number; a budget that cannot afford the required copies
             of each costed node; a ``target`` outside (0, 1) or not
@@ -3383,6 +3394,7 @@ class NonRepairableRBD(RBD):
             required,
             strategy,
             switching_probability,
+            start_probability,
             mixing,
             method,
         )
@@ -3548,6 +3560,7 @@ class NonRepairableRBD(RBD):
         required,
         strategy,
         switching_probability,
+        start_probability,
         mixing,
         method,
     ) -> SimpleNamespace:
@@ -3600,6 +3613,15 @@ class NonRepairableRBD(RBD):
         switching = self._redundancy_switching(
             nodes, switching_probability, ways, fewest
         )
+        starts = self._redundancy_switching(
+            nodes, start_probability, ways, fewest, "start_probability"
+        )
+        if any(p < 1.0 for p in switching) and any(p < 1.0 for p in starts):
+            raise ValueError(
+                "Give switching_probability (a failed switch ends the "
+                "arrangement) or start_probability (a spare that fails to "
+                "start is skipped, and the next one is tried), not both."
+            )
         grouped = self._allocation_groups(nodes, options, ways)
         # The lifetime (or probability) model of one copy of each kind.
         models = [
@@ -3747,6 +3769,7 @@ class NonRepairableRBD(RBD):
                         units,
                         k=fewest[i],
                         switching_probability=switching[i],
+                        start_probability=starts[i],
                     )
                     if standby.is_simulated:
                         raise NotImplementedError(
@@ -3995,15 +4018,22 @@ class NonRepairableRBD(RBD):
         return [choices[given[node]] for node in nodes]
 
     @staticmethod
-    def _redundancy_switching(nodes, switching_probability, ways, fewest):
+    def _redundancy_switching(
+        nodes,
+        switching_probability,
+        ways,
+        fewest,
+        name: str = "switching_probability",
+    ):
         """The probability that switching onto each costed node's next cold
-        spare succeeds."""
+        spare succeeds (or, as ``name="start_probability"``, that each
+        spare starts once switched in)."""
         cold = [node for node, way in zip(nodes, ways) if "cold" in way]
         if isinstance(switching_probability, dict):
             for node in switching_probability:
                 if node not in cold:
                     raise ValueError(
-                        "switching_probability applies to cold standby, and "
+                        f"{name} applies to cold standby, and "
                         f"node {node!r} is not a cold standby node in costs."
                     )
             given = {
@@ -4012,7 +4042,7 @@ class NonRepairableRBD(RBD):
         else:
             if float(switching_probability) != 1.0 and not cold:
                 raise ValueError(
-                    "switching_probability applies to cold standby, which no "
+                    f"{name} applies to cold standby, which no "
                     "node uses (see strategy)."
                 )
             given = {node: switching_probability for node in nodes}
@@ -4021,10 +4051,12 @@ class NonRepairableRBD(RBD):
             rho = float(given[node])
             if not 0.0 <= rho <= 1.0:
                 raise ValueError(
-                    f"switching_probability for node {node!r} must be in "
+                    f"{name} for node {node!r} must be in "
                     f"[0, 1], got {given[node]!r}."
                 )
-            if rho < 1.0 and "cold" in way and k > 1:
+            if name == "switching_probability" and (
+                rho < 1.0 and "cold" in way and k > 1
+            ):
                 raise ValueError(
                     "Imperfect switching is supported for cold standby with "
                     f"one unit required; node {node!r} requires {k}."
@@ -4263,6 +4295,7 @@ class NonRepairableRBD(RBD):
         required: Union[int, Dict[Hashable, int], None] = None,
         strategy: Union[str, Dict[Hashable, str]] = "active",
         switching_probability: Union[float, Dict[Hashable, float]] = 1.0,
+        start_probability: Union[float, Dict[Hashable, float]] = 1.0,
         mixing: bool = True,
     ) -> List[RedundancyAllocation]:
         """The whole cost-reliability trade-off of redundancy allocation.
@@ -4304,6 +4337,8 @@ class NonRepairableRBD(RBD):
             ``"active"``, ``"cold"`` or ``"choose"``, as for
             ``allocate_redundancy``.
         switching_probability : float or dict, optional
+            For cold standby, as for ``allocate_redundancy``.
+        start_probability : float or dict, optional
             For cold standby, as for ``allocate_redundancy``.
         mixing : bool, optional
             Whether a node's copies may mix types, as for
@@ -4365,6 +4400,7 @@ class NonRepairableRBD(RBD):
             required,
             strategy,
             switching_probability,
+            start_probability,
             mixing,
             "exact",
         )
