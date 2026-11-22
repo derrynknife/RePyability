@@ -141,10 +141,12 @@ def test_two_operating_with_a_spare_that_may_not_start():
 
 
 def test_a_tiny_dormancy_is_exact_and_near_cold():
-    # The hypoexponential stage rates are too close to separate: the chain
-    # takes it, and it is all but cold.
+    # The hypoexponential stage rates are all but equal: surpyval's
+    # Hypoexponential takes them from 0.29 (before, it refused, and the
+    # chain took them), and either way the answer is exact and all but
+    # cold.
     nearly = StandbyModel([UNIT] * 3, k=2, dormancy_factor=1e-12)
-    assert isinstance(nearly._sf_model, MarkovStandbySurvival)
+    assert model_route(nearly)[0] == "exact"
     cold = StandbyModel([UNIT] * 3, k=2)
     np.testing.assert_allclose(nearly.sf(T), cold.sf(T), rtol=1e-9)
 

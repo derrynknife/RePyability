@@ -466,9 +466,7 @@ def plan_vs_actual(
     # its salvage credited at that end, as expected_npv credits it.
     retire_at = _npv.own_terms(rbd, horizon, None, None, None)[2]
     if retire_at is not None:
-        if now > retire_at and not math.isclose(
-            now, retire_at, rel_tol=1e-12
-        ):
+        if now > retire_at and not math.isclose(now, retire_at, rel_tol=1e-12):
             raise ValueError(
                 f"now ({now:g}) is past the retirement on the plan "
                 f"({retire_at:g}): the plan ends before today. Compare the "

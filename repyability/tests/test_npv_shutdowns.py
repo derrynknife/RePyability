@@ -200,18 +200,32 @@ def test_a_paused_part_held_in_a_shut_is_priced():
     )
 
 
-def test_compiled_shuts_are_priced_as_in_python():
+def test_shuts_are_simulated_in_python():
+    # The compiled engine does not simulate shutdowns: asked for, it
+    # refuses, naming the engines that do, and "auto" runs the Python
+    # loop. (Shuts that take no time, priced at each shut; an instant
+    # renewal at them leaves no outage in the histories, so it is not
+    # priced.)
     pytest.importorskip("numba")
     rbd = one(
-        {"repair_cost": 2.0, "preventive": {"shutdown": "line", "cost": 4.0}},
-        shutdown={"period": 100.0, "offset": 20.0, "duration": 0.0},
+        {"repair_cost": 2.0, "preventive": {"shutdown": "line"}},
+        shutdown={
+            "period": 100.0,
+            "offset": 20.0,
+            "duration": 0.0,
+            "cost": 4.0,
+        },
     )
     python = rbd.npv_distribution(
         1000.0, mc_samples=50, seed=1, engine="python"
     )
-    numba = rbd.npv_distribution(1000.0, mc_samples=50, seed=1, engine="numba")
-    assert numba.engine == "numba"
-    assert np.array_equal(python.samples, numba.samples)
+    auto = rbd.npv_distribution(1000.0, mc_samples=50, seed=1, engine="auto")
+    assert auto.engine == "python"
+    assert np.array_equal(python.samples, auto.samples)
+    with pytest.raises(
+        NotImplementedError, match="does not simulate shutdowns"
+    ):
+        rbd.npv_distribution(1000.0, mc_samples=50, seed=1, engine="numba")
 
 
 def test_a_diagram_whose_only_costs_are_its_shuts():
