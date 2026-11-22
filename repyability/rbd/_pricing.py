@@ -55,6 +55,10 @@ _SETUP = (
     "includes renewals the log does not mark."
 )
 _BOUGHT = "Paid at the start: the log does not record purchases."
+_SALVAGE = (
+    "Credited at the plan's end (its retirement or the horizon): the log "
+    "does not record a sale."
+)
 
 
 def unrecorded(rbd) -> List[Tuple[str, Optional[Hashable], str]]:
@@ -91,6 +95,9 @@ def unrecorded(rbd) -> List[Tuple[str, Optional[Hashable], str]]:
     for node, price in rbd.acquisition_costs.items():
         if price:
             out.append(("acquisition", node, _BOUGHT))
+    for node, own in getattr(rbd, "_valuation", {}).items():
+        if "salvage" in own:
+            out.append(("salvage", node, _SALVAGE))
     return out
 
 

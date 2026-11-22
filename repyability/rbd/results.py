@@ -5291,6 +5291,16 @@ class SimulatedSwitchTime(_ResultMapping):
     escalation : dict
         Each stream's growth per unit time, as given (see
         ``ExpectedNPV``); empty with none.
+    salvage : float
+        The present value of the salvage the components' plans credit at
+        the end (their own ``"salvage"``, as a number), the same for
+        every candidate and in every run's NPV; 0 with none.
+    undiscounted_salvage : float
+        That salvage, not discounted.
+    retire_at : float or None
+        When a plan's own ``"retire_at"`` ended the runs before the
+        horizon (``horizon`` is then that time, and switching at it is
+        never switching); None otherwise.
     """
 
     switch_time: float
@@ -5313,6 +5323,9 @@ class SimulatedSwitchTime(_ResultMapping):
     rate_basis: str = "nominal"
     inflation: Optional[float] = None
     escalation: Dict[Hashable, float] = field(default_factory=dict)
+    salvage: float = 0.0
+    undiscounted_salvage: float = 0.0
+    retire_at: Optional[float] = None
 
     def difference_interval(
         self, against: str = "never switch", confidence: float = 0.95

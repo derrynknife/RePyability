@@ -343,19 +343,29 @@ def simulated(
         ("without", without_d, state_without),
     ):
         _npv_runs._require_priceable(diagram)
-        _npv_runs._require_matched(
-            diagram, f"the plan {name} the service", horizon, state
-        )
         priced = _npv.Money(diagram, rate, 0.0)
+        # The plan's own retirement ends its runs there, and its own
+        # salvage is credited then (as npv_distribution's runs), in the
+        # period it falls in; the periods after hold nothing.
+        stop, salvage, nominal_salvage, _ = _npv.own_end(
+            diagram, horizon, priced
+        )
+        own_ends = np.append(ends[ends < stop], stop)
+        last = own_ends.size - 1
+        _npv_runs._require_matched(
+            diagram, f"the plan {name} the service", stop, state
+        )
         pv = np.zeros((n, periods))
         nominal = np.zeros((n, periods))
         count = np.zeros((n, periods))
+        pv[:, last] -= salvage
+        nominal[:, last] -= nominal_salvage
         for first in range(0, n, _npv_runs._CHUNK):
             size = min(_npv_runs._CHUNK, n - first)
             ledger, runs = _npv_runs.priced_chunk(
                 diagram,
-                horizon,
-                ends,
+                stop,
+                own_ends,
                 priced,
                 size,
                 seed,
@@ -370,9 +380,9 @@ def simulated(
             history, at, down, planned = _pricing.changes(
                 runs.components[node]._data
             )
-            failed = down & ~planned & (at <= horizon)
+            failed = down & ~planned & (at <= stop)
             k = np.minimum(
-                np.searchsorted(ends, at[failed], side="right"), periods - 1
+                np.searchsorted(own_ends, at[failed], side="right"), last
             )
             np.add.at(count, (first + history[failed], k), 1.0)
         money[name], plain[name], fails[name] = pv, nominal, count
