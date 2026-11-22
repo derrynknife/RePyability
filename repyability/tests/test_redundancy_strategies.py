@@ -454,3 +454,104 @@ def test_cold_target_beyond_active_reach():
         rbd.allocate_redundancy(
             {"n0": 1.0}, target=0.9, t=MISSION, max_units=3
         )
+
+
+# -- start_probability: a spare that fails to start is skipped -------------
+
+
+@pytest.mark.parametrize("required", [1, 2])
+def test_start_probability_search_matches_the_design_applied(required):
+    # Two nodes in series, cold standby with spares that start with
+    # probability 0.9. The search's reliability is the diagram's once its
+    # design is fitted as a StandbyModel with that start_probability.
+    names, rbd = series([2000.0, 1500.0])
+    models = {n: rbd.reliabilities[n] for n in names}
+    result = rbd.allocate_redundancy(
+        {"n0": 1.0, "n1": 1.0},
+        budget=4 * required + 2,
+        t=MISSION,
+        required=required,
+        strategy="cold",
+        start_probability=0.9,
+    )
+    assert max(result.units[n] for n in names) - required >= 2
+    applied = NonRepairableRBD(
+        [("s", "n0"), ("n0", "n1"), ("n1", "t")],
+        {
+            n: StandbyModel(
+                [models[n]] * result.units[n],
+                k=required,
+                start_probability=0.9,
+            )
+            for n in names
+        },
+    )
+    shown = float(np.ravel(applied.sf(MISSION))[0])
+    assert result.reliability == pytest.approx(shown, rel=1e-12)
+    front = rbd.redundancy_front(
+        {"n0": 1.0, "n1": 1.0},
+        budget=4 * required + 2,
+        t=MISSION,
+        required=required,
+        strategy="cold",
+        start_probability=0.9,
+    )
+    same = [d for d in front if d.units == result.units]
+    assert same and same[0].reliability == pytest.approx(shown, rel=1e-12)
+
+
+def test_start_probability_is_not_a_failed_switch():
+    # One exponential unit and three cold spares: a spare that fails to
+    # start is skipped, so the arrangement works while fewer than four
+    # failures and skipped spares together have happened; a failed switch
+    # ends it. Closed forms of each, at mean 2000 over 1000.
+    rbd = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": exponential(2000)})
+    p, m = 0.9, MISSION / 2000
+    skipped = rbd.allocate_redundancy(
+        {"a": 1.0}, budget=4, t=MISSION, strategy="cold", start_probability=p
+    )
+    ended = rbd.allocate_redundancy(
+        {"a": 1.0},
+        budget=4,
+        t=MISSION,
+        strategy="cold",
+        switching_probability=p,
+    )
+    assert skipped.units == ended.units == {"a": 4}
+    # Skipped: the j-th failure is survived if a later spare starts; each
+    # failure uses up a started spare, so with j failures by t, the
+    # arrangement works if the 3 spares hold at least j that start.
+    starts = binom(3, p)
+    want = sum(poisson.pmf(j, m) * starts.sf(j - 1) for j in range(4))
+    assert skipped.reliability == pytest.approx(want, rel=1e-6)
+    assert ended.reliability == pytest.approx(
+        sum(p**j * poisson.pmf(j, m) for j in range(4)), rel=2e-3
+    )
+    assert skipped.reliability > ended.reliability
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"strategy": "cold", "start_probability": 1.5}, r"\[0, 1\]"),
+        ({"start_probability": 0.9}, "which no node uses"),
+        (
+            {"strategy": {"n0": "cold"}, "start_probability": {"n1": 0.9}},
+            "not a cold standby node",
+        ),
+        (
+            {
+                "strategy": "cold",
+                "switching_probability": 0.95,
+                "start_probability": 0.9,
+            },
+            "not both",
+        ),
+    ],
+)
+def test_start_probability_validation(kwargs, match):
+    names, rbd = series([2000.0, 1500.0])
+    with pytest.raises(ValueError, match=match):
+        rbd.allocate_redundancy(
+            {"n0": 1.0, "n1": 1.0}, budget=10, t=MISSION, **kwargs
+        )
