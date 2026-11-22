@@ -502,8 +502,9 @@ outcomes). Month by month the numbers are small, about 0.05 failures
 With `discount=`, each period also has its expected cost as a present
 value. An expected cost accrues as the part runs, and each part of it is
 discounted from when it is expected to fall: an integral over the
-forecast, worked out until its error estimate, `npv_precision`, is
-small.
+forecast, worked out until its error estimate is small. `npv_precision`
+is that estimate plus how far the expected cost itself can be from the
+true one (the expected failures are worked out on a grid).
 
 ```python
 worth = failures_by_period(ring, usage, "month", age=5200.0, discount=0.07)

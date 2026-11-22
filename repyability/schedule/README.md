@@ -596,7 +596,7 @@ in `test_schedule_forecast.py`.
   $2,874.75 and $2,890.71**, so $2,882.73 give or take $7.98. Each
   failure's cost discounted from when it is expected to fall (the
   integral below), the value is **$2,882.74**, to within $0.016 at the
-  default tolerance (and $2,882.741 to within $0.0005 at
+  default tolerance (and $2,882.741 to within $0.0007 at
   `npv_tolerance=1e-5`); by month $104.40, $226.20, $214.53, $210.05,
   $246.83, $239.74, $230.71, $242.24, $241.48, $239.51, $236.52,
   $222.18 and $228.36. The equivalent annual cost over the 1.04 years
@@ -613,8 +613,12 @@ in `test_schedule_forecast.py`.
   15) rule on pieces from the start (32 equal ones, cut again at the
   periods' ends), the pieces whose two rules differ most halved until
   the differences, times `r`, are within `npv_tolerance` of the value.
-  That error estimate is `npv_precision`. `C` comes from `failures`
-  run to failure, and from `cost_by_window`'s means under a policy
+  `npv_precision` is that error estimate plus what the error of `C`
+  itself can move the value: run to failure, `failures`' count is
+  worked out at a grid's points and taken linearly between them, off
+  by at most an eighth of the grid's largest second difference, and at
+  most that times `exp(-r T) + |1 - exp(-r T)|` in the present value.
+  `C` comes from `failures` run to failure, and from `cost_by_window`'s means under a policy
   (every policy it takes, with no new renewal maths). Days with no
   running add nothing.
 - **Decisions (defaults):**

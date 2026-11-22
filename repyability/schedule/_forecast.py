@@ -132,6 +132,7 @@ def _accrued_npv(
     tolerance: float,
     costs: Callable[[np.ndarray], np.ndarray],
     notes: List[str],
+    cost_error: float = 0.0,
 ):
     """The present value, in each period and in all, of a part's expected
     cost, which accrues as it runs: ``(by period, total, precision)``.
@@ -144,7 +145,10 @@ def _accrued_npv(
     ``exp(-r T) C(T) + r * integral_0^T exp(-r s) C(s) ds``, each cost
     discounted from when it is expected to fall, the integral taken by
     the Gauss-Kronrod rule on pieces halved until its error estimate is
-    within ``tolerance`` of the value. That estimate is the precision.
+    within ``tolerance`` of the value. The precision is that estimate
+    plus what ``cost_error`` (a bound on how far ``C`` itself may be from
+    the true expected cost, anywhere in the forecast) can move the value:
+    ``cost_error * (exp(-r T) + |1 - exp(-r T)|)``.
     """
     from repyability.rbd._common import (
         _DISCOUNT_ROUNDS,
@@ -180,6 +184,10 @@ def _accrued_npv(
     )
     by_period[running <= 0.0] = 0.0
     total = float(present[0, -1])
+    # The expected cost's own error, discounted: at most cost_error at T
+    # and in the integral, whose weights r exp(-r s) add up to 1 - exp(-r T).
+    shrink = float(np.exp(-rate * ends[-1]))
+    precision += cost_error * (shrink + abs(1.0 - shrink))
     if precision > tolerance * abs(total):
         notes.append(
             f"The present value is within {precision:.3g} of the true one "
@@ -566,6 +574,7 @@ def failures_by_period(
             # Run to failure, a window's expected cost is its expected
             # failures' (failures' exact counts, which cost_by_window's
             # distributions only repeat, at many times the work).
+            cost_error = 0.0
             if policy != "run to failure":
 
                 def costs(model_ends: np.ndarray) -> np.ndarray:
@@ -588,8 +597,19 @@ def failures_by_period(
                         prepend=0.0,
                     )
 
+                # The counts are linear between their grid's points: how
+                # far that can be from the true count is in the precision.
+                cost_error = part.cu * part._failures_error(total_end, age)
+
             expected_npv, npv, npv_precision = _accrued_npv(
-                usage, seconds, unit, discount, npv_tolerance, costs, notes
+                usage,
+                seconds,
+                unit,
+                discount,
+                npv_tolerance,
+                costs,
+                notes,
+                cost_error,
             )
         eac = _discount.equivalent_annual(
             npv, discount, float(seconds[-1]) / _YEAR_SECONDS

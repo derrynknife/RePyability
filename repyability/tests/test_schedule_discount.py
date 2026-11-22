@@ -414,10 +414,10 @@ def test_uc48_wear_ring_present_value_by_month(pump):
     assert np.all(months.expected_npv <= high + 1e-9)
     assert np.all(months.expected_npv >= low - 1e-9)
     # Each failure's cost discounted from when it is expected to fall:
-    # $2,882.742, to within $0.0163 (the 36 windows' bracket of the
+    # $2,882.742, to within $0.0165 (the 36 windows' bracket of the
     # method before gave $2,882.77 give or take $2.47).
     assert months.npv == pytest.approx(2882.742, abs=5e-4)
-    assert months.npv_precision == pytest.approx(0.0163, abs=5e-5)
+    assert months.npv_precision == pytest.approx(0.01646, abs=5e-5)
     assert months.npv_precision <= 1e-3 * months.npv
     finer = failures_by_period(
         part, pump, "month", age=5200.0, discount=0.07, npv_tolerance=1e-5
