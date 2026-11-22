@@ -230,7 +230,7 @@ class Repairable:
         - ``mcf(t, items=..., random_state=...)``: a simulation-estimated mean
           cumulative function (imperfect repair), e.g. a surpyval
           ``GeneralizedRenewal`` (Kijima I/II) model, fitted or built with
-          ``fit_from_parameters``.
+          ``from_params``.
 
         If both are present ``cif`` is used (analytic, exact). For a
         simulation-backed model the failure-count methods
@@ -275,7 +275,7 @@ class Repairable:
 
     >>> import surpyval as surv
     >>> from surpyval.recurrent import GeneralizedRenewal
-    >>> grp = GeneralizedRenewal.fit_from_parameters(
+    >>> grp = GeneralizedRenewal.from_params(
     ...     [100.0, 2.0], 0.5, kijima="i", dist=surv.Weibull
     ... )
     >>> unit = Repairable(grp)
@@ -773,7 +773,7 @@ class Repairable:
 
         >>> import surpyval as surv
         >>> from surpyval.recurrent import GeneralizedRenewal
-        >>> grp = GeneralizedRenewal.fit_from_parameters(
+        >>> grp = GeneralizedRenewal.from_params(
         ...     [100.0, 2.0], 1.0, kijima="i", dist=surv.Weibull
         ... )
         >>> unit = Repairable(grp)
@@ -1011,7 +1011,7 @@ class Repairable:
         >>> from surpyval.recurrent import GeneralizedRenewal
         >>> from repyability import Repairable
         >>> from repyability import minimal_repair_time_to_nth_failure
-        >>> grp = GeneralizedRenewal.fit_from_parameters(
+        >>> grp = GeneralizedRenewal.from_params(
         ...     [100.0, 2.0], 1.0, kijima="i", dist=surv.Weibull
         ... )
         >>> unit = Repairable(grp)
@@ -1108,7 +1108,7 @@ class Repairable:
         >>> import surpyval as surv
         >>> from surpyval.recurrent import GeneralizedRenewal
         >>> from repyability import Repairable
-        >>> grp = GeneralizedRenewal.fit_from_parameters(
+        >>> grp = GeneralizedRenewal.from_params(
         ...     [100.0, 2.0], 0.4, kijima="i", dist=surv.Weibull
         ... )
         >>> unit = Repairable(grp)
@@ -1167,7 +1167,7 @@ class Repairable:
         >>> import surpyval as surv
         >>> from surpyval.recurrent import GeneralizedRenewal
         >>> from repyability import Repairable
-        >>> grp = GeneralizedRenewal.fit_from_parameters(
+        >>> grp = GeneralizedRenewal.from_params(
         ...     [100.0, 2.0], 0.4, kijima="i", dist=surv.Weibull
         ... )
         >>> unit = Repairable(grp)

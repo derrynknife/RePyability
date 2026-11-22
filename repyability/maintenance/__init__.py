@@ -97,7 +97,7 @@ class FailureLimitPolicy(_ResultMapping):
     >>> import surpyval as surv
     >>> from surpyval.recurrent import GeneralizedRenewal
     >>> from repyability import Repairable
-    >>> grp = GeneralizedRenewal.fit_from_parameters(
+    >>> grp = GeneralizedRenewal.from_params(
     ...     [100.0, 2.0], 0.4, kijima="i", dist=surv.Weibull
     ... )
     >>> unit = Repairable(grp)

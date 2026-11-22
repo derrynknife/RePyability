@@ -301,7 +301,7 @@ def test_inputs_are_checked():
 
 
 def test_a_simulation_backed_model_is_refused():
-    grp = GeneralizedRenewal.fit_from_parameters(
+    grp = GeneralizedRenewal.from_params(
         [100.0, 2.0], 0.5, kijima="i", dist=surv.Weibull
     )
     part = Repairable(grp)

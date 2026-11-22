@@ -86,8 +86,8 @@ def failures_by(process, horizon, n=N_RUNS, seed=1, **more):
 @pytest.mark.parametrize(
     "process",
     [
-        surv.ARA.fit_from_parameters([100.0, 2.5], 0.0),
-        surv.ARI.fit_from_parameters([100.0, 2.5], 0.0),
+        surv.ARA.from_params([100.0, 2.5], 0.0),
+        surv.ARI.from_params([100.0, 2.5], 0.0),
     ],
     ids=["ARA", "ARI"],
 )
@@ -102,7 +102,7 @@ def test_no_reduction_is_minimal_repair(process):
 def test_g1_with_no_stretch_is_a_renewal_process():
     # G1 with q = 0 draws every gap from the life itself: a renewal
     # process, and with an exponential life a Poisson one, lambda * T.
-    process = surv.GeneralizedOneRenewal.fit_from_parameters(
+    process = surv.GeneralizedOneRenewal.from_params(
         [0.05], 0.0, dist=surv.Exponential
     )
     assert failures_by(process, 200.0) == pytest.approx(10.0, abs=0.2)
@@ -111,10 +111,10 @@ def test_g1_with_no_stretch_is_a_renewal_process():
 @pytest.mark.parametrize(
     "process",
     [
-        surv.GeneralizedOneRenewal.fit_from_parameters([100.0, 2.0], 0.3),
-        surv.ARA.fit_from_parameters([100.0, 2.5], 0.6),
-        surv.ARA.fit_from_parameters([100.0, 2.5], 0.4, m=2),
-        surv.ARI.fit_from_parameters([100.0, 2.5], 0.5),
+        surv.GeneralizedOneRenewal.from_params([100.0, 2.0], 0.3),
+        surv.ARA.from_params([100.0, 2.5], 0.6),
+        surv.ARA.from_params([100.0, 2.5], 0.4, m=2),
+        surv.ARI.from_params([100.0, 2.5], 0.5),
     ],
     ids=["G1", "ARA1", "ARA2", "ARI1"],
 )
@@ -153,7 +153,7 @@ def test_a_stepped_unit_leaves_other_units_draws_as_they_were():
         {
             "a": plain,
             "b": {
-                "reliability": surv.ARA.fit_from_parameters([100.0, 2.5], 0.5),
+                "reliability": surv.ARA.from_params([100.0, 2.5], 0.5),
                 "repairability": "instant",
             },
         },
@@ -168,7 +168,7 @@ def test_a_stepped_unit_leaves_other_units_draws_as_they_were():
 
 
 def test_a_stepped_unit_is_saved_as_its_fitted_model():
-    process = surv.ARA.fit_from_parameters([100.0, 2.5], 0.6)
+    process = surv.ARA.from_params([100.0, 2.5], 0.6)
     rbd = one(process)
     saved = rbd.to_dict()
     back = RepairableRBD.from_dict(saved)
@@ -185,7 +185,7 @@ def test_a_stepped_unit_is_saved_as_its_fitted_model():
 def test_a_stepped_unit_starts_from_its_age():
     # Run 80 since new without a failure: under ARA its next failure is
     # the life's from age 80, as for any unit; then the fitted repairs.
-    process = surv.ARA.fit_from_parameters([100.0, 2.5], 0.0)
+    process = surv.ARA.from_params([100.0, 2.5], 0.0)
     run = one(process).availability(
         t_simulation=100.0,
         mc_samples=N_RUNS,
@@ -198,7 +198,7 @@ def test_a_stepped_unit_starts_from_its_age():
 
 
 def test_what_a_stepped_unit_refuses():
-    process = surv.ARA.fit_from_parameters([100.0, 2.5], 0.5)
+    process = surv.ARA.from_params([100.0, 2.5], 0.5)
     with pytest.raises(NotImplementedError, match="not a Kijima virtual age"):
         one(process).availability(
             t_simulation=10.0,

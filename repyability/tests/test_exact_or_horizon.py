@@ -24,7 +24,7 @@ from repyability import NonRepairable, Opportunities, Opportunity
 from repyability._version import __version__
 from repyability.maintenance import _replacement as R
 from repyability.schedule import DutyPlan, Recurrence, Shifts
-from repyability.utils.deprecation import REMOVED_IN_0_21
+from repyability.utils.deprecation import NEXT_REMOVAL
 
 NOW = "2026-11-16"
 A_DAY = math.log(1.07) / 365.25
@@ -495,7 +495,7 @@ def test_on_real_dates_the_choices_are_discounted_at_the_policy_s_rate():
 
 
 def test_auto_sampling_warns_it_will_refuse_with_a_ready_horizon():
-    with pytest.warns(FutureWarning, match=f"From {REMOVED_IN_0_21}") as w:
+    with pytest.warns(FutureWarning, match=f"From {NEXT_REMOVAL}") as w:
         sampled = WORN.optimal_opportunity_policy(
             COPRIME, mc_samples=2, seed=1
         )
@@ -516,4 +516,4 @@ def test_auto_sampling_refuses_in_0_21():
     # 0.20 and refuses from 0.21. This fails as a reminder once the
     # version reaches it: make "auto" refuse with its ready horizon.
     version = tuple(map(int, __version__.split(".")))[:2]
-    assert version < tuple(map(int, REMOVED_IN_0_21.split(".")))
+    assert version < tuple(map(int, NEXT_REMOVAL.split(".")))

@@ -24,7 +24,7 @@ from repyability.repairable import (
 
 def _gr(q, alpha=100.0, beta=2.0, kijima="ii"):
     """A generalized-renewal model, Weibull baseline, restoration factor q."""
-    return GeneralizedRenewal.fit_from_parameters(
+    return GeneralizedRenewal.from_params(
         [alpha, beta], q, kijima=kijima, dist=surv.Weibull
     )
 
@@ -324,7 +324,7 @@ def test_the_simulations_seed_goes_by_random_state():
             self, events, items=1000, random_state=None
         ):
             self.seen.append(("count", random_state))
-            return GeneralizedRenewal.fit_from_parameters(
+            return GeneralizedRenewal.from_params(
                 [100.0, 2.0], 0.5, kijima="ii", dist=surv.Weibull
             ).count_terminated_simulation(events, items=items)
 

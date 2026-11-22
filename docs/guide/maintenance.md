@@ -623,7 +623,7 @@ near its minimum, so the interval found varies more than the cost rate:
 ```python
 from surpyval.recurrent import GeneralizedRenewal
 
-model = GeneralizedRenewal.fit_from_parameters(
+model = GeneralizedRenewal.from_params(
     [1500, 2.0], q=0.4, kijima="i", dist=surv.Weibull
 )
 compressor = Repairable(model)
