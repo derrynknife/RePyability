@@ -38,15 +38,13 @@ PUBLIC = {
     "surpyval.univariate.nonparametric",
     "surpyval.univariate.regression",
     "surpyval.univariate.competing_risks",
+    "surpyval.univariate.joint",
     "surpyval.univariate.regression.kinds",
 }
 
 #: Names RePyability needs that surpyval has no public home for yet, each
 #: with why. Remove an entry once surpyval gives the name a public home.
 NO_PUBLIC_HOME = {
-    # A joint model's prediction for one unit, which a diagram takes as a
-    # block (``rbd/joint_node.py``).
-    ("surpyval.univariate.joint", "DynamicPrediction"),
     # A lifetime's life left at a virtual age, from a uniform: what
     # ``_event_loop._aged_life`` draws for any model it has no closed form
     # for (and the tests check ``MixtureLife`` against).
@@ -180,7 +178,8 @@ def test_the_check_catches_a_private_import(tmp_path):
         ")\n"
         "import surpyval as surv\n"
         "surv.utils._private\n"
-        '"""\n>>> from surpyval.univariate.joint import JointModel\n"""\n'
+        '"""\n>>> from surpyval.univariate.joint.dynamic import '
+        'DynamicPrediction\n"""\n'
     )
     imports = [
         (module, name)
@@ -190,7 +189,7 @@ def test_the_check_catches_a_private_import(tmp_path):
     assert imports == [
         ("surpyval.univariate.regression._kinds", "PH"),
         ("surpyval.degradation.process_models", "WienerProcessModel"),
-        ("surpyval.univariate.joint", "JointModel"),
+        ("surpyval.univariate.joint.dynamic", "DynamicPrediction"),
     ]
     assert [d for _, d in _private_attributes(source)] == [
         "surv.utils._private"
