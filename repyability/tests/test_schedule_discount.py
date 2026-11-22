@@ -450,7 +450,7 @@ def test_uc48_wear_ring_present_value_by_month(pump):
     assert months.notes[-1] == (
         "Discounted to 2026-11-16 at 7% a year. The present values "
         "(expected_npv, npv) discount the expected cost from when it is "
-        "expected to fall, to within 0.0163 in all; expected_cost and the "
+        "expected to fall, to within 0.0165 in all; expected_cost and the "
         "ranges are not discounted."
     )
     json.dumps(months.to_dict())
