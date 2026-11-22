@@ -63,6 +63,12 @@ W = surv.Weibull.from_params
 PAIR = [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")]
 
 
+def once_upgraded(rbd):
+    """The diagram a long-run method is asked of: ``rbd`` once upgraded
+    where it has upgrades (``_long_run.follows_upgrades``)."""
+    return _long_run.after_upgrades(rbd) if rbd._upgrades else rbd
+
+
 def quietly(call):
     """``call()``, or the error it raises, with warnings silenced."""
     with warnings.catch_warnings():
@@ -115,7 +121,9 @@ def test_the_action_rates_are_the_private_call_s(name):
     public = quietly(rbd.node_action_rates)
     if isinstance(public, Exception):
         return  # refused: the routes test checks it says so
-    private = quietly(lambda: private_actions(rbd))
+    # The long run of a diagram with upgrades is that once upgraded
+    # (``_long_run.follows_upgrades``): the private call is asked of it.
+    private = quietly(lambda: private_actions(once_upgraded(rbd)))
     assert list(public) == list(rbd.components)
     for node, rates in public.items():
         assert isinstance(rates, NodeActionRates)
@@ -253,7 +261,7 @@ def test_the_replacement_cycle_is_the_private_call_s(name):
         public = quietly(lambda: rbd.replacement_cycle(node))
         if isinstance(public, Exception):
             continue  # refused: the routes test checks it says so
-        private = _long_run._block_cycle(rbd, node)
+        private = _long_run._block_cycle(once_upgraded(rbd), node)
         assert isinstance(public, ReplacementCycle)
         for field in public:
             assert np.array_equal(
