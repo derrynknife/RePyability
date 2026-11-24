@@ -73,7 +73,6 @@ from repyability.rbd._events import (
 from repyability.rbd._model_utils import (
     always_works,
     distribution_name,
-    is_mixture,
     lfp_p,
 )
 from repyability.rbd._processes import COX_LEWIS_LIFE
@@ -84,7 +83,7 @@ from repyability.rbd._runs import (  # noqa: E402,F401
     restoration_criticality_index_by_component,
     restoration_criticality_index_by_system,
 )
-from repyability.rbd._sampling import MixtureLife, stream_sampler
+from repyability.rbd._sampling import stream_sampler
 from repyability.rbd._tally import (
     _CATEGORIES,
     _REPAIR,
@@ -315,10 +314,8 @@ def _aged_life(model, age: float, u: float) -> float:
     ``age``, from the uniform ``u``: the ``x`` with ``H(age + x) = H(age) -
     log(u)`` (``H`` the cumulative hazard), as surpyval's virtual-age
     renewal models draw it (``conditional_gaps``). A plain Exponential or
-    Weibull is worked in closed form, a mixture by ``MixtureLife.aged``
-    (#295), any other model by surpyval."""
-    if is_mixture(model):
-        return MixtureLife.of(model).aged(age, u)
+    Weibull is worked in closed form, any other model (a mixture, #295,
+    included) by surpyval's ``conditional_gaps``."""
     dist = getattr(model, "dist", None)
     name = getattr(dist, "name", None)
     if (
@@ -350,7 +347,7 @@ def _aged_life(model, age: float, u: float) -> float:
         if grown <= -1.0:
             return math.inf
         return math.log1p(grown) / beta
-    from surpyval.recurrent.renewal.renewal_model import conditional_gaps
+    from surpyval.recurrent import conditional_gaps
 
     return float(conditional_gaps(model, np.array([age]), np.array([u]))[0])
 

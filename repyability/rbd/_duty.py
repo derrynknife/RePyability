@@ -4,16 +4,14 @@ time.
 A node that operates a fraction ``d`` of the calendar ages only then, so
 its life in calendar time is its operating life over ``d``: ``R_c(t) =
 R(d t)``. A surpyval model of a time stays one of its kind under that
-change of scale, with its times moved: the model moves itself where it can
-(``rescale_time``, from the surpyval release after 0.28), so the node keeps
-its model's kind and every exact method and simulation takes it as it would
-the model fitted in calendar time. With surpyval 0.28, which has no
-``rescale_time``, ``_SCALED`` moves the parameters of each distribution
-(the workaround goes once the minimum surpyval rescales).
+change of scale, with its times moved: the model moves itself
+(``rescale_time``, from surpyval 0.29), so the node keeps its model's kind
+and every exact method and simulation takes it as it would the model
+fitted in calendar time.
 """
 
 import math
-from typing import Any, Callable, Dict, List, Union
+from typing import Any, Union
 
 import numpy as np
 
@@ -21,39 +19,6 @@ from repyability.utils.checks import is_number
 
 from ._covariate_schedule import ClockLife
 from ._model_utils import distribution_name, is_fixed_probability
-
-
-def _scale_first(p: List[float], d: float) -> List[float]:
-    """A scale parameter first (a characteristic life), shapes after."""
-    return [p[0] / d, *p[1:]]
-
-
-def _location_scale(p: List[float], d: float) -> List[float]:
-    """A location and a scale, both times."""
-    return [p[0] / d, p[1] / d]
-
-
-#: How each surpyval distribution's parameters move when its time is
-#: divided by ``d`` (``R_c(t) = R(d t)``), for a surpyval whose models do
-#: not rescale themselves (0.28).
-_SCALED: Dict[str, Callable[[List[float], float], List[float]]] = {
-    "Exponential": lambda p, d: [p[0] * d],
-    "Weibull": _scale_first,
-    "ExpoWeibull": _scale_first,
-    "LogLogistic": _scale_first,
-    "Rayleigh": _scale_first,
-    # The log of a time.
-    "LogNormal": lambda p, d: [p[0] - math.log(d), p[1]],
-    "Galton": lambda p, d: [p[0] - math.log(d), p[1]],
-    # A shape and a rate.
-    "Gamma": lambda p, d: [p[0], p[1] * d],
-    "Normal": _location_scale,
-    "Gauss": _location_scale,
-    "Gumbel": _location_scale,
-    "GumbelLEV": _location_scale,
-    "Logistic": _location_scale,
-    "Uniform": _location_scale,
-}
 
 
 def duty_fraction(node, value) -> float:
@@ -243,32 +208,22 @@ class PlannedLife(ClockLife):
 def on_calendar(node, model, d: float):
     """``model``, a life in operating time, as the life on the calendar of
     a node that operates the fraction ``d`` of the time: the model's own
-    ``rescale_time(d)`` where it has one, else (surpyval 0.28) a surpyval
-    parametric distribution with its parameters moved (``_SCALED``);
-    raise for any other model."""
+    ``rescale_time(d)``; raise for a model that has none or refuses."""
     if d == 1.0:
         return model
     rescale = getattr(model, "rescale_time", None)
+    reason = ""
     if callable(rescale) and not is_fixed_probability(model):
-        return rescale(d)
-    name = distribution_name(model)
-    move = _SCALED.get(name) if name is not None else None
-    if move is None or is_fixed_probability(model):
-        raise ValueError(
-            f"Node {node!r} is given a duty, which moves a life in "
-            "operating time onto the calendar, but its life is "
-            f"{name or type(model).__name__}, which cannot be moved: give "
-            "the life it has on the calendar instead."
-        )
-    import surpyval
-
-    params = [float(p) for p in model.params]
-    extras = dict(getattr(model, "extras", {}))
-    if extras.get("gamma"):
-        # An offset is a time too.
-        extras["gamma"] = float(extras["gamma"]) / d
-    assert name is not None  # a distribution of time (see _SCALED)
-    return getattr(surpyval, name).from_params(move(params, d), **extras)
+        try:
+            return rescale(d)
+        except ValueError as refused:
+            reason = f" ({refused})"
+    name = distribution_name(model) or type(model).__name__
+    raise ValueError(
+        f"Node {node!r} is given a duty, which moves a life in operating "
+        f"time onto the calendar, but its life is {name}, which cannot be "
+        f"moved{reason}: give the life it has on the calendar instead."
+    )
 
 
 def _clocked_task(node, key: str, task: dict) -> None:

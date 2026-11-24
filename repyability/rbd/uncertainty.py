@@ -30,16 +30,15 @@ in surpyval, already provides. A node's uncertainty is one of
   covariates kept), a Wiener or gamma degradation process, a mixture, a
   Royston-Parmar model, and a fitted repairable-unit process
   (Crow-AMSAA, Duane, HPP or generalised renewal). Each parameter is
-  drawn on its own scale, as a distribution's is: surpyval gives no range
-  per parameter for these models, so the range is read from what
-  ``with_params`` refuses, the others at their estimates. A parameter it
-  refuses just below 0 (a scale, a shape, a rate) is drawn on the log
-  scale; one it also refuses just above 1, and a renewal process's
-  restoration factor (which a diagram takes in [0, 1]), on the logit
-  scale; any other (a regression coefficient, a location) on its
-  own. A mixture's weights are drawn as their log-ratios to the last
-  (surpyval's ``w_logits``). The covariance is carried to those scales
-  by the delta method, so every draw is valid and none is cut off. A
+  drawn on its own scale, as a distribution's is, within the range
+  surpyval gives it (``parameter_bounds``, from 0.29). A parameter
+  bounded on one side (a scale, a shape, a rate) is drawn on the log
+  scale; one bounded on both, and a renewal process's restoration factor
+  (which a diagram takes in [0, 1]), on the logit scale; any other (a
+  regression coefficient, a location) on its own. A mixture's weights
+  are drawn as their log-ratios to the last (surpyval's ``w_logits``).
+  The covariance is carried to those scales by the delta method, so
+  every draw is valid and none is cut off. A
   draw surpyval still refuses (where parameters are tied together, as a
   spline's are) is drawn again and counted, with a warning, and past
   ``MOST_REFUSED`` (2%) of the draws ``"fit"`` refuses.
@@ -439,7 +438,7 @@ class _Rebuilt:
     """A fitted model drawn through surpyval's ``with_params`` (see the
     module docstring): its parameters' ``names`` (``covariance_names``),
     their fitted values (``params``), their ``covariance``, each one's
-    range as surpyval refuses values past it (``bounds``; a mixture's
+    range (``bounds``, surpyval's ``parameter_bounds``; a mixture's
     weights (0, 1)), and the node model at other values (``rebuild``)
     or at a point of the scales the draws are made on (``unscaled``)."""
 
@@ -536,65 +535,48 @@ class _Rebuilt:
         return drawn
 
     def _bounds(self) -> list:
-        """Each parameter's range, read from what surpyval refuses (it
-        gives no range per parameter for these models): bounded below by
-        0 where ``with_params`` refuses the parameter just below 0 (the
-        others at their estimates), and above by 1 too where it also
-        refuses it just above 1 (or it is a renewal process's restoration
-        factor, which a diagram takes in [0, 1]); unbounded otherwise (a
-        regression coefficient, a location). A parameter the fit holds
-        fixed (no variance) is left as it is; a mixture's weights are in
-        (0, 1)."""
-        k = len(self.params) - self.m
-        variances = np.diag(self.covariance)
-        out: list = []
-        for j in range(k):
-            value = self.params[j]
-            if variances[j] <= 0.0:
-                out.append((None, None))
-                continue
-            tiny = 1e-9 * max(1.0, abs(value))
-            if self._accepts(j, -tiny):
-                out.append((None, None))
-                continue
-            if value <= 0.0:
-                raise ValueError(
-                    f"{self.label}: its fitted {self.names[j]}, "
-                    f"{value!r}, is on the edge of its range (surpyval "
-                    "refuses it below 0), so it has no normal "
-                    "approximation there; give a list of models instead "
-                    "(refits to resampled data, say)."
-                )
-            restoration = j == 0 and _restores(self.fit)
-            upper = (
-                1.0
-                if restoration
-                or (value < 1.0 and not self._accepts(j, 1 + tiny))
-                else None
+        """Each parameter's range, surpyval's (``parameter_bounds``, from
+        0.29), but a renewal process's restoration factor in [0, 1] (as a
+        diagram takes it, where surpyval allows a generalised renewal
+        process's past 1). A parameter the fit holds fixed (no variance)
+        is left as it is. A fitted value on or past an end of its range
+        is refused: it has no normal approximation there."""
+        ranges = getattr(self.fit, "parameter_bounds", None)
+        if ranges is None or len(ranges) != len(self.params):
+            raise ValueError(
+                f"{self.label}: surpyval gives no range for each of its "
+                f"{_kind(self.fit)}'s parameters (parameter_bounds), which "
+                "'fit' draws them within. Give a list of models instead "
+                "(refits to resampled data, say)."
             )
-            if upper is not None and value >= upper:
-                raise ValueError(
-                    f"{self.label}: its fitted {self.names[j]}, "
-                    f"{value!r}, is at or past the edge of its range (0, "
-                    "1), so it has no normal approximation there; give a "
-                    "list of models instead (refits to resampled data, "
-                    "say)."
+        variances = np.diag(self.covariance)
+        k = len(self.params) - self.m
+        out: list = []
+        for j, (low, high) in enumerate(ranges):
+            if j < k and variances[j] <= 0.0:
+                out.append((None, None))
+                continue
+            if j == 0 and _restores(self.fit):
+                high = 1.0 if high is None else min(float(high), 1.0)
+            value = self.params[j]
+            low = None if low is None else float(low)
+            high = None if high is None else float(high)
+            if (low is not None and value <= low) or (
+                high is not None and value >= high
+            ):
+                what = (
+                    "a fitted weight"
+                    if j >= k
+                    else f"its fitted {self.names[j]}"
                 )
-            out.append((0.0, upper))
-        for w in self.params[k:]:
-            if not 0.0 < w < 1.0:
                 raise ValueError(
-                    f"{self.label}: a fitted weight, {w!r}, is on the edge "
-                    "of its range, so it has no normal approximation there; "
-                    "give a list of models instead."
+                    f"{self.label}: {what}, {value!r}, is on or past the "
+                    f"edge of its range ({low}, {high}), so it has no "
+                    "normal approximation there; give a list of models "
+                    "instead (refits to resampled data, say)."
                 )
-            out.append((0.0, 1.0))
+            out.append((low, high))
         return out
-
-    def _accepts(self, j: int, value: float) -> bool:
-        moved = self.params.copy()
-        moved[j] = value
-        return _tried(self.rebuild, moved) is not None
 
     def scaled(self) -> Tuple[np.ndarray, np.ndarray]:
         """The centre and covariance of the draws, on each parameter's
@@ -1062,7 +1044,7 @@ def varied_parameters(model, spec: Any, label: str):
                 "itself."
             )
         if rebuilt_by_surpyval(model):
-            # Their ranges as surpyval refuses values past them.
+            # Their ranges as surpyval gives them (parameter_bounds).
             rebuilt = _redrawable(model, label)
             return (
                 list(range(len(rebuilt.params))),

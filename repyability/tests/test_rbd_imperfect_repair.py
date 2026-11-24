@@ -8,7 +8,7 @@ import math
 import numpy as np
 import pytest
 import surpyval as surv
-from surpyval.recurrent.renewal.renewal_model import conditional_gaps
+from surpyval.recurrent import conditional_gaps
 
 from repyability import RepairableRBD
 from repyability.rbd import routes as r

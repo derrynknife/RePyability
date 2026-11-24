@@ -9,33 +9,24 @@ life it is that first-passage time, which surpyval gives from any level:
 Replacement on condition by level (a spec's ``"preventive": {"policy":
 "condition", "level": ...}``) inspects the level and replaces a unit found
 at or past the level; between inspections it needs the level at the next
-inspection given that the unit has not failed by then, which surpyval does
-not give yet (SurPyval#836). :func:`level_after` works it out from the
-fitted parameters, a workaround to drop once surpyval has it:
+inspection given that the unit has not failed by then, which surpyval
+gives from 0.29 (``level_at(..., given_survival=True)``, the method of
+images for a Wiener path; a gamma increment truncated at the
+threshold): the simulation draws it by its quantile function
+(:func:`level_after`).
 
-- a Wiener process, ``Y(t) = y + mu t + sigma B(t)``: the level at ``t``
-  of a path that has not reached the threshold ``L`` by then, whose
-  density is the free one less its reflection in ``L`` (the method of
-  images), ``phi(a) - exp(2 mu (L - y) / sigma^2) phi(b)``;
-- a gamma process, whose increment over ``t`` is Gamma(``alpha t``,
-  rate ``beta``): monotone, so not having failed by ``t`` is the level
-  being below ``L`` at ``t``, a gamma truncated there.
-
-Both are stated once, in :func:`level_below`: the probability that a unit
-at level ``y`` now is, a time ``t`` later, unfailed and at a level at most
-``z``. The simulation's draw (:func:`level_after`) inverts it; the
-numerical values (``_level_replacement``) take its differences over a
-grid of levels.
+The numerical values (``_level_replacement``) take differences of
+:func:`level_below` over a grid of levels: the probability that a unit at
+level ``y`` now is, a time ``t`` later, unfailed and at a level at most
+``z``, from the fitted parameters, broadcast over arrays of levels and
+times (surpyval's ``ProcessLevel`` takes one starting level and time at a
+time). The tests check it against surpyval's.
 """
 
-import math
 import sys
 
 import numpy as np
-from scipy.special import gammainc, gammaincinv, log_ndtr, ndtr
-
-#: The bisection's steps for a Wiener level: enough to settle a float.
-_STEPS = 200
+from scipy.special import gammainc, log_ndtr, ndtr
 
 
 def _kinds():
@@ -69,24 +60,23 @@ def check_life(model, label: str) -> None:
         )
 
 
-def level_below(model, y, t, z, exp=np.exp):
+def level_below(model, y, t, z):
     """The probability that a unit at level ``y`` now has not failed (not
     reached ``model.threshold``) a time ``t > 0`` from now, and is then at
     a level at most ``z``: at ``z`` at or past the threshold, its
-    survival. Arrays broadcast. ``exp`` is the exponential the Wiener
-    reflection's weight is taken by: the simulation's draws use
-    ``math.exp``, with which its seeded results were recorded. A
-    workaround for SurPyval#836 (see the module docstring)."""
+    survival. Arrays broadcast. surpyval's ``level_at(...,
+    given_survival=True)`` is this over its value at the threshold, for
+    one ``y`` and ``t``."""
     threshold = float(model.threshold)
     a, b = (float(p) for p in model.params)
     wiener, _ = _kinds()
     z = np.minimum(z, threshold)
     if isinstance(model, wiener):
-        return _wiener_below(a, b, threshold, y, t, z, exp)
+        return _wiener_below(a, b, threshold, y, t, z)
     return _gamma_below(a, b, y, t, z)
 
 
-def _wiener_below(mu, sigma, threshold, y, t, z, exp):
+def _wiener_below(mu, sigma, threshold, y, t, z):
     """``level_below`` for a Wiener process, ``z`` at most the threshold:
     the free path's distribution less its reflection in the threshold."""
     spread = sigma * np.sqrt(t)
@@ -94,7 +84,7 @@ def _wiener_below(mu, sigma, threshold, y, t, z, exp):
     weight = 2.0 * mu * (threshold - y) / sigma**2
     free = ndtr((z - y - mu * t) / spread)
     image = (z - 2.0 * threshold + y - mu * t) / spread
-    return free - exp(weight + log_ndtr(image))
+    return free - np.exp(weight + log_ndtr(image))
 
 
 def _gamma_below(alpha, beta, y, t, z):
@@ -107,45 +97,12 @@ def _gamma_below(alpha, beta, y, t, z):
 def level_after(model, y: float, t: float, u: float) -> float:
     """The level at time ``t`` from now of a unit at level ``y`` now that
     has not failed (reached ``model.threshold``) by then, from the uniform
-    ``u``: the inverse of its distribution function, ``level_below`` over
-    its value at the threshold. A workaround for SurPyval#836."""
-    threshold = float(model.threshold)
+    ``u``: surpyval's quantile of the level given survival
+    (``level_at(..., given_survival=True)``)."""
     if t <= 0.0:
         return y
-    wiener, _ = _kinds()
-    if isinstance(model, wiener):
-        return _wiener_level(model, y, t, u, threshold)
-    alpha, beta = (float(p) for p in model.params)
-    # P(increment < L - y) is the survival; the increment below it is a
-    # gamma truncated there.
-    survive = _gamma_below(alpha, beta, y, t, threshold)
-    return y + float(gammaincinv(alpha * t, u * survive)) / beta
-
-
-def _wiener_level(model, y: float, t: float, u: float, threshold: float):
-    """A Wiener level (see :func:`level_after`), by bisection of its
-    distribution function on ``(-inf, threshold)``."""
-    mu, sigma = (float(p) for p in model.params)
-    spread = sigma * math.sqrt(t)
-
-    def below(z: float) -> float:
-        """P(Y(t) <= z and no crossing by t), for z <= threshold."""
-        return _wiener_below(mu, sigma, threshold, y, t, z, math.exp)
-
-    survive = below(threshold)
-    target = u * survive
-    # A bracket: the free path's mean less a wide margin, up to L.
-    lo = min(y + mu * t, threshold) - 40.0 * spread
-    hi = threshold
-    for _ in range(_STEPS):
-        mid = 0.5 * (lo + hi)
-        if mid <= lo or mid >= hi:
-            break
-        if below(mid) < target:
-            lo = mid
-        else:
-            hi = mid
-    return 0.5 * (lo + hi)
+    level = model.level_at(t, y0=y, t0=0.0, given_survival=True)
+    return float(np.ravel(level.qf(u))[0])
 
 
 def failure_from(model, y: float, u: float) -> float:
