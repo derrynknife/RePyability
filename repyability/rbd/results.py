@@ -5403,6 +5403,8 @@ class DowntimeDesign(_ResultMapping):
         The copies of each redundancy node, by node.
     intervals : dict
         Each interval node's task interval (None: as given), by node.
+    inspections : dict
+        Each inspection node's test interval (None: as given), by node.
     crews : int or None
         The repair crews (None: as many as are needed).
     call_out : dict or None
@@ -5429,6 +5431,7 @@ class DowntimeDesign(_ResultMapping):
 
     copies: Dict[Hashable, int]
     intervals: Dict[Hashable, Optional[float]]
+    inspections: Dict[Hashable, Optional[float]]
     crews: Optional[int]
     call_out: Optional[Dict[str, float]]
     spend: float

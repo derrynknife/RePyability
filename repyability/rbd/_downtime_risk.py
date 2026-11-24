@@ -19,6 +19,8 @@ optional ``budget``:
 - ``intervals``: a node's preventive task's interval, through the
   candidates given, its spend the expected preventive cost over the
   horizon (from the same runs);
+- ``inspections``: a node's test interval (hidden failures), through
+  the candidates given, its spend the expected inspection cost;
 - ``crews``: repair crews more than the diagram's ``repair_crews``, at
   a price each and their salaries at the ``crew_cost_rate``;
 - ``call_out``: a call-out crew's contract, through the contracts given,
@@ -128,11 +130,13 @@ def _cap(value, what: str) -> Optional[int]:
 
 
 def _levers(
-    rbd, redundancy, intervals, max_units, crews, call_out
+    rbd, redundancy, intervals, inspections, max_units, crews, call_out
 ) -> List[_Lever]:
     """The levers, checked, in the order the search tries their moves:
-    the redundancy nodes', the interval nodes', the crews' and the
-    call-out contracts'."""
+    the redundancy nodes', the interval nodes', the inspection nodes',
+    the crews' and the call-out contracts'. Each option of a choice
+    lever is built once here, so that one the diagram cannot take is
+    refused before the search."""
     from repyability.rbd import _repairable_allocation as allocation
     from repyability.rbd import _requirements
 
@@ -189,10 +193,42 @@ def _levers(
         levers.append(
             _Lever("interval", node, options=tuple(float(v) for v in row))
         )
+    for node, values in (inspections or {}).items():
+        _requirements._require_component(rbd, node, "inspections")
+        spec = rbd._init_args["components"].get(node)
+        test = spec.get("inspection") if isinstance(spec, dict) else None
+        if not isinstance(test, dict) or "interval" not in test:
+            raise ValueError(
+                f"Node {node!r} has no inspection with an interval to "
+                "move: give it one (its 'inspection' spec's 'interval')."
+            )
+        row = checks.real_array(values, f"inspections[{node!r}]").ravel()
+        if row.size == 0 or not np.all(np.isfinite(row) & (row > 0.0)):
+            raise ValueError(
+                f"inspections[{node!r}] must be the test intervals to try, "
+                f"in the order to try them, each more than 0; got {values!r}."
+            )
+        levers.append(
+            _Lever("inspection", node, options=tuple(float(v) for v in row))
+        )
     if crews is not None:
         levers.append(_crews_lever(rbd, crews))
     if call_out is not None:
         levers.append(_call_out_lever(rbd, call_out))
+    for i, lever in enumerate(levers):
+        for step in range(1, len(lever.options) + 1):
+            state = tuple(step if j == i else 0 for j in range(len(levers)))
+            try:
+                _design(rbd, levers, state)
+            except (ValueError, TypeError, NotImplementedError) as error:
+                what = (
+                    lever.kind
+                    if lever.node is None
+                    else f"{lever.kind} of node {lever.node!r}"
+                )
+                raise type(error)(
+                    f"The {what}'s option {step} cannot be taken: {error}"
+                ) from error
     return levers
 
 
@@ -275,6 +311,12 @@ def _design(rbd, levers: Sequence[_Lever], state: Sequence[int]):
                 spec["preventive"], interval=lever.options[step - 1]
             )
             components[lever.node] = spec
+        elif lever.kind == "inspection":
+            spec = dict(components[lever.node])
+            spec["inspection"] = dict(
+                spec["inspection"], interval=lever.options[step - 1]
+            )
+            components[lever.node] = spec
         elif lever.kind == "crews":
             args["repair_crews"] = int(args["repair_crews"]) + step
         elif lever.kind == "call_out":
@@ -295,12 +337,12 @@ def _design(rbd, levers: Sequence[_Lever], state: Sequence[int]):
 
 def _settings(rbd, levers: Sequence[_Lever], state: Sequence[int]) -> dict:
     """A design's levers, as its result gives them."""
-    found: dict = {"copies": {}, "intervals": {}}
+    found: dict = {"copies": {}, "intervals": {}, "inspections": {}}
     for lever, step in zip(levers, state):
         if lever.kind == "copies":
             found["copies"][lever.node] = step
-        elif lever.kind == "interval":
-            found["intervals"][lever.node] = (
+        elif lever.kind in ("interval", "inspection"):
+            found[lever.kind + "s"][lever.node] = (
                 lever.options[step - 1] if step else None
             )
     crews = next((s for v, s in zip(levers, state) if v.kind == "crews"), 0)
@@ -383,6 +425,7 @@ def least_spend_for_downtime(
     downtime: str,
     redundancy: Optional[Mapping],
     intervals: Optional[Mapping],
+    inspections: Optional[Mapping],
     max_units: Optional[Mapping],
     crews: Optional[Mapping],
     call_out,
@@ -436,7 +479,9 @@ def least_spend_for_downtime(
         MC_SAMPLES if mc_samples is None else mc_samples, "mc_samples"
     )
     seed = _npv_runs._seed(seed)
-    levers = _levers(rbd, redundancy, intervals, max_units, crews, call_out)
+    levers = _levers(
+        rbd, redundancy, intervals, inspections, max_units, crews, call_out
+    )
 
     designs: List[DowntimeDesign] = []
     cache: Dict[Tuple[int, ...], DowntimeDesign] = {}
@@ -583,8 +628,8 @@ def _floor_words(floor, last, limit, measure, budget) -> str:
     if floor == "caps":
         return (
             f"{lowest}: every lever is at its cap (max_units, crews' "
-            "'max', or the last interval or contract given). Raise the "
-            "caps, or give more options."
+            "'max', or the last option given). Raise the caps, or give "
+            "more options."
         )
     if floor == "planned":
         return (
@@ -598,5 +643,5 @@ def _floor_words(floor, last, limit, measure, budget) -> str:
         return f"{lowest}: the search took its most steps ({MAX_STEPS})."
     return (
         f"{lowest}: no lever given lowers it further. Give other levers "
-        "(redundancy=, intervals=, crews=, call_out=)."
+        "(redundancy=, intervals=, inspections=, crews=, call_out=)."
     )

@@ -19,6 +19,11 @@ release between minors that only adds (0.19.1).
   fees and time engaged). Each `DowntimeDesign` gives its `crews` and
   `call_out`. A group of units (standby, load-sharing, identical) is one
   node to the levers: a copy is a second group in parallel.
+- `least_spend_for_downtime(inspections={node: [intervals]})`: a unit's
+  test interval as a lever, through the candidates given, at its tests'
+  expected cost. Each `DowntimeDesign` gives its `inspections`. A
+  lever's option a diagram cannot take (a test interval under its
+  offset) is refused before the search, naming the lever.
 - Load-sharing groups on a `RepairableRBD`: a component spec's
   `"load_sharing"` (`"units"`, `"k"`, `"load"`), with an
   accelerated-failure-time `"reliability"`, makes the node a group of
