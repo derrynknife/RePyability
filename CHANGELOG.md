@@ -33,6 +33,14 @@ release between minors that only adds (0.19.1).
   its own age, from what is there (`shutdown_spec`, a
   `{"shutdown", "older_than"}` task and `events_by_period(state=)`),
   with its checks.
+- Forecasts through a duty in a unit of use (UC-69 of the schedule
+  README): a life in km, miles, cycles, starts or any meter of the duty
+  plan's own is read from the plan's meter of it, in
+  `UsageForecast.model_time` and `moment` (`unit="km"`), the new
+  `UsageForecast.reading(unit)`, `failures_by_period` and `task_value`
+  (`Replaces`, `Finds`). km and miles convert; a unit of another kind is
+  refused, saying which meters the plan has. A model labelled `"km"` is
+  no longer refused by `failures_by_period`.
 - `value_plan` takes a `"task_value"` analysis: a service's value on
   dates (`task_value` with `Services(plan, effect=)`) from one JSON
   document, with the task, the usage forecast (its start, end and duty

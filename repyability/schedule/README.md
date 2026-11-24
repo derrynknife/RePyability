@@ -538,8 +538,9 @@ in `test_schedule_forecast.py`.
   - The part's `age` is at the forecast's start.
   - The model's unit is read from its label (surpyval's `unit`: `"h"`,
     `"hrs"`, `"days"`, ...), else given as `unit=`, else hours, with a
-    note. A label that is not a unit of time (`"km"`) is refused, as is
-    a `unit=` that contradicts the label.
+    note. A label that is a unit of use (`"km"`) is read from the
+    plan's meter of it (UC-69); a `unit=` that contradicts the label is
+    refused.
   - The range is fixed at the 5th to 95th percentile (90%, two-sided),
     in counts and in cost.
 - **Checks:** `test_uc38_wear_ring_by_month` (the numbers above, each
@@ -551,6 +552,51 @@ in `test_schedule_forecast.py`.
   the life in days), `test_a_policy_by_period` (age replacement against
   `cost_distribution`), and
   `test_a_part_with_no_cost_or_a_replacement_taking_time`.
+
+### UC-69: "Our haul-truck tyres' life is fitted in km, and the trucks run about 400 km a day. How many tyres fail each month?"
+
+- **Status:** built: a life in a unit of use (`"km"`, `"miles"`,
+  `"cycles"`, `"starts"`, or any meter of the plan's own) is read from
+  the duty plan's meter of it (`UsageForecast.reading(unit)`), in
+  `model_time`, `moment`, `failures_by_period` and `task_value` with
+  `Replaces` or `Finds`.
+- **Who asks:** a planner whose lives count distance or uses, not hours
+  (tyres in km, valves in cycles, engines in starts).
+- **What they know:** the tyre's life (Weibull, scale 60,000 km, shape
+  2), the truck's duty (400 km a day, `Rate(400, per="day",
+  meter="km")`, or 500 km each weekday, `per_hour={"km": 500 / 16}` on
+  Mon–Fri 06:00–22:00 shifts).
+- **The answer, by hand:** at 400 km a day 60,000 km is 150 days, so the
+  tyre is the same Weibull with a scale of 150 days, run every day:
+  January 2027 expects **0.0421** failures (the first failure's chance,
+  `1 - R(31)` = 0.0418 with `R(t) = exp(-(t / 150)^2)`, and the
+  replacements' own failures the rest), February 0.105, March 0.174. On the weekday duty, January has 21 weekdays, **10,500 km**,
+  and by each month's end the km are 500 times the weekdays since 1
+  January (20,500 by February's, 32,000 by March's).
+- **How it is solved:** the duty plan already drives any meter (a
+  `Rate`'s `meter=`, `per_hour=` and `per_run=`, and `"starts"` from every
+  run), so a life in a unit of use is read from that meter as a life in
+  hours is read from the hours: its model time at a moment is the
+  meter's reading since the forecast's start. Units of one kind convert
+  (a life in miles on a plan in km reads km over 1.609344); a unit of
+  another kind (a life in km on a plan with hours alone, or in cycles on
+  one with km) is refused, saying which meters the plan has and how to
+  give it the one it needs. A varying duty, seasons and layered plans
+  (exact runs over a general rate) come with the meter, as for hours.
+  Present values discount each cost from the date it falls, read through
+  the same meter.
+- **Decisions (defaults):** the kinds that convert are distance (km,
+  miles); cycles and starts are each their own; any other name is a
+  meter of the plan's own, read as it is. The notes say which meter was
+  read. A service valued on the unit's diagram (`Services`) takes a life
+  in operating time only: the diagram's clock is calendar time, so a
+  life in km is refused there, as on a `RepairableRBD` (a duty plan's
+  shares are shares of the time).
+- **Checks:** `test_schedule_use_units.py`: the km life at 400 km a day
+  against the life in days run continuously (to 1e-12, present values
+  too); the weekday duty against its hand count of km and
+  `NonRepairable.failures` there (to 1e-12); miles on a km plan (to
+  1e-6); the refusals; starts; a replacement task's model times in km.
 
 ### UC-39: "What is coming on this system each calendar month?"
 

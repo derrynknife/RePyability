@@ -32,11 +32,14 @@ from ._duty import Continuous, DutyPlan, Rate, pieces
 from ._meters import (
     CALENDAR_PERIODS,
     UNITS,
+    USE_UNITS,
     Clock,
     format_moment,
     nonnegative,
     positive,
+    time_unit,
     to_plain,
+    use_unit,
 )
 
 _HOUR_S = 3600.0
@@ -809,11 +812,64 @@ class UsageForecast:
             )
         return UNITS[unit]
 
+    def reading(self, unit: str) -> Tuple[str, float]:
+        """The meter a life counted in ``unit`` is read from, and how many
+        of the meter's units make one of ``unit``: ``("hours", 24.0)`` for
+        a life in days. A unit of time reads the operating hours; a unit
+        of use (``"km"``, ``"miles"``, ``"cycles"``, ``"starts"``, or any
+        meter of the plan's own, such as ``"tonnes"``) reads the plan's
+        meter of that name, or one of the same kind in another unit (km
+        and miles convert). A unit of another kind is refused, saying
+        why: a distance is not read from hours.
+
+        Parameters
+        ----------
+        unit : str
+            The unit the life was fitted in.
+
+        Examples
+        --------
+        >>> from repyability.schedule import DutyPlan, Rate
+        >>> truck = DutyPlan(Rate(400, per="day", meter="km"))
+        >>> usage = truck.forecast("2027-01-01", "2027-02-01")
+        >>> usage.reading("miles")
+        ('km', 1.609344)
+        """
+        if not isinstance(unit, str) or not unit:
+            raise ValueError(f"unit must name a unit; got {unit!r}.")
+        if unit in UNITS:
+            return "hours", UNITS[unit]
+        named = use_unit(unit) or unit
+        if named in self._maps:
+            return named, 1.0
+        meters = ", ".join(map(repr, self.meters))
+        kind = USE_UNITS.get(named)
+        if kind is not None:
+            for meter in self.meters:
+                theirs = USE_UNITS.get(use_unit(meter) or meter)
+                if theirs is not None and theirs[0] == kind[0]:
+                    return meter, kind[1] / theirs[1]
+        if time_unit(unit) is not None:
+            raise ValueError(
+                f"unit {unit!r} is a unit of time: give it as one of "
+                f"{', '.join(map(repr, UNITS))}."
+            )
+        what = f"a {kind[0]}" if kind is not None else f"{unit!r}"
+        if kind is not None and kind[0] in ("cycles", "starts"):
+            what = f"a count of {kind[0]}"
+        raise ValueError(
+            f"The life is counted in {unit!r}, and the duty plan has no "
+            f"meter of it (its meters are {meters}): {what} cannot be read "
+            "from operating hours. Give the plan the meter: a Rate(..., "
+            f"meter={named!r}), or per_hour= or per_run= on its runs."
+        )
+
     def model_time(self, moments, unit: str = "hours"):
-        """Operating time since the forecast's start at each moment, in
-        ``unit`` (the unit a model's life was fitted in): how a model in
-        operating time is reached from dates. A moment or a sequence (an
-        array back).
+        """Operating time (or use) since the forecast's start at each
+        moment, in ``unit`` (the unit a model's life was fitted in): how a
+        model in operating time is reached from dates. A unit of use
+        (``"km"``, ``"cycles"``) is read from the plan's meter of it (see
+        ``reading``). A moment or a sequence (an array back).
 
         Examples
         --------
@@ -823,29 +879,31 @@ class UsageForecast:
         >>> usage.model_time("2026-11-23")
         80.0
         """
-        scale = self._unit(unit)
+        meter, scale = self.reading(unit)
         single = isinstance(moments, (str, datetime)) or not hasattr(
             moments, "__iter__"
         )
         given = [moments] if single else list(moments)
         t = np.array([self._seconds(m) for m in given])
         values = (
-            self._at_s("hours", t) - self._at_s("hours", self._start_s)
+            self._at_s(meter, t) - self._at_s(meter, self._start_s)
         ) / scale
         return float(values[0]) if single else values
 
     def moment(
         self, model_time: float, unit: str = "hours"
     ) -> Optional[datetime]:
-        """The first moment operating time since the start reaches
-        ``model_time`` (in ``unit``); None past the forecast. The inverse
-        of ``model_time`` wherever the equipment is running."""
+        """The first moment operating time (or use) since the start
+        reaches ``model_time`` (in ``unit``, as ``model_time`` reads it);
+        None past the forecast. The inverse of ``model_time`` wherever the
+        equipment is running."""
         mt = nonnegative(model_time, "model_time")
-        knots, values = self._map("hours")
+        meter, scale = self.reading(unit)
+        knots, values = self._map(meter)
         base = float(_value(knots, values[0], self._start_s))
         if mt == 0.0:
             return self._moment(self._start_s)
-        t = _cross(knots, values[0], base + mt * self._unit(unit))
+        t = _cross(knots, values[0], base + mt * scale)
         return self._moment(t)
 
     def duty(self, start=None, end=None) -> float:
