@@ -12,6 +12,13 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `least_spend_for_downtime` takes two more levers: `crews={"price":,
+  "max":}` (repair crews more than the diagram's `repair_crews`, each at
+  its price and its salary at the `crew_cost_rate`) and `call_out=` (a
+  call-out contract, or a list to try in order, priced by its expected
+  fees and time engaged). Each `DowntimeDesign` gives its `crews` and
+  `call_out`. A group of units (standby, load-sharing, identical) is one
+  node to the levers: a copy is a second group in parallel.
 - Load-sharing groups on a `RepairableRBD`: a component spec's
   `"load_sharing"` (`"units"`, `"k"`, `"load"`), with an
   accelerated-failure-time `"reliability"`, makes the node a group of

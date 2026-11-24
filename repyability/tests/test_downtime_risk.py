@@ -236,3 +236,139 @@ def test_refusals():
         pump().least_spend_for_downtime(YEAR, 10.0, redundancy={"p": 0.0})
     with pytest.raises(ValueError, match="limit"):
         pump().least_spend_for_downtime(YEAR, -1.0)
+
+
+TWO = [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")]
+
+
+def pair(**more):
+    """Two pumps in parallel, a failure every 50 h and 50 h repairs."""
+    return RepairableRBD(
+        TWO,
+        {
+            n: {"reliability": E([0.02]), "repairability": E([0.02])}
+            for n in "ab"
+        },
+        **more,
+    )
+
+
+def direct(diagram, n, seed):
+    """A diagram's own run, as the search runs each design."""
+    run = diagram.availability(
+        YEAR,
+        mc_samples=n,
+        seed=seed,
+        control_variate=False,
+        conditional=False,
+    )
+    return YEAR - np.asarray(run.uptimes, float), run
+
+
+def test_a_crew_more_is_the_diagram_with_it_and_its_salary():
+    found = pair(repair_crews=1, crew_cost_rate=2.0).least_spend_for_downtime(
+        YEAR, 1.0, crews={"price": 100.0}, mc_samples=1000, seed=50
+    )
+    # A third crew has no job two pumps do not already give the two.
+    assert not found.met and found.floor == "lowest"
+    assert [d.crews for d in found.frontier] == [1, 2]
+    best = found.frontier[-1]
+    assert best.spend == pytest.approx(100.0 + 2.0 * YEAR, rel=1e-12)
+    down, _ = direct(pair(repair_crews=2, crew_cost_rate=2.0), 1000, 50)
+    assert best.unplanned["mean_hours"] == pytest.approx(down.mean())
+    # Against the crews' Markov chain: with two crews each pump is down
+    # half the time on its own, both a quarter (2,190 h a year); with
+    # one, the chain on the pumps down has shares 1 : 2 : 2, both down
+    # 0.4 of the time (3,504 h).
+    exact = pair(repair_crews=2).mean_unavailability() * YEAR
+    assert exact == pytest.approx(YEAR / 4.0, rel=1e-9)
+    assert abs(down.mean() - exact) < 4 * down.std() / math.sqrt(down.size)
+    first = found.frontier[0].unplanned["mean_hours"]
+    one = pair(repair_crews=1).mean_unavailability() * YEAR
+    assert one == pytest.approx(0.4 * YEAR, rel=1e-9)
+    assert abs(first - one) < 0.05 * one
+
+
+def test_a_call_out_contract_is_priced_by_its_runs():
+    contract = {"when_waiting": 1, "fee": 50.0, "rate": 3.0}
+    found = pair(repair_crews=1, crew_cost_rate=2.0).least_spend_for_downtime(
+        YEAR,
+        1.0,
+        call_out=[{"when_waiting": 2, "fee": 1.0}, contract],
+        mc_samples=1000,
+        seed=51,
+    )
+    best = found.frontier[-1]
+    assert best.call_out == contract
+    # Its spend is its fees and time engaged, the change in the crews'
+    # cost of its runs; the salaries are the same in both.
+    _, plain = direct(pair(repair_crews=1, crew_cost_rate=2.0), 1000, 51)
+    down, called = direct(
+        pair(repair_crews=1, crew_cost_rate=2.0, call_out=contract), 1000, 51
+    )
+    extra = called.cost.by_category["crews"] - plain.cost.by_category["crews"]
+    assert best.spend == pytest.approx(extra, rel=1e-12)
+    assert best.unplanned["mean_hours"] == pytest.approx(down.mean())
+    # Called at the first job waiting, two pumps always have a crew each.
+    exact = pair(repair_crews=1, call_out=contract).mean_unavailability()
+    assert exact * YEAR == pytest.approx(YEAR / 4.0, rel=1e-9)
+
+
+@pytest.mark.parametrize(
+    "group",
+    [
+        {"standby": {"units": 2}},
+        {"identical": {"units": 2, "k": 1}},
+        {"load_sharing": {"units": 2, "k": 1, "load": 2.0}},
+    ],
+)
+def test_a_group_of_units_is_one_node_to_the_levers(group):
+    from repyability.tests import catalogue
+
+    life = catalogue.aft() if "load_sharing" in group else E([0.01])
+    spec = {"reliability": life, "repairability": E([0.02]), **group}
+    rbd = RepairableRBD(ONE, {"p": spec}, repair_crews=1, crew_cost_rate=1.0)
+    found = rbd.least_spend_for_downtime(
+        YEAR,
+        1.0,
+        redundancy={"p": 1e5},
+        crews={"max": 1},
+        max_units={"p": 1},
+        mc_samples=300,
+        seed=52,
+    )
+    # A crew more (8,760 for the year) repairs both units at once; a copy
+    # is a second group in parallel.
+    assert found.frontier[0].crews == 1
+    assert {d.crews for d in found.frontier} <= {1, 2}
+    best = min(found.frontier, key=lambda d: d.estimate)
+    assert best.copies == {"p": 1}
+    copied = RepairableRBD(
+        [("s", "p"), ("p", "t"), ("s", "p (copy 1)"), ("p (copy 1)", "t")],
+        {"p": spec, "p (copy 1)": spec},
+        repair_crews=best.crews,
+        crew_cost_rate=1.0,
+    )
+    down, _ = direct(copied, 300, 52)
+    assert best.unplanned["mean_hours"] == pytest.approx(down.mean())
+
+
+def test_crew_and_call_out_refusals():
+    with pytest.raises(ValueError, match="repair_crews=None"):
+        pair().least_spend_for_downtime(YEAR, 1.0, crews={"price": 1.0})
+    with pytest.raises(ValueError, match="must cost something"):
+        pair(repair_crews=1).least_spend_for_downtime(YEAR, 1.0, crews={})
+    with pytest.raises(ValueError, match="crews must be a dict"):
+        pair(repair_crews=1).least_spend_for_downtime(
+            YEAR, 1.0, crews={"cost": 1.0}
+        )
+    with pytest.raises(ValueError, match="must cost something"):
+        pair(repair_crews=1).least_spend_for_downtime(
+            YEAR, 1.0, call_out={"when_waiting": 1}
+        )
+    with pytest.raises(ValueError, match="repair_crews is None"):
+        pair().least_spend_for_downtime(
+            YEAR, 1.0, call_out={"when_waiting": 1, "fee": 1.0}
+        )
+    with pytest.raises(ValueError, match="list of them"):
+        pair(repair_crews=1).least_spend_for_downtime(YEAR, 1.0, call_out=[])

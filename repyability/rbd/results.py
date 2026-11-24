@@ -5403,10 +5403,15 @@ class DowntimeDesign(_ResultMapping):
         The copies of each redundancy node, by node.
     intervals : dict
         Each interval node's task interval (None: as given), by node.
+    crews : int or None
+        The repair crews (None: as many as are needed).
+    call_out : dict or None
+        The call-out contract in force (None: none).
     spend : float
-        What the levers cost beyond the diagram as given: the copies'
-        prices, and the change in the expected preventive cost over the
-        horizon.
+        What the levers cost beyond the diagram as given: their prices
+        (the copies', the crews' more), and the change in the expected
+        cost of preventive tasks, inspections and crews (their salaries,
+        call-out fees and time engaged) over the horizon.
     estimate : float
         The target downtime's risk measure: its quantile at the level, or
         its tail mean.
@@ -5424,6 +5429,8 @@ class DowntimeDesign(_ResultMapping):
 
     copies: Dict[Hashable, int]
     intervals: Dict[Hashable, Optional[float]]
+    crews: Optional[int]
+    call_out: Optional[Dict[str, float]]
     spend: float
     estimate: float
     bound: float

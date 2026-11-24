@@ -5089,6 +5089,8 @@ class RepairableRBD(RBD):
         redundancy: Optional[Mapping] = None,
         intervals: Optional[Mapping] = None,
         max_units: Optional[Mapping] = None,
+        crews: Optional[Mapping] = None,
+        call_out: Any = None,
         budget: Optional[float] = None,
         value_rate: float = 0.0,
         confidence: float = 0.95,
@@ -5101,25 +5103,28 @@ class RepairableRBD(RBD):
         downtime over the horizon; what is the least I need to pay?".
         Simulated.
 
-        In plain terms: the target is the system's downtime over
-        ``horizon``, in hours or its cost (each hour down at the
-        ``downtime_cost_rate`` and ``value_rate``), all of it or only the
-        unplanned part (``downtime=``). A design meets the limit when an
-        upper confidence bound on the downtime's quantile at ``level``
-        (``objective="var"``, an order statistic, exact) or on the mean of
-        the worst share beyond it (``"cvar"``, approximate) is under it.
-        The levers are each at their own price, and spend is unbounded
-        unless ``budget`` is given: ``redundancy`` (copies of a node in
-        parallel with it, at a price each) and ``intervals`` (a node's
-        preventive interval, through the candidates given, at its tasks'
-        expected cost). The search takes, step by step, the move that
-        lowers the bad run's downtime most per extra spend, every design
-        on the same seed, until one meets the limit; its designs are the
-        frontier. If the levers stop short, ``stopped`` says what stopped
-        them (the budget, their caps, or planned task downtime no lever
-        lowers). Every design reports both its planned and its unplanned
-        downtime, the mean and the quantile at ``level``, in hours and
-        in cost. The guide's "Downtime you can be sure of" explains.
+        In plain terms: the target is the system's downtime over ``horizon``,
+        in hours or its cost (each hour down at the ``downtime_cost_rate`` and
+        ``value_rate``), all of it or only the unplanned part (``downtime=``).
+        A design meets the limit when an upper confidence bound on the
+        downtime's quantile at ``level`` (``objective="var"``, an order
+        statistic, exact) or on the mean of the worst share beyond it
+        (``"cvar"``, approximate) is under it. The levers are each at their own
+        price, and spend is unbounded unless ``budget`` is given:
+        ``redundancy`` (copies of a node in parallel with it, at a price each),
+        ``intervals`` (a node's preventive interval, through the candidates
+        given, at its tasks' expected cost), ``crews`` (repair crews more, at a
+        price each and their salaries) and ``call_out`` (a call-out crew's
+        contract, through those given, at its expected fees and time engaged).
+        A group of units (standby, load-sharing or identical) is one node: its
+        copy is a second group in parallel. The search takes, step by step, the
+        move that lowers the bad run's downtime most per extra spend, every
+        design on the same seed, until one meets the limit; its designs are the
+        frontier. If the levers stop short, ``stopped`` says what stopped them
+        (the budget, their caps, or planned task downtime no lever lowers).
+        Every design reports both its planned and its unplanned downtime, the
+        mean and the quantile at ``level``, in hours and in cost. The guide's
+        "Downtime you can be sure of" explains.
 
         Parameters
         ----------
@@ -5143,6 +5148,16 @@ class RepairableRBD(RBD):
             preventive task.
         max_units : dict, optional
             ``{node: most copies}``; by default none.
+        crews : dict, optional
+            Repair crews more than ``repair_crews``, which the diagram
+            must have: ``{"price": p, "max": m}``, ``p`` what each crew
+            more costs over the horizon besides its salary at the
+            ``crew_cost_rate`` (by default 0; one of the two must be more
+            than 0) and ``m`` the most crews more (by default none).
+        call_out : dict or list of dict, optional
+            Call-out contracts to try, in order, each as the diagram's
+            ``call_out`` takes (a fee or a rate more than 0), which needs
+            ``repair_crews``; by default none.
         budget : float, optional
             The most the levers may cost; by default no bound.
         value_rate : float, optional
@@ -5206,6 +5221,8 @@ class RepairableRBD(RBD):
             redundancy=redundancy,
             intervals=intervals,
             max_units=max_units,
+            crews=crews,
+            call_out=call_out,
             budget=budget,
             value_rate=value_rate,
             confidence=confidence,
