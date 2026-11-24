@@ -670,6 +670,10 @@ period. `value_lower` and `value_upper` are the value's 90% interval
 preventive task of its own. A virtual age on a duty plan that changes
 over time is not followed yet: give the unit's duty as one share.
 
+The same question can be asked as one JSON document, with the effect as
+plain data: `value_plan`'s `"task_value"` analysis (see
+[One call, as JSON](costs.md#one-call-as-json)).
+
 ### A system, by month
 
 A `RepairableRBD` runs on calendar time: its blocks' `"duty"` puts
