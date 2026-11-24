@@ -1129,9 +1129,18 @@ in `test_schedule_forecast.py`.
   time falls when `D` reaches it (`_Preventive.clock`). Its reliability
   from new, `R(D(t))`, is the model's own `sf`; a unit put in later has
   another, so it is no renewal process, and the Python simulation counts
-  it (the compiled engine hands it over). `events_by_period` then counts
-  each month's events in the histories and takes the cost's mean and
-  range from the same runs, each cost discounted from when it falls.
+  it (the compiled engine hands it over). Where its repairs take no time
+  and its task, if any, is counted in operating time and takes no time,
+  every event falls at an operating time, so the exact methods take it
+  as its operating-time curve seen through `D`
+  (`_point_availability.TimeChangedCurve`, on the one-node diagram with
+  no duty): its value at `t` is the curve's at `D(t)`, an event at
+  operating time `y` falls at `D⁻¹(y)`, and the plan's times are breaks.
+  `events_by_period` is then exact, each cost discounted from when it
+  falls as on any diagram. Otherwise (repairs or tasks that take time, a
+  task counted in calendar time, tests, a maintenance group) it counts
+  each month's events in the simulations' histories and takes the cost's
+  mean and range from the same runs.
 - **Decisions (defaults):** a plan belongs to the analysis
   (`CalendarContext.duty`), not to the unit's plan; a task in operating
   time on a block with no duty counts the diagram's clock as its
@@ -1142,7 +1151,12 @@ in `test_schedule_forecast.py`.
   in operating time and standby groups are refused, saying so).
 - **Checks:** `test_duty_plans.py`: a plan of one share is the duty share
   to the bit; the simulation against `M(D(t))` for run to failure, block
-  and age replacement; a usage task's dates equal the forecast's
+  and age replacement; the exact methods against `M(D(t))` (to 1e-12 of
+  the one-node diagram's count), an exponential life against its closed
+  form (failures `λD(t)`, a present value of `cλ∫e^{-rs}s(s)ds`, to
+  1e-7), and `events_by_period` against `failures_by_period` through the
+  same shifts (to 1e-6, the present values within the part's
+  `npv_precision`); a usage task's dates equal the forecast's
   `moment`s; a rule's dates; saving; the refusals. A rule as a spec of
   its own (resolved by the calendar) is not built: the diagram must
   stand without a calendar, and a rule's dates need one.
@@ -1171,11 +1185,11 @@ in `test_schedule_forecast.py`.
   planned hour and start as 0.9, an expected value. The dates when 90%
   of runs go ahead (the nth run to go ahead follows a negative binomial)
   are not worked out yet.
-- **Exact values on a duty plan that changes.** A unit on such a plan
-  is simulated (UC-64). Where its repairs and tasks take no time it is
-  its operating-time process seen through `D`, so its exact curves could
-  be the operating-time ones at `D(t)`; not built yet. Nor are tests
-  counted in operating time on such a plan, or a start other than new.
+- **Exact values on a duty plan that changes, with time taken.** A unit
+  on such a plan whose repairs or tasks take time, or whose task is
+  counted in calendar time, is simulated (UC-64); one whose repairs and
+  tasks take no time is exact. Tests counted in operating time on such a
+  plan, or a start other than new, are not built yet.
 
 ## Candidates
 

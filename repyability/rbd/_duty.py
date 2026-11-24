@@ -119,8 +119,11 @@ class PlannedLife(ClockLife):
     at ``t0`` fails when ``D`` has run its operating life on from
     ``D(t0)``: at ``D⁻¹(D(t0) + L)``, ``L`` drawn from the model's own
     quantile function. From new at 0 its survival is ``R(D(t))`` (exact);
-    a unit put in later has another, so the diagram's exact methods do not
-    take it, and only the simulations (the Python engine) do.
+    a unit put in later has another, so it is no renewal process on the
+    diagram's clock, and the simulations (the Python engine) take it.
+    Where its repairs and tasks take no time it is its operating-time
+    process seen through ``D`` (``time_change_blocker``), which the
+    diagram's values over time take (``TimeChangedCurve``).
 
     Parameters
     ----------
@@ -174,6 +177,32 @@ class PlannedLife(ClockLife):
         if share == 0.0:
             return math.inf  # the last share is 0: it never gets there
         return float(self._times[k] + (y - self._hours[k]) / share)
+
+    def inverses(self, y) -> np.ndarray:
+        """``D⁻¹`` at each operating time ``y`` (see ``inverse``)."""
+        y = np.asarray(y, dtype=float)
+        k = np.clip(
+            np.searchsorted(self._hours, y, side="left") - 1,
+            0,
+            self._times.size - 1,
+        )
+        share = self._shares[k]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = self._times[k] + (y - self._hours[k]) / share
+        out = np.where(share > 0.0, out, np.inf)
+        out = np.where(np.isinf(y), np.inf, out)
+        return np.where(y > 0.0, out, 0.0)
+
+    def share_after(self, t) -> np.ndarray:
+        """The share of the time run just after each time ``t``: ``D``'s
+        slope from then on."""
+        k = np.clip(
+            np.searchsorted(self._times, np.asarray(t, dtype=float), "right")
+            - 1,
+            0,
+            self._times.size - 1,
+        )
+        return self._shares[k]
 
     def life_left(self, t0: float, age: float, u: float) -> float:
         """The time on the diagram's clock to the failure of a unit put
@@ -322,3 +351,61 @@ def tasks_on_calendar(node, spec: dict, d):
                     pass  # not numbers: the task's own check says so
         out = {**out, key: task}
     return out, operating
+
+
+def planned_life(rbd, node) -> Any:
+    """The ``PlannedLife`` of a ``RepairableRBD``'s component on a duty
+    plan that changes over time, or None."""
+    life = getattr(rbd.components.get(node), "reliability", None)
+    return life if isinstance(life, PlannedLife) else None
+
+
+def time_change_blocker(rbd, node) -> Any:
+    """Why a component on a duty plan that changes over time is not its
+    operating-time process seen through its plan ``D`` (see
+    ``time_changed_unit``), in words; None when it is: its repairs take
+    no time, and its preventive task, if any, is counted in operating
+    time and takes no time, with no tests and no maintenance group.
+    Every event then falls at an operating time, as from new on a plan
+    of one share, put on the calendar at ``D⁻¹`` of it."""
+    from repyability.rbd._requirements import _repairs_take_time
+
+    plan = planned_life(rbd, node)
+    if plan is None:
+        return "it is not on a duty plan that changes over time"
+    if _repairs_take_time(rbd.components[node]):
+        return "its repairs take time"
+    if node in rbd._inspection:
+        return "it has tests of hidden failures"
+    if node in rbd._member_group:
+        return "it is in a maintenance group"
+    schedule = rbd._preventive.get(node)
+    if schedule is not None:
+        if schedule.clock is not plan:
+            return (
+                "its preventive task is counted in calendar time, not in "
+                "its operating time"
+            )
+        if schedule.duration is not None:
+            return "its preventive task takes time"
+    return None
+
+
+def time_changed_unit(rbd, node):
+    """The one-node ``RepairableRBD`` of a component that a duty plan
+    that changes over time only time-changes (see
+    ``time_change_blocker``): its spec without its duty, so that its
+    clock is the unit's operating time. Kept on ``rbd``."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    kept = rbd.__dict__.setdefault("_time_changed_units", {})
+    if node not in kept:
+        spec = rbd._init_args["components"][node]
+        as_spec = getattr(spec, "spec", None)
+        if callable(as_spec) and not isinstance(spec, dict):
+            spec = as_spec()
+        spec = {key: value for key, value in spec.items() if key != "duty"}
+        kept[node] = RepairableRBD(
+            [(("in", node), node), (node, ("out", node))], {node: spec}
+        )
+    return kept[node]

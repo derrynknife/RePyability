@@ -28,6 +28,7 @@ from repyability.rbd import (
     _chain_transient,
     _covariate_schedule,
     _crews,
+    _duty,
     _long_run,
     _overrides,
     _repairable_capacity,
@@ -81,6 +82,7 @@ from repyability.rbd._point_availability import (
     StartedBlockCurve,
     SteadyCurve,
     SystemCurve,
+    TimeChangedCurve,
 )
 from repyability.rbd._point_availability import knots as point_knots
 from repyability.rbd._point_availability import unit_curve
@@ -246,6 +248,8 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
             r.NUMERICAL,
             "its units' Markov chain, followed over time by " "uniformization",
         )
+    if _duty.planned_life(rbd, node) is not None:
+        return _time_changed_over_time(rbd, node, kind)
     message = r.refusal(partial(_requirements._require_time_models, rbd, node))
     if not message:
         message = r.refusal(
@@ -316,6 +320,31 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
     ):
         return r.NUMERICAL, _TESTED_CYCLE + " over time"
     return r.NUMERICAL, "its renewal equation, solved on a grid"
+
+
+def _time_changed_over_time(rbd, node, kind: str) -> Tuple[str, str]:
+    """How a component on a duty plan that changes over time is found
+    over time (see ``_node_over_time``): as its process in operating
+    time, seen through its plan (``_duty.time_change_blocker``), else
+    refused."""
+    from repyability.rbd import routes as r
+
+    plan = _duty.planned_life(rbd, node)
+    why = _duty.time_change_blocker(rbd, node)
+    if why is not None:
+        return r.REFUSED, str(
+            NotImplementedError(
+                f"{plan._no_reliability()} Its values over time are "
+                "worked out from its operating time only when its repairs "
+                f"and tasks take no time, and {why}."
+            )
+        )
+    route, how = _node_over_time(
+        _duty.time_changed_unit(rbd, node), node, kind
+    )
+    if route == r.REFUSED:
+        return route, how
+    return route, f"{how}, in operating time, put on the calendar by its plan"
 
 
 def _over_time(
@@ -529,11 +558,14 @@ def _plain_unit(rbd, node) -> bool:
     """Whether a component's curve follows from its life and repair
     models alone (and its state at 0): a unit with no schedule, tests,
     imperfect repair or maintenance group, not a nested RBD or a
-    standby group. Another with the same models has the same curve."""
+    standby group, nor on a duty plan that changes over time (its curve
+    is its plan's too). Another with the same models has the same
+    curve."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     return not (
         isinstance(rbd.components[node], RepairableRBD)
+        or _duty.planned_life(rbd, node) is not None
         or node in rbd._standby
         or node in rbd._inspection
         or node in rbd._preventive
@@ -582,6 +614,27 @@ def _node_curve(
 
     if isinstance(component, RepairableRBD):
         return _nested_curve(component, horizon, counts, stages, start)
+    plan = _duty.planned_life(rbd, node)
+    if plan is not None:
+        why = _duty.time_change_blocker(rbd, node)
+        if why is not None:
+            raise NotImplementedError(
+                f"{plan._no_reliability()} Its values over time are "
+                "worked out from its operating time only when its repairs "
+                f"and tasks take no time, and {why}."
+            )
+        unit = _duty.time_changed_unit(rbd, node)
+        inner = _node_curve(
+            unit,
+            node,
+            unit.components[node],
+            max(float(plan.operating(horizon)), 1e-12 * horizon),
+            counts,
+            degrading,
+            stages,
+            start,
+        )
+        return TimeChangedCurve(inner, plan)
     if node in rbd._standby:
         return _standby_curve(rbd, node, start)
     if node in rbd._imperfect or node not in rbd._inspection:

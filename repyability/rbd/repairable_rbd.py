@@ -368,8 +368,10 @@ class RepairableRBD(RBD):
           unit's life is drawn in operating time and put on the clock
           through the plan from when it is put into service, and a
           preventive task in operating time falls when the plan reaches
-          it; only the simulations take such a block (see
-          ``schedule.CalendarContext``).
+          it. The simulations take such a block; the values over time
+          take it too where its repairs and tasks take no time (a task
+          counted in operating time), as its operating-time process seen
+          through the plan (see ``schedule.CalendarContext``).
           ``"upgrade"`` gives the component another life from a time: a
           dict of ``"at"`` (the time, in the diagram's time from 0),
           ``"reliability"`` (the life its units have from then: the unit

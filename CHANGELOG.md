@@ -68,6 +68,16 @@ release between minors that only adds (0.19.1).
   written into the request for a stated effect. `npv_schema()` gives the
   new inputs, and a request's `"diagram"` is no longer required for
   this analysis. No other analysis's numbers change.
+- Exact values over time on a duty plan that changes over time. A unit
+  whose repairs take no time, and whose preventive task (if any) is
+  counted in operating time and takes no time, is its operating-time
+  process seen through the plan: `expected_events(_by_window)`,
+  `expected_cost` (with `discount_rate`), `point_availability`,
+  `cost_by_window`'s means, `cost`'s and `availability`'s default exact
+  means, and `schedule.events_by_period` now work it out exactly rather
+  than refusing or simulating it. Units whose repairs or tasks take
+  time, or whose task is counted in calendar time, are simulated as
+  before.
 
 ### Changed
 
@@ -97,6 +107,13 @@ release between minors that only adds (0.19.1).
   on condition by level on a Wiener process takes about three times as
   long (surpyval's quantile is a vectorised bisection, about 0.9 ms a
   draw).
+- `schedule.events_by_period` on a duty plan that changes, for units
+  whose repairs and tasks take no time: the events and the cost's means
+  were the means of 1,000 simulations (by default), and are now exact,
+  so its numbers move within the old simulations' error (they agree with
+  `failures_by_period` through the same plan to 1e-6). `cost()` and
+  `availability()` on such a diagram now take the exact means by default
+  (`control_variate=False` for the simulations' own).
 
 ### Fixed
 

@@ -163,7 +163,12 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   operating time on such a plan carries it as its `_Preventive.clock`
   (due in operating time, mapped back through the plan's inverse). The
   engine always runs on calendar time; an analysis's
-  `schedule.CalendarContext` gives each unit its plan.
+  `schedule.CalendarContext` gives each unit its plan. One exception: a
+  duty plan's unit whose repairs and tasks take no time (a task counted
+  in operating time) is its operating-time process seen through `D`, so
+  the values over time take it as the curve of its one-node diagram with
+  no duty, at `D(t)` (`_duty.time_change_blocker`,
+  `_point_availability.TimeChangedCurve`); `on_clock` leaves it out.
 - **Simulations take turns across threads (#216).** The event loop keeps
   a run's state on the diagram (`_run_state`, an `_events._Run`) and draws that cannot be
   streamed come from numpy's global RNG, so a run holds

@@ -811,11 +811,13 @@ def events_by_period(
         A [`CalendarContext`][repyability.schedule.CalendarContext] also
         gives each unit its duty plan (and its unit of time, and the dates
         of tasks on a recurrence rule): a plan of one share is worked out
-        exactly, as a block's ``"duty"``; with a plan that changes over
-        time (weekday shifts), each unit's life is drawn in operating time
-        and put on the calendar by its plan, so the events are the means
-        of the simulations' histories, and the cost's means simulated
-        too.
+        exactly, as a block's ``"duty"``. With a plan that changes over
+        time (weekday shifts), a unit whose repairs and tasks take no time
+        (a task counted in operating time) is its operating-time process
+        seen through the plan, exact too; otherwise each unit's life is
+        drawn in operating time and put on the calendar by its plan, so
+        the events are the means of the simulations' histories, and the
+        cost's means simulated too.
     period : str, optional
         ``"day"``, ``"week"``, ``"month"`` (the default), ``"quarter"`` or
         ``"year"``.

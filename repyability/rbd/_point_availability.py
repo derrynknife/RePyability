@@ -2209,6 +2209,67 @@ class ShiftedCurve:
         return Atoms(*kept)
 
 
+class TimeChangedCurve:
+    """A unit on a duty plan that changes over time, whose repairs and
+    tasks take no time: ``curve``, its process in operating time, seen
+    through ``plan``'s ``D`` (a ``_duty.PlannedLife``), the operating
+    time from 0 to each time on the diagram's clock. Its value at ``x``
+    is ``curve``'s at ``D(x)``, its events by ``x`` those by ``D(x)``, and
+    an event at operating time ``y`` falls at ``D⁻¹(y)``, the first time
+    ``D`` reaches it. The plan's times are its breaks, ``D`` bending
+    there. Followed as far as it is asked for, with no period."""
+
+    settle = np.inf
+    period = None
+
+    def __init__(self, curve, plan):
+        self.curve = curve
+        self.plan = plan
+
+    def _times(self, start: float, stop: float, of) -> np.ndarray:
+        """The plan's times in ``[start, stop]``, and ``of(curve, a, b)``
+        (times in operating time) put on the diagram's clock."""
+        plan = self.plan
+        inner = of(self.curve, plan.operating(start), plan.operating(stop))
+        own = plan._times[(plan._times >= start) & (plan._times <= stop)]
+        times = np.unique(np.concatenate([own, plan.inverses(inner)]))
+        return times[(times >= start) & (times <= stop)]
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        return self.curve.at(self.plan.operating(np.asarray(x, float)))
+
+    def failed_at(self, x: np.ndarray) -> np.ndarray:
+        return failed_at(self.curve, self.plan.operating(np.asarray(x, float)))
+
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """Its rate of change: ``curve``'s at ``D(x)`` times ``D``'s slope
+        just after ``x``."""
+        from repyability.rbd._rates import derivative
+
+        x = np.asarray(x, dtype=float)
+        inner = derivative(self.curve, self.plan.operating(x), scale)
+        return self.plan.share_after(x) * inner
+
+    def knots(self, start: float, stop: float) -> np.ndarray:
+        return self._times(start, stop, lambda c, a, b: c.knots(a, b))
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        return self._times(start, stop, curve_breaks)
+
+    def grids(self) -> list:
+        """None: ``D`` bends at the plan's times, so a grid of operating
+        time is no grid of the diagram's clock (its knots are all
+        breaks)."""
+        return []
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        return self.curve.events(self.plan.operating(np.asarray(x, float)))
+
+    def atoms(self, stop: float) -> Atoms:
+        inner = self.curve.atoms(float(self.plan.operating(stop)))
+        return Atoms(self.plan.inverses(inner.times), *inner[1:])
+
+
 class PlanCurve:
     """A unit replaced at the times of a plan (its spec's
     ``"replace_at"``), and after the last no more: ``stretches``, one

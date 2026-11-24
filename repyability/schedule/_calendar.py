@@ -7,10 +7,12 @@ whose life is in operating time reaches it through its own duty plan
 calendar is ``R(D(t))``, a unit put into service at ``t0`` failing when
 ``D`` has run its operating life on from ``D(t0)``, and a task counted in
 operating time falls when ``D`` reaches it. A plan that runs one share of
-the time throughout is the block's ``"duty"`` share, worked out exactly; a
-plan that changes (weekday shifts, a season) is followed by the
-simulations. The duty plans belong to the analysis, not to the units'
-plans: the same diagram runs on another site's calendar with other plans.
+the time throughout is the block's ``"duty"`` share, worked out exactly; on
+a plan that changes (weekday shifts, a season) a unit whose repairs and
+tasks take no time is its operating-time process seen through ``D``, also
+exact over time, and any other is followed by the simulations. The duty
+plans belong to the analysis, not to the units' plans: the same diagram
+runs on another site's calendar with other plans.
 """
 
 from dataclasses import dataclass, field

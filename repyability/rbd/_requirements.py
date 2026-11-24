@@ -47,9 +47,18 @@ from repyability.rbd.standby_node import StandbyModel
 
 def _mean_lives(rbd) -> List[float]:
     """The components' mean lives (their failure-time scales), against
-    which an endless horizon's discount rate is judged (#231)."""
+    which an endless horizon's discount rate is judged (#231): on a duty
+    plan that changes over time, when its plan has run its life in
+    operating time from 0."""
+    from repyability.rbd._duty import PlannedLife
+
+    def scale(life) -> float:
+        if isinstance(life, PlannedLife):
+            return life.inverse(failure_time_scale(life.model))
+        return failure_time_scale(life)
+
     return [
-        failure_time_scale(component.reliability)
+        scale(component.reliability)
         for component in rbd.components.values()
         if isinstance(component, NonRepairable)
     ]

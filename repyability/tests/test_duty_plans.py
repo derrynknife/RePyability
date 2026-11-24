@@ -6,8 +6,9 @@ plan that changes, its life is drawn in operating hours and put on the
 calendar through the plan (``_duty.PlannedLife``), and a task counted in
 operating time falls when the plan reaches it. A unit whose repairs and
 tasks take no time is then its operating-time process seen through the
-plan, ``M(D(t))``, which the exact methods give on the one-node diagram
-with no duty.
+plan, ``M(D(t))``: the exact methods follow it so (a
+``TimeChangedCurve``), and the simulation is checked against the one-node
+diagram with no duty.
 """
 
 import math
@@ -16,7 +17,7 @@ import numpy as np
 import pytest
 import surpyval as surv
 
-from repyability import NodeState, RepairableRBD
+from repyability import NodeState, NonRepairable, RepairableRBD
 from repyability.rbd import _compiled, _event_loop
 from repyability.rbd._duty import PlannedLife
 from repyability.rbd.serialisation import rbd_from_json, rbd_to_json
@@ -28,6 +29,7 @@ from repyability.schedule import (
     Shifts,
     UsageForecast,
     events_by_period,
+    failures_by_period,
 )
 
 ONE = [("s", "a"), ("a", "t")]
@@ -111,9 +113,120 @@ def test_a_unit_is_its_operating_process_seen_through_its_plan(task):
     exact = RepairableRBD(ONE, {"a": spec}).expected_events_by_window(
         np.array([hours])
     )
-    run = rbd.cost(end, mc_samples=4000, seed=7)
+    # The simulation alone (not the exact means it would take).
+    run = rbd.cost(end, mc_samples=4000, seed=7, control_variate=False)
     # Bounds fixed before the run: four standard errors.
     assert abs(run.mean - exact.node_failures["a"][0]) < 4.0 * run.mean_se
+
+
+# -- exact values through the plan ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "task",
+    [
+        None,
+        {"policy": "block", "interval": 300.0},
+        {"policy": "age", "interval": 300.0},
+    ],
+    ids=["run to failure", "block", "age"],
+)
+def test_the_exact_methods_follow_the_operating_process_through_the_plan(
+    task,
+):
+    more = (
+        {} if task is None else {"preventive": {**task, "basis": "operating"}}
+    )
+    rbd = planned(**more)
+    ends = np.array([500.0, 1500.0, 2000.0, 2500.0, 4000.0])
+    hours = rbd.components["a"].reliability.operating(ends)
+    spec = {"reliability": W, "repairability": "instant", "repair_cost": 1.0}
+    if task is not None:
+        spec["preventive"] = dict(task)
+    alone = RepairableRBD(ONE, {"a": spec})
+    # The plan stands still from 2000 to 3000: 2500 h is 1250 operating
+    # hours, as 2000 h is.
+    reference = alone.expected_events_by_window(np.unique(hours))
+    by_hours = {
+        key: np.interp(
+            hours,
+            np.unique(hours),
+            np.cumsum(getattr(reference, key)["a"]),
+        )
+        for key in ("node_failures", "node_preventive")
+    }
+    got = rbd.expected_events_by_window(ends)
+    for key, want in by_hours.items():
+        np.testing.assert_allclose(
+            np.cumsum(getattr(got, key)["a"]), want, rtol=0.0, atol=1e-12
+        )
+    assert got.node_failures["a"][3] == 0.0  # no running, no failures
+    assert rbd.analysis_routes()["expected_events"].route == "numerical"
+
+
+def test_a_constant_rate_through_the_plan_against_the_closed_form():
+    # An exponential life in operating hours, repaired at once: it fails
+    # at its rate times the share run, so by t it has failed lam D(t)
+    # times, and a repair cost c is worth c lam (integral of exp(-r s)
+    # times the share at s) at 0.
+    lam, c, r = 1.0 / 500.0, 80.0, 2e-4
+    rbd = RepairableRBD(
+        ONE,
+        {
+            "a": {
+                "reliability": surv.Exponential.from_params([lam]),
+                "repairability": "instant",
+                "repair_cost": c,
+                "duty": PLAN,
+            }
+        },
+    )
+    ends = np.array([700.0, 1600.0, 2600.0, 3900.0])
+    events = rbd.expected_events_by_window(ends)
+    hours = rbd.components["a"].reliability.operating(ends)
+    np.testing.assert_allclose(
+        np.cumsum(events.node_failures["a"]), lam * hours, rtol=1e-7
+    )
+    times = np.array(PLAN.times + (3900.0,))
+    shares = np.array(PLAN.shares)
+    npv = (
+        c
+        * lam
+        * float(
+            np.sum(shares * (np.exp(-r * times[:-1]) - np.exp(-r * times[1:])))
+            / r
+        )
+    )
+    got = rbd.expected_cost(3900.0, discount_rate=r).mean
+    assert math.isclose(got, npv, rel_tol=1e-7)
+    assert math.isclose(
+        rbd.expected_cost(3900.0).mean, c * lam * hours[-1], rel_tol=1e-7
+    )
+
+
+def test_a_plan_that_changes_beside_a_unit_on_the_calendar():
+    # A series pair, both repaired at once: the system fails whenever
+    # either does, so its failures are theirs added up.
+    rbd = RepairableRBD(
+        [("s", "a"), ("a", "b"), ("b", "t")],
+        {
+            "a": {"reliability": W, "repairability": "instant", "duty": PLAN},
+            "b": {
+                "reliability": surv.Exponential.from_params([1 / 900.0]),
+                "repairability": "instant",
+            },
+        },
+    )
+    ends = np.array([1000.0, 2500.0, 4000.0])
+    got = rbd.expected_events_by_window(ends)
+    np.testing.assert_allclose(
+        got.system_failures,
+        got.node_failures["a"] + got.node_failures["b"],
+        rtol=1e-9,
+    )
+    np.testing.assert_allclose(
+        np.cumsum(got.node_failures["b"]), ends / 900.0, rtol=1e-7
+    )
 
 
 def test_a_usage_task_falls_where_the_forecast_reaches_it():
@@ -176,6 +289,39 @@ def test_events_by_period_on_a_plan_that_changes():
     assert np.all(months.expected_npv < months.cost.mean)
 
 
+def test_events_by_period_through_a_plan_agrees_with_the_part_alone():
+    # Repaired at once, the unit is its operating process seen through
+    # the shifts: events_by_period is exact, and gives what the part's
+    # own forecast through the same shifts gives.
+    frame = UsageForecast.calendar("2027-01-01", "2027-07-01")
+    shifts = DutyPlan(Shifts("Mon-Fri", "06:00", "22:00")).forecast(
+        "2027-01-01", "2027-07-01"
+    )
+    life = surv.Weibull.from_params([900.0, 2.0])
+    spec = {"reliability": life, "repairability": "instant"}
+    rbd = RepairableRBD(ONE, {"a": {**spec, "repair_cost": 100.0}})
+    months = events_by_period(
+        rbd,
+        CalendarContext(frame, {"a": shifts}),
+        cost=True,
+        discount=0.07,
+        mc_samples=200,
+        seed=2,
+    )
+    assert not any("histories" in note for note in months.notes)
+    part = failures_by_period(
+        NonRepairable(life, unplanned_cost=100.0), shifts, discount=0.07
+    )
+    np.testing.assert_allclose(
+        months.events.node_failures["a"], part.expected_failures, rtol=1e-6
+    )
+    assert part.expected_cost is not None
+    np.testing.assert_allclose(months.cost.mean, part.expected_cost, rtol=1e-6)
+    assert months.npv is not None and part.npv is not None
+    assert part.npv_precision is not None
+    assert abs(months.npv - part.npv) <= part.npv_precision
+
+
 # -- saving and what is refused ---------------------------------------------
 
 
@@ -220,10 +366,39 @@ def test_what_a_plan_that_changes_refuses(more, words):
         planned(**more)
 
 
-def test_the_exact_methods_refuse_and_a_state_must_be_new():
-    rbd = planned()
-    with pytest.raises(NotImplementedError, match="changes over time"):
+@pytest.mark.parametrize(
+    "more, words",
+    [
+        (
+            {"repairability": surv.Exponential.from_params([0.1])},
+            "its repairs take time",
+        ),
+        (
+            {"preventive": {"interval": 300.0}},
+            "counted in calendar time",
+        ),
+        (
+            {
+                "preventive": {
+                    "interval": 300.0,
+                    "basis": "operating",
+                    "duration": surv.Exponential.from_params([0.5]),
+                }
+            },
+            "its preventive task takes time",
+        ),
+    ],
+)
+def test_the_exact_methods_refuse_what_takes_time(more, words):
+    rbd = planned(**more)
+    with pytest.raises(NotImplementedError, match=words):
         rbd.expected_events_by_window(np.array([1000.0]))
+    route = rbd.analysis_routes()["expected_events"]
+    assert route.route == "refused" and words in route.reason
+
+
+def test_a_state_must_be_new():
+    rbd = planned()
     with pytest.raises(NotImplementedError, match="other than new"):
         rbd.availability(
             1000.0, mc_samples=10, seed=1, state={"a": NodeState(age=10.0)}
