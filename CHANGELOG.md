@@ -38,6 +38,35 @@ release between minors that only adds (0.19.1).
   new inputs, and a request's `"diagram"` is no longer required for
   this analysis. No other analysis's numbers change.
 
+### Changed
+
+- RePyability's own copies of four things surpyval 0.29 (the minimum)
+  now does are gone, and surpyval's are used:
+  - a mixture's life left at a virtual age (imperfect repair, partial
+    restoration, a unit started part-worn) is surpyval's
+    `conditional_gaps`, now imported from `surpyval.recurrent`;
+  - the level found at an inspection under replacement on condition by
+    level is surpyval's level given survival
+    (`level_at(..., given_survival=True)`), drawn by its quantile
+    function from the same uniform;
+  - a duty cycle puts a life on the calendar by the model's own
+    `rescale_time` only (a model that cannot rescale its time is refused,
+    with surpyval's reason);
+  - `uncertainty="fit"` on a regression, a degradation or
+    repairable-unit process or a mixture draws each parameter within
+    surpyval's `parameter_bounds` (a renewal process's restoration factor
+    still in [0, 1]), rather than ranges found by probing `with_params`.
+
+  Intentional number changes, all in the last digits of seeded
+  simulations: a mixture's life given an age moves by at most about
+  1.5e-15 of `age + x` (both draws are within 2e-15 of a 50-digit
+  root); a Wiener process's level given survival by at most about 1e-12
+  relative, a gamma process's by about 7e-16. The parameter ranges are
+  unchanged for every kind the tests draw. A simulation with replacement
+  on condition by level on a Wiener process takes about three times as
+  long (surpyval's quantile is a vectorised bisection, about 0.9 ms a
+  draw).
+
 ### Fixed
 
 - A parameter sensitivity or uncertainty no longer takes a regression

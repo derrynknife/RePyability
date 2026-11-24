@@ -17,7 +17,7 @@ from repyability import (
     RepairableRBD,
     StandbyModel,
 )
-from repyability.rbd._duty import _SCALED, on_calendar
+from repyability.rbd._duty import on_calendar
 from repyability.rbd.serialisation import rbd_from_json, rbd_to_json
 
 W = surv.Weibull.from_params
@@ -172,22 +172,14 @@ PARAMETERS = {
 }
 
 
-def test_every_scaled_distribution_is_checked():
-    assert set(PARAMETERS) == set(_SCALED)
-
-
-@pytest.mark.parametrize("own", [True, False])
 @pytest.mark.parametrize("name", sorted(PARAMETERS))
-def test_a_life_on_the_calendar(name, own, monkeypatch):
+def test_a_life_on_the_calendar(name):
     # Operating a fraction d of the time, R_c(t) = R(d t): by the model's
-    # own rescaling where surpyval has it, else by _SCALED (surpyval 0.28).
-    if not own:
-        monkeypatch.delattr(surv.Parametric, "rescale_time", raising=False)
-    elif not hasattr(surv.Parametric, "rescale_time"):
-        pytest.skip("this surpyval does not rescale a model's time")
+    # own rescaling (surpyval's rescale_time).
     model = getattr(surv, name).from_params(PARAMETERS[name])
     d, t = 0.3, np.array([5.0, 40.0, 90.0, 150.0])
     moved = on_calendar("a", model, d)
+    assert type(moved) is type(model)
     np.testing.assert_allclose(
         np.ravel(moved.sf(t / d)), np.ravel(model.sf(t)), atol=1e-12
     )
@@ -199,14 +191,18 @@ def test_a_life_on_the_calendar(name, own, monkeypatch):
     )
 
 
+def test_a_life_that_cannot_be_moved_is_refused():
+    # surpyval refuses to rescale a Beta (a life on [0, 1]); the refusal
+    # names the node and says what to give instead.
+    with pytest.raises(ValueError, match="'a'.*give the life it has"):
+        on_calendar("a", surv.Beta.from_params([2.0, 3.0]), 0.5)
+
+
 def test_a_mixture_on_the_calendar():
-    # Any model that rescales itself takes a duty, not only those _SCALED
-    # moves.
+    # Any model that rescales itself takes a duty, a mixture included.
     mixture = surv.MixtureModel.from_params(
         surv.Weibull, [[100.0, 2.0], [400.0, 1.5]], [0.3, 0.7]
     )
-    if not hasattr(mixture, "rescale_time"):
-        pytest.skip("this surpyval does not rescale a mixture's time")
     d, t = 0.3, np.array([5.0, 40.0, 90.0, 150.0])
     np.testing.assert_allclose(
         np.ravel(on_calendar("a", mixture, d).sf(t / d)),

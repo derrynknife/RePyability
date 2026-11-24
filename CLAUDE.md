@@ -368,11 +368,12 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   Started from a state, the unit up at 0 is at its measured level (`y0`
   if new; `_renewal`'s `level`, `LevelHead.level`), which the first
   inspection reads from.
-  The level's law between inspections is stated once,
-  `_degradation.level_below`, which the simulation's draw inverts and the
-  grid of levels takes differences of. A change to one goes into the
-  other; `test_level_replacement.py` checks the model against the
-  simulation.
+  The level's law between inspections is surpyval's
+  (`level_at(..., given_survival=True)`), which the simulation draws by
+  its quantile function; the grid of levels takes differences of
+  `_degradation.level_below`, the same law broadcast over arrays, and
+  `test_level_replacement.py` checks the draws invert it and the model
+  against the simulation.
 
 ## How each analysis is computed
 
@@ -630,9 +631,22 @@ CONTRIBUTING.md. What it leaves to the maintainer's say:
 
 ## surpyval workarounds to remove
 
-surpyval 0.28 is the minimum (the release 0.19 is tested against: a
-Bayesian fit's `qf(0)` with an offset or shares, #1242, and `same_unit`,
-which RePyability now takes as they are). 0.27 removed nothing, and 0.26
+surpyval 0.29 is the minimum (the release 0.20 is tested against). It
+gave RePyability what four workarounds stood in for, and they are gone:
+a mixture's life left at a virtual age (`conditional_gaps`, by Newton's
+steps on the cumulative hazard, to a bit or two of the root, #295, which
+`_event_loop._aged_life` takes), a degradation process's level given
+that the unit has not failed (`level_at(..., given_survival=True)`,
+which `_degradation.level_after` draws by its quantile function for
+replacement on condition by level, #271), a model's own
+`rescale_time` for a duty cycle (`_duty.on_calendar`), and each fitted
+model's `parameter_bounds` (`uncertainty._Rebuilt._bounds`, which keeps
+only a renewal process's restoration factor in [0, 1], as a diagram
+takes it). `_degradation.level_below`, the numerical method's statement
+of the same law, broadcast over arrays of levels and times, stays: the
+tests check the draws against it. 0.28 has a Bayesian fit's `qf(0)` with
+an offset or shares (#1242) and `same_unit`, which RePyability takes as
+they are. 0.27 removed nothing, and 0.26
 removed what 0.25 deprecated, none of which RePyability used. 0.25 has
 the joint models a `JointNode` takes; 0.24
 gives a mixture a precise tail (`sf`, #671) and
@@ -649,55 +663,14 @@ surpyval's deprecation policy calls public (the top level, its listed
 subpackages' `__all__`, `surpyval.univariate.regression.kinds`) and reads
 no underscored attribute; `test_public_surpyval_api.py` fails on anything
 else. Take a model class from its subpackage, not the top level
-(`surpyval.univariate.joint`'s `JointModel`,
-`surpyval.univariate.regression`'s `SemiParametricRegressionModel`): from
-0.29 surpyval keeps only what users call at its top level, and the rest
-warn there. One name has no public home yet and is listed there
-(`NO_PUBLIC_HOME`): `conditional_gaps` (`rbd/_event_loop._aged_life`).
-Take it from its public home once surpyval gives it one; that test fails
-when it does.
+(`surpyval.univariate.joint`'s `JointModel` and `DynamicPrediction`,
+`surpyval.univariate.regression`'s `SemiParametricRegressionModel`,
+`surpyval.recurrent`'s `conditional_gaps`): from 0.29 surpyval keeps
+only what users call at its top level, and the rest warn there. A name
+with no public home yet goes in `NO_PUBLIC_HOME` there, with why (empty
+from 0.29).
 
-What remains (each checked against surpyval 0.28 on 15 Nov 2026):
-
-- **A mixture's life left at a virtual age** (surpyval #857, #295).
-  0.27's `conditional_gaps` inverts the quantile function wherever the
-  cumulative hazard to reach is under 20, which loses about `eps *
-  exp(H)` of the age found (some 1e-10 relative at `u = 1e-6`), and takes
-  3–15 times as long a draw. `MixtureLife.aged` draws it for `_aged_life`
-  by Newton's steps on the mixture's `H`, worked out from its
-  components, from a table of `H` (a change to it changes seeded results
-  in the last bits). Take `conditional_gaps` again, and drop
-  `MixtureLife`, once the minimum surpyval's draw is as precise. (On
-  the issue's mixture against a 50-digit reference, 0.27's draw was off
-  by up to 4e-11 of `age + x` and `aged` by 7e-16, in a seventh of the
-  time; unchanged on surpyval's `dev`.)
-- **A degradation process's level given survival** (surpyval #836).
-  Replacement on condition by level (#271) needs the level at the next
-  inspection of a unit that has not failed by then, which surpyval's
-  `WienerProcessModel` and `GammaProcessModel` do not give.
-  `_degradation.level_after` works it out from the fitted parameters (the
-  method of images for a Wiener path; a gamma increment truncated at the
-  threshold), and `_condition_next` draws it from the `LEVEL` stream (a
-  change to it changes seeded results). Take surpyval's once the minimum
-  surpyval has it. (0.27's `level_at(t, y0=, t0=)` is the level with no
-  condition on survival, which for a Wiener path keeps the units that
-  crossed and came back, so it is not this.)
-
-- **Rescaling a model's time for a duty cycle** (surpyval 0.28 only).
-  A spec's `"duty"` puts a life in operating time on the calendar, `R(d
-  t)`, by the model's own `rescale_time(d)` (surpyval's release after
-  0.28). With 0.28, which has none, `_duty._SCALED` moves each surpyval
-  distribution's parameters (a rule per distribution, which `test_units`
-  checks against `R(d t)` with `rescale_time` hidden). Drop `_SCALED`,
-  and `on_calendar`'s fallback, once the minimum surpyval has
-  `rescale_time`.
-- **Parameter ranges for drawing fits other than distributions** (no
-  surpyval issue yet). surpyval gives no range per parameter for a
-  regression, a degradation or repairable-unit process or a mixture, so
-  `uncertainty._Rebuilt._bounds` reads each from what `with_params`
-  refuses just below 0 and just above 1, to draw it on the log or logit
-  scale. Take surpyval's ranges once the minimum surpyval says them.
-  (0.27 keeps them private, such as a regression's `_parameter_bounds`.)
+What remains:
 
 - **A share of a model's hazard** (no surpyval issue known yet: a hazard
   ratio as a model option, with `isf`). A common-cause group splitting

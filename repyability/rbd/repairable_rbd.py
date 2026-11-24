@@ -360,8 +360,8 @@ class RepairableRBD(RBD):
           keeps them as given, for saving, the levers,
           ``with_intervals`` and the interval choices, which take and
           give them in operating time. The life must be a model that
-          rescales its time (surpyval's ``rescale_time``; with surpyval
-          0.28, a parametric distribution of a time). With no duty, a
+          rescales its time (surpyval's ``rescale_time``: a parametric
+          distribution of a time, or a mixture). With no duty, a
           task in operating time counts the diagram's clock. ``"duty"``
           may instead be a plan that changes over time, a
           ``schedule.DutySchedule`` (``UsageForecast.schedule()``): each

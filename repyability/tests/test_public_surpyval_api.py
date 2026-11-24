@@ -13,6 +13,7 @@ import ast
 import importlib
 import pathlib
 import re
+from typing import Set, Tuple
 
 import pytest
 
@@ -44,12 +45,9 @@ PUBLIC = {
 
 #: Names RePyability needs that surpyval has no public home for yet, each
 #: with why. Remove an entry once surpyval gives the name a public home.
-NO_PUBLIC_HOME = {
-    # A lifetime's life left at a virtual age, from a uniform: what
-    # ``_event_loop._aged_life`` draws for any model it has no closed form
-    # for (and the tests check ``MixtureLife`` against).
-    ("surpyval.recurrent.renewal.renewal_model", "conditional_gaps"),
-}
+#: (Empty from surpyval 0.29, which exports ``conditional_gaps`` from
+#: ``surpyval.recurrent``.)
+NO_PUBLIC_HOME: Set[Tuple[str, str]] = set()
 
 #: The names RePyability's code binds the surpyval module to.
 ALIASES = {"surpyval", "surv"}

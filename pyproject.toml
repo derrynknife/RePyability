@@ -45,8 +45,10 @@ dependencies = [
     # once, so run the tests against surpyval's development branch before it
     # is released, to show a break first. CI also tests this minimum. 0.29
     # is the release RePyability 0.20 is tested against (the renewal
-    # fitters' from_params, and the model classes in their subpackages,
-    # surpyval.univariate.joint among the public ones); 0.28 has a Bayesian
+    # fitters' from_params, the model classes in their subpackages,
+    # surpyval.univariate.joint among the public ones, conditional_gaps in
+    # surpyval.recurrent and precise for a mixture, a process's level given
+    # survival, rescale_time and parameter_bounds); 0.28 has a Bayesian
     # fit's quantile with an offset or shares, its qf(0), and same_unit; 0.25
     # has the joint models (surpyval.univariate.joint) a JointNode takes;
     # 0.24 gives a mixture a precise tail (sf) and has conditional_gaps read

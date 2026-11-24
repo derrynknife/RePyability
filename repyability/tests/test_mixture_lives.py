@@ -4,7 +4,8 @@ A mixture (two modes, such as infant mortality and wear-out) has the
 survival function, distribution, density and mean the analyses take, and
 a quantile function, precise in both tails from surpyval 0.25 (#821): the
 simulations' streams draw its lives by it, one uniform a draw, and a life
-given an age through its cumulative hazard (``MixtureLife``).
+given an age by surpyval's ``conditional_gaps`` (Newton's steps on its
+cumulative hazard, from surpyval 0.29).
 Every analysis on diagrams with a mixture life is checked in
 ``test_analysis_routes`` (the catalogue's "mixture life" diagrams), and
 the engines against each other in ``test_catalogue``.
@@ -19,11 +20,7 @@ import surpyval as surv
 
 from repyability import NonRepairable, NonRepairableRBD, RepairableRBD
 from repyability.rbd._event_loop import _aged_life
-from repyability.rbd._sampling import (
-    MixtureLife,
-    inverse_sampler,
-    stream_sampler,
-)
+from repyability.rbd._sampling import inverse_sampler, stream_sampler
 from repyability.tests.catalogue import mixture_life
 
 REPAIR = surv.Exponential.from_params([1.0])
@@ -215,7 +212,6 @@ def test_a_standalone_unit_prices_age_replacement(mix):
     assert 0.0 < age < np.inf
     assert unit.cost_rate(age) <= unit.cost_rate(0.8 * age)
     assert unit.cost_rate(age) <= unit.cost_rate(1.25 * age)
-    assert isinstance(MixtureLife(mix).qf(np.array([0.5]))[0], float)
 
 
 ISSUE_295 = {
@@ -255,46 +251,29 @@ def exact_life_left(age, u):
     "(arm64 macOS and Windows have none)",
 )
 def test_a_life_given_an_age_is_the_root_to_the_last_bits():
-    # #295: the mixture's life left at an age, by Newton's steps on its
-    # cumulative hazard, is the root to a few bits of age + x, from new to
-    # deep in the tail (where conditional_gaps root-found with some 150
-    # evaluations), and agrees with surpyval's draw.
-    from surpyval.recurrent.renewal.renewal_model import conditional_gaps
-
-    life = MixtureLife.of(surv.MixtureModel.from_dict(ISSUE_295))
+    # #295: the mixture's life left at an age (surpyval's conditional_gaps,
+    # Newton's steps on its cumulative hazard from 0.29) is the root to a
+    # few bits of age + x, from new to deep in the tail.
+    mix = surv.MixtureModel.from_dict(ISSUE_295)
     rng = np.random.default_rng(4)
     for age in (0.0, 5.0, 100.0, 1000.0, 3000.0, 9000.0, 15000.0):
         for u in np.r_[rng.uniform(size=8), 1e-6, 0.999]:
-            left = life.aged(age, u)
+            left = _aged_life(mix, age, u)
             exact = exact_life_left(age, u)
             assert abs(left - exact) <= 16 * np.finfo(float).eps * (
                 age + exact
             ), (age, u)
-            theirs = conditional_gaps(life, np.array([age]), np.array([u]))
-            assert left == pytest.approx(theirs[0], rel=1e-7)
-    assert life.aged(100.0, 1.0) == 0.0
-    assert life.aged(100.0, 0.0) == np.inf
+    assert _aged_life(mix, 100.0, 1.0) == 0.0
+    assert _aged_life(mix, 100.0, 0.0) == np.inf
 
 
-def test_a_life_given_an_age_takes_a_few_evaluations(monkeypatch):
-    # #295: a handful of evaluations of the cumulative hazard a draw, at
-    # any age (the issue's 15,000 h run went from ~53 s to a few).
-    life = MixtureLife.of(surv.MixtureModel.from_dict(ISSUE_295))
-    calls = []
-    plain = MixtureLife._cumulative
+def test_a_life_given_an_age_is_surpyvals_draw():
+    # The event loop takes surpyval's own draw, to the bit.
+    from surpyval.recurrent import conditional_gaps
 
-    def counted(self, x):
-        calls.append(len(x))
-        return plain(self, x)
-
-    life.aged(100.0, 0.5)  # its table, made once
-    monkeypatch.setattr(MixtureLife, "_cumulative", counted)
-    rng = np.random.default_rng(0)
-    counts = []
-    for age in (0.0, 100.0, 1000.0, 2000.0, 8000.0, 30000.0):
-        for u in rng.uniform(size=50):
-            calls.clear()
-            life.aged(age, u)
-            counts.append(len(calls))
-    assert max(counts) <= 8
-    assert np.mean(counts) <= 4.5
+    mix = surv.MixtureModel.from_dict(ISSUE_295)
+    rng = np.random.default_rng(7)
+    for age in (0.0, 100.0, 2000.0, 15000.0):
+        for u in rng.uniform(size=5):
+            theirs = conditional_gaps(mix, np.array([age]), np.array([u]))
+            assert _aged_life(mix, age, u) == float(theirs[0])
