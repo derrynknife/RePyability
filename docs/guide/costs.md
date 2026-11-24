@@ -634,6 +634,8 @@ The call-out contract is cheaper than a second crew's 17,620 (its price
 and a year's salary) for the same downtime: the pumps' 3,504 hours a
 year down together become 2,190, as the crews' Markov chain gives.
 
+For hidden failures, `inspections={node: [intervals]}` moves a unit's
+test interval through the candidates given, each at its tests' cost.
 A design's spend is the levers' prices and the change in its expected
 cost of preventive tasks, inspections and crews over the horizon. A
 group of units (standby, load-sharing or identical) is one node to the

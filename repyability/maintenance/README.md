@@ -89,7 +89,7 @@ Not yet single:
 | UC-60 | A part upgraded in year 3 and block-replaced before and after, the new model on the same interval | **Built**: an `"upgrade"` with a `"preventive"` block policy, numerical over a horizon and simulated |
 | UC-66 | A pump whose seal is a redundant pair, replaced whole when both have failed: its life is a diagram | **Built**: a `NonRepairableRBD` as a life wherever a life is taken (`UnitPlan`, a spec's `"reliability"`, `NonRepairable`), by its functions; `NonRepairableRBD.qf` inverts its `ff` to near machine precision |
 | UC-64 | What a part costs per year once upgraded: the long run of the diagram with the new life, the time before the upgrade ignored | **Built**: the long-run methods of a diagram with an `"upgrade"` give the values of the diagram after it |
-| UC-68 | "95% sure": the least spend that keeps a bad year's downtime (hours or cost) under a limit, with the frontier and both planned and unplanned downtime | **Built** (simulated): `RepairableRBD.least_spend_for_downtime` and `UnitPlan.least_spend_for_downtime`, with redundancy, interval, crew and call-out levers; risk measures in `repyability.value._risk` |
+| UC-68 | "95% sure": the least spend that keeps a bad year's downtime (hours or cost) under a limit, with the frontier and both planned and unplanned downtime | **Built** (simulated): `RepairableRBD.least_spend_for_downtime` and `UnitPlan.least_spend_for_downtime`, with redundancy, interval, test-interval, crew and call-out levers; risk measures in `repyability.value._risk` |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -3398,6 +3398,16 @@ group in parallel, and its units' repairs are the crews' jobs. Checks:
 diagram built with them on the same seed, their mean downtime against
 the chain, the spend against the runs' crew cost, each kind of group,
 and the refusals.
+
+**Test intervals (added after).** For a unit whose failures hide until
+a test finds them, `inspections={node: [intervals]}` moves its test
+interval through the candidates, each at its tests' expected cost.
+Hand-worked answer: a failure every 1,000 h on average, 20 h repairs,
+a test at 50 every 2,000 h: 4,784 h down in a year (the exact value
+over the horizon); every 1,000, 500, 250 and 100 h, 3,210, 1,925,
+1,127 and 573 h, at 200, 650, 1,550 and about 4,150 more a year. The
+simulated designs agree within four standard errors. A bad year stays
+over 300 h even at 100 h: the levers' cap is named.
 
 ### UC-61: "Our plan has two outages a year that cost 300 each, and at each we renew the pump if it is past 500 hours. The expected NPV is fine; how bad could a run be?"
 

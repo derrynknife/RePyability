@@ -372,3 +372,63 @@ def test_crew_and_call_out_refusals():
         )
     with pytest.raises(ValueError, match="list of them"):
         pair(repair_crews=1).least_spend_for_downtime(YEAR, 1.0, call_out=[])
+
+
+def hidden(interval=2000.0):
+    """A unit whose failures hide until a test finds them: a failure every
+    1,000 h on average, 20 h repairs, a test costing 50."""
+    return RepairableRBD(
+        ONE,
+        {
+            "p": {
+                "reliability": E([FAIL]),
+                "repairability": E([0.05]),
+                "inspection": {"interval": interval, "cost": 50.0},
+            }
+        },
+    )
+
+
+def test_test_intervals_against_the_exact_downtime_and_their_count():
+    found = hidden().least_spend_for_downtime(
+        YEAR,
+        300.0,
+        inspections={"p": [1000.0, 500.0, 250.0, 100.0]},
+        mc_samples=1000,
+        seed=60,
+    )
+    # Even testing every 100 h leaves a bad year over 300 h down.
+    assert not found.met and found.floor == "caps"
+    chosen = [d.inspections["p"] for d in found.frontier]
+    assert chosen == [None, 1000.0, 500.0, 250.0, 100.0]
+    for design in found.frontier:
+        interval = design.inspections["p"] or 2000.0
+        down, _ = direct(hidden(interval), 1000, 60)
+        assert design.unplanned["mean_hours"] == pytest.approx(down.mean())
+        exact = hidden(interval).mission_unavailability(YEAR) * YEAR
+        se = down.std() / math.sqrt(down.size)
+        assert abs(down.mean() - exact) < 4 * se
+    # The spend is the tests more, at 50 each: 4 a year every 2,000 h,
+    # then 8, 17 and 35 (a test falling in a repair is not made, which
+    # can happen once in a while at the shorter intervals).
+    assert [d.spend for d in found.frontier[:3]] == [0.0, 200.0, 650.0]
+    assert found.frontier[3].spend == pytest.approx(1550.0, abs=50.0)
+
+
+def test_inspection_refusals():
+    with pytest.raises(ValueError, match="no inspection"):
+        pump().least_spend_for_downtime(YEAR, 10.0, inspections={"p": [100.0]})
+    with pytest.raises(ValueError, match="test intervals to try"):
+        hidden().least_spend_for_downtime(YEAR, 10.0, inspections={"p": []})
+    offset = RepairableRBD(
+        ONE,
+        {
+            "p": {
+                "reliability": E([FAIL]),
+                "repairability": E([0.05]),
+                "inspection": {"interval": 2000.0, "offset": 500.0},
+            }
+        },
+    )
+    with pytest.raises(ValueError, match="option 1 cannot be taken"):
+        offset.least_spend_for_downtime(YEAR, 10.0, inspections={"p": [400.0]})

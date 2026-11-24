@@ -5088,6 +5088,7 @@ class RepairableRBD(RBD):
         downtime: str = "all",
         redundancy: Optional[Mapping] = None,
         intervals: Optional[Mapping] = None,
+        inspections: Optional[Mapping] = None,
         max_units: Optional[Mapping] = None,
         crews: Optional[Mapping] = None,
         call_out: Any = None,
@@ -5113,18 +5114,19 @@ class RepairableRBD(RBD):
         price, and spend is unbounded unless ``budget`` is given:
         ``redundancy`` (copies of a node in parallel with it, at a price each),
         ``intervals`` (a node's preventive interval, through the candidates
-        given, at its tasks' expected cost), ``crews`` (repair crews more, at a
-        price each and their salaries) and ``call_out`` (a call-out crew's
-        contract, through those given, at its expected fees and time engaged).
-        A group of units (standby, load-sharing or identical) is one node: its
-        copy is a second group in parallel. The search takes, step by step, the
-        move that lowers the bad run's downtime most per extra spend, every
-        design on the same seed, until one meets the limit; its designs are the
-        frontier. If the levers stop short, ``stopped`` says what stopped them
-        (the budget, their caps, or planned task downtime no lever lowers).
-        Every design reports both its planned and its unplanned downtime, the
-        mean and the quantile at ``level``, in hours and in cost. The guide's
-        "Downtime you can be sure of" explains.
+        given, at its tasks' expected cost), ``inspections`` (a node's test
+        interval, likewise), ``crews`` (repair crews more, at a price each and
+        their salaries) and ``call_out`` (a call-out crew's contract, through
+        those given, at its expected fees and time engaged). A group of units
+        (standby, load-sharing or identical) is one node: its copy is a second
+        group in parallel. The search takes, step by step, the move that lowers
+        the bad run's downtime most per extra spend, every design on the same
+        seed, until one meets the limit; its designs are the frontier. If the
+        levers stop short, ``stopped`` says what stopped them (the budget,
+        their caps, or planned task downtime no lever lowers). Every design
+        reports both its planned and its unplanned downtime, the mean and the
+        quantile at ``level``, in hours and in cost. The guide's "Downtime you
+        can be sure of" explains.
 
         Parameters
         ----------
@@ -5146,6 +5148,9 @@ class RepairableRBD(RBD):
         intervals : dict, optional
             ``{node: intervals to try, in order}`` for nodes with a
             preventive task.
+        inspections : dict, optional
+            ``{node: test intervals to try, in order}`` for nodes with an
+            ``"inspection"``, each at its tests' expected cost.
         max_units : dict, optional
             ``{node: most copies}``; by default none.
         crews : dict, optional
@@ -5220,6 +5225,7 @@ class RepairableRBD(RBD):
             downtime=downtime,
             redundancy=redundancy,
             intervals=intervals,
+            inspections=inspections,
             max_units=max_units,
             crews=crews,
             call_out=call_out,
