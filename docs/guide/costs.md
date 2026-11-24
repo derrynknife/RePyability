@@ -636,6 +636,9 @@ year down together become 2,190, as the crews' Markov chain gives.
 
 For hidden failures, `inspections={node: [intervals]}` moves a unit's
 test interval through the candidates given, each at its tests' cost.
+`upgrades={node: {"reliability": better_life, "cost": price}}` (or a
+list of offers, tried in order) buys a better unit from the start, at
+its price for each unit, the node's copies included.
 A design's spend is the levers' prices and the change in its expected
 cost of preventive tasks, inspections and crews over the horizon. A
 group of units (standby, load-sharing or identical) is one node to the
