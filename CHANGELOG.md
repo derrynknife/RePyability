@@ -28,6 +28,11 @@ release between minors that only adds (0.19.1).
   exponential lives and repairs; otherwise simulated, with the units drawn
   out as its exact twin. See the guide's "Blocks of identical units".
 - `UnitPlan` takes `load_sharing` and `identical`, as the spec keys.
+- UC-70 of the schedule README: replacing a part at planned stops on
+  dates only if it is older than a threshold, by month, each part from
+  its own age, from what is there (`shutdown_spec`, a
+  `{"shutdown", "older_than"}` task and `events_by_period(state=)`),
+  with its checks.
 - `value_plan` takes a `"task_value"` analysis: a service's value on
   dates (`task_value` with `Services(plan, effect=)`) from one JSON
   document, with the task, the usage forecast (its start, end and duty
