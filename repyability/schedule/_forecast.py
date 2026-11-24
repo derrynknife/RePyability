@@ -31,7 +31,7 @@ import numpy as np
 from repyability.utils.checks import is_number
 
 from . import _discount
-from ._meters import UNITS, Clock, clock, time_unit
+from ._meters import UNITS, Clock, clock, time_unit, use_unit
 from ._recurrence import Recurrence, _period
 from ._usage import UsageForecast, _Plain
 
@@ -57,10 +57,19 @@ def _model_label(model: Any) -> Optional[str]:
 
 
 def _resolve_unit(
-    unit: Optional[str], label: Optional[str], what: str, notes: List[str]
+    unit: Optional[str],
+    label: Optional[str],
+    what: str,
+    notes: List[str],
+    use: bool = False,
 ) -> str:
     """The model-time unit to use: ``unit`` if given, else the one the
-    model's label names, else hours (with a note)."""
+    model's label names, else hours (with a note). With ``use``, a unit
+    of use (``"km"``, ``"cycles"``, a meter of the plan's own) is taken
+    too, given or labelled, to be read from the duty plan's meter of it
+    (``UsageForecast.reading``)."""
+    if use:
+        return _resolve_use(unit, label, what, notes)
     if unit is not None:
         if unit not in UNITS:
             raise ValueError(
@@ -87,6 +96,29 @@ def _resolve_unit(
             f"time: give unit=, one of {', '.join(map(repr, UNITS))}, for "
             "how its times are read from dates."
         )
+    return named
+
+
+def _resolve_use(
+    unit: Optional[str], label: Optional[str], what: str, notes: List[str]
+) -> str:
+    """``_resolve_unit`` with units of use: a unit of time as there, any
+    other text the unit of use it names (``"kilometres"`` is ``"km"``)."""
+    given = unit if unit is not None else label
+    if not isinstance(given, str) or not given.strip():
+        if unit is not None:
+            raise ValueError(f"unit must name a unit; got {unit!r}.")
+        return _resolve_unit(None, None, what, notes)
+    named = time_unit(given)
+    if named is None:
+        named = use_unit(given) or " ".join(given.split())
+    if unit is not None and label is not None:
+        theirs = time_unit(label) or use_unit(label) or label
+        if theirs != named:
+            raise ValueError(
+                f"unit={unit!r}, but the {what} is labelled {label!r}: give "
+                "the unit the life was fitted in."
+            )
     return named
 
 
@@ -156,14 +188,14 @@ def _accrued_npv(
         _discounted_accrual,
     )
 
-    scale = usage._unit(unit)
-    base = usage._at_s("hours", usage._start_s)
+    meter, scale = usage.reading(unit)
+    base = usage._at_s(meter, usage._start_s)
     rate = _discount.continuous(discount)
     ends = np.asarray(seconds, float) / _YEAR_SECONDS
 
     def accrued(years: np.ndarray) -> np.ndarray:
         """``C`` at ``years`` from the start, as one row."""
-        model = usage._at_s("hours", usage._start_s + years * _YEAR_SECONDS)
+        model = usage._at_s(meter, usage._start_s + years * _YEAR_SECONDS)
         model = np.maximum((model - base) / scale, 0.0)
         knots, where = np.unique(model, return_inverse=True)
         moving = knots > 0.0
@@ -179,7 +211,7 @@ def _accrued_npv(
     # A period with no running accrues nothing: exactly 0, not what its
     # ends' values leave over in rounding.
     running = np.diff(
-        usage._at_s("hours", usage._start_s + np.asarray(seconds, float)),
+        usage._at_s(meter, usage._start_s + np.asarray(seconds, float)),
         prepend=base,
     )
     by_period[running <= 0.0] = 0.0
@@ -370,9 +402,11 @@ def failures_by_period(
     Parameters
     ----------
     part : NonRepairable
-        The part, its life in operating time (hours by default).
+        The part, its life in operating time (hours by default), or in a
+        unit of use (km, cycles, starts) its duty plan has a meter of.
     usage : UsageForecast
-        The map between dates and operating hours
+        The map between dates and operating hours, and the plan's other
+        meters
         ([`DutyPlan.forecast`][repyability.schedule.DutyPlan.forecast]); its
         start is the part's "now". ``UsageForecast.calendar`` for a life in
         calendar time.
@@ -382,8 +416,14 @@ def failures_by_period(
     age : float, optional
         The part's age at the forecast's start, in ``unit``; by default 0.
     unit : str, optional
-        The unit the part's life is in (``"hours"``, ``"days"``, ...); by
-        default the one its model's label names, else hours (with a note).
+        The unit the part's life is in (``"hours"``, ``"days"``, ...; or a
+        unit of use, ``"km"``, ``"miles"``, ``"cycles"``, ``"starts"`` or
+        any meter of the plan's, read from that meter, see
+        [`UsageForecast.reading`][repyability.schedule.UsageForecast.reading]);
+        by default the one its model's label names, else hours (with a
+        note). A unit of one kind converts (a life in miles on a plan in
+        km); one of another kind is refused (a life in km on a plan of
+        hours alone).
     every, resets, since_renewal, calendar : optional
         A replacement policy, as
         [`NonRepairable.cost_by_window`][repyability.NonRepairable.cost_by_window]
@@ -442,8 +482,13 @@ def failures_by_period(
     usage = _usage(usage)
     notes: List[str] = []
     unit = _resolve_unit(
-        unit, _model_label(getattr(part, "reliability", None)), "life", notes
+        unit,
+        _model_label(getattr(part, "reliability", None)),
+        "life",
+        notes,
+        use=True,
     )
+    meter, _ = usage.reading(unit)
     if not (is_number(age) and 0.0 <= float(age) < np.inf):
         raise ValueError(f"age must be a number, at least 0; got {age!r}.")
     age = float(age)
@@ -554,10 +599,19 @@ def failures_by_period(
                 )
                 probability[i] = 1.0 - float(spread.failure_probabilities[0])
         total["probability"] = float(probability[-1]) if n else 0.0
-    notes.append(
-        "Operating time comes from the duty plan "
-        f"({usage.describe()}); the part's age is at the forecast's start."
-    )
+    if meter == "hours":
+        notes.append(
+            "Operating time comes from the duty plan "
+            f"({usage.describe()}); the part's age is at the forecast's "
+            "start."
+        )
+    else:
+        notes.append(
+            f"The life is counted in {unit}, read from the duty plan's "
+            f"{meter!r} meter ({usage.describe()}); the part's age is at "
+            "the forecast's start, in "
+            f"{unit}."
+        )
     if low is not None:
         notes.append(f"Ranges are {RANGE_WORDS}.")
     expected_npv = npv = npv_precision = eac = None

@@ -70,6 +70,45 @@ UNIT_LABELS = {
 }
 
 
+#: Units of use (not of time) a life may be counted in, by kind: each a
+#: kind and its size in the kind's first unit. Units of one kind convert
+#: (km and miles); a unit of another kind, or of time, does not.
+USE_UNITS = {
+    "km": ("distance", 1.0),
+    "miles": ("distance", 1.609344),
+    "cycles": ("cycles", 1.0),
+    "starts": ("starts", 1.0),
+}
+
+#: The spellings of a unit of use read as each of ``USE_UNITS``.
+USE_LABELS = {
+    label: unit
+    for unit, labels in {
+        "km": (
+            "km",
+            "kms",
+            "kilometre",
+            "kilometres",
+            "kilometer",
+            "kilometers",
+        ),
+        "miles": ("mi", "mile", "miles"),
+        "cycles": ("cycle", "cycles"),
+        "starts": ("start", "starts"),
+    }.items()
+    for label in labels
+}
+
+
+def use_unit(label) -> Optional[str]:
+    """The unit of ``USE_UNITS`` a label names (``"kilometres"`` is
+    ``"km"``); None for any other (a unit of time, or a meter of the
+    plan's own, such as ``"tonnes"``)."""
+    if not isinstance(label, str):
+        return None
+    return USE_LABELS.get(" ".join(label.lower().split()))
+
+
 def time_unit(label) -> Optional[str]:
     """The unit of ``UNITS`` a model's unit label names (``"h"``,
     ``"hrs"`` and ``"hours"`` are all ``"hours"``); None when it names no

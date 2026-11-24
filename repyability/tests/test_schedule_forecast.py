@@ -192,7 +192,8 @@ def test_the_unit_is_read_from_the_model_or_given(pump):
         surv.Weibull.from_params([9000.0, 2.5], unit="km"),
         unplanned_cost=4800.0,
     )
-    with pytest.raises(ValueError, match="not a unit of time"):
+    # A life in km is read from a km meter, which the pump's plan has not.
+    with pytest.raises(ValueError, match="a distance cannot be read"):
         failures_by_period(in_km, pump)
 
 

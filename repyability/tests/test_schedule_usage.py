@@ -272,7 +272,8 @@ def test_refusals(pump):
         )
     with pytest.raises(ValueError, match="period must be"):
         pump.by_period("fortnight")
-    with pytest.raises(ValueError, match="unit must be"):
+    # Not a unit of time: a meter the plan would need, which it has not.
+    with pytest.raises(ValueError, match="no meter of it"):
         pump.model_time("2026-11-20", unit="furlongs")
 
 

@@ -788,7 +788,14 @@ def task_value(
     else:
         part = does.part if isinstance(does, Replaces) else does.device
         label = _model_label(getattr(part, "reliability", None))
-    unit = _resolve_unit(unit, label, "life", notes)
+    unit = _resolve_unit(unit, label, "life", notes, use=True)
+    meter, scale = usage.reading(unit)
+    if isinstance(does, Services) and meter != "hours":
+        raise ValueError(
+            f"The life is counted in {unit}, and a service is valued on the "
+            "unit's diagram, whose clock is calendar time: give the life "
+            "in operating time, or value a replacement (Replaces) by use."
+        )
     if not (is_number(age) and 0.0 <= float(age) < np.inf):
         raise ValueError(f"age must be a number, at least 0; got {age!r}.")
     age = float(age)
@@ -841,9 +848,8 @@ def task_value(
             done_s = done_s[kept]
     starts_s = usage._start_s
     clock_s = usage._start_s + done_s
-    scale = usage._unit(unit)
-    base = usage._at_s("hours", starts_s)
-    times = (usage._at_s("hours", clock_s) - base) / scale
+    base = usage._at_s(meter, starts_s)
+    times = (usage._at_s(meter, clock_s) - base) / scale
     times = np.maximum(np.asarray(times, float).reshape(done_s.shape), 0.0)
 
     def by_period(at_seconds, amounts=None) -> np.ndarray:
