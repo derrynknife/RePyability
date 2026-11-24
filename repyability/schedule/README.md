@@ -985,6 +985,52 @@ in `test_schedule_forecast.py`.
   `test_uc41_a_diagram_takes_the_dated_shuts` (two shuts in two years,
   $40,000, simulated).
 
+### UC-70: "At each quarterly stop we change a seal if it is older than 4,000 hours, otherwise we leave it. How many seals fail, and how many do we change, each month?"
+
+- **Status:** built, from what is there: the stops are the site's
+  shutdowns on their dates (`shutdown_spec` from a rule, UC-41), each
+  seal's task is `"preventive": {"shutdown": name, "older_than": X,
+  "cost": ...}`, and `events_by_period(rbd, usage, state=...)` gives the
+  failures (`node_failures`) and the planned changes
+  (`node_preventive`) by period, each seal from its own age. With
+  `cost=True` it adds the cost by period and its range.
+- **Who asks:** a planner forecasting spares and work for the year,
+  counting the planned changes at the stops in the demand.
+- **What they know:** the stops' rule (the first of each quarter, 12
+  hours), the threshold, each seal's life and its age now.
+- **The answer, by hand:** with an exponential life (rate `λ`, no
+  ageing) a seal is older than `X` at a stop exactly when it has not
+  failed, nor been changed, in the `X` before it: **`exp(-λX)`** at each
+  stop more than `X` into the forecast, whatever its age now. At
+  `λ = 1/3,000` an hour and `X = 1,500` h that is **0.6065** a stop; a
+  seal changed is off line for the stop's 12 hours, so the quarter from
+  1 April expects `λ (2,184 - 12 × 0.6065)` = **0.7256** failures. Six
+  Weibull seals (scale 8,000 h, shape 2.5) at 0 to 7,500 h, `X = 4,000`
+  h, over 2027: 3.74 failures and 7.20 changes (2.50 on 1 April, 1.65 on
+  1 July, 3.05 on 1 October), $5,185 at $1,000 a failure and $200 a
+  change; a plain simulation of the same diagram (4,000 runs) gives
+  $5,210 ± 24.
+- **How it is solved:** the diagram's numerical route for replacement
+  at a shutdown once older than `older_than` (the units followed from
+  one stop to the next on a grid, kept by age), from each node's state.
+  The threshold is on the diagram's clock (calendar time): a task at a
+  shutdown is on the calendar, as the shut is, so `"basis":
+  "operating"` is refused there, and a threshold in operating hours on
+  a block run a share `d` of the time is given as `X / d`. A threshold
+  read through a duty plan that changes is not built yet.
+- **Decisions (defaults):**
+  - A stop at the forecast's start is now, not ahead: it changes
+    nothing (the forecast starts from each seal's state then), as a
+    task due at the start is not taken as done. Give a seal its age
+    after that stop.
+  - A seal changed at a stop takes the stop's length (no ageing then).
+  - Seals of different ages are nodes of their own, each with its
+    state; a series diagram of them gives each its own counts.
+- **Checks:** `test_schedule_older_than.py`: the stops' times; the
+  exponential closed form for the changes and the failures (to 2e-4,
+  the grid's), from three ages; the six seals against a plain
+  simulation (within four standard errors) and `expected_cost`.
+
 ### UC-42: "The pump's life was fitted on two clocks, running hours and starts. What rate do I give it?"
 
 - **Status:** built: `UsageForecast.life_at_usage(model, meter="starts",
