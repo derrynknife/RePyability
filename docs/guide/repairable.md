@@ -960,6 +960,93 @@ the pair is up 0.9910.)
 - **Simulation.** `availability`, `cost` and `compare` simulate groups
   whatever their units' models, in Python.
 
+## Load-sharing groups
+
+Two pumps that share a duty are not two independent pumps: while both
+run, each carries half the flow; when one fails, the other carries all of
+it and wears faster until its partner is back. Give a component spec a
+`"load_sharing"` dict and the node becomes a group of identical units that
+share a load, each repaired on its own. Its `"reliability"` is a fitted
+accelerated-failure-time model with the load as its one covariate, as a
+non-repairable [`LoadSharingModel`](redundancy-models.md#load-sharing) takes:
+
+```python
+x = np.array([50.0, 100.0, 150.0, 12.5, 25.0, 37.5])
+load = np.array([[1.0], [1.0], [1.0], [2.0], [2.0], [2.0]])
+pump = surv.ExponentialAFT.fit(x, Z=load)   # life 100 h at load 1, 25 h at 2
+pumps = RepairableRBD(
+    [("s", "pumps"), ("pumps", "t")],
+    {"pumps": {"reliability": pump,
+               "repairability": surv.Exponential.from_params([0.1]),
+               "load_sharing": {"units": 2, "k": 1, "load": 2.0}}},
+)
+pumps.mean_availability()           # -> 0.9677
+pumps.system_failure_frequency()    # -> 0.00645  group failures per hour
+pumps.point_availability(10.0)      # -> 0.9861   ten hours from new
+```
+
+By hand: both running, each fails at 0.01 an hour; one running, it fails
+at 0.04; each repair takes 10 hours on average. The chance of one pump
+down is 0.2 of both up (0.02 / 0.1), and of both down 0.2 of one down
+(0.04 / 0.2), so the pair is down 0.04 / 1.24 = 3.2% of the time. Two pumps
+that did not share the load, each failing at 0.01, would be down 0.8% of
+the time (0.0909 squared): the load shared makes the survivor the weak
+point.
+
+- **The units.** `"units"` (by default 2) identical units, every one that
+  is up working; the group is up while at least `"k"` (by default 1, at
+  most `"units"`) work. `"load"` is the total the working units share.
+- **Ageing.** While `s` units work, each carries `load / s` and uses up
+  its life at the model's `phi(load / s)`. A unit's life is drawn from the
+  model's baseline (its life at no acceleration), so a unit that has run
+  at half load and then alone has used up the exposure of both spells
+  (the cumulative-exposure model).
+- **Repairs.** Each failed unit is repaired on its own, a job for the
+  repair crews at the group's `"priority"`. It comes back as new, and the
+  load is shared again.
+- **Costs.** `"repair_cost"` and `"replace_cost"` are charged at each
+  unit's failure, and `"downtime_cost"` while the group is down.
+- **Exact values.** With an exponential baseline and exponential repairs,
+  the group is a Markov chain on how many units work (a birth-death
+  chain), and its long-run values are exact and its values over time
+  numerical, as for a standby group (with limited crews too, while the
+  group's units are the crews' only jobs).
+- **Simulation.** Any other life (a Weibull baseline, say) is simulated, in
+  Python: `availability`, `cost` and `compare`.
+- **Not taken yet:** maintenance or tests, imperfect repair, a duty,
+  covariates over time, an upgrade, a maintenance group, a common-cause
+  group, or an `"instant"` repair.
+
+## Blocks of identical units
+
+Three filters in parallel, any two enough, each repaired on its own, can be
+one node: give a spec an `"identical"` dict of `"units"` and `"k"` (both
+needed). The block is up while at least `"k"` of its units are, so `"k"`
+equal to `"units"` puts them in series and 1 in parallel. The units are
+independent: the block is the diagram with its units drawn out, each a
+component of its own, as one node (a
+[`RepeatedNode`](redundancy-models.md#repeated-nodes-n-identical-copies)'s arrangement with each copy
+repaired).
+
+```python
+filters = RepairableRBD(
+    [("s", "filters"), ("filters", "t")],
+    {"filters": {"reliability": surv.Exponential.from_params([0.01]),
+                 "repairability": surv.Exponential.from_params([0.1]),
+                 "identical": {"units": 3, "k": 2}}},
+)
+filters.mean_availability()    # -> 0.9767   at least 2 of 3 up
+```
+
+Each filter is up 0.1 / 0.11 = 0.9091 of the time, and two or three of
+three are up with probability 3 (0.9091)² (0.0909) + 0.9091³ = 0.9767.
+Costs, repairs and crews are as for a load-sharing group, and so is what a
+block does not take yet. With exponential lives and repairs its values are
+exact from its chain; with others it is simulated, in Python, with its units
+drawn out as the simulation's exact twin (see
+[an exact twin](simulation.md#an-exact-twin)), which then gives the exact values over
+a window.
+
 ## Imperfect repair
 
 A patched pump is still an old pump. By default every repair renews a

@@ -158,7 +158,7 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
         )
         if message:
             return r.REFUSED, message
-        return r.EXACT, "a standby group's Markov chain"
+        return r.EXACT, f"the Markov chain of {rbd._standby[node].what}"
     if node in rbd._inspection:
         message = r.refusal(
             partial(_requirements._require_tested_exact, rbd, node)
@@ -1195,8 +1195,8 @@ def _standby_rates(rbd, node) -> Tuple[float, float]:
     repair = _constant_rate(component.time_to_replace)
     if life is None or repair is None:
         raise NotImplementedError(
-            f"Component {node!r} is a standby group, whose exact "
-            "long-run values come from a Markov chain of its units, "
+            f"Component {node!r} is {rbd._standby[node].what}, whose "
+            "exact long-run values come from a Markov chain of its units, "
             "which needs their lives and repair times exponential: "
             "simulate it with availability() or cost()."
         )
@@ -1218,6 +1218,7 @@ def _standby_long_run(rbd, node) -> "_standby_chain.StandbyLongRun":
         arrangement.dormancy_factor,
         arrangement.switching_probability,
         rbd.repair_crews if _crews._crews_limited(rbd) else None,
+        arrangement.rates,
     )
 
 

@@ -1953,7 +1953,8 @@ def _replacements(rbd, node, long_run: bool = False):
     _requirements._require_own_failures(rbd, node, simulate)
     if node in rbd._standby:
         raise NotImplementedError(
-            f"Component {node!r} is a standby group, whose units' "
+            f"Component {node!r} is {rbd._standby[node].what}, whose "
+            "units' "
             f"failures depend on each other: {simulate}"
         )
     if node in rbd._inspection:

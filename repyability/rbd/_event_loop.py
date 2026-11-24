@@ -1366,10 +1366,14 @@ def _standby_draw_counts(
     life = _safe_mean(rbd.components[node].reliability)
     if not life > 0.0:
         return float("nan"), float("nan")
-    active = (
-        arrangement.k
-        + (arrangement.units - arrangement.k) * arrangement.dormancy_factor
-    )
+    if arrangement.rates is not None:
+        # Every unit operates, at most at the fastest rate they share.
+        active = arrangement.units * max(arrangement.rates)
+    else:
+        active = (
+            arrangement.k
+            + (arrangement.units - arrangement.k) * arrangement.dormancy_factor
+        )
     failures = t_simulation * active / life
     return failures / arrangement.units + 1.0, failures + 1.0
 

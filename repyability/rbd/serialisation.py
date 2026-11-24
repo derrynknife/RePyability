@@ -448,12 +448,15 @@ def _serialise_component(value) -> dict:
                     "number, or without it, and give the function again."
                 )
             out[key] = float(own)
-        if value.get("standby") is not None:
-            # A standby group: numbers only.
-            out["standby"] = {
-                key: float(number) if isinstance(number, float) else number
-                for key, number in value["standby"].items()
-            }
+        for key in ("standby", "load_sharing", "identical"):
+            if value.get(key) is not None:
+                # A group of units: numbers only.
+                out[key] = {
+                    name: (
+                        float(number) if isinstance(number, float) else number
+                    )
+                    for name, number in value[key].items()
+                }
         return out
     return serialise_model(value)
 
@@ -597,8 +600,9 @@ def _deserialise_component(d: dict) -> Any:
                 **d["upgrade"],
                 "reliability": deserialise_model(d["upgrade"]["reliability"]),
             }
-        if "standby" in d:
-            out["standby"] = dict(d["standby"])
+        for key in ("standby", "load_sharing", "identical"):
+            if key in d:
+                out[key] = dict(d[key])
         for key in ("salvage", "escalation", "retire_at"):
             if key in d:
                 out[key] = d[key]

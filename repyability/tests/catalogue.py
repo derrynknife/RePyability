@@ -109,6 +109,14 @@ def aft():
 
 
 @_fitted_once
+def weibull_aft():
+    """A pump's Weibull life at its load (surpyval's WeibullAFT)."""
+    x = np.array([50.0, 100.0, 150.0, 12.5, 25.0, 37.5])
+    load = np.array([[1.0], [1.0], [1.0], [2.0], [2.0], [2.0]])
+    return surv.WeibullAFT.fit(x, Z=load)
+
+
+@_fitted_once
 def ph():
     """A pump's life at its load (surpyval's ExponentialPH): 500 at load
     1, 125 at load 2."""
@@ -1534,6 +1542,34 @@ def repairable_kinds():
                     "repairability": E([0.5]),
                     "standby": {"units": 3, "k": 2},
                 }
+            ),
+            "load-sharing group": system(
+                {
+                    "reliability": aft(),
+                    "repairability": E([0.5]),
+                    "load_sharing": {"units": 3, "k": 2, "load": 2.0},
+                    "repair_cost": 3.0,
+                },
+                downtime_cost_rate=5.0,
+            ),
+            "load-sharing group, Weibull": system(
+                {
+                    "reliability": weibull_aft(),
+                    "repairability": E([0.5]),
+                    "load_sharing": {"units": 2, "load": 2.0},
+                }
+            ),
+            "identical units, parallel": system(
+                {
+                    "reliability": E([0.002]),
+                    "repairability": E([0.5]),
+                    "identical": {"units": 3, "k": 1},
+                    "repair_cost": 3.0,
+                },
+                downtime_cost_rate=5.0,
+            ),
+            "identical units, series, Weibull": system(
+                unit(identical={"units": 2, "k": 2}, repair_cost=3.0)
             ),
             "repair crews around a nested RBD": RepairableRBD(
                 EDGES,

@@ -122,17 +122,20 @@ def _state_key(states: dict) -> Optional[str]:
     return json.dumps(entries, sort_keys=True) if entries else None
 
 
-def _hot_units(spec: dict) -> "RepairableRBD":
-    """A standby group's twin (see ``RepairableRBD._twin``): its units
+def _hot_units(spec: dict, arrangement, life) -> "RepairableRBD":
+    """A group of units' twin (see ``RepairableRBD._twin``): its units
     operating together, each failing and repaired on its own, ``k`` of them
     needed, as a nested RBD whose components are named ``0, 1, ...``, as
-    the group's units are, so that their streams are the units'."""
+    the group's units are, so that their streams are the units'. Each
+    unit's life is ``life``, the one the group's units draw (a
+    load-sharing unit's at no acceleration): the twin's values are its
+    own, exact, whatever it leaves out."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
-    standby = spec["standby"]
-    units, k = int(standby.get("units", 2)), int(standby.get("k", 1))
-    keys = ("reliability", "repairability") + RepairableRBD.COST_KEYS
+    units, k = arrangement.units, arrangement.k
+    keys = ("repairability",) + RepairableRBD.COST_KEYS
     unit = {key: spec[key] for key in keys if key in spec}
+    unit["reliability"] = life
     return RepairableRBD(
         [("s", u) for u in range(units)] + [(u, "t") for u in range(units)],
         {u: dict(unit) for u in range(units)},
@@ -1258,10 +1261,29 @@ def _twin_simpler(diagram, node, spec: dict) -> Tuple[Any, str]:
 
     if node in diagram._standby:
         if r.refusal(partial(_long_run._standby_rates, diagram, node)):
-            return (
-                _hot_units(spec),
+            arrangement = diagram._standby[node]
+            # The life its units draw: a load-sharing unit's at no
+            # acceleration, the spec's own otherwise.
+            twin = _hot_units(
+                spec,
+                arrangement,
+                (
+                    diagram.components[node].reliability
+                    if arrangement.key == "load_sharing"
+                    else spec["reliability"]
+                ),
+            )
+            if arrangement.key == "identical":
+                # Its units are independent: the twin is the block.
+                return twin, ""
+            if arrangement.key == "load_sharing":
+                return twin, (
+                    f"the load sharing of group {node!r} (its units "
+                    "operate together at no acceleration)"
+                )
+            return twin, (
                 f"the switching of standby group {node!r} (its units "
-                "operate together)",
+                "operate together)"
             )
         return spec, ""
     drop: Dict[str, str] = {}

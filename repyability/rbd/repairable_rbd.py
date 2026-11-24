@@ -410,6 +410,38 @@ class RepairableRBD(RBD):
           ``"instant"`` repair. Its long-run values are exact from its
           Markov chain when its units' lives and repair times are
           exponential; it is simulated in Python.
+          ``"load_sharing"`` makes the node a load-sharing group of
+          identical units, each repaired on its own: a dict of
+          ``"units"`` (by default 2), ``"k"`` (how many must work, by
+          default 1, at most ``"units"``) and ``"load"`` (the total load
+          the working units share, a positive number). The
+          ``"reliability"`` is a fitted accelerated-failure-time model
+          with the load as its one covariate (surpyval's
+          ``ExponentialAFT``, ``WeibullAFT``, ...), as a
+          [`LoadSharingModel`][repyability.LoadSharingModel] takes:
+          while ``s`` units work, each carries ``load / s`` and uses up
+          its life (drawn from the model's baseline) at the model's
+          ``phi(load / s)``, so when one fails the others age faster,
+          and when it is repaired they share the load again. Every unit
+          that is up works; the group is up while ``k`` of them do.
+          ``"identical"`` makes the node a block of identical,
+          independent units, each failing and repaired on its own as
+          ``"reliability"`` and ``"repairability"`` say: a dict of
+          ``"units"`` and ``"k"`` (both needed), the block up while at
+          least ``k`` units are: ``k`` equal to ``units`` for units in
+          series, 1 for units in parallel. It is the diagram with the
+          units drawn out (a
+          [`RepeatedNode`][repyability.RepeatedNode]'s arrangement, each
+          copy repaired), as one node. For both, ``"repair_cost"`` and
+          ``"replace_cost"`` are charged at each unit's failure, a
+          failed unit's repair is a job for the repair crews at the
+          node's ``"priority"``, and ``"downtime_cost"`` is charged while
+          the node is down. They take no maintenance, tests, imperfect
+          repair, duty, covariates, upgrade or maintenance group yet, and
+          no ``"instant"`` repair. Their long-run values and values over
+          time are exact from the units' Markov chain when the lives and
+          repair times are exponential (a load-sharing unit's baseline
+          exponential); otherwise they are simulated, in Python.
         - A [`UnitPlan`][repyability.UnitPlan]: one unit's life
           and repair models, its tasks and its prices, of which the spec
           dict above is the shorthand. The node is the node given
@@ -670,6 +702,11 @@ class RepairableRBD(RBD):
     STANDBY_KEYS : tuple[str, ...]
         The keys of a ``"standby"`` spec: ``"units"``, ``"k"``,
         ``"dormancy_factor"`` and ``"switching_probability"``.
+    LOAD_SHARING_KEYS : tuple[str, ...]
+        The keys of a ``"load_sharing"`` spec: ``"units"``, ``"k"`` and
+        ``"load"``.
+    IDENTICAL_KEYS : tuple[str, ...]
+        The keys of an ``"identical"`` spec: ``"units"`` and ``"k"``.
     SHUTDOWN_KEYS : tuple[str, ...]
         The keys of a shutdown's spec: ``"period"``, ``"offset"``,
         ``"times"``, ``"duration"``, ``"scope"``, ``"cost"``,
@@ -823,6 +860,8 @@ class RepairableRBD(RBD):
     GROUP_KEYS = _spec.GROUP_KEYS
     INSPECTION_KEYS = _spec.INSPECTION_KEYS
     STANDBY_KEYS = _spec.STANDBY_KEYS
+    LOAD_SHARING_KEYS = _spec.LOAD_SHARING_KEYS
+    IDENTICAL_KEYS = _spec.IDENTICAL_KEYS
     SHUTDOWN_KEYS = _shutdowns.SHUTDOWN_KEYS
     _PER_ACTION_COST_KEYS = _spec._PER_ACTION_COST_KEYS
 
@@ -940,6 +979,19 @@ class RepairableRBD(RBD):
         # A block on a covariate schedule takes its life under it (see
         # _covariate_schedule); the spec as given keeps the regression
         # model and the schedule, for saving and drawing.
+        # Load-sharing groups and blocks of identical units, checked
+        # before a duty or covariates change the specs: each node's group
+        # and the life its units draw (see _spec._validate_units_group).
+        units_groups: dict[Any, Tuple[_Standby, Any]] = {}
+        for name, component in components.items():
+            if isinstance(component, dict) and any(
+                component.get(key) is not None
+                for key in ("load_sharing", "identical")
+            ):
+                _spec._validate_component_spec(name, component)
+                group = _spec._validate_units_group(name, component)
+                if group is not None:
+                    units_groups[name] = group
         components = _covariate_schedule.on_schedules(components)
         components, self._operating_tasks, clocks = _on_duty(components)
         self.repair_crews = _validate_crews(repair_crews)
@@ -1061,6 +1113,9 @@ class RepairableRBD(RBD):
                     self._standby[name] = _spec._validate_standby(
                         name, component
                     )
+                life = component["reliability"]
+                if name in units_groups:
+                    self._standby[name], life = units_groups[name]
                 if component.get("group") is not None:
                     self._member_group[name] = component["group"]
                 imperfect = _spec._validate_imperfect(self, name, component)
@@ -1138,12 +1193,10 @@ class RepairableRBD(RBD):
                     repair_model, f"The repairability of component {name!r}"
                 )
                 try:
-                    components[name] = NonRepairable(
-                        component["reliability"], repair_model
-                    )
+                    components[name] = NonRepairable(life, repair_model)
                 except (TypeError, ValueError) as error:
                     raise type(error)(f"Component {name!r}: {error}") from None
-                reliability[name] = component["reliability"]
+                reliability[name] = life
                 repairability[name] = repair_model
             elif isinstance(component, RepairableRBD):
                 reliability[name] = component

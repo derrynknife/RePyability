@@ -698,6 +698,8 @@ _OWN_KEYS = (
     "salvage",
     "escalation",
     "retire_at",
+    "load_sharing",
+    "identical",
 )
 
 
@@ -792,6 +794,12 @@ class UnitPlan:
     retire_at : float, optional
         When the unit is retired, in the plan's unit of time from 0;
         nothing is earned or spent after it.
+    load_sharing : dict, optional
+        Makes the node a load-sharing group of such units, as a spec's
+        ``"load_sharing"``.
+    identical : dict, optional
+        Makes the node a block of identical units, each repaired on its
+        own, as a spec's ``"identical"``.
 
     Examples
     --------
@@ -822,6 +830,8 @@ class UnitPlan:
     salvage: Any = None
     escalation: Optional[float] = None
     retire_at: Optional[float] = None
+    load_sharing: Optional[dict] = None
+    identical: Optional[dict] = None
 
     #: The node a plan valued alone is in its one-node diagram
     #: (``diagram()``): what its results' tables name.

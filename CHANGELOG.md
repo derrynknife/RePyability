@@ -10,6 +10,32 @@ release between minors that only adds (0.19.1).
 
 ## [Unreleased]
 
+### Added
+
+- Load-sharing groups on a `RepairableRBD`: a component spec's
+  `"load_sharing"` (`"units"`, `"k"`, `"load"`), with an
+  accelerated-failure-time `"reliability"`, makes the node a group of
+  identical units that share a load, each repaired on its own. While `s`
+  units work, each ages at its life's `phi(load / s)`; when a failed unit
+  is repaired, the load is shared again. With an exponential baseline and
+  repairs the long-run values are exact (a birth-death Markov chain) and
+  the values over time numerical; otherwise the group is simulated, in
+  Python. See the guide's "Load-sharing groups".
+- Blocks of identical units on a `RepairableRBD`: a spec's `"identical"`
+  (`"units"`, `"k"`) makes the node `units` independent units, each
+  repaired on its own, up while `k` of them are (series with `k` equal to
+  `units`, parallel with 1), as one node. Exact from its chain with
+  exponential lives and repairs; otherwise simulated, with the units drawn
+  out as its exact twin. See the guide's "Blocks of identical units".
+- `UnitPlan` takes `load_sharing` and `identical`, as the spec keys.
+
+### Fixed
+
+- A parameter sensitivity or uncertainty no longer takes a regression
+  model's parameters (its baseline's and its coefficients) as its
+  distribution's: `model_parameters` gives None for one, as for any model
+  it cannot rebuild, rather than a rebuild that fails.
+
 ## [0.20] - 2026-11-22
 
 Money over time and site shutdowns. Net present values are exact by

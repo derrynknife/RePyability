@@ -167,6 +167,14 @@ class _StandbyGroup:
     and the spare waits on. A repaired unit fills an empty position, or
     joins the spares. The group is up while ``k`` units operate.
 
+    A group with ``rates`` (load-sharing, or identical units: see
+    ``_Standby``) has no spares: every unit up operates, a repaired unit
+    operating at once, and the group is up while at least ``k`` do. While
+    ``s`` operate each uses up its life at ``rates[s - 1]``, so whenever
+    one fails or comes back, each other operating unit's life left is
+    counted down at the rate it had and its failure put at the new rate
+    (the cumulative-exposure model of ``LoadSharingModel``).
+
     The group keeps its units' events in a queue of its own and has one
     event in the RBD's queue, ``entry``: its next. The RBD passes that
     event to ``advance``, which returns the group's state after it.
@@ -178,6 +186,8 @@ class _StandbyGroup:
         "_k",
         "_dormancy",
         "_switching",
+        "_rates",
+        "_rate",
         "_draws",
         "_end",
         "_operating",
@@ -204,6 +214,8 @@ class _StandbyGroup:
         self._k = arrangement.k
         self._dormancy = arrangement.dormancy_factor
         self._switching = arrangement.switching_probability
+        self._rates = arrangement.rates
+        self._rate = 1.0
         self._draws = (
             draws if isinstance(draws, _StandbyDraws) else _StandbyDraws(draws)
         )
@@ -219,9 +231,12 @@ class _StandbyGroup:
         self._order = 0
         self.entry: Optional["Event"] = None
         self.up = True
+        if self._rates is not None:
+            # Every unit operates, at the rate they share.
+            self._rate = self._rates[arrangement.units - 1]
         for unit in range(arrangement.units):
             self._life[unit] = self._draws.life(unit)
-            if unit < self._k:
+            if self._rates is not None or unit < self._k:
                 self._operate(unit, 0.0)
             else:
                 self._wait(unit, 0.0)
@@ -237,7 +252,35 @@ class _StandbyGroup:
     def _operate(self, unit: int, t: float) -> None:
         self._operating.add(unit)
         self._since[unit] = t
-        self._queue(t + self._life[unit], _UNIT_FAILS, unit)
+        self._queue(t + self._life[unit] / self._rate, _UNIT_FAILS, unit)
+
+    def _share(self, t: float) -> None:
+        """The units operating at ``t`` have changed (a group with
+        ``rates``): each other's life left is counted down at the rate it
+        had, and its failure put at the rate they now share."""
+        rate, rates = self._rate, self._rates
+        assert rates is not None  # a group with rates alone
+        if self._operating:
+            self._rate = rates[len(self._operating) - 1]
+        for unit in self._operating:
+            self._life[unit] = max(
+                self._life[unit] - rate * (t - self._since[unit]), 0.0
+            )
+            self._version[unit] += 1
+            self._operate(unit, t)
+
+    def _advance_shared(self, t: float, kind: int, unit: int) -> int:
+        """``advance`` for a group with ``rates``: how many units failed."""
+        if kind == _UNIT_REPAIRED:
+            self._life[unit] = self._draws.life(unit)
+            self._since[unit] = t
+            self._operating.add(unit)
+            self._share(t)
+            return 0
+        self._operating.discard(unit)
+        self._repair(unit, t)
+        self._share(t)
+        return 1
 
     def _wait(self, unit: int, t: float) -> None:
         self._spares.append(unit)
@@ -288,23 +331,34 @@ class _StandbyGroup:
         one (not superseded by an earlier)."""
         return event is self.entry
 
+    def _released(self, unit: int, t: float) -> None:
+        """Unit ``unit``'s repair is done at ``t``: its crew is free."""
+        from . import _event_loop
+
+        crews = self._rbd._run_state._crews
+        if crews is not None:
+            started = crews.release(_Unit(self._node, unit), t)
+            if started is not None:
+                _event_loop._crew_started(self._rbd, started)
+
     def advance(self, t: float) -> Tuple[bool, int]:
         """Take the group's event at ``t`` (its ``entry``): whether it is up
         after it, and how many of its units failed (each is repaired)."""
-        from . import _event_loop
-
         self.entry = None
         events, version = self._events, self._version
         while events[0][4] != version[events[0][3]]:
             heapq.heappop(events)
         _, _, kind, unit, _ = heapq.heappop(events)
         failures = 0
+        if self._rates is not None:
+            if kind == _UNIT_REPAIRED:
+                self._released(unit, t)
+            failures = self._advance_shared(t, kind, unit)
+            self.up = len(self._operating) >= self._k
+            self._arm()
+            return self.up, failures
         if kind == _UNIT_REPAIRED:
-            crews = self._rbd._run_state._crews
-            if crews is not None:
-                started = crews.release(_Unit(self._node, unit), t)
-                if started is not None:
-                    _event_loop._crew_started(self._rbd, started)
+            self._released(unit, t)
             self._life[unit] = self._draws.life(unit)
             if len(self._operating) < self._k:
                 self._operate(unit, t)
@@ -945,12 +999,40 @@ class _Shutdown(NamedTuple):
 
 
 class _Standby(NamedTuple):
-    """A standby group (a component spec's ``"standby"``): ``units``
-    identical units, ``k`` of which must operate, the rest waiting as
+    """A group of identical units, each failing and repaired on its own,
+    as one node (see ``_StandbyGroup``).
+
+    A standby group (a component spec's ``"standby"``, ``rates`` None):
+    ``units`` units, ``k`` of which must operate, the rest waiting as
     spares that age at ``dormancy_factor`` of the operating rate, switched
-    in with ``switching_probability``."""
+    in with ``switching_probability``.
+
+    With ``rates`` (a spec's ``"load_sharing"`` or ``"identical"``), every
+    unit that is up operates, none waits, and the group is up while at
+    least ``k`` operate. While ``s`` operate, each uses up its life at
+    ``rates[s - 1]``: a load-sharing group's units' ageing under the load
+    ``s`` of them share, and 1 throughout for independent identical
+    units. Such a group has a dormancy of 0 and switching of 1, which it
+    never uses."""
 
     units: int
     k: int
     dormancy_factor: float
     switching_probability: float
+    rates: Optional[Tuple[float, ...]] = None
+    #: The spec's key that made the group: ``"standby"``,
+    #: ``"load_sharing"`` or ``"identical"``.
+    key: str = "standby"
+
+    @property
+    def what(self) -> str:
+        """The group in words, for a message."""
+        return GROUP_KINDS[self.key]
+
+
+#: Each kind of group of units in words, by the spec's key.
+GROUP_KINDS = {
+    "standby": "a standby group",
+    "load_sharing": "a load-sharing group",
+    "identical": "a block of identical units",
+}

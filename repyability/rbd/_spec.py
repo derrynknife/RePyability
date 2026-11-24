@@ -31,6 +31,7 @@ from repyability.rbd._model_utils import (
 if TYPE_CHECKING:
     pass
 from repyability.rbd._events import (
+    GROUP_KINDS,
     _Imperfect,
     _Inspection,
     _MaintenanceGroup,
@@ -65,6 +66,8 @@ COMPONENT_SPEC_KEYS = (
         "acquisition_cost",
         "priority",
         "standby",
+        "load_sharing",
+        "identical",
         "group",
         "repair",
         "replace_after",
@@ -139,6 +142,29 @@ INSPECTION_KEYS = (
 
 #: The keys of a component's ``"standby"`` spec.
 STANDBY_KEYS = ("units", "k", "dormancy_factor", "switching_probability")
+
+#: The keys of a component's ``"load_sharing"`` spec.
+LOAD_SHARING_KEYS = ("units", "k", "load")
+
+#: The keys of a component's ``"identical"`` spec.
+IDENTICAL_KEYS = ("units", "k")
+
+#: The spec keys that make a component a group of units (see
+#: ``_events._Standby``).
+GROUP_KEYS_OF_UNITS = ("standby", "load_sharing", "identical")
+
+#: The spec keys a load-sharing group or a block of identical units does
+#: not take yet, and what each is.
+_NOT_FOR_UNITS = (
+    ("preventive", "a preventive schedule"),
+    ("inspection", "an inspection"),
+    ("group", "a maintenance group"),
+    ("repair", "an imperfect repair"),
+    ("replace_after", "an imperfect repair"),
+    ("duty", "a duty"),
+    ("covariates", "a covariate schedule"),
+    ("upgrade", "an upgrade"),
+)
 
 #: The costs charged per action (per failure, per preventive
 #: replacement or per inspection), which may be distributions.
@@ -1086,6 +1112,136 @@ def _validate_upgrade(node, spec: dict) -> _Upgrade:
     if upgrade.get("cost") is not None:
         cost = _validate_cost(node, "the upgrade's cost", upgrade["cost"])
     return _Upgrade(at, life, cost)
+
+
+def _group_key(spec: dict) -> Optional[str]:
+    """The key that makes a component spec a group of units
+    (``"standby"``, ``"load_sharing"`` or ``"identical"``), or None;
+    raise if it has more than one."""
+    given = [key for key in GROUP_KEYS_OF_UNITS if spec.get(key) is not None]
+    if len(given) > 1:
+        raise ValueError(
+            f"A component is one group of units at most: give one of "
+            f"{', '.join(map(repr, given))}."
+        )
+    return given[0] if given else None
+
+
+def _whole_count(node, key: str, name: str, value) -> int:
+    """A group's count (its ``units`` or ``k``), checked: a whole number,
+    1 or more."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float, np.integer, np.floating))
+        or int(value) != value
+        or value < 1
+    ):
+        raise ValueError(
+            f"Component {node!r}: {key} {name} must be a whole "
+            f"number, 1 or more; got {value!r}."
+        )
+    return int(value)
+
+
+def _validate_units_group(node, spec: dict) -> Optional[Tuple[_Standby, Any]]:
+    """A component spec's ``"load_sharing"`` or ``"identical"``,
+    validated: the group of units it makes the component (see
+    ``_StandbyGroup``), and the life each unit draws (a load-sharing
+    unit's baseline, its life at no acceleration); None for a spec with
+    neither."""
+    try:
+        key = _group_key(spec)
+    except ValueError as error:
+        raise ValueError(f"Component {node!r}: {error}") from None
+    if key not in ("load_sharing", "identical"):
+        return None
+    given = spec[key]
+    keys = LOAD_SHARING_KEYS if key == "load_sharing" else IDENTICAL_KEYS
+    if not isinstance(given, dict):
+        raise ValueError(
+            f"Component {node!r}: {key} must be a dict of "
+            f"{', '.join(keys)}, got {given!r}."
+        )
+    unknown = set(given) - set(keys)
+    if unknown:
+        raise ValueError(
+            f"Component {node!r}: unknown {key} key(s) "
+            f"{sorted(map(str, unknown))}; it takes {', '.join(keys)}."
+        )
+    what = GROUP_KINDS[key]
+    for refused, words in _NOT_FOR_UNITS:
+        if spec.get(refused) is not None:
+            raise ValueError(
+                f"Component {node!r} is {what}, which takes no {words} "
+                f"({refused!r}) yet."
+            )
+    if isinstance(spec["repairability"], str):
+        raise ValueError(
+            f"Component {node!r} is {what}, whose units need a repair "
+            "time: repaired instantly, its units would never be down."
+        )
+    if key == "identical" and not {"units", "k"} <= set(given):
+        raise ValueError(
+            f"Component {node!r}: a block of identical units needs its "
+            "'units' and its 'k', how many of them must work: 'k' equal "
+            "to 'units' for units in series, 1 for units in parallel."
+        )
+    units = _whole_count(node, key, "units", given.get("units", 2))
+    k = _whole_count(node, key, "k", given.get("k", 1))
+    if k > units:
+        raise ValueError(
+            f"Component {node!r}: {key} k ({k}) cannot be more than its "
+            f"units ({units})."
+        )
+    if key == "identical":
+        return (
+            _Standby(units, k, 0.0, 1.0, (1.0,) * units, key),
+            spec["reliability"],
+        )
+    return _load_sharing(node, spec, given, units, k)
+
+
+def _load_sharing(
+    node, spec: dict, given: dict, units: int, k: int
+) -> Tuple[_Standby, Any]:
+    """A ``"load_sharing"`` group: the rate at which each unit ages while
+    ``s`` of them share the ``load`` (its life's ``phi(load / s)``), and
+    the life at no acceleration that each unit draws (see
+    ``LoadSharingModel``)."""
+    from repyability.rbd.load_sharing_node import _AFT_KIND, _baseline
+
+    life = spec["reliability"]
+    if getattr(life, "kind", None) != _AFT_KIND:
+        raise ValueError(
+            f"Component {node!r} is a load-sharing group, whose "
+            "reliability must be a fitted accelerated-failure-time model "
+            "with the load as its one covariate (such as surpyval's "
+            f"WeibullAFT.fit(x, Z=load)); got {type(life).__name__}."
+        )
+    if "load" not in given:
+        raise ValueError(
+            f"Component {node!r}: a load-sharing group needs its 'load', "
+            "the total its operating units share."
+        )
+    load = given["load"]
+    if not is_number(load) or not 0.0 < float(load) < math.inf:
+        raise ValueError(
+            f"Component {node!r}: load_sharing load must be a positive, "
+            f"finite number; got {load!r}."
+        )
+    rates = []
+    for s in range(1, units + 1):
+        rate = float(np.ravel(life.phi(np.atleast_2d(float(load) / s)))[0])
+        if not 0.0 < rate < math.inf:
+            raise ValueError(
+                f"Component {node!r}: its life ages at {rate!r} times its "
+                f"baseline's rate under a load of {float(load) / s:g} "
+                f"(shared by {s}); a load-sharing group needs a positive, "
+                "finite rate."
+            )
+        rates.append(rate)
+    arrangement = _Standby(units, k, 0.0, 1.0, tuple(rates), "load_sharing")
+    return arrangement, _baseline(life)
 
 
 def _validate_standby(node, spec: dict) -> _Standby:
