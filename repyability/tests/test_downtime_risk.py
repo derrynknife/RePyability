@@ -432,3 +432,117 @@ def test_inspection_refusals():
     )
     with pytest.raises(ValueError, match="option 1 cannot be taken"):
         offset.least_spend_for_downtime(YEAR, 10.0, inspections={"p": [400.0]})
+
+
+BETTER = 2.5e-4  # the better pump: 4,000 h between failures
+
+
+def test_an_upgrade_against_the_better_pump_s_exact_percentile():
+    exact = optimize.brentq(
+        lambda x: downtime_cdf(x, BETTER, REPAIR, YEAR) - 0.95, 1.0, YEAR
+    )
+    density = (
+        downtime_cdf(exact + 1.0, BETTER, REPAIR, YEAR)
+        - downtime_cdf(exact - 1.0, BETTER, REPAIR, YEAR)
+    ) / 2.0
+    n = 4000
+    found = pump().least_spend_for_downtime(
+        YEAR,
+        400.0,
+        upgrades={"p": {"reliability": E([BETTER]), "cost": 3000.0}},
+        mc_samples=n,
+        seed=61,
+    )
+    assert found.met and found.design.upgrades == {"p": 1}
+    assert found.design.spend == 3000.0
+    se = math.sqrt(0.95 * 0.05 / n) / density
+    assert abs(found.design.estimate - exact) < 4 * se
+    better = RepairableRBD(
+        ONE, {"p": {"reliability": E([BETTER]), "repairability": E([REPAIR])}}
+    )
+    down, _ = direct(better, n, 61)
+    assert found.design.unplanned["mean_hours"] == pytest.approx(down.mean())
+
+
+def test_an_upgrade_is_paid_for_every_unit_its_copies_too():
+    found = pump().least_spend_for_downtime(
+        YEAR,
+        0.5,
+        redundancy={"p": 5000.0},
+        upgrades={"p": [{"reliability": E([BETTER]), "cost": 1000.0}]},
+        mc_samples=500,
+        seed=62,
+    )
+    assert found.met
+    assert any(d.upgrades["p"] and d.copies["p"] for d in found.frontier)
+    for design in found.frontier:
+        units = 1 + design.copies["p"]
+        paid = 1000.0 * units if design.upgrades["p"] else 0.0
+        assert design.spend == 5000.0 * design.copies["p"] + paid
+
+
+def test_upgrades_of_groups_and_refusals():
+    from repyability.tests import catalogue
+
+    block = RepairableRBD(
+        ONE,
+        {
+            "p": {
+                "reliability": E([0.01]),
+                "repairability": E([0.02]),
+                "identical": {"units": 2, "k": 2},
+            }
+        },
+    )
+    found = block.least_spend_for_downtime(
+        YEAR,
+        1.0,
+        upgrades={"p": {"reliability": E([0.001]), "cost": 10.0}},
+        mc_samples=300,
+        seed=63,
+    )
+    assert found.frontier[-1].upgrades == {"p": 1}
+    shared = RepairableRBD(
+        ONE,
+        {
+            "p": {
+                "reliability": catalogue.aft(),
+                "repairability": E([0.5]),
+                "load_sharing": {"units": 2, "load": 2.0},
+            }
+        },
+    )
+    # A load-sharing group's life must take the load: a plain life
+    # cannot, and is refused before the search.
+    with pytest.raises(ValueError, match="option 1 cannot be taken"):
+        shared.least_spend_for_downtime(
+            YEAR,
+            1.0,
+            upgrades={"p": {"reliability": E([0.001]), "cost": 10.0}},
+        )
+    with pytest.raises(ValueError, match="'reliability'"):
+        pump().least_spend_for_downtime(
+            YEAR, 1.0, upgrades={"p": {"reliability": E([BETTER])}}
+        )
+    with pytest.raises(ValueError, match="cost of an upgrade"):
+        pump().least_spend_for_downtime(
+            YEAR,
+            1.0,
+            upgrades={"p": {"reliability": E([BETTER]), "cost": 0.0}},
+        )
+    upgraded = RepairableRBD(
+        ONE,
+        {
+            "p": {
+                "reliability": E([FAIL]),
+                "repairability": E([REPAIR]),
+                "upgrade": {"at": 100.0, "reliability": E([BETTER])},
+            }
+        },
+    )
+    with pytest.raises(ValueError, match="already has an upgrade"):
+        upgraded.least_spend_for_downtime(
+            YEAR,
+            1.0,
+            upgrades={"p": {"reliability": E([BETTER]), "cost": 1.0}},
+        )

@@ -24,6 +24,12 @@ release between minors that only adds (0.19.1).
   expected cost. Each `DowntimeDesign` gives its `inspections`. A
   lever's option a diagram cannot take (a test interval under its
   offset) is refused before the search, naming the lever.
+- `least_spend_for_downtime(upgrades={node: offer or [offers]})`: a
+  better life for a node's units from the start, each offer
+  `{"reliability":, "cost":}` at its price per unit (the node's copies
+  are upgraded units too, and pay it). Each `DowntimeDesign` gives its
+  `upgrades` (the offer taken, from 1). A node with its own `"upgrade"`
+  is refused.
 - Load-sharing groups on a `RepairableRBD`: a component spec's
   `"load_sharing"` (`"units"`, `"k"`, `"load"`), with an
   accelerated-failure-time `"reliability"`, makes the node a group of

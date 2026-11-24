@@ -5089,6 +5089,7 @@ class RepairableRBD(RBD):
         redundancy: Optional[Mapping] = None,
         intervals: Optional[Mapping] = None,
         inspections: Optional[Mapping] = None,
+        upgrades: Optional[Mapping] = None,
         max_units: Optional[Mapping] = None,
         crews: Optional[Mapping] = None,
         call_out: Any = None,
@@ -5115,7 +5116,8 @@ class RepairableRBD(RBD):
         ``redundancy`` (copies of a node in parallel with it, at a price each),
         ``intervals`` (a node's preventive interval, through the candidates
         given, at its tasks' expected cost), ``inspections`` (a node's test
-        interval, likewise), ``crews`` (repair crews more, at a price each and
+        interval, likewise), ``upgrades`` (a better life from the start, at a
+        price per unit), ``crews`` (repair crews more, at a price each and
         their salaries) and ``call_out`` (a call-out crew's contract, through
         those given, at its expected fees and time engaged). A group of units
         (standby, load-sharing or identical) is one node: its copy is a second
@@ -5151,6 +5153,11 @@ class RepairableRBD(RBD):
         inspections : dict, optional
             ``{node: test intervals to try, in order}`` for nodes with an
             ``"inspection"``, each at its tests' expected cost.
+        upgrades : dict, optional
+            ``{node: offer or list of offers, tried in order}``, each
+            offer ``{"reliability": better life, "cost": price per
+            unit}``: the node's units have the better life from the
+            start, at the price for each (the copies too).
         max_units : dict, optional
             ``{node: most copies}``; by default none.
         crews : dict, optional
@@ -5226,6 +5233,7 @@ class RepairableRBD(RBD):
             redundancy=redundancy,
             intervals=intervals,
             inspections=inspections,
+            upgrades=upgrades,
             max_units=max_units,
             crews=crews,
             call_out=call_out,

@@ -21,6 +21,9 @@ optional ``budget``:
   horizon (from the same runs);
 - ``inspections``: a node's test interval (hidden failures), through
   the candidates given, its spend the expected inspection cost;
+- ``upgrades``: a better life for a node's units from the start (a
+  better model bought now), through the offers given, at its capital
+  price per unit (a copy of an upgraded node is an upgraded unit too);
 - ``crews``: repair crews more than the diagram's ``repair_crews``, at
   a price each and their salaries at the ``crew_cost_rate``;
 - ``call_out``: a call-out crew's contract, through the contracts given,
@@ -130,11 +133,19 @@ def _cap(value, what: str) -> Optional[int]:
 
 
 def _levers(
-    rbd, redundancy, intervals, inspections, max_units, crews, call_out
+    rbd,
+    redundancy,
+    intervals,
+    inspections,
+    upgrades,
+    max_units,
+    crews,
+    call_out,
 ) -> List[_Lever]:
     """The levers, checked, in the order the search tries their moves:
     the redundancy nodes', the interval nodes', the inspection nodes',
-    the crews' and the call-out contracts'. Each option of a choice
+    the upgrade nodes', the crews' and the call-out contracts'. Each
+    option of a choice
     lever is built once here, so that one the diagram cannot take is
     refused before the search."""
     from repyability.rbd import _repairable_allocation as allocation
@@ -211,6 +222,8 @@ def _levers(
         levers.append(
             _Lever("inspection", node, options=tuple(float(v) for v in row))
         )
+    for node, offers in (upgrades or {}).items():
+        levers.append(_upgrade_lever(rbd, node, offers))
     if crews is not None:
         levers.append(_crews_lever(rbd, crews))
     if call_out is not None:
@@ -230,6 +243,72 @@ def _levers(
                     f"The {what}'s option {step} cannot be taken: {error}"
                 ) from error
     return levers
+
+
+def _fixed_spend(levers: Sequence[_Lever], state: Sequence[int]) -> float:
+    """The levers' prices: a count lever's at each step, an upgrade's
+    for each unit of its node (its copies are upgraded units too)."""
+    copies = {v.node: s for v, s in zip(levers, state) if v.kind == "copies"}
+    total = 0.0
+    for lever, step in zip(levers, state):
+        if lever.kind == "upgrade":
+            if step:
+                total += lever.options[step - 1][1] * (
+                    1 + copies.get(lever.node, 0)
+                )
+        else:
+            total += lever.price * step
+    return total
+
+
+def _upgrade_lever(rbd, node, offers) -> _Lever:
+    """``upgrades[node]``: better lives for the node's units from the
+    start, each at its capital price per unit, tried in order."""
+    from repyability.rbd import _requirements
+
+    _requirements._require_component(rbd, node, "upgrades")
+    spec = rbd._init_args["components"].get(node)
+    if not isinstance(spec, dict):
+        raise ValueError(
+            f"Node {node!r} is not given as a spec or a UnitPlan, so its "
+            "life cannot be upgraded here: give it as one."
+        )
+    if spec.get("upgrade") is not None:
+        raise ValueError(
+            f"Node {node!r} already has an upgrade on its spec; an upgrade "
+            "lever replaces its life from the start: leave one out."
+        )
+    listed = [offers] if isinstance(offers, Mapping) else offers
+    if (
+        isinstance(listed, (str, bytes))
+        or not isinstance(listed, Sequence)
+        or not listed
+    ):
+        raise ValueError(
+            f"upgrades[{node!r}] must be an upgrade (a dict of "
+            "'reliability', the better life, and 'cost', its price per "
+            f"unit) or a list of them to try, in order; got {offers!r}."
+        )
+    options = []
+    for offer in listed:
+        if not isinstance(offer, Mapping) or set(offer) != {
+            "reliability",
+            "cost",
+        }:
+            raise ValueError(
+                f"Each of upgrades[{node!r}] must be a dict of "
+                "'reliability' (the better life) and 'cost' (its price per "
+                f"unit); got {offer!r}."
+            )
+        options.append(
+            (
+                offer["reliability"],
+                _price(
+                    offer["cost"], f"The cost of an upgrade of node {node!r}"
+                ),
+            )
+        )
+    return _Lever("upgrade", node, options=tuple(options))
 
 
 def _crews_lever(rbd, crews) -> _Lever:
@@ -317,6 +396,10 @@ def _design(rbd, levers: Sequence[_Lever], state: Sequence[int]):
                 spec["inspection"], interval=lever.options[step - 1]
             )
             components[lever.node] = spec
+        elif lever.kind == "upgrade":
+            spec = dict(components[lever.node])
+            spec["reliability"] = lever.options[step - 1][0]
+            components[lever.node] = spec
         elif lever.kind == "crews":
             args["repair_crews"] = int(args["repair_crews"]) + step
         elif lever.kind == "call_out":
@@ -337,10 +420,17 @@ def _design(rbd, levers: Sequence[_Lever], state: Sequence[int]):
 
 def _settings(rbd, levers: Sequence[_Lever], state: Sequence[int]) -> dict:
     """A design's levers, as its result gives them."""
-    found: dict = {"copies": {}, "intervals": {}, "inspections": {}}
+    found: dict = {
+        "copies": {},
+        "intervals": {},
+        "inspections": {},
+        "upgrades": {},
+    }
     for lever, step in zip(levers, state):
         if lever.kind == "copies":
             found["copies"][lever.node] = step
+        elif lever.kind == "upgrade":
+            found["upgrades"][lever.node] = step or None
         elif lever.kind in ("interval", "inspection"):
             found[lever.kind + "s"][lever.node] = (
                 lever.options[step - 1] if step else None
@@ -426,6 +516,7 @@ def least_spend_for_downtime(
     redundancy: Optional[Mapping],
     intervals: Optional[Mapping],
     inspections: Optional[Mapping],
+    upgrades: Optional[Mapping],
     max_units: Optional[Mapping],
     crews: Optional[Mapping],
     call_out,
@@ -480,7 +571,14 @@ def least_spend_for_downtime(
     )
     seed = _npv_runs._seed(seed)
     levers = _levers(
-        rbd, redundancy, intervals, inspections, max_units, crews, call_out
+        rbd,
+        redundancy,
+        intervals,
+        inspections,
+        upgrades,
+        max_units,
+        crews,
+        call_out,
     )
 
     designs: List[DowntimeDesign] = []
@@ -510,9 +608,7 @@ def least_spend_for_downtime(
         methods[0] = risk.bound_method
         if not base_spent:
             base_spent.append(spent)
-        spend = sum(
-            lever.price * step for lever, step in zip(levers, state)
-        ) + (spent - base_spent[0])
+        spend = _fixed_spend(levers, state) + (spent - base_spent[0])
         design = DowntimeDesign(
             **_settings(rbd, levers, state),
             spend=float(spend),
@@ -643,5 +739,6 @@ def _floor_words(floor, last, limit, measure, budget) -> str:
         return f"{lowest}: the search took its most steps ({MAX_STEPS})."
     return (
         f"{lowest}: no lever given lowers it further. Give other levers "
-        "(redundancy=, intervals=, inspections=, crews=, call_out=)."
+        "(redundancy=, intervals=, inspections=, upgrades=, crews=, "
+        "call_out=)."
     )
