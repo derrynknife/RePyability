@@ -219,6 +219,120 @@ class Services:
         return f"services the unit, {what}"
 
 
+#: The fields of a restoration an effect's plain data may give.
+_RESTORATION_KEYS = (
+    "q",
+    "model",
+    "to_age",
+    "replace_every",
+    "replacement_cost",
+)
+
+
+def effect_to_dict(effect) -> Optional[Dict[str, Any]]:
+    """A service's ``effect`` as plain data, for JSON: None for no
+    effect, ``{"kind": "restoration", ...}`` with the restoration's
+    fields, or ``{"kind": "condition", "life": ..., "fresh": ...,
+    "stale": ..., "lasts": ...}`` with the life as a diagram saves a
+    node's model. ``effect_from_dict`` loads it.
+
+    Raises
+    ------
+    NotImplementedError
+        A restoration by a fitted process, which has no plain form:
+        give its Kijima model and factor (``q``) instead.
+    """
+    from repyability.maintenance import Restoration
+    from repyability.rbd.serialisation import serialise_model
+
+    if effect is None:
+        return None
+    if isinstance(effect, Condition):
+        return {
+            "kind": "condition",
+            "life": serialise_model(effect.life),
+            "fresh": list(effect.fresh),
+            "stale": list(effect.stale),
+            "lasts": float(effect.lasts),
+        }
+    if isinstance(effect, Restoration):
+        if effect.process is not None:
+            raise NotImplementedError(
+                "A restoration by a fitted process has no plain form: give "
+                "the process's Kijima model and factor as "
+                "Restoration(q=..., model=...)."
+            )
+        out: Dict[str, Any] = {"kind": "restoration"}
+        for name in _RESTORATION_KEYS:
+            value = getattr(effect, name)
+            if value is not None:
+                out[name] = value
+        return out
+    raise TypeError(
+        "effect must be a maintenance.Restoration, a schedule.Condition "
+        f"or None; got {effect!r}."
+    )
+
+
+def effect_from_dict(data):
+    """The effect ``effect_to_dict`` saved (None for no effect).
+
+    Parameters
+    ----------
+    data : dict or None
+        ``{"kind": "restoration", "q": ..., "model": ..., "to_age": ...,
+        "replace_every": ..., "replacement_cost": ...}`` (the fields
+        given), ``{"kind": "condition", "life": ..., "fresh": ...,
+        "stale": ..., "lasts": ...}``, or None (or ``{"kind": "none"}``)
+        for no effect.
+    """
+    from repyability.maintenance import Restoration
+    from repyability.rbd.serialisation import deserialise_model
+
+    if data is None:
+        return None
+    kind = data.get("kind") if isinstance(data, dict) else None
+    takes = {
+        "none": (),
+        "restoration": _RESTORATION_KEYS,
+        "condition": ("life", "fresh", "stale", "lasts"),
+    }
+    if kind not in takes:
+        raise ValueError(
+            "an effect is None (no effect), or an object whose kind is "
+            "'none', 'restoration' (a Kijima factor q with its model, or a "
+            "virtual age to_age) or 'condition' (a fitted life with fresh, "
+            f"stale and lasts); got {data!r}."
+        )
+    unknown = sorted(set(data) - {"kind", *takes[kind]})
+    if unknown:
+        raise ValueError(
+            f"a {kind!r} effect takes no key(s) {unknown}; it takes "
+            f"{list(takes[kind])}."
+        )
+    if kind == "none":
+        return None
+    if kind == "restoration":
+        return Restoration(
+            **{name: data[name] for name in _RESTORATION_KEYS if name in data}
+        )
+    missing = [name for name in takes[kind] if name not in data]
+    if missing:
+        raise ValueError(f"a 'condition' effect needs {missing}.")
+    life = data["life"]
+    if not isinstance(life, dict) or "kind" not in life:
+        raise ValueError(
+            "a condition's life is a model as a diagram saves a node's "
+            "(serialise_model's {'kind': 'surpyval', 'model': ...})."
+        )
+    return Condition(
+        deserialise_model(life),
+        fresh=data["fresh"],
+        stale=data["stale"],
+        lasts=data["lasts"],
+    )
+
+
 @dataclass(frozen=True)
 class Sides:
     """A service's simulated value: by period, the two sides' mean

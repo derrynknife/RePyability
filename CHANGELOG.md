@@ -28,6 +28,15 @@ release between minors that only adds (0.19.1).
   exponential lives and repairs; otherwise simulated, with the units drawn
   out as its exact twin. See the guide's "Blocks of identical units".
 - `UnitPlan` takes `load_sharing` and `identical`, as the spec keys.
+- `value_plan` takes a `"task_value"` analysis: a service's value on
+  dates (`task_value` with `Services(plan, effect=)`) from one JSON
+  document, with the task, the usage forecast (its start, end and duty
+  plan) and the effect as plain data: none (the default, exact), a
+  Kijima `"restoration"` or a fitted `"condition"`. The diagram is the
+  unit's plan, needed only with an effect, and a seed is drawn and
+  written into the request for a stated effect. `npv_schema()` gives the
+  new inputs, and a request's `"diagram"` is no longer required for
+  this analysis. No other analysis's numbers change.
 
 ### Fixed
 

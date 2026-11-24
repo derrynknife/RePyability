@@ -908,6 +908,15 @@ in `test_schedule_forecast.py`.
   to the with side. The value by period and in all is the mean
   difference, with a two-sided interval (90% by default) from the runs'
   spread.
+- **As JSON:** `value_plan`'s `"task_value"` analysis takes the task
+  (`Task.to_dict()`), the forecast (its start, end and duty plan), the
+  effect as plain data (none, `{"kind": "restoration", ...}` or
+  `{"kind": "condition", ...}`, `schedule._service.effect_to_dict`) and
+  the unit's plan as the diagram, so a caller that records the choice of
+  effect per failure mode (RCM's) can send it as it is stored. A
+  restoration by a fitted process has no plain form: its Kijima model
+  and factor are sent instead. `test_value_plan_services` checks each
+  answer equals `task_value` called directly.
 - **Decisions (defaults):**
   - A service takes no time, as UC-50's replacement and UC-54's test.
   - A service due at the forecast's start is done then: its effect is

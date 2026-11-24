@@ -821,6 +821,18 @@ answer["route"]["route"]                         # -> 'exact'
 value_plan(answer["request"]) == answer          # -> True
 ```
 
+`"task_value"` asks what a service on dates is worth (see
+[Is a service worth it?](schedule.md#is-a-service-worth-it)): its inputs
+are the `task` (`Task.to_dict()`), the `usage` (a forecast's `start`,
+`end` and duty `plan`, as `UsageForecast.to_dict()` has them), the
+service's `effect` and `task_value`'s keywords; the diagram is the
+unit's plan (`UnitPlan.to_dict()`), needed only with an effect. The
+effect is left out for none (the service an accepted cost, valued
+exactly), or `{"kind": "restoration", "q": 0.6}` (with its `"model"`,
+or `"to_age"`), or `{"kind": "condition", "life": ..., "fresh": [...],
+"stale": [...], "lasts": ...}`, the fitted life as a diagram saves a
+node's model.
+
 ### Buying redundancy
 
 A redundant copy is bought once and then runs: it fails, is repaired and

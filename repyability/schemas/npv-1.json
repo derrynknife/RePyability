@@ -21,10 +21,49 @@
         "expected_npv_uncertainty",
         "npv_distribution",
         "compare_npv",
-        "plan_vs_actual"
+        "plan_vs_actual",
+        "task_value"
+      ]
+    },
+    "effect": {
+      "description": "What a service does to the life (task_value): null for no effect (the default, the service an accepted cost), a Kijima restoration or virtual age, or a fitted condition (its life as a diagram saves a node's model).",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "properties": {"kind": {"const": "none"}},
+          "required": ["kind"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {"const": "restoration"},
+            "q": {"type": "number", "minimum": 0},
+            "model": {"enum": ["kijima1", "kijima2"]},
+            "to_age": {"type": "number", "minimum": 0},
+            "replace_every": {"type": "integer", "minimum": 1},
+            "replacement_cost": {"type": "number"}
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {"const": "condition"},
+            "life": {"type": "object", "required": ["kind"]},
+            "fresh": {"type": "array", "items": {"type": "number"}},
+            "stale": {"type": "array", "items": {"type": "number"}},
+            "lasts": {"type": "number", "exclusiveMinimum": 0}
+          },
+          "required": ["kind", "life", "fresh", "stale", "lasts"],
+          "additionalProperties": false
+        }
       ]
     },
     "request": {
+      "description": "A request; every analysis but task_value names a diagram (task_value's is the unit's plan, needed only with an effect).",
       "type": "object",
       "properties": {
         "schema": {"const": 1},
@@ -57,8 +96,11 @@
               ]
             },
             "escalation": {
-              "type": "object",
-              "additionalProperties": {"type": "number"}
+              "description": "A diagram's growth rate by name; task_value's one yearly rate.",
+              "oneOf": [
+                {"type": "object", "additionalProperties": {"type": "number"}},
+                {"type": ["number", "null"]}
+              ]
             },
             "rates": {"enum": ["nominal", "real"]},
             "inflation": {"type": ["number", "null"]},
@@ -86,12 +128,34 @@
               }
             },
             "seed": {"type": ["integer", "null"]},
-            "mc_samples": {"type": ["integer", "null"], "minimum": 1}
+            "mc_samples": {"type": ["integer", "null"], "minimum": 1},
+            "task": {
+              "description": "task_value: the task, a Task's to_dict().",
+              "type": "object"
+            },
+            "usage": {
+              "description": "task_value: the forecast's start and end, its duty plan (a DutyPlan's to_dict(); calendar time without one), readings and read_at, as a UsageForecast's to_dict() has them.",
+              "type": "object",
+              "required": ["start", "end"]
+            },
+            "effect": {"$ref": "#/$defs/effect"},
+            "age": {"type": "number", "minimum": 0},
+            "unit": {"type": ["string", "null"]},
+            "discount": {"type": ["number", "null"]},
+            "period": {"enum": ["day", "week", "month", "quarter", "year"]},
+            "npv_tolerance": {"type": "number", "exclusiveMinimum": 0},
+            "confidence": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "exclusiveMaximum": 1
+            }
           }
         },
         "other": {"$ref": "#/$defs/diagram"}
       },
-      "required": ["schema", "diagram", "analysis"],
+      "required": ["schema", "analysis"],
+      "if": {"properties": {"analysis": {"not": {"const": "task_value"}}}},
+      "then": {"required": ["diagram"]},
       "additionalProperties": false
     },
     "answer": {
