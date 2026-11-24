@@ -145,6 +145,13 @@ def _unsupported_level(
         return "a call-out crew"
     if rbd._standby and not numba:
         return "standby groups"
+    for arrangement in rbd._standby.values():
+        if arrangement.rates is not None:
+            # The compiled loop has standby groups' rules alone.
+            return {
+                "load_sharing": "load-sharing groups",
+                "identical": "blocks of identical units",
+            }[arrangement.key]
     if rbd._maintenance:
         return "maintenance groups"
     if rbd._shutdowns and (

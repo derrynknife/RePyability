@@ -836,7 +836,8 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
         return
     if node in rbd._standby:
         raise NotImplementedError(
-            f"Component {node!r} is a standby group, whose units' "
+            f"Component {node!r} is {rbd._standby[node].what}, whose "
+            "units' "
             "states are not taken as a state: leave it out (new)."
         )
     restoration = rbd._restoring.get(node)
@@ -974,7 +975,7 @@ def _check_own_life(rbd, node, state: NodeState, simulated: bool):
     elif node in rbd._restoring:
         what = "is restored partly by its maintenance"
     elif node in rbd._standby:
-        what = "is a standby group"
+        what = "is " + rbd._standby[node].what
     elif isinstance(spec, dict) and spec.get("duty") is not None:
         what = "operates part of the time (a duty)"
     elif any(node in group.members for group in rbd.ccf_groups):
@@ -1213,6 +1214,7 @@ def _standby_curve(rbd, node, start: Optional[NodeState] = None):
         arrangement.dormancy_factor,
         arrangement.switching_probability,
         rbd.repair_crews if _crews._crews_limited(rbd) else None,
+        arrangement.rates,
     )
     if start is not None and start.stationary:
         initial = group.probabilities
@@ -1220,7 +1222,7 @@ def _standby_curve(rbd, node, start: Optional[NodeState] = None):
         initial = np.zeros(len(group.states))
         initial[0] = 1.0
     chain = _uniformized(
-        f"Component {node!r} is a standby group, whose",
+        f"Component {node!r} is {arrangement.what}, whose",
         group.generator,
         initial,
         group.probabilities,

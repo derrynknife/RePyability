@@ -258,7 +258,7 @@ def resolve_opportunistic(rbd, shut: _Shutdown) -> Tuple[tuple, ...]:
             what = (
                 "restored partly by its maintenance"
                 if node in rbd._restoring
-                else "a standby group"
+                else rbd._standby[node].what
             )
             raise ValueError(
                 f"Shutdown {shut.name!r} renews {node!r} opportunistically, "
@@ -697,7 +697,8 @@ def _pause_refusal(rbd, node, shut: _Shutdown) -> Optional[str]:
     if isinstance(component, RepairableRBD):
         return f"{lead} is a nested RBD: standing it still" + after
     if node in rbd._standby:
-        return f"{lead} is a standby group: standing it still" + after
+        what = rbd._standby[node].what
+        return f"{lead} is {what}: standing it still" + after
     if any(node in group.members for group in rbd.ccf_groups):
         return f"{lead} is in a common-cause group: standing it still" + after
     if node in rbd._member_group:

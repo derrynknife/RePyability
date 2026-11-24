@@ -345,6 +345,11 @@ def parametric_spec(model) -> Optional[ParametricSpec]:
     if cls is None or not hasattr(cls, "from_params"):
         return None
     params = [float(p) for p in np.atleast_1d(model.params)]
+    if len(params) != getattr(cls, "k", len(params)):
+        # Not the distribution's own parameters: a regression's (its
+        # baseline's and its coefficients), which from_params does not
+        # take.
+        return None
     dist = getattr(model, "dist", None)
     names = getattr(dist, "parameter_names", None)
     if not names or len(list(names)) != len(params):

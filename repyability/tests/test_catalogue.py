@@ -259,7 +259,14 @@ def repairable_kinds(rbd, components, options) -> set:
         found |= model_kinds(component["reliability"])
         if isinstance(component["repairability"], str):
             found.add(f"repairability {component['repairability']!r}")
-        for key in ("preventive", "inspection", "standby", "repair"):
+        for key in (
+            "preventive",
+            "inspection",
+            "standby",
+            "load_sharing",
+            "identical",
+            "repair",
+        ):
             found |= {f"{key} key {sub!r}" for sub in component.get(key) or {}}
         preventive = component.get("preventive")
         if preventive:
@@ -311,6 +318,8 @@ def required_repairable() -> set:
         | {f"policy {policy!r}" for policy in cls.PREVENTIVE_POLICIES}
         | {f"inspection key {key!r}" for key in cls.INSPECTION_KEYS}
         | {f"standby key {key!r}" for key in cls.STANDBY_KEYS}
+        | {f"load_sharing key {key!r}" for key in cls.LOAD_SHARING_KEYS}
+        | {f"identical key {key!r}" for key in cls.IDENTICAL_KEYS}
         | {"repair key 'model'", "repair key 'q'"}
         | {f"repair model {model!r}" for model in cls.REPAIR_MODELS}
         | {f"restoration model {model!r}" for model in cls.REPAIR_MODELS}

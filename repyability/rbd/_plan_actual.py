@@ -62,7 +62,8 @@ def _log_state_refusal(rbd, node) -> Optional[str]:
         )
     if node in rbd._standby:
         return (
-            f"Component {node!r} is a standby group: its log does not say "
+            f"Component {node!r} is {rbd._standby[node].what}: its log "
+            "does not say "
             "which of its units are up, nor their ages." + ask
         )
     if node in rbd._imperfect:

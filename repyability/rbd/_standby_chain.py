@@ -16,9 +16,15 @@ operate, how many are spares and how many are under repair. Its states are
 few (at most ``(k + 1) * (units + 1)``), and its balance equations are
 solved directly. From new (every unit ready) it is followed over time by
 ``_chain_transient`` (#146).
+
+A group with ``rates`` (a load-sharing group, or a block of identical
+units: see ``_events._Standby``) has no spares: every unit up operates,
+and the group is up while at least ``k`` do. While ``s`` operate, each
+fails at ``rates[s - 1] * lam`` (an exponential unit's life used up at
+that rate), so the chain is a birth-death chain on how many operate.
 """
 
-from typing import Dict, List, NamedTuple, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -54,6 +60,37 @@ class StandbyLongRun(NamedTuple):
     unavailability: float
 
 
+def _rate(rates: Optional[Sequence[float]], operating: int) -> float:
+    """The rate at which each of ``operating`` units uses up its life: 1
+    in a standby group."""
+    return 1.0 if rates is None else float(rates[operating - 1])
+
+
+def _state_rates(
+    operating: int,
+    spares: int,
+    k: int,
+    lam: float,
+    dormancy: float,
+    switching: float,
+    rates: Optional[Sequence[float]],
+) -> Tuple[float, float, float]:
+    """In a state: the rate of the units' failures, that of the group's
+    (up to down: 0 where it is down) and whether it is up (1 or 0)."""
+    if rates is not None:
+        each = lam * _rate(rates, operating) if operating else 0.0
+        if operating < k:
+            return operating * each, 0.0, 0.0
+        # Down at a failure only from exactly k operating.
+        return operating * each, (k * each if operating == k else 0.0), 1.0
+    units_failing = (operating + spares * dormancy) * lam
+    if operating != k:
+        return units_failing, 0.0, 0.0
+    # An operating unit fails, and no spare takes over.
+    takeover = switching if spares else 0.0
+    return units_failing, k * lam * (1.0 - takeover), 1.0
+
+
 def _transitions(
     units: int,
     k: int,
@@ -62,18 +99,21 @@ def _transitions(
     dormancy: float,
     switching: float,
     crews: Optional[int],
+    rates: Optional[Sequence[float]] = None,
 ) -> Tuple[List[State], Dict[Tuple[State, State], float]]:
     """The states reached from the one with ``k`` units operating and the
-    rest spares, and the rates between them."""
-    start: State = (k, units - k, 0)
+    rest spares (every unit operating, with ``rates``), and the rates
+    between them."""
+    operate = k if rates is None else units
+    start: State = (operate, units - operate, 0)
     states = [start]
     seen = {start}
-    rates: Dict[Tuple[State, State], float] = {}
+    moves: Dict[Tuple[State, State], float] = {}
 
     def add(source: State, target: State, rate: float) -> None:
         if rate <= 0.0 or target == source:
             return
-        rates[(source, target)] = rates.get((source, target), 0.0) + rate
+        moves[(source, target)] = moves.get((source, target), 0.0) + rate
         if target not in seen:
             seen.add(target)
             states.append(target)
@@ -82,7 +122,7 @@ def _transitions(
         operating, spares, repairing = state
         # An operating unit fails: a spare takes over if the switch works.
         if operating:
-            fails = operating * lam
+            fails = operating * lam * _rate(rates, operating)
             if spares:
                 add(
                     state,
@@ -107,12 +147,12 @@ def _transitions(
         if repairing:
             target = (
                 (operating + 1, spares, repairing - 1)
-                if operating < k
+                if operating < operate
                 else (operating, spares + 1, repairing - 1)
             )
             busy = repairing if crews is None else min(repairing, crews)
             add(state, target, busy * mu)
-    return states, rates
+    return states, moves
 
 
 def chain(
@@ -123,6 +163,7 @@ def chain(
     dormancy: float = 0.0,
     switching: float = 1.0,
     crews: Optional[int] = None,
+    rates: Optional[Sequence[float]] = None,
 ) -> StandbyChain:
     """The Markov chain of a group of ``units`` exponential units, ``k``
     needed, and its long-run distribution (see ``long_run`` for the
@@ -135,11 +176,13 @@ def chain(
         whether the group is up, and the rates of its failures and its
         units'.
     """
-    states, rates = _transitions(units, k, lam, mu, dormancy, switching, crews)
+    states, moves = _transitions(
+        units, k, lam, mu, dormancy, switching, crews, rates
+    )
     index = {state: i for i, state in enumerate(states)}
     size = len(states)
     generator = np.zeros((size, size))
-    for (source, target), rate in rates.items():
+    for (source, target), rate in moves.items():
         generator[index[source], index[target]] += rate
     generator -= np.diag(generator.sum(axis=1))
     # The balance equations of the other states, for their probabilities
@@ -153,12 +196,9 @@ def chain(
     failures = np.zeros(size)
     unit_failures = np.zeros(size)
     for i, (operating, spares, _) in enumerate(states):
-        unit_failures[i] = (operating + spares * dormancy) * lam
-        if operating == k:
-            up[i] = 1.0
-            # An operating unit fails, and no spare takes over.
-            takeover = switching if spares else 0.0
-            failures[i] = k * lam * (1.0 - takeover)
+        unit_failures[i], failures[i], up[i] = _state_rates(
+            operating, spares, k, lam, dormancy, switching, rates
+        )
     return StandbyChain(
         states, generator, probabilities, up, failures, unit_failures
     )
@@ -172,6 +212,7 @@ def long_run(
     dormancy: float = 0.0,
     switching: float = 1.0,
     crews: Optional[int] = None,
+    rates: Optional[Sequence[float]] = None,
 ) -> StandbyLongRun:
     """The long-run values of a group of ``units`` exponential units, ``k``
     needed (see the module docstring).
@@ -189,6 +230,10 @@ def long_run(
         1.0.
     crews : int, optional
         How many units can be repaired at once, by default None: all.
+    rates : sequence of float, optional
+        For a group with no spares (see the module docstring): the rate
+        at which each operating unit uses up its life while ``s``
+        operate, ``rates[s - 1]``. By default None: a standby group.
 
     Returns
     -------
@@ -196,16 +241,17 @@ def long_run(
         The group's availability, failure frequency, unit failure frequency
         and unavailability.
     """
-    group = chain(units, k, lam, mu, dormancy, switching, crews)
+    group = chain(units, k, lam, mu, dormancy, switching, crews, rates)
     availability = unavailability = failures = unit_failures = 0.0
     for state, p in zip(group.states, group.probabilities):
         operating, spares, _ = state
-        unit_failures += p * (operating + spares * dormancy) * lam
-        if operating == k:
+        units_failing, failing, up = _state_rates(
+            operating, spares, k, lam, dormancy, switching, rates
+        )
+        unit_failures += p * units_failing
+        if up:
             availability += p
-            # Up to down: an operating unit fails, and no spare takes over.
-            takeover = switching if spares else 0.0
-            failures += p * k * lam * (1.0 - takeover)
+            failures += p * failing
         else:
             unavailability += p
     return StandbyLongRun(
