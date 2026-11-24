@@ -89,7 +89,7 @@ Not yet single:
 | UC-60 | A part upgraded in year 3 and block-replaced before and after, the new model on the same interval | **Built**: an `"upgrade"` with a `"preventive"` block policy, numerical over a horizon and simulated |
 | UC-66 | A pump whose seal is a redundant pair, replaced whole when both have failed: its life is a diagram | **Built**: a `NonRepairableRBD` as a life wherever a life is taken (`UnitPlan`, a spec's `"reliability"`, `NonRepairable`), by its functions; `NonRepairableRBD.qf` inverts its `ff` to near machine precision |
 | UC-64 | What a part costs per year once upgraded: the long run of the diagram with the new life, the time before the upgrade ignored | **Built**: the long-run methods of a diagram with an `"upgrade"` give the values of the diagram after it |
-| UC-68 | "95% sure": the least spend that keeps a bad year's downtime (hours or cost) under a limit, with the frontier and both planned and unplanned downtime | **Built** (simulated): `RepairableRBD.least_spend_for_downtime` and `UnitPlan.least_spend_for_downtime`, with redundancy and interval levers; risk measures in `repyability.value._risk` |
+| UC-68 | "95% sure": the least spend that keeps a bad year's downtime (hours or cost) under a limit, with the frontier and both planned and unplanned downtime | **Built** (simulated): `RepairableRBD.least_spend_for_downtime` and `UnitPlan.least_spend_for_downtime`, with redundancy, interval, crew and call-out levers; risk measures in `repyability.value._risk` |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -3376,6 +3376,28 @@ at consolidation.
 planned and unplanned, and then summed it; keeping it per run was all
 the risk needed. Spares, crews and call-out, upgrades and parameter
 uncertainty are levers still to add (filed).
+
+**Crews and call-out (added after).** Who asks: the same owner, whose
+downtime is jobs waiting for a crew. What they know: the crews they have
+(`repair_crews`), what a crew costs (its salary at the `crew_cost_rate`,
+and a price besides), and call-out contracts on offer (a fee per call,
+a rate while engaged). Solved in the same search: `crews={"price": p,
+"max": m}` adds a crew a step, at `p` and its salary; `call_out=[...]`
+tries the contracts in order, each priced by its expected fees and time
+engaged from its own runs. A design's spend now counts the change in
+its expected inspection and crew costs, as well as its preventive cost.
+Hand-worked answer: two pumps in parallel, each failing every 50 h on
+average and repaired in 50 h, one crew. Both are down 0.4 of the time
+(the chain on the pumps down has shares 1 : 2 : 2): 3,504 h a year. A
+second crew, or a call-out at the first job waiting, makes the pumps
+independent: both down a quarter of the time, 2,190 h; a third crew does
+nothing more, and the search stops there. A group of units (standby,
+load-sharing, identical) is one node to the levers: a copy is a second
+group in parallel, and its units' repairs are the crews' jobs. Checks:
+`test_downtime_risk.py`, the crew and call-out designs against the
+diagram built with them on the same seed, their mean downtime against
+the chain, the spend against the runs' crew cost, each kind of group,
+and the refusals.
 
 ### UC-61: "Our plan has two outages a year that cost 300 each, and at each we renew the pump if it is past 500 hours. The expected NPV is fine; how bad could a run be?"
 

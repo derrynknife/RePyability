@@ -18,7 +18,19 @@ optional ``budget``:
   node is, feeding the node it feeds, whose ``k`` is kept);
 - ``intervals``: a node's preventive task's interval, through the
   candidates given, its spend the expected preventive cost over the
-  horizon (from the same runs).
+  horizon (from the same runs);
+- ``crews``: repair crews more than the diagram's ``repair_crews``, at
+  a price each and their salaries at the ``crew_cost_rate``;
+- ``call_out``: a call-out crew's contract, through the contracts given,
+  its spend its expected fees and time engaged.
+
+Besides the levers' prices, a design's spend is the change in its
+expected cost of preventive tasks, inspections and crews over the
+horizon, from the same runs (a copy's tasks cost too).
+
+A group of units (a standby, load-sharing or identical block) is one
+node: a copy of it is a second group in parallel, and its units'
+repairs are jobs for the crews as any other.
 
 The search is greedy marginal analysis, as the allocations' searches
 are: from the diagram as it is, each step takes the move that lowers the
@@ -35,7 +47,16 @@ and their quantiles at ``level``, in hours and, with a rate, in cost.
 """
 
 import math
-from typing import Dict, Hashable, List, Mapping, Optional, Tuple
+from typing import (
+    Dict,
+    Hashable,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import numpy as np
 
@@ -69,14 +90,53 @@ def _copy_name(rbd, node, index: int):
     return name
 
 
-def _levers(rbd, redundancy, intervals, max_units):
-    """The levers, checked: each redundancy node's price and cap, each
-    interval node's candidates."""
+class _Lever(NamedTuple):
+    """One lever of the search, at a step from 0 (the diagram as given):
+    a count lever (``"copies"``, ``"crews"``) adds one more at each step,
+    at ``price`` each, up to ``cap`` (None: no bound); a choice lever
+    (``"interval"``, ``"call_out"``) takes ``options[step - 1]``, its
+    options in the order to try them."""
+
+    kind: str
+    node: Optional[Hashable]
+    price: float = 0.0
+    cap: Optional[int] = None
+    options: Tuple = ()
+
+
+#: The cost categories the levers' spend is counted in, besides their
+#: prices: their change from the diagram as given, from the same runs.
+SPEND_CATEGORIES = ("preventive", "inspection", "crews")
+
+
+def _price(value, what: str, positive: bool = True) -> float:
+    cost = checks.number_or_nan(value)
+    if not (math.isfinite(cost) and (cost > 0.0 if positive else cost >= 0)):
+        more = "more than 0" if positive else "at least 0"
+        raise ValueError(f"{what} must be a number {more}; got {value!r}.")
+    return float(cost)
+
+
+def _cap(value, what: str) -> Optional[int]:
+    if value is not None and not (
+        checks.is_number(value) and int(value) == value and value >= 0
+    ):
+        raise ValueError(
+            f"{what} must be a whole number, at least 0; got {value!r}."
+        )
+    return None if value is None else int(value)
+
+
+def _levers(
+    rbd, redundancy, intervals, max_units, crews, call_out
+) -> List[_Lever]:
+    """The levers, checked, in the order the search tries their moves:
+    the redundancy nodes', the interval nodes', the crews' and the
+    call-out contracts'."""
     from repyability.rbd import _repairable_allocation as allocation
     from repyability.rbd import _requirements
 
-    prices: Dict[Hashable, float] = {}
-    caps: Dict[Hashable, Optional[int]] = {}
+    levers: List[_Lever] = []
     for node, price in (redundancy or {}).items():
         _requirements._require_component(rbd, node, "redundancy")
         allocation._allocation_trains(rbd, {("copies", node): [node]}, ())
@@ -100,23 +160,17 @@ def _levers(rbd, redundancy, intervals, max_units):
                 "which its copies would have to join: copy nodes outside "
                 "groups, or use allocate_redundancy for groups."
             )
-        cost = checks.number_or_nan(price)
-        if not (math.isfinite(cost) and cost > 0.0):
-            raise ValueError(
-                f"The price of a copy of node {node!r} must be a number "
-                f"more than 0; got {price!r}."
+        levers.append(
+            _Lever(
+                "copies",
+                node,
+                price=_price(price, f"The price of a copy of node {node!r}"),
+                cap=_cap(
+                    None if max_units is None else max_units.get(node),
+                    f"max_units for node {node!r}",
+                ),
             )
-        prices[node] = float(cost)
-        cap = None if max_units is None else max_units.get(node)
-        if cap is not None and not (
-            checks.is_number(cap) and int(cap) == cap and cap >= 0
-        ):
-            raise ValueError(
-                f"max_units for node {node!r} must be a whole number of "
-                f"copies, at least 0; got {cap!r}."
-            )
-        caps[node] = None if cap is None else int(cap)
-    candidates: Dict[Hashable, Tuple[float, ...]] = {}
+        )
     for node, values in (intervals or {}).items():
         _requirements._require_component(rbd, node, "intervals")
         spec = rbd._init_args["components"].get(node)
@@ -132,38 +186,137 @@ def _levers(rbd, redundancy, intervals, max_units):
                 f"intervals[{node!r}] must be the intervals to try, in the "
                 f"order to try them, each more than 0; got {values!r}."
             )
-        candidates[node] = tuple(float(v) for v in row)
-    return prices, caps, candidates
+        levers.append(
+            _Lever("interval", node, options=tuple(float(v) for v in row))
+        )
+    if crews is not None:
+        levers.append(_crews_lever(rbd, crews))
+    if call_out is not None:
+        levers.append(_call_out_lever(rbd, call_out))
+    return levers
 
 
-def _design(rbd, copies: Dict, steps: Dict, candidates: Dict):
-    """The diagram with ``copies[node]`` copies of each node and each
-    interval node's task at ``candidates[node][steps[node] - 1]`` (as
-    given at step 0)."""
+def _crews_lever(rbd, crews) -> _Lever:
+    """``crews``: more repair crews than the diagram's ``repair_crews``,
+    each at its ``"price"`` (and its salary at the ``crew_cost_rate``,
+    from the runs), up to ``"max"`` more."""
+    if not isinstance(crews, Mapping) or set(crews) - {"price", "max"}:
+        raise ValueError(
+            "crews must be a dict of 'price' (what each crew more costs "
+            "over the horizon, besides its salary at the crew_cost_rate) "
+            f"and 'max' (the most crews more); got {crews!r}."
+        )
+    if rbd.repair_crews is None:
+        raise ValueError(
+            "crews= adds repair crews to the diagram's repair_crews, but it "
+            "has as many as are needed (repair_crews=None), so no job "
+            "waits: give the diagram repair_crews, or leave crews out."
+        )
+    price = _price(crews.get("price", 0.0), "crews' 'price'", positive=False)
+    if price == 0.0 and not rbd.crew_cost_rate > 0.0:
+        raise ValueError(
+            "A crew more must cost something: give crews a 'price', or the "
+            "diagram a crew_cost_rate (each crew's salary)."
+        )
+    return _Lever(
+        "crews", None, price=price, cap=_cap(crews.get("max"), "crews' 'max'")
+    )
+
+
+def _call_out_lever(rbd, call_out) -> _Lever:
+    """``call_out``: the call-out contracts to try, in order, each priced
+    by its fee and its rate (from the runs)."""
+    from repyability.rbd import _spec
+
+    contracts = [call_out] if isinstance(call_out, Mapping) else call_out
+    if (
+        isinstance(contracts, (str, bytes))
+        or not isinstance(contracts, Sequence)
+        or not contracts
+    ):
+        raise ValueError(
+            "call_out must be a call-out contract (a dict, as the "
+            "diagram's call_out takes) or a list of them to try, in order; "
+            f"got {call_out!r}."
+        )
+    options = []
+    for contract in contracts:
+        if not isinstance(contract, Mapping):
+            raise ValueError(
+                f"Each call_out contract must be a dict; got {contract!r}."
+            )
+        checked = _spec._validate_call_out(dict(contract), rbd.repair_crews)
+        if checked is None or not (checked.fee > 0.0 or checked.rate > 0.0):
+            raise ValueError(
+                "A call-out contract must cost something: give it a 'fee' "
+                f"or a 'rate'; got {dict(contract)!r}."
+            )
+        options.append(dict(contract))
+    return _Lever("call_out", None, options=tuple(options))
+
+
+def _design(rbd, levers: Sequence[_Lever], state: Sequence[int]):
+    """The diagram with each lever at its step in ``state`` (as given at
+    0): copies made last, of the node as its other levers leave it."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
-    if not any(copies.values()) and not any(steps.values()):
+    if not any(state):
         return rbd
     args = dict(rbd._init_args)
     components = dict(args["components"])
     edges = [tuple(e) for e in args["edges"]]
     k = dict(args.get("k") or {})
-    for node, step in steps.items():
-        if step:
-            spec = dict(components[node])
+    for lever, step in zip(levers, state):
+        if not step:
+            continue
+        if lever.kind == "interval":
+            spec = dict(components[lever.node])
             spec["preventive"] = dict(
-                spec["preventive"], interval=candidates[node][step - 1]
+                spec["preventive"], interval=lever.options[step - 1]
             )
-            components[node] = spec
-    for node, count in copies.items():
+            components[lever.node] = spec
+        elif lever.kind == "crews":
+            args["repair_crews"] = int(args["repair_crews"]) + step
+        elif lever.kind == "call_out":
+            args["call_out"] = dict(lever.options[step - 1])
+    for lever, step in zip(levers, state):
+        if lever.kind != "copies":
+            continue
+        node = lever.node
         feeds = list(rbd.G.predecessors(node))
         exit_node = next(iter(rbd.G.successors(node)))
-        for index in range(1, count + 1):
+        for index in range(1, step + 1):
             name = _copy_name(rbd, node, index)
             components[name] = components[node]
             edges += [(u, name) for u in feeds] + [(name, exit_node)]
     args.update(edges=edges, components=components, k=k or None)
     return RepairableRBD(**args)
+
+
+def _settings(rbd, levers: Sequence[_Lever], state: Sequence[int]) -> dict:
+    """A design's levers, as its result gives them."""
+    found: dict = {"copies": {}, "intervals": {}}
+    for lever, step in zip(levers, state):
+        if lever.kind == "copies":
+            found["copies"][lever.node] = step
+        elif lever.kind == "interval":
+            found["intervals"][lever.node] = (
+                lever.options[step - 1] if step else None
+            )
+    crews = next((s for v, s in zip(levers, state) if v.kind == "crews"), 0)
+    found["crews"] = (
+        None if rbd.repair_crews is None else int(rbd.repair_crews) + crews
+    )
+    contract = next(
+        (
+            dict(v.options[s - 1])
+            for v, s in zip(levers, state)
+            if v.kind == "call_out" and s
+        ),
+        rbd.call_out,
+    )
+    found["call_out"] = None if contract is None else dict(contract)
+    return found
 
 
 def _evaluate(
@@ -199,9 +352,12 @@ def _evaluate(
     target = down if downtime == "all" else unplanned
     scale = 1.0 if measure == "hours" else rate
     found = _risk.risk(target * scale, level, objective, confidence)
-    preventive = 0.0
+    spent = 0.0
     if run.cost is not None:
-        preventive = float(run.cost.by_category.get("preventive", 0.0))
+        spent = sum(
+            float(run.cost.by_category.get(name, 0.0))
+            for name in SPEND_CATEGORIES
+        )
 
     def summary(values) -> Dict[str, Optional[float]]:
         ordered = np.sort(values)
@@ -213,7 +369,7 @@ def _evaluate(
             "bad_cost": hours[1] * rate if rate else None,
         }
 
-    return found, summary(planned), summary(unplanned), preventive
+    return found, summary(planned), summary(unplanned), spent
 
 
 def least_spend_for_downtime(
@@ -228,6 +384,8 @@ def least_spend_for_downtime(
     redundancy: Optional[Mapping],
     intervals: Optional[Mapping],
     max_units: Optional[Mapping],
+    crews: Optional[Mapping],
+    call_out,
     budget,
     value_rate: float,
     confidence: float,
@@ -278,25 +436,20 @@ def least_spend_for_downtime(
         MC_SAMPLES if mc_samples is None else mc_samples, "mc_samples"
     )
     seed = _npv_runs._seed(seed)
-    prices, caps, candidates = _levers(rbd, redundancy, intervals, max_units)
+    levers = _levers(rbd, redundancy, intervals, max_units, crews, call_out)
 
     designs: List[DowntimeDesign] = []
-    cache: Dict[tuple, DowntimeDesign] = {}
-    base_preventive: List[float] = []
+    cache: Dict[Tuple[int, ...], DowntimeDesign] = {}
+    base_spent: List[float] = []
     used = [engine]
     methods = [""]
 
-    def key(copies, steps):
-        return tuple(sorted(copies.items(), key=repr)) + tuple(
-            sorted(steps.items(), key=repr)
-        )
-
-    def score(copies: Dict, steps: Dict) -> DowntimeDesign:
-        found = cache.get(key(copies, steps))
+    def score(state: Tuple[int, ...]) -> DowntimeDesign:
+        found = cache.get(state)
         if found is not None:
             return found
-        diagram = _design(rbd, copies, steps, candidates)
-        risk, planned, unplanned, preventive = _evaluate(
+        diagram = _design(rbd, levers, state)
+        risk, planned, unplanned, spent = _evaluate(
             diagram,
             horizon,
             n,
@@ -310,17 +463,13 @@ def least_spend_for_downtime(
             objective,
         )
         methods[0] = risk.bound_method
-        if not base_preventive:
-            base_preventive.append(preventive)
-        spend = sum(prices[node] * c for node, c in copies.items()) + (
-            preventive - base_preventive[0]
-        )
+        if not base_spent:
+            base_spent.append(spent)
+        spend = sum(
+            lever.price * step for lever, step in zip(levers, state)
+        ) + (spent - base_spent[0])
         design = DowntimeDesign(
-            copies=dict(copies),
-            intervals={
-                node: (candidates[node][s - 1] if s else None)
-                for node, s in steps.items()
-            },
+            **_settings(rbd, levers, state),
             spend=float(spend),
             estimate=risk.estimate,
             bound=risk.bound,
@@ -328,12 +477,11 @@ def least_spend_for_downtime(
             planned=planned,
             unplanned=unplanned,
         )
-        cache[key(copies, steps)] = design
+        cache[state] = design
         return design
 
-    copies = {node: 0 for node in prices}
-    steps = {node: 0 for node in candidates}
-    current = score(copies, steps)
+    state: Tuple[int, ...] = (0,) * len(levers)
+    current = score(state)
     designs.append(current)
     floor = None
     over_budget = False
@@ -341,20 +489,20 @@ def least_spend_for_downtime(
         if current.meets:
             break
         moves = []
-        for node in prices:
-            if caps[node] is None or copies[node] < caps[node]:
-                moves.append(({**copies, node: copies[node] + 1}, steps))
-        for node in candidates:
-            # Any later interval: a quantile can stay put over one step.
-            for step in range(steps[node] + 1, len(candidates[node]) + 1):
-                moves.append((copies, {**steps, node: step}))
+        for i, lever in enumerate(levers):
+            if lever.options:
+                # Any later option: a quantile can stay put over one step.
+                for step in range(state[i] + 1, len(lever.options) + 1):
+                    moves.append(state[:i] + (step,) + state[i + 1 :])
+            elif lever.cap is None or state[i] < lever.cap:
+                moves.append(state[:i] + (state[i] + 1,) + state[i + 1 :])
         if not moves:
             floor = "caps"
             break
         best, best_gain = None, 0.0
         over_budget = False
-        for move_copies, move_steps in moves:
-            option = score(move_copies, move_steps)
+        for move in moves:
+            option = score(move)
             drop = current.estimate - option.estimate
             if drop <= 0.0:
                 continue
@@ -364,11 +512,11 @@ def least_spend_for_downtime(
             extra = option.spend - current.spend
             gain = math.inf if extra <= 0.0 else drop / extra
             if best is None or gain > best_gain:
-                best, best_gain = (move_copies, move_steps, option), gain
+                best, best_gain = (move, option), gain
         if best is None:
             floor = "budget" if over_budget else "lowest"
             break
-        copies, steps, current = dict(best[0]), dict(best[1]), best[2]
+        state, current = best
         designs.append(current)
     else:
         floor = "steps"
@@ -434,8 +582,9 @@ def _floor_words(floor, last, limit, measure, budget) -> str:
         )
     if floor == "caps":
         return (
-            f"{lowest}: every lever is at its cap (max_units, or the last "
-            "interval given). Raise max_units, or give more intervals."
+            f"{lowest}: every lever is at its cap (max_units, crews' "
+            "'max', or the last interval or contract given). Raise the "
+            "caps, or give more options."
         )
     if floor == "planned":
         return (
@@ -449,5 +598,5 @@ def _floor_words(floor, last, limit, measure, budget) -> str:
         return f"{lowest}: the search took its most steps ({MAX_STEPS})."
     return (
         f"{lowest}: no lever given lowers it further. Give other levers "
-        "(redundancy=, intervals=)."
+        "(redundancy=, intervals=, crews=, call_out=)."
     )

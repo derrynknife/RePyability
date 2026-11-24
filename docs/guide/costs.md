@@ -606,6 +606,39 @@ levers' caps (`max_units`, the last interval). `objective="cvar"` targets
 the mean of the worst 5% instead (its bound is normal, approximate). A
 `UnitPlan` takes the same method, through its one-node diagram.
 
+When downtime is jobs waiting for a crew, crews and call-out are levers
+too. `crews={"price": p, "max": m}` adds a repair crew a step to the
+diagram's `repair_crews`, each at `p` and its salary at the
+`crew_cost_rate`; `call_out=[contract, ...]` tries call-out contracts in
+order, each priced by the fees and time engaged its own runs give. Two
+pumps in parallel with one crew are both down 40% of the time; a second
+crew, or a call-out at the first job waiting, makes it a quarter:
+
+```python
+pumps = RepairableRBD(
+    [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+    {n: {"reliability": surv.Exponential.from_params([0.02]),
+         "repairability": surv.Exponential.from_params([0.02])} for n in "ab"},
+    repair_crews=1, crew_cost_rate=2.0,
+)
+staffed = pumps.least_spend_for_downtime(
+    8760.0, 1.0, crews={"price": 100.0},
+    call_out={"when_waiting": 1, "fee": 50.0, "rate": 3.0},
+    mc_samples=1000, seed=5,
+)
+[(d.crews, d.call_out is not None, round(d.spend)) for d in staffed.frontier]   # -> [(1, False, 0), (1, True, 10947)]
+[round(d.unplanned["mean_hours"]) for d in staffed.frontier]   # -> [3495, 2186]
+```
+
+The call-out contract is cheaper than a second crew's 17,620 (its price
+and a year's salary) for the same downtime: the pumps' 3,504 hours a
+year down together become 2,190, as the crews' Markov chain gives.
+
+A design's spend is the levers' prices and the change in its expected
+cost of preventive tasks, inspections and crews over the horizon. A
+group of units (standby, load-sharing or identical) is one node to the
+levers: its copy is a second group in parallel.
+
 For one part replaced at an age or at a failure, over for ever,
 `NonRepairable.age_replacement_value(age, discount_rate=)` gives the net
 present value (Fox, 1966) and the equivalent annual cost in closed form. At a
