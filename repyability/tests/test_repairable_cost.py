@@ -481,23 +481,19 @@ def test_cost_distributions_survive_a_json_round_trip():
     assert np.array_equal(a.samples, b.samples)
 
 
-def test_a_nested_rbd_that_carries_costs_is_warned_of():
-    # The outer diagram does not count a nested diagram's costs: it says
-    # so once, as it is built, naming the node; a nested diagram with
-    # nothing priced is not warned of, and a diagram rebuilt with the
-    # same nested one (a lever moved) says nothing new.
+def test_a_nested_rbd_that_carries_costs_is_counted_without_a_warning():
+    # The outer diagram counts a nested diagram's costs (see
+    # test_nested_costs.py): it is priced, and nothing is warned of as it
+    # is built, nor when a lever is moved.
     inner = one_component({"repair_cost": 100.0}, downtime_cost_rate=7.0)
-    plain = one_component()
     edges = [("s", "x"), ("x", "C"), ("C", "t")]
     spec = {"reliability": RELIABILITY, "repairability": REPAIRABILITY}
-    with pytest.warns(
-        UserWarning, match="Node 'x' is a nested RBD that"
-    ) as record:
-        outer = RepairableRBD(edges, {"x": inner, "C": spec})
-    assert len(record) == 1
-    assert not outer.has_costs
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        RepairableRBD(edges, {"x": plain, "C": spec})
+        outer = RepairableRBD(edges, {"x": inner, "C": spec})
+        assert outer.has_costs
+        assert outer.expected_cost_rate() == pytest.approx(
+            inner.expected_cost_rate()
+        )
         outer.with_levers({("C", "reliability.failure_rate"): 0.2})
         outer.parameter_sensitivity(x=[10.0])

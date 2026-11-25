@@ -11,7 +11,13 @@ from typing import Any, Collection, Dict, Hashable, List, Optional
 
 import numpy as np
 
-from repyability.rbd import _curves, _requirements, _shutdowns, _windows
+from repyability.rbd import (
+    _curves,
+    _nested_costs,
+    _requirements,
+    _shutdowns,
+    _windows,
+)
 from repyability.rbd._common import (
     _discount_rate,
     _present_horizon,
@@ -433,12 +439,19 @@ def expected_npv(
             # less a growth (a growth above the rate is a rate below 0,
             # valid over a horizon).
             found_at: Dict[float, Any] = {}
+            nested = _nested_costs.priced(rbd)
+            if nested:
+                _nested_costs.require(rbd, working | broken)
+                _nested_costs.require_unvalued(rbd)
+                nested_states = _curves._states(rbd, state, working | broken)
 
             def costs_at(effective: float):
+                # This diagram's own costs (its system's in ``by_category``)
+                # and, in the cells, its nested diagrams' by label.
                 if effective not in found_at:
                     cells: Dict[Any, Any] = {}
                     if effective >= 0.0:
-                        got = _windows.expected_cost(
+                        got = _windows._own_cost(
                             rbd,
                             ends,
                             working,
@@ -459,11 +472,26 @@ def expected_npv(
                             state,
                             cells,
                         )
+                    if nested:
+                        for (
+                            category,
+                            label,
+                            values,
+                        ) in _nested_costs.window_parts(
+                            rbd,
+                            ends,
+                            effective,
+                            working,
+                            broken,
+                            nested_states,
+                        ):
+                            cell = (label, category)
+                            cells[cell] = cells.get(cell, 0.0) + values
                     found_at[effective] = (got, cells)
                 return found_at[effective]
 
             for node, category in costs_at(rate)[1]:
-                g = growth(node, category)
+                g = growth(_nested_costs.owner(rbd, node), category)
                 present_cells[(node, category)] = costs_at(rate - g)[1][
                     (node, category)
                 ]
@@ -524,7 +552,7 @@ def expected_npv(
                     cost_by_component.get(component, 0.0) + total
                 )
 
-    for node, price in rbd.acquisition_costs.items():
+    for node, price in _nested_costs.acquisitions(rbd).items():
         if price:
             # Paid at the start: all of it in the first period.
             paid = np.full(len(ends), float(price))

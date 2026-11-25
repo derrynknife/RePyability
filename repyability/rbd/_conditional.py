@@ -37,6 +37,7 @@ the step a time falls in, the counts linearly.
 """
 
 import io
+import json
 import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
@@ -579,6 +580,18 @@ def partial_bytes(
     arrays["category_costs"] = np.array(spent, dtype=float)
     arrays["module_costs"] = by_node
     arrays["module_costed"] = costed
+    # A nested RBD's costs by label (see _nested_costs), in JSON.
+    labels = [
+        (label, float(value))
+        for label, value in (tally.cost_by_component.items() if priced else ())
+        if label not in nodes
+    ]
+    arrays["label_names"] = np.array(
+        [json.dumps(label) for label, _ in labels], dtype=str
+    )
+    arrays["label_costs"] = np.array(
+        [value for _, value in labels], dtype=float
+    )
     buffer = io.BytesIO()
     np.savez(buffer, **arrays)
     return buffer.getvalue()
@@ -587,7 +600,10 @@ def partial_bytes(
 def from_partial(saved: bytes, modules: int):
     """A module shard's partial (see ``partial_bytes``): its range, the
     ``modules`` histories, each simulation's own cost, the costs by
-    category and by module, and which modules the costs by module hold."""
+    category and by module, which modules the costs by module hold, and
+    a nested RBD's costs by label."""
+    from repyability.rbd.serialisation import _node_name
+
     with np.load(io.BytesIO(saved), allow_pickle=False) as data:
         if str(data["kind"][0]) != _PARTIAL:
             raise ValueError(
@@ -610,6 +626,12 @@ def from_partial(saved: bytes, modules: int):
                 (float(value) for value in data["category_costs"]),
             )
         )
+        labels = dict(
+            zip(
+                (_node_name(json.loads(str(n))) for n in data["label_names"]),
+                (float(value) for value in data["label_costs"]),
+            )
+        )
         return (
             (start, stop),
             histories,
@@ -617,6 +639,7 @@ def from_partial(saved: bytes, modules: int):
             categories,
             data["module_costs"].copy(),
             data["module_costed"].copy(),
+            labels,
         )
 
 

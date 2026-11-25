@@ -36,9 +36,16 @@ import numpy as np
 
 from repyability.rbd import (
     _crews,
+    _curves,
 )
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.rbd import _npv, _pricing, _requirements, _streams
+from repyability.rbd import (
+    _nested_costs,
+    _npv,
+    _pricing,
+    _requirements,
+    _streams,
+)
 from repyability.rbd.contracts import AvailabilityContract
 from repyability.rbd.results import (
     ConfidenceInterval,
@@ -60,7 +67,25 @@ _INSTEAD = (
 
 def refusal(rbd) -> Optional[Tuple[str, Tuple[Hashable, ...]]]:
     """Why the runs of ``rbd`` cannot be priced from their histories, and
-    the components named, or None if they can."""
+    the components named, or None if they can: its own, or a nested
+    diagram's that carries costs (each priced from its own histories)."""
+    why = _nested_costs.refusal(rbd, simulated=True)
+    if why is None:
+        why = _nested_costs.refusal_unvalued(rbd)
+    if why is not None:
+        return why, ()
+    for name, nested in _nested_costs.priced(rbd):
+        found = refusal(nested)
+        if found is not None:
+            return (
+                f"In the nested RBD at node {name!r}: {found[0]}",
+                (name,),
+            )
+    return _own_refusal(rbd)
+
+
+def _own_refusal(rbd) -> Optional[Tuple[str, Tuple[Hashable, ...]]]:
+    """``refusal`` for the diagram's own costs."""
     if _crews._call_out_priced(rbd):
         return (
             "The call-out crew's fee and rate are charged when it is "
@@ -249,6 +274,18 @@ def priced_chunk(
         size,
         hidden=hidden if rbd._shutdowns else None,
     )
+    if _nested_costs.priced(rbd):
+        # The nested diagrams' costs, from their own runs alone.
+        _nested_costs.price_runs(
+            rbd,
+            ledger,
+            money,
+            horizon,
+            size,
+            seed,
+            first,
+            _curves._simulation_states(rbd, state),
+        )
     for shut in rbd._shutdowns.values():
         # Its cost at each start, in every run (as the loop charges it).
         starts = shut.starts(horizon)
@@ -394,7 +431,7 @@ def _priced_runs(
         if node is not None:
             by_component[node] = by_component.get(node, 0.0) + amount
 
-    for node, price in rbd.acquisition_costs.items():
+    for node, price in _nested_costs.acquisitions(rbd).items():
         if price:
             costs += float(price)
             plain_cost += float(price)

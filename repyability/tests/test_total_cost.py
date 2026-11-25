@@ -958,8 +958,8 @@ def test_nested_rbds_cannot_be_copied():
     )
     with pytest.raises(ValueError, match="nested RepairableRBD"):
         rbd.allocate_redundancy(100.0, nodes=["sub"])
-    # Its costs are not this RBD's: only "x" is bought here.
-    assert rbd.acquisition_cost == 5.0
+    # The nested diagram is bought with it, but only "x" is given copies.
+    assert rbd.acquisition_cost == 5.0 + inner.acquisition_cost
     assert set(rbd.allocate_redundancy(100.0).units) == {"x"}
 
 

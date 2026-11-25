@@ -112,10 +112,7 @@ def test_a_diagram_of_plans_is_the_diagram_of_specs(monkeypatch):
             assert same(spec, other), name
         if not isinstance(rbd._decomposition(), modular.GraphStructure):
             # (A meshed one is built under a lowered step limit.)
-            with warnings.catch_warnings():
-                # (A nested diagram's costs are warned of.)
-                warnings.simplefilter("ignore", UserWarning)
-                assert again.analysis_routes() == rbd.analysis_routes()
+            assert again.analysis_routes() == rbd.analysis_routes()
 
 
 def pump_spec() -> dict:

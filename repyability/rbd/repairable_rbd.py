@@ -89,6 +89,7 @@ from repyability.rbd import (
     _first_failure,
     _intervals,
     _long_run,
+    _nested_costs,
     _npv,
     _npv_runs,
     _plan_actual,
@@ -1252,11 +1253,7 @@ class RepairableRBD(RBD):
         self.ccf_groups = _spec._validate_ccf_groups(self, ccf_groups)
         _shutdowns.check(self)
         _covariate_schedule.check(self)
-        _spec._warn_nested_costs(components)
 
-    #: Whether a diagram this one is nested in has warned that it carries
-    #: costs the parent does not count (see ``_spec._warn_nested_costs``).
-    _costs_reported = False
     #: The junctions are folded out of the structure (see ``RBD``).
     _FOLDS_JUNCTIONS = True
     _SIMULATE_INSTEAD = (
@@ -1460,6 +1457,7 @@ class RepairableRBD(RBD):
             or any(
                 shut.cost for shut in getattr(self, "_shutdowns", {}).values()
             )
+            or bool(_nested_costs.priced(self))
         )
 
     @_long_run.follows_upgrades

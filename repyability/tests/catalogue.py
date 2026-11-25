@@ -1632,6 +1632,33 @@ def repairable_kinds():
                 },
                 downtime_cost_rate=5.0,
             ),
+            # A nested RBD that carries costs (its repairs, a task, its
+            # own downtime and crews), counted in the system's.
+            "a nested RBD that carries costs": RepairableRBD(
+                EDGES,
+                {
+                    "a": RepairableRBD(
+                        [("s", "x"), ("s", "y"), ("x", "t"), ("y", "t")],
+                        {
+                            "x": unit(
+                                repair_cost=4.0,
+                                preventive={
+                                    "interval": 250.0,
+                                    "duration": E([0.25]),
+                                    "cost": 2.0,
+                                },
+                            ),
+                            "y": unit(repair_cost=3.0, downtime_cost=0.5),
+                        },
+                        downtime_cost_rate=6.0,
+                        repair_crews=2,
+                        crew_cost_rate=0.01,
+                    ),
+                    "b": unit(repair_cost=3.0),
+                    "c": unit(),
+                },
+                downtime_cost_rate=5.0,
+            ),
             "planned outages, one repair crew": system(
                 unit(
                     preventive={

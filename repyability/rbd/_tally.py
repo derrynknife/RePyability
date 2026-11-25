@@ -120,11 +120,16 @@ def _module_shards(
             categories[key] = categories.get(key, 0.0) + value
     by_module = np.sum([part[4] for part in parts], axis=0)
     costed = np.any([part[5] for part in parts], axis=0)
+    labels: Dict[Hashable, float] = {}
+    for part in parts:
+        for label, value in part[6].items():
+            labels[label] = labels.get(label, 0.0) + value
     return (
         _conditional.joined([part[1] for part in parts]),
         np.concatenate([part[2] for part in parts]),
         categories,
         [float(v) if c else None for v, c in zip(by_module, costed)],
+        labels,
     )
 
 
@@ -327,6 +332,10 @@ class _ModuleRun:
             )
         # (The diagram worked out given the modules may have no crews to
         # pay: their salaries are added on their own.)
+        # (A nested RBD's crews, among the other nodes, are its own.)
+        self.nested_crews = (
+            0.0 if self.exact_cost is None else _nested_crews(self, T)
+        )
         self.others = (
             0.0
             if self.exact_cost is None
@@ -335,6 +344,7 @@ class _ModuleRun:
                 for key, value in self.exact_cost.by_category.items()
                 if key not in ("system_downtime", "crews")
             )
+            + self.nested_crews
         )
         self.x = _conditional.grid(
             T, [curve_breaks(curve, 0.0, T) for curve in curves.values()]
@@ -382,9 +392,13 @@ class _ModuleRun:
         histories: List[Any] = []
         simulated = np.zeros(count)
         if self.shards is not None:
-            histories, simulated, spent_on, by_module = _module_shards(
+            histories, simulated, spent_on, by_module, labels = _module_shards(
                 *self.shards, first, count, len(modules)
             )
+            for label, spent in labels.items():
+                self.own_components[label] = (
+                    self.own_components.get(label, 0.0) + spent
+                )
             for key, spent in spent_on.items():
                 self.own_categories[key] += spent
             for node, spent in zip(modules, by_module):
@@ -501,7 +515,11 @@ class _ModuleRun:
             np.mean(self.rbd.downtime_cost_rate * (self.T - self.uptimes()))
         )
         # (A call-out crew's costs are among the modules' own.)
-        by_category["crews"] = self.own_categories["crews"] / n + self.salaries
+        by_category["crews"] = (
+            self.own_categories["crews"] / n
+            + self.salaries
+            + self.nested_crews
+        )
         by_component = {
             node: float(np.ravel(value)[0])
             for node, value in exact_cost.by_component.items()
@@ -696,6 +714,28 @@ class _ModuleRun:
             control_variate=control,
             **capacity_fields,
         )
+
+
+def _nested_crews(run: "_ModuleRun", T: float) -> float:
+    """The salaries of the crews of the nested RBDs among the other nodes
+    of a conditional run (the modules held), over the window."""
+    from repyability.rbd import _nested_costs
+
+    states = _curves._states(
+        run.exact, run.other_states, run.working | run.fixed | run.broken
+    )
+    return math.fsum(
+        float(np.ravel(values)[0])
+        for category, _, values in _nested_costs.window_parts(
+            run.exact,
+            np.array([T]),
+            0.0,
+            run.working | run.fixed,
+            run.broken,
+            states,
+        )
+        if category == "crews"
+    )
 
 
 def _exact_controls(
@@ -936,6 +976,9 @@ class _Tally:
         self.cost_samples: List[float] = []
         self.cost_by_category = {key: ExactSum() for key in _CATEGORIES}
         self.cost_by_component = {node: ExactSum() for node in costs}
+        # The priced nodes each simulation's costs are by, in order (a
+        # nested RBD's labels follow, see ``add_nested``).
+        self._priced = list(costs)
         # With capacities (see _CapacityRecorder): the times a simulated
         # system's expected capacity changed and by how much, and the times
         # whether it can carry an unlimited amount did (+1 or -1), as lists
@@ -1211,7 +1254,7 @@ class _Tally:
         add_columns(
             [
                 *self.cost_by_category.values(),
-                *self.cost_by_component.values(),
+                *(self.cost_by_component[node] for node in self._priced),
             ],
             table,
         )
@@ -1226,6 +1269,22 @@ class _Tally:
         first = len(samples) - count
         samples[first:] = [cost + amount for cost in samples[first:]]
         self.cost_by_category["crews"].add(np.full(count, amount))
+
+    def add_nested(self, samples, categories: dict, components: dict) -> None:
+        """Charge the last ``len(samples)`` simulations a nested RBD's
+        costs in them (see ``_nested_costs.charge``): each its amount of
+        ``samples``, and the totals ``categories`` and ``components``
+        (``ExactSum``s, by category and by label) to the totals."""
+        count = len(samples)
+        if not count:
+            return
+        own = self.cost_samples
+        first = len(own) - count
+        own[first:] = [a + b for a, b in zip(own[first:], samples)]
+        for key, amount in categories.items():
+            self.cost_by_category[key].add(amount)
+        for label, amount in components.items():
+            self.cost_by_component.setdefault(label, ExactSum()).add(amount)
 
     def state_changes(self) -> Tuple[np.ndarray, np.ndarray]:
         """Every time a simulated system changed state (``-0.0`` made
@@ -1309,7 +1368,7 @@ class _Tally:
             for key, amount in other.cost_by_category.items():
                 self.cost_by_category[key].add(amount)
             for node, amount in other.cost_by_component.items():
-                self.cost_by_component[node].add(amount)
+                self.cost_by_component.setdefault(node, ExactSum()).add(amount)
             return
         self._fold()
         other._fold()
@@ -1345,7 +1404,7 @@ class _Tally:
         for key, amount in other.cost_by_category.items():
             self.cost_by_category[key].add(amount)
         for node, amount in other.cost_by_component.items():
-            self.cost_by_component[node].add(amount)
+            self.cost_by_component.setdefault(node, ExactSum()).add(amount)
         if self.capacity_binned is not None:
             # Chunks of one run, on one grid.
             assert other.capacity_binned is not None

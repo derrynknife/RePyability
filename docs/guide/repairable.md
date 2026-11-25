@@ -1297,9 +1297,10 @@ nested.system_failure_frequency()  # -> 0.03497
 nested.availability(t_simulation=100.0, mc_samples=2_000, seed=0).availability[-1]   # -> 0.959
 ```
 
-What does not recurse: the outer diagram counts its own components' costs
-alone (a nested diagram that carries any is warned of when the outer one is
-built), its `spares_demand` and `spares_stock` refuse by default with a
+The costs recurse too: a nested diagram's costs are counted in the outer
+one's, by category, each labelled with its path (`("pumps", "A")`), exactly
+and simulated (see [Costs](costs.md#a-subsystems-costs)). What does not
+recurse: its `spares_demand` and `spares_stock` refuse by default with a
 nested RBD, naming the components counted, and its levers and parameter
 uncertainty are its own components' (a nested diagram's fits are not
 drawn). Count those with the nested diagram's own methods. In
