@@ -1888,7 +1888,13 @@ class RepairableRBD(RBD):
         the horizon (their estimates). A replacement takes a spare (each
         failure repaired as new, a group's unit failures); a failure
         repaired imperfectly (the spec's ``"repair"``) takes one only with
-        ``repairs=True``. Each component or part has its own
+        ``repairs=True``. A preventive task that replaces the unit takes
+        one too, and with the shelf empty is put off until it is in (the
+        unit runs on, and a failure first takes the task's spare); a test
+        that finds a hidden failure takes one, its repair starting once
+        the test is over and the spare is in; and with repair crews, a
+        repair that waits for its spare queues for a crew only once it is
+        in. Each component or part has its own
         ``SimulatedSparesStock``, with every stock tried (``by_stock``).
         For a bad year's *downtime* (rather than a stock-out) to stay
         under a limit, use ``least_spend_for_downtime(spares=...)``. With
@@ -5370,8 +5376,9 @@ class RepairableRBD(RBD):
             many spares to hold to be 95% sure a bad year loses under 100
             hours" is this lever alone; the stock is the design's
             ``spares``. Simulated in Python (the compiled engine refuses a
-            shelf), with no repair crews, preventive tasks or tests on the
-            node.
+            shelf); a task put off for a spare, a test's repair and a
+            crew's job wait for it as ``spares_stock(method="simulate")``
+            says.
 
         Returns
         -------

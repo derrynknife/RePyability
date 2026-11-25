@@ -31,6 +31,9 @@ if TYPE_CHECKING:
 
 # The kinds of a standby group's own events.
 _UNIT_FAILS, _SPARE_FAILS, _UNIT_REPAIRED = 0, 1, 2
+#: A failed unit's spare is in, with repair crews: its job now queues for
+#: a crew (see _shelves).
+_SPARE_IN = 3
 
 
 #: The classes of event at one instant, in the order they are taken (see
@@ -292,6 +295,7 @@ class _StandbyGroup:
         "_events",
         "_order",
         "_clock",
+        "_ends",
         "entry",
         "up",
     )
@@ -325,6 +329,9 @@ class _StandbyGroup:
         self._since = [0.0] * arrangement.units
         self._version = [0] * arrangement.units
         self._events: list = []
+        # When each unit's repair waiting for its spare ends, if a crew
+        # takes it at once (see _repair).
+        self._ends = [0.0] * arrangement.units
         self._order = 0
         self.entry: Optional["Event"] = None
         self.up = True
@@ -418,6 +425,18 @@ class _StandbyGroup:
             ready = shelf.of[self._node][0].take(t)
         ends = ready + self._draws.repair(unit)
         crews = self._rbd._run_state._crews
+        if crews is not None and ready > t:
+            # Its job falls due when the spare is in, and only then
+            # queues for a crew (the crew is not held while it waits).
+            self._ends[unit] = ends
+            self._queue(ready, _SPARE_IN, unit)
+            return
+        self._request(unit, t, ends)
+
+    def _request(self, unit: int, t: float, ends: float) -> None:
+        """Unit ``unit``'s repair, ending at ``ends`` if started at once,
+        falls due at ``t``: a job for the crews."""
+        crews = self._rbd._run_state._crews
         if crews is None or crews.request(
             _Unit(self._node, unit), t, Event(ends, None, True)
         ):
@@ -474,6 +493,10 @@ class _StandbyGroup:
             heapq.heappop(events)
         _, _, kind, unit, _ = heapq.heappop(events)
         failures = 0
+        if kind == _SPARE_IN:
+            self._request(unit, t, self._ends[unit])
+            self._arm()
+            return self.up, 0
         if self._rates is not None:
             if kind == _UNIT_REPAIRED:
                 self._released(unit, t)
