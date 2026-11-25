@@ -107,7 +107,8 @@ def own_end(rbd, horizon: float, money):
     number is worth that whatever happened. A salvage by age, which
     depends on each run's unit in service, is credited run by run
     (``own_salvage_by_age``, ``_npv_runs.priced_chunk``) and left out
-    here; a unit whose age is no one number is refused."""
+    here, as is a nested diagram's components' own salvage
+    (``_npv_runs._credit_nested``)."""
     salvage, _, retire_at = own_terms(rbd, horizon, None, None, None)
     stop = _retirement(retire_at, horizon)
     given = salvage if isinstance(salvage, dict) else {}
@@ -135,30 +136,20 @@ def own_salvage_by_age(rbd) -> Dict[Any, Any]:
 
 def _require_age_known(rbd, node) -> None:
     """Refuse a salvage by age in the simulated runs for a unit whose age
-    at the end is no one number of the run: one that keeps a virtual age,
-    whose failures are hidden until a test, a group of units, a nested
-    diagram or a life on the diagram's clock."""
-    from repyability.rbd._covariate_schedule import scheduled
-    from repyability.rbd.repairable_rbd import RepairableRBD
-
-    component = rbd.components[node]
-    why = None
-    if isinstance(component, RepairableRBD):
-        why = "is a nested diagram, whose units have ages of their own"
-    elif node in rbd._imperfect or node in rbd._restoring:
-        why = "keeps a virtual age (imperfect repair or partial restoration)"
-    elif node in rbd._inspection:
-        why = "has hidden failures, unseen until a test"
-    elif node in rbd._standby:
-        why = "is a group of units, each of its own age"
-    elif scheduled(component) is not None:
-        why = "has a life on the diagram's clock"
-    if why is not None:
+    at the end is no number of a run. Every unit has one but a unit
+    repaired by a fitted ARI process, which takes off its intensity and
+    keeps no virtual age. (What the age is for the rest is the Python
+    loop's ``_event_loop._end_ages``: a virtual age, in operating time on
+    a duty plan; a unit failed unseen by its tests is down, and credited
+    nothing; a group's units each by its own.)"""
+    imperfect = rbd._imperfect.get(node)
+    process = None if imperfect is None else imperfect.process
+    if process is not None and np.isnan(process.states(age=[0.0]).age[0]):
         raise NotImplementedError(
-            f"Component {node!r} has a salvage by age, and {why}, so the "
-            "age of its unit in service at the end is no one number of a "
-            "run: give its salvage as a number, or value its worth at the "
-            "end with expected_npv."
+            f"Component {node!r} has a salvage by age, and is repaired by "
+            "a fitted ARI process, which reduces its intensity and keeps "
+            "no virtual age, so the age of its unit at the end is no "
+            "number: give its salvage as a number."
         )
 
 

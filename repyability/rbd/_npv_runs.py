@@ -71,7 +71,7 @@ def refusal(rbd) -> Optional[Tuple[str, Tuple[Hashable, ...]]]:
     diagram's that carries costs (each priced from its own histories)."""
     why = _nested_costs.refusal(rbd, simulated=True)
     if why is None:
-        why = _nested_costs.refusal_unvalued(rbd)
+        why = _nested_costs.refusal_unvalued(rbd, runs=True)
     if why is not None:
         return why, ()
     for name, nested in _nested_costs.priced(rbd):
@@ -158,12 +158,15 @@ def route(rbd, timelines_route):
     found = refusal(rbd)
     if found is not None:
         return r.refused(*found)
+    from repyability.rbd import _timeline_runs
+
+    python_ages = _timeline_runs._python_ages(rbd)
     return r.AnalysisRoute(
         r.SIMULATED,
         "The simulations simulate_timelines makes, each history priced "
         "with the diagram's costs and discounted at the times they fell.",
-        engine=timelines_route.engine,
-        engine_reason=timelines_route.engine_reason,
+        engine="python" if python_ages else timelines_route.engine,
+        engine_reason=python_ages or timelines_route.engine_reason,
     )
 
 
@@ -302,31 +305,128 @@ def priced_chunk(
         )
     if by_age:
         _credit_by_age(rbd, ledger, found[2], by_age, horizon, money)
+    # The nested diagrams' components' own salvage, from their own runs.
+    _credit_nested(
+        rbd,
+        ledger,
+        money,
+        horizon,
+        size,
+        seed,
+        first,
+        _curves._simulation_states(rbd, state),
+    )
     return ledger, runs
 
 
-def _credit_by_age(rbd, ledger, ages, by_age, horizon: float, money):
+def _credit_by_age(
+    rbd, ledger, ages, by_age, horizon: float, money, where: tuple = ()
+):
     """Each run's salvage by age at its end ``horizon``, ``worth(age)`` of
-    each such unit up then (none for one down), as a credit (a negative
-    cost of category ``"salvage"``) in the last period."""
+    each such unit up then (none for one down: in its repair, or failed
+    unseen by its tests), and a group's the sum over its units up, as a
+    credit (a negative cost of category ``"salvage"``) in the last
+    period. ``ages`` are laid out by ``_timeline_runs.age_slots``; a
+    nested diagram's are labelled by its place, ``where``."""
+    from repyability.rbd import _timeline_runs
+
     growth = money.growth("salvage")
     present = math.exp(-(money.rate - growth) * horizon)
     nominal = math.exp(growth * horizon) if growth else 1.0
     last = len(ledger.ends) - 1
-    nodes = list(rbd.components)
+    columns, at = {}, 0
+    for node, width in _timeline_runs.age_slots(rbd):
+        columns[node] = slice(at, at + width)
+        at += width
     for node, worth in by_age.items():
-        age = ages[:, nodes.index(node)]
-        up = np.flatnonzero(np.isfinite(age))
-        if not up.size:
+        age = ages[:, columns[node]]
+        up = np.isfinite(age)
+        rows = np.nonzero(up)[0]
+        if not rows.size:
             continue
-        values = np.asarray(worth(age[up]), dtype=float)
-        if values.shape != up.shape or not np.all(np.isfinite(values)):
+        found = age[up]
+        values = np.asarray(worth(found), dtype=float)
+        if values.shape != found.shape or not np.all(np.isfinite(values)):
             raise ValueError(
                 f"The salvage of {node!r} by age must take an array of "
                 "ages and return a finite value for each."
             )
+        label = where + (node,) if where else node
         ledger._add(
-            last, "salvage", node, up, -present * values, -nominal * values
+            last, "salvage", label, rows, -present * values, -nominal * values
+        )
+
+
+def _credit_nested(
+    rbd,
+    ledger,
+    money,
+    horizon: float,
+    size: int,
+    seed,
+    first: int,
+    states,
+    prefix: tuple = (),
+) -> None:
+    """Credit into ``ledger`` each nested diagram's components' own
+    salvage at ``horizon`` (their plans' ``"salvage"``), each by its own
+    rule, recursively: a number in every run, a salvage by age by the age
+    of its units at the end in the nested diagram's own run (named from
+    its place, so it is the run it has inside the system's, as
+    ``_nested_costs.price_runs`` prices its costs), labelled with its
+    path. ``states`` are the components' states at 0, checked."""
+    from repyability.rbd import _timeline_runs
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    states = {} if states is None else states
+    growth = money.growth("salvage")
+    present = math.exp(-(money.rate - growth) * horizon)
+    nominal = math.exp(growth * horizon) if growth else 1.0
+    last = len(ledger.ends) - 1
+    everyone = np.arange(size)
+    for name, nested in rbd.components.items():
+        if not isinstance(nested, RepairableRBD) or not _nested_costs.salvaged(
+            nested
+        ):
+            continue
+        path = prefix + (name,)
+        start = states.get(name) or None
+        salvage = _npv.own_terms(nested, math.inf, None, None, None)[0]
+        for node, worth in (salvage or {}).items():
+            if not callable(worth):
+                ledger._add(
+                    last,
+                    "salvage",
+                    path + (node,),
+                    everyone,
+                    np.full(size, -present * worth),
+                    np.full(size, -nominal * worth),
+                )
+        by_age = _npv.own_salvage_by_age(nested)
+        if by_age:
+            for node in by_age:
+                _npv._require_age_known(nested, node)
+            found = _timeline_runs.simulate(
+                nested,
+                horizon,
+                size,
+                seed,
+                None,
+                None,
+                False,
+                "python",
+                None,
+                first,
+                start,
+                hidden=True,
+                prefix=path,
+                ages=True,
+            )
+            _credit_by_age(
+                nested, ledger, found[2], by_age, horizon, money, path
+            )
+        _credit_nested(
+            nested, ledger, money, horizon, size, seed, first, start, path
         )
 
 

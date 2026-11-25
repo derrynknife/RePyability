@@ -13,7 +13,7 @@ and each of the system's, with the component whose change made it (see
 import itertools
 import math
 from dataclasses import replace
-from typing import List, NamedTuple, Optional, Tuple
+from typing import Any, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -52,8 +52,9 @@ class Block(NamedTuple):
     held: Optional[np.ndarray] = None
     hidden: Optional[tuple] = None
     #: The Python loop's: each simulation's (a row) age of each
-    #: component's unit in service at the end, NaN for one down then (see
-    #: ``_replicate``); numba's loop records none (``None``).
+    #: component's units in service at the end, NaN for one down then,
+    #: laid out by ``age_slots`` (see ``_event_loop._end_ages``); numba's
+    #: loop records none (``None``).
     ages: Optional[np.ndarray] = None
     #: Each component's events as the loop counts them (see
     #: ``_events.TALLY_COUNTED``), changes of state or not: bounds,
@@ -301,7 +302,9 @@ def _block(histories: list, m: int) -> Block:
         system_changes(3, bool),
         held,
         hidden,
-        np.array([h[7] for h in histories], float).reshape(n, m),
+        np.array([h[7] for h in histories], float).reshape(
+            n, len(histories[0][7]) if n else m
+        ),
         counted,
     )
 
@@ -360,6 +363,7 @@ def simulate(
     ``prefix`` is the RBD's place in a system it is nested in: its
     streams are named as there, and it runs in Python (a nested RBD's
     histories alone, for pricing them, see ``_nested_costs``)."""
+    from repyability.rbd._covariate_schedule import scheduled
     from repyability.rbd._runs import _UNSTREAMED
     from repyability.rbd.results import TimelineSimulation
 
@@ -420,7 +424,14 @@ def simulate(
         )
         if antithetic and not complete:
             raise NotImplementedError(_UNSTREAMED)
-        chosen = "python" if prefix else _engine(rbd, plan, engine, N, states)
+        python_ages = _python_ages(rbd) if ages else None
+        if python_ages is not None and engine == "numba":
+            raise NotImplementedError(python_ages)
+        chosen = (
+            "python"
+            if prefix or python_ages is not None
+            else _engine(rbd, plan, engine, N, states)
+        )
         tally = _event_loop._run(
             rbd,
             t_simulation,
@@ -461,6 +472,9 @@ def simulate(
                     tally.histories.counted(),
                     t_simulation,
                     [states.get(node) for node in rbd.components],
+                    [node in rbd._inspection for node in rbd.components],
+                    [slots for _, slots in age_slots(rbd)],
+                    [scheduled(c) for c in rbd.components.values()],
                 )
         events = (
             dict(zip(rbd.components, tally.histories.counted()))
@@ -488,21 +502,83 @@ def simulate(
     return (result, left_out) if hidden else result
 
 
-def _ages_at_end(parts, counted, t_end: float, starts) -> np.ndarray:
+def _age(clock, new: float, t_end: float) -> float:
+    """The age at ``t_end`` of a unit put in as new at ``new``: the time
+    since, or on a duty plan that changes, its operating time since (as
+    the Python loop's stand-in counts it, from its virtual age 0)."""
+    if clock is None:
+        return t_end - new
+    return 0.0 + clock.operated_between(new, t_end)
+
+
+def age_slots(rbd) -> List[Tuple[Any, int]]:
+    """How the ages at the end (``Block.ages``) are laid out: each
+    component in order, with its count of columns, a standby group's
+    units (``_StandbyGroup.ages``), any other one."""
+    return [
+        (node, rbd._standby[node].units if node in rbd._standby else 1)
+        for node in rbd.components
+    ]
+
+
+def _python_ages(rbd) -> Optional[str]:
+    """Why the ages at the end of a run of ``rbd`` are the Python loop's
+    alone, or None: a salvage by age of a standby group's units, each of
+    its own age, which numba's histories (the group's alone) do not
+    give."""
+    from repyability.rbd import _npv
+
+    for node in _npv.own_salvage_by_age(rbd):
+        if node in rbd._standby:
+            return (
+                f"Component {node!r} is a group of units with a salvage by "
+                "age, which credits each unit by its own age at the end: "
+                "the Python engine alone records them, so give "
+                "engine='python' or 'auto'."
+            )
+    return None
+
+
+def _ages_at_end(
+    parts,
+    counted,
+    t_end: float,
+    starts,
+    tested=None,
+    slots=None,
+    clocks=None,
+) -> np.ndarray:
     """Each simulation's age of each component's unit in service at the
     end, NaN for one down then, from its histories, as the Python loop
     keeps it (``_replicate``'s ``new_at``): the unit was put in as new at
     its last change up (a repair's or a task's end), or at its last task
     in zero time (a counted ``TALLY_PREVENTIVE`` that changes nothing),
     or, failing both, ``age`` before 0 from its state (new by default).
-    A unit whose age is no one number (``_npv.own_salvage_by_age``
-    refuses it) is not asked for. A row a simulation, a column a
-    component."""
+    A unit with hidden failures (``tested``) does not age while a test
+    takes it off line: back up from a planned change down (its test's;
+    it takes no tasks), it is as old as when it went down. A life on a
+    duty plan that changes (``clocks``, its ``PlannedLife``) ages in
+    operating time: ``D(end) - D(put in)``, as its stand-in counts it
+    (``_ImperfectComponent.age_at``). A unit kept at a virtual age is not
+    on numba's loop (``_compiled.unsupported``), nor a group's units
+    (``_python_ages``): a standby group's columns (``slots``, as
+    ``age_slots`` lays them out) are NaN. A row a simulation."""
     from repyability.rbd._events import TALLY_PREVENTIVE
 
     size = parts[0].size if parts else 0
-    out = np.full((size, len(parts)), math.nan)
-    for c, (data, events, start) in enumerate(zip(parts, counted, starts)):
+    tested = tested or [False] * len(parts)
+    slots = slots or [1] * len(parts)
+    clocks = clocks or [None] * len(parts)
+    out = np.full((size, int(sum(slots))), math.nan)
+    column = 0
+    for data, events, start, test, width, clock in zip(
+        parts, counted, starts, tested, slots, clocks
+    ):
+
+        c = column
+        column += width
+        if width != 1:
+            continue  # a group's units: not in its histories
         before = -float(getattr(start, "age", 0.0) or 0.0)
         tasks = (events.kinds & TALLY_PREVENTIVE) != 0
         last_task = np.full(size, -math.inf)
@@ -512,6 +588,17 @@ def _ages_at_end(parts, counted, t_end: float, starts) -> np.ndarray:
             up_at_start = bool(data.start[s])
             if up_at_start == bool((z - a) % 2):
                 continue  # down at the end
+            if test:
+                # Each change down and the change up after it, in order.
+                new = before
+                first = a + (1 if up_at_start else 0)
+                for j in range(first, z, 2):
+                    if j > a and data.planned[j - 1]:
+                        new = new + (data.times[j] - data.times[j - 1])
+                    else:
+                        new = float(data.times[j])
+                out[s, c] = _age(clock, new, t_end)
+                continue
             # The changes that leave it up: every other, from the first
             # (down at 0) or the second (up at 0).
             ups = data.times[a + (1 if up_at_start else 0) : z : 2]
@@ -519,7 +606,7 @@ def _ages_at_end(parts, counted, t_end: float, starts) -> np.ndarray:
             if ups.size:
                 new = max(new, float(ups[-1]))
             new = max(new, float(last_task[s]))
-            out[s, c] = t_end - new
+            out[s, c] = _age(clock, new, t_end)
     return out
 
 

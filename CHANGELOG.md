@@ -12,6 +12,30 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A salvage by age in the simulated runs (`npv_distribution`,
+  `compare_npv`, `best_switch_time`, a service's values) for the units
+  it refused, whose age at the end is more than the time since they were
+  put in. A unit that keeps a virtual age (Kijima repair, a fitted G1 or
+  ARA process, a task that restores it partly) is worth `worth(virtual
+  age)`; a unit with hidden failures is worth nothing if it has failed
+  unseen at the end, and otherwise its worth at its age since it was put
+  in, less the tests that took it off line; a standby group, a
+  load-sharing group or a block of identical units is worth the sum of
+  each unit up at its own age (a spare's the life it has used up
+  waiting, at its dormancy); a nested diagram's components are each
+  credited by their own salvage (a number or by age, recursively, from
+  the nested diagram's own runs), where their salvage was refused (their
+  escalation and retirement still are); and a life on a duty plan that
+  changes is worth `worth(operating age)`. Only a unit repaired by a
+  fitted ARI process, which keeps no virtual age, is still refused.
+  Checked run by run against each age worked out by hand from the run's
+  histories, and against closed forms (Exponential units tested once in
+  the window, a cold and a warm standby pair, identical units, nested
+  units, a duty plan). numba's loop gives a tested unit's age and a duty
+  plan's operating age from its histories, to the bit of the Python
+  loop's; a group's units are the Python loop's alone (`"auto"` runs
+  Python, `engine="numba"` refuses with the reason). No result changes
+  where a salvage by age was taken before.
 - A salvage by age in the simulated runs (`expected_npv` and the other
   priced runs) takes the compiled engine (numba): each unit's age at the
   end is worked out from the run's histories (its last change up, or its

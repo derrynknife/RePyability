@@ -2527,10 +2527,15 @@ group, a common cause, a shutdown) is refused. The runs and
 `expected_npv`. The valuations of
 runs (`npv_distribution`, `compare_npv`) end at a plan's retirement and
 credit every run its salvage at the end (a number; a salvage by age as
-`worth(age)` of each run's own unit in service at the end, if it is up,
-the age recorded by the Python loop, which such a run runs in; a unit
-whose age is no one number, keeping a virtual age, tested for hidden
-failures, a group, nested or on a duty plan that changes, is refused),
+`worth(age)` of each run's own unit in service at the end, if it is up:
+a unit that keeps a virtual age (imperfect repair, a fitted process, a
+task that restores it partly) at its virtual age; one tested for hidden
+failures credited nothing if failed unseen, else at its age since it
+was put in, less its tests off line; a group's units each at its own
+age, a spare's the life it used up waiting; a nested diagram's
+components each by their own salvage; a life on a duty plan that
+changes at its operating age; only a fitted ARI process, which keeps no
+virtual age, is refused),
 as `expected_npv` does, and so do `best_switch_time` (every
 candidate credited alike, the candidates up to the retirement) and a
 service's `task_value` (each side's runs to the plan's retirement, its
@@ -2575,7 +2580,11 @@ unit's money on the plan. The simulated runs then took a salvage given
 as a number and a retirement, then a salvage by age, each run's unit
 in service at the end (`test_salvage_by_age_runs.py`: a memoryless unit
 against `E[min(X, H)]`, a plain one against `expected_npv`, within four
-standard errors), and `expected_npv` one unit's retirement within a
+standard errors; then the units whose age is more than the time since
+they were put in, `test_salvage_by_age_cases.py`: each age by hand from
+its run's histories, and closed forms for hidden failures, standby
+pairs, identical units, nested units and a duty plan), and
+`expected_npv` one unit's retirement within a
 system (`test_retire_units.py`); the switch times, logs and services' values took the plan's
 own end next (`test_npv_runs_own_end.py`).
 

@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 import surpyval as surv
 
+from repyability import RepairableRBD
 from repyability.maintenance import AgePolicy, Prices, UnitPlan
 from repyability.rbd import _npv_runs
 
@@ -88,10 +89,24 @@ def test_seeded_runs_without_a_salvage_are_unchanged():
     assert np.all((credit >= 1000.0 - 0.2 * H) & (credit <= 1000.0))
 
 
-def test_the_compiled_engine_is_refused_for_it():
-    with pytest.raises(NotImplementedError, match="Python engine"):
-        plan().diagram().npv_distribution(
-            H, mc_samples=10, seed=1, engine="numba"
+def test_the_compiled_engine_is_refused_for_a_group_s_units():
+    # Each unit of a group is credited by its own age, which the Python
+    # loop alone records (a plain unit's runs on numba too,
+    # test_end_ages.py); refused before numba is needed.
+    group = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {
+            "a": {
+                "reliability": surv.Exponential.from_params([LAM]),
+                "repairability": surv.Exponential.from_params([0.1]),
+                "standby": {"units": 2, "k": 1},
+                "salvage": worth,
+            }
+        },
+    )
+    with pytest.raises(NotImplementedError, match="Python engine alone"):
+        group.npv_distribution(
+            H, value_rate=1.0, mc_samples=10, seed=1, engine="numba"
         )
 
 

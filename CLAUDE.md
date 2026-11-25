@@ -211,9 +211,14 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   age at the end (for a salvage by age in the runs) is the Python
   loop's `Block.ages`, and on numba's loop is worked out from the
   histories (`_timeline_runs._ages_at_end`: the last change up, or the
-  last task in zero time): a change to what renews a unit in the loop
-  goes into it, and `test_end_ages.py` checks it against the Python
-  loop's own, and numba's against Python's, to the bit.
+  last task in zero time; a tested unit's tests off line not ageing it;
+  a duty plan's operating time): a change to what renews or ages a unit
+  in the loop (`_event_loop._end_ages`) goes into it, and
+  `test_end_ages.py` checks it against the Python loop's own, and
+  numba's against Python's, to the bit. A virtual age is the loop's
+  stand-in's (`_ImperfectComponent.age_at`), and a standby group's units'
+  ages (`_StandbyGroup.ages`, laid out by `age_slots`) are the Python
+  loop's alone (`_timeline_runs._python_ages`).
 - **Capacity states are worked out in batches**
   (`_tally._CapacityRecorder.evaluate`): a simulation's in Python, a batch's
   compiled, so a state's capacity must not depend on what is worked out

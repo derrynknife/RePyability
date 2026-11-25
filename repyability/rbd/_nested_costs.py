@@ -164,15 +164,53 @@ def require(rbd, held=frozenset(), simulated: bool = False, states=None):
         raise NotImplementedError(reason)
 
 
-def refusal_unvalued(rbd) -> Optional[str]:
+def salvaged(rbd) -> bool:
+    """Whether a component of ``rbd``, or of a diagram nested in it, has
+    a salvage of its own (its plan's ``"salvage"``)."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    if any(
+        "salvage" in own for own in getattr(rbd, "_valuation", {}).values()
+    ):
+        return True
+    return any(
+        isinstance(component, RepairableRBD) and salvaged(component)
+        for component in getattr(rbd, "components", {}).values()
+    )
+
+
+def refusal_unvalued(rbd, runs: bool = False) -> Optional[str]:
     """Why a valuation cannot take a nested diagram, or None: one whose
     units carry their own salvage, escalation or retirement (their plans'
     valuation terms), which the diagram they are nested in does not
-    take."""
-    for name, nested in priced(rbd):
+    take. The valuations of runs (``runs``) take their salvage (each by
+    its own rule, ``_npv_runs._credit_nested``), from the nested
+    diagram's own runs: one some of whose draws are not streamed is
+    refused, as its run alone could not repeat them."""
+    from repyability.rbd import _event_loop
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    for name, nested in getattr(rbd, "components", {}).items():
+        if not isinstance(nested, RepairableRBD):
+            continue
+        if not runs and not nested.has_costs:
+            continue
         own = getattr(nested, "_valuation", {})
-        if own:
-            unit = next(iter(own))
+        terms = {
+            unit: [key for key in terms if not (runs and key == "salvage")]
+            for unit, terms in own.items()
+        }
+        unit = next((u for u, keys in terms.items() if keys), None)
+        if unit is not None and nested.has_costs:
+            if runs:
+                return (
+                    f"Component {unit!r} of the nested RBD at node "
+                    f"{name!r} has its own {' and '.join(terms[unit])}, "
+                    "which a valuation of runs of the diagram it is nested "
+                    "in does not take (only its salvage): give them for "
+                    f"the nested node, {name!r}, in the valuation's "
+                    "arguments."
+                )
             return (
                 f"Component {unit!r} of the nested RBD at node {name!r} has "
                 "valuation terms of its own (a salvage, escalation or "
@@ -180,7 +218,19 @@ def refusal_unvalued(rbd) -> Optional[str]:
                 "nested in does not take: give them for the nested node, "
                 f"{name!r}, in the valuation's arguments."
             )
-        inner = refusal_unvalued(nested)
+        if runs and salvaged(nested):
+            _, complete = _event_loop._stream_specs(
+                nested, 1.0, (name,), priced=True
+            )
+            if not complete:
+                return (
+                    f"Node {name!r} is a nested RBD whose components have a "
+                    "salvage of their own, and some of its draws do not "
+                    "come from a stream (a model other than a surpyval "
+                    "parametric one), so the ages of its units at the end "
+                    "cannot be simulated alone in the system's runs."
+                )
+        inner = refusal_unvalued(nested, runs)
         if inner is not None:
             return inner
     return None
