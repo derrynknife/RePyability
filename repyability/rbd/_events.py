@@ -370,7 +370,13 @@ class _StandbyGroup:
         """Unit ``unit`` has failed at ``t``: its repair, drawn now, is a
         job for a crew."""
         self._version[unit] += 1
-        ends = t + self._draws.repair(unit)
+        ready = t
+        shelf = self._rbd._run_state._shelf
+        if shelf is not None and self._node in shelf.of:
+            # Its replacement takes a spare, and waits for one if the
+            # shelf is empty (see _shelves).
+            ready = shelf.of[self._node][0].take(t)
+        ends = ready + self._draws.repair(unit)
         crews = self._rbd._run_state._crews
         if crews is None or crews.request(
             _Unit(self._node, unit), t, Event(ends, None, True)
@@ -638,6 +644,7 @@ class _Run:
         "_held",
         "_paused_pending",
         "_sound",
+        "_shelf",
     )
 
     #: The events to come, in time order.
@@ -702,10 +709,14 @@ class _Run:
     #: whether the system is down unplanned (see ``_unplanned``); None
     #: where that is not followed.
     _sound: Any
+    #: The shelves of spares the components draw on (see ``_shelves``),
+    #: or None.
+    _shelf: Any
 
     def __init__(self) -> None:
         self._step_sources = None
         self._sound = None
+        self._shelf = None
 
 
 @dataclass(order=True, slots=True)

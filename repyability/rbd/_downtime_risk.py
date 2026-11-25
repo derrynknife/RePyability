@@ -27,7 +27,13 @@ optional ``budget``:
 - ``crews``: repair crews more than the diagram's ``repair_crews``, at
   a price each and their salaries at the ``crew_cost_rate``;
 - ``call_out``: a call-out crew's contract, through the contracts given,
-  its spend its expected fees and time engaged.
+  its spend its expected fees and time engaged;
+- ``spares``: spares more on a node's shelf, at a holding price each
+  (over the horizon). Every design is run with the shelf (see
+  ``_shelves``): from its stock as given (by default none), each spare
+  used reordered at once and arriving the lead time later, a repair that
+  finds the shelf empty waiting for one. A node's copies draw on its
+  shelf (one part), and a group's units on the group's.
 
 Besides the levers' prices, a design's spend is the change in its
 expected cost of preventive tasks, inspections and crews over the
@@ -71,6 +77,7 @@ from typing import (
 
 import numpy as np
 
+from repyability.rbd import _shelves
 from repyability.rbd.results import DowntimeDesign, DowntimeRiskResult
 from repyability.utils import checks
 from repyability.value import _risk
@@ -103,16 +110,19 @@ def _copy_name(rbd, node, index: int):
 
 class _Lever(NamedTuple):
     """One lever of the search, at a step from 0 (the diagram as given):
-    a count lever (``"copies"``, ``"crews"``) adds one more at each step,
-    at ``price`` each, up to ``cap`` (None: no bound); a choice lever
-    (``"interval"``, ``"call_out"``) takes ``options[step - 1]``, its
-    options in the order to try them."""
+    a count lever (``"copies"``, ``"crews"``, ``"spares"``) adds one more
+    at each step, at ``price`` each, up to ``cap`` (None: no bound); a
+    choice lever (``"interval"``, ``"call_out"``) takes
+    ``options[step - 1]``, its options in the order to try them. A
+    spares lever's ``shelf`` is the shelf as given (its stock, lead time
+    and whether repairs take a spare)."""
 
     kind: str
     node: Optional[Hashable]
     price: float = 0.0
     cap: Optional[int] = None
     options: Tuple = ()
+    shelf: Optional[_shelves.Shelf] = None
 
 
 #: The cost categories the levers' spend is counted in, besides their
@@ -147,10 +157,12 @@ def _levers(
     max_units,
     crews,
     call_out,
+    spares=None,
 ) -> List[_Lever]:
     """The levers, checked, in the order the search tries their moves:
     the redundancy nodes', the interval nodes', the inspection nodes',
-    the upgrade nodes', the crews' and the call-out contracts'. Each
+    the upgrade nodes', the spares nodes', the crews' and the call-out
+    contracts'. Each
     option of a choice
     lever is built once here, so that one the diagram cannot take is
     refused before the search."""
@@ -230,6 +242,14 @@ def _levers(
         )
     for node, offers in (upgrades or {}).items():
         levers.append(_upgrade_lever(rbd, node, offers))
+    if spares is not None and not isinstance(spares, Mapping):
+        raise ValueError(
+            "spares must be a dict of node: its shelf's lever, e.g. "
+            "{'pump': {'price': 400, 'lead_time': 720}}; got "
+            f"{spares!r}."
+        )
+    for node, spec in (spares or {}).items():
+        levers.append(_spares_lever(rbd, node, spec))
     if crews is not None:
         levers.append(_crews_lever(rbd, crews))
     if call_out is not None:
@@ -315,6 +335,65 @@ def _upgrade_lever(rbd, node, offers) -> _Lever:
             )
         )
     return _Lever("upgrade", node, options=tuple(options))
+
+
+#: The keys of a spares lever.
+SPARES_KEYS = ("price", "lead_time", "max", "stock", "repairs")
+
+
+def _spares_lever(rbd, node, spec) -> _Lever:
+    """``spares[node]``: spares more on the node's shelf, each at its
+    ``"price"`` (its holding cost over the horizon), up to ``"max"`` more,
+    from the shelf's ``"stock"`` as given (by default 0), with its
+    ``"lead_time"`` and whether ``"repairs"`` take a spare."""
+    if (
+        not isinstance(spec, Mapping)
+        or set(spec) - set(SPARES_KEYS)
+        or not {"price", "lead_time"} <= set(spec)
+    ):
+        raise ValueError(
+            f"spares[{node!r}] must be a dict of 'price' (what each spare "
+            "more on the shelf costs to hold over the horizon) and "
+            "'lead_time' (the time a spare ordered takes to arrive), and "
+            "optionally 'max' (the most spares more), 'stock' (the spares "
+            "held now, by default 0) and 'repairs' (whether a failure "
+            f"repaired imperfectly takes a spare too); got {spec!r}."
+        )
+    _shelves.require(rbd, node, "spares")
+    shelf = _shelves.shelf(
+        spec.get("stock", 0),
+        spec["lead_time"],
+        spec.get("repairs", False),
+        f"the shelf of node {node!r}",
+    )
+    return _Lever(
+        "spares",
+        node,
+        price=_price(spec["price"], f"The price of a spare of node {node!r}"),
+        cap=_cap(spec.get("max"), f"spares[{node!r}]'s 'max'"),
+        shelf=shelf,
+    )
+
+
+def _shelved(rbd, diagram, levers: Sequence[_Lever], state: Sequence[int]):
+    """``diagram`` (a design of ``rbd``) with each spares lever's shelf at
+    its step: its stock as given and as many more, its node's copies
+    drawing on it too."""
+    shelves, of = {}, {}
+    copies = {v.node: s for v, s in zip(levers, state) if v.kind == "copies"}
+    for lever, step in zip(levers, state):
+        if lever.kind != "spares":
+            continue
+        assert lever.shelf is not None  # a spares lever has its shelf
+        shelves[lever.node] = lever.shelf._replace(
+            stock=lever.shelf.stock + step
+        )
+        of[lever.node] = lever.node
+        for index in range(1, copies.get(lever.node, 0) + 1):
+            of[_copy_name(rbd, lever.node, index)] = lever.node
+    if not shelves:
+        return diagram
+    return _shelves.shelved(diagram, _shelves.Shelves(shelves, of))
 
 
 def _crews_lever(rbd, crews) -> _Lever:
@@ -431,10 +510,14 @@ def _settings(rbd, levers: Sequence[_Lever], state: Sequence[int]) -> dict:
         "intervals": {},
         "inspections": {},
         "upgrades": {},
+        "spares": {},
     }
     for lever, step in zip(levers, state):
         if lever.kind == "copies":
             found["copies"][lever.node] = step
+        elif lever.kind == "spares":
+            assert lever.shelf is not None  # a spares lever has its shelf
+            found["spares"][lever.node] = lever.shelf.stock + step
         elif lever.kind == "upgrade":
             found["upgrades"][lever.node] = step or None
         elif lever.kind in ("interval", "inspection"):
@@ -596,6 +679,7 @@ def least_spend_for_downtime(
     engine: str,
     uncertainty=None,
     n_draws: int = 100,
+    spares: Optional[Mapping] = None,
 ) -> DowntimeRiskResult:
     """See ``RepairableRBD.least_spend_for_downtime``."""
     from repyability.rbd import _npv_runs
@@ -649,6 +733,7 @@ def least_spend_for_downtime(
         max_units,
         crews,
         call_out,
+        spares,
     )
 
     drawn = _drawn(rbd, uncertainty, n_draws, n, seed)
@@ -664,10 +749,22 @@ def least_spend_for_downtime(
         if found is not None:
             return found
         if drawn is None:
-            diagrams = [(_design(rbd, levers, state), n, seed)]
+            diagrams = [
+                (
+                    _shelved(rbd, _design(rbd, levers, state), levers, state),
+                    n,
+                    seed,
+                )
+            ]
         else:
             diagrams = [
-                (_design(given, levers, state), drawn.runs, s)
+                (
+                    _shelved(
+                        rbd, _design(given, levers, state), levers, state
+                    ),
+                    drawn.runs,
+                    s,
+                )
                 for given, s in zip(drawn.diagrams, drawn.seeds)
             ]
         risk, planned, unplanned, spent = _evaluate(
@@ -801,7 +898,8 @@ def _floor_words(floor, last, limit, measure, budget) -> str:
     if floor == "caps":
         return (
             f"{lowest}: every lever is at its cap (max_units, crews' "
-            "'max', or the last option given). Raise the caps, or give "
+            "or spares' 'max', or the last option given). Raise the caps, "
+            "or give "
             "more options."
         )
     if floor == "planned":
@@ -816,6 +914,6 @@ def _floor_words(floor, last, limit, measure, budget) -> str:
         return f"{lowest}: the search took its most steps ({MAX_STEPS})."
     return (
         f"{lowest}: no lever given lowers it further. Give other levers "
-        "(redundancy=, intervals=, inspections=, upgrades=, crews=, "
-        "call_out=)."
+        "(redundancy=, intervals=, inspections=, upgrades=, spares=, "
+        "crews=, call_out=)."
     )

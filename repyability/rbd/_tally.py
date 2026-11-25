@@ -873,6 +873,7 @@ class _Replication:
         "capacity_time",
         "delivered",
         "replacements",
+        "shelves",
         "opportunistic",
         "outage_jobs",
         "history",
@@ -895,6 +896,7 @@ class _Replication:
     capacity_time: Optional[list]
     delivered: Optional[float]
     replacements: List[int]
+    shelves: Optional[dict]
     opportunistic: List[int]
     outage_jobs: Optional[List[int]]
     history: Optional[tuple]
@@ -1006,6 +1008,9 @@ class _Tally:
         # Each replication's replacements of each node, when asked for
         # (see RepairableRBD.spares_demand).
         self.replacements: Optional[List[List[int]]] = None
+        # Each replication's record of each shelf of spares (see
+        # _shelves), when the run has any.
+        self.shelves: Optional[list] = None
         # Per node: its early renewals at stops of its maintenance group.
         self.opportunistic = [0] * n
         # Per start of a shutdown that renews components opportunistically
@@ -1068,6 +1073,8 @@ class _Tally:
                 self.delivered.append(rec.delivered)
         if self.replacements is not None:
             self.replacements.append(rec.replacements)
+        if self.shelves is not None:
+            self.shelves.append(rec.shelves)
         for c, count in enumerate(rec.opportunistic):
             if count:
                 self.opportunistic[c] += count
@@ -1419,6 +1426,9 @@ class _Tally:
         if self.replacements is not None:
             assert other.replacements is not None  # blocks of one run
             self.replacements.extend(other.replacements)
+        if self.shelves is not None:
+            assert other.shelves is not None  # blocks of one run
+            self.shelves.extend(other.shelves)
 
     def to_dict(self) -> dict:
         """The totals, as JSON data (see ``SimulationChunk.to_dict``): each

@@ -37,6 +37,7 @@ from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import (
     _overrides,
     _runs,
+    _shelves,
     _streams,
     _timeline_runs,
     _unplanned,
@@ -822,6 +823,8 @@ def _simulate_block(span: Tuple[int, int]) -> "_Tally":
     )
     if replacements:
         tally.replacements = []
+    if _shelves.of(rbd) is not None:
+        tally.shelves = []
     if histories:
         tally.histories = _timeline_runs.Records(len(rbd.components))
     for replication in range(*span):
@@ -2949,6 +2952,9 @@ def _run_alone(
         # Only the Python engine counts them.
         tally.replacements = []
         engine = "python"
+    if _shelves.of(rbd) is not None:
+        # Each simulation's record of each shelf of spares.
+        tally.shelves = []
     if histories:
         tally.histories = _timeline_runs.Records(len(rbd.components))
     runner: Any = None
@@ -3111,6 +3117,9 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         follow=True,
         works=ctx.works,
     )
+    # The shelves of spares the components draw on, full (see _shelves).
+    shelf = rbd._run_state._shelf = _shelves.start(_shelves.of(rbd))
+    shelf_of = None if shelf is None else shelf.of
     status = rbd._run_state.component_status
     # Which components have failed, against down for planned work, and
     # the time the system is down unplanned (see _unplanned): None for a
@@ -3445,6 +3454,8 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             )
         if history and not event.status:
             counted_of[c].append((t, _change_tally(event, node in inspected)))
+        # When a spare is ready for the repair this failure starts.
+        spare_at = None
         if event.status:
             restored[c] += 1
             if history:
@@ -3467,6 +3478,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             rep_cost += pay(node, 3, inspection_charges.get(node))
         else:
             failed[c] += 1
+            took = replaced[c]
             # Repair and replace are charged per corrective action, at
             # the failure that triggers it (for a hidden failure, when an
             # inspection finds it; for a standby group, at each unit's).
@@ -3477,6 +3489,12 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
                     replaced[c] += 1
                     for category, charges in failure_charges.get(node, ()):
                         rep_cost += pay(node, category, charges)
+            if shelf_of is not None and not grouped and node in shelf_of:
+                # A replacement takes a spare (a repair, if its shelf
+                # says so), and waits for one if the shelf is empty.
+                stock, repairs = shelf_of[node]
+                if repairs or replaced[c] > took:
+                    spare_at = stock.take(t)
             if node in member_group:
                 rep_cost += stop(member_group[node], t, node)
 
@@ -3524,6 +3542,11 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             next_event = _follow_up(rbd, event, sources[node])
             if sound is not None and isinstance(sources[node], _StreamedRBD):
                 sound.take(node, sources[node])
+        if spare_at is not None and spare_at > t and next_event is not None:
+            # Its repair starts once the spare is ready.
+            next_event = Event(
+                next_event.time + (spare_at - t), node, next_event.status
+            )
         if crews is not None:
             # A job waits for a repair crew (see _Crews).
             next_event = _crew_follow_up(rbd, event, next_event)
@@ -3592,6 +3615,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     rec.by_category, rec.by_node = by_category, by_node
     rec.capacity_changes = rec.capacity_time = rec.delivered = None
     rec.replacements = replaced
+    rec.shelves = _shelves.records(shelf, t_simulation)
     rec.opportunistic = opportunistic
     rec.outage_jobs = outage_jobs
     rec.history = (

@@ -106,6 +106,8 @@
 
 ::: repyability.SparesStock
 
+::: repyability.SimulatedSparesStock
+
 ::: repyability.SimulationChunk
 
 ::: repyability.TimelineSimulation

@@ -66,6 +66,7 @@ from repyability.rbd.results import (
     PlanVsActual,
     RateBreakdown,
     ReplacementCycle,
+    SimulatedSparesStock,
     SimulatedSwitchTime,
     SimulationSamples,
     SparesDemand,
@@ -1856,12 +1857,45 @@ class RepairableRBD(RBD):
         nodes: Optional[Collection[Hashable]] = None,
         fleet: int = 1,
         parts: Optional[Mapping[Hashable, Collection[Hashable]]] = None,
-    ) -> Dict[Hashable, SparesStock]:
+        method: str = "exact",
+        horizon: Optional[float] = None,
+        no_stockout: Optional[float] = None,
+        repairs: bool = False,
+        confidence: float = 0.95,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+    ) -> Mapping[Hashable, Union[SparesStock, SimulatedSparesStock]]:
         """The fewest spares of each component (or each part several
         share, ``parts``) to hold for a fill rate, or to run out no more
         than a fraction of the time, when each spare used is reordered at
         once and arrives ``lead_time`` later (one-for-one, or ``(S - 1,
-        S)``, replenishment), in the long run.
+        S)``, replenishment), in the long run; or, with
+        ``method="simulate"``, over a ``horizon`` from new, and to be
+        that sure of getting through it with no repair waiting for a
+        spare (``no_stockout``).
+
+        **How many spares to hold to be X% sure.** With
+        ``method="simulate"``, the shelf is in the runs: each run starts
+        with ``S`` on the shelf, a spare used is reordered at once, and a
+        repair that finds the shelf empty waits for the next to arrive
+        (so the unit is down longer and its next failures come later,
+        which the long-run values below leave out). Stocks 0, 1, ... are
+        run on one seed until each meets its targets: ``no_stockout`` (the
+        chance of no stock-out at all over the horizon, met by its lower
+        confidence bound at ``confidence``, so "90% sure, with 95%
+        confidence"), and ``fill_rate`` and ``stockout_probability`` over
+        the horizon (their estimates). A replacement takes a spare (each
+        failure repaired as new, a group's unit failures); a failure
+        repaired imperfectly (the spec's ``"repair"``) takes one only with
+        ``repairs=True``. Each component or part has its own
+        ``SimulatedSparesStock``, with every stock tried (``by_stock``).
+        For a bad year's *downtime* (rather than a stock-out) to stay
+        under a limit, use ``least_spend_for_downtime(spares=...)``. With
+        a lead time longer than the horizon, nothing ordered arrives in
+        it, and ``spares_demand(horizon)`` gives the same chance exactly:
+        that the demand is at most the stock.
+
+        The rest of this describes the long run (``method="exact"``).
 
         With a stock of ``S`` a spare is on the shelf while fewer than
         ``S`` are on order: those used in the last lead time. The demand is
@@ -1932,12 +1966,36 @@ class RepairableRBD(RBD):
         parts : dict, optional
             ``{part: [nodes]}``: the components that draw on one shelf, as
             for ``spares_demand``.
+        method : str, optional
+            ``"exact"`` (the default: the long run, worked out) or
+            ``"simulate"`` (over ``horizon`` from new, the shelf in the
+            runs).
+        horizon : float, optional
+            With ``method="simulate"``, the window the shelf must get
+            through, from new with a full shelf (required).
+        no_stockout : float, optional
+            With ``method="simulate"``, the chance to reach of no repair
+            waiting for a spare over the horizon, in ``(0, 1)``.
+        repairs : bool, optional
+            With ``method="simulate"``, whether a failure repaired
+            imperfectly takes a spare too; by default False (only
+            replacements do).
+        confidence : float, optional
+            With ``method="simulate"``, the level of the lower bound on
+            the chance of no stock-out, by default 0.95.
+        mc_samples : int, optional
+            With ``method="simulate"``, the runs at each stock, by default
+            10,000.
+        seed : int, optional
+            With ``method="simulate"``, seeds the runs (the same for every
+            stock); by default one is drawn and kept in the result.
 
         Returns
         -------
-        dict[Hashable, SparesStock]
-            Per component, and per part, the stock and what it achieves,
-            with the distributions behind them.
+        dict[Hashable, SparesStock] or dict[Hashable, SimulatedSparesStock]
+            Per component, and per part, the stock and what it achieves:
+            with the distributions behind them, or (simulated) the values
+            at every stock tried.
 
         Raises
         ------
@@ -1980,6 +2038,26 @@ class RepairableRBD(RBD):
         >>> round(stock.fill_rate, 4)
         0.9665
         """
+        one_of("method", method, ("exact", "simulate"))
+        if method == "simulate":
+            return _spares.spares_stock_simulated(
+                self,
+                lead_time,
+                horizon=horizon,
+                fill_rate=fill_rate,
+                stockout_probability=stockout_probability,
+                no_stockout=no_stockout,
+                nodes=nodes,
+                fleet=fleet,
+                parts=parts,
+                repairs=repairs,
+                mc_samples=mc_samples,
+                seed=seed,
+                confidence=confidence,
+            )
+        _spares.require_exact_stock(
+            horizon, no_stockout, repairs, mc_samples, seed
+        )
         _shutdowns.refuse(self, "spares_stock")
         return _spares.spares_stock(
             self,
@@ -5141,6 +5219,7 @@ class RepairableRBD(RBD):
         engine: str = "auto",
         uncertainty: Any = None,
         n_draws: int = 100,
+        spares: Optional[Mapping] = None,
     ):
         """The least spend that keeps a bad run's downtime under
         ``limit``: "I want to be 95% sure I don't lose more than this on
@@ -5160,8 +5239,11 @@ class RepairableRBD(RBD):
         given, at its tasks' expected cost), ``inspections`` (a node's test
         interval, likewise), ``upgrades`` (a better life from the start, at a
         price per unit), ``crews`` (repair crews more, at a price each and
-        their salaries) and ``call_out`` (a call-out crew's contract, through
-        those given, at its expected fees and time engaged). A group of units
+        their salaries), ``call_out`` (a call-out crew's contract, through
+        those given, at its expected fees and time engaged) and ``spares``
+        (spares more on a node's shelf, at a holding price each: every
+        design is then run with the shelf, a repair that finds it empty
+        waiting for a spare to arrive). A group of units
         (standby, load-sharing or identical) is one node: its copy is a second
         group in parallel. The search takes, step by step, the move that lowers
         the bad run's downtime most per extra spend, every design on the same
@@ -5239,6 +5321,21 @@ class RepairableRBD(RBD):
         n_draws : int, optional
             The draws of the models with ``uncertainty``, by default 100,
             at most ``mc_samples``.
+        spares : dict, optional
+            ``{node: {"price": p, "lead_time": L, "max": m, "stock": s,
+            "repairs": r}}``: a shelf of spares for the node, from ``s``
+            held (by default 0) up to ``m`` more (by default no bound),
+            each more at ``p`` (its holding cost over the horizon). Each
+            spare used is reordered at once and arrives ``L`` later, and a
+            repair that finds the shelf empty waits for it. A replacement
+            takes a spare (a failure repaired as new, a group's unit
+            failures); a failure repaired imperfectly takes one only with
+            ``"repairs": True``. The node's copies draw on its shelf. "How
+            many spares to hold to be 95% sure a bad year loses under 100
+            hours" is this lever alone; the stock is the design's
+            ``spares``. Simulated in Python (the compiled engine refuses a
+            shelf), with no repair crews, preventive tasks or tests on the
+            node.
 
         Returns
         -------
@@ -5298,6 +5395,7 @@ class RepairableRBD(RBD):
             engine=engine,
             uncertainty=uncertainty,
             n_draws=n_draws,
+            spares=spares,
         )
 
     def best_switch_time(
