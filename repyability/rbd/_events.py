@@ -203,17 +203,21 @@ class _StandbyDraws:
     from one (see ``_streams``); or, when they cannot be streamed, from the
     unit models' ``random`` and numpy's global RNG."""
 
-    __slots__ = ("_models", "_lives", "_repairs", "_switches")
+    __slots__ = ("_models", "_life", "_lives", "_repairs", "_switches")
 
     def __init__(self, models, lives=None, repairs=None, switches=None):
         self._models = models
+        # A unit's life in its own (operating) time: on a duty plan that
+        # changes over time, the plan's model (see _StandbyGroup).
+        life = models.reliability
+        self._life = getattr(life, "model", life) if _planned(life) else life
         self._lives = lives
         self._repairs = repairs
         self._switches = switches
 
     def life(self, unit: int) -> float:
         if self._lives is None:
-            return self._models.reliability.random(1).item()
+            return self._life.random(1).item()
         return self._lives[unit].draw()
 
     def repair(self, unit: int) -> float:
@@ -227,9 +231,23 @@ class _StandbyDraws:
         return self._switches.draw()
 
 
+def _planned(life) -> bool:
+    """Whether ``life`` is on a duty plan that changes over time."""
+    from ._duty import PlannedLife
+
+    return isinstance(life, PlannedLife)
+
+
 class _StandbyGroup:
     """A standby group's units during one simulation (a component spec's
     ``"standby"``; see ``RepairableRBD``).
+
+    On a duty plan that changes over time (the group's life a
+    ``_duty.PlannedLife``), every unit's life is in operating time and
+    is used up on the plan's clock ``D``: at rate 1 of ``D`` while it
+    operates, and at ``dormancy_factor`` of ``D`` while it waits (a
+    warm spare ages at its share of the duty, a cold one not at all), so
+    a unit fails when ``D`` has run its life on from now (``_after``).
 
     Each unit put into service as new draws a life, used up at rate 1 while
     it operates and at ``dormancy_factor`` while it waits as a spare (the
@@ -273,6 +291,7 @@ class _StandbyGroup:
         "_version",
         "_events",
         "_order",
+        "_clock",
         "entry",
         "up",
     )
@@ -296,6 +315,8 @@ class _StandbyGroup:
             draws if isinstance(draws, _StandbyDraws) else _StandbyDraws(draws)
         )
         self._end = t_simulation
+        life = rbd.components[node].reliability
+        self._clock = life if _planned(life) else None
         self._operating: set = set()
         self._spares: deque = deque()
         # Each unit's life left, as of ``_since``; and a count that a
@@ -328,7 +349,23 @@ class _StandbyGroup:
     def _operate(self, unit: int, t: float) -> None:
         self._operating.add(unit)
         self._since[unit] = t
-        self._queue(t + self._life[unit] / self._rate, _UNIT_FAILS, unit)
+        self._queue(
+            self._after(t, self._life[unit] / self._rate), _UNIT_FAILS, unit
+        )
+
+    def _after(self, t: float, x: float) -> float:
+        """When a unit's clock has run ``x`` on from ``t``: ``t + x``, or
+        on a duty plan that changes, ``D⁻¹(D(t) + x)``."""
+        if self._clock is None:
+            return t + x
+        return t + self._clock.run_on(t, x)
+
+    def _ran(self, t0: float, t1: float) -> float:
+        """How much a unit's clock has run from ``t0`` to ``t1``: ``t1 -
+        t0``, or on a duty plan that changes, ``D(t1) - D(t0)``."""
+        if self._clock is None:
+            return t1 - t0
+        return self._clock.operated_between(t0, t1)
 
     def _share(self, t: float) -> None:
         """The units operating at ``t`` have changed (a group with
@@ -340,7 +377,8 @@ class _StandbyGroup:
             self._rate = rates[len(self._operating) - 1]
         for unit in self._operating:
             self._life[unit] = max(
-                self._life[unit] - rate * (t - self._since[unit]), 0.0
+                self._life[unit] - rate * self._ran(self._since[unit], t),
+                0.0,
             )
             self._version[unit] += 1
             self._operate(unit, t)
@@ -363,7 +401,9 @@ class _StandbyGroup:
         self._since[unit] = t
         if self._dormancy > 0.0:
             self._queue(
-                t + self._life[unit] / self._dormancy, _SPARE_FAILS, unit
+                self._after(t, self._life[unit] / self._dormancy),
+                _SPARE_FAILS,
+                unit,
             )
 
     def _repair(self, unit: int, t: float) -> None:
@@ -465,7 +505,7 @@ class _StandbyGroup:
                     # It has used up its life at the dormant rate so far (all
                     # of it, at most: a spare due to fail in standby now).
                     self._version[spare] += 1
-                    used = self._dormancy * (t - self._since[spare])
+                    used = self._dormancy * self._ran(self._since[spare], t)
                     self._life[spare] = max(self._life[spare] - used, 0.0)
                     self._operate(spare, t)
                 else:

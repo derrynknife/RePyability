@@ -41,8 +41,8 @@ def planned_refusals(node, spec: dict) -> None:
     counted in operating time, ``PlannedLife.operated_between``):
     replacement on condition by a measured level (by a threshold on the
     chance of failing, the risk is judged through the operating time to
-    the next inspection, ``_event_loop._replaced_at``); and a standby
-    group, whose spares age on a clock of their own."""
+    the next inspection, ``_event_loop._replaced_at``). A standby
+    group's units age on the plan's clock (``_events._StandbyGroup``)."""
     lead = f"Component {node!r} runs on a duty plan that changes over time"
     preventive = spec.get("preventive")
     if (
@@ -55,11 +55,6 @@ def planned_refusals(node, spec: dict) -> None:
             "whose degradation is not followed on a plan that changes "
             "yet: give a threshold on the chance of failing, or the duty "
             "as one share."
-        )
-    if spec.get("standby") is not None:
-        raise NotImplementedError(
-            f"{lead}, and is a standby group, whose spares age on a clock "
-            "of their own: give the duty as one share."
         )
 
 
