@@ -12,6 +12,13 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- The simulated runs (`npv_distribution`, `compare_npv`,
+  `best_switch_time`, a service's `task_value`) take a unit's own salvage
+  by age: each run credits `worth(age)` of the unit in service at its end
+  if it is up, the age recorded by the Python loop (such a run runs in
+  it; `engine="numba"` is refused). A unit whose age is no one number
+  (a virtual age, hidden failures, a group, a nested diagram, a duty
+  plan that changes) is refused.
 - `expected_npv(retire_at={node: t}, retired="failed"|"junction")`
   retires one unit inside a diagram of several (a unit's own
   `retire_at` in such a diagram does too, where it was refused): from

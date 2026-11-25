@@ -82,7 +82,15 @@ def test_compare_npv_credits_each_plan_its_own():
 
 
 def test_what_runs_still_refuse_says_what_to_give():
-    by_age = with_money(salvage=lambda age: 100.0 - age / 10.0)
+    # A salvage by age of a unit that keeps a virtual age, whose age is
+    # no one number of a run (a plain unit's is credited run by run,
+    # test_salvage_by_age_runs.py).
+    from repyability.maintenance import ImperfectRepair
+
+    by_age = with_money(
+        salvage=lambda age: 100.0 - age / 10.0,
+        imperfect_repair=ImperfectRepair(model="kijima1", q=0.5),
+    )
     with pytest.raises(NotImplementedError, match="salvage by age"):
         by_age.diagram().npv_distribution(HORIZON, **RUNS)
     route = by_age.diagram().analysis_routes()["npv_distribution"]
