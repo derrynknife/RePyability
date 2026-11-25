@@ -667,8 +667,9 @@ dates and without it, from one seed, so both see the same failures until
 a service changes them; each run is priced with the plan's prices, by
 period. `value_lower` and `value_upper` are the value's 90% interval
 (`confidence=`), by period and in `total`. The plan must hold no
-preventive task of its own. A virtual age on a duty plan that changes
-over time is not followed yet: give the unit's duty as one share.
+preventive task of its own. On a duty plan that changes over time
+(weekday shifts) the virtual age is counted in operating time, and
+`age=` is the unit's operating age.
 
 The same question can be asked as one JSON document, with the effect as
 plain data: `value_plan`'s `"task_value"` analysis (see

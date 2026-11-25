@@ -196,3 +196,67 @@ def test_refusals(serviced_life):
     condition = Condition(serviced_life, fresh=[1.0], stale=[2.0], lasts=1.0)
     with pytest.raises(ValueError, match="covariate schedule"):
         task_value(SERVICE, Services(PLAN, condition), shifts, seed=1)
+
+
+# -- a service on a duty plan that changes ---------------------------------
+
+SHIFTS = DutyPlan(Shifts("Mon-Fri", "06:00", "22:00")).forecast(
+    "2027-01-01", "2028-01-01"
+)
+
+
+def test_a_service_on_a_duty_plan_that_changes():
+    # As new (factor 0) on weekday shifts, from 4,000 operating hours:
+    # the replacement's exact value through the same shifts.
+    part = NonRepairable(LIFE, unplanned_cost=12000.0)
+    exact = task_value(
+        SERVICE,
+        Replaces(part),
+        SHIFTS,
+        age=4000.0,
+        discount=0.07,
+        period="quarter",
+    )
+    worth = task_value(
+        SERVICE,
+        Services(PLAN, Restoration(q=0.0)),
+        SHIFTS,
+        age=4000.0,
+        discount=0.07,
+        period="quarter",
+        seed=67,
+    )
+    assert worth.method == "simulated"
+    se = standard_error(worth)
+    assert abs(worth.total["value"] - exact.total["value"]) < 4 * se
+
+
+def test_minimal_repairs_on_shifts_against_the_closed_form():
+    # Repaired as bad as old, renewed by each service: the failures in
+    # each stretch between services are H of its operating hours, D the
+    # shifts' running hours (H(x) = (x / 8,760) ** 3).
+    minimal = UnitPlan(
+        LIFE,
+        "instant",
+        prices=Prices(repair=12000.0),
+        imperfect_repair=ImperfectRepair(model="kijima1", q=1.0),
+    )
+    worth = task_value(
+        SERVICE,
+        Services(minimal, Restoration(q=0.0)),
+        SHIFTS,
+        discount=None,
+        period="quarter",
+        seed=5,
+    )
+    dates = ["2027-01-01", "2027-04-01", "2027-07-01", "2027-10-01"]
+    hours = np.append(
+        SHIFTS.model_time(dates), SHIFTS.model_time("2028-01-01")
+    )
+
+    def H(x):
+        return (np.asarray(x) / 8760.0) ** 3
+
+    expected = 12000.0 * (H(hours[-1]) - float(np.sum(H(np.diff(hours)))))
+    expected -= 3 * 800.0
+    assert abs(worth.total["value"] - expected) < 4 * standard_error(worth)
