@@ -126,7 +126,7 @@ def _unsupported_level(
     from repyability.non_repairable import NonRepairable
     from repyability.rbd.repairable_rbd import RepairableRBD
 
-    from . import _crews, _shelves
+    from . import _crews, _duty, _shelves
     from ._covariate_schedule import scheduled
 
     if _shelves.of(rbd) is not None:
@@ -205,9 +205,12 @@ def _unsupported_level(
         if type(component) is not NonRepairable:
             return f"the {type(component).__name__} of node {name!r}"
         clocked = scheduled(component)
-        if clocked is not None:
+        if clocked is not None and not (
+            numba and _duty.lives_streamed(clocked, False)
+        ):
             # A life on the diagram's clock (the Python loop's
-            # _ScheduledComponent).
+            # _ScheduledComponent): numba's loop takes a duty plan's that
+            # draws its lives in operating time (see _kernel._operating).
             what = (
                 "covariate schedule"
                 if clocked.lead.endswith("covariate schedule")
@@ -389,7 +392,7 @@ class _System:
         from repyability.rbd._tally import _CATEGORIES
         from repyability.rbd.repairable_rbd import RepairableRBD
 
-        from . import _crews, _unplanned
+        from . import _crews, _duty, _unplanned
 
         nodes = list(rbd.components)
         index = {node: c for c, node in enumerate(nodes)}
@@ -642,6 +645,37 @@ class _System:
             np.int8,
         )
         kept_f = _kept(structures, start)
+        #: Each component's duty plan that changes over time (a
+        #: ``_duty.PlannedLife``, -1 for none; see ``_kernel._operating``):
+        #: its lives, its standby units' and, where counted in operating
+        #: time, its tasks (1) and tests (2) go through it.
+        plan_of = np.full(n_all, -1, np.int64)
+        clocked = np.zeros(n_all, np.int8)
+        plans: dict = {}
+        for c, (here, name, _, _) in enumerate(everything):
+            life = _duty.planned_life(here, name)
+            if life is None or not active[c]:
+                continue
+            plan_of[c] = plans.setdefault(id(life), (len(plans), life))[0]
+            task = here._preventive.get(name)
+            tests = here._inspection.get(name)
+            clocked[c] = (task is not None and task.clock is not None) + 2 * (
+                tests is not None and tests.clock is not None
+            )
+        knots = [
+            life for _, life in sorted(plans.values(), key=lambda x: x[0])
+        ]
+        plan_size = np.array([life._times.size for life in knots], np.int64)
+        plan_first = np.concatenate(([0], np.cumsum(plan_size)[:-1])).astype(
+            np.int64
+        )
+
+        def joined(field) -> np.ndarray:
+            return np.concatenate(
+                [np.asarray(getattr(life, field), float) for life in knots]
+                or [np.zeros(0)]
+            )
+
         #: Everything numba's own loop simulates besides plain components
         #: (see ``_kernel._simulate``).
         self.upkeep = (
@@ -681,6 +715,13 @@ class _System:
             int(self.split),
             tracking,
             kept_f,
+            plan_of,
+            clocked,
+            plan_first,
+            plan_size,
+            joined("_times"),
+            joined("_shares"),
+            joined("_hours"),
         )
         initial_up = rbd.is_system_working(
             {node: bool(start[c]) for c, node in enumerate(nodes)}, method

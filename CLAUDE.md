@@ -153,13 +153,18 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   a call binds costs reference counting that numba cannot prune in a
   function this size, and passing the run's tuples to a function per
   simulation cost several times the loop (measured in #206).
-- **A life on the diagram's clock is the Python loop's alone**
-  (`_covariate_schedule.ClockLife`: a covariate schedule's
-  `ScheduledLife`, and a duty plan that changes over time,
-  `_duty.PlannedLife`): what is left of a unit's life depends on when it
-  is put into service (`life_left(t0, age, u)`, the loop's
-  `_ScheduledComponent`), so the exact methods refuse it and
-  `_compiled.unsupported` hands it to Python. A task counted in
+- **A life on the diagram's clock** (`_covariate_schedule.ClockLife`: a
+  covariate schedule's `ScheduledLife`, and a duty plan that changes
+  over time, `_duty.PlannedLife`): what is left of a unit's life depends
+  on when it is put into service (`life_left(t0, age, u)`, the loop's
+  `_ScheduledComponent`), so the exact methods refuse it (but a unit
+  that a plan only time-changes). A covariate schedule, and a virtual
+  age on a plan, are the Python loop's alone (`_compiled.unsupported`
+  hands them over); a plan's unit that keeps no virtual age draws its
+  lives in operating time from its stream (`_duty.lives_streamed`), and
+  numba's loop takes it, with `D` and `D⁻¹` at every draw site
+  (`_kernel._operating`, `_inverse`, `_after`, written as
+  `PlannedLife`'s arithmetic so the engines agree to the bit). A task counted in
   operating time on such a plan carries it as its `_Preventive.clock`
   (due in operating time, mapped back through the plan's inverse), and
   a test as its `_Inspection.clock`; every age the loop keeps for such a

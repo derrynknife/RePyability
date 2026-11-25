@@ -334,11 +334,19 @@ def test_saving_keeps_the_plan():
     np.testing.assert_array_equal(a, b)
 
 
-def test_the_compiled_engine_hands_it_to_python():
+def test_numba_runs_it_and_other_engines_hand_it_to_python():
+    # numba's own loop puts each life and task on the calendar through
+    # the plan (test_simulation_engines checks it to the bit); an engine
+    # from another package keeps the plain components' contract.
     rbd = planned()
     plan = _event_loop._stream_plan(rbd, 1.0, 0, False)[0]
-    reason = _compiled.unsupported(rbd, plan, None, numba=True)
+    assert _compiled.unsupported(rbd, plan, None, numba=True) is None
+    reason = _compiled.unsupported(rbd, plan, None)
     assert reason == "the duty plan that changes over time of node 'a'"
+    # With a virtual age, its lives are drawn given that age: Python's.
+    kijima = planned(repair={"model": "kijima1", "q": 0.5})
+    plan = _event_loop._stream_plan(kijima, 1.0, 0, False)[0]
+    assert _compiled.unsupported(kijima, plan, None, numba=True) is not None
 
 
 @pytest.mark.parametrize(

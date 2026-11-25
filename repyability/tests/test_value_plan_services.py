@@ -149,20 +149,17 @@ def test_a_duty_plan_and_its_refusal_are_answers():
     assert restored["result"] == direct(
         Restoration(q=0.5), usage=shifts, seed=1, mc_samples=200
     )
-    # A standby group on the shifts is not followed.
+    # A standby group is followed on the shifts too, but takes no
+    # service's task, on any plan: the diagram says so.
     pair = UnitPlan(
         LIFE,
         surv.Exponential.from_params([0.1]),
         prices=Prices(repair=12000.0),
         standby={"units": 2, "k": 1},
     )
-    refused = answered(
-        ask(Restoration(q=0.5), plan=pair, usage=shifts, seed=1)
-    )
-    assert "result" not in refused
-    assert refused["route"]["route"] == "refused"
-    assert "standby group" in refused["refused"]["reason"]
-    assert refused["refused"]["routes"] == {"task_value": "refused"}
+    for usage in (shifts, USAGE):
+        with pytest.raises(ValueError, match="standby group"):
+            value_plan(ask(Restoration(q=0.5), plan=pair, usage=usage, seed=1))
 
 
 def test_usage_by_its_start_end_and_plan_alone():
