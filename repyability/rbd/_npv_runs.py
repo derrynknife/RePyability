@@ -249,7 +249,8 @@ def priced_chunk(
     ledger, the runs (a ``TimelineSimulation``)."""
     from repyability.rbd import _timeline_runs
 
-    runs, hidden = _timeline_runs.simulate(
+    by_age = _npv.own_salvage_by_age(rbd)
+    found = _timeline_runs.simulate(
         rbd,
         horizon,
         size,
@@ -262,7 +263,9 @@ def priced_chunk(
         first,
         state,
         hidden=True,
+        ages=bool(by_age),
     )
+    runs, hidden = found[0], found[1]
     logs = {node: runs.components[node]._data for node in rbd.costs}
     ledger = _pricing.priced(
         rbd,
@@ -297,7 +300,34 @@ def priced_chunk(
             None,
             money.growth("shutdown"),
         )
+    if by_age:
+        _credit_by_age(rbd, ledger, found[2], by_age, horizon, money)
     return ledger, runs
+
+
+def _credit_by_age(rbd, ledger, ages, by_age, horizon: float, money):
+    """Each run's salvage by age at its end ``horizon``, ``worth(age)`` of
+    each such unit up then (none for one down), as a credit (a negative
+    cost of category ``"salvage"``) in the last period."""
+    growth = money.growth("salvage")
+    present = math.exp(-(money.rate - growth) * horizon)
+    nominal = math.exp(growth * horizon) if growth else 1.0
+    last = len(ledger.ends) - 1
+    nodes = list(rbd.components)
+    for node, worth in by_age.items():
+        age = ages[:, nodes.index(node)]
+        up = np.flatnonzero(np.isfinite(age))
+        if not up.size:
+            continue
+        values = np.asarray(worth(age[up]), dtype=float)
+        if values.shape != up.shape or not np.all(np.isfinite(values)):
+            raise ValueError(
+                f"The salvage of {node!r} by age must take an array of "
+                "ages and return a finite value for each."
+            )
+        ledger._add(
+            last, "salvage", node, up, -present * values, -nominal * values
+        )
 
 
 def _up_by_period(system, ends: np.ndarray, size: int) -> np.ndarray:
@@ -421,6 +451,11 @@ def _priced_runs(
     zero = np.zeros(n)
     values = present.pop(("value", None), zero)
     plain_value = nominal.pop(("value", None), zero)
+    # A salvage by age, each run's own (a credit: a negative cost).
+    salvage_runs = np.full(n, float(salvage))
+    for key in [k for k in present if k[0] == "salvage"]:
+        salvage_runs = salvage_runs - present.pop(key)
+        plain_salvage = plain_salvage - float(nominal.pop(key).mean())
     costs = np.zeros(n)
     plain_cost = 0.0
     by_category: Dict[str, float] = {}
@@ -455,7 +490,7 @@ def _priced_runs(
             else payments.sum(axis=1).mean()
         )
 
-    samples = values - costs + paid + salvage
+    samples = values - costs + paid + salvage_runs
     ordered = np.sort(samples)
     worst = max(1, math.ceil(round(tail * n, 9)))
     priced_at_mean: List[Hashable] = [
@@ -504,7 +539,7 @@ def _priced_runs(
             else [float(e) for e in contract_ends]
         ),
         period_availability=available,
-        salvage=salvage,
+        salvage=float(salvage_runs.mean()),
         undiscounted_salvage=plain_salvage,
         retire_at=horizon if retired else None,
         **money.stated(),

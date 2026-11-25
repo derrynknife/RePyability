@@ -51,6 +51,10 @@ class Block(NamedTuple):
     system_planned: np.ndarray
     held: Optional[np.ndarray] = None
     hidden: Optional[tuple] = None
+    #: The Python loop's: each simulation's (a row) age of each
+    #: component's unit in service at the end, NaN for one down then (see
+    #: ``_replicate``); numba's loop records none (``None``).
+    ages: Optional[np.ndarray] = None
 
 
 class Hidden(NamedTuple):
@@ -97,6 +101,15 @@ class Records:
             self._pending = []
             self.blocks.append(_block(pending, self.m))
         return self
+
+    def ages(self) -> Optional[np.ndarray]:
+        """Each simulation's age of each component's unit in service at
+        the end (NaN for one down then), a row a simulation; None if a
+        block (numba's) has none."""
+        self.compact()
+        if not self.blocks or any(b.ages is None for b in self.blocks):
+            return None
+        return np.concatenate([b.ages for b in self.blocks])
 
     def data(self, t_end: float) -> Tuple[List[_Data], _Data]:
         """Each component's histories, in the order of the components, and
@@ -263,6 +276,7 @@ def _block(histories: list, m: int) -> Block:
         system_changes(3, bool),
         held,
         hidden,
+        np.array([h[7] for h in histories], float).reshape(n, m),
     )
 
 
@@ -280,10 +294,16 @@ def simulate(
     state=None,
     hidden: bool = False,
     prefix: tuple = (),
+    ages: bool = False,
 ):
     """``simulate_timelines``: validated, run, and returned as a
     ``TimelineSimulation``; with ``hidden``, with each component's holds
-    and hidden changes too (``Records.hidden``, for pricing the runs).
+    and hidden changes too (``Records.hidden``, for pricing the runs);
+    with ``ages`` (and ``hidden``), also each simulation's age of each
+    component's unit in service at the end (``Records.ages``), which the
+    Python loop alone records: a run that asks for them runs in it
+    (``"a salvage by age"``, as ``_compiled.unsupported`` would hand it
+    over), and ``engine="numba"`` is refused.
     ``prefix`` is the RBD's place in a system it is nested in: its
     streams are named as there, and it runs in Python (a nested RBD's
     histories alone, for pricing them, see ``_nested_costs``)."""
@@ -347,7 +367,17 @@ def simulate(
         )
         if antithetic and not complete:
             raise NotImplementedError(_UNSTREAMED)
-        chosen = "python" if prefix else _engine(rbd, plan, engine, N, states)
+        if ages and engine == "numba":
+            raise NotImplementedError(
+                "A salvage by age needs the age of each unit in service at "
+                "the end of each run, which only the Python engine "
+                "records: give engine='python' or 'auto'."
+            )
+        chosen = (
+            "python"
+            if prefix or ages
+            else _engine(rbd, plan, engine, N, states)
+        )
         tally = _event_loop._run(
             rbd,
             t_simulation,
@@ -378,6 +408,7 @@ def simulate(
             if hidden
             else None
         )
+        at_end = tally.histories.ages() if ages else None
     finally:
         np.random.set_state(after)
     result = TimelineSimulation(
@@ -392,6 +423,8 @@ def simulate(
         method="event loop",
         start=start,
     )
+    if ages:
+        return result, left_out, at_end
     return (result, left_out) if hidden else result
 
 

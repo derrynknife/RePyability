@@ -2526,8 +2526,12 @@ group, a common cause, a shutdown) is refused. The runs and
 `plan_vs_actual` refuse a unit retiring alone, pointing to
 `expected_npv`. The valuations of
 runs (`npv_distribution`, `compare_npv`) end at a plan's retirement and
-credit every run its salvage at the end (a number; a salvage by age is
-refused), as `expected_npv` does, and so do `best_switch_time` (every
+credit every run its salvage at the end (a number; a salvage by age as
+`worth(age)` of each run's own unit in service at the end, if it is up,
+the age recorded by the Python loop, which such a run runs in; a unit
+whose age is no one number, keeping a virtual age, tested for hidden
+failures, a group, nested or on a duty plan that changes, is refused),
+as `expected_npv` does, and so do `best_switch_time` (every
 candidate credited alike, the candidates up to the retirement) and a
 service's `task_value` (each side's runs to the plan's retirement, its
 salvage in the period it falls in, no service after it).
@@ -2568,9 +2572,11 @@ retirement, plus the salvage `expected_npv` credits
 **What was learned.** The diagram is already the single unit's engine;
 what a plan alone needed was a name for its one-node diagram and the
 unit's money on the plan. The simulated runs then took a salvage given
-as a number and a retirement; a salvage by age in the runs (each run's
-unit in service) and one unit's retirement within a system are left
-for later; the switch times, logs and services' values took the plan's
+as a number and a retirement, then a salvage by age, each run's unit
+in service at the end (`test_salvage_by_age_runs.py`: a memoryless unit
+against `E[min(X, H)]`, a plain one against `expected_npv`, within four
+standard errors), and `expected_npv` one unit's retirement within a
+system (`test_retire_units.py`); the switch times, logs and services' values took the plan's
 own end next (`test_npv_runs_own_end.py`).
 
 ### UC-59: "A stop every month renews the bearing; a long overhaul every year renews the pump and the bearing. What is the plan worth over two years, and how available is the line?"

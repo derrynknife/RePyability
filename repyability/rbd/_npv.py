@@ -105,25 +105,61 @@ def own_end(rbd, horizon: float, money):
     discounted and not, and whether the plan retires before the
     horizon. Every run credits the same: a salvage given as a
     number is worth that whatever happened. A salvage by age, which
-    depends on each run's unit in service, is refused."""
+    depends on each run's unit in service, is credited run by run
+    (``own_salvage_by_age``, ``_npv_runs.priced_chunk``) and left out
+    here; a unit whose age is no one number is refused."""
     salvage, _, retire_at = own_terms(rbd, horizon, None, None, None)
     stop = _retirement(retire_at, horizon)
     given = salvage if isinstance(salvage, dict) else {}
     for node, worth in given.items():
         if callable(worth):
-            raise NotImplementedError(
-                f"Component {node!r} has a salvage by age, which the "
-                "valuations of simulated runs (npv_distribution, "
-                "compare_npv, best_switch_time, a service's task_value) "
-                "do not take yet: give it as a number, or "
-                "value its worth at the end with expected_npv."
-            )
+            _require_age_known(rbd, node)
+    if isinstance(salvage, dict):
+        salvage = {n: w for n, w in salvage.items() if not callable(w)}
     credits = _salvage(rbd, salvage, stop, None, set())
     total = float(sum(credits.values()))
     growth = money.growth("salvage")
     present = math.exp(-(money.rate - growth) * stop) * total
     nominal = (math.exp(growth * stop) if growth else 1.0) * total
     return stop, present, nominal, stop < horizon
+
+
+def own_salvage_by_age(rbd) -> Dict[Any, Any]:
+    """Each component's own salvage by age (a function of the age of its
+    unit in service), which the simulated runs credit run by run."""
+    salvage = own_terms(rbd, math.inf, None, None, None)[0]
+    if not isinstance(salvage, dict):
+        return {}
+    return {node: worth for node, worth in salvage.items() if callable(worth)}
+
+
+def _require_age_known(rbd, node) -> None:
+    """Refuse a salvage by age in the simulated runs for a unit whose age
+    at the end is no one number of the run: one that keeps a virtual age,
+    whose failures are hidden until a test, a group of units, a nested
+    diagram or a life on the diagram's clock."""
+    from repyability.rbd._covariate_schedule import scheduled
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    component = rbd.components[node]
+    why = None
+    if isinstance(component, RepairableRBD):
+        why = "is a nested diagram, whose units have ages of their own"
+    elif node in rbd._imperfect or node in rbd._restoring:
+        why = "keeps a virtual age (imperfect repair or partial restoration)"
+    elif node in rbd._inspection:
+        why = "has hidden failures, unseen until a test"
+    elif node in rbd._standby:
+        why = "is a group of units, each of its own age"
+    elif scheduled(component) is not None:
+        why = "has a life on the diagram's clock"
+    if why is not None:
+        raise NotImplementedError(
+            f"Component {node!r} has a salvage by age, and {why}, so the "
+            "age of its unit in service at the end is no one number of a "
+            "run: give its salvage as a number, or value its worth at the "
+            "end with expected_npv."
+        )
 
 
 def _number(value, name: str, strict: bool) -> float:

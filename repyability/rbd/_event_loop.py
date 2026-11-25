@@ -3132,6 +3132,18 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     held_of: list = [[] for _ in range(n)] if shut_record else []
     hidden_of: list = [[] for _ in range(n)] if shut_record else []
     system_record: tuple = ([], [], [], []) if history else ()
+    # With history: when each component's unit in service was put in as
+    # new (a renewing repair's end, a renewal by a task, from a state its
+    # age before 0), for its age at the end (a salvage by age, see
+    # _npv_runs.salvage_by_age); a unit down at the start has none yet.
+    new_at = (
+        [
+            -float(getattr(ctx.states.get(node), "age", 0.0) or 0.0)
+            for node in index
+        ]
+        if history
+        else []
+    )
     # The system's state, and its up and down time until ``since``, its
     # last change; each component's last change, and the system's up and
     # down time until then.
@@ -3305,8 +3317,12 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             if event.preventive:
                 if not restoring or node not in restoring:
                     replaced[index[node]] += 1
+                    if history:
+                        new_at[index[node]] = event.time
                 elif sources[node].task_replaces:
                     replaced[index[node]] += 1
+                    if history:
+                        new_at[index[node]] = event.time
                 rep_cost += pay(node, 2, preventive_charges.get(node))
                 # Replaced on condition: at an inspection, charged too.
                 rep_cost += pay(node, 3, inspection_charges.get(node))
@@ -3365,6 +3381,8 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             )
         if event.status:
             restored[c] += 1
+            if history:
+                new_at[c] = t
         elif event.preventive:
             # A planned outage: charged the preventive cost, and the
             # inspection's if replaced on condition (a nested RBD's own
@@ -3519,6 +3537,10 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             system_record,
             held_of if shut_record else None,
             hidden_of if shut_record else None,
+            [
+                t_simulation - new_at[c] if status[node] else math.nan
+                for node, c in index.items()
+            ],
         )
         if history
         else None
