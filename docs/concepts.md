@@ -564,7 +564,8 @@ Under block replacement the unit's own curve runs to the first block time,
 which hands the block intervals' recursion the probability that it is up
 there (and replaced) and the repairs going on; a calendar is shifted by the
 state's `since_scheduled`, the time since its last scheduled replacement or
-test. A component long in service whose state is not known starts in its
+test (with none given, the calendar is as from new: a component tested from
+an offset is first tested at the offset, and known up at 0). A component long in service whose state is not known starts in its
 long-run (stationary) state: off a calendar it stays at `A_i` throughout,
 with its events at their long-run rates; on one, it follows its settled
 cycle from its `since_scheduled`. In the simulation, the first draw is the inverse

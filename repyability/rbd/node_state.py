@@ -89,8 +89,10 @@ class NodeState:
         For a repairable component on a calendar: the time since its last
         block replacement, or its last test (of hidden failures, at which
         it was found working; with an ``age`` below it, it was put into
-        service since, and has not been tested), by default None: 0, as
-        from new.
+        service since, and has not been tested), by default None: on
+        its calendar as from new (a test's first at its ``"offset"``,
+        known up at 0; with no offset, as 0). 0 is tested at 0: next
+        tested after an interval, whatever its offset.
     stationary : bool, optional
         For a repairable component: start it in its long-run state, by
         default ``False``. Its ``since_scheduled`` still places it on its

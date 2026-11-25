@@ -682,13 +682,12 @@ def _node_curve(
             inspection.coverage,
             inspection.per_full_test,
         )
-    if start is None and inspection.offset:
-        # New at 0, first tested at the offset: on a calendar whose last
-        # test was interval - offset before 0, last known up at 0.
-        return InspectionCurve(
-            rate, interval, interval - inspection.offset, 0.0
-        )
-    if start is not None and not start.alive:
+    phase = _test_phase(inspection, start)
+    if start is None:
+        # New at 0, last known up then; first tested at the offset (on a
+        # calendar whose last test was interval - offset before 0).
+        return InspectionCurve(rate, interval, phase, 0.0)
+    if not start.alive:
         raise NotImplementedError(
             f"Component {node!r} has hidden failures, repaired at once "
             "when a test finds them, as the exact values need: it cannot "
@@ -696,13 +695,28 @@ def _node_curve(
             "since_scheduled (it was found working), or simulate it: "
             "availability(state=...)."
         )
-    phase = 0.0 if start is None else start.since_scheduled or 0.0
     # Last known up at its last test, or, put into service since, when
-    # it was.
+    # it was (at 0, with no since_scheduled: see _test_phase).
     since = (
-        phase if start is None or start.stationary else min(start.age, phase)
+        phase
+        if start.stationary
+        else min(start.age, start.since_scheduled or 0.0)
     )
     return InspectionCurve(rate, interval, phase, since)
+
+
+def _test_phase(inspection, start) -> float:
+    """How long before 0 a tested component's last test fell, on the
+    calendar its state places it: its ``since_scheduled``; with none
+    given (new, or a state without one), as from new: first tested at
+    its offset, ``interval - offset`` after a test before 0 (0 with no
+    offset: first tested after an interval). The simulation's calendar
+    (``_event_loop._due``) is the same."""
+    since = None if start is None else start.since_scheduled
+    if since is not None:
+        return float(since)
+    offset = inspection.offset
+    return float(inspection.interval - offset) if offset else 0.0
 
 
 def _tested_unit_curve(rbd, node, unit: TestedUnit, horizon: float, start):
@@ -715,16 +729,16 @@ def _tested_unit_curve(rbd, node, unit: TestedUnit, horizon: float, start):
     ``down_for``. From a state its tests are on the calendar its phase
     places (``k T - phase``), as the simulation's."""
     inspection = rbd._inspection[node]
-    if start is None or start.new:
+    if start is None or (start.new and start.since_scheduled is None):
         if inspection.offset:
             return unit.curve(horizon, inspection.offset, 0)
         return unit.curve(horizon, 0.0, 1)
-    phase = start.since_scheduled or 0.0
+    phase = _test_phase(inspection, start)
     if start.stationary:
         return unit.curve(horizon, -phase, 1, ("stationary",))
     if not start.alive:
         return unit.curve(horizon, -phase, 1, ("down", start.down_for))
-    since = min(start.age, phase)
+    since = min(start.age, start.since_scheduled or 0.0)
     return unit.curve(horizon, -phase, 1, ("alive", start.age, since))
 
 
@@ -739,13 +753,14 @@ def _tested_life_curve(rbd, node, life: TestedLife, start):
     if start is None:
         return TestedLifeCurve(life, inspection.offset or interval)
     # Up: its repairs take no time (see _check_state).
-    phase = start.since_scheduled or 0.0
+    phase = _test_phase(inspection, start)
     if start.stationary:
         return TestedLifeSteady(life, phase)
     model = life.model
-    # Last known up at its last test (or when put into service since),
-    # at age ``known_age``; at 0 it is ``start.age`` old.
-    since = min(start.age, phase)
+    # Last known up at its last test (or when put into service since;
+    # at 0 with no since_scheduled), at age ``known_age``; at 0 it is
+    # ``start.age`` old.
+    since = min(start.age, start.since_scheduled or 0.0)
     known_age = np.array([start.age - since])
     known_up = float(_sf_values(model.sf, known_age)[0])
     known_down = float(np.atleast_1d(model.ff(known_age))[0])

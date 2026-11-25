@@ -450,6 +450,28 @@ release between minors that only adds (0.19.1).
 
 ### Fixed
 
+- **A tested component with an inspection `"offset"`, started from a
+  state with no `since_scheduled`, is on its calendar as from new in
+  the exact methods too**: first tested at the offset and every
+  interval after it, known up at 0, as the simulation has always taken
+  it. The exact methods (`point_availability`, `mission_availability`,
+  `expected_failures`, `expected_events`, `expected_cost` and the
+  others) put its tests at multiples of the interval and dropped the
+  offset, for each kind of tested component (instant tests and repairs
+  of an exponential life, of any life, and tests or repairs that take
+  time); a stationary state with no `since_scheduled` is placed the
+  same way. A unit whose tests or repairs take time, new and given
+  `since_scheduled=0` (tested at 0), is now tested after an interval,
+  as the simulation has it, rather than at the offset.
+  **Changed numbers:** an exponential life of mean 300, tested every 50
+  from an offset of 20 and repaired in no time, from
+  `NodeState(age=100)`: `mission_availability(1000)` 0.92111 → 0.92295
+  (by hand: 20 before the first test, 19 whole intervals and 30; the
+  simulation of 20,000 histories gives 0.92314); the same with a
+  Weibull(300, 2) life, 0.91523 → 0.91687, and with fixed 3-long
+  repairs, 0.91372 → 0.91538; the unit with 3-long repairs from
+  `NodeState(age=0, since_scheduled=0)`, 0.91538 → 0.91372. Seeded
+  simulations do not change.
 - **The long-run `spares_stock` takes in that a unit waiting for a spare
   makes no demand.** It took the demand as going on while a repair
   waited, which overstated the risk where stock-outs are common. A
