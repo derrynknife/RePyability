@@ -12,6 +12,10 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A repair by a fitted process's own rule (G1, ARA, ARI) on a duty plan
+  that changes over time, which was refused: each next failure is the
+  process's quantile in operating time, given its state, run on through
+  the plan (its uniform from the unit's failure stream there).
 - Replacement on condition (a threshold on the chance of failing before
   the next inspection) on a duty plan that changes over time, which was
   refused: the threshold judges the risk through the operating time to
@@ -67,8 +71,7 @@ release between minors that only adds (0.19.1).
   group's opportunity age, each counted in operating time. A unit whose
   repairs and tasks take no time stays exact through its plan, from a
   state too (minimal repair: `H(D(t))`). Still refused there:
-  replacement on condition by a measured level, repair by a fitted
-  process's own rule and standby groups.
+  replacement on condition by a measured level and standby groups.
 - `OnRule(rule, at=)`: a unit plan's task on a recurrence rule's dates (a
   `"preventive"` spec's `"rule"` and `"at"`). Its dates are the
   calendar's: `CalendarContext.diagram` now also takes a diagram's edges

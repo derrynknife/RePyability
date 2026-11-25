@@ -37,21 +37,14 @@ def duty_fraction(node, value) -> float:
 
 def planned_refusals(node, spec: dict) -> None:
     """Refuse what a block on a duty plan that changes over time cannot
-    go with: a repair by a fitted process's own rule (a Kijima virtual
-    age is counted in operating time, ``PlannedLife.operated_between``);
+    go with (a virtual age, Kijima's or a fitted process's own, is
+    counted in operating time, ``PlannedLife.operated_between``):
     replacement on condition by a measured level (by a threshold on the
     chance of failing, the risk is judged through the operating time to
     the next inspection, ``_event_loop._replaced_at``); and a standby
     group, whose spares age on a clock of their own."""
     lead = f"Component {node!r} runs on a duty plan that changes over time"
     preventive = spec.get("preventive")
-    repair = spec.get("repair")
-    if isinstance(repair, dict) and repair.get("model") == "process":
-        raise NotImplementedError(
-            f"{lead}, and is repaired by a fitted process's own rule, "
-            "which is not followed on a plan that changes yet: give a "
-            "Kijima repair (kijima1 or kijima2), or the duty as one share."
-        )
     if (
         isinstance(preventive, dict)
         and preventive.get("policy") == "condition"
@@ -234,6 +227,11 @@ class PlannedLife(ClockLife):
             life = _aged_life(self.model, age, u)
         else:
             life = float(np.ravel(self.model.qf(np.array([u])))[0])
+        return self.run_on(t0, life)
+
+    def run_on(self, t0: float, life: float) -> float:
+        """The time on the diagram's clock from ``t0`` until the plan has
+        run ``life`` of operating time on from ``D(t0)``."""
         return self.inverse(self.operating(t0) + life) - t0
 
     def operated_between(self, t0: float, t1: float) -> float:

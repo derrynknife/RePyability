@@ -344,7 +344,6 @@ def test_the_compiled_engine_hands_it_to_python():
 @pytest.mark.parametrize(
     "more, words",
     [
-        ({"repair": {"model": "process"}}, "fitted process"),
         (
             {
                 "preventive": {
@@ -647,3 +646,34 @@ def test_condition_on_the_plan_is_its_operating_process():
     got = on_plan.expected_cost(np.array([4000.0])).mean[0]
     want = alone.expected_cost(np.array([hours])).mean[0]
     assert math.isclose(got, want, rel_tol=1e-12)
+
+
+# -- a repair by a fitted process's own rule ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "process",
+    [
+        surv.ARA.from_params([400.0, 2.0], 0.5),
+        surv.ARI.from_params([400.0, 2.5], 0.5),
+        surv.GeneralizedOneRenewal.from_params([400.0, 2.0], 0.3),
+    ],
+    ids=["ARA", "ARI", "G1"],
+)
+def test_a_fitted_process_runs_its_next_failure_on_through_the_plan(process):
+    # Repaired at once by the process's own rule: each next failure is the
+    # process's quantile in operating time, run on through the plan, so
+    # the unit is its operating-time process seen through it, against the
+    # one-node diagram with no duty at D(end) (its own simulation, from
+    # another seed), within four standard errors.
+    spec = {
+        "reliability": process,
+        "repairability": "instant",
+        "repair_cost": 1.0,
+    }
+    on_plan = RepairableRBD(ONE, {"a": {**spec, "duty": PLAN}})
+    alone = RepairableRBD(ONE, {"a": spec})
+    hours = float(PlannedLife(W, PLAN).operating(4000.0))
+    a = on_plan.cost(4000.0, mc_samples=4000, seed=7, control_variate=False)
+    b = alone.cost(hours, mc_samples=4000, seed=3, control_variate=False)
+    assert abs(a.mean - b.mean) < 4.0 * math.hypot(a.mean_se, b.mean_se)
