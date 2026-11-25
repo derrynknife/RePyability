@@ -5101,6 +5101,8 @@ class RepairableRBD(RBD):
         mc_samples: Optional[int] = None,
         seed: Optional[int] = None,
         engine: str = "auto",
+        uncertainty: Any = None,
+        n_draws: int = 100,
     ):
         """The least spend that keeps a bad run's downtime under
         ``limit``: "I want to be 95% sure I don't lose more than this on
@@ -5188,6 +5190,17 @@ class RepairableRBD(RBD):
         engine : str, optional
             ``"auto"``, ``"python"`` or ``"numba"``, as for
             ``availability``.
+        uncertainty : bool or dict, optional
+            Take the fitted models' uncertainty in: True for every fitted
+            model, or the inputs as ``expected_npv_uncertainty`` takes
+            them. Each design is run over ``n_draws`` draws of the
+            models, ``mc_samples`` runs shared among them and pooled (the
+            same draws for every design), and the result's
+            ``uncertainty`` says so; the bound is then approximate. By
+            default None: the models are taken as known.
+        n_draws : int, optional
+            The draws of the models with ``uncertainty``, by default 100,
+            at most ``mc_samples``.
 
         Returns
         -------
@@ -5245,6 +5258,8 @@ class RepairableRBD(RBD):
             mc_samples=mc_samples,
             seed=seed,
             engine=engine,
+            uncertainty=uncertainty,
+            n_draws=n_draws,
         )
 
     def best_switch_time(

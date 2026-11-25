@@ -46,6 +46,12 @@ run's downtime. When the levers stop short, the result says which floor
 stopped them: the budget, the levers' caps, or downtime no lever left
 lowers (the planned task downtime, when it is planned).
 
+With ``uncertainty``, the models are not taken as known: each design
+is run over draws of the fitted models (as ``expected_npv_uncertainty``
+draws them), the same draws and seeds for every design, its runs shared
+among the draws and pooled, so the bad run's downtime is that of the
+predictive distribution; the result says so (``uncertainty``).
+
 Every design reports both planned and unplanned downtime (each
 simulation's, from the engines' own split, ``_unplanned``): their means
 and their quantiles at ``level``, in hours and, with a rate, in cost.
@@ -452,10 +458,8 @@ def _settings(rbd, levers: Sequence[_Lever], state: Sequence[int]) -> dict:
 
 
 def _evaluate(
-    diagram,
+    diagrams,
     horizon,
-    n,
-    seed,
     engine,
     rate,
     downtime,
@@ -464,32 +468,39 @@ def _evaluate(
     confidence,
     objective,
 ):
-    """One design's runs: its risk, and its planned and unplanned
-    downtime."""
-    run = diagram.availability(
-        horizon,
-        mc_samples=n,
-        seed=seed,
-        engine=engine,
-        control_variate=False,
-        conditional=False,
-    )
-    down = horizon - np.asarray(run.uptimes, float)
-    unplanned = (
-        down
-        if run.unplanned_downtimes is None
-        else np.asarray(run.unplanned_downtimes, float)
-    )
+    """One design's runs, ``diagrams`` its ``(diagram, runs, seed)``
+    (one, or one for each parameter draw, the runs pooled): its risk,
+    and its planned and unplanned downtime."""
+    downs, unplanneds, spents = [], [], []
+    for diagram, n, seed in diagrams:
+        run = diagram.availability(
+            horizon,
+            mc_samples=n,
+            seed=seed,
+            engine=engine,
+            control_variate=False,
+            conditional=False,
+        )
+        down = horizon - np.asarray(run.uptimes, float)
+        downs.append(down)
+        unplanneds.append(
+            down
+            if run.unplanned_downtimes is None
+            else np.asarray(run.unplanned_downtimes, float)
+        )
+        spent = 0.0
+        if run.cost is not None:
+            spent = sum(
+                float(run.cost.by_category.get(name, 0.0))
+                for name in SPEND_CATEGORIES
+            )
+        spents.append(spent)
+    down = np.concatenate(downs)
+    unplanned = np.concatenate(unplanneds)
     planned = np.maximum(down - unplanned, 0.0)
     target = down if downtime == "all" else unplanned
     scale = 1.0 if measure == "hours" else rate
     found = _risk.risk(target * scale, level, objective, confidence)
-    spent = 0.0
-    if run.cost is not None:
-        spent = sum(
-            float(run.cost.by_category.get(name, 0.0))
-            for name in SPEND_CATEGORIES
-        )
 
     def summary(values) -> Dict[str, Optional[float]]:
         ordered = np.sort(values)
@@ -501,7 +512,64 @@ def _evaluate(
             "bad_cost": hours[1] * rate if rate else None,
         }
 
-    return found, summary(planned), summary(unplanned), spent
+    # Each draw has as many runs: the mean cost is the draws' mean.
+    return found, summary(planned), summary(unplanned), float(np.mean(spents))
+
+
+class _Drawn(NamedTuple):
+    """The parameter draws a design is run over: each draw's diagram as
+    given (its fitted models drawn), its runs and its seed, the same for
+    every design; and what the result says of them."""
+
+    diagrams: List
+    runs: int
+    seeds: List[int]
+    words: str
+
+
+def _drawn(rbd, uncertainty, n_draws, n, seed) -> Optional[_Drawn]:
+    """The diagram over ``n_draws`` plausible models of its fitted
+    inputs, as ``expected_npv_uncertainty`` draws them, with ``n`` runs
+    shared among the draws; None without ``uncertainty``."""
+    from repyability.rbd import _repairable_uncertainty as drawing
+
+    if uncertainty is None or uncertainty is False:
+        return None
+    draws = checks.whole_number(n_draws, "n_draws")
+    if n < draws:
+        raise ValueError(
+            f"mc_samples ({n}) must be at least n_draws ({draws}): each "
+            "draw of the models needs a run of its own."
+        )
+    inputs, groups = drawing.sources(
+        rbd, None if uncertainty is True else uncertainty
+    )
+    models, group_models = drawing.draws(
+        rbd, inputs, groups, draws, seed, "random"
+    )
+    diagrams = [
+        drawing.build(rbd, inputs, models, group_models, i)
+        for i in range(draws)
+    ]
+    seeds = [
+        int(v)
+        for v in np.random.default_rng(seed).integers(0, 2**31 - 1, size=draws)
+    ]
+    fixed = drawing.held_fixed(rbd, inputs, groups)
+    held = (
+        "; held as given: "
+        + ", ".join(f"the {h['role']} of {h['node']!r}" for h in fixed)
+        if fixed
+        else ""
+    )
+    words = (
+        f"Over the models' uncertainty: {draws} draws of the fitted "
+        f"models ({drawing.band_of(rbd, inputs, groups)}), "
+        f"{n // draws} runs each, pooled{held}. An upgrade's life is "
+        "taken as given. Runs that share a draw are not independent, so "
+        "the bound is approximate (exact with one run a draw)."
+    )
+    return _Drawn(diagrams, n // draws, seeds, words)
 
 
 def least_spend_for_downtime(
@@ -526,6 +594,8 @@ def least_spend_for_downtime(
     mc_samples: Optional[int],
     seed,
     engine: str,
+    uncertainty=None,
+    n_draws: int = 100,
 ) -> DowntimeRiskResult:
     """See ``RepairableRBD.least_spend_for_downtime``."""
     from repyability.rbd import _npv_runs
@@ -581,6 +651,8 @@ def least_spend_for_downtime(
         call_out,
     )
 
+    drawn = _drawn(rbd, uncertainty, n_draws, n, seed)
+
     designs: List[DowntimeDesign] = []
     cache: Dict[Tuple[int, ...], DowntimeDesign] = {}
     base_spent: List[float] = []
@@ -591,12 +663,16 @@ def least_spend_for_downtime(
         found = cache.get(state)
         if found is not None:
             return found
-        diagram = _design(rbd, levers, state)
+        if drawn is None:
+            diagrams = [(_design(rbd, levers, state), n, seed)]
+        else:
+            diagrams = [
+                (_design(given, levers, state), drawn.runs, s)
+                for given, s in zip(drawn.diagrams, drawn.seeds)
+            ]
         risk, planned, unplanned, spent = _evaluate(
-            diagram,
+            diagrams,
             horizon,
-            n,
-            seed,
             engine,
             rate,
             downtime,
@@ -692,8 +768,9 @@ def least_spend_for_downtime(
         frontier=_frontier(list(cache.values())),
         floor=None if answer is not None else floor,
         stopped=stopped,
-        n_simulations=n,
+        n_simulations=n if drawn is None else drawn.runs * len(drawn.seeds),
         seed=seed,
+        uncertainty=None if drawn is None else drawn.words,
         engine=used[0],
     )
 

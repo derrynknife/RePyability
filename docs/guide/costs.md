@@ -640,7 +640,12 @@ test interval through the candidates given, each at its tests' cost.
 list of offers, tried in order) buys a better unit from the start, at
 its price for each unit, the node's copies included.
 A design's spend is the levers' prices and the change in its expected
-cost of preventive tasks, inspections and crews over the horizon. A
+cost of preventive tasks, inspections and crews over the horizon. The
+models are taken as known; `uncertainty=True` runs every design over
+`n_draws` draws of the fitted models instead (the same draws for each),
+so a life fitted to few failures makes the bad year worse, and the
+result's `uncertainty` says what was drawn and that the bound is then
+approximate. A
 group of units (standby, load-sharing or identical) is one node to the
 levers: its copy is a second group in parallel.
 

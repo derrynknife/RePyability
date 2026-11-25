@@ -546,3 +546,73 @@ def test_upgrades_of_groups_and_refusals():
             1.0,
             upgrades={"p": {"reliability": E([BETTER]), "cost": 1.0}},
         )
+
+
+def fitted_pump():
+    """The pump, its life fitted to 30 failures (a rate of 1.2e-3 an
+    hour), its repairs known."""
+    x = np.random.default_rng(3).exponential(1000.0, 30)
+    life = surv.Exponential.fit(x)
+    return RepairableRBD(
+        ONE, {"p": {"reliability": life, "repairability": E([REPAIR])}}
+    )
+
+
+def test_parameter_uncertainty_against_the_exact_mixture():
+    from repyability.rbd import _downtime_risk
+
+    rbd = fitted_pump()
+    n, draws = 4000, 50
+    found = rbd.least_spend_for_downtime(
+        YEAR, 1e6, uncertainty=True, n_draws=draws, mc_samples=n, seed=70
+    )
+    # Over the draws, the downtime's distribution is the mixture of each
+    # drawn rate's exact one: its 95th percentile is 914.9 h, against
+    # 846 h (simulated) with the fitted rate taken as known.
+    given = _downtime_risk._drawn(rbd, True, draws, n, 70)
+    rates = [
+        d._init_args["components"]["p"]["reliability"].params[0]
+        for d in given.diagrams
+    ]
+
+    def mixture(x):
+        return np.mean([downtime_cdf(x, r, REPAIR, YEAR) for r in rates])
+
+    exact = optimize.brentq(lambda x: mixture(x) - 0.95, 1.0, YEAR)
+    density = (mixture(exact + 1.0) - mixture(exact - 1.0)) / 2.0
+    se = math.sqrt(0.95 * 0.05 / n) / density
+    assert abs(found.design.estimate - exact) < 4 * se
+    known = rbd.least_spend_for_downtime(YEAR, 1e6, mc_samples=n, seed=70)
+    assert known.uncertainty is None
+    assert found.design.estimate > known.design.estimate
+    assert found.n_simulations == n
+    assert "50 draws" in found.uncertainty
+    assert "the repairability of 'p'" in found.uncertainty
+    assert "approximate" in found.uncertainty
+
+
+def test_parameter_uncertainty_is_seeded_and_shared_by_the_designs():
+    def search():
+        return fitted_pump().least_spend_for_downtime(
+            YEAR,
+            100.0,
+            redundancy={"p": 5000.0},
+            uncertainty=True,
+            n_draws=20,
+            mc_samples=400,
+            seed=71,
+        )
+
+    one, again = search(), search()
+    assert one.met and one.design.copies["p"] >= 1
+    assert [d.estimate for d in one.frontier] == [
+        d.estimate for d in again.frontier
+    ]
+    with pytest.raises(ValueError, match="at least n_draws"):
+        fitted_pump().least_spend_for_downtime(
+            YEAR, 10.0, uncertainty=True, n_draws=200, mc_samples=100
+        )
+    with pytest.raises(ValueError, match="surpyval fit"):
+        pump().least_spend_for_downtime(
+            YEAR, 10.0, uncertainty=True, mc_samples=100
+        )

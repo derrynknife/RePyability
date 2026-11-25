@@ -5494,6 +5494,9 @@ class DowntimeRiskResult(_ResultMapping):
         Their seed (every design takes it).
     engine : str
         The engine asked for (``"auto"`` lets each design's run choose).
+    uncertainty : str or None
+        With parameter uncertainty, what was drawn and how the runs were
+        shared among the draws; None when the models are taken as known.
     """
 
     horizon: float
@@ -5513,6 +5516,7 @@ class DowntimeRiskResult(_ResultMapping):
     n_simulations: int
     seed: int
     engine: str
+    uncertainty: Optional[str] = None
 
     def __repr__(self) -> str:
         what = "met" if self.met else f"not met ({self.floor})"

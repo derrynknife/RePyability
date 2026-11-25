@@ -89,7 +89,7 @@ Not yet single:
 | UC-60 | A part upgraded in year 3 and block-replaced before and after, the new model on the same interval | **Built**: an `"upgrade"` with a `"preventive"` block policy, numerical over a horizon and simulated |
 | UC-66 | A pump whose seal is a redundant pair, replaced whole when both have failed: its life is a diagram | **Built**: a `NonRepairableRBD` as a life wherever a life is taken (`UnitPlan`, a spec's `"reliability"`, `NonRepairable`), by its functions; `NonRepairableRBD.qf` inverts its `ff` to near machine precision |
 | UC-64 | What a part costs per year once upgraded: the long run of the diagram with the new life, the time before the upgrade ignored | **Built**: the long-run methods of a diagram with an `"upgrade"` give the values of the diagram after it |
-| UC-68 | "95% sure": the least spend that keeps a bad year's downtime (hours or cost) under a limit, with the frontier and both planned and unplanned downtime | **Built** (simulated): `RepairableRBD.least_spend_for_downtime` and `UnitPlan.least_spend_for_downtime`, with redundancy, interval, test-interval, upgrade, crew and call-out levers; risk measures in `repyability.value._risk` |
+| UC-68 | "95% sure": the least spend that keeps a bad year's downtime (hours or cost) under a limit, with the frontier and both planned and unplanned downtime | **Built** (simulated): `RepairableRBD.least_spend_for_downtime` and `UnitPlan.least_spend_for_downtime`, with redundancy, interval, test-interval, upgrade, crew and call-out levers, and parameter uncertainty (`uncertainty=`); risk measures in `repyability.value._risk` |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 
 ## How a use case is added
@@ -3316,7 +3316,8 @@ cannot reach `x`, which floor stopped them.
   be down with every planned task finished).
 - The risk measure is the downtime's quantile at `level` (0.95), or the
   mean of the worst share beyond it (`objective="cvar"`). The randomness
-  is that of failures and repairs, the models taken as known.
+  is that of failures and repairs, the models taken as known (their
+uncertainty is an option, `uncertainty=`, added after).
 - "Sure" despite simulation noise: a design meets `x` only when an upper
   confidence bound on its percentile is under it (an order statistic,
   the binomial method, exact; the tail mean's bound is normal, and says
@@ -3421,6 +3422,21 @@ upgrade at a later time (the spec's own `"upgrade"`) is not a lever
 yet: a node that has one is refused. A load-sharing group's better life
 must take the load, as its own does; one that cannot is refused before
 the search.
+
+**Parameter uncertainty (added after).** "The pump's life is fitted to
+30 failures: how sure is 95% sure?" `uncertainty=True` (or the inputs
+as `expected_npv_uncertainty` takes them) runs each design over
+`n_draws` draws of the fitted models, the same draws and seeds for
+every design (common random numbers still), the `mc_samples` runs
+shared among the draws and pooled: the bad year is that of the
+predictive distribution, and the result's `uncertainty` says what was
+drawn, what was held as given (an upgrade's life among them), and that
+the bound is approximate, as runs sharing a draw are not independent.
+Hand-worked answer: the pump of the first answer, its rate fitted to 30
+failures (1.2e-3 an hour); over 50 draws its downtime is the mixture of
+each drawn rate's exact distribution, whose 95th percentile is 914.9 h;
+4,000 runs give 917.2 h, against 846 h with the fitted rate taken as
+known.
 
 ### UC-61: "Our plan has two outages a year that cost 300 each, and at each we renew the pump if it is past 500 hours. The expected NPV is fine; how bad could a run be?"
 
