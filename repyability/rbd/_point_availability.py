@@ -2390,6 +2390,95 @@ class PlanCurve:
         ]
 
 
+class MixedCurve:
+    """A unit's curve from a start whose state is known only by its
+    probabilities: ``parts``, ``(weight, curve)``, each the unit's curve
+    from one of the states it may be in, weighted by the chance of that
+    state (the weights add up to 1); and ``action``, ``(probability,
+    planned, drop)``, a preventive action at the start (the replacement
+    at an upgrade, see ``_curves._upgraded_curve``) with that
+    probability, a planned outage with probability ``planned``, which
+    takes ``drop`` off its point availability there."""
+
+    period = None
+
+    def __init__(self, parts: list, action=(0.0, 0.0, 0.0)):
+        self.parts = [(float(w), curve) for w, curve in parts if w > 0.0]
+        self.action = tuple(float(v) for v in action)
+        self.settle = max(curve.settle for _, curve in self.parts)
+
+    def _sum(self, value: Callable) -> np.ndarray:
+        out = np.zeros(1)
+        for w, curve in self.parts:
+            out = out + w * np.asarray(value(curve), dtype=float)
+        return out
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        return np.clip(self._sum(lambda curve: curve.at(x)), 0.0, 1.0)
+
+    def failed_at(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        return self._sum(lambda curve: failed_at(curve, x))
+
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        from repyability.rbd._rates import derivative
+
+        x = np.asarray(x, dtype=float)
+        return self._sum(lambda curve: derivative(curve, x, scale))
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The parts' expected events before each ``x``, weighted, and the
+        action at the start for each ``x`` after it."""
+        x = np.asarray(x, dtype=float)
+        each = [(w, curve.events(x)) for w, curve in self.parts]
+        out = {key: sum(w * own[key] for w, own in each) for key in each[0][1]}
+        probability, planned, _ = self.action
+        after = (x > 0.0).astype(float)
+        out["preventive"] = out["preventive"] + probability * after
+        out["planned"] = out["planned"] + planned * after
+        return out
+
+    def atoms(self, stop: float) -> Atoms:
+        """The parts' events at exact times, weighted, and the action."""
+        parts = []
+        for w, curve in self.parts:
+            own = curve.atoms(stop)
+            parts.append(Atoms(own.times, *(w * column for column in own[1:])))
+        probability, planned, drop = self.action
+        if probability > 0.0 and stop > 0.0:
+            parts.insert(
+                0,
+                Atoms(
+                    np.zeros(1),
+                    np.zeros(1),
+                    np.array([planned]),
+                    np.array([probability]),
+                    np.array([drop]),
+                ),
+            )
+        merged = Atoms(*(np.concatenate(c) for c in zip(*parts)))
+        order = np.argsort(merged.times, kind="stable")
+        return Atoms(*(column[order] for column in merged))
+
+    def knots(self, start: float, stop: float) -> np.ndarray:
+        return np.unique(
+            np.concatenate(
+                [curve.knots(start, stop) for _, curve in self.parts]
+            )
+        )
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        return np.unique(
+            np.concatenate(
+                [curve_breaks(curve, start, stop) for _, curve in self.parts]
+            )
+        )
+
+    def grids(self) -> list:
+        return [grid for _, curve in self.parts for grid in curve_grids(curve)]
+
+
 class StartedBlockCurve:
     """A unit under block replacement started from a state: ``head``, its
     own curve up to its first block time, ``length`` after the start, and

@@ -645,10 +645,13 @@ class _UpgradedComponent(_StreamedComponent):
     upgrade's time ``at``, the upgrade's from it. So an upgrade to the
     same life is a plain replacement at ``at``, draw for draw. The unit
     up at ``at`` is replaced then by the component's schedule, and one in
-    a repair is back with the new life once it is repaired. Without
-    streams, each life is drawn by its model from numpy's global RNG."""
+    a repair is back with the new life once it is repaired. ``old`` says
+    whether the unit in service has the component's own life (put into
+    service before ``at``), which a unit with tests is replaced for at
+    the upgrade (see ``_inspected_next``). Without streams, each life is
+    drawn by its model from numpy's global RNG."""
 
-    __slots__ = ("now", "_at", "_lives")
+    __slots__ = ("now", "old", "_at", "_lives")
 
     def __init__(
         self,
@@ -658,20 +661,28 @@ class _UpgradedComponent(_StreamedComponent):
         at: float,
         start=None,
         timed=(None, None),
+        test=None,
     ):
-        # ``timed``: its block replacements' times, a stream and the model.
-        super().__init__(uniforms, repair, timed[0], timed[1], start)
+        # ``timed``: its maintenance or test times, a stream and the model.
+        super().__init__(uniforms, repair, timed[0], timed[1], start, test)
         self.now = 0.0
+        self.old = True
         self._at = at
         #: The two lives' quantile functions (with streams), or their
         #: models' draws (without).
         self._lives = lives
 
+    def reset(self):
+        super().reset()
+        self.old = True
+
     def next_event(self):
         if not self._fails_next:
             return super().next_event()
         self._fails_next = False
-        life = self._lives[self.now >= self._at]
+        upgraded = self.now >= self._at
+        self.old = not upgraded
+        life = self._lives[upgraded]
         if self._failure is None:
             return life.draw(), False
         u = np.array([self._failure.draw()])
@@ -685,12 +696,13 @@ def _upgraded(rbd, node, run=None, path: tuple = ()) -> _UpgradedComponent:
     RNG."""
     component, upgrade = rbd.components[node], rbd._upgrades[node]
     models = (component.reliability, upgrade.life)
-    uniforms = repair = start = duration = None
+    uniforms = repair = start = duration = test = None
     if run is not None:
         uniforms = run.stream(path, _streams.FAILURE)
         repair = run.stream(path, _streams.REPAIR)
         start = run.stream(path, _streams.START)
         duration = run.stream(path, _streams.DURATION)
+        test = run.stream(path, _streams.TEST)
     timed = (duration, _duration_model(rbd, node))
     if uniforms is None or repair is None:
         return _UpgradedComponent(
@@ -700,10 +712,11 @@ def _upgraded(rbd, node, run=None, path: tuple = ()) -> _UpgradedComponent:
             upgrade.at,
             start,
             timed,
+            test,
         )
     lives = tuple(stream_sampler(model) for model in models)
     return _UpgradedComponent(
-        uniforms, repair, lives, upgrade.at, start, timed
+        uniforms, repair, lives, upgrade.at, start, timed, test
     )
 
 
@@ -2143,7 +2156,7 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
             found = _finds(rbd, node, inspection, life)
             return False, Event(found, node, False, inspection=True)
         rbd._run_state._pending_failure[node] = life
-        return True, _inspected_next(rbd, node, 0.0, inspection)
+        return True, _inspected_next(rbd, node, 0.0, inspection, source)
     if schedule is None:
         return True, Event(life, node, False)
     return True, _renewal(
@@ -2781,11 +2794,12 @@ def _inspected_follow_up(
     node, t = event.component, event.time
     if not event.inspection:
         if event.status:
-            # Repaired: as new, from t.
+            # Repaired, or replaced at the upgrade: as new, from t.
             return _inspected_renewal(rbd, node, t, source, inspection)
         # Failed, unseen: found by the first inspection at or after t,
         # unless that one can miss it and does (a shared common cause
-        # has decided for all its failures, see _strike).
+        # has decided for all its failures, see _strike); or replaced at
+        # an upgrade before it.
         rbd._run_state._pending_failure[node] = None
         found = _finds(rbd, node, inspection, t)
         coin = (
@@ -2793,6 +2807,9 @@ def _inspected_follow_up(
             if rbd._run_state._ccf_coins
             else None
         )
+        swap = _swapped_at(inspection, source, t)
+        if swap <= found:
+            return Event(swap, node, True, True)
         if not inspection.is_full(found) and not (
             coin < inspection.coverage
             if coin is not None
@@ -2802,8 +2819,12 @@ def _inspected_follow_up(
         return Event(found, node, False, inspection=True)
     if event.missed:
         # A test that missed the failure: the next test misses it too,
-        # unless it is a full test.
+        # unless it is a full test; or the unit is replaced at an upgrade
+        # before it.
         due = _due(rbd, node, inspection, t)
+        swap = _swapped_at(inspection, source, t)
+        if swap <= due:
+            return Event(swap, node, True, True)
         return Event(
             due,
             node,
@@ -2814,7 +2835,7 @@ def _inspected_follow_up(
     if event.status:
         # Tested in zero time, or back from a test: working, with its
         # failure still ahead of it.
-        return _inspected_next(rbd, node, t, inspection)
+        return _inspected_next(rbd, node, t, inspection, source)
     # A test that takes time, of a failed unit (repaired once the test is
     # done) or of a working one (off-line, and not ageing, until then).
     duration = 0.0
@@ -2846,16 +2867,38 @@ def _inspected_renewal(
     _clock(source, t)
     life, _ = source.next_event()
     rbd._run_state._pending_failure[node] = t + life
-    return _inspected_next(rbd, node, t, inspection)
+    return _inspected_next(rbd, node, t, inspection, source)
 
 
-def _inspected_next(rbd, node, t: float, inspection: _Inspection) -> Event:
+def _swapped_at(inspection: _Inspection, source, t: float) -> float:
+    """When the unit in service at ``t`` of a component with tests is
+    replaced at its upgrade (``inspection.upgrade_at``): then, or at
+    once if it is past (a unit off line for a test then is replaced
+    once it is back); ``inf`` if it is not (no upgrade, a unit kept in
+    service, or one of the new life already)."""
+    at = inspection.upgrade_at
+    if at is None or not getattr(source, "old", False):
+        return math.inf
+    return max(at, t)
+
+
+def _inspected_next(
+    rbd, node, t: float, inspection: _Inspection, source=None
+) -> Event:
     """The next event of a working unit with hidden failures, at ``t``:
     its failure, or the next inspection if that comes first (a failure
-    at the same time comes first, and is found by it). A test that takes
-    time takes the unit off-line; one in zero time leaves it up."""
+    at the same time comes first, and is found by it), or its
+    replacement at an upgrade (see ``_swapped_at``) if that comes
+    before both (a test due at the same time is then not done). A test
+    that takes time takes the unit off-line; one in zero time leaves it
+    up."""
     failure = rbd._run_state._pending_failure[node]
     due = _due(rbd, node, inspection, t)
+    swap = _swapped_at(inspection, source, t)
+    if swap < failure and swap <= due:  # type: ignore[operator]
+        # Replaced, in no time, by a unit of the new life.
+        rbd._run_state._pending_failure[node] = None
+        return Event(swap, node, True, True)
     if failure <= due:  # type: ignore[operator]
         return Event(failure, node, False)  # type: ignore[arg-type]
     return Event(due, node, inspection.duration is None, inspection=True)
@@ -3583,8 +3626,11 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
                 elif sources[node].task_replaces:
                     replaced[index[node]] += 1
                 rep_cost += pay(node, 2, preventive_charges.get(node))
-                # Replaced on condition: at an inspection, charged too.
-                rep_cost += pay(node, 3, inspection_charges.get(node))
+                if node not in inspected:
+                    # Replaced on condition: at an inspection, charged
+                    # too (a tested unit's replacement at its upgrade is
+                    # no test).
+                    rep_cost += pay(node, 3, inspection_charges.get(node))
                 if node in member_group and not renewing_early:
                     # Renewed in place on schedule: a stop of its group.
                     rep_cost += stop(member_group[node], event.time, node)

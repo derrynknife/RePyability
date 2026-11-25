@@ -427,7 +427,8 @@ def _serialise_component(value) -> dict:
             if value.get(key) is not None:
                 out[key] = _serialise_schedule(value[key])
         if value.get("upgrade") is not None:
-            # An upgrade: its time, the new life and the capital cost.
+            # An upgrade: its time, the new life, the capital cost, and
+            # whether the unit in service then is replaced.
             upgrade = value["upgrade"]
             out["upgrade"] = {
                 "at": float(upgrade["at"]),
@@ -435,6 +436,10 @@ def _serialise_component(value) -> dict:
             }
             if upgrade.get("cost"):
                 out["upgrade"]["cost"] = float(upgrade["cost"])
+            if upgrade.get("replace_in_service") is not None:
+                out["upgrade"]["replace_in_service"] = bool(
+                    upgrade["replace_in_service"]
+                )
         for key in ("salvage", "escalation", "retire_at"):
             # The unit's own money: numbers (a salvage by age is a
             # function, which is not saved).

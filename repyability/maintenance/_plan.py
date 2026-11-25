@@ -617,8 +617,10 @@ class Inspection:
 @dataclass(frozen=True)
 class Upgrade:
     """From time ``at`` (from 0) the unit has another ``life``: the unit
-    in service is replaced by one of it, in no time, for the capital
-    ``cost``.
+    in service is replaced by one of it (in no time, or as the plan's
+    block or age replacement replaces it), for the capital ``cost``; or,
+    with ``replace_in_service=False``, it stays until its next failure
+    or due replacement, and the unit put in then has the new life.
 
     Parameters
     ----------
@@ -629,16 +631,22 @@ class Upgrade:
         The new unit's time-to-failure model (as the plan's ``life``).
     cost : float, optional
         The capital cost of the upgrade, in money, charged at ``at``.
+    replace_in_service : bool, optional
+        Whether the unit in service at ``at`` is replaced then (None:
+        the default, True), or stays until its next failure or due
+        replacement (False).
     """
 
     at: Any = None
     life: Any = None
     cost: Any = None
+    replace_in_service: Any = None
 
     def spec(self) -> dict:
         """The ``"upgrade"`` spec this task is."""
         out: dict = {"at": self.at, "reliability": self.life}
         _put(out, "cost", self.cost)
+        _put(out, "replace_in_service", self.replace_in_service)
         return out
 
     @classmethod
@@ -647,6 +655,7 @@ class Upgrade:
             at=_take(spec, used, "at"),
             life=_take(spec, used, "reliability"),
             cost=_take(spec, used, "cost"),
+            replace_in_service=_take(spec, used, "replace_in_service"),
         )
 
 

@@ -381,13 +381,19 @@ class RepairableRBD(RBD):
           ``"upgrade"`` gives the component another life from a time: a
           dict of ``"at"`` (the time, in the diagram's time from 0),
           ``"reliability"`` (the life its units have from then: the unit
-          in service is replaced by one of it, in no time) and ``"cost"``
-          (the capital cost, charged then under ``"capital"``). Its
-          values over a horizon are worked out, and the long-run methods
-          give the long run once upgraded (the diagram with the new
-          life); it takes no maintenance or tests of its own but block
-          replacement yet (see the guide's "Upgrades, retirement and
-          salvage").
+          in service is replaced by one of it, in no time, or as its
+          block or age replacement replaces it, at its cost and in its
+          time; a unit then in a repair is back with the new life),
+          ``"cost"`` (the capital cost, charged then under
+          ``"capital"``) and ``"replace_in_service"`` (True, the
+          default; False keeps the unit in service then until its next
+          failure or due replacement, and the unit put in then has the
+          new life). Its values over a horizon are worked out (but for a
+          unit kept, and tests that take time, which are simulated), and
+          the long-run methods give the long run once upgraded (the
+          diagram with the new life); it takes block or age replacement
+          on its own interval, or tests, and no other task yet (see the
+          guide's "Upgrades, retirement and salvage").
           ``"covariates"``, a surpyval ``StepSchedule``, runs a block
           whose ``"reliability"`` is a fitted surpyval regression model
           (proportional or additive hazards, accelerated failure time or
@@ -1152,15 +1158,27 @@ class RepairableRBD(RBD):
                     self._upgrades[name] = upgrade
                     # Its schedule: replaced at the upgrade's time, by a
                     # unit of the new life (see _curves._plan_curve), as
-                    # one more of its block replacements if it has them.
-                    block = self._preventive.get(name)
-                    self._preventive[name] = (
-                        _Preventive(
-                            upgrade.at, "block", None, times=(upgrade.at,)
+                    # one more of its block or age replacements if it has
+                    # them, or before its tests then. A unit kept in
+                    # service is not replaced then (a plan of no times).
+                    task = self._preventive.get(name)
+                    tests = self._inspection.get(name)
+                    if tests is not None:
+                        if not upgrade.kept:
+                            self._inspection[name] = tests._replace(
+                                upgrade_at=upgrade.at
+                            )
+                    elif task is None:
+                        self._preventive[name] = _Preventive(
+                            upgrade.at,
+                            "block",
+                            None,
+                            times=() if upgrade.kept else (upgrade.at,),
                         )
-                        if block is None
-                        else block._replace(upgrade_at=upgrade.at)
-                    )
+                    elif not upgrade.kept:
+                        self._preventive[name] = task._replace(
+                            upgrade_at=upgrade.at
+                        )
                     if upgrade.cost:
                         node_costs["capital_cost"] = upgrade.cost
                 own_money = _spec._validate_valuation(name, component)

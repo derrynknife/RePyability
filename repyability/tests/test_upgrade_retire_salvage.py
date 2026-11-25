@@ -237,17 +237,31 @@ def test_what_an_upgrade_is_not_taken_with_says_what_to_run():
         (
             {"upgrade": {"at": 5.0, "reliability": E([1e-3]), "when": 1}},
             "Component 'a': unknown upgrade key(s) ['when']; it takes at, "
-            "reliability, cost.",
+            "reliability, cost, replace_in_service.",
         ),
         (
             {
                 "upgrade": {"at": 5.0, "reliability": E([1e-3])},
-                "preventive": {"interval": 50.0},
+                "preventive": {"replace_at": [50.0]},
             },
             "Component 'a' has an upgrade and a preventive task other "
             "than block replacement on its own interval ('policy': "
-            "'block'), which are not taken together yet: give it block "
-            "replacement, or one or the other.",
+            "'block') or age replacement ('policy': 'age'), which are not "
+            "taken together yet: give it one of those, or one or the "
+            "other.",
+        ),
+        (
+            {
+                "upgrade": {
+                    "at": 5.0,
+                    "reliability": E([1e-3]),
+                    "replace_in_service": "no",
+                },
+            },
+            "Component 'a': the upgrade's replace_in_service must be True "
+            "(the unit in service at the upgrade is replaced then, the "
+            "default) or False (it stays until its next failure or due "
+            "replacement), got 'no'.",
         ),
         (
             {"upgrade": {"at": 5.0, "reliability": 100.0}},

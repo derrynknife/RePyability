@@ -477,6 +477,13 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("Hidden failures, tested", "tested, Weibull"),
         ("Tests that take time", "tested, taking time"),
         ("Tests that can miss a failure", "tested, missing"),
+        ("An upgrade (another life from a time)", "upgraded at a time"),
+        ("An upgrade, age-replaced", "upgraded at a time, age-replaced"),
+        ("An upgrade, tested", "upgraded at a time, tested"),
+        (
+            "An upgrade, the unit in service kept",
+            "upgraded at a time, the unit in service kept",
+        ),
         ("Imperfect repair (Kijima)", "imperfect repair"),
         ("Minimal repair", "minimal repair in no time"),
         (

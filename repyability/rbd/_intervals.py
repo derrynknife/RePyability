@@ -628,6 +628,9 @@ def optimal_replacement_intervals(
     """See ``RepairableRBD.optimal_replacement_intervals``."""
     robust = _robust_method(robust)
     chosen = _maintained(rbd, nodes)
+    if rbd._upgrades:
+        # No long run across an upgrade (as its routes say).
+        _requirements._require_no_plans(rbd)
     min_availability, max_cost_rate = _interval_targets(
         rbd, min_availability, max_cost_rate
     )
@@ -1018,6 +1021,9 @@ def optimal_inspection_intervals(
 ) -> MaintenancePlan:
     """See ``RepairableRBD.optimal_inspection_intervals``."""
     chosen = _inspected(rbd, nodes)
+    if rbd._upgrades:
+        # No long run across an upgrade (as its routes say).
+        _requirements._require_no_plans(rbd)
     min_availability, max_cost_rate = _interval_targets(
         rbd, min_availability, max_cost_rate
     )
