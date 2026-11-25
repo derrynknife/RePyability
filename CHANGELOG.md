@@ -12,6 +12,9 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `task_value` with `Services(plan, effect=Restoration(...))` values a
+  restoring service on a duty plan that changes over time (weekday
+  shifts), its virtual age counted in operating time; it was refused.
 - One saved sub-system (a `RepairableRBD`) can be given for several nodes
   of a diagram: each node after the first gets its own copy, built from
   the same arguments and models, so the diagram is the one with the

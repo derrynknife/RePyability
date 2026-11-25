@@ -973,8 +973,9 @@ in `test_schedule_forecast.py`.
     value the service on the plan without it.
   - 4,000 runs by default; a seed is drawn and kept when none is given.
   - What the engine does not follow is refused with its own reason: a
-    virtual age on a duty plan that changes over time, a covariate
-    schedule with a duty, a state with imperfect repair.
+    covariate schedule with a duty, a standby group on a duty plan that
+    changes. A virtual age on a duty plan that changes (weekday shifts)
+    is counted in operating time, `age=` the operating age.
 - **Checks** (`test_schedule_services.py`): the default against the hand
   numbers to the cent; factor 1 equal to the default exactly; as new
   (factor 0) against UC-50's `Replaces` values within four standard
@@ -1182,10 +1183,9 @@ in `test_schedule_forecast.py`.
   `age_replacement_value` where the usage keeps a steady pace) is not
   joined to it yet; a task's long run is (`Task.long_run_value`).
 - **A service on what the engine does not follow yet.** UC-67's
-  simulated effects keep the engine's limits: a virtual age is not
-  followed on a duty plan that changes, nor from a state with imperfect
-  repairs; a covariate of the time since the service (a ramp, not a
-  step) is not a schedule the engine takes.
+  simulated effects keep the engine's limits: a covariate of the time
+  since the service (a ramp, not a step) is not a schedule the engine
+  takes, and surpyval has no ramp schedule yet.
 - A test that can miss a failure or that takes the device off line, and
   an inspection that finds a warning before the failure (on condition),
   are not valued on dates yet either.
