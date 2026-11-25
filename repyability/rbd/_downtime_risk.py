@@ -22,8 +22,13 @@ optional ``budget``:
 - ``inspections``: a node's test interval (hidden failures), through
   the candidates given, its spend the expected inspection cost;
 - ``upgrades``: a better life for a node's units from the start (a
-  better model bought now), through the offers given, at its capital
-  price per unit (a copy of an upgraded node is an upgraded unit too);
+  better model bought now), or from a time ``"at"`` (the spec's own
+  upgrade: the unit in service then is replaced, and every unit put in
+  from then on has the better life), through the offers given, at its
+  capital price per unit (a copy of an upgraded node is an upgraded unit
+  too), paid whether or not a run reaches its time;
+- ``units``: one more unit inside a node's standby, load-sharing or
+  identical group, at a price each (a copy of the group has them too);
 - ``crews``: repair crews more than the diagram's ``repair_crews``, at
   a price each and their salaries at the ``crew_cost_rate``;
 - ``call_out``: a call-out crew's contract, through the contracts given,
@@ -158,6 +163,7 @@ def _levers(
     crews,
     call_out,
     spares=None,
+    units=None,
 ) -> List[_Lever]:
     """The levers, checked, in the order the search tries their moves:
     the redundancy nodes', the interval nodes', the inspection nodes',
@@ -250,6 +256,13 @@ def _levers(
         )
     for node, spec in (spares or {}).items():
         levers.append(_spares_lever(rbd, node, spec))
+    if units is not None and not isinstance(units, Mapping):
+        raise ValueError(
+            "units must be a dict of node: its group's lever, e.g. "
+            f"{{'pumps': {{'price': 5000, 'max': 2}}}}; got {units!r}."
+        )
+    for node, spec in (units or {}).items():
+        levers.append(_units_lever(rbd, node, spec))
     if crews is not None:
         levers.append(_crews_lever(rbd, crews))
     if call_out is not None:
@@ -277,7 +290,9 @@ def _fixed_spend(levers: Sequence[_Lever], state: Sequence[int]) -> float:
     copies = {v.node: s for v, s in zip(levers, state) if v.kind == "copies"}
     total = 0.0
     for lever, step in zip(levers, state):
-        if lever.kind == "upgrade":
+        if lever.kind == "units":
+            total += lever.price * step * (1 + copies.get(lever.node, 0))
+        elif lever.kind == "upgrade":
             if step:
                 total += lever.options[step - 1][1] * (
                     1 + copies.get(lever.node, 0)
@@ -317,14 +332,22 @@ def _upgrade_lever(rbd, node, offers) -> _Lever:
         )
     options = []
     for offer in listed:
-        if not isinstance(offer, Mapping) or set(offer) != {
-            "reliability",
-            "cost",
-        }:
+        if not isinstance(offer, Mapping) or not (
+            {"reliability", "cost"}
+            <= set(offer)
+            <= {"reliability", "cost", "at"}
+        ):
             raise ValueError(
                 f"Each of upgrades[{node!r}] must be a dict of "
                 "'reliability' (the better life) and 'cost' (its price per "
-                f"unit); got {offer!r}."
+                "unit), and optionally 'at' (the time it is made, by "
+                f"default 0: from the start); got {offer!r}."
+            )
+        at = offer.get("at", 0.0)
+        if not (checks.is_number(at) and math.isfinite(at) and at >= 0.0):
+            raise ValueError(
+                f"upgrades[{node!r}]'s 'at' must be the time the upgrade is "
+                f"made, a number at least 0; got {at!r}."
             )
         options.append(
             (
@@ -332,9 +355,41 @@ def _upgrade_lever(rbd, node, offers) -> _Lever:
                 _price(
                     offer["cost"], f"The cost of an upgrade of node {node!r}"
                 ),
+                float(at),
             )
         )
     return _Lever("upgrade", node, options=tuple(options))
+
+
+def _units_lever(rbd, node, spec) -> _Lever:
+    """``units[node]``: units more inside the node's group (standby,
+    load-sharing or identical), each at its ``"price"``, up to ``"max"``
+    more."""
+    from repyability.rbd import _requirements, _spec
+
+    _requirements._require_component(rbd, node, "units")
+    given = rbd._init_args["components"].get(node)
+    key = _spec._group_key(given) if isinstance(given, dict) else None
+    if key is None:
+        raise ValueError(
+            f"Node {node!r} is not a group of units given as a spec "
+            "('standby', 'load_sharing' or 'identical'), so it has no units "
+            "to add: give it as one, or copy it whole (redundancy=)."
+        )
+    if not isinstance(spec, Mapping) or set(spec) - {"price", "max"}:
+        raise ValueError(
+            f"units[{node!r}] must be a dict of 'price' (what each unit "
+            "more costs) and 'max' (the most units more); got "
+            f"{spec!r}."
+        )
+    return _Lever(
+        "units",
+        node,
+        price=_price(
+            spec.get("price"), f"The price of a unit more of node {node!r}"
+        ),
+        cap=_cap(spec.get("max"), f"units[{node!r}]'s 'max'"),
+    )
 
 
 #: The keys of a spares lever.
@@ -483,7 +538,22 @@ def _design(rbd, levers: Sequence[_Lever], state: Sequence[int]):
             components[lever.node] = spec
         elif lever.kind == "upgrade":
             spec = dict(components[lever.node])
-            spec["reliability"] = lever.options[step - 1][0]
+            life, _, at = lever.options[step - 1]
+            if at > 0.0:
+                # The spec's own upgrade at its time; its price is the
+                # lever's, so the spec charges nothing.
+                spec["upgrade"] = {"at": at, "reliability": life}
+            else:
+                spec["reliability"] = life
+            components[lever.node] = spec
+        elif lever.kind == "units":
+            from repyability.rbd import _spec
+
+            spec = dict(components[lever.node])
+            key = _spec._group_key(spec)
+            group = dict(spec[key])
+            group["units"] = int(group["units"]) + step
+            spec[key] = group
             components[lever.node] = spec
         elif lever.kind == "crews":
             args["repair_crews"] = int(args["repair_crews"]) + step
@@ -511,6 +581,7 @@ def _settings(rbd, levers: Sequence[_Lever], state: Sequence[int]) -> dict:
         "inspections": {},
         "upgrades": {},
         "spares": {},
+        "units": {},
     }
     for lever, step in zip(levers, state):
         if lever.kind == "copies":
@@ -518,6 +589,8 @@ def _settings(rbd, levers: Sequence[_Lever], state: Sequence[int]) -> dict:
         elif lever.kind == "spares":
             assert lever.shelf is not None  # a spares lever has its shelf
             found["spares"][lever.node] = lever.shelf.stock + step
+        elif lever.kind == "units":
+            found["units"][lever.node] = step
         elif lever.kind == "upgrade":
             found["upgrades"][lever.node] = step or None
         elif lever.kind in ("interval", "inspection"):
@@ -680,6 +753,7 @@ def least_spend_for_downtime(
     uncertainty=None,
     n_draws: int = 100,
     spares: Optional[Mapping] = None,
+    units: Optional[Mapping] = None,
 ) -> DowntimeRiskResult:
     """See ``RepairableRBD.least_spend_for_downtime``."""
     from repyability.rbd import _npv_runs
@@ -734,6 +808,7 @@ def least_spend_for_downtime(
         crews,
         call_out,
         spares,
+        units,
     )
 
     drawn = _drawn(rbd, uncertainty, n_draws, n, seed)
@@ -897,10 +972,9 @@ def _floor_words(floor, last, limit, measure, budget) -> str:
         )
     if floor == "caps":
         return (
-            f"{lowest}: every lever is at its cap (max_units, crews' "
-            "or spares' 'max', or the last option given). Raise the caps, "
-            "or give "
-            "more options."
+            f"{lowest}: every lever is at its cap (max_units, crews', "
+            "spares' or units' 'max', or the last option given). Raise "
+            "the caps, or give more options."
         )
     if floor == "planned":
         return (
@@ -914,6 +988,6 @@ def _floor_words(floor, last, limit, measure, budget) -> str:
         return f"{lowest}: the search took its most steps ({MAX_STEPS})."
     return (
         f"{lowest}: no lever given lowers it further. Give other levers "
-        "(redundancy=, intervals=, inspections=, upgrades=, spares=, "
+        "(redundancy=, intervals=, inspections=, upgrades=, spares=, units=, "
         "crews=, call_out=)."
     )

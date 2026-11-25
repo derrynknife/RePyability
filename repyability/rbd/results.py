@@ -5618,6 +5618,9 @@ class DowntimeDesign(_ResultMapping):
     spares : dict
         Each spares node's stock on its shelf, by node (empty without a
         ``spares`` lever).
+    units : dict
+        Each units node's units more in its group, by node (empty
+        without a ``units`` lever).
     """
 
     copies: Dict[Hashable, int]
@@ -5633,6 +5636,7 @@ class DowntimeDesign(_ResultMapping):
     planned: Dict[str, Optional[float]]
     unplanned: Dict[str, Optional[float]]
     spares: Dict[Hashable, int] = field(default_factory=dict)
+    units: Dict[Hashable, int] = field(default_factory=dict)
 
 
 @dataclass

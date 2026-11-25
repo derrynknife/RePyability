@@ -616,3 +616,82 @@ def test_parameter_uncertainty_is_seeded_and_shared_by_the_designs():
         pump().least_spend_for_downtime(
             YEAR, 10.0, uncertainty=True, mc_samples=100
         )
+
+
+def test_an_upgrade_at_a_later_time_is_the_spec_s_own_upgrade():
+    # The lever's design is the diagram with the spec's upgrade at its
+    # time, run for run; its spend is the price for each unit.
+    n, at = 2000, 3000.0
+    found = pump().least_spend_for_downtime(
+        YEAR,
+        0.5,
+        upgrades={"p": {"reliability": E([BETTER]), "cost": 3000.0, "at": at}},
+        mc_samples=n,
+        seed=64,
+    )
+    design = next(d for d in found.frontier if d.upgrades["p"])
+    assert design.spend == 3000.0
+    upgraded = RepairableRBD(
+        ONE,
+        {
+            "p": {
+                "reliability": E([FAIL]),
+                "repairability": E([REPAIR]),
+                "upgrade": {"at": at, "reliability": E([BETTER])},
+            }
+        },
+    )
+    down, _ = direct(upgraded, n, 64)
+    assert design.unplanned["mean_hours"] == pytest.approx(down.mean())
+    # Its mean downtime: the old pump's to the upgrade, the better one's
+    # after it (each exact), within four standard errors.
+    old = pump().mission_unavailability(at) * at
+    new = RepairableRBD(
+        ONE, {"p": {"reliability": E([BETTER]), "repairability": E([REPAIR])}}
+    ).mission_unavailability(YEAR - at) * (YEAR - at)
+    se = down.std(ddof=1) / math.sqrt(n)
+    assert abs(down.mean() - (old + new)) < 4 * se
+    with pytest.raises(ValueError, match="'at'"):
+        pump().least_spend_for_downtime(
+            YEAR,
+            1.0,
+            upgrades={
+                "p": {"reliability": E([BETTER]), "cost": 1.0, "at": -1.0}
+            },
+        )
+
+
+def test_a_unit_more_in_a_group_is_the_group_with_it():
+    def block(units):
+        return RepairableRBD(
+            ONE,
+            {
+                "p": {
+                    "reliability": E([0.01]),
+                    "repairability": E([0.1]),
+                    "identical": {"units": units, "k": 1},
+                }
+            },
+        )
+
+    n = 1000
+    found = block(1).least_spend_for_downtime(
+        YEAR,
+        200.0,
+        units={"p": {"price": 700.0, "max": 3}},
+        mc_samples=n,
+        seed=65,
+    )
+    assert found.met
+    more = found.design.units["p"]
+    assert more >= 1 and found.design.spend == 700.0 * more
+    down, _ = direct(block(1 + more), n, 65)
+    assert found.design.unplanned["mean_hours"] == pytest.approx(down.mean())
+    # 1-of-2 identical units, each down lam / (lam + mu) = 1/11 in the
+    # long run, independent: the group is down 1/121 of the time (72 h a
+    # year; 1-of-1, 796 h).
+    assert more == 1
+    se = down.std(ddof=1) / math.sqrt(n)
+    assert abs(down.mean() - YEAR / 121) < 4 * se + 1.0
+    with pytest.raises(ValueError, match="not a group of units"):
+        pump().least_spend_for_downtime(YEAR, 1.0, units={"p": {"price": 1.0}})
