@@ -180,7 +180,6 @@ from repyability.rbd.results import (
     SparesDemand,
     SparesStock,
 )
-from repyability.rbd.routes import Refused
 from repyability.utils.checks import (
     one_of,
 )
@@ -1817,36 +1816,72 @@ _STOCK_CREWS = (
 )
 
 
+def _nested(rbd) -> list:
+    """The nodes that are nested RBDs (sub-systems)."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    return [
+        node
+        for node, component in rbd.components.items()
+        if isinstance(component, RepairableRBD)
+    ]
+
+
 def _spares_nodes(rbd, nodes, given: str = "nodes") -> list:
     """The components whose spares are counted: ``nodes`` (given in
-    ``given``) checked, or every component; refused when none is given
-    and one is a nested RBD, whose components' spares are not counted
-    here (its own ``spares_demand`` counts them)."""
+    ``given``) checked, or every component but the nested RBDs, whose
+    components are counted through their own models (see
+    ``_sub_systems``)."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     if nodes is None:
-        nested = [
-            node
-            for node, component in rbd.components.items()
-            if isinstance(component, RepairableRBD)
-        ]
-        if nested:
-            raise Refused(
-                f"Node {nested[0]!r} is a nested RBD, whose components' "
-                "spares are not counted here (its own spares_demand and "
-                "spares_stock count them): give the components counted, "
-                f"nodes={[n for n in rbd.components if n not in nested]!r}."
-            )
-        return list(rbd.components)
+        nested = _nested(rbd)
+        return [node for node in rbd.components if node not in nested]
     chosen = list(dict.fromkeys(nodes))
     for node in chosen:
         _requirements._require_component(rbd, node, given)
         if isinstance(rbd.components[node], RepairableRBD):
             raise ValueError(
                 f"Node {node!r} is a nested RBD: its spares are its "
-                "components', which its own spares_demand counts."
+                "components', which are counted as (node, component) "
+                "with nodes left out, or by its own spares_demand."
             )
     return chosen
+
+
+def _sub_systems(rbd, nodes, parts, method: str = "exact") -> list:
+    """The nested RBDs whose components are counted too, each as ``(node,
+    component)``: every one, when neither ``nodes`` nor ``parts`` is
+    given. Counted through the sub-system's own models, which nothing in
+    the diagram changes but its repair crews (refused, as for any
+    component that can wait for one); not by simulation, whose runs
+    record the top-level nodes' replacements alone."""
+    if nodes is not None or parts is not None:
+        return []
+    nested = _nested(rbd)
+    if nested and method == "simulate":
+        raise NotImplementedError(
+            f"Node {nested[0]!r} is a nested RBD, and the simulated runs "
+            "record the top-level nodes' replacements alone: count its "
+            "components with method='exact' (each as (node, component)), "
+            "or by its own spares_demand(method='simulate'), or give the "
+            "top-level components counted, nodes="
+            f"{[n for n in rbd.components if n not in nested]!r}."
+        )
+    return nested
+
+
+def require_countable(rbd, long_run: bool) -> None:
+    """Raise as ``spares_demand`` (``spares_stock``, ``long_run``) with
+    no ``nodes`` would, before counting: the repair crews, each
+    component's replacements and each sub-system's own."""
+    _crews._require_unlimited_crews(
+        rbd, *(_STOCK_CREWS if long_run else _SPARES_CREWS)
+    )
+    for node in _spares_nodes(rbd, None):
+        _replacements(rbd, node, long_run)
+    for node in _sub_systems(rbd, None, None):
+        require_countable(rbd.components[node], long_run)
 
 
 def _spares_parts(rbd, parts) -> Dict[Hashable, Tuple[Hashable, ...]]:
@@ -1878,6 +1913,22 @@ def _spares_parts(rbd, parts) -> Dict[Hashable, Tuple[Hashable, ...]]:
                 f"list, got {members!r}."
             )
         listed = list(members)
+        across = [
+            m
+            for m in listed
+            if isinstance(m, tuple)
+            and m not in rbd.components
+            and m[:1]
+            and m[0] in _nested(rbd)
+        ]
+        if across:
+            raise NotImplementedError(
+                f"Part {part!r} names {across[0]!r}, a component of the "
+                f"sub-system {across[0][0]!r}: a part pooling spares across "
+                "levels is not counted yet. Count the sub-system's own "
+                "parts with its own spares_demand or spares_stock "
+                "(parts=...)."
+            )
         twice = sorted(
             {repr(n) for n in listed if listed.count(n) > 1}, key=str
         )
@@ -2118,6 +2169,8 @@ def spares_demand(
     fleet = _whole("fleet", fleet)
     one_of("method", method, ("exact", "simulate"))
     chosen, pools, counted = _spares_counted(rbd, nodes, parts)
+    # A sub-system's components, each as (node, component), from its own.
+    nested = _sub_systems(rbd, nodes, parts, method)
     if method == "simulate":
         runs = _simulated_replacements(
             rbd,
@@ -2142,10 +2195,24 @@ def spares_demand(
             part: _summed(each[m] for m in members)
             for part, members in pools.items()
         }
-    out = {
-        node: SparesDemand(_fleet(number, fleet), end, fleet, method)
-        for node, number in counts.items()
-    }
+    out: Dict[Hashable, SparesDemand] = {}
+    for node in rbd.components:
+        if node in counts:
+            out[node] = SparesDemand(
+                _fleet(counts[node], fleet), end, fleet, method
+            )
+        elif node in nested:
+            inner = spares_demand(
+                rbd.components[node],
+                horizon,
+                nodes=None,
+                fleet=fleet,
+                method=method,
+                mc_samples=mc_samples,
+                seed=seed,
+                parts=None,
+            )
+            out.update({(node, key): value for key, value in inner.items()})
     for part, number in pooled.items():
         out[part] = SparesDemand(
             _fleet(number, fleet), end, fleet, method, pools[part]
@@ -2203,6 +2270,7 @@ def spares_stock(
             raise ValueError(f"{name} must be in (0, 1), got {target!r}.")
     chosen, pools, counted = _spares_counted(rbd, nodes, parts)
     _crews._require_unlimited_crews(rbd, *_STOCK_CREWS)
+    nested = _sub_systems(rbd, nodes, parts)
     models = {node: _replacements(rbd, node, True) for node in counted}
     for part, members in pools.items():
         blocks = [m for m in members if isinstance(models[m], Block)]
@@ -2278,9 +2346,25 @@ def spares_stock(
             stockout_probability=result.stockout_probability_for(stock),
         )
 
-    out: Dict[Hashable, SparesStock] = {
-        node: stocked((node,)) for node in chosen
-    }
+    out: Dict[Hashable, SparesStock] = {}
+    for node in rbd.components:
+        if node in chosen:
+            out[node] = stocked((node,))
+        elif node in nested:
+            from repyability.rbd import _shutdowns
+
+            inner = rbd.components[node]
+            _shutdowns.refuse(inner, "spares_stock")
+            found = spares_stock(
+                inner,
+                lead_time,
+                fill_rate=fill_rate,
+                stockout_probability=stockout_probability,
+                nodes=None,
+                fleet=fleet,
+                parts=None,
+            )
+            out.update({(node, key): value for key, value in found.items()})
     for part, members in pools.items():
         out[part] = dataclasses.replace(stocked(members), members=members)
     return out
@@ -2369,6 +2453,16 @@ def spares_stock_simulated(
     montecarlo.check_count(n, False, "mc_samples")
     seed = _npv_runs._seed(seed)
     chosen, pools, counted = _spares_counted(rbd, nodes, parts)
+    nested = _nested(rbd) if nodes is None and parts is None else []
+    if nested:
+        raise NotImplementedError(
+            f"spares_stock(method='simulate'): node {nested[0]!r} is a "
+            "nested RBD, and a shelf for a sub-system's components is not "
+            "simulated yet: use the sub-system's own "
+            "spares_stock(method='simulate'), or give the top-level "
+            "components, nodes="
+            f"{[n for n in rbd.components if n not in nested]!r}."
+        )
     for node in counted:
         _shelves.require(rbd, node, "spares_stock(method='simulate')")
     members = {node: (node,) for node in chosen}

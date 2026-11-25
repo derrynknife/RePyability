@@ -1773,9 +1773,10 @@ class RepairableRBD(RBD):
             The time counted over, from new.
         nodes : Collection[Hashable], optional
             The components to count for, by default every component, or
-            none when ``parts`` are given. A nested RBD's components'
-            spares are not counted here (its own ``spares_demand`` counts
-            them): with one, give the components counted.
+            none when ``parts`` are given. By default a nested RBD's
+            (a sub-system's) components are counted too, each as ``(node,
+            component)``, exactly through its own models (by simulation,
+            refused: give ``nodes``, or use the sub-system's own).
         fleet : int, optional
             How many systems, by default 1.
         method : str, optional
@@ -1803,11 +1804,11 @@ class RepairableRBD(RBD):
             If ``horizon`` is negative or not finite, ``fleet`` is not a
             whole number of at least 1, ``method`` is unknown, ``nodes`` or
             a part names a node that is not a component, or a nested RBD,
-            or ``parts`` is not as above; and, as ``routes.Refused``, when
-            no ``nodes`` are given and a component is a nested RBD, whose
-            components' spares are not counted here.
+            or ``parts`` is not as above.
         NotImplementedError
-            For a part with two members in one common-cause group; and
+            For a part with two members in one common-cause group, or one
+            that names a sub-system's component; by simulation, with a
+            sub-system and no ``nodes``; and
             with ``method="exact"``, for a standby group, a component with
             hidden failures whose tests can last as long as their interval,
             or while a component can wait for a repair crew (see
@@ -1958,9 +1959,9 @@ class RepairableRBD(RBD):
             both.
         nodes : Collection[Hashable], optional
             The components, by default every component (none when
-            ``parts`` are given); with a nested RBD, whose components'
-            spares are not counted here, give them, as for
-            ``spares_demand``.
+            ``parts`` are given), a nested RBD's each as ``(node,
+            component)``, as for ``spares_demand`` (simulated, a nested
+            RBD's are refused).
         fleet : int, optional
             How many systems share the stock, by default 1.
         parts : dict, optional
@@ -2004,8 +2005,7 @@ class RepairableRBD(RBD):
             given or one is not in ``(0, 1)``, ``fleet`` is not a whole
             number of at least 1, ``nodes`` or a part names a node that is
             not a component, or a nested RBD, or ``parts`` is not as for
-            ``spares_demand``; and, as ``routes.Refused``, when no
-            ``nodes`` are given and a component is a nested RBD.
+            ``spares_demand``.
         NotImplementedError
             For a part with two members in one common-cause group, or two
             under block replacement, a component under block replacement
@@ -3547,9 +3547,16 @@ class RepairableRBD(RBD):
           states, with the states the system is down in made absorbing,
           followed by uniformization (to about 1e-13).
 
+        A sub-system (a nested ``RepairableRBD``) is drawn into the
+        diagram in its place, its components each as ``(node,
+        component)``, and takes these routes as the flat diagram does,
+        unless repair crews that jobs wait for (in it or beside it),
+        common-cause, maintenance or shutdown groups in it, or a state
+        given for it couple it.
+
         Everything else (other lives or repairs in a redundant structure,
         scheduled maintenance, tests of hidden failures, standby groups,
-        common-cause groups, nested diagrams) refuses and points to
+        common-cause groups, a coupled sub-system) refuses and points to
         ``method="simulate"``, which reads the first failures off
         [`simulate_timelines`][repyability.RepairableRBD.simulate_timelines]:
         the share of simulations with no failure by each time.

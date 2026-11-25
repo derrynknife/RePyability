@@ -17,6 +17,16 @@ release between minors that only adds (0.19.1).
   plan's clock `D`, at its pace while the unit operates and at its
   `dormancy_factor` of it while it waits (a warm spare ages at its share
   of the duty, a cold one not at all); repairs take calendar time.
+- Spares and the first failure across a repairable sub-system (a nested
+  `RepairableRBD`), which were refused. `spares_demand` and
+  `spares_stock` with no `nodes` count each of a sub-system's components
+  as `(node, component)`, exactly through its own models (the same as the
+  system drawn flat); by simulation, and for a part across levels, they
+  are refused with the reason. `first_failure_sf` and
+  `mean_time_to_first_failure` draw a sub-system into the diagram in its
+  place, where nothing couples it (repair crews that jobs wait for,
+  common-cause, maintenance or shutdown groups, a state given for it).
+  `analysis_routes` says so. No other result changes.
 - A repair by a fitted process's own rule (G1, ARA, ARI) on a duty plan
   that changes over time, which was refused: each next failure is the
   process's quantile in operating time, given its state, run on through

@@ -522,8 +522,6 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         ("spares_stock", True),
     ):
         refusal = r.refusal(
-            partial(_spares._spares_nodes, rbd, None)
-        ) or r.refusal(
             partial(
                 _crews._require_unlimited_crews,
                 rbd,
@@ -542,6 +540,18 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                 partial(_spares._replacements, rbd, node, long_run_count)
             )
             which = (node,)
+        for node in [] if refusal else _spares._sub_systems(rbd, None, None):
+            # A sub-system's components, through its own models.
+            refusal = r.refusal(
+                partial(
+                    _spares.require_countable,
+                    rbd.components[node],
+                    long_run_count,
+                )
+            )
+            which = (node,)
+            if refusal:
+                break
         out[name] = (
             r.refused(refusal, which)
             if refusal
@@ -561,7 +571,13 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                 + "; with hidden failures, on its tests: exactly, tested "
                 "and repaired in no time by tests that find every "
                 "failure, and otherwise from the cycle between the tests "
-                "that find failures, followed test by test (#159).",
+                "that find failures, followed test by test (#159)."
+                + (
+                    " A sub-system's components are counted through its "
+                    "own models, each as (node, component)."
+                    if _spares._sub_systems(rbd, None, None)
+                    else ""
+                ),
             )
         )
     plan, streamed = _event_loop._stream_plan(rbd, 1.0, 0, False)
