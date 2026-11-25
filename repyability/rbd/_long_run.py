@@ -153,12 +153,20 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
             return r.EXACT, how + ", in closed form"
         return r.NUMERICAL, how + ", its operating time by quadrature"
     if node in rbd._standby:
-        message = r.refusal(
+        if not r.refusal(
             partial(functools.partial(_standby_rates, rbd), node)
+        ):
+            return r.EXACT, f"the Markov chain of {rbd._standby[node].what}"
+        message = r.refusal(
+            partial(functools.partial(_require_standby_long_run, rbd), node)
         )
         if message:
             return r.REFUSED, message
-        return r.EXACT, f"the Markov chain of {rbd._standby[node].what}"
+        return (
+            r.NUMERICAL,
+            "the regeneration cycle of a cold standby pair with one repair "
+            "at a time, by quadrature",
+        )
     if node in rbd._inspection:
         message = r.refusal(
             partial(_requirements._require_tested_exact, rbd, node)
@@ -1203,12 +1211,67 @@ def _standby_rates(rbd, node) -> Tuple[float, float]:
     return life, repair
 
 
+def _standby_crews(rbd) -> Optional[int]:
+    """How many of a standby group's units can be repaired at once in its
+    long-run values (None: all; see ``_standby_long_run``)."""
+    return rbd.repair_crews if _crews._crews_limited(rbd) else None
+
+
+def _standby_cycle_blocker(rbd, node) -> Optional[str]:
+    """Why a standby group with lives or repairs that are not exponential
+    has no long-run values from its cycle (``_standby_cycle``), as the
+    refusal's message, or None."""
+    from repyability.rbd import _standby_cycle
+    from repyability.rbd._covariate_schedule import ClockLife
+
+    reason = _standby_cycle.why_not(rbd._standby[node], _standby_crews(rbd))
+    component = rbd.components[node]
+    if reason is None and any(
+        isinstance(m, ClockLife) or not callable(getattr(m, "df", None))
+        for m in (component.reliability, component.time_to_replace)
+    ):
+        reason = "its life or repair is not a distribution of times"
+    if reason is None:
+        return None
+    return (
+        f"Component {node!r} is {rbd._standby[node].what}, whose exact "
+        "long-run values come from a Markov chain of its units, which "
+        "needs their lives and repair times exponential, or (a cold "
+        "standby pair, one needed, a sure switch, one repair at a time) "
+        f"from its cycle; {reason}: simulate it with availability() or "
+        "cost()."
+    )
+
+
+def _require_standby_long_run(rbd, node) -> None:
+    """Raise if a standby group has no long-run values: its units are not
+    exponential, and its cycle does not give them either."""
+    try:
+        _standby_rates(rbd, node)
+    except NotImplementedError:
+        message = _standby_cycle_blocker(rbd, node)
+        if message is not None:
+            raise NotImplementedError(message) from None
+
+
 def _standby_long_run(rbd, node) -> "_standby_chain.StandbyLongRun":
     """A standby group's long-run values, from its Markov chain (see
-    ``_standby_chain``). The crews do not tie it to other nodes here (see
-    ``_crews_couple``): its units' repairs wait only for each other,
-    with ``repair_crews`` crews when they are the crews' only jobs."""
-    life, repair = _standby_rates(rbd, node)
+    ``_standby_chain``), or with lives or repairs that are not
+    exponential, for a cold standby pair with one repair at a time, from
+    its cycle (``_standby_cycle``). The crews do not tie it to other
+    nodes here (see ``_crews_couple``): its units' repairs wait only for
+    each other, with ``repair_crews`` crews when they are the crews' only
+    jobs."""
+    from repyability.rbd import _standby_cycle
+
+    try:
+        life, repair = _standby_rates(rbd, node)
+    except NotImplementedError:
+        _require_standby_long_run(rbd, node)
+        component = rbd.components[node]
+        return _standby_cycle.long_run(
+            component.reliability, component.time_to_replace
+        )
     arrangement = rbd._standby[node]
     return _standby_chain.long_run(
         arrangement.units,

@@ -958,6 +958,17 @@ the pair is up 0.9910.)
   from its long-run state, the same chain is followed by uniformization (see
   [above](#repair-crews)): the availability over time and over a mission,
   and the expected failures and repairs, are numerical.
+- **A cold standby pair with any lives and repairs.** Two units, one needed,
+  a spare that does not age and always switches in, repaired one at a time
+  (`repair_crews=1`): the pair starts afresh each time a unit fails with the
+  other ready, so a cycle lasts `max(X, R)` (the operating unit's life, the
+  other's repair) and is down `(R - X)+` of it. Its long-run availability,
+  failure frequency and repairs (and so its costs) are worked out from that
+  cycle by quadrature, to about 1e-10, for Weibull wear-out lives as for
+  any: Weibull(1,000 h, 2.5) lives and Weibull(300 h, 1.5) repairs give
+  0.98830, and 400 runs of 1,000,000 h 0.98834 (+0.4 standard errors).
+  Warm spares, a switch that can fail, more units, both repaired at once and
+  values over time are simulated, for now.
 - **Simulation.** `availability`, `cost` and `compare` simulate groups
   whatever their units' models, in Python.
 

@@ -24,14 +24,20 @@ release between minors that only adds (0.19.1).
   now holds 4 (0.881; long runs of the shelf 0.880), where the
   approximation held 5 (0.824 at 4).
 
-### Changed
-
-- Long-run spares stocks for wear-out lives with long lead times and
-  common stock-outs change (see Added): the stock can fall by one or
-  more, and its fill rate and stock-out probability are the shelf's in
-  the runs. The guide's block-replaced pumps keep 52, at 0.9618 (was
-  0.9596), and with repairs that take time at 0.9684 (was 0.9667).
-
+- Long-run values of a cold standby pair whose lives and repairs are not
+  exponential (Weibull wear-out, say), which only a simulation gave: two
+  units, one needed, a cold spare that switches in surely, one repair at
+  a time. The pair regenerates whenever a unit fails with the other
+  ready, so its availability, failure frequency and repairs follow from
+  one cycle, `max(X, R)` long and down `(R - X)+`, by quadrature (to
+  about 1e-10): `mean_availability`, `mean_unavailability`, the
+  frequencies and the cost rate take it, inside larger diagrams too.
+  Checked: exponential units equal the Markov chain with one crew to
+  1e-9 (Weibull of shape 1 too); exponential repairs against the
+  memoryless closed form; Weibull(1000, 2.5) lives and Weibull(300, 1.5)
+  repairs 0.988301 against 0.988336 simulated (400 runs of 1e6 h, +0.4
+  SE). Warm spares, failing switches, more units, parallel repairs and
+  values over time stay simulated.
 - `spares_demand(method="simulate")` counts a sub-system's components
   too, each as `(node, component)` from the sub-system's own runs on the
   same seed, where it refused (still refused where a shutdown stands the
@@ -266,6 +272,11 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- Long-run spares stocks for wear-out lives with long lead times and
+  common stock-outs change (see Added): the stock can fall by one or
+  more, and its fill rate and stock-out probability are the shelf's in
+  the runs. The guide's block-replaced pumps keep 52, at 0.9618 (was
+  0.9596), and with repairs that take time at 0.9684 (was 0.9667).
 - A life along a covariate path (a ramp of the time since service, or
   any `CovariatePath`) is drawn in about half the time: surpyval's
   `Hf_tvc` is worked out in one call on a grid of 512 ages (and the
