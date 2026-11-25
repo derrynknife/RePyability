@@ -355,10 +355,13 @@ class Sides:
     engine: str
 
 
-def _diagrams(does: Services, usage, unit: str, times: np.ndarray, age):
+def _diagrams(
+    does: Services, usage, unit: str, times: np.ndarray, age, use=None
+):
     """The plan's one-node diagrams with the service (at ``times`` on the
-    diagram's clock) and without it, on the usage's calendar, and the
-    start state."""
+    diagram's clock, in ``unit``) and without it, on the usage's
+    calendar, and the start state (``age`` in the life's unit: ``use``,
+    a unit of use read from the plan's meter, or ``unit``)."""
     from repyability.maintenance import BlockPolicy, UnitPlan
     from repyability.rbd.node_state import NodeState
 
@@ -383,15 +386,26 @@ def _diagrams(does: Services, usage, unit: str, times: np.ndarray, age):
         )
         with_plan = replace(plan, tasks=plan.tasks + (task,))
         without_plan = plan
+    uses = {} if use is None else {plan.NODE: use}
     context = CalendarContext(usage, unit=unit)
-    duty = CalendarContext(usage, {plan.NODE: usage}, unit=unit).duty_plan(
-        plan.NODE
-    )
-    if duty != 1.0:
-        context = CalendarContext(usage, {plan.NODE: usage}, unit=unit)
+    duty = CalendarContext(
+        usage, {plan.NODE: usage}, unit=unit, use=uses
+    ).duty_plan(plan.NODE)
+    if use is not None or duty != 1.0:
+        context = CalendarContext(
+            usage, {plan.NODE: usage}, unit=unit, use=uses
+        )
+    # A state's age on a block of one share or rate is on the diagram's
+    # clock (the operating age over the duty); on a plan that changes it
+    # is the operating age itself.
+    if use is not None:
+        from repyability.rbd._duty import duty_value
+
+        duty = duty_value(plan.NODE, duty)
+    per = float(duty) if isinstance(duty, float) else 1.0
     state_with = state_without = None
     if age:
-        state_without = {plan.NODE: NodeState(age=float(age))}
+        state_without = {plan.NODE: NodeState(age=float(age) / per)}
         start_age = float(age)
         if at_start and not isinstance(effect, Condition):
             # A service at the start: the unit taken to have had no action
@@ -407,7 +421,7 @@ def _diagrams(does: Services, usage, unit: str, times: np.ndarray, age):
                 )
             else:
                 start_age = float(effect.q) * float(age)
-        state_with = {plan.NODE: NodeState(age=start_age)}
+        state_with = {plan.NODE: NodeState(age=start_age / per)}
     return (
         with_plan.diagram(context),
         without_plan.diagram(context),
@@ -428,6 +442,7 @@ def simulated(
     seed,
     confidence: float,
     engine: str = "auto",
+    use=None,
 ) -> Sides:
     """The service's value by simulation: the plan's diagram with and
     without it from one seed (``times`` and the periods' ``ends`` on the
@@ -443,7 +458,7 @@ def simulated(
     montecarlo.check_confidence(confidence)
     seed = _npv_runs._seed(seed)
     with_d, without_d, state_with, state_without = _diagrams(
-        does, usage, unit, times, age
+        does, usage, unit, times, age, use
     )
     horizon = float(ends[-1])
     node = does.plan.NODE

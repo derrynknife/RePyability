@@ -559,7 +559,11 @@ in `test_schedule_forecast.py`.
   `"cycles"`, `"starts"`, or any meter of the plan's own) is read from
   the duty plan's meter of it (`UsageForecast.reading(unit)`), in
   `model_time`, `moment`, `failures_by_period` and `task_value` with
-  `Replaces` or `Finds`.
+  `Replaces` or `Finds`; on a diagram, through
+  `CalendarContext(usage, duty={node: plan}, use={node: "km"})`, whose
+  block's duty is then that use's rate per unit of the diagram's clock
+  (`UsageForecast.schedule(unit, use="km")`, a `DutySchedule` with
+  `use`), in `events_by_period` and `task_value` with `Services`.
 - **Who asks:** a planner whose lives count distance or uses, not hours
   (tyres in km, valves in cycles, engines in starts).
 - **What they know:** the tyre's life (Weibull, scale 60,000 km, shape
@@ -588,15 +592,26 @@ in `test_schedule_forecast.py`.
 - **Decisions (defaults):** the kinds that convert are distance (km,
   miles); cycles and starts are each their own; any other name is a
   meter of the plan's own, read as it is. The notes say which meter was
-  read. A service valued on the unit's diagram (`Services`) takes a life
-  in operating time only: the diagram's clock is calendar time, so a
-  life in km is refused there, as on a `RepairableRBD` (a duty plan's
-  shares are shares of the time).
+  read. On a diagram, whose clock is calendar time, a block's duty is a
+  share of the time in (0, 1] for a life in operating hours, or a rate
+  of its use (any number from 0) given as a plan of that use: a rate
+  above 1 is taken only with the unit of use it is a rate of, so a
+  share given wrongly is still refused. A task counted in operating
+  time (`"basis": "operating"`) is then counted in that use (a tyre
+  replaced at 40,000 km). A state's age is in the life's unit (km), put
+  on the clock through the rate.
 - **Checks:** `test_schedule_use_units.py`: the km life at 400 km a day
   against the life in days run continuously (to 1e-12, present values
   too); the weekday duty against its hand count of km and
   `NonRepairable.failures` there (to 1e-12); miles on a km plan (to
   1e-6); the refusals; starts; a replacement task's model times in km.
+  `test_duty_rates.py`: on a diagram, the km life at 400 km a day
+  against the life in days (to 1e-12, the NPV too); the rate and the
+  weekday duty against `failures_by_period` (to 1e-6); a task at
+  40,000 km on the weekday duty, exact against its simulation (four
+  standard errors); a service by km as new against the replacement's
+  exact value (four standard errors), at a rate and on weekdays; saving;
+  the refusals.
 
 ### UC-39: "What is coming on this system each calendar month?"
 

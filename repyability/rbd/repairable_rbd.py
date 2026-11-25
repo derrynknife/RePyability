@@ -369,7 +369,11 @@ class RepairableRBD(RBD):
           unit's life is drawn in operating time and put on the clock
           through the plan from when it is put into service, and a
           preventive task in operating time falls when the plan reaches
-          it. The simulations take such a block; the values over time
+          it. For a life counted in a unit of use (km, cycles), the
+          plan's shares are that use's rates per unit of the clock (its
+          ``use``, ``UsageForecast.schedule(use="km")``), any number from
+          0, and its tasks in operating time are counted in that use.
+          The simulations take such a block; the values over time
           take it too where its repairs and tasks take no time (a task
           counted in operating time), as its operating-time process seen
           through the plan (see ``schedule.CalendarContext``).

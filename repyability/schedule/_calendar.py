@@ -46,6 +46,14 @@ class CalendarContext:
     unit : str, optional
         The unit of the diagram's models (``"hours"``, the default,
         ``"days"``, ...): of its clock and of each life in operating time.
+    use : mapping, optional
+        Node -> the unit of use its life is counted in (``"km"``,
+        ``"miles"``, ``"cycles"``, ``"starts"`` or a meter of its plan's
+        own), read from its duty plan's meter of it
+        (``UsageForecast.reading``): its duty is then that use's rate per
+        unit of the diagram's clock (400 km a day), and its tasks counted
+        in operating time (``"basis": "operating"``) are counted in that
+        use. A node left out has its life in operating time.
 
     Examples
     --------
@@ -63,6 +71,7 @@ class CalendarContext:
     usage: UsageForecast
     duty: Mapping[Any, Any] = field(default_factory=dict)
     unit: str = "hours"
+    use: Mapping[Any, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.usage, UsageForecast):
@@ -79,6 +88,19 @@ class CalendarContext:
                 f"{self.duty!r}."
             )
         object.__setattr__(self, "duty", dict(self.duty))
+        if not isinstance(self.use, Mapping):
+            raise TypeError(
+                "use must map each node to the unit of use its life is "
+                f"counted in (such as 'km'); got {self.use!r}."
+            )
+        object.__setattr__(self, "use", dict(self.use))
+        for node, unit in self.use.items():
+            if node not in self.duty or is_number(self.duty[node]):
+                raise ValueError(
+                    f"The life of node {node!r} is counted in {unit!r}, "
+                    "which is read from its duty plan's meter: give the "
+                    "node its duty plan (a UsageForecast) in duty."
+                )
         for node in self.duty:
             self.duty_plan(node)  # checked where it is given
 
@@ -118,6 +140,10 @@ class CalendarContext:
                 f"before the calendar does ({self.usage.end}): forecast it "
                 "to the calendar's end at least."
             )
+        if node in self.use:
+            # A rate of use, kept as steps (the block's duty takes a rate
+            # above 1 only as a plan of that use).
+            return given.schedule(self.unit, use=self.use[node])
         steps = given.schedule(self.unit)
         if len(set(steps.shares)) == 1:
             return float(steps.shares[0])
@@ -310,19 +336,25 @@ class CalendarContext:
             plans[str(node)] = (
                 plan if isinstance(plan, float) else _steps_dict(plan)
             )
-        return {
+        out = {
             "usage": self.usage.to_dict(),
             "duty": plans,
             "unit": self.unit,
         }
+        if self.use:
+            out["use"] = {str(node): unit for node, unit in self.use.items()}
+        return out
 
 
 def _steps_dict(plan: DutySchedule) -> Dict[str, Any]:
-    return {
+    out: Dict[str, Any] = {
         "unit": plan.unit,
         "times": list(plan.times),
         "shares": list(plan.shares),
     }
+    if plan.use is not None:
+        out["use"] = plan.use
+    return out
 
 
 def calendar_of(usage) -> Optional[CalendarContext]:
