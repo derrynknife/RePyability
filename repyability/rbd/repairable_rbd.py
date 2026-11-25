@@ -1063,6 +1063,7 @@ class RepairableRBD(RBD):
         }
         reliability = {}
         repairability = {}
+        nested: set = set()
         for name, component in components.items():
             if isinstance(component, dict):
                 _spec._validate_component_spec(name, component)
@@ -1202,6 +1203,14 @@ class RepairableRBD(RBD):
                 reliability[name] = life
                 repairability[name] = repair_model
             elif isinstance(component, RepairableRBD):
+                if id(component) in nested:
+                    # One sub-system drawn at several nodes: a nested
+                    # diagram carries its simulation state, so each node
+                    # after the first gets its own copy, built from the
+                    # same arguments (and models).
+                    component = _spec.own_copy(component)
+                    components[name] = component
+                nested.add(id(component))
                 reliability[name] = component
                 repairability[name] = None
             elif isinstance(component, NonRepairable):
@@ -1221,7 +1230,6 @@ class RepairableRBD(RBD):
                 if not isinstance(spec, RepairableRBD)
             }
         )
-        _spec._refuse_shared_nested(components)
 
         super().__init__(
             edges,
