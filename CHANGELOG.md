@@ -12,6 +12,16 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `spares_demand(method="simulate")` counts a sub-system's components
+  too, each as `(node, component)` from the sub-system's own runs on the
+  same seed, where it refused (still refused where a shutdown stands the
+  sub-system still or a group renews it); and `spares_demand` takes a
+  part pooling spares across levels (`(node, component)` members), its
+  count the sum of the independent demands. Checked: the simulated
+  counts against the exact ones within 1.3 SE; a top-level unit and a
+  sub-system's at constant rates pooled are Poisson(6) over 4,000 h to
+  3e-7, simulated mean 5.93 (-1.8 SE).
+
 - `spares_stock(method="simulate")` takes a sub-system's components, each
   on a shelf of its own keyed `(node, component)` in the sub-system's
   own loop (a shelf across levels is refused), and a fleet (`fleet=`):

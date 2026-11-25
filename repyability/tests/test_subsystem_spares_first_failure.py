@@ -102,10 +102,25 @@ def test_one_sub_system_for_several_nodes_counts_each():
     assert set(counted) == {("q1", "a"), ("q1", "b"), ("q2", "a"), ("q2", "b")}
 
 
-def test_the_simulated_counts_of_a_sub_system_refuse():
+def test_the_simulated_counts_of_a_sub_system_are_its_own_runs():
     nested, flat = pumps_and_pair()
-    with pytest.raises(NotImplementedError, match="top-level nodes"):
-        nested.spares_demand(1000.0, method="simulate", mc_samples=10)
+    # Each sub-system's component from the sub-system's own runs on the
+    # same seed, keyed (node, component), against the exact count.
+    n = 4000
+    simulated = nested.spares_demand(
+        5000.0, method="simulate", mc_samples=n, seed=2
+    )
+    assert list(simulated) == ["p", ("q", "a"), ("q", "b")]
+    inner = nested.components["q"].spares_demand(
+        5000.0, method="simulate", mc_samples=n, seed=2
+    )
+    assert np.array_equal(
+        simulated[("q", "a")].probabilities, inner["a"].probabilities
+    )
+    exact = nested.spares_demand(5000.0)
+    for key in simulated:
+        se = exact[key].std / math.sqrt(n)
+        assert abs(simulated[key].mean - exact[key].mean) < 4 * se
     # Its top-level components are counted as before.
     alone = nested.spares_demand(
         1000.0, nodes=["p"], method="simulate", mc_samples=10, seed=1
@@ -151,7 +166,43 @@ def test_what_couples_a_sub_system_refuses_its_counts():
     assert routes["spares_stock"].route == "refused"
     nested, _ = pumps_and_pair()
     with pytest.raises(NotImplementedError, match="across levels"):
-        nested.spares_demand(1000.0, parts={"seal": ["p", ("q", "a")]})
+        nested.spares_stock(
+            100.0, fill_rate=0.9, parts={"seal": ["p", ("q", "a")]}
+        )
+
+
+def instant(rate):
+    return {"reliability": E([rate]), "repairability": "instant"}
+
+
+def test_a_part_pools_spares_across_levels():
+    # A top-level unit and a sub-system's, each replaced in no time at a
+    # constant rate: their demands are independent Poisson processes, so
+    # the pooled count over T is Poisson((l1 + l2) T), as for two units
+    # at one level.
+    inner = RepairableRBD(PAIR, {"a": instant(1e-3), "b": instant(2e-3)})
+    nested = RepairableRBD(
+        [("s", "p"), ("p", "q"), ("q", "t")], {"p": instant(5e-4), "q": inner}
+    )
+    T = 4000.0
+    from scipy import stats
+
+    pooled = nested.spares_demand(T, parts={"seal": ["p", ("q", "a")]})
+    assert pooled["seal"].members == ("p", ("q", "a"))
+    expected = stats.poisson.pmf(
+        np.arange(len(pooled["seal"].probabilities)), 1.5e-3 * T
+    )
+    # The counts are worked out on a grid, to about 1e-6.
+    assert np.allclose(pooled["seal"].probabilities, expected, atol=1e-6)
+    simulated = nested.spares_demand(
+        T,
+        parts={"seal": ["p", ("q", "a")]},
+        method="simulate",
+        mc_samples=4000,
+        seed=5,
+    )["seal"]
+    se = math.sqrt(1.5e-3 * T / 4000)
+    assert abs(simulated.mean - 1.5e-3 * T) < 4 * se
 
 
 def test_the_routes_say_a_sub_system_is_counted():

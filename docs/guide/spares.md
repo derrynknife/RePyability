@@ -37,9 +37,12 @@ that last it with probability `p`. The components are counted from new, and
 a fleet's systems independently; `nodes` picks the components (by default
 all of them). A sub-system (a nested `RepairableRBD`) is counted by its
 components, each as `(node, component)`, exactly through its own models,
-the same as the system drawn flat; by simulation it is refused (give
-`nodes`, or call the sub-system's own), and so is a part pooling spares
-across levels.
+the same as the system drawn flat, or by simulation from its own runs on
+the same seed (nothing in the parent changes them, but a shutdown that
+stands it still or a group that renews it, refused). A part may pool
+spares across levels (`parts={"seal": ["p", ("q", "a")]}`): their demands
+are independent, so its count is their sum. (The long-run stock and the
+simulated shelf still refuse a part across levels.)
 
 The seals' count is Poisson, as for any constant failure rate with instant
 replacement. The pumps' is not:

@@ -1860,21 +1860,51 @@ def _sub_systems(rbd, nodes, parts, method: str = "exact") -> list:
     component)``: every one, when neither ``nodes`` nor ``parts`` is
     given. Counted through the sub-system's own models, which nothing in
     the diagram changes but its repair crews (refused, as for any
-    component that can wait for one); not by simulation, whose runs
-    record the top-level nodes' replacements alone."""
+    component that can wait for one); by simulation, from the
+    sub-system's own runs on the same seed, which nothing in the parent
+    changes but a shutdown that pauses it or a maintenance group it is
+    in (refused)."""
     if nodes is not None or parts is not None:
         return []
     nested = _nested(rbd)
-    if nested and method == "simulate":
-        raise NotImplementedError(
-            f"Node {nested[0]!r} is a nested RBD, and the simulated runs "
-            "record the top-level nodes' replacements alone: count its "
-            "components with method='exact' (each as (node, component)), "
-            "or by its own spares_demand(method='simulate'), or give the "
-            "top-level components counted, nodes="
-            f"{[n for n in rbd.components if n not in nested]!r}."
-        )
+    if method == "simulate":
+        for node in nested:
+            _require_uncoupled(rbd, node)
     return nested
+
+
+def _require_uncoupled(rbd, node) -> None:
+    """Raise if the parent changes sub-system ``node``'s own runs: a
+    shutdown that stands it still, or a maintenance group (or a
+    shutdown's early renewals) it is in."""
+    from repyability.rbd import _shutdowns
+
+    paused = any(stops for _, stops in _shutdowns.holding(rbd, node))
+    if paused or node in rbd._member_group or node in rbd._outage_members:
+        raise NotImplementedError(
+            f"Node {node!r} is a nested RBD that "
+            + (
+                "a shutdown stands still"
+                if paused
+                else "is in a maintenance group or renewed at shutdowns"
+            )
+            + ", so its components' replacements are not those of its "
+            "own runs: count the top-level components (nodes=...) by "
+            "simulation, or its components with method='exact'."
+        )
+
+
+def _inner(rbd, key) -> bool:
+    """Whether ``key`` names a sub-system's component, ``(node,
+    component)``."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    return (
+        isinstance(key, tuple)
+        and key not in rbd.components
+        and len(key) == 2
+        and isinstance(rbd.components.get(key[0]), RepairableRBD)
+    )
 
 
 def require_countable(rbd, long_run: bool) -> None:
@@ -1890,12 +1920,16 @@ def require_countable(rbd, long_run: bool) -> None:
         require_countable(rbd.components[node], long_run)
 
 
-def _spares_parts(rbd, parts) -> Dict[Hashable, Tuple[Hashable, ...]]:
+def _spares_parts(
+    rbd, parts, across: bool = False
+) -> Dict[Hashable, Tuple[Hashable, ...]]:
     """The parts whose spares are pooled (#183), ``{part: members}``,
     checked: each a collection of components (no nested RBD), a node
     in one part at most, a part's name no component's, and no two
     members in one common-cause group, whose shared causes replace
-    them together."""
+    them together. With ``across``, a member may be a sub-system's
+    component, ``(node, component)``: its demand is independent of
+    the other levels', so the part's count is their sum."""
     if parts is None:
         return {}
     if not isinstance(parts, Mapping) or not parts:
@@ -1919,7 +1953,8 @@ def _spares_parts(rbd, parts) -> Dict[Hashable, Tuple[Hashable, ...]]:
                 f"list, got {members!r}."
             )
         listed = list(members)
-        across = [
+        _across_ok = across
+        across_members = [
             m
             for m in listed
             if isinstance(m, tuple)
@@ -1927,10 +1962,11 @@ def _spares_parts(rbd, parts) -> Dict[Hashable, Tuple[Hashable, ...]]:
             and m[:1]
             and m[0] in _nested(rbd)
         ]
-        if across:
+        if across_members and not _across_ok:
             raise NotImplementedError(
-                f"Part {part!r} names {across[0]!r}, a component of the "
-                f"sub-system {across[0][0]!r}: a part pooling spares across "
+                f"Part {part!r} names {across_members[0]!r}, a component "
+                f"of the sub-system {across_members[0][0]!r}: a part "
+                "pooling spares across "
                 "levels is not counted yet. Count the sub-system's own "
                 "parts with its own spares_demand or spares_stock "
                 "(parts=...)."
@@ -1943,7 +1979,15 @@ def _spares_parts(rbd, parts) -> Dict[Hashable, Tuple[Hashable, ...]]:
                 f"Part {part!r} lists {', '.join(twice)} more than once: "
                 "name each component that uses it once."
             )
-        chosen = _spares_nodes(rbd, listed, f"part {part!r}")
+        chosen = _spares_nodes(
+            rbd,
+            [m for m in listed if m not in across_members],
+            f"part {part!r}",
+        )
+        for member in across_members:
+            inner = rbd.components[member[0]]
+            _spares_nodes(inner, [member[1]], f"part {part!r}")
+            chosen.append(member)
         if not chosen:
             raise ValueError(f"Part {part!r} has no components.")
         for node in chosen:
@@ -1966,12 +2010,14 @@ def _spares_parts(rbd, parts) -> Dict[Hashable, Tuple[Hashable, ...]]:
     return out
 
 
-def _spares_counted(rbd, nodes, parts) -> Tuple[list, dict, list]:
+def _spares_counted(
+    rbd, nodes, parts, across: bool = False
+) -> Tuple[list, dict, list]:
     """The components counted on their own (``nodes``, or every one
     but a nested RBD; none when only ``parts`` are asked for), the
-    parts (see ``_spares_parts``), and every component either counts,
-    in order."""
-    pools = _spares_parts(rbd, parts)
+    parts (see ``_spares_parts``, ``across`` levels too), and every
+    component either counts, in order."""
+    pools = _spares_parts(rbd, parts, across)
     chosen = [] if (nodes is None and pools) else _spares_nodes(rbd, nodes)
     if nodes is not None:
         for part, members in pools.items():
@@ -2174,17 +2220,30 @@ def spares_demand(
     end = _horizon(horizon)
     fleet = _whole("fleet", fleet)
     one_of("method", method, ("exact", "simulate"))
-    chosen, pools, counted = _spares_counted(rbd, nodes, parts)
+    chosen, pools, counted = _spares_counted(rbd, nodes, parts, True)
     # A sub-system's components, each as (node, component), from its own.
     nested = _sub_systems(rbd, nodes, parts, method)
+    # A part's members in sub-systems, from the sub-system's own.
+    inner = [key for key in counted if _inner(rbd, key)]
+    top = [key for key in counted if key not in inner]
     if method == "simulate":
         runs = _simulated_replacements(
             rbd,
             end,
-            counted,
+            top,
             10_000 if mc_samples is None else mc_samples,
             seed,
         )
+        for node in dict.fromkeys(key[0] for key in inner):
+            _require_uncoupled(rbd, node)
+            own = _simulated_replacements(
+                rbd.components[node],
+                end,
+                [key[1] for key in inner if key[0] == node],
+                10_000 if mc_samples is None else mc_samples,
+                seed,
+            )
+            runs.update({(node, c): row for c, row in own.items()})
         counts = {node: _fractions(runs[node]) for node in chosen}
         pooled = {
             part: _fractions(np.sum([runs[m] for m in members], axis=0))
@@ -2192,7 +2251,12 @@ def spares_demand(
         }
     else:
         _crews._require_unlimited_crews(rbd, *_SPARES_CREWS)
-        models = {node: _replacements(rbd, node) for node in counted}
+        models = {node: _replacements(rbd, node) for node in top}
+        for node, c in inner:
+            _crews._require_unlimited_crews(
+                rbd.components[node], *_SPARES_CREWS
+            )
+            models[(node, c)] = _replacements(rbd.components[node], c)
         each = {
             node: count(model, end, "new") for node, model in models.items()
         }
@@ -2208,7 +2272,7 @@ def spares_demand(
                 _fleet(counts[node], fleet), end, fleet, method
             )
         elif node in nested:
-            inner = spares_demand(
+            theirs = spares_demand(
                 rbd.components[node],
                 horizon,
                 nodes=None,
@@ -2218,7 +2282,7 @@ def spares_demand(
                 seed=seed,
                 parts=None,
             )
-            out.update({(node, key): value for key, value in inner.items()})
+            out.update({(node, key): v for key, v in theirs.items()})
     for part, number in pooled.items():
         out[part] = SparesDemand(
             _fleet(number, fleet), end, fleet, method, pools[part]

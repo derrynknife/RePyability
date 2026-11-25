@@ -1775,8 +1775,9 @@ class RepairableRBD(RBD):
             The components to count for, by default every component, or
             none when ``parts`` are given. By default a nested RBD's
             (a sub-system's) components are counted too, each as ``(node,
-            component)``, exactly through its own models (by simulation,
-            refused: give ``nodes``, or use the sub-system's own).
+            component)``, exactly through its own models, or by
+            simulation from its own runs on the same seed (refused where
+            a shutdown stands it still or a group renews it).
         fleet : int, optional
             How many systems, by default 1.
         method : str, optional
@@ -1790,6 +1791,9 @@ class RepairableRBD(RBD):
             ``{part: [nodes]}``: the components whose spares come from one
             shelf, counted together under the part's name. A node is in one
             part at most, and a part is named apart from the components.
+            A member may be a sub-system's component, ``(node,
+            component)``: its demand is independent of the other
+            levels', so the part's count is their sum.
 
         Returns
         -------
