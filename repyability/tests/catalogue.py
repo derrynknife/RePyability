@@ -1109,6 +1109,23 @@ def repairable_kinds():
                     replace_cost=10.0,
                 )
             ),
+            # Repaired and maintained in no time on such a plan: its
+            # operating-time process seen through the plan (exact over
+            # time).
+            "on a duty plan that changes, renewed in no time": system(
+                unit(
+                    duty=DutySchedule(
+                        "hours", (0.0, 40.0, 100.0), (1.0, 0.0, 0.5)
+                    ),
+                    repairability="instant",
+                    preventive={
+                        "interval": 75.0,
+                        "basis": "operating",
+                        "cost": 2.0,
+                    },
+                    replace_cost=10.0,
+                )
+            ),
             "operated part of the time, tested by running hours": system(
                 unit(
                     duty=0.5,

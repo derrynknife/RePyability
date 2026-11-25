@@ -75,10 +75,15 @@ def scheduled(component) -> Optional["ClockLife"]:
 
 def on_clock(rbd) -> bool:
     """Whether a component of ``rbd`` has a life on the diagram's clock
-    (a ``ClockLife``), which only the simulations take."""
+    (a ``ClockLife``) that only the simulations take: all but a duty
+    plan's that only time-changes its unit (``_duty.time_change_blocker``),
+    whose values over time are its operating time's."""
+    from ._duty import time_change_blocker
+
     return any(
         scheduled(component) is not None
-        for component in rbd.components.values()
+        and time_change_blocker(rbd, node) is not None
+        for node, component in rbd.components.items()
     )
 
 
