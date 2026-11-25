@@ -25,6 +25,16 @@ import numba
 import numpy as np
 from numba import njit
 
+from repyability.rbd._events import (
+    TALLY_CORRECTIVE,
+    TALLY_COUNTED,
+    TALLY_FAILURE,
+    TALLY_KEPT,
+    TALLY_PLANNED,
+    TALLY_PREVENTIVE,
+    TALLY_TEST,
+)
+
 # The kinds of term of the structure (see ``modular``).
 _NODE, _SERIES, _PARALLEL = 0, 1, 2
 
@@ -1335,7 +1345,23 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                     # working unit (renewed in place), a test in zero time
                     # of a working unit, or a test of a failed one, which
                     # finds its failure (charged its repair now) or misses
-                    # it.
+                    # it. Recording, the event is counted
+                    # (``_events.TALLY_*``) as a record that changes
+                    # nothing.
+                    if recording:
+                        if recorded_n == recorded_room:
+                            code = -2
+                            break
+                        if kind_now <= _PM_IN_PLACE:
+                            kept_as = TALLY_PREVENTIVE
+                        elif not up_now and kind_now != _TEST_MISSED:
+                            kept_as = TALLY_TEST | TALLY_CORRECTIVE
+                        else:
+                            kept_as = TALLY_TEST
+                        rec_times[row, recorded_n] = t
+                        rec_which[row, recorded_n] = c
+                        rec_planned[row, recorded_n] = TALLY_KEPT | kept_as
+                        recorded_n += 1
                     if kind_now <= _PM_IN_PLACE:
                         q = pm_charge[c]
                         if q > -2:
@@ -1420,16 +1446,21 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                             break
                         rec_times[row, recorded_n] = t
                         rec_which[row, recorded_n] = c
-                        # A planned change down: maintenance or a test
-                        # off line.
-                        rec_planned[row, recorded_n] = (
-                            1
-                            if state_now == 0
-                            and (
-                                kind_now == _PM_START or kind_now == _TEST_DOWN
-                            )
-                            else 0
-                        )
+                        # A change down is counted (``_events.TALLY_*``):
+                        # maintenance or a test off line, planned, or a
+                        # failure, a corrective action at once unless a
+                        # test is to find it.
+                        if state_now:
+                            change_as = 0
+                        elif kind_now == _PM_START:
+                            change_as = TALLY_PLANNED | TALLY_PREVENTIVE
+                        elif kind_now == _TEST_DOWN:
+                            change_as = TALLY_PLANNED | TALLY_TEST
+                        elif tested[c] > 0.0:
+                            change_as = TALLY_FAILURE
+                        else:
+                            change_as = TALLY_FAILURE | TALLY_CORRECTIVE
+                        rec_planned[row, recorded_n] = change_as
                         recorded_n += 1
                         seen[c] += 1
                     if state_now:
@@ -1885,34 +1916,63 @@ def trace_capacity(
 
 
 @njit(cache=True)
-def group_records(counts, times, which, planned, m):
-    """The changes of components that a batch's simulations recorded (row
-    ``row``'s first ``counts[row]`` of ``times``, ``which`` and
-    ``planned``, in the order they happened), by component: component
-    ``c``'s are ``bounds[c]`` to ``bounds[c + 1]`` of the times and
-    planned flags returned, simulation ``row``'s from ``offsets[c, row]``
-    to ``offsets[c, row + 1]`` of those, in the order they happened."""
+def group_records(counts, times, which, flags, m, wanted, kept):
+    """The records of a batch's simulations (row ``row``'s first
+    ``counts[row]`` of ``times``, ``which`` and ``flags``, in the order
+    they happened) with any of the bits ``wanted`` in their flags (any
+    record for -1), those that change nothing (``TALLY_KEPT``) only if
+    ``kept``, by component: component ``c``'s are ``bounds[c]`` to
+    ``bounds[c + 1]`` of the times and flags returned, simulation
+    ``row``'s from ``offsets[c, row]`` to ``offsets[c, row + 1]`` of those,
+    in the order they happened."""
     rows = counts.size
     per = np.zeros((m, rows + 1), np.int64)
     for row in range(rows):
         for k in range(counts[row]):
-            per[which[row, k], row + 1] += 1
+            if _taken(flags[row, k], wanted, kept):
+                per[which[row, k], row + 1] += 1
     bounds = np.zeros(m + 1, np.int64)
     for c in range(m):
         for row in range(rows):
             per[c, row + 1] += per[c, row]
         bounds[c + 1] = bounds[c] + per[c, rows]
     out_times = np.empty(bounds[m])
-    out_planned = np.empty(bounds[m], np.bool_)
+    out_flags = np.empty(bounds[m], np.int8)
     filled = per[:, :rows].copy()
     for row in range(rows):
         for k in range(counts[row]):
+            if not _taken(flags[row, k], wanted, kept):
+                continue
             c = which[row, k]
             at = bounds[c] + filled[c, row]
             out_times[at] = times[row, k]
-            out_planned[at] = planned[row, k] != 0
+            out_flags[at] = flags[row, k]
             filled[c, row] += 1
-    return bounds, per, out_times, out_planned
+    return bounds, per, out_times, out_flags
+
+
+@njit(cache=True, inline="always")
+def _taken(flag, wanted, kept):
+    """Whether a record of ``flag`` is one ``group_records`` takes."""
+    if not kept and flag & TALLY_KEPT:
+        return False
+    return wanted < 0 or (flag & wanted) != 0
+
+
+def changes_and_counted(counts, times, which, flags, m):
+    """A batch's records (see ``group_records``) as the components'
+    changes (their times and whether each is a planned change down) and
+    their counted events (``_timeline_runs.Block.counted``)."""
+    bounds, offsets, at, made = group_records(
+        counts, times, which, flags, m, -1, False
+    )
+    counted = group_records(
+        counts, times, which, flags, m, TALLY_COUNTED, True
+    )
+    return (
+        (bounds, offsets, at, (made & TALLY_PLANNED) != 0),
+        counted[:3] + ((counted[3] & TALLY_COUNTED).astype(np.int8),),
+    )
 
 
 @njit(cache=True, nogil=True)

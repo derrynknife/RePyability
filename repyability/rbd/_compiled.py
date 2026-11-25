@@ -1194,9 +1194,10 @@ class Runner:
         if self._recording:
             from repyability.rbd._timeline_runs import Block
 
-            bounds, offsets, times, planned = self._kernel.group_records(
+            changed_at, counted = self._kernel.changes_and_counted(
                 rec_count, rec_times, rec_which, rec_planned, self._model.n
             )
+            bounds, offsets, times, planned = changed_at
             changed = np.zeros(size + 1, np.int64)
             np.cumsum(change_count, out=changed[1:])
             made = np.arange(change_times.shape[1]) < change_count[:, None]
@@ -1213,6 +1214,7 @@ class Runner:
                     change_cause[made].astype(np.int64),
                     change_index[made],
                     change_planned[made].astype(bool),
+                    counted=counted,
                 )
             )
             # Each simulation's cost beside its histories (for a

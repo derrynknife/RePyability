@@ -1156,7 +1156,13 @@ in `test_schedule_forecast.py`.
   falls as on any diagram. Otherwise (repairs or tasks that take time, a
   task counted in calendar time, tests, a maintenance group) it counts
   each month's events in the simulations' histories and takes the cost's
-  mean and range from the same runs.
+  mean and range from the same runs. Both engines record each
+  component's events there as the loop counts them, those that change
+  no state included (a task in zero time, a test that finds the unit
+  working, a test that finds a hidden failure, which is then a
+  corrective action), so every task, test and corrective action is
+  counted; a shut's starts are planned, so exact, and its hold is not a
+  task.
 - **Decisions (defaults):** a plan belongs to the analysis
   (`CalendarContext.duty`), not to the unit's plan; a task in operating
   time on a block with no duty counts the diagram's clock as its
@@ -1184,7 +1190,12 @@ in `test_schedule_forecast.py`.
   form (failures `λD(t)`, a present value of `cλ∫e^{-rs}s(s)ds`, to
   1e-7), and `events_by_period` against `failures_by_period` through the
   same shifts (to 1e-6, the present values within the part's
-  `npv_precision`); a usage task's dates equal the forecast's
+  `npv_precision`); `test_history_events.py`: the histories' counts
+  against the exact counts on a duty of one share (tasks in zero time,
+  tests in zero time, taking time and missing), the counts on dates by
+  hand (a zero-time task in calendar time, tests in operating time, a
+  shut), and the quarter's counts on shifts against the one-node
+  diagram at `D(end)`, within four standard errors; a usage task's dates equal the forecast's
   `moment`s; a rule's dates; saving; the refusals. A rule as a spec of
   its own (resolved by the calendar) is not built: the diagram must
   stand without a calendar, and a rule's dates need one.

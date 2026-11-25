@@ -54,6 +54,10 @@ from repyability.rbd._degradation import (
     level_after,
 )
 from repyability.rbd._events import (
+    TALLY_CORRECTIVE,
+    TALLY_FAILURE,
+    TALLY_PREVENTIVE,
+    TALLY_TEST,
     Event,
     _Cause,
     _CauseDraws,
@@ -2566,6 +2570,29 @@ def _replaced_at(
     return dues[above[0]] if above.size else math.inf
 
 
+def _no_change_tally(event: Event) -> int:
+    """What an event that leaves its component's state as it is counts
+    as (``_events.TALLY_*``): a task in zero time of a working unit, or a
+    test that finds it working, misses its failure or finds it (and its
+    repair starts, a corrective action)."""
+    if event.preventive:
+        return TALLY_PREVENTIVE
+    if not event.status and not event.missed:
+        return TALLY_TEST | TALLY_CORRECTIVE
+    return TALLY_TEST
+
+
+def _change_tally(event: Event, hidden: bool) -> int:
+    """What a change down counts as (``_events.TALLY_*``): a task's
+    outage, a test off line, or a failure, a corrective action at once
+    unless its failures are ``hidden`` (found by a test)."""
+    if event.preventive:
+        return TALLY_PREVENTIVE
+    if event.inspection:
+        return TALLY_TEST
+    return TALLY_FAILURE if hidden else TALLY_FAILURE | TALLY_CORRECTIVE
+
+
 def _condition_next(
     rbd, node, t: float, schedule: _Preventive, source
 ) -> Event:
@@ -3132,6 +3159,10 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     held_of: list = [[] for _ in range(n)] if shut_record else []
     hidden_of: list = [[] for _ in range(n)] if shut_record else []
     system_record: tuple = ([], [], [], []) if history else ()
+    # With history: each component's events as the loop counts them
+    # (their times and what each counts as, _events.TALLY_*), whether or
+    # not they change its state, and whether a shut's hold hides them.
+    counted_of: list = [[] for _ in range(n)] if history else []
     # With history: when each component's unit in service was put in as
     # new (a renewing repair's end, a renewal by a task, from a state its
     # age before 0), for its age at the end (a salvage by age, see
@@ -3314,6 +3345,10 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             # No change of state: maintenance or a test in zero time of a
             # working unit (renewed in place, or found working), or a
             # test that finds a hidden failure, whose repair starts now.
+            if history:
+                counted_of[index[node]].append(
+                    (event.time, _no_change_tally(event))
+                )
             if event.preventive:
                 if not restoring or node not in restoring:
                     replaced[index[node]] += 1
@@ -3379,6 +3414,8 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             hidden_of[c].append(
                 (t, bool(event.preventive or event.inspection))
             )
+        if history and not event.status:
+            counted_of[c].append((t, _change_tally(event, node in inspected)))
         if event.status:
             restored[c] += 1
             if history:
@@ -3541,6 +3578,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
                 t_simulation - new_at[c] if status[node] else math.nan
                 for node, c in index.items()
             ],
+            counted_of,
         )
         if history
         else None

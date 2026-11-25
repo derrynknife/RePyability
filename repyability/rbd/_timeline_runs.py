@@ -55,6 +55,20 @@ class Block(NamedTuple):
     #: component's unit in service at the end, NaN for one down then (see
     #: ``_replicate``); numba's loop records none (``None``).
     ages: Optional[np.ndarray] = None
+    #: Each component's events as the loop counts them (see
+    #: ``_events.TALLY_COUNTED``), changes of state or not: bounds,
+    #: offsets, times and what each counts as, laid out as the changes.
+    counted: Optional[tuple] = None
+
+
+class Counted(NamedTuple):
+    """A component's events as the loop counts them, a task or test in
+    zero time included: each one's simulation (its place in the run),
+    time and what it counts as (``_events.TALLY_*`` bits)."""
+
+    history: np.ndarray
+    times: np.ndarray
+    kinds: np.ndarray
 
 
 class Hidden(NamedTuple):
@@ -162,6 +176,33 @@ class Records:
         )
         return components, system
 
+    def counted(self) -> List[Counted]:
+        """Each component's counted events (see ``Counted``), in the
+        order of the components."""
+        self.compact()
+        blocks = self.blocks or [_block([], self.m)]
+        out = []
+        for c in range(self.m):
+            history, times, kinds = [], [], []
+            first = 0
+            for b in blocks:
+                assert b.counted is not None
+                bounds, offsets, at, flags = b.counted
+                a, z = bounds[c], bounds[c + 1]
+                counts = np.diff(offsets[c])
+                history.append(first + np.repeat(np.arange(b.up.size), counts))
+                times.append(at[a:z])
+                kinds.append(flags[a:z])
+                first += b.up.size
+            out.append(
+                Counted(
+                    np.concatenate(history),
+                    np.concatenate(times),
+                    np.concatenate(kinds),
+                )
+            )
+        return out
+
     def hidden(self) -> List[Hidden]:
         """Each component's holds and hidden changes (see ``Hidden``), in
         the order of the components."""
@@ -239,24 +280,8 @@ def _block(histories: list, m: int) -> Block:
                 if places:
                     at = bounds[c] + grouped[c, s] + np.asarray(places)
                     held[at] = True
-        hidden_offsets = np.zeros((m, n + 1), np.int64)
-        np.cumsum(
-            np.array(
-                [[len(h[6][c]) for h in histories] for c in range(m)],
-                np.int64,
-            ).reshape(m, n),
-            axis=1,
-            out=hidden_offsets[:, 1:],
-        )
-        hidden_bounds = np.zeros(m + 1, np.int64)
-        np.cumsum(hidden_offsets[:, n], out=hidden_bounds[1:])
-        changes = [x for c in range(m) for h in histories for x in h[6][c]]
-        hidden = (
-            hidden_bounds,
-            hidden_offsets,
-            np.array([t for t, _ in changes], float),
-            np.array([p for _, p in changes], bool),
-        )
+        hidden = _laid_out([h[6] for h in histories], m, bool)
+    counted = _laid_out([h[8] for h in histories], m, np.int8)
 
     def system_changes(field: int, dtype) -> np.ndarray:
         lists = (h[4][field] for h in histories)
@@ -277,6 +302,31 @@ def _block(histories: list, m: int) -> Block:
         held,
         hidden,
         np.array([h[7] for h in histories], float).reshape(n, m),
+        counted,
+    )
+
+
+def _laid_out(lists: list, m: int, dtype) -> tuple:
+    """Each simulation's (time, value) pairs of each component (a list
+    of ``m`` lists a simulation), laid out as a block's changes: bounds,
+    offsets, the times and the values."""
+    n = len(lists)
+    offsets = np.zeros((m, n + 1), np.int64)
+    np.cumsum(
+        np.array(
+            [[len(one[c]) for one in lists] for c in range(m)], np.int64
+        ).reshape(m, n),
+        axis=1,
+        out=offsets[:, 1:],
+    )
+    bounds = np.zeros(m + 1, np.int64)
+    np.cumsum(offsets[:, n], out=bounds[1:])
+    pairs = [x for c in range(m) for one in lists for x in one[c]]
+    return (
+        bounds,
+        offsets,
+        np.array([t for t, _ in pairs], float),
+        np.array([k for _, k in pairs], dtype),
     )
 
 
@@ -295,6 +345,7 @@ def simulate(
     hidden: bool = False,
     prefix: tuple = (),
     ages: bool = False,
+    counted: bool = False,
 ):
     """``simulate_timelines``: validated, run, and returned as a
     ``TimelineSimulation``; with ``hidden``, with each component's holds
@@ -303,7 +354,9 @@ def simulate(
     component's unit in service at the end (``Records.ages``), which the
     Python loop alone records: a run that asks for them runs in it
     (``"a salvage by age"``, as ``_compiled.unsupported`` would hand it
-    over), and ``engine="numba"`` is refused.
+    over), and ``engine="numba"`` is refused. With ``counted``, it
+    returns each component's counted events too (``Records.counted``: a
+    task or test in zero time included), by node.
     ``prefix`` is the RBD's place in a system it is nested in: its
     streams are named as there, and it runs in Python (a nested RBD's
     histories alone, for pricing them, see ``_nested_costs``)."""
@@ -409,6 +462,11 @@ def simulate(
             else None
         )
         at_end = tally.histories.ages() if ages else None
+        events = (
+            dict(zip(rbd.components, tally.histories.counted()))
+            if counted
+            else None
+        )
     finally:
         np.random.set_state(after)
     result = TimelineSimulation(
@@ -423,6 +481,8 @@ def simulate(
         method="event loop",
         start=start,
     )
+    if counted:
+        return result, events
     if ages:
         return result, left_out, at_end
     return (result, left_out) if hidden else result

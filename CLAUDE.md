@@ -196,7 +196,11 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   `_Context.history`; `_kernel._simulate` when given room to record, the
   system's own level only): each top-level
   component's changes, and each of the system's with the component that
-  made it (#205: there is no other path to them). A change to what the
+  made it (#205: there is no other path to them), and each component's
+  events as the loop counts them (`_events.TALLY_*`: failures,
+  corrective actions, tasks and tests, those that change no state
+  included; `Records.counted`, which `events_by_period` bins on a plan
+  that changes). A change to what the
   loops record goes into both: `test_timelines.py` checks every engine's
   histories against each other and against `availability`. One thing
   the Python loop alone records: each unit's age at the end
