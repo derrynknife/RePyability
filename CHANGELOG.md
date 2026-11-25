@@ -12,6 +12,14 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `OnRule(rule, at=)`: a unit plan's task on a recurrence rule's dates (a
+  `"preventive"` spec's `"rule"` and `"at"`). Its dates are the
+  calendar's: `CalendarContext.diagram` now also takes a diagram's edges
+  and components (and options) to build it on the calendar, putting each
+  rule task at `rule_times(rule, at)`, and a `UnitPlan`'s analyses do so
+  with `calendar=` (and `events_by_period` with a `CalendarContext`). A
+  diagram given a rule task without a calendar refuses, saying so. A
+  saved plan keeps its rule.
 - `least_spend_for_downtime` takes two more levers: `crews={"price":,
   "max":}` (repair crews more than the diagram's `repair_crews`, each at
   its price and its salary at the `crew_cost_rate`) and `call_out=` (a

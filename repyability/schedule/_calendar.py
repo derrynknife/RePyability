@@ -175,22 +175,76 @@ class CalendarContext:
 
     # -- the diagram on it ----------------------------------------------------
 
-    def diagram(self, rbd):
-        """``rbd`` (a ``RepairableRBD``) on this calendar: each node the
-        calendar gives a plan has it as its ``"duty"``. The diagram
-        itself when the calendar gives no plan.
+    def diagram(self, rbd, components=None, **options):
+        """A ``RepairableRBD`` on this calendar: each node the calendar
+        gives a plan has it as its ``"duty"``, and each task on a
+        recurrence rule (``OnRule``, a ``"preventive"`` spec's
+        ``"rule"``) replaces its unit at the rule's dates within the
+        calendar (``rule_times``). Given a diagram, the diagram itself
+        when the calendar changes nothing.
+
+        A diagram whose tasks are on rules cannot be built without a
+        calendar: give its ``edges`` and ``components`` (and any of
+        ``RepairableRBD``'s options) here in place of the diagram.
 
         Parameters
         ----------
-        rbd : RepairableRBD
+        rbd : RepairableRBD or sequence of edges
             The diagram, each node the calendar's ``duty`` names a unit
-            with a life (a spec or a ``UnitPlan``).
+            with a life (a spec or a ``UnitPlan``); or the edges of the
+            diagram to build, with ``components``.
+        components : dict, optional
+            With edges: the diagram's components, as ``RepairableRBD``
+            takes them.
+        **options
+            With edges: ``RepairableRBD``'s other arguments.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import OnRule, UnitPlan
+        >>> from repyability.schedule import CalendarContext, Recurrence
+        >>> from repyability.schedule import UsageForecast
+        >>> frame = UsageForecast.calendar("2027-01-01", "2028-01-01")
+        >>> quarterly = Recurrence.monthly(
+        ...     weekday="Monday", nth=1, every=3, anchor="2027-01-01"
+        ... )
+        >>> plan = UnitPlan(
+        ...     surv.Weibull.from_params([3000.0, 2.0]),
+        ...     "instant",
+        ...     tasks=(OnRule(quarterly, at="06:00", cost=50.0),),
+        ... )
+        >>> rbd = CalendarContext(frame).diagram(
+        ...     [("input", "pump"), ("pump", "output")], {"pump": plan}
+        ... )
+        >>> rbd.expected_cost(8760.0).by_category["preventive"]
+        200.0
         """
         from repyability.rbd.repairable_rbd import RepairableRBD
 
-        components = dict(rbd._init_args["components"])
+        if components is None:
+            if not isinstance(rbd, RepairableRBD):
+                raise TypeError(
+                    "diagram takes a RepairableRBD, or a diagram's edges "
+                    f"with its components; got {rbd!r}."
+                )
+            if options:
+                raise TypeError(
+                    "A diagram's options are given with its edges and "
+                    "components, not with a diagram already built."
+                )
+            args = dict(rbd._init_args)
+        else:
+            if isinstance(rbd, RepairableRBD):
+                raise TypeError(
+                    "Give a diagram already built alone, or the edges and "
+                    "components of one to build, not both."
+                )
+            args = {**options, "edges": rbd, "components": components}
+        given = dict(args["components"])
+        components = {}
         changed = False
-        for node, spec in list(components.items()):
+        for node, spec in given.items():
             as_spec = getattr(spec, "spec", None)
             if callable(as_spec) and not isinstance(spec, dict):
                 spec = as_spec()
@@ -201,7 +255,12 @@ class CalendarContext:
                         "and it is not a unit with a life (a spec or a "
                         "UnitPlan): leave it out of the calendar's duty."
                     )
+                components[node] = spec
                 continue
+            on_rule = self._on_rule(node, spec)
+            if on_rule is not spec:
+                spec = on_rule
+                changed = True
             plan = self.duty_plan(node)
             if plan is not None:
                 spec = {**spec, "duty": plan}
@@ -213,9 +272,32 @@ class CalendarContext:
                     f"The calendar gives node {node!r} a duty plan, and "
                     f"the diagram has no node {node!r}."
                 )
-        if not changed:
+        if not changed and isinstance(rbd, RepairableRBD):
             return rbd
-        return RepairableRBD(**{**rbd._init_args, "components": components})
+        return RepairableRBD(**{**args, "components": components})
+
+    def _on_rule(self, node, spec: dict) -> dict:
+        """Spec ``spec`` with its task on a recurrence rule, if any, put
+        on this calendar: replaced at the rule's dates within it (its
+        ``"replace_at"``), or no task when none falls within it; the spec
+        itself when its task is on no rule."""
+        task = spec.get("preventive")
+        if not isinstance(task, dict) or task.get("rule") is None:
+            return spec
+        if task.get("basis") not in (None, "calendar"):
+            raise ValueError(
+                f"Component {node!r}: its task is on a recurrence rule, "
+                "whose dates are on the calendar, so its basis cannot be "
+                f"{task['basis']!r}."
+            )
+        from ._forecast import _rule
+
+        times = self.rule_times(_rule(task["rule"]), task.get("at"))
+        rest = {k: v for k, v in task.items() if k not in ("rule", "at")}
+        out = {k: v for k, v in spec.items() if k != "preventive"}
+        if times.size:
+            out["preventive"] = {**rest, "replace_at": tuple(times.tolist())}
+        return out
 
     # -- saving --------------------------------------------------------------
 
