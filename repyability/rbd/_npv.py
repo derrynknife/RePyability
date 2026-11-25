@@ -36,13 +36,17 @@ def _escalation(rbd, escalation) -> Dict[Any, float]:
     return _money.escalation(rbd.components, escalation)
 
 
-def own_terms(rbd, horizon: float, salvage, escalation, retire_at):
+def own_terms(
+    rbd, horizon: float, salvage, escalation, retire_at, nodes: bool = False
+):
     """``salvage``, ``escalation`` and ``retire_at`` with the components'
     own (their spec's or plan's ``"salvage"``, ``"escalation"`` and
     ``"retire_at"``) added where the arguments leave them out: a salvage
     or growth given for a node in the arguments is the node's. A unit's
     retirement before the horizon retires the diagram when it is its only
-    component; in a diagram of several it is refused."""
+    component; in a diagram of several it is that unit's own retirement
+    (``{node: t}``, as ``expected_npv`` takes it) with ``nodes``, and is
+    refused without (the simulated runs)."""
     own = getattr(rbd, "_valuation", {})
     if not own:
         return salvage, escalation, retire_at
@@ -58,18 +62,33 @@ def own_terms(rbd, horizon: float, salvage, escalation, retire_at):
     if growths and (escalation is None or isinstance(escalation, dict)):
         escalation = {**growths, **(escalation or {})}
     retiring = {n: v["retire_at"] for n, v in own.items() if "retire_at" in v}
-    if retiring and retire_at is None:
+    if retiring and (retire_at is None or isinstance(retire_at, dict)):
         node, at = next(iter(retiring.items()))
         if len(rbd.components) > 1:
-            raise NotImplementedError(
-                f"Component {node!r} retires at {at:g}, and retiring one "
-                "unit of a diagram of several is not built: give the "
-                "valuation's retire_at to retire the whole system, or "
-                "value the unit's plan alone (UnitPlan.expected_npv)."
-            )
-        if at < horizon:
+            if not nodes:
+                raise NotImplementedError(
+                    f"Component {node!r} retires at {at:g}, and retiring "
+                    "one unit of a diagram of several is not built for "
+                    "the simulated runs or plan_vs_actual yet: value it "
+                    "with expected_npv (which retires the unit alone), or "
+                    "give the valuation's retire_at to retire the whole "
+                    "system."
+                )
+            retire_at = {
+                **{n: t for n, t in retiring.items() if t < horizon},
+                **(retire_at or {}),
+            } or None
+        elif retire_at is None and at < horizon:
             retire_at = at
     return salvage, escalation, retire_at
+
+
+def check_own_retirements(rbd) -> None:
+    """Refuse, as ``expected_npv`` would, a unit's own retirement that
+    it cannot value alone (see ``_require_independent``)."""
+    retire_at = own_terms(rbd, math.inf, None, None, None, nodes=True)[2]
+    if isinstance(retire_at, dict):
+        _require_independent(rbd, retire_at, set(), set())
 
 
 def own_escalation(rbd, escalation):
@@ -363,6 +382,7 @@ def expected_npv(
     escalation=None,
     rates: str = "nominal",
     inflation=None,
+    retired=None,
 ) -> ExpectedNPV:
     """See ``RepairableRBD.expected_npv``."""
     if not isinstance(rate_sensitivity, (bool, np.bool_)):
@@ -373,8 +393,32 @@ def expected_npv(
         )
     horizon = _number(horizon, "horizon", strict=True)
     salvage, escalation, retire_at = own_terms(
-        rbd, horizon, salvage, escalation, retire_at
+        rbd, horizon, salvage, escalation, retire_at, nodes=True
     )
+    if isinstance(retire_at, dict):
+        return _retiring_units(
+            rbd,
+            horizon,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            periods=periods,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            method=method,
+            state=state,
+            retire_at=retire_at,
+            retired=retired,
+            salvage=salvage,
+            rate_sensitivity=rate_sensitivity,
+            escalation=escalation,
+            rates=rates,
+            inflation=inflation,
+        )
+    if retired is not None:
+        raise ValueError(
+            "retired says what each unit retired by retire_at={node: t} "
+            "becomes; give it with such a retire_at."
+        )
     money = Money(rbd, discount_rate, value_rate, escalation, rates, inflation)
     given_rate, rate, schedule = money.given_rate, money.rate, money.schedule
     growth, earns = money.growth, money.earns
@@ -645,6 +689,256 @@ def expected_npv(
 
         result.rate_sensitivity, result.rate_sensitivity_error = (
             _rate_derivative(npv_at, given_rate, result.npv, stop)
+        )
+    return result
+
+
+#: What a unit retired alone (``retire_at={node: t}``) is taken as from
+#: its retirement: down for good, its paths lost (the default, which never
+#: invents availability), or always working, a junction.
+RETIRED = ("failed", "junction")
+
+
+def _retired_as(rbd, retire_at: dict, retired, horizon: float):
+    """The units retired alone, checked: ``{node: (t, how)}``, each a
+    component retired at ``t`` (from 0 to the horizon; at the horizon
+    it changes nothing and is left out) as ``how`` (see ``RETIRED``)."""
+    out: Dict[Any, Any] = {}
+    if retired is not None and not isinstance(retired, (str, dict)):
+        raise TypeError(
+            "retired is 'failed' or 'junction', or a dict of one for each "
+            f"node retired; got {retired!r}."
+        )
+    for node, at in retire_at.items():
+        _requirements._require_component(rbd, node, "retire_at")
+        t = _number(at, f"The retirement of {node!r}", strict=False)
+        if t > horizon and not math.isclose(t, horizon, rel_tol=1e-12):
+            raise ValueError(
+                f"Component {node!r} retires at {t:g}, past the horizon "
+                f"({horizon:g}): leave it out, or value a longer horizon."
+            )
+        how = retired.get(node) if isinstance(retired, dict) else retired
+        how = "failed" if how is None else how
+        checks.one_of(f"How {node!r} is retired", how, RETIRED)
+        if t < horizon and not math.isclose(t, horizon, rel_tol=1e-12):
+            out[node] = (t, how)
+    if isinstance(retired, dict):
+        for node in retired:
+            if node not in retire_at:
+                raise ValueError(
+                    f"retired names {node!r}, which retire_at does not "
+                    "retire."
+                )
+    return out
+
+
+def _require_independent(rbd, nodes, working, broken) -> None:
+    """Refuse a unit retired alone that the others depend on beyond the
+    structure (repair crews, a maintenance group, a common cause, a
+    shutdown): its retirement would change their own values, which the
+    valuation, which holds it from its retirement, takes as unchanged."""
+    for node in nodes:
+        why = None
+        if node in working or node in broken:
+            why = "is held working or broken already"
+        elif rbd._crews_couple():
+            why = "shares the repair crews with the other units"
+        elif node in rbd._member_group:
+            why = "is in a maintenance group"
+        elif any(node in group.members for group in rbd.ccf_groups):
+            why = "is in a common-cause group"
+        elif _shutdowns.holding(rbd, node):
+            why = "is worked on at the site's shutdowns"
+        if why is not None:
+            raise NotImplementedError(
+                f"Component {node!r} retires alone, and {why}: its "
+                "retirement would change the other units' own values, "
+                "which are not followed past it yet. Give the valuation's "
+                "retire_at to retire the whole system, or leave it in."
+            )
+
+
+def _retiring_units(
+    rbd,
+    horizon: float,
+    *,
+    discount_rate,
+    value_rate,
+    periods,
+    working_nodes,
+    broken_nodes,
+    method,
+    state,
+    retire_at: dict,
+    retired,
+    salvage,
+    rate_sensitivity: bool,
+    escalation,
+    rates: str,
+    inflation,
+) -> ExpectedNPV:
+    """``expected_npv`` with units retired alone (``retire_at={node:
+    t}``). Between one retirement and the next the system is the diagram
+    with the units retired so far held (broken, or working as junctions,
+    ``retired``): each unit is independent of the others (crews, groups,
+    common causes and shutdowns refused), so the others' own values are
+    the diagram's, and what changes is the system's (its value earned,
+    its downtime) and the retired unit's own costs, which stop. Each
+    stretch's flows are its held diagram's (``expected_npv`` on the
+    periods cut at the retirements), the retired units' own rows left
+    out after them (their acquisition kept); each retired unit's salvage
+    is credited at its retirement, the others' at the horizon."""
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
+    units = _retired_as(rbd, retire_at, retired, horizon)
+    _require_independent(rbd, units, working, broken)
+    money = Money(rbd, discount_rate, value_rate, escalation, rates, inflation)
+    table_ends = _period_ends(periods, horizon)
+    times = sorted({t for t, _ in units.values()})
+    knots = np.unique(np.concatenate([table_ends, [t for t in times if t]]))
+    edges = [0.0] + [t for t in times if t > 0.0] + [horizon]
+    starts = np.concatenate(([0.0], table_ends[:-1]))
+    cells: Dict[Any, List[float]] = {}
+    for a, b in zip(edges[:-1], edges[1:]):
+        held = {n for n, (t, _) in units.items() if t <= a}
+        fails = {n for n in held if units[n][1] == "failed"}
+        variant = expected_npv(
+            rbd,
+            horizon,
+            discount_rate=discount_rate,
+            value_rate=value_rate,
+            periods=[float(k) for k in knots],
+            working_nodes=working | (held - fails),
+            broken_nodes=broken | fails,
+            method=method,
+            state=state,
+            retire_at=horizon,
+            salvage={},
+            escalation=escalation,
+            rates=rates,
+            inflation=inflation,
+        )
+        for row in variant.cash_flows:
+            end = row["end"]
+            if row["category"] == "salvage" or not a < end <= b:
+                continue
+            if row["component"] in held and row["category"] != ("acquisition"):
+                continue  # retired: its own costs stop
+            q = int(np.searchsorted(table_ends, end - 1e-12 * horizon))
+            key = (q, row["category"], row["component"])
+            cell = cells.setdefault(key, [0.0, 0.0])
+            cell[0] += row["present_value"]
+            cell[1] += row["undiscounted"]
+    # The salvage: a retired unit's at its retirement, the rest at the
+    # horizon.
+    given = dict(salvage) if isinstance(salvage, dict) else {}
+    if salvage is not None and not isinstance(salvage, dict):
+        given = {None: salvage}
+    forced = working | broken
+    growth = money.growth("salvage")
+    salvaged = plain_salvage = 0.0
+    for component, worth in given.items():
+        at = units[component][0] if component in units else horizon
+        amount = _salvage(rbd, {component: worth}, at, state, forced).get(
+            component, 0.0
+        )
+        if not amount:
+            continue
+        present = math.exp(-(money.rate - growth) * at) * amount
+        nominal = (math.exp(growth * at) if growth else 1.0) * amount
+        q = int(np.searchsorted(table_ends, at - 1e-12 * horizon))
+        cell = cells.setdefault((q, "salvage", component), [0.0, 0.0])
+        cell[0] += present
+        cell[1] += nominal
+        salvaged += present
+        plain_salvage += nominal
+    rows: List[Dict[str, Any]] = []
+    by_category: Dict[str, float] = {}
+    by_component: Dict[Hashable, float] = {}
+    value = plain_value = cost = plain_cost = 0.0
+    for (q, category, component), (present, nominal) in cells.items():
+        if present == 0.0 and nominal == 0.0:
+            continue
+        rows.append(
+            {
+                "period": q + 1,
+                "start": float(starts[q]),
+                "end": float(table_ends[q]),
+                "category": category,
+                "component": component,
+                "present_value": present,
+                "undiscounted": nominal,
+            }
+        )
+        if category == "value":
+            value += present
+            plain_value += nominal
+        elif category != "salvage":
+            cost -= present
+            plain_cost -= nominal
+            by_category[category] = by_category.get(category, 0.0) - present
+            if component is not None:
+                by_component[component] = (
+                    by_component.get(component, 0.0) - present
+                )
+    order = {
+        name: i
+        for i, name in enumerate(("acquisition",) + _CATEGORIES + ("salvage",))
+    }
+    rows.sort(
+        key=lambda r: (
+            r["period"],
+            order.get(r["category"], len(order)),
+            str(r["component"]),
+        )
+    )
+    result = ExpectedNPV(
+        horizon=horizon,
+        discount_rate=money.given_rate,
+        value_rate=money.value_rate,
+        npv=value - cost + salvaged,
+        value=value,
+        cost=cost,
+        eac=0.0,
+        undiscounted_npv=plain_value - plain_cost + plain_salvage,
+        undiscounted_value=plain_value,
+        undiscounted_cost=plain_cost,
+        cost_by_category=by_category,
+        cost_by_component=by_component,
+        period_ends=[float(x) for x in table_ends],
+        cash_flows=rows,
+        salvage=salvaged,
+        undiscounted_salvage=plain_salvage,
+        retired_units={
+            node: {"at": float(t), "as": how}
+            for node, (t, how) in units.items()
+        },
+        **money.stated(),
+    )
+    result.eac = cost / result.annuity_factor
+    if rate_sensitivity:
+
+        def npv_at(r: float) -> float:
+            return _retiring_units(
+                rbd,
+                horizon,
+                discount_rate=r,
+                value_rate=value_rate,
+                periods=None,
+                working_nodes=working_nodes,
+                broken_nodes=broken_nodes,
+                method=method,
+                state=state,
+                retire_at=retire_at,
+                retired=retired,
+                salvage=salvage,
+                rate_sensitivity=False,
+                escalation=escalation,
+                rates=rates,
+                inflation=inflation,
+            ).npv
+
+        result.rate_sensitivity, result.rate_sensitivity_error = (
+            _rate_derivative(npv_at, money.given_rate, result.npv, horizon)
         )
     return result
 

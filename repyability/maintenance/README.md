@@ -2514,8 +2514,17 @@ names, so a diagram holding the plan takes them too: `expected_npv`
 takes each as its argument of the same name for the node, an argument
 given for the node taking precedence (a system's salvage, a number, is
 added to the units' own). A unit retiring is the system's retirement
-only where it is the diagram's only unit; in a diagram of several it is
-refused, saying to give the valuation's `retire_at`. The valuations of
+only where it is the diagram's only unit; in a diagram of several it
+retires alone (`expected_npv(retire_at={node: t}, retired=)`): from `t`
+it is held failed (its paths lost, the default, which never invents
+availability) or as a junction, its own costs stop, the system's go on
+(its value and downtime as the diagram held so), and its salvage is
+credited at `t`. Each stretch between retirements is the diagram with
+the units retired so far held, which holds because the units are
+independent: a unit tied to the others (shared crews, a maintenance
+group, a common cause, a shutdown) is refused. The runs and
+`plan_vs_actual` refuse a unit retiring alone, pointing to
+`expected_npv`. The valuations of
 runs (`npv_distribution`, `compare_npv`) end at a plan's retirement and
 credit every run its salvage at the end (a number; a salvage by age is
 refused), as `expected_npv` does, and so do `best_switch_time` (every
@@ -2544,7 +2553,12 @@ of weekday shifts, the plan's runs, expected NPV and events by week
 equal its diagram on that calendar; the plan's salvage (a number and by
 age), escalation and retirement equal the arguments for the node, the
 arguments win, a retirement past the horizon is the horizon, a unit's
-retirement in a diagram of several is refused, the runs refuse a
+retirement in a diagram of several retires it alone (and
+`test_retire_units.py`: a pair's NPV with one retired against the
+closed form of the exponential units' availabilities, to 1e-6, failed
+and as a junction; at the horizon nothing changes; at 0 it is the
+diagram with it held broken; a salvage at its retirement is worth
+`value * exp(-r t)`), the runs refuse a
 salvage by age, and the terms save and load; each run of a plan with a
 salvage or retirement is the run of the plan without, to the
 retirement, plus the salvage `expected_npv` credits

@@ -303,15 +303,19 @@ def test_a_salvage_on_a_diagram_of_several_is_its_node_s():
     )
 
 
-def test_one_unit_retiring_in_a_diagram_of_several_is_refused():
+def test_one_unit_retiring_in_a_diagram_of_several_retires_alone():
     unit = with_money(retire_at=100.0)
     other = {"reliability": W, "repairability": REPAIR, "repair_cost": 3.0}
     rbd = RepairableRBD(
         [("s", "a"), ("a", "b"), ("b", "t")], {"a": unit, "b": other}
     )
-    with pytest.raises(NotImplementedError, match="retiring one unit"):
-        rbd.expected_npv(HORIZON)
-    assert rbd.analysis_routes()["expected_npv"].route == routes.REFUSED
+    own = rbd.expected_npv(HORIZON, discount_rate=RATE)
+    given = rbd.expected_npv(
+        HORIZON, discount_rate=RATE, retire_at={"a": 100.0}
+    )
+    assert own.npv == given.npv
+    assert own.retired_units == {"a": {"at": 100.0, "as": "failed"}}
+    assert rbd.analysis_routes()["expected_npv"].route != routes.REFUSED
     # Retiring the whole system is the valuation's.
     rbd.expected_npv(HORIZON, retire_at=100.0)
 

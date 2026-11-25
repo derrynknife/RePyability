@@ -88,13 +88,13 @@ def test_what_runs_still_refuse_says_what_to_give():
     route = by_age.diagram().analysis_routes()["npv_distribution"]
     assert route.route == routes.REFUSED
     assert "salvage by age" in route.reason
-    # One unit of several retiring is not built (expected_npv's refusal).
+    # One unit of several retiring is expected_npv's alone.
     other = {"reliability": W, "repairability": REPAIR, "repair_cost": 3.0}
     several = RepairableRBD(
         [("s", "a"), ("a", "b"), ("b", "t")],
         {"a": with_money(retire_at=100.0), "b": other},
     )
-    with pytest.raises(NotImplementedError, match="retiring one unit"):
+    with pytest.raises(NotImplementedError, match="expected_npv"):
         several.npv_distribution(HORIZON, **RUNS)
     assert several.analysis_routes()["npv_distribution"].route == (
         routes.REFUSED
