@@ -573,6 +573,14 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                 "failure, and otherwise from the cycle between the tests "
                 "that find failures, followed test by test (#159)."
                 + (
+                    " Where each unit's demand in a lead time is one or "
+                    "more, its life wears out and stock-outs are common at "
+                    "the margin, the stock is found with the shelf in the "
+                    "runs instead (the result's method says so)."
+                    if long_run_count
+                    else ""
+                )
+                + (
                     " A sub-system's components are counted through its "
                     "own models, each as (node, component)."
                     if _spares._sub_systems(rbd, None, None)

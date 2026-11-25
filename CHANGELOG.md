@@ -12,6 +12,26 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- The long-run `spares_stock` finds the stock with the shelf in the runs
+  where its approximation errs: each unit's demand in a lead time one or
+  more on average, lives not at a constant rate (wear-out), and
+  stock-outs common at the margin (one spare fewer out of stock a tenth
+  of the time or more). 200 runs of about 500 demands each, seeded by 1
+  by default (`mc_samples=`, `seed=` now go to the long run for this).
+  `SparesStock` gains `method` (`"exact"`, `"approximate"` or
+  `"simulated"`), `reason` and `simulated` (the values at each stock
+  tried). Weibull(1000, 3) with a 3,000 h lead time at an 85% fill rate
+  now holds 4 (0.881; long runs of the shelf 0.880), where the
+  approximation held 5 (0.824 at 4).
+
+### Changed
+
+- Long-run spares stocks for wear-out lives with long lead times and
+  common stock-outs change (see Added): the stock can fall by one or
+  more, and its fill rate and stock-out probability are the shelf's in
+  the runs. The guide's block-replaced pumps keep 52, at 0.9618 (was
+  0.9596), and with repairs that take time at 0.9684 (was 0.9667).
+
 - `spares_demand(method="simulate")` counts a sub-system's components
   too, each as `(node, component)` from the sub-system's own runs on the
   same seed, where it refused (still refused where a shutdown stands the

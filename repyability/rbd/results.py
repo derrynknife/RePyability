@@ -4330,6 +4330,18 @@ class SparesStock(_ResultMapping):
         approximation: close where stock-outs are rare, and short of the
         fill rate for wear-out lives with a lead time of several lives
         (see ``spares_stock``).
+    method : str
+        How the stock was found: ``"exact"``, ``"approximate"`` (the
+        reweighted demand) or ``"simulated"`` (the shelf in the runs,
+        where the approximation would hold more than needed: see
+        ``spares_stock``).
+    reason : str or None
+        Why it was simulated, or why it could not be.
+    simulated : dict or None
+        With ``method="simulated"``, the ``fill_rate`` and
+        ``stockout_probability`` simulated at each stock tried, by stock
+        (``fill_rate_for`` and ``stockout_probability_for`` give these
+        for a stock tried, the approximation for another).
 
     Examples
     --------
@@ -4368,6 +4380,15 @@ class SparesStock(_ResultMapping):
     members: Optional[tuple] = None
     sources: Optional[int] = None
     exact: bool = False
+    method: str = ""
+    reason: Optional[str] = None
+    simulated: Optional[Dict[int, Dict[str, float]]] = None
+
+    def __post_init__(self):
+        if not self.method:
+            object.__setattr__(
+                self, "method", "exact" if self.exact else "approximate"
+            )
 
     def _held(self, stock: int) -> Tuple[np.ndarray, np.ndarray]:
         """The spares on order with ``stock`` on the shelf, at a random
@@ -4440,6 +4461,8 @@ class SparesStock(_ResultMapping):
         """
         if stock <= 0:
             return 0.0
+        if self.simulated and int(stock) in self.simulated:
+            return float(self.simulated[int(stock)]["fill_rate"])
         at_demand = self._held(int(stock))[1]
         return float(min(at_demand[: int(stock)].sum(), 1.0))
 
@@ -4460,6 +4483,8 @@ class SparesStock(_ResultMapping):
         """
         if stock <= 0:
             return 1.0
+        if self.simulated and int(stock) in self.simulated:
+            return float(self.simulated[int(stock)]["stockout_probability"])
         at_random = self._held(int(stock))[0]
         return float(max(1.0 - at_random[: int(stock)].sum(), 0.0))
 

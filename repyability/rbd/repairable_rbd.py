@@ -1942,8 +1942,16 @@ class RepairableRBD(RBD):
         constant rate with repairs that take time but by much for wear-out
         lives with a lead time of several lives and common stock-outs,
         whose demands the waits put in step with the orders' arrivals (a
-        fill rate of 0.02 where the shelf meets 0.30). Check such a stock
-        with ``method="simulate"``.
+        fill rate of 0.02 where the shelf meets 0.30). **So where each unit's
+        demand in a lead time is one or more on average** (a lead time of a
+        life or more), its lives are not at a constant rate (wear-out), and
+        stock-outs are common at the margin (one spare fewer leaves the shelf
+        empty a tenth of the time or more), the stock is found with the shelf
+        in the runs instead: 200 runs of about 500 demands each, from new, at
+        stocks 0, 1, ... until the fill rate and the time out of stock over
+        them meet the targets (seeded, by default by 1, so the same at every
+        call). The result says so (``method="simulated"`` and its ``reason``),
+        with the values at every stock tried (``simulated``).
 
         The counts are worked out on a grid, to about 1e-6, for components
         with corrective repair alone or under age replacement; and on its
@@ -2027,10 +2035,13 @@ class RepairableRBD(RBD):
             the chance of no stock-out, by default 0.95.
         mc_samples : int, optional
             With ``method="simulate"``, the runs at each stock, by default
-            10,000.
+            10,000; in the long run, those of a stock it simulates (see
+            above), by default 200.
         seed : int, optional
             With ``method="simulate"``, seeds the runs (the same for every
-            stock); by default one is drawn and kept in the result.
+            stock); by default one is drawn and kept in the result. In the
+            long run, a stock it simulates is seeded by 1 by default, so
+            that it is the same at every call.
 
         Returns
         -------
@@ -2109,6 +2120,8 @@ class RepairableRBD(RBD):
             nodes=nodes,
             fleet=fleet,
             parts=parts,
+            mc_samples=mc_samples,
+            seed=seed,
         )
 
     def allocate_redundancy(
