@@ -207,11 +207,13 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   included; `Records.counted`, which `events_by_period` bins on a plan
   that changes). A change to what the
   loops record goes into both: `test_timelines.py` checks every engine's
-  histories against each other and against `availability`. One thing
-  the Python loop alone records: each unit's age at the end
-  (`Block.ages`, for a salvage by age in the runs); a run that needs it
-  runs in Python (`_timeline_runs.simulate(ages=True)`), until numba's
-  loop records it too.
+  histories against each other and against `availability`. Each unit's
+  age at the end (for a salvage by age in the runs) is the Python
+  loop's `Block.ages`, and on numba's loop is worked out from the
+  histories (`_timeline_runs._ages_at_end`: the last change up, or the
+  last task in zero time): a change to what renews a unit in the loop
+  goes into it, and `test_end_ages.py` checks it against the Python
+  loop's own, and numba's against Python's, to the bit.
 - **Capacity states are worked out in batches**
   (`_tally._CapacityRecorder.evaluate`): a simulation's in Python, a batch's
   compiled, so a state's capacity must not depend on what is worked out
