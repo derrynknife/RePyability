@@ -795,6 +795,13 @@ def _validate_preventive(
             f"Component {node!r}: preventive must be a dict with "
             f"{', '.join(PREVENTIVE_KEYS)}, got {spec!r}."
         )
+    if spec.get("rule") is not None:
+        raise ValueError(
+            f"Component {node!r}: its preventive task is on a recurrence "
+            "rule (OnRule), whose dates need a calendar: build the diagram "
+            "on one, CalendarContext(usage).diagram(edges, components), "
+            "or give a UnitPlan's analyses a CalendarContext."
+        )
     unknown = set(spec) - set(PREVENTIVE_KEYS)
     if unknown:
         raise ValueError(

@@ -484,6 +484,63 @@ class AtShutdown(_Task):
 
 
 @dataclass(frozen=True)
+class OnRule(_Task):
+    """Renew (or restore) the unit on each date of a recurrence ``rule``
+    (the first Monday of each quarter, say), at the clock time ``at``: a
+    task on the calendar, whose dates need one. A diagram holding it
+    refuses to be built without a calendar; ``CalendarContext.diagram``
+    puts it on that calendar, the task then replacing the unit at the
+    rule's dates within it (``CalendarContext.rule_times``), as
+    ``BlockPolicy(times=...)`` does. A replacement due while the unit is
+    down is skipped. See [Tasks on a
+    rule](../guide/system-maintenance.md#tasks-on-a-rule).
+
+    Parameters
+    ----------
+    rule : Recurrence
+        The recurrence rule (``repyability.schedule.Recurrence``) whose
+        dates the task falls on.
+    at : str or datetime.time, optional
+        The clock time on each date (``"06:00"``); midnight by default.
+    cost : float or distribution, optional
+        The price of each task, in money: a number, or a distribution of it
+        (anything with ``qf`` and ``mean``, such as a fitted surpyval
+        model) drawn afresh each time. None prices nothing.
+    duration : model, float or "instant", optional
+        How long each task takes, in the plan's unit of time: a
+        time-to-maintain model or a fixed time, the unit down meanwhile (a
+        planned outage); ``"instant"`` (the default) renews it in place.
+    restoration : Restoration, optional
+        How much of the unit's age each task takes away; None (the
+        default) renews it as new.
+    """
+
+    rule: Any = None
+    at: Any = None
+    cost: Any = None
+    duration: Any = INSTANT
+    restoration: Optional[Restoration] = None
+
+    POLICY: ClassVar[str] = "block"
+    DEFAULT_POLICY: ClassVar[str] = "block"
+    _PLAIN: ClassVar[Tuple[str, ...]] = ("rule", "at", "cost", "duration")
+
+    def __post_init__(self):
+        from repyability.schedule._recurrence import Recurrence
+
+        if not isinstance(self.rule, Recurrence):
+            raise TypeError(
+                "OnRule's rule must be a Recurrence "
+                "(repyability.schedule.Recurrence.monthly(...), ...); got "
+                f"{self.rule!r}."
+            )
+        if self.at is not None:
+            from repyability.schedule._meters import clock
+
+            clock(self.at, "at")  # checked where it is given
+
+
+@dataclass(frozen=True)
 class Inspection:
     """Test the unit every ``interval`` (or at the site's ``shutdown``),
     finding a hidden failure; the first at ``offset``, each finding one
@@ -679,6 +736,7 @@ PREVENTIVE_TASKS = (
     ConditionPolicy,
     CalendarReplacement,
     AtShutdown,
+    OnRule,
 )
 _POLICIES = {
     "age": AgePolicy,
@@ -765,8 +823,9 @@ class UnitPlan:
         ``"repairability"``; ``"instant"`` repairs it in no time.
     tasks : sequence, optional
         Its tasks: at most one preventive task (``AgePolicy``,
-        ``BlockPolicy``, ``ConditionPolicy``, ``CalendarReplacement`` or
-        ``AtShutdown``), one ``Inspection`` and one ``Upgrade``.
+        ``BlockPolicy``, ``ConditionPolicy``, ``CalendarReplacement``,
+        ``AtShutdown`` or ``OnRule``), one ``Inspection`` and one
+        ``Upgrade``.
     prices : Prices or dict, optional
         The unit's own prices (a dict is read as the fields of a
         ``Prices``); by default none.
@@ -935,6 +994,8 @@ class UnitPlan:
             inner: set = set()
             if preventive.get("shutdown") is not None:
                 kind: Any = AtShutdown
+            elif preventive.get("rule") is not None:
+                kind = OnRule
             else:
                 policy = preventive.get("policy")
                 if policy is None:
@@ -1039,9 +1100,9 @@ class UnitPlan:
         from repyability.rbd.repairable_rbd import RepairableRBD
 
         node = self.NODE
-        rbd = RepairableRBD([("input", node), (node, "output")], {node: self})
+        edges = [("input", node), (node, "output")]
         if calendar is None:
-            return rbd
+            return RepairableRBD(edges, {node: self})
         from repyability.schedule._calendar import CalendarContext
 
         if not isinstance(calendar, CalendarContext):
@@ -1049,7 +1110,7 @@ class UnitPlan:
                 "calendar must be a schedule.CalendarContext (its duty "
                 f"naming the node {node!r}); got {calendar!r}."
             )
-        return calendar.diagram(rbd)
+        return calendar.diagram(edges, {node: self})
 
     def analysis_routes(self, calendar=None) -> dict:
         """How each valuation of the plan alone is worked out (exact,
@@ -1218,8 +1279,10 @@ class UnitPlan:
             As for ``schedule.events_by_period``.
         """
         from repyability.schedule import events_by_period
+        from repyability.schedule._calendar import calendar_of
 
-        return events_by_period(self.diagram(), usage, period, **kwargs)
+        rbd = self.diagram(calendar_of(usage))
+        return events_by_period(rbd, usage, period, **kwargs)
 
     def failures_by_period(self, usage, period: str = "month", **kwargs):
         """The plan's expected failures (with the other events) in each

@@ -324,6 +324,46 @@ side of it, so `parameter_sensitivity(window=...)` says what moving a
 replacement is worth. A stretch far shorter than the unit's repairs
 cannot be followed on its grid and refuses, pointing to the simulation.
 
+### Tasks on a rule
+
+A task is often on the calendar rather than on a clock of its own: the
+seal is changed at the check on the first Monday of each quarter. Give the
+plan an `OnRule(rule, at=)` task, a `repyability.schedule.Recurrence` and
+the clock time on each date. Its dates need a calendar, so a diagram
+holding it is built on one: `CalendarContext(usage).diagram(edges,
+components)`, or, for a plan alone, any of the `UnitPlan`'s analyses with
+`calendar=` (the forecasts take the `CalendarContext` as their `usage`).
+The calendar puts the task at the rule's dates within it, after its start
+(a task due at the start is due now, not done), and from then on it is the
+replacement at given times above, with its values over a horizon worked
+out. A diagram given a rule task without a calendar refuses, saying so.
+
+```python
+import surpyval as surv
+from repyability import OnRule, UnitPlan
+from repyability.schedule import CalendarContext, Recurrence, UsageForecast
+
+quarterly = Recurrence.monthly(
+    weekday="Monday", nth=1, every=3, anchor="2027-01-01"
+)
+plan = UnitPlan(
+    surv.Exponential.from_params([1 / 2000.0]),
+    "instant",
+    tasks=(OnRule(quarterly, at="06:00", cost=50.0),),
+    prices={"repair": 100.0},
+)
+year = CalendarContext(UsageForecast.calendar("2027-01-01", "2028-01-01"))
+year.rule_times(quarterly, at="06:00")      # -> [78. 2262. 4446. 6630.]
+months = plan.events_by_period(year, cost=True)
+months.cost.mean[0]                         # -> 87.2
+```
+
+The seal is changed on 4 January, 5 April, 5 July and 4 October at 06:00,
+and January costs the change and the failures expected then, `50 + 100 *
+744 / 2000 = 87.2`. A rule with no date within the calendar leaves the
+unit with no task; its basis is the calendar's (`"basis": "operating"` is
+refused).
+
 ### Replacement on a calendar policy
 
 A part whose replacement costs differently at different times (cheap in a

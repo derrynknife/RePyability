@@ -236,6 +236,7 @@ from repyability.maintenance._plan import (  # noqa: E402
     ConditionPolicy,
     ImperfectRepair,
     Inspection,
+    OnRule,
     Prices,
     Restoration,
     UnitPlan,

@@ -23,6 +23,8 @@ exported at the top level and from `repyability.maintenance`:
 
 ::: repyability.AtShutdown
 
+::: repyability.OnRule
+
 ::: repyability.Inspection
 
 ::: repyability.Upgrade

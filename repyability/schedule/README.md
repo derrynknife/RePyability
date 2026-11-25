@@ -1191,6 +1191,36 @@ in `test_schedule_forecast.py`.
   tasks take no time is exact. Tests counted in operating time on such a
   plan, or a start other than new, are not built yet.
 
+### UC-71: "The seal is changed at the check on the first Monday of each quarter. Can that sit in the pump's plan, so it goes wherever the plan goes?"
+
+- **Status:** built: the task `OnRule(rule, at=)` (a `"preventive"`
+  spec's `"rule"` and `"at"`), which `CalendarContext.diagram(edges,
+  components)` puts at `rule_times(rule, at)` (its `"replace_at"`), and
+  which a diagram built without a calendar refuses, saying so.
+- **Who asks:** UC-64's planner, who keeps each pump's plan as one
+  record (`UnitPlan.to_dict()`) and wants the quarterly check in it
+  rather than worked into times for each forecast.
+- **What they know:** the rule (the first Monday of every third month,
+  from 1 January 2027), the clock time (06:00), the task's price, the
+  forecast's calendar.
+- **The answer, by hand:** in 2027 the dates are 4 January, 5 April, 5
+  July and 4 October, so the task falls at 78, 2,262, 4,446 and 6,630 h
+  on the diagram's clock; a memoryless seal (MTTF 2,000 h, repairs in no
+  time, 100 a repair) costs `50 + 100 * 744 / 2000 = 87.2` in January,
+  and 37.2 in February.
+- **How it is solved:** the plan holds the rule, not the times: the
+  times are the calendar's, so the same plan gives other dates on
+  another calendar. `CalendarContext.diagram` replaces each rule task by
+  the times within it, after which the task is block replacement at
+  given times, exact over a horizon. A rule with no date in the calendar
+  leaves no task.
+- **Decisions (defaults):** a diagram (not only a plan) is built through
+  the calendar, from its edges and components, since a built diagram
+  cannot hold a task with no times; the basis is the calendar's.
+- **Checks:** `test_on_rule.py`: the dates against the hand-worked ones;
+  every exact value equal to the same diagram given the times; the
+  saved plan reloaded; the refusals.
+
 ## Candidates
 
 - The dates when only some runs go ahead (UC-10's 90% dates).

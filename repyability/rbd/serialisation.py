@@ -481,6 +481,15 @@ def _serialise_schedule(spec: dict) -> dict:
     elif spec.get("replace_at") is not None:
         # Replaced at the times of a plan, in place of an interval.
         out["replace_at"] = [float(t) for t in spec["replace_at"]]
+    elif spec.get("rule") is not None:
+        # On a recurrence rule's dates (a unit's plan, before a calendar
+        # puts it on its dates), at a clock time.
+        from repyability.schedule._meters import clock
+
+        out["rule"] = spec["rule"].to_dict()
+        if spec.get("at") is not None:
+            when = clock(spec["at"], "at")
+            out["at"] = when.strftime("%H:%M:%S" if when.second else "%H:%M")
     else:
         out["interval"] = float(spec["interval"])
     if spec.get("basis") is not None:
@@ -538,6 +547,10 @@ def _deserialise_schedule(d: dict) -> dict:
     out = dict(d)
     if "shutdown" in d:
         out["shutdown"] = _node_name(d["shutdown"])
+    if "rule" in d:
+        from repyability.schedule._recurrence import Recurrence
+
+        out["rule"] = Recurrence.from_dict(d["rule"])
     if isinstance(d.get("duration"), dict):
         out["duration"] = deserialise_model(d["duration"])
     if "restoration" in d:
