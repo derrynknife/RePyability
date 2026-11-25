@@ -16,20 +16,32 @@ and the unit's downtime, start late by the difference. A repair that
 waits is a *stock-out*. Nothing else changes: the draws are those of the
 run without a shelf, so a stock no run uses up gives that run bit for bit.
 
+A repair that waits for its spare keeps the unit down until the spare is
+in, and then (with repair crews) queues for a crew: the crew is not held
+while the spare is on its way, so the job falls due when the spare
+arrives (an ``Arrival``, taken at its instant among the failures). A
+preventive task that replaces the unit, and finds the shelf empty, is
+put off until the spare is in: the unit runs on as it is, and should it
+fail first, the failure takes the spare ordered for the task (and the
+task, its spare used, is not done). A test that finds a hidden failure
+is a demand: the repair starts once the test is over and the spare is
+in. A unit replaced on condition takes none of this yet.
+
 The shelf is the Python event loop's alone (``_compiled.unsupported``
 gives the reason to the compiled engine, which refuses rather than
 differ). It is held on a copy of the diagram (``shelved``), which only the
 simulated routes that take it build: ``spares_stock(method="simulate")``
-and ``least_spend_for_downtime``'s ``spares`` lever. It does not take
-repair crews (a job would hold a crew while it waited for its spare),
-preventive tasks, tests of hidden failures, maintenance groups, early
-renewals at shutdowns or nested RBDs: those are refused with the reason.
+and ``least_spend_for_downtime``'s ``spares`` lever. Refused, with the
+reason: replacement on condition, maintenance groups, early renewals at
+shutdowns and nested RBDs; with repair crews, tests of hidden failures
+and a node a shutdown pauses.
 """
 
 import copy
 import math
 from collections import deque
-from typing import Dict, Hashable, List, NamedTuple, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, Hashable, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -77,7 +89,7 @@ def shelf(stock, lead_time, repairs=False, what: str = "the shelf") -> Shelf:
 def why_not(rbd, node) -> Optional[str]:
     """Why component ``node`` cannot draw on a shelf in the simulation,
     or None."""
-    from repyability.rbd import _crews
+    from repyability.rbd import _crews, _shutdowns
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     if isinstance(rbd.components[node], RepairableRBD):
@@ -85,27 +97,28 @@ def why_not(rbd, node) -> Optional[str]:
             "it is a nested RBD, whose components' spares are its own: "
             "a shelf for a sub-system's components is not simulated yet"
         )
-    if _crews._crews_limited(rbd):
+    schedule = rbd._preventive.get(node)
+    if schedule is not None and schedule.policy == "condition":
         return (
-            "the diagram has repair crews, and a job waiting for its spare "
-            "would hold a crew: a shelf with repair crews is not simulated "
-            "yet"
-        )
-    if node in rbd._preventive:
-        return (
-            "it has a preventive task, whose replacement with the shelf "
+            "it is replaced on condition, whose replacement with the shelf "
             "empty is not simulated yet"
-        )
-    if node in rbd._inspection:
-        return (
-            "its failures are found by tests, whose repairs with the shelf "
-            "empty are not simulated yet"
         )
     if node in rbd._member_group or node in rbd._outage_members:
         return (
             "it is renewed early (at its maintenance group's stops or at "
             "shutdowns), which a shelf is not simulated for yet"
         )
+    if _crews._crews_limited(rbd):
+        if node in rbd._inspection:
+            return (
+                "its failures are found by tests, and with repair crews a "
+                "test's job waiting for its spare is not simulated yet"
+            )
+        if any(paused for _, paused in _shutdowns.holding(rbd, node)):
+            return (
+                "a shutdown pauses it, and with repair crews a job waiting "
+                "for its spare through a pause is not simulated yet"
+            )
     return None
 
 
@@ -169,12 +182,38 @@ class _Stock:
         return ready
 
 
+@dataclass(frozen=True)
+class Arrival:
+    """The arrival of the spare a repair waited for, with repair crews
+    (a dataclass, so equal to no node name): the job then queues for a
+    crew. One for each node in a simulation."""
+
+    node: Any
+
+
 class Running(NamedTuple):
     """The shelves of one simulation: each by its name, and the one each
-    node draws on, with whether its repairs take a spare."""
+    node draws on, with whether its repairs take a spare; and as it runs,
+    when the spare already taken for a node's next replacement is in
+    (``ready``: a task put off for it, or a test's repair), when each
+    shelved unit with a preventive task is due to fail (``ends``), the
+    restoration each job waiting for its spare will end with once a crew
+    takes it (``waiting``), and each node's ``Arrival``."""
 
     stocks: Dict[Hashable, _Stock]
     of: Dict[Hashable, Tuple[_Stock, bool]]
+    ready: Dict[Hashable, float]
+    ends: Dict[Hashable, float]
+    waiting: Dict[Hashable, Any]
+    arrivals: Dict[Hashable, Arrival]
+
+    def arrival(self, node) -> Arrival:
+        """``node``'s ``Arrival`` (the same one through the simulation, so
+        that it keeps one place among events at one instant)."""
+        found = self.arrivals.get(node)
+        if found is None:
+            found = self.arrivals[node] = Arrival(node)
+        return found
 
 
 def start(shelves: Optional[Shelves]) -> Optional[Running]:
@@ -188,6 +227,10 @@ def start(shelves: Optional[Shelves]) -> Optional[Running]:
             node: (stocks[name], shelves.shelves[name].repairs)
             for node, name in shelves.of.items()
         },
+        {},
+        {},
+        {},
+        {},
     )
 
 

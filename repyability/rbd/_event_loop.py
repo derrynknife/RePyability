@@ -1804,6 +1804,9 @@ def _start_queue(
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     rbd._run_state = _Run()
+    # The shelves of spares the components draw on, full (see _shelves),
+    # before the first events, which note when a task's unit fails.
+    rbd._run_state._shelf = _shelves.start(_shelves.of(rbd))
     # What the components draw their events from: themselves (an
     # imperfectly repaired one through a stand-in keeping its virtual
     # age, and one started from a state through one whose next draw can
@@ -2424,12 +2427,54 @@ def _renewal(
         # Maintenance that takes time is a planned outage; in zero time
         # the unit is renewed in place, and stays up.
         event = Event(due, node, schedule.duration_at(due) is None, True)
+    shelf = rbd._run_state._shelf
+    if shelf is not None and node in shelf.of:
+        # When it fails, should its task be put off for a spare.
+        shelf.ends[node] = t + life
     if node in rbd._early_members or node in rbd._outage_members:
         # Kept, should a stop of its group, or a shutdown, renew it early
         # (see _stop and _outage_renewals).
         rbd._run_state._renewed_at[node] = start
         rbd._run_state._pending_event[node] = event
     return event
+
+
+def _task_replaces(rbd, node, source) -> bool:
+    """Whether ``node``'s preventive task replaces the unit (and so takes
+    a spare): a task that restores it partly does not, unless this one
+    replaces it."""
+    if node not in rbd._restoring:
+        return True
+    return bool(source.task_replaces)
+
+
+def _put_off(rbd, event: Event, shelf, t_simulation: float):
+    """A task that replaces ``event``'s unit falls due at ``event.time``
+    (see ``_shelves``): False if its spare is in (the task goes ahead);
+    otherwise the event that now comes next, the unit running on as it
+    is, or None if it falls past the end: its failure, if that comes
+    before the spare (which it then takes), or the task once the spare
+    is in."""
+    node, t = event.component, event.time
+    ready = shelf.ready.pop(node, None)
+    if ready is None:
+        ready = shelf.of[node][0].take(t)
+    if ready <= t:
+        return False
+    shelf.ready[node] = ready
+    failure = shelf.ends.get(node, math.inf)
+    if failure < ready:
+        later = Event(failure, node, False)
+    else:
+        later = Event(
+            ready,
+            node,
+            event.status,
+            event.preventive,
+            event.inspection,
+            event.missed,
+        )
+    return later if later.time < t_simulation else None
 
 
 def _own_sources(rbd, states: Optional[dict] = None) -> dict:
@@ -2737,7 +2782,14 @@ def _inspected_follow_up(
     failure = rbd._run_state._pending_failure[node]
     if failure is None:
         repair, status = source.next_event()
-        return Event(t + duration + repair, node, status)
+        start = t + duration
+        shelf = rbd._run_state._shelf
+        if shelf is not None and shelf.ready:
+            # Its repair waits for the spare it took (see _shelves).
+            ready = shelf.ready.pop(node, start)
+            if ready > start:
+                start = ready
+        return Event(start + repair, node, status)
     rbd._run_state._pending_failure[node] = failure + duration
     return Event(t + duration, node, True, inspection=True)
 
@@ -3142,7 +3194,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         works=ctx.works,
     )
     # The shelves of spares the components draw on, full (see _shelves).
-    shelf = rbd._run_state._shelf = _shelves.start(_shelves.of(rbd))
+    shelf = rbd._run_state._shelf
     shelf_of = None if shelf is None else shelf.of
     status = rbd._run_state.component_status
     # Which components have failed, against down for planned work, and
@@ -3306,6 +3358,21 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             for follow in _strike(rbd, event, sources[node]):
                 push(heap, entry(follow))
             continue
+        if node.__class__ is _shelves.Arrival:
+            # The spare a repair waited for is in: the job now queues for
+            # a repair crew (see _shelves).
+            assert shelf is not None  # only a shelf queues an arrival
+            target = node.node
+            ends = _crew_follow_up(
+                rbd,
+                Event(event.time, target, False),
+                shelf.waiting.pop(target),
+            )
+            if ends is not None and ends.time < t_simulation:
+                push(heap, entry(ends))
+            if ccf_members and target in ccf_members:
+                ccf_pending[target] = ends
+            continue
         if node.__class__ is _Shut:
             # A shutdown's window starts (status False) or ends: its nodes
             # are held off line, or let go, as planned changes of what the
@@ -3401,6 +3468,24 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             if now == status[node]:
                 continue
             event, grouped = Event(event.time, node, now), True
+        if (
+            shelf_of is not None
+            and event.preventive
+            and status[node]
+            and node in shelf_of
+            and _task_replaces(rbd, node, sources[node])
+        ):
+            # A task that replaces the unit takes a spare; with the shelf
+            # empty it is put off until one is in (see _shelves).
+            put_off = _put_off(rbd, event, shelf, t_simulation)
+            if put_off is not False:
+                if put_off is not None:
+                    push(heap, entry(put_off))
+                if ccf_members and node in ccf_members:
+                    ccf_pending[node] = put_off
+                if paused_pending and node in paused_pending:
+                    paused_pending[node] = put_off
+                continue
         if (event.preventive or event.inspection) and (
             event.status == status[node]
         ):
@@ -3429,7 +3514,14 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             else:
                 rep_cost += pay(node, 3, inspection_charges.get(node))
                 if not event.status and not event.missed:
+                    took = replaced[index[node]]
                     rep_cost += corrective(node, index[node])
+                    if shelf_of is not None and node in shelf_of:
+                        # The failure the test found takes a spare: its
+                        # repair waits for it (see _inspected_follow_up).
+                        stock, repairs = shelf_of[node]
+                        if repairs or replaced[index[node]] > took:
+                            shelf.ready[node] = stock.take(event.time)
             follow = _follow_up(rbd, event, sources[node])
             next_event: Optional[Event] = (
                 follow
@@ -3513,12 +3605,20 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
                     replaced[c] += 1
                     for category, charges in failure_charges.get(node, ()):
                         rep_cost += pay(node, category, charges)
-            if shelf_of is not None and not grouped and node in shelf_of:
+            if (
+                shelf_of is not None
+                and not grouped
+                and node in shelf_of
+                and node not in inspected
+            ):
                 # A replacement takes a spare (a repair, if its shelf
-                # says so), and waits for one if the shelf is empty.
+                # says so), and waits for one if the shelf is empty; one
+                # already ordered for a task put off is this one's.
                 stock, repairs = shelf_of[node]
                 if repairs or replaced[c] > took:
-                    spare_at = stock.take(t)
+                    spare_at = shelf.ready.pop(node, None)
+                    if spare_at is None:
+                        spare_at = stock.take(t)
             if node in member_group:
                 rep_cost += stop(member_group[node], t, node)
 
@@ -3571,7 +3671,21 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             next_event = Event(
                 next_event.time + (spare_at - t), node, next_event.status
             )
-        if crews is not None:
+        if (
+            crews is not None
+            and spare_at is not None
+            and spare_at > t
+            and next_event is not None
+            and node in crews.served
+        ):
+            # The job falls due when its spare is in, and only then
+            # queues for a crew (see _shelves).
+            assert shelf is not None  # only a shelf has a spare to wait for
+            shelf.waiting[node] = next_event
+            if spare_at < t_simulation:
+                push(heap, entry(Event(spare_at, shelf.arrival(node), False)))
+            next_event = None
+        elif crews is not None:
             # A job waits for a repair crew (see _Crews).
             next_event = _crew_follow_up(rbd, event, next_event)
         if next_event is not None and next_event.time < t_simulation:

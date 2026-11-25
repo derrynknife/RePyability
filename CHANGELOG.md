@@ -12,6 +12,22 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- The simulated shelf of spares (`spares_stock(method="simulate")`, the
+  `spares` lever of `least_spend_for_downtime`) takes repair crews,
+  preventive tasks and tests of hidden failures, which it refused. A
+  repair waiting for its spare queues for a crew only once the spare is
+  in (no crew is held meanwhile); a task that replaces the unit takes a
+  spare and, with the shelf empty, is put off until one is in, the unit
+  running on (a failure first takes the task's spare); a test that finds
+  a failure takes one, the repair starting once the test is over and the
+  spare is in. Checked against closed forms: age replacement put off
+  (0.7954 simulated, 0.7941 exact, +1.8 SE), a test's repair waiting
+  (0.7683 against 0.7673, +1.4 SE), and a crew's job after its spare
+  (q exactly as with no crews; p against its renewal value). Still
+  refused: replacement on condition, maintenance groups, early renewals
+  at shutdowns, a sub-system's components and, with crews, tested units
+  and units a shutdown pauses. No result without a shelf changes.
+
 - A service whose effect is a covariate of the time since it, a ramp:
   `schedule.Condition(life, since_service=True, fresh=, rate=, since=)`,
   `fresh + rate × (t - s)` from the last service `s`. A block's

@@ -3508,6 +3508,35 @@ the refusals (repair crews, preventive tasks, tests, a sub-system's
 components, a fleet). Still to add: a shelf with crews, tasks and tests,
 and for a sub-system's components.
 
+**The shelf with crews, tasks and tests (added after).** "Our pumps have
+a 1,000 h task, a crew of one and spares that take 300 h: is the stock
+still enough?" Rules, each the simplest that keeps the unit's own
+process as it was: (a) with repair crews, a repair waiting for its spare
+falls due as a crew's job only once the spare is in (an `Arrival` taken
+among the failures at its instant), so no crew is held while a spare is
+on its way; (b) a task that replaces the unit takes a spare, and with
+the shelf empty is put off until it is in, the unit running on as it is:
+should it fail first (its life was drawn when it was put in, so the loop
+knows when), the failure takes the task's spare and waits for it, and
+the task, its spare used, is not done; (c) a test that finds a hidden
+failure takes a spare, the repair starting once the test is over and
+the spare is in. Hand-worked answers: (1) age replacement at 500 h in
+no time, failures at 1/1,000 h replaced in no time, no stock and 300 h
+lead time: from each renewal, a failure before 500 h is down 300 h in a
+cycle of `X + 300`, and otherwise the cycle is 800 h long, down
+`(800 - X)+`: the long-run availability is 0.79408, and 400 runs of
+200,000 h give 0.79536 (+1.8 standard errors); taken down to wait, it
+would be 0.567. (2) Tests every 200 h in no time, the same lead: a cycle
+is `200 / (1 - exp(-0.2)) + 200` long, up 1,000 h of it, 0.76726
+against 0.76832 simulated (+1.4 standard errors). (3) A unit `p`
+repaired in no time but waiting 200 h for its spare, and a unit `q`
+with 20 h repairs, one crew: `q` never waits for `p`, so its uptime is
+the run with no crews' (to 1e-12), and `p` is down `200 + π_q / μ` per
+failure, `π_q = 2λ / (2λ + μ)` being `q`'s share under repair when the
+spare comes. Checks: `test_spares_shelf.py`. Still refused, with the
+reason: replacement on condition, maintenance groups, early renewals at
+shutdowns, and with crews, tested units and units a shutdown pauses.
+
 ### UC-61: "Our plan has two outages a year that cost 300 each, and at each we renew the pump if it is past 500 hours. The expected NPV is fine; how bad could a run be?"
 
 - **Status:** built: `npv_distribution`, `compare_npv` and

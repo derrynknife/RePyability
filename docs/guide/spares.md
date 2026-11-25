@@ -184,11 +184,19 @@ sure["pump"].by_stock[2]["no_stockout"]   # -> 0.8169
 - **When the lead time is longer than the horizon**, nothing ordered
   arrives in it, and the chance is exact without simulating:
   `spares_demand(horizon)[node].covered(S)`.
+- **With repair crews**, a repair that waits for its spare queues for a
+  crew only once the spare is in: no crew is held while it is on its way.
+- **A preventive task** that replaces the unit takes a spare too. With the
+  shelf empty the task is put off until the spare is in, the unit running
+  on as it is; should it fail first, the failure takes the spare ordered
+  for the task, and waits for it.
+- **A test that finds a hidden failure** takes a spare, and the repair
+  starts once the test is over and the spare is in.
 - It simulates one system (`fleet=1`), with `parts=` pooling shelves. The
   shelf is simulated in Python only (the compiled engine refuses it), and
-  not yet with repair crews, preventive tasks, tests of hidden failures,
-  maintenance groups or for a sub-system's components, which are refused
-  with the reason.
+  not yet for replacement on condition, maintenance groups or a
+  sub-system's components, nor (with repair crews) for tested units or a
+  unit a shutdown pauses, which are refused with the reason.
 
 To keep a bad year's *downtime* under a limit rather than avoid every
 stock-out, the spares are a lever of `least_spend_for_downtime` (see

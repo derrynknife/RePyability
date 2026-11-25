@@ -112,6 +112,49 @@ def kinds():
     yield "beside a sub-system", RepairableRBD(
         [("s", "p"), ("p", "q"), ("q", "t")], {"p": dict(life), "q": inner}
     ), {"p": "p"}
+    yield "preventive task", RepairableRBD(
+        ONE,
+        {
+            "p": {
+                "reliability": W([1000.0, 2.0]),
+                "repairability": E([0.05]),
+                "preventive": {"interval": 400.0},
+            }
+        },
+    ), {"p": "p"}
+    yield "block task taking time", RepairableRBD(
+        ONE,
+        {
+            "p": {
+                "reliability": W([1000.0, 2.0]),
+                "repairability": E([0.05]),
+                "preventive": {
+                    "interval": 400.0,
+                    "policy": "block",
+                    "duration": E([0.2]),
+                },
+            }
+        },
+    ), {"p": "p"}
+    yield "tested", RepairableRBD(
+        ONE,
+        {
+            "p": {
+                **life,
+                "inspection": {"interval": 100.0, "duration": E([0.5])},
+            }
+        },
+    ), {"p": "p"}
+    yield "repair crews", RepairableRBD(
+        [("s", "p"), ("p", "q"), ("q", "t")],
+        {"p": dict(life), "q": dict(life)},
+        repair_crews=1,
+    ), {"p": "p", "q": "p"}
+    yield "standby with crews", RepairableRBD(
+        [("s", "p"), ("p", "q"), ("q", "t")],
+        {"p": {**life, "standby": {"units": 2, "k": 1}}, "q": dict(life)},
+        repair_crews=1,
+    ), {"p": "p"}
 
 
 @pytest.mark.parametrize("kind", [k[0] for k in kinds()])
@@ -317,40 +360,35 @@ def test_the_compiled_engine_refuses_a_shelf():
     [
         (
             RepairableRBD(
+                ONE,
+                {
+                    "p": {
+                        "reliability": E([FAIL]),
+                        "repairability": "instant",
+                        "preventive": {
+                            "interval": 100.0,
+                            "policy": "condition",
+                            "threshold": 0.1,
+                        },
+                    }
+                },
+            ),
+            "replaced on condition",
+        ),
+        (
+            RepairableRBD(
                 [("s", "p"), ("p", "q"), ("q", "t")],
                 {
-                    n: {"reliability": E([FAIL]), "repairability": E([0.1])}
+                    n: {
+                        "reliability": E([FAIL]),
+                        "repairability": E([0.1]),
+                        "inspection": {"interval": 100.0},
+                    }
                     for n in "pq"
                 },
                 repair_crews=1,
             ),
-            "repair crews",
-        ),
-        (
-            RepairableRBD(
-                ONE,
-                {
-                    "p": {
-                        "reliability": E([FAIL]),
-                        "repairability": "instant",
-                        "preventive": {"interval": 100.0},
-                    }
-                },
-            ),
-            "preventive task",
-        ),
-        (
-            RepairableRBD(
-                ONE,
-                {
-                    "p": {
-                        "reliability": E([FAIL]),
-                        "repairability": "instant",
-                        "inspection": {"interval": 100.0},
-                    }
-                },
-            ),
-            "found by tests",
+            "found by tests, and with repair crews",
         ),
     ],
 )
@@ -542,3 +580,122 @@ def test_the_spares_lever_checks_its_spec():
             engine="numba",
             mc_samples=10,
         )
+
+
+def long_run(rbd, horizon, runs, seed):
+    run = rbd.availability(
+        horizon,
+        mc_samples=runs,
+        seed=seed,
+        control_variate=False,
+        conditional=False,
+    )
+    up = np.asarray(run.uptimes) / horizon
+    return run, up.mean(), up.std(ddof=1) / math.sqrt(runs)
+
+
+def test_a_task_that_finds_the_shelf_empty_is_put_off():
+    # Age replacement at T in no time, failures exponential and replaced
+    # in no time, no stock: a task orders its spare and the unit runs on
+    # until it is in, L later; a failure before then takes that spare and
+    # waits for it. From each renewal, with X the life:
+    #   X < T: down L, a cycle of X + L;
+    #   X >= T: a cycle of T + L, down (T + L - X)+.
+    lam, T, lead = 1e-3, 500.0, 300.0
+    rbd = unit(preventive={"interval": T})
+    q = math.exp(-lam * T)
+    cycle = (1 - q) / lam - T * q + lead * (1 - q) + (T + lead) * q
+    down = lead * (1 - q) + q * (lead - (1 - math.exp(-lam * lead)) / lam)
+    _, mean, se = long_run(shelved(rbd, 0, lead), 200_000.0, 400, 1)
+    assert abs(mean - (1 - down / cycle)) < 4 * se
+    # Taken down to wait instead, it would be down L every cycle.
+    assert 1 - down / cycle - (1 - lead / ((1 - q) / lam + lead)) > 0.2
+    # Each demand is a cycle's: a task's or a failure's, never both.
+    rows, _ = records(shelved(rbd, 0, lead), 200_000.0, 400, 1)
+    demands = np.array([r.demands for r in rows], float)
+    assert demands.mean() == pytest.approx(200_000.0 / cycle, rel=0.01)
+
+
+def test_a_test_that_finds_a_failure_waits_for_its_spare():
+    # Tests every tau in no time, repairs in no time, no stock and a lead
+    # time of tau: from each renewal (on a test) the failure is found at
+    # the first test after it, the unit back L later, so a cycle is
+    # tau / (1 - exp(-lam tau)) + L long, up 1 / lam of it.
+    lam, tau = 1e-3, 200.0
+    rbd = unit(inspection={"interval": tau})
+    cycle = tau / (1 - math.exp(-lam * tau)) + tau
+    _, mean, se = long_run(shelved(rbd, 0, tau), 200_000.0, 400, 1)
+    assert abs(mean - (1 / lam) / cycle) < 4 * se
+    rows, _ = records(shelved(rbd, 0, tau), 200_000.0, 50, 1)
+    assert all(r.demands == r.stockouts > 0 for r in rows)
+    assert all(
+        r.waited == pytest.approx(tau * r.demands, rel=1e-9) for r in rows
+    )
+
+
+def crewed(group=False):
+    lam, mu = 1e-3, 0.05
+    # A group's units need a repair time: a billionth of an hour.
+    p = {
+        "reliability": E([lam]),
+        "repairability": E([1e9]) if group else "instant",
+    }
+    if group:
+        p["standby"] = {"units": 2, "k": 1}
+    q = {"reliability": E([2 * lam]), "repairability": E([mu])}
+    edges = [("s", "p"), ("p", "q"), ("q", "t")]
+    return (
+        RepairableRBD(edges, {"p": p, "q": q}, repair_crews=1),
+        RepairableRBD(edges, {"p": dict(p), "q": dict(q)}),
+        lam,
+        mu,
+    )
+
+
+@pytest.mark.parametrize("group", [False, True])
+def test_a_crew_is_not_held_while_a_spare_is_on_its_way(group):
+    # p's repairs take no time but wait L for their spare; q's take a crew,
+    # the only one. Were the crew held while p waits, q would wait too:
+    # it never does, so q is as with no crews to the bit.
+    lead, horizon, runs = 200.0, 200_000.0, 400
+    with_crews, without, lam, mu = crewed(group)
+    a = shelved(with_crews, 0, lead).availability(
+        horizon,
+        mc_samples=runs,
+        seed=2,
+        control_variate=False,
+        conditional=False,
+    )
+    b = shelved(without, 0, lead).availability(
+        horizon,
+        mc_samples=runs,
+        seed=2,
+        control_variate=False,
+        conditional=False,
+    )
+    assert a.node_uptime["q"] == pytest.approx(b.node_uptime["q"], rel=1e-12)
+    if group:
+        return
+    # Once its spare is in, p's job queues for the crew: it waits for q's
+    # repair when q is under one (q's long-run share 2 lam / (2 lam + mu),
+    # its repair left 1 / mu), q being independent of p. So p is down
+    # L + 2 lam / (2 lam + mu) / mu per failure.
+    exact = (1 / lam) / (1 / lam + lead + 2 * lam / (2 * lam + mu) / mu)
+    # p's share up in batches of runs on seeds of their own.
+    batches = [
+        shelved(with_crews, 0, lead)
+        .availability(
+            horizon,
+            mc_samples=100,
+            seed=10 + k,
+            control_variate=False,
+            conditional=False,
+        )
+        .node_uptime["p"]
+        / (100 * horizon)
+        for k in range(10)
+    ]
+    se = np.std(batches, ddof=1) / math.sqrt(len(batches))
+    assert abs(np.mean(batches) - exact) < 4 * se
+    # Under no crews' 1 / (1 + lam L), by about 0.0005.
+    assert np.mean(batches) < (1 / lam) / (1 / lam + lead)
