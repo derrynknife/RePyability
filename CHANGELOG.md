@@ -12,6 +12,10 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- One saved sub-system (a `RepairableRBD`) can be given for several nodes
+  of a diagram: each node after the first gets its own copy, built from
+  the same arguments and models, so the diagram is the one with the
+  copies given (it was refused, asking for `copy.deepcopy`).
 - `OnRule(rule, at=)`: a unit plan's task on a recurrence rule's dates (a
   `"preventive"` spec's `"rule"` and `"at"`). Its dates are the
   calendar's: `CalendarContext.diagram` now also takes a diagram's edges

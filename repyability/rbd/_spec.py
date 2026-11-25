@@ -186,25 +186,18 @@ def _mean_cost(cost) -> float:
     return float(np.ravel(cost.mean())[0])
 
 
-def _refuse_shared_nested(components: dict) -> None:
-    """Raise if one ``RepairableRBD`` object is given for two nodes: a
-    nested diagram carries its simulation state (its event queue), so
-    it is one node's. Give each node its own (``copy.deepcopy`` one
-    for nodes alike)."""
+def own_copy(rbd):
+    """A ``RepairableRBD`` built again from ``rbd``'s arguments, its
+    own nested diagrams copied too: the same sub-system with a
+    simulation state of its own, for a second node drawn with it."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
-    first: dict = {}
-    for name, component in components.items():
-        if not isinstance(component, RepairableRBD):
-            continue
-        other = first.setdefault(id(component), name)
-        if other != name:
-            raise ValueError(
-                f"Nodes {other!r} and {name!r} are given one RepairableRBD "
-                "object: a nested diagram carries its simulation state, "
-                "so it is one node's. Give each node its own "
-                "(copy.deepcopy it for nodes alike)."
-            )
+    args = dict(rbd._init_args)
+    args["components"] = {
+        name: own_copy(c) if isinstance(c, RepairableRBD) else c
+        for name, c in args["components"].items()
+    }
+    return RepairableRBD(**args)
 
 
 def _validate_ccf_groups(rbd, ccf_groups) -> list:
