@@ -385,6 +385,17 @@ def tasks_on_calendar(node, spec: dict, d):
     return out, operating
 
 
+def lives_streamed(life, keeps_age: bool) -> bool:
+    """Whether a unit on the diagram's clock draws each life from its
+    ``FAILURE`` stream as a life in operating time (its plan's model's
+    draws), which the plan puts on the calendar (``PlannedLife.run_on``):
+    a unit on a duty plan that changes over time that keeps no virtual
+    age, as both engines draw it. Any other (a virtual age, a covariate
+    schedule) draws uniforms, which ``life_left`` inverts given its age
+    and when it starts."""
+    return isinstance(life, PlannedLife) and not keeps_age
+
+
 def planned_life(rbd, node) -> Any:
     """The ``PlannedLife`` of a ``RepairableRBD``'s component on a duty
     plan that changes over time, or None."""

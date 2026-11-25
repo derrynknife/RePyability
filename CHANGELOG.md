@@ -12,6 +12,12 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- The compiled engine (numba) runs a diagram on a duty plan that changes
+  over time, which it handed to the Python loop: `D` and `D⁻¹` at every
+  draw (each life, an age or block task and the tests counted in
+  operating time, a standby group's units), to the bit of the Python
+  loop's results. A unit that keeps a virtual age on such a plan (and
+  a covariate schedule) stays in Python.
 - Standby groups on a duty plan that changes over time, which were
   refused: each unit's life is in operating time and is used up on the
   plan's clock `D`, at its pace while the unit operates and at its
@@ -188,6 +194,11 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- Seeded results on a duty plan that changes over time move: a unit
+  that keeps no virtual age now draws each life in operating time from
+  its stream (its model's draws, as both engines read them), where it
+  inverted a uniform one draw at a time. The same lives in distribution;
+  no expected value changes.
 - RePyability's own copies of four things surpyval 0.29 (the minimum)
   now does are gone, and surpyval's are used:
   - a mixture's life left at a virtual age (imperfect repair, partial

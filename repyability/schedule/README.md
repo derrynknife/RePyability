@@ -1183,7 +1183,8 @@ in `test_schedule_forecast.py`.
   pace while operating, at the `dormancy_factor` of it while waiting (a
   warm spare ages at its share of the duty, a cold one not at all;
   standing ready while the line runs is what ages it), their repairs on
-  the calendar. The compiled engine hands such a unit to Python.
+  the calendar. Both engines take such a unit (numba puts `D` and `D⁻¹`
+  at every draw), but one that keeps a virtual age, which Python takes.
 - **Checks:** `test_duty_plans.py`: a plan of one share is the duty share
   to the bit; the simulation against `M(D(t))` for run to failure, block
   and age replacement, and against the one-node diagram's own
@@ -1239,8 +1240,8 @@ in `test_schedule_forecast.py`.
   on such a plan whose repairs or tasks take time, or whose task is
   counted in calendar time, is simulated (UC-64); one whose repairs and
   tasks take no time is exact (from a state too). Replacement on
-  condition by a measured level and the compiled engine (`D` and `D⁻¹`
-  at every draw) are not built on such a plan yet.
+  condition by a measured level is not built on such a plan yet, and
+  the compiled engine leaves a virtual age on it to Python.
 
 ### UC-71: "The seal is changed at the check on the first Monday of each quarter. Can that sit in the pump's plan, so it goes wherever the plan goes?"
 

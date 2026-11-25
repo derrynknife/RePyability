@@ -573,15 +573,24 @@ class _ScheduledComponent(_ImperfectComponent):
     keeping a virtual age), but each life is drawn from the time ``now``
     it starts on the diagram's clock, which the loop sets before each
     draw (``_clock``), and its age then: one uniform each, from its
-    ``FAILURE`` stream (numpy's global RNG without streams)."""
+    ``FAILURE`` stream (numpy's global RNG without streams). With
+    ``lives``, that stream holds its lives in operating time, on a duty
+    plan that changes over time (``_duty.lives_streamed``): each is run
+    on through the plan from ``now``."""
 
-    __slots__ = ("now",)
+    __slots__ = ("now", "_lives")
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, lives: bool = False, **kwargs):
         super().__init__(*args, **kwargs)
         self.now = 0.0
+        self._lives = lives
 
     def _life(self) -> float:
+        if self._lives:
+            assert self._failure is not None  # drawn from its stream
+            return self._unit.reliability.run_on(
+                self.now, self._failure.draw()
+            )
         u = (
             self._failure.draw()
             if self._failure is not None
@@ -722,8 +731,10 @@ def _stand_in(
         return component
     failure = run.stream(path, _streams.FAILURE)
     repair = run.stream(path, _streams.REPAIR)
-    if scheduled(component) is not None:
-        # Its lives from the uniforms of its FAILURE stream.
+    clock = scheduled(component)
+    if clock is not None:
+        # Its lives from its FAILURE stream: uniforms, or lives in
+        # operating time (see _duty.lives_streamed).
         if failure is None or repair is None:
             return _ScheduledComponent(
                 component, imperfect, model=duration, restoration=restoration
@@ -739,6 +750,9 @@ def _stand_in(
             run.stream(path, _streams.TEST),
             restoration,
             run.stream(path, _streams.START),
+            lives=_duty.lives_streamed(
+                clock, imperfect is not None or restoration is not None
+            ),
         )
     if imperfect is not None or restoration is not None:
         if failure is None or repair is None:
@@ -1310,9 +1324,17 @@ def _stream_specs(
                 if own is None
                 else _exponential_sampler(own)
             )
-            if scheduled(component) is not None:
-                # Uniforms, which its stand-in inverts along the schedule.
-                failure = _uniforms
+            clock = scheduled(component)
+            if clock is not None:
+                # Uniforms, which its stand-in inverts along the schedule,
+                # or lives in operating time (see _duty.lives_streamed).
+                failure = (
+                    stream_sampler(getattr(clock, "model"))
+                    if _duty.lives_streamed(
+                        clock, _keeps_virtual_age(rbd, name)
+                    )
+                    else _uniforms
+                )
             upgrade = rbd._upgrades.get(name)
             if upgrade is not None:
                 # Uniforms, which its stand-in turns into lives by the
@@ -1328,12 +1350,6 @@ def _stream_specs(
             # Each unit's lives and repairs, and the group's switches; on
             # a duty plan that changes over time, lives in operating time
             # (see _StandbyGroup).
-            plan = _duty.planned_life(rbd, name)
-            if plan is not None:
-                failure = stream_sampler(plan.model)
-                if failure is None:
-                    complete = False
-                    continue
             lives, switches = _standby_draw_counts(rbd, name, t_simulation)
             for unit in range(arrangement.units):
                 add(path + (unit,), _streams.FAILURE, failure, lives)

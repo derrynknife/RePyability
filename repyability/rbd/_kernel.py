@@ -299,6 +299,59 @@ def _take_trail(split, child, L, c):
     return 0
 
 
+# Where ``upkeep`` keeps the duty plans that change over time (see
+# ``_compiled._System.upkeep``): each component's plan (-1 for none) and
+# whether its preventive task (1) and its tests (2) are counted in
+# operating time; and each plan's first knot and number of knots in the
+# knots' times, shares and operating times (``_duty.PlannedLife``).
+_PLAN_OF, _CLOCKED, _PLAN_FIRST, _PLAN_SIZE = 36, 37, 38, 39
+_PLAN_TIMES, _PLAN_SHARES, _PLAN_HOURS = 40, 41, 42
+
+
+@njit(cache=True, inline="always")
+def _operating(p, x, upkeep):
+    """``PlannedLife.operating``: plan ``p``'s operating time ``D(x)``
+    (``x`` itself before 0)."""
+    if x <= 0.0:
+        return x
+    times, shares = upkeep[_PLAN_TIMES], upkeep[_PLAN_SHARES]
+    k = upkeep[_PLAN_FIRST][p]
+    last = k + upkeep[_PLAN_SIZE][p] - 1
+    while k < last and times[k + 1] <= x:
+        k += 1
+    share = shares[k]
+    ran = share * (x - times[k]) if share > 0.0 else 0.0
+    return upkeep[_PLAN_HOURS][k] + ran
+
+
+@njit(cache=True, inline="always")
+def _inverse(p, y, upkeep):
+    """``PlannedLife.inverse``: the first time plan ``p``'s operating time
+    reaches ``y`` (``inf`` if it never does; ``y`` itself before 0)."""
+    if not y > 0.0:
+        return y
+    if y == np.inf:
+        return np.inf
+    hours = upkeep[_PLAN_HOURS]
+    k = upkeep[_PLAN_FIRST][p]
+    last = k + upkeep[_PLAN_SIZE][p] - 1
+    while k < last and hours[k + 1] < y:
+        k += 1
+    share = upkeep[_PLAN_SHARES][k]
+    if share == 0.0:
+        return np.inf
+    return upkeep[_PLAN_TIMES][k] + (y - hours[k]) / share
+
+
+@njit(cache=True, inline="always")
+def _after(p, t, x, upkeep):
+    """When a clock that runs ``x`` on from ``t`` gets there: ``t + x``,
+    or on plan ``p`` (``p >= 0``), ``t + PlannedLife.run_on(t, x)``."""
+    if p < 0:
+        return t + x
+    return t + (_inverse(p, _operating(p, t, upkeep) + x, upkeep) - t)
+
+
 @njit(cache=True, inline="always")
 def _renewal(c, t, maintenance, fail, lives, limit, flat, base):
     """``RepairableRBD._renewal`` for a unit under age or block replacement
@@ -313,21 +366,30 @@ def _renewal(c, t, maintenance, fail, lives, limit, flat, base):
     if k >= limit[s]:
         return s + 1, 0.0, _FAIL
     lives[c] = k + 1
+    # On a duty plan that changes over time, the life is in operating
+    # time, run on through the plan (and so is the task, counted in it).
+    p = maintenance[_PLAN_OF][c]
     life = flat[base[s] + k]
+    if p >= 0:
+        life = _after(p, t, life, maintenance) - t
+    clocked = p >= 0 and (maintenance[_CLOCKED][c] & 1) != 0
+    r = _operating(p, t, maintenance) if clocked else t
     if policy[c] == 1:
-        due = t + interval[c]
+        due = r + interval[c]
     elif phase[c] >= 0.0:
         # On a shutdown's calendar: its first time, then every interval
         # (``_Preventive.due``, as ``_Inspection.due`` with an offset).
-        k = np.floor((t - phase[c]) / interval[c]) + 1.0
+        k = np.floor((r - phase[c]) / interval[c]) + 1.0
         due = phase[c] + k * interval[c]
-        if not due > t:
+        if not due > r:
             due = phase[c] + (k + 1.0) * interval[c]
     else:
         # The next multiple of the interval after t.
-        due = (np.floor(t / interval[c]) + 1.0) * interval[c]
-        if not due > t:
+        due = (np.floor(r / interval[c]) + 1.0) * interval[c]
+        if not due > r:
             due = due + interval[c]
+    if clocked:
+        due = _inverse(p, due, maintenance)
     if due < t:
         due = t
     if t + life <= due:
@@ -380,13 +442,62 @@ def _full_test(t, partial, interval, offset, per_full):
 
 
 @njit(cache=True, inline="always")
+def _test_clock(c, upkeep):
+    """The plan component ``c``'s tests are counted on (-1 for the
+    diagram's clock)."""
+    p = upkeep[_PLAN_OF][c]
+    if p >= 0 and (upkeep[_CLOCKED][c] & 2) != 0:
+        return p
+    return -1
+
+
+@njit(cache=True, inline="always")
+def _next_test(c, t, upkeep):
+    """``_Inspection.due`` of component ``c``: its first test after
+    ``t`` (in operating time, and back, on a plan)."""
+    interval, offset = upkeep[5], upkeep[6]
+    p = _test_clock(c, upkeep)
+    if p < 0:
+        return _test_due(t, interval[c], offset[c])
+    due = _test_due(_operating(p, t, upkeep), interval[c], offset[c])
+    return _inverse(p, due, upkeep)
+
+
+@njit(cache=True, inline="always")
+def _finding_test(c, t, upkeep):
+    """``_Inspection.finds`` of component ``c``: the test that finds a
+    failure at ``t``, the first at or after it (on a plan, the first in
+    operating time that falls at or after ``t`` itself)."""
+    interval, offset = upkeep[5], upkeep[6]
+    p = _test_clock(c, upkeep)
+    if p < 0:
+        return _test_finding(t, interval[c], offset[c])
+    at = _test_finding(_operating(p, t, upkeep), interval[c], offset[c])
+    found = _inverse(p, at, upkeep)
+    if found >= t:
+        return found
+    return _inverse(p, _test_due(at, interval[c], offset[c]), upkeep)
+
+
+@njit(cache=True, inline="always")
+def _is_full(c, t, upkeep):
+    """``_Inspection.is_full`` of component ``c``'s test at ``t``."""
+    p = _test_clock(c, upkeep)
+    if p >= 0:
+        t = _operating(p, t, upkeep)
+    return _full_test(
+        t, upkeep[8][c], upkeep[5][c], upkeep[6][c], upkeep[9][c]
+    )
+
+
+@njit(cache=True, inline="always")
 def _tested_next(c, t, upkeep, pending):
     """``RepairableRBD._inspected_next``: a working unit's next event, its
     hidden failure or its next test, whichever comes first (a failure at
     the same time first)."""
-    interval, offset, test_time = upkeep[5], upkeep[6], upkeep[10]
+    test_time = upkeep[10]
     failure = pending[c]
-    due = _test_due(t, interval[c], offset[c])
+    due = _next_test(c, t, upkeep)
     if failure <= due:
         return failure, _FAIL
     if test_time[c] < 0:
@@ -556,26 +667,34 @@ def _unit_event(u, g, time, kind, units, groups):
 
 
 @njit(cache=True, inline="always")
-def _operate(u, g, t, units, groups):
+def _group_plan(g, upkeep):
+    """The duty plan group ``g``'s units age on (-1 for none)."""
+    return upkeep[_PLAN_OF][upkeep[17][g]]
+
+
+@njit(cache=True, inline="always")
+def _operate(u, g, t, units, groups, upkeep):
     """``_StandbyGroup._operate``: unit ``u`` operates from ``t``."""
     life, since, operating = units[0], units[1], units[6]
     operating[u] = 1
     groups[1][g] += 1
     since[u] = t
-    _unit_event(u, g, t + life[u], _UNIT_FAILS, units, groups)
+    fails = _after(_group_plan(g, upkeep), t, life[u], upkeep)
+    _unit_event(u, g, fails, _UNIT_FAILS, units, groups)
 
 
 @njit(cache=True, inline="always")
-def _stand_by(u, g, t, dormancy, first, units, groups):
+def _stand_by(u, g, t, dormancy, first, units, groups, upkeep):
     """``_StandbyGroup._wait``: unit ``u`` joins the spares at ``t``."""
     spares_n, spares = groups[2], groups[3]
     spares[first[g] + spares_n[g]] = u
     spares_n[g] += 1
     units[1][u] = t
     if dormancy[g] > 0.0:
-        _unit_event(
-            u, g, t + units[0][u] / dormancy[g], _SPARE_FAILS, units, groups
+        fails = _after(
+            _group_plan(g, upkeep), t, units[0][u] / dormancy[g], upkeep
         )
+        _unit_event(u, g, fails, _SPARE_FAILS, units, groups)
 
 
 @njit(cache=True, inline="always")
@@ -746,6 +865,8 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
     # The nested RBDs: each nested node's level, each level's components,
     # and the nested levels, innermost first.
     level_start, level_stop = upkeep[29], upkeep[30]
+    # Each component's duty plan that changes over time (-1 for none).
+    plan_of = upkeep[_PLAN_OF]
     child_level = upkeep[27]
     levels = level_start.size
     # Planned against unplanned downtime (see ``_unplanned``), for a
@@ -1091,6 +1212,8 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                     else:
                         code, t = _draw(fail[c], lives, c, limit, flat, base)
                         kind = _FAIL
+                        if plan_of[c] >= 0:
+                            t = _after(plan_of[c], 0.0, t, upkeep)
                         if code == 0 and tested[c] > 0.0:
                             pending[c] = 0.0 + t
                             t, kind = _tested_next(c, 0.0, upkeep, pending)
@@ -1119,10 +1242,17 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                             break
                         units[0][u] = life
                         if u - group_first[g] < group_k[g]:
-                            _operate(u, g, 0.0, units, groups)
+                            _operate(u, g, 0.0, units, groups, upkeep)
                         else:
                             _stand_by(
-                                u, g, 0.0, dormancy, group_first, units, groups
+                                u,
+                                g,
+                                0.0,
+                                dormancy,
+                                group_first,
+                                units,
+                                groups,
+                                upkeep,
                             )
                     if code != 0:
                         break
@@ -1224,10 +1354,17 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                         break
                     units[0][u] = life
                     if groups[1][g] < group_k[g]:
-                        _operate(u, g, t, units, groups)
+                        _operate(u, g, t, units, groups, upkeep)
                     else:
                         _stand_by(
-                            u, g, t, dormancy, group_first, units, groups
+                            u,
+                            g,
+                            t,
+                            dormancy,
+                            group_first,
+                            units,
+                            groups,
+                            upkeep,
                         )
                 else:
                     if unit_kind == _SPARE_FAILS:
@@ -1289,9 +1426,16 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                             # It has used up its life at the dormant rate
                             # so far (all of it, at most).
                             units[5][spare] = 0
-                            used = dormancy[g] * (t - units[1][spare])
+                            p = _group_plan(g, upkeep)
+                            if p < 0:
+                                ran = t - units[1][spare]
+                            else:
+                                ran = _operating(p, t, upkeep) - _operating(
+                                    p, units[1][spare], upkeep
+                                )
+                            used = dormancy[g] * ran
                             units[0][spare] = max(units[0][spare] - used, 0.0)
-                            _operate(spare, g, t, units, groups)
+                            _operate(spare, g, t, units, groups, upkeep)
                 size = _arm(
                     g,
                     c,
@@ -1618,15 +1762,9 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                         # after its failure, unless that one can miss it and
                         # does.
                         pending[c] = np.nan
-                        t_next = _test_finding(t, tested[c], test_offset[c])
+                        t_next = _finding_test(c, t, upkeep)
                         kind_next = _TEST_DOWN
-                        if not _full_test(
-                            t_next,
-                            partial[c],
-                            tested[c],
-                            test_offset[c],
-                            per_full[c],
-                        ):
+                        if not _is_full(c, t_next, upkeep):
                             code, uniform = _draw(
                                 test_draw[c], finding, c, limit, flat, base
                             )
@@ -1636,15 +1774,9 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                                 kind_next = _TEST_MISSED
                     elif kind_now == _TEST_MISSED:
                         # Missed: so is the next test, unless it is a full one.
-                        t_next = _test_due(t, tested[c], test_offset[c])
+                        t_next = _next_test(c, t, upkeep)
                         kind_next = _TEST_MISSED
-                        if _full_test(
-                            t_next,
-                            partial[c],
-                            tested[c],
-                            test_offset[c],
-                            per_full[c],
-                        ):
+                        if _is_full(c, t_next, upkeep):
                             kind_next = _TEST_DOWN
                     elif kind_now == _TEST_UP:
                         t_next, kind_next = _tested_next(c, t, upkeep, pending)
@@ -1678,7 +1810,7 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                         )
                         if code != 0:
                             break
-                        pending[c] = t + life
+                        pending[c] = _after(plan_of[c], t, life, upkeep)
                         t_next, kind_next = _tested_next(c, t, upkeep, pending)
                 elif kind_now == _FAIL:
                     code, took = _draw(
@@ -1706,7 +1838,7 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                     code, life = _draw(fail[c], lives, c, limit, flat, base)
                     if code != 0:
                         break
-                    t_next = t + life
+                    t_next = _after(plan_of[c], t, life, upkeep)
                     kind_next = _FAIL
                 waits = False
                 if limited:

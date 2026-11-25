@@ -2012,3 +2012,129 @@ def test_numba_leaves_shutdowns_that_take_time_or_cost_to_python():
     assert _compiled.unsupported(rbd, plan, None, numba=True) is None
     # An engine of the interface's version runs plain components only.
     assert _compiled.unsupported(rbd, plan, None) == "shutdowns"
+
+
+# -- duty plans that change over time -----------------------------------------
+
+
+def planned_rbds():
+    """Systems on a duty plan that changes over time, which numba's own
+    loop runs: each life in operating time put on the calendar through
+    the plan, and tasks and tests counted in operating time or on the
+    calendar."""
+    from repyability.schedule import DutySchedule
+
+    plan = DutySchedule(
+        "hours", (0.0, 60.0, 140.0, 200.0), (1.0, 0.25, 0.0, 0.5)
+    )
+    life = W([50.0, 1.8])
+    repair = E([0.5])
+    par3 = [("s", n) for n in "abc"] + [(n, "t") for n in "abc"]
+
+    def unit(**more):
+        return {
+            "reliability": life,
+            "repairability": repair,
+            "repair_cost": 1.0,
+            "duty": plan,
+            **more,
+        }
+
+    inner = RepairableRBD(
+        [("s", "x"), ("s", "y"), ("x", "t"), ("y", "t")],
+        {"x": unit(), "y": unit()},
+    )
+    return {
+        "plain": RepairableRBD(par3, {n: unit() for n in "abc"}),
+        "age, on the calendar": RepairableRBD(
+            par3,
+            {
+                "a": unit(preventive={"policy": "age", "interval": 30.0}),
+                "b": unit(),
+                "c": unit(),
+            },
+        ),
+        "block in operating time, taking time": RepairableRBD(
+            par3,
+            {
+                "a": unit(
+                    preventive={
+                        "policy": "block",
+                        "interval": 25.0,
+                        "basis": "operating",
+                        "duration": E([2.0]),
+                        "cost": 0.5,
+                    }
+                ),
+                "b": unit(
+                    preventive={
+                        "policy": "age",
+                        "interval": 35.0,
+                        "basis": "operating",
+                    }
+                ),
+                "c": unit(),
+            },
+        ),
+        "tests in operating time": RepairableRBD(
+            par3,
+            {
+                "a": unit(
+                    inspection={
+                        "interval": 10.0,
+                        "basis": "operating",
+                        "coverage": 0.6,
+                        "full_test": 30.0,
+                        "duration": E([4.0]),
+                    }
+                ),
+                "b": unit(inspection={"interval": 12.0, "offset": 5.0}),
+                "c": unit(
+                    inspection={
+                        "interval": 15.0,
+                        "offset": 4.0,
+                        "basis": "operating",
+                    }
+                ),
+            },
+        ),
+        "a standby group": RepairableRBD(
+            [("s", "g"), ("g", "t")],
+            {
+                "g": unit(
+                    standby={
+                        "units": 3,
+                        "k": 1,
+                        "dormancy_factor": 0.4,
+                        "switching_probability": 0.9,
+                    }
+                )
+            },
+        ),
+        "a repair crew": RepairableRBD(
+            par3, {n: unit() for n in "abc"}, repair_crews=1
+        ),
+        "nested": RepairableRBD(
+            [("s", "m"), ("m", "c"), ("c", "t")], {"m": inner, "c": unit()}
+        ),
+    }
+
+
+@needs_numba
+@pytest.mark.parametrize("name", sorted(planned_rbds()))
+def test_the_engines_agree_on_a_duty_plan_that_changes(name):
+    rbd = planned_rbds()[name]
+    plan = _event_loop._stream_plan(rbd, 1.0, 0, False)[0]
+    assert _compiled.unsupported(rbd, plan, None, numba=True) is None
+    options = dict(
+        t_simulation=400.0, mc_samples=200, seed=29, control_variate=False
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        python = rbd.availability(engine="python", **options)
+        compiled = rbd.availability(engine="numba", **options)
+        identical(python, compiled)
+        identical(
+            rbd.cost(engine="python", **options),
+            rbd.cost(engine="numba", **options),
+        )
