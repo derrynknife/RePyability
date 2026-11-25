@@ -1999,6 +1999,11 @@ class RepairableRBD(RBD):
     ) -> TotalCostAllocation:
         """Choose the redundancy with the lowest total cost of ownership.
 
+        This is an expected-value search. To be fairly sure of the
+        downtime instead (the least spend that keeps a bad year's downtime
+        under a limit, at a value-at-risk or expected-shortfall level), use
+        [`least_spend_for_downtime`][repyability.RepairableRBD.least_spend_for_downtime].
+
         How many identical copies of each node to fit in active parallel
         (or of each train of nodes to add alongside it, see ``trains``) so
         that owning the system for ``horizon`` costs least: each copy costs
@@ -2585,6 +2590,12 @@ class RepairableRBD(RBD):
         seed=None,
     ) -> MaintenancePlan:
         """Choose the age-replacement intervals for the system as a whole.
+
+        This is an expected-value search. To be fairly sure of the
+        downtime instead (a bad year's downtime under a limit, at a
+        value-at-risk or expected-shortfall level, test intervals among
+        the levers), use
+        [`least_spend_for_downtime`][repyability.RepairableRBD.least_spend_for_downtime].
 
         ``NonRepairable.find_optimal_replacement`` chooses one unit's
         replacement age on its own. In a system the components should be
