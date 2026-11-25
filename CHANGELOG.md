@@ -299,6 +299,30 @@ release between minors that only adds (0.19.1).
 
 ### Fixed
 
+- **The long-run `spares_stock` takes in that a unit waiting for a spare
+  makes no demand.** It took the demand as going on while a repair
+  waited, which overstated the risk where stock-outs are common. A
+  stock's fill rate, time out of stock and the stock for a target are
+  now a finite source's (a machine-repairman model): the units drawing
+  on the shelf (the fleet times a part's components) less those waiting.
+  Exact for units with one constant failure rate replaced in no time and
+  on no schedule (`SparesStock.exact`); an approximation otherwise, said
+  so in the result and documented (within the shelf simulation's error
+  for lead times short of a life, and on the side of holding more where
+  stock-outs are common, by much for wear-out lives with a lead time of
+  several lives: check those with `method="simulate"`). New:
+  `SparesStock.sources`, `exact` and `on_order_for(stock)`; `on_order`
+  and `on_order_at_demand` are as before, the demand as if it went on.
+  Intentional number changes, every long-run stock value: one spare for
+  a unit failing at 0.001 an hour, replaced in no time, with a 300-hour
+  lead time, fill rate 0.7408 → 0.7692 (`1 / 1.3`, the simulated shelf's
+  0.7689), time out of stock 0.2592 → 0.2565; with a 3,000-hour lead time
+  and three spares 0.4232 → 0.6538; the spares guide's fleet of 20, the
+  pumps' fill rate 0.9724 → 0.9737 (28 held), the seals' stock 17 → 16,
+  the pooled seals' fill rate 0.9704 → 0.9714 (17 held). A Poisson
+  unit's `on_order` is now the Poisson probabilities in closed form
+  (it was the grid's, to 1e-6). Seeded and simulated results do not
+  change.
 - `task_value` with `Services` and an effect, on a duty plan of one
   share below 1 (a `Rate` of hours a day), took `age=` as calendar time
   rather than the operating age it is: the service's value now starts

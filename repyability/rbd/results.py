@@ -4289,8 +4289,12 @@ class SparesStock(_ResultMapping):
 
     Returned (one per component) by ``RepairableRBD.spares_stock``. With a
     stock of ``S``, a spare is on the shelf when fewer than ``S`` are on
-    order: those used in the last lead time. Like the other result types
-    it is also a read-only mapping of its fields.
+    order: those used in the last lead time. A unit whose repair waits for
+    a spare is down, so it makes no demand until the spare comes: of the
+    ``sources`` units drawing on the shelf, ``k - S`` are waiting when
+    ``k > S`` are on order, and the demand is that of the rest. The
+    values for a stock take that in (see ``fill_rate_for``). Like the
+    other result types it is also a read-only mapping of its fields.
 
     Attributes
     ----------
@@ -4305,19 +4309,34 @@ class SparesStock(_ResultMapping):
     fleet : int
         How many systems draw on the stock.
     on_order : numpy.ndarray
-        The distribution of how many spares are on order at a random time:
-        the demand in a lead time.
+        The distribution of how many spares are on order at a random time
+        were the demand to go on while repairs wait: the demand in a lead
+        time. The stock's own is ``on_order_for(stock)``.
     on_order_at_demand : numpy.ndarray
         The same, as a demand finds it (not counting itself).
     members : tuple or None
         The components whose spares a part pools (see ``spares_stock``'s
         ``parts``), or None for one component's.
+    sources : int or None
+        How many units draw on the shelf: the fleet times the components
+        (a part's members). None takes the demand as going on while a
+        repair waits, as the long-run values once did.
+    exact : bool
+        Whether the values for a stock are exact: for units with a
+        constant failure rate, the same for each, replaced in no time and
+        on no schedule, the spares on order are those of a finite source
+        (a machine-repairman model), exactly. Otherwise they are the
+        demand in a lead time reweighted as that model has it, an
+        approximation: close where stock-outs are rare, and short of the
+        fill rate for wear-out lives with a lead time of several lives
+        (see ``spares_stock``).
 
     Examples
     --------
     A component with a constant failure rate of 0.01, replaced in no time,
-    and a lead time of 300 hours: the spares on order are Poisson, 3 on
-    average, and 7 on the shelf meet 96.6% of demands:
+    and a lead time of 300 hours: were the demand to go on, the spares on
+    order would be Poisson, 3 on average; a unit waiting for a spare makes
+    none, and 7 on the shelf meet 97.8% of demands:
 
     >>> import surpyval as surv
     >>> from repyability import RepairableRBD
@@ -4334,7 +4353,9 @@ class SparesStock(_ResultMapping):
     >>> stock.stock
     7
     >>> round(stock.fill_rate, 4)
-    0.9665
+    0.9781
+    >>> stock.exact
+    True
     """
 
     stock: int
@@ -4345,10 +4366,67 @@ class SparesStock(_ResultMapping):
     on_order: np.ndarray
     on_order_at_demand: np.ndarray
     members: Optional[tuple] = None
+    sources: Optional[int] = None
+    exact: bool = False
+
+    def _held(self, stock: int) -> Tuple[np.ndarray, np.ndarray]:
+        """The spares on order with ``stock`` on the shelf, at a random
+        time and as a demand finds them: ``on_order`` and
+        ``on_order_at_demand`` reweighted by the units still up. With
+        ``n`` sources and ``k`` on order, ``a_k = (n - max(0, k - S)) /
+        n`` of the demand goes on; a random time finds ``k`` as often as
+        ``on_order[k]`` times the product of ``a_j`` for ``j < k``, and a
+        demand as ``on_order_at_demand[k]`` times that and ``a_k``. For
+        Poisson demand (a constant failure rate, replaced in no time)
+        that is the finite source's distribution exactly, whatever the
+        lead time's (it is insensitive to it), and a demand finds it as a
+        random time does but weighed by the demand going on (the arrival
+        theorem)."""
+        random = np.asarray(self.on_order, dtype=float)
+        before = np.asarray(self.on_order_at_demand, dtype=float)
+        if self.sources is None:
+            return random, before
+        n = int(self.sources)
+        size = stock + n + 1
+        random = np.pad(random, (0, max(size - len(random), 0)))[:size]
+        before = np.pad(before, (0, max(size - len(before), 0)))[:size]
+        k = np.arange(size)
+        going = np.clip(n - np.maximum(k - stock, 0), 0, None) / n
+        reached = np.concatenate(([1.0], np.cumprod(going)[:-1]))
+        at_random = random * reached
+        at_demand = before * reached * going
+        if at_random.sum() <= 0.0:
+            # All of the demand in a lead time is past what the shelf
+            # and the units can hold: every unit is waiting.
+            at_random = np.zeros(size)
+            at_random[-1] = 1.0
+        if at_demand.sum() <= 0.0:
+            at_demand = np.zeros(size)
+            at_demand[-2] = 1.0
+        return at_random / at_random.sum(), at_demand / at_demand.sum()
+
+    def on_order_for(self, stock: int) -> np.ndarray:
+        """The distribution of how many spares are on order at a random
+        time with ``stock`` on the shelf: no more than the stock and the
+        units drawing on it, as a unit waiting for a spare makes no
+        demand.
+
+        Parameters
+        ----------
+        stock : int
+            The spares held.
+
+        Returns
+        -------
+        numpy.ndarray
+            The probabilities of ``0, 1, 2, ...`` on order.
+        """
+        return self._held(max(int(stock), 0))[0]
 
     def fill_rate_for(self, stock: int) -> float:
         """The fraction of demands a stock of ``stock`` meets from the
-        shelf: that a demand finds fewer than ``stock`` on order.
+        shelf: that a demand finds fewer than ``stock`` on order, a unit
+        waiting for a spare making no demand.
 
         Parameters
         ----------
@@ -4362,11 +4440,13 @@ class SparesStock(_ResultMapping):
         """
         if stock <= 0:
             return 0.0
-        return float(min(self.on_order_at_demand[: int(stock)].sum(), 1.0))
+        at_demand = self._held(int(stock))[1]
+        return float(min(at_demand[: int(stock)].sum(), 1.0))
 
     def stockout_probability_for(self, stock: int) -> float:
         """The fraction of time a stock of ``stock`` leaves the shelf
-        empty: that ``stock`` or more are on order.
+        empty: that ``stock`` or more are on order, a unit waiting for a
+        spare making no demand.
 
         Parameters
         ----------
@@ -4380,7 +4460,8 @@ class SparesStock(_ResultMapping):
         """
         if stock <= 0:
             return 1.0
-        return float(max(1.0 - self.on_order[: int(stock)].sum(), 0.0))
+        at_random = self._held(int(stock))[0]
+        return float(max(1.0 - at_random[: int(stock)].sum(), 0.0))
 
 
 @dataclass

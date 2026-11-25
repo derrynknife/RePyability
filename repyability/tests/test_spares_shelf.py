@@ -4,6 +4,7 @@ repair that finds the shelf empty waiting for a spare; the stock to hold
 to be sure of no stock-out (``spares_stock(method="simulate")``); and
 the spares lever of ``least_spend_for_downtime``."""
 
+import dataclasses
 import math
 
 import numpy as np
@@ -210,9 +211,8 @@ def ratio_se(waited, demands):
 
 
 def test_the_simulated_fill_rate_matches_the_long_run_one():
-    # Where stock-outs are rare, the long-run values (which take the
-    # demand as going on while a repair waits) and the simulated shelf
-    # agree within four standard errors.
+    # Where stock-outs are rare, the long-run values and the simulated
+    # shelf agree within four standard errors.
     lead, horizon, runs = 300.0, 200_000.0, 1000
     rbd = unit(E([1 / 24]))
     exact = rbd.spares_stock(lead, fill_rate=0.5)["p"]
@@ -229,8 +229,9 @@ def test_the_simulated_fill_rate_matches_the_long_run_one():
 
 def test_the_shelf_feedback_against_its_chain():
     # With one spare, a repair that waits keeps the unit down, so the next
-    # demand comes later: more demands are met than the long-run value
-    # without that feedback says, as the chain of the waits has it.
+    # demand comes later: more demands are met than with the demand going
+    # on, as the chain of the waits has it, and the long-run value (the
+    # finite source's) is the chain's.
     lead, horizon, runs = 300.0, 200_000.0, 1000
     rbd = unit()
     rows, _ = records(shelved(rbd, 1, lead), horizon, runs, 6)
@@ -239,9 +240,13 @@ def test_the_shelf_feedback_against_its_chain():
     rate, se = ratio_se(waited, demands)
     chain = stationary_fill_rate(FAIL, lead)
     assert abs((1 - rate) - chain) < 4 * se
-    plain = rbd.spares_stock(lead, fill_rate=0.5)["p"].fill_rate_for(1)
-    assert plain == pytest.approx(math.exp(-FAIL * lead), rel=1e-6)
-    assert chain - plain > 10 * se
+    stock = rbd.spares_stock(lead, fill_rate=0.5)["p"]
+    assert stock.exact
+    assert stock.fill_rate_for(1) == pytest.approx(1 / 1.3, abs=1e-12)
+    assert stock.fill_rate_for(1) == pytest.approx(chain, abs=1e-5)
+    going_on = dataclasses.replace(stock, sources=None).fill_rate_for(1)
+    assert going_on == pytest.approx(math.exp(-FAIL * lead), rel=1e-12)
+    assert chain - going_on > 10 * se
 
 
 def no_stockout_case():

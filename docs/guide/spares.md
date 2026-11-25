@@ -75,23 +75,39 @@ time the shelf is empty), or both:
 ```python
 stock = rbd.spares_stock(2016.0, fill_rate=0.95, fleet=20)   # 12 weeks to arrive
 stock["pump"].stock                   # -> 28
-stock["pump"].fill_rate               # -> 0.9724
-stock["pump"].stockout_probability    # -> 0.0387
-stock["seal"].stock                   # -> 17
+stock["pump"].fill_rate               # -> 0.9737
+stock["pump"].stockout_probability    # -> 0.0380
+stock["seal"].stock                   # -> 16
 ```
 
 Each result holds the distribution of the spares on order at a random time
-(`on_order`: 22.6 pumps on average) and as a demand finds them
-(`on_order_at_demand`), and `fill_rate_for(s)` and
-`stockout_probability_for(s)` give what any other stock achieves:
+were the demand to go on while a repair waits (`on_order`: 22.6 pumps on
+average) and as a demand finds them (`on_order_at_demand`), and
+`fill_rate_for(s)` and `stockout_probability_for(s)` give what any other
+stock achieves:
 
 ```python
-stock["pump"].fill_rate_for(26)       # -> 0.8870
+stock["pump"].fill_rate_for(26)       # -> 0.8942
 ```
 
-- **Poisson demand**, as the seals', finds the shelf as it is at a random
-  time: its fill rate is one minus its stock-out probability, and the stock
-  is the textbook Poisson one.
+- **A unit waiting for a spare makes no demand.** It is down until the
+  spare comes, so when the shelf is empty fewer units can fail and the
+  demand slows: of the 20 seals, `k - S` are waiting when `k > S` are on
+  order. The values for a stock take that in, as a finite source (a
+  machine-repairman model), and `on_order_for(s)` is the distribution
+  then. For units with one constant failure rate, replaced in no time,
+  as the seals, it is exact (`exact` is True): one spare for one such
+  unit with `λL = 0.3` meets `1 / 1.3 = 76.9%` of demands, where the
+  demand going on would say `exp(-0.3) = 74.1%`. Otherwise, as for the
+  pumps, it is an approximation (`exact` is False): within the
+  simulated shelf's error where the lead time is short of a life, and
+  short of it (on the side of holding more) where stock-outs are common;
+  for wear-out lives and a lead time of several lives, by much. Check
+  those with `method="simulate"` (below).
+- **Poisson demand**, as the seals', would find the shelf as it is at a
+  random time; with the waiting units, a demand comes less often while
+  the shelf is empty, so its fill rate (0.9530) is a little more than one
+  minus its stock-out probability (0.0493).
 - **Wear-out demand is steadier.** A Poisson estimate at the pumps' rate
   would hold 32 pumps, where 28 meet the fill rate. And a demand finds
   fewer on order than a random time does (a pump that has just failed is
@@ -122,7 +138,7 @@ sum(s.stock for s in each.values())   # -> 21   7 for each position
 shelf = station.spares_stock(six_weeks, fill_rate=0.95, fleet=13,
                              parts={"seal": ["seal1", "seal2", "seal3"]})
 shelf["seal"].stock                   # -> 17
-shelf["seal"].fill_rate               # -> 0.9704
+shelf["seal"].fill_rate               # -> 0.9714
 ```
 
 The positions' demands are independent, so a part's is their sum: for its
@@ -137,8 +153,7 @@ together.
 
 ## How many to hold to be sure
 
-The stock above is the long run's, and it takes the demand as going on
-while a repair waits for a spare. To be *sure* of getting through a year
+The stock above is the long run's. To be *sure* of getting through a year
 (or any horizon) without a repair waiting, ask `spares_stock` to simulate
 the shelf, `method="simulate"`: each run starts with `S` on the shelf, a
 spare used is reordered at once and arrives the lead time later, and a
