@@ -17,6 +17,9 @@ far below the percentile). Pass: the coverage's 99% binomial interval
 reaches 0.95. Run at consolidation, with one process:
 
     PYTHONPATH=. python scripts/downtime_bound_coverage.py
+
+Run on 25 November 2026: coverage 0.9700 (970 of 1000), 99% interval
+[0.9532, 0.9821]; PASS.
 """
 
 import math
