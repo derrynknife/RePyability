@@ -137,6 +137,31 @@ way) draws from numpy's global RNG, seeded afresh for each simulation from
 the run's seed: the run stays reproducible, but that component cannot take
 part in antithetic pairs or common random numbers.
 
+## Events at one instant
+
+Several events can fall at exactly the same time: the members a common
+cause strikes, a failure at the instant of a planned test, tasks and
+shutdowns on one calendar, or anything at time 0. Both engines take them
+in one stated order:
+
+1. **failures** first, then **planned stops** (maintenance or a test that
+   takes a unit down, a shutdown starting), then **restorations** (a
+   repair or a task ending, maintenance in zero time, a test that finds a
+   unit working, a shutdown ending);
+2. within each of those, a shared common cause or a shutdown before the
+   nodes, then the nodes in the diagram's order (the order of
+   `components`). A standby, load-sharing or identical-units group's event
+   is its unit's: a unit failing, a failure; a repair done, a restoration.
+
+So when a unit fails at the instant another's repair ends, the failure
+is taken first (if the system goes down between them, that is a system
+failure of no length, and counted), the members a cause strikes join the repair crews' queue in the
+diagram's order whatever order the group names them in (give them a
+`priority` to change who is repaired first), and a shutdown that ends as
+the work done in it does lets its nodes go before they are restored, so
+the restoration is theirs. The exact methods copy this order: the repair
+crews' chain takes a strike of any number of members.
+
 ## Simulating to a tolerance
 
 `tolerance` says how precise the estimate must be: within `tolerance` either

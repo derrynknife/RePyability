@@ -32,7 +32,7 @@ from typing import Callable, Dict, Hashable, List, Tuple
 
 import numpy as np
 
-from repyability.rbd._events import Event
+from repyability.rbd._events import Event, _EventQueue
 
 
 def takes_planned_outages(rbd) -> bool:
@@ -58,8 +58,10 @@ class _Sound:
     """One level of a run (see the module's docstring): ``sound``, each
     component that has not failed; ``down``, whether the level is down
     unplanned; ``side``, a heap of nested RBDs' changes still to take (as
-    ``(time, Event)`` pairs, the event's status whether the nested RBD is
-    sound, ordered by time alone as the event queue's are); and at the top
+    the event queue's entries, the event's status whether the nested RBD
+    is sound, in the event queue's order: by time, then at one instant a
+    change to failed before one to sound, and by the node's place); and at
+    the top
     level (``top``) the time down unplanned so far (``unplanned``, and
     ``since`` it last went down), or for a nested RBD the changes of
     ``down`` since its parent last took them (``trail``)."""
@@ -70,6 +72,7 @@ class _Sound:
         "top",
         "down",
         "side",
+        "_ranks",
         "trail",
         "since",
         "unplanned",
@@ -86,7 +89,9 @@ class _Sound:
         self.works = works
         self.top = top
         self.down = not up and not works(sound)
-        self.side: list = []
+        # The side's order is the event queue's (see _EventQueue).
+        self._ranks = _EventQueue(sound)
+        self.side: list = self._ranks._heap
         self.trail: List[Tuple[float, bool]] = []
         self.since = 0.0
         self.unplanned = 0.0
@@ -114,7 +119,9 @@ class _Sound:
         """Queue the changes of nested RBD ``node`` (``source``, its
         ``_StreamedRBD``) since it last gave them."""
         for t, down in source.take_trail():
-            heapq.heappush(self.side, (t, Event(t, node, not down)))
+            heapq.heappush(
+                self.side, self._ranks.entry(Event(t, node, not down))
+            )
 
     def catch_up(self, t: float, status: dict, up: bool) -> None:
         """Take the nested RBDs' changes at or before ``t``: each, of a
@@ -122,7 +129,7 @@ class _Sound:
         has failed."""
         side = self.side
         while side and side[0][0] <= t:
-            change = heapq.heappop(side)[1]
+            change = heapq.heappop(side)[2]
             if not status[change.component]:
                 self.change(
                     change.component, not change.status, change.time, up

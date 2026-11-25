@@ -253,6 +253,20 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   recorded (`tests/bdd_records.json`, by `tests/_bdd_cases.py`), and
   `test_bdd_records.py` checks both modes against the records; re-record
   only after a deliberate change of the plans.
+- **Events at one instant are taken in a stated order
+  (`_events._EventQueue`)**: by class (failures, then planned stops, then
+  restorations: `_events.tie_class`, a group's event its unit's), then a
+  shared cause's or a shutdown's before the nodes' (in the order first
+  queued), then by the node's place in `components`. The Python queue
+  keys its heap by `(time, rank, event)`, `rank` one integer; the
+  compiled heap (`_kernel._push`, `_pop`) compares by the same key from
+  an entry's node and kind (`_kernel._tie_class`), with no array more. A
+  new kind of event takes a class in both; a node has one event in the
+  queue that is taken, so the key orders every tie that matters. What
+  copies the loop copies this order (`_conditional.paths`, the crews'
+  chain's strikes); `test_event_order.py` checks both heaps against the
+  rule written out plainly. A change to the rule changes seeded results
+  where events tie, and `engines.API`.
 - **The random streams (`repyability/rbd/_streams.py`) define every seeded
   result** (#209): uniform `k` of simulation `r` is numpy's Philox's with
   the stream's key (from the entropy and the stream's name) and the counter
@@ -271,11 +285,10 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   `test_call_out_crew.py` check the chain's exact values against the
   simulation. It takes common-cause groups in too (#251,
   `_crews._crew_causes`): a shared cause's strike is its members' failures
-  one after another in the cause's order, each as a failure of its own
-  (`_crew_chain._enumerate`'s `failed`), which is the order
-  `_event_loop._strike` queues them in only for two members (the event
-  queue releases ties at one time by its heap's shape, so the chain
-  refuses causes of more, `MAX_STRUCK`); `test_crews_ccf.py` checks it
+  one after another in the diagram's order, each as a failure of its own
+  (`_crew_chain._enumerate`'s `failed`), which is the order the event
+  queue takes failures at one instant in (see "Events at one instant"
+  below), however many a cause strikes; `test_crews_ccf.py` checks it
   against the simulation. The chain can count a component's alike copies
   (`copies`: a state says how many are under repair and waiting, not
   which), for the redundancy allocation with crews
@@ -323,8 +336,8 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   `Shocks.causes`): every set of members a shock can fail, a single
   member's too, each a `_Cause` on the cause streams, while a member's
   own life is its own model's (`_own_rate` is None). A cause names its
-  members in the group's order, which is the order `_event_loop._strike`
-  fails them in: that is the rule for members struck at one instant. No
+  members in the group's order; a strike's failures are then taken in the
+  diagram's order, as every failure at one instant is. No
   chain copies them: `_ccf_rates` refuses the group for every exact
   method. A `NonRepairableRBD` writes the same causes into its structure
   (`shocks.written_shocks`) and is from then on the diagram written out;

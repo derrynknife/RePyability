@@ -872,7 +872,8 @@ def _shut_events(rbd, t_simulation: float, forced: set) -> list:
             shut.name, nodes, paused, shut.duration, shut.cost, rules, places
         )
         for start in starts:
-            out.append(Event(start, source, False))
+            # A planned stop (see _EventQueue's order at one instant).
+            out.append(Event(start, source, False, True))
             end = float(start) + shut.duration
             if shut.duration > 0.0 and end < t_simulation:
                 out.append(Event(end, source, True))
@@ -1753,7 +1754,7 @@ def _start_queue(
         component_status[component] = False
 
     # The queue supplies failure/repair events in chronological order
-    event_queue = _EventQueue()
+    event_queue = _EventQueue(rbd.components)
     # When each working node with hidden failures is due to fail (None
     # once it has failed).
     rbd._run_state._pending_failure = {}
@@ -1862,7 +1863,7 @@ def _start_queue(
                 for node in event.component.paused:
                     rbd._run_state._paused_pending.setdefault(node, None)
         for item in event_queue._heap:
-            event = item[1] if isinstance(item, tuple) else item
+            event = item[-1]
             if event.component in rbd._run_state._paused_pending:
                 rbd._run_state._paused_pending[event.component] = event
     rbd._run_state._event_queue = event_queue
@@ -3032,6 +3033,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
 
     # The queue's heap, worked directly (see _EventQueue).
     heap = rbd._run_state._event_queue._heap
+    entry = rbd._run_state._event_queue.entry
     push, pop = heapq.heappush, heapq.heappop
 
     # When each group last stopped: the work started at one instant is
@@ -3064,7 +3066,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         per stop, if a member opened it or it renews any."""
         renewals = _stop(rbd, group, t, trigger)
         for renewal in renewals:
-            push(heap, (renewal.time, renewal))
+            push(heap, entry(renewal))
         if (trigger is None and not renewals) or stopped.get(group) == t:
             return 0.0
         stopped[group] = t
@@ -3076,7 +3078,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     # No event at or after the end of the window is queued, so the
     # simulation runs until the queue is empty.
     while heap:
-        event = pop(heap)[1]
+        event = pop(heap)[2]
         if sound is not None and sound.side:
             # Nested RBDs' failures up to now (see _unplanned).
             sound.catch_up(event.time, status, up)
@@ -3087,7 +3089,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         if node.__class__ is _Cause:
             # A shared common cause strikes (#158).
             for follow in _strike(rbd, event, sources[node]):
-                push(heap, (follow.time, follow))
+                push(heap, entry(follow))
             continue
         if node.__class__ is _Shut:
             # A shutdown's window starts (status False) or ends: its nodes
@@ -3137,13 +3139,13 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
                 for member in node.paused:
                     moved = _shifted(rbd, member, t, node.duration)
                     if moved is not None:
-                        push(heap, (moved.time, moved))
+                        push(heap, entry(moved))
                 if node.opportunistic:
                     renewals = _outage_renewals(rbd, node.opportunistic, t)
                     assert outage_jobs is not None  # it has rules
                     outage_jobs[node.places[t]] += len(renewals)
                     for renewal in renewals:
-                        push(heap, (renewal.time, renewal))
+                        push(heap, entry(renewal))
             if changed is not None and works(view) != up:
                 system_up, system_down, since = system_up_t, system_down_t, t
                 up = not up
@@ -3212,7 +3214,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
                 else _crew_follow_up(rbd, event, follow)
             )
             if next_event is not None and next_event.time < t_simulation:
-                push(heap, (next_event.time, next_event))
+                push(heap, entry(next_event))
             if ccf_members and node in ccf_members:
                 ccf_pending[node] = next_event
             continue
@@ -3332,7 +3334,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             # A job waits for a repair crew (see _Crews).
             next_event = _crew_follow_up(rbd, event, next_event)
         if next_event is not None and next_event.time < t_simulation:
-            push(heap, (next_event.time, next_event))
+            push(heap, entry(next_event))
             if paused_pending and node in paused_pending:
                 paused_pending[node] = next_event
         elif paused_pending and node in paused_pending:

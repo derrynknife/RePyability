@@ -1003,8 +1003,8 @@ class Shocks(_Model):
     takes the shocks, given each member's own age too, and the causes are
     named among its nodes. A [`RepairableRBD`][repyability.RepairableRBD]
     simulates them (its exact methods refuse, naming the simulation): a
-    strike fails the members it names that are up, in the group's order,
-    each then repaired, or found at its test, on its own.
+    strike fails the members it names that are up, in the diagram's
+    order, each then repaired, or found at its test, on its own.
 
     Parameters
     ----------

@@ -510,16 +510,15 @@ With limited repair crews a shared failure's members queue for a crew with
 the other components, which the groups' own chains do not follow: the
 [crews' Markov chain](repairable.md#repair-crews) takes the groups in
 instead. A shared cause strikes at its rate and fails the members it names
-that are up, and they join the queue one after another in the group's
-order, as in the simulation, so the first named is repaired first when a
-crew is free. The long-run values, the importance measures and the values
-over time then come from that chain, as without groups. It takes causes
-that strike two members (any group of two; a larger `AlphaFactor` or `MGL`
-group whose causes of three or more have no share): the simulation queues
-three or more components struck at one instant in the order its event
-queue releases them, which is not a rule a chain can copy, so those
-refuse, as do members repaired instantly or found by tests. The
-simulations take them all.
+that are up, and they join the queue one after another in the diagram's
+order (the order of the nodes in `components`, whatever order the group
+names them in), as the simulation takes [failures at one
+instant](simulation.md#events-at-one-instant), so the first in the diagram
+is repaired first when a crew is free; give `priority` to change that. The
+long-run values, the importance measures and the values over time then
+come from that chain, as without groups, for causes that strike any
+number of members. Members repaired instantly or found by tests refuse;
+the simulations take them.
 
 Over time, each group's chain is followed from every member up at 0 (by
 uniformization, or through the members' tests, after whose first periods it
@@ -654,8 +653,8 @@ the exact and numerical values; the simulations need exponential lives
 alone. A member held working or broken, a member with a life of its own (a
 `level` or `model` in its state), a member maintained on a schedule,
 repaired imperfectly or in a maintenance group, and with limited repair
-crews a group one of whose causes strikes three or more members, are
-refused, with the reason; `analysis_routes()` says which. (With limited
+crews a member repaired instantly or found by tests, are refused, with
+the reason; `analysis_routes()` says which. (With limited
 repair crews a member may be held: it is struck no more, and the causes it
 shares still strike the others.)
 
@@ -667,7 +666,7 @@ adds failures instead: shocks come at `rate`, whatever the members' ages,
 and each fails each member with probability `p` (`lethal_rate` adds shocks
 that fail every member), while each member keeps its own life, of any kind,
 for its other failures. The members need not be alike. A strike fails the
-members it names that are up, in the group's order; each is then repaired
+members it names that are up, in the diagram's order; each is then repaired
 on its own, and a tested member's failure waits, unseen, for its test (with
 a test that can miss, one coin for all the failures of a strike). A member
 that is down when a shock comes is not struck.

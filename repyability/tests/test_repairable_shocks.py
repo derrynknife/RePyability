@@ -143,9 +143,10 @@ def test_a_member_that_wears_out_against_its_own_renewal_process():
     assert plain - mean > 20 * error
 
 
-def test_a_strike_fails_its_members_in_the_group_s_order():
-    """Each cause names its members in the group's order, which is the
-    order a strike fails them in (`_event_loop._strike`)."""
+def test_a_cause_names_its_members_in_the_group_s_order():
+    """Each cause names its members in the group's order (a strike's
+    failures are then taken in the diagram's order, as every failure at
+    one instant is: `_events._EventQueue`)."""
     spec = {"reliability": W([300.0, 2.0]), "repairability": E([0.1])}
     rbd = RepairableRBD(
         [("s", n) for n in "abc"] + [(n, "t") for n in "abc"],

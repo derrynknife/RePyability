@@ -857,9 +857,12 @@ def test_changes_at_one_instant_are_the_event_loops(name):
     if _compiled.available():
         assert same_runs(runs, recorded(rbd, "numba", 100.0, 30, 2))
     if name == "two of three":
-        # Merged in the order of the components, they would differ: the
-        # changes at one instant are in the loop's order.
-        assert not same_data(rbd.system_timeline(runs.components), runs.system)
+        # The loop takes changes at one instant in a stated order (failures,
+        # then planned stops, then restorations, each by the node's place;
+        # see _events._EventQueue): here a's and b's failures at 10, then
+        # b's instant repair, which is also the order of the components.
+        # (Before the rule, the heap's order differed from it.)
+        assert same_data(rbd.system_timeline(runs.components), runs.system)
 
 
 @pytest.mark.parametrize("engine", ENGINES)
