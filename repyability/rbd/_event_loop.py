@@ -1325,7 +1325,15 @@ def _stream_specs(
             continue
         arrangement = rbd._standby.get(name)
         if arrangement is not None:
-            # Each unit's lives and repairs, and the group's switches.
+            # Each unit's lives and repairs, and the group's switches; on
+            # a duty plan that changes over time, lives in operating time
+            # (see _StandbyGroup).
+            plan = _duty.planned_life(rbd, name)
+            if plan is not None:
+                failure = stream_sampler(plan.model)
+                if failure is None:
+                    complete = False
+                    continue
             lives, switches = _standby_draw_counts(rbd, name, t_simulation)
             for unit in range(arrangement.units):
                 add(path + (unit,), _streams.FAILURE, failure, lives)

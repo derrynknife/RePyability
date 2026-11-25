@@ -12,6 +12,11 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Standby groups on a duty plan that changes over time, which were
+  refused: each unit's life is in operating time and is used up on the
+  plan's clock `D`, at its pace while the unit operates and at its
+  `dormancy_factor` of it while it waits (a warm spare ages at its share
+  of the duty, a cold one not at all); repairs take calendar time.
 - A repair by a fitted process's own rule (G1, ARA, ARI) on a duty plan
   that changes over time, which was refused: each next failure is the
   process's quantile in operating time, given its state, run on through
@@ -89,7 +94,7 @@ release between minors that only adds (0.19.1).
   group's opportunity age, each counted in operating time. A unit whose
   repairs and tasks take no time stays exact through its plan, from a
   state too (minimal repair: `H(D(t))`). Still refused there:
-  replacement on condition by a measured level and standby groups.
+  replacement on condition by a measured level.
 - `OnRule(rule, at=)`: a unit plan's task on a recurrence rule's dates (a
   `"preventive"` spec's `"rule"` and `"at"`). Its dates are the
   calendar's: `CalendarContext.diagram` now also takes a diagram's edges

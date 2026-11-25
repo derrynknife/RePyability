@@ -1179,8 +1179,11 @@ in `test_schedule_forecast.py`.
   - D(now)) / R(a)`, `a` the operating age (by a measured level it is
   refused). A repair by a fitted process's own rule draws the
   process's next failure in operating time, given its state, and runs
-  it on through `D`. Standby groups are refused, saying so; the
-  compiled engine hands such a unit to Python.
+  it on through `D`. A standby group's units age on `D` too: at its
+  pace while operating, at the `dormancy_factor` of it while waiting (a
+  warm spare ages at its share of the duty, a cold one not at all;
+  standing ready while the line runs is what ages it), their repairs on
+  the calendar. The compiled engine hands such a unit to Python.
 - **Checks:** `test_duty_plans.py`: a plan of one share is the duty share
   to the bit; the simulation against `M(D(t))` for run to failure, block
   and age replacement, and against the one-node diagram's own
@@ -1190,7 +1193,9 @@ in `test_schedule_forecast.py`.
   a virtual age, an age replacement's age, a block's and the tests'
   phases, a maintenance group's opportunity, and replacement on
   condition inspected in operating time, exact to 1e-12 too, and a
-  repair by G1's, ARA's and ARI's own rules), within
+  repair by G1's, ARA's and ARI's own rules), a standby group (cold,
+  warm with imperfect switching, two of three warm) never repaired
+  against `StandbyModel`'s first failure by `D(end)`, within
   four standard errors; replacement on condition inspected on the
   calendar replaces nothing while the plan runs nothing; minimal repair against `H(D(t))`; the exact methods against `M(D(t))` (to 1e-12 of
   the one-node diagram's count), an exponential life against its closed
@@ -1234,9 +1239,8 @@ in `test_schedule_forecast.py`.
   on such a plan whose repairs or tasks take time, or whose task is
   counted in calendar time, is simulated (UC-64); one whose repairs and
   tasks take no time is exact (from a state too). Replacement on
-  condition by a measured level, standby groups (spares ageing on a
-  clock of their own) and the compiled engine (`D` and `D⁻¹` at every
-  draw) are not built on such a plan yet.
+  condition by a measured level and the compiled engine (`D` and `D⁻¹`
+  at every draw) are not built on such a plan yet.
 
 ### UC-71: "The seal is changed at the check on the first Monday of each quarter. Can that sit in the pump's plan, so it goes wherever the plan goes?"
 

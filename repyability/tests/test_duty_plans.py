@@ -354,7 +354,6 @@ def test_the_compiled_engine_hands_it_to_python():
             },
             "measured level",
         ),
-        ({"standby": {"units": 2, "k": 1}}, "standby group"),
     ],
 )
 def test_what_a_plan_that_changes_refuses(more, words):
@@ -677,3 +676,53 @@ def test_a_fitted_process_runs_its_next_failure_on_through_the_plan(process):
     a = on_plan.cost(4000.0, mc_samples=4000, seed=7, control_variate=False)
     b = alone.cost(hours, mc_samples=4000, seed=3, control_variate=False)
     assert abs(a.mean - b.mean) < 4.0 * math.hypot(a.mean_se, b.mean_se)
+
+
+# -- standby groups -----------------------------------------------------------
+
+
+@pytest.mark.parametrize("end, hours", [(4000.0, 1750.0), (2500.0, 1250.0)])
+@pytest.mark.parametrize(
+    "standby, life",
+    [
+        ({"units": 2, "k": 1}, surv.Weibull.from_params([1500.0, 2.0])),
+        (
+            {
+                "units": 2,
+                "k": 1,
+                "dormancy_factor": 0.5,
+                "switching_probability": 0.8,
+            },
+            surv.Weibull.from_params([1500.0, 2.0]),
+        ),
+        (
+            {"units": 3, "k": 2, "dormancy_factor": 0.3},
+            surv.Exponential.from_params([1 / 1500.0]),
+        ),
+    ],
+    ids=["cold", "warm, switching", "two of three, warm"],
+)
+def test_a_standby_group_ages_on_the_plans_clock(standby, life, end, hours):
+    # Each unit's life is in operating time, used up at the plan's pace
+    # while it operates and at its dormancy's share of it while it waits
+    # (a cold spare not at all). Never repaired within the window, the
+    # group's first failure is the standby arrangement's in operating
+    # time: by D(end) (1,750 h by 4,000 h; 1,250 h by 2,500 h, in the
+    # stretch with no running), StandbyModel's ff, within four standard
+    # errors.
+    from repyability import StandbyModel
+
+    never = surv.Exponential.from_params([1e-9])
+    spec = {"reliability": life, "repairability": never, "standby": standby}
+    rbd = RepairableRBD(ONE, {"a": {**spec, "duty": PLAN}})
+    runs = 8000
+    run = rbd.availability(end, mc_samples=runs, seed=7, control_variate=False)
+    model = StandbyModel(
+        [life] * standby["units"],
+        k=standby["k"],
+        dormancy_factor=standby.get("dormancy_factor", 0.0),
+        switching_probability=standby.get("switching_probability", 1.0),
+    )
+    want = float(model.ff(np.array([hours]))[0])
+    got = run.system_failures / runs
+    assert abs(got - want) < 4.0 * math.sqrt(want * (1.0 - want) / runs)
