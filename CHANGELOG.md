@@ -246,6 +246,16 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- A life along a covariate path (a ramp of the time since service, or
+  any `CovariatePath`) is drawn in about half the time: surpyval's
+  `Hf_tvc` is worked out in one call on a grid of 512 ages (and the
+  path's jumps), the life found on the cubic between the two either side
+  of it and confirmed by one more call, Newton's steps going on only
+  where it is not within the stated accuracy (`PATH_RTOL`, 1e-10 of the
+  cumulative hazard). 5.7 ms a draw becomes 2.9 ms on a Weibull PH ramp;
+  the ramp's tests run in 17 s, from 35. Seeded results along a path
+  move in their last digits (each life within 1e-10 of the target, as
+  before; 4.6e-11 at most from the old draw on the test's ramp).
 - Seeded results on a duty plan that changes over time move: a unit
   that keeps no virtual age now draws each life in operating time from
   its stream (its model's draws, as both engines read them), where it

@@ -1,6 +1,8 @@
 """The value of a service on dates (UC-67 of the schedule README):
 ``task_value(task, Services(plan, effect=), usage)``."""
 
+import math
+
 import numpy as np
 import pytest
 import surpyval as surv
@@ -401,3 +403,40 @@ def test_a_ramp_is_checked(serviced_life):
         Condition(serviced_life, since_service=True, since=-1.0)
     with pytest.raises(ValueError, match="needs fresh"):
         Condition(serviced_life)
+
+
+def test_a_path_life_reaches_its_target_to_the_stated_accuracy(serviced_life):
+    # Each life drawn along a ramp is where surpyval's own cumulative
+    # hazard reaches -log(1 - u) to PATH_RTOL, from new and from a virtual
+    # age, across a service and past the last; and it is Newton's answer
+    # from the start to that accuracy.
+    from repyability.rbd import _covariate_schedule as cs
+
+    life = serviced_life.with_params([5000.0, 2.0, 1.0 / 4000.0])
+    ramp = cs.PathLife(life, cs.SinceService(SERVICES, [0.0], [1.0]))
+    us = np.random.default_rng(1).random(40)
+    for t0, age in ((0.0, 0.0), (100.0, 0.0), (3000.0, 700.0)):
+        path = ramp.on_ages(t0, age)
+        lives = np.array([ramp.life_left(t0, age, u) for u in us])
+        before = float(life.Hf_tvc(np.array([age]), path)[0]) if age else 0.0
+        H = np.ravel(life.Hf_tvc(age + lives, path)) - before
+        target = -np.log1p(-us)
+        assert np.all(np.abs(H - target) <= cs.PATH_RTOL * target * 1.01)
+        for u, x in zip(us[:5], lives[:5]):
+            exposure = -math.log1p(-u)
+
+            def H1(y):
+                return (
+                    float(life.Hf_tvc(np.array([age + y]), path)[0]) - before
+                )
+
+            def h1(y):
+                row = ramp._row(t0 + y)
+                return float(life.hf(np.array([age + y]), row)[0])
+
+            newton = cs._solve(
+                H1, h1, exposure, 0.0, math.inf, x * 0.9, 5000.0, cs.PATH_RTOL
+            )
+            assert x == pytest.approx(newton, rel=1e-9)
+    assert ramp.life_left(0.0, 0.0, 0.0) == 0.0
+    assert ramp.life_left(0.0, 0.0, 1.0) == math.inf

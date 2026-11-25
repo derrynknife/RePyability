@@ -707,6 +707,13 @@ from 0.29).
 
 What remains:
 
+- **A life along a covariate path** (no surpyval issue yet: an inverse
+  of `Hf_tvc` along a `CovariatePath`, and `Hf_tvc` from a start age).
+  `_covariate_schedule.PathLife.life_left` works `Hf_tvc` out on a grid
+  of ages in one call, finds the life on the cubic between two of them
+  and confirms it with one more call (Newton's steps on `Hf_tvc` where
+  it is not within `PATH_RTOL`). Take surpyval's inverse once the
+  minimum surpyval has one.
 - **A share of a model's hazard** (no surpyval issue known yet: a hazard
   ratio as a model option, with `isf`). A common-cause group splitting
   the failure rate gives each cause a share `c` of its members' hazard,
