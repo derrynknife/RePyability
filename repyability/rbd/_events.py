@@ -928,6 +928,11 @@ class _Inspection(NamedTuple):
     times: Optional[Tuple[float, ...]] = None
     #: The name of the shutdown the tests are done at; None for none.
     shutdown: Any = None
+    #: Counted in operating time on a duty plan that changes over time
+    #: (a ``_duty.PlannedLife``, the block's life): each test falls when
+    #: the plan's operating time reaches the time it is due at in
+    #: operating time; None on the diagram's clock.
+    clock: Any = None
 
     @property
     def partial(self) -> bool:
@@ -949,6 +954,11 @@ class _Inspection(NamedTuple):
 
     def due(self, t: float) -> float:
         """The first inspection after ``t``."""
+        if self.clock is not None:
+            # In operating time, and back on the diagram's clock.
+            clock = self.clock
+            plain = self._replace(clock=None)
+            return clock.inverse(plain.due(float(clock.operating(t))))
         if self.times is not None:
             return _next_time(self.times, t)
         if not self.offset:
@@ -964,6 +974,15 @@ class _Inspection(NamedTuple):
     def finds(self, t: float) -> float:
         """The inspection that finds a failure at ``t``: the first at or
         after it."""
+        if self.clock is not None:
+            # In operating time: the first test at or after the operating
+            # time at t that falls at or after t itself (a test reached
+            # before a stretch at no duty is not one after it).
+            clock = self.clock
+            plain = self._replace(clock=None)
+            at = plain.finds(float(clock.operating(t)))
+            found = clock.inverse(at)
+            return found if found >= t else clock.inverse(plain.due(at))
         if self.times is not None:
             return _next_time(self.times, t, at=True)
         if not self.offset:
@@ -981,6 +1000,8 @@ class _Inspection(NamedTuple):
         failure."""
         if not self.partial:
             return True
+        if self.clock is not None:
+            t = float(self.clock.operating(t))
         k = int(round((t - self.offset) / self.interval))
         return k % self.per_full_test == 0
 

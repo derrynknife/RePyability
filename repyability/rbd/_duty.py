@@ -37,22 +37,19 @@ def duty_fraction(node, value) -> float:
 
 def planned_refusals(node, spec: dict) -> None:
     """Refuse what a block on a duty plan that changes over time cannot
-    go with: a virtual age (imperfect repair, partial restoration), whose
-    operating time would run at a pace that changes; replacement on
-    condition, which judges the next inspection's risk at the age alone;
-    and a standby group, whose spares age on a clock of their own."""
+    go with: a repair by a fitted process's own rule (a Kijima virtual
+    age is counted in operating time, ``PlannedLife.operated_between``);
+    replacement on condition, which judges the next inspection's risk at
+    the age alone; and a standby group, whose spares age on a clock of
+    their own."""
     lead = f"Component {node!r} runs on a duty plan that changes over time"
     preventive = spec.get("preventive")
-    restoring = (
-        isinstance(preventive, dict)
-        and preventive.get("restoration") is not None
-    )
-    if spec.get("repair") is not None or restoring:
+    repair = spec.get("repair")
+    if isinstance(repair, dict) and repair.get("model") == "process":
         raise NotImplementedError(
-            f"{lead}, and keeps a virtual age (imperfect repair or partial "
-            "restoration), which is not followed on a plan that changes "
-            "yet: give repairs and tasks that renew, or the duty as one "
-            "share."
+            f"{lead}, and is repaired by a fitted process's own rule, "
+            "which is not followed on a plan that changes yet: give a "
+            "Kijima repair (kijima1 or kijima2), or the duty as one share."
         )
     if isinstance(preventive, dict) and preventive.get("policy") == (
         "condition"
@@ -135,8 +132,6 @@ class PlannedLife(ClockLife):
         The block's name, for the messages.
     """
 
-    clock = True
-    new_only = True
     lead = "runs on a duty plan that changes over time"
     aged = "whose operating time runs at a pace that changes"
 
@@ -153,23 +148,30 @@ class PlannedLife(ClockLife):
         self._hours = hours
 
     def operating(self, t):
-        """``D(t)``: the operating time from the diagram's 0 to ``t``."""
+        """``D(t)``: the operating time from the diagram's 0 to ``t``.
+        Before 0 it is ``t`` itself: an age a state gives at 0 is in
+        operating time, so a unit put into service ``a`` operating hours
+        before 0 is put in at ``-a``."""
         x = np.asarray(t, dtype=float)
         k = np.clip(
             np.searchsorted(self._times, x, side="right") - 1,
             0,
             self._times.size - 1,
         )
-        out = self._hours[k] + self._shares[k] * (x - self._times[k])
-        out = np.where(x <= 0.0, 0.0, out)
+        share = self._shares[k]
+        with np.errstate(invalid="ignore"):
+            # At no duty for ever after, an endless time runs nothing.
+            ran = np.where(share > 0.0, share * (x - self._times[k]), 0.0)
+        out = np.where(x <= 0.0, x, self._hours[k] + ran)
         return float(out) if out.ndim == 0 else out
 
     def inverse(self, y: float) -> float:
         """``D⁻¹(y)``: the first time the operating time reaches ``y``
-        (``inf`` if it never does)."""
+        (``inf`` if it never does; ``y`` itself before 0, see
+        ``operating``)."""
         y = float(y)
         if not y > 0.0:
-            return 0.0
+            return y
         if math.isinf(y):
             return math.inf
         k = int(np.searchsorted(self._hours, y, side="left")) - 1
@@ -191,7 +193,7 @@ class PlannedLife(ClockLife):
             out = self._times[k] + (y - self._hours[k]) / share
         out = np.where(share > 0.0, out, np.inf)
         out = np.where(np.isinf(y), np.inf, out)
-        return np.where(y > 0.0, out, 0.0)
+        return np.where(y > 0.0, out, y)
 
     def share_after(self, t) -> np.ndarray:
         """The share of the time run just after each time ``t``: ``D``'s
@@ -206,20 +208,46 @@ class PlannedLife(ClockLife):
 
     def life_left(self, t0: float, age: float, u: float) -> float:
         """The time on the diagram's clock to the failure of a unit put
-        into service new at ``t0``, from the uniform ``u`` (no ``age``: a
-        state other than new is refused)."""
-        life = float(np.ravel(self.model.qf(np.array([u])))[0])
+        into (or back in) service at ``t0`` at virtual age ``age``, in
+        operating time (0 for a new unit), from the uniform ``u``: the
+        operating life left at that age (``_event_loop._aged_life``; as
+        new, the model's quantile), run on from ``D(t0)``."""
+        if age > 0.0:
+            from ._event_loop import _aged_life
+
+            life = _aged_life(self.model, age, u)
+        else:
+            life = float(np.ravel(self.model.qf(np.array([u])))[0])
         return self.inverse(self.operating(t0) + life) - t0
+
+    def operated_between(self, t0: float, t1: float) -> float:
+        """``D(t1) - D(t0)``: the operating time run from ``t0`` to
+        ``t1``, which a virtual age counts."""
+        return float(self.operating(t1)) - float(self.operating(t0))
+
+    def operated_for(self, t0: float, x: float) -> float:
+        """``D(t0 + x) - D(t0)``: the operating time over the ``x`` of
+        the diagram's clock from ``t0``."""
+        return self.operated_between(t0, t0 + x)
+
+    def back_by(self, t: float, x: float) -> float:
+        """The time from which the plan has run ``x`` of operating time
+        by ``t``: ``D⁻¹(D(t) - x)``, the first such (0 for ``x`` at least
+        ``D(t)``)."""
+        return self.inverse(float(self.operating(t)) - x)
 
     def sf(self, x):
         """``R(D(x))``: a unit new at 0 is up at ``x``."""
-        return self.model.sf(self.operating(x))
+        return self.model.sf(self._from_zero(x))
 
     def ff(self, x):
-        return self.model.ff(self.operating(x))
+        return self.model.ff(self._from_zero(x))
 
     def Hf(self, x):
-        return self.model.Hf(self.operating(x))
+        return self.model.Hf(self._from_zero(x))
+
+    def _from_zero(self, x):
+        return np.maximum(self.operating(x), 0.0)
 
     def mean(self):
         raise self._no_reliability("mean life")
@@ -257,18 +285,14 @@ def on_calendar(node, model, d: float):
 
 def _clocked_task(node, key: str, task: dict) -> None:
     """Refuse a task counted in operating time on a duty plan that
-    changes over time that the simulation does not place on it."""
+    changes over time that the simulation does not place on it: an age
+    from which a shutdown renews the unit (a task at a shutdown is on the
+    calendar, so it is refused there too)."""
     lead = (
         f"Component {node!r} runs on a duty plan that changes over time, "
         f"and its {key} is counted in operating time"
     )
-    if key == "inspection":
-        raise NotImplementedError(
-            f"{lead}: tests counted in operating time are not placed on a "
-            "plan that changes yet. Give the test interval in calendar "
-            "time, or the duty as one share."
-        )
-    for name in ("opportunity", "older_than"):
+    for name in ("older_than",):
         if task.get(name) is not None:
             raise NotImplementedError(
                 f"{lead}, with an age for the stops ({name!r}), which is "
@@ -296,12 +320,11 @@ def tasks_on_calendar(node, spec: dict, d):
     for none), and the basis is taken off either way. On a duty plan that
     changes over time (``d`` a ``PlannedLife``) a preventive task keeps
     its times in operating time, for its ``_Preventive``'s ``clock`` to
-    place; with no duty, the diagram's clock is the block's operating
-    time. Return the spec and whether a task was counted in operating
-    time; refuse a basis other than ``BASES``, and one in operating time
-    at a shutdown or under a ``"calendar"`` policy (and, on
-    a plan that changes, an inspection, or an age at which a stop renews
-    the unit)."""
+    place, and an inspection for its ``_Inspection``'s; with no duty,
+    the diagram's clock is the block's operating time. Return the spec
+    and whether a task was counted in operating time; refuse a basis
+    other than ``BASES``, and one in operating time at a shutdown or
+    under a ``"calendar"`` policy."""
     from repyability.utils.checks import one_of
 
     out = spec

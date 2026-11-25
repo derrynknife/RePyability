@@ -1108,6 +1108,9 @@ class RepairableRBD(RBD):
                     )
                     if cost is not None:
                         node_costs["inspection_cost"] = cost
+                    if name in clocks:
+                        # Counted in operating time on a plan that changes.
+                        inspection = inspection._replace(clock=clocks[name])
                     self._inspection[name] = inspection
                 if component.get("priority") is not None:
                     self._priority[name] = _validate_priority(

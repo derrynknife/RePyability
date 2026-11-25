@@ -344,7 +344,7 @@ def test_the_compiled_engine_hands_it_to_python():
 @pytest.mark.parametrize(
     "more, words",
     [
-        ({"repair": {"model": "kijima1", "q": 0.5}}, "virtual age"),
+        ({"repair": {"model": "process"}}, "fitted process"),
         (
             {
                 "preventive": {
@@ -355,10 +355,7 @@ def test_the_compiled_engine_hands_it_to_python():
             },
             "on condition",
         ),
-        (
-            {"inspection": {"interval": 100.0, "basis": "operating"}},
-            "tests counted in operating time",
-        ),
+        ({"standby": {"units": 2, "k": 1}}, "standby group"),
     ],
 )
 def test_what_a_plan_that_changes_refuses(more, words):
@@ -397,11 +394,14 @@ def test_the_exact_methods_refuse_what_takes_time(more, words):
     assert route.route == "refused" and words in route.reason
 
 
-def test_a_state_must_be_new():
+def test_a_state_is_at_its_age_in_operating_time():
     rbd = planned()
-    with pytest.raises(NotImplementedError, match="other than new"):
+    with pytest.raises(ValueError, match="cannot be up at age"):
         rbd.availability(
-            1000.0, mc_samples=10, seed=1, state={"a": NodeState(age=10.0)}
+            1000.0,
+            mc_samples=10,
+            seed=1,
+            state={"a": NodeState(age=1e9)},
         )
 
 
@@ -426,3 +426,178 @@ def test_a_plan_is_checked():
                 }
             },
         )
+
+
+# -- what keeps an age, on the plan's clock --------------------------------
+#
+# A unit whose repairs and tasks take no time is its operating-time
+# process seen through the plan, so its simulation on the calendar
+# against the one-node diagram with no duty run to D(end) (its own
+# simulation, from another seed) checks that every age the loop keeps
+# (a virtual age, an age replacement's, a stop's opportunity, a test's
+# phase, a state's) is counted in operating time. Bounds fixed before the
+# runs: four standard errors of the difference.
+
+
+def against_operating_time(more, state=None, runs=4000, diagram=ONE):
+    spec = {"reliability": W, "repairability": "instant", "repair_cost": 1.0}
+    spec.update(more)
+    nodes = [n for n in {e for edge in diagram for e in edge} if n not in "st"]
+    groups = {"g": {}} if "group" in spec else None
+    on_plan = RepairableRBD(
+        diagram,
+        {n: {**spec, "duty": PLAN} for n in nodes},
+        maintenance_groups=groups,
+    )
+    alone = RepairableRBD(
+        diagram, {n: spec for n in nodes}, maintenance_groups=groups
+    )
+    end = 4000.0
+    hours = float(PlannedLife(W, PLAN).operating(end))
+    states = None if state is None else {n: state for n in nodes}
+    a = on_plan.cost(
+        end, mc_samples=runs, seed=7, control_variate=False, state=states
+    )
+    b = alone.cost(
+        hours, mc_samples=runs, seed=3, control_variate=False, state=states
+    )
+    assert abs(a.mean - b.mean) < 4.0 * math.hypot(a.mean_se, b.mean_se)
+    return on_plan, alone, hours
+
+
+@pytest.mark.parametrize(
+    "more",
+    [
+        {"repair": {"model": "kijima1", "q": 0.5}},
+        {"repair": {"model": "kijima2", "q": 0.3}},
+        {
+            "preventive": {
+                "policy": "block",
+                "interval": 300.0,
+                "basis": "operating",
+                "restoration": {"model": "kijima1", "q": 0.4},
+            }
+        },
+        {
+            "repair": {"model": "kijima1", "q": 0.5},
+            "preventive": {
+                "policy": "age",
+                "interval": 300.0,
+                "basis": "operating",
+            },
+        },
+    ],
+    ids=["kijima1", "kijima2", "restoring task", "kijima with age"],
+)
+def test_a_virtual_age_is_counted_in_operating_time(more):
+    against_operating_time(more)
+
+
+def test_minimal_repair_through_the_plan_against_the_closed_form():
+    # Repaired to as bad as old at once: failures by t are H(D(t)), the
+    # Weibull's (D(t) / 400) ** 2, exactly and in the simulation.
+    more = {"repair": {"model": "kijima1", "q": 1.0}}
+    rbd = planned(**more)
+    ends = np.array([500.0, 1500.0, 2500.0, 4000.0])
+    hand = (np.array([500.0, 1125.0, 1250.0, 1750.0]) / 400.0) ** 2
+    got = np.cumsum(rbd.expected_events_by_window(ends).node_failures["a"])
+    np.testing.assert_allclose(got, hand, rtol=1e-9)
+    run = rbd.cost(4000.0, mc_samples=4000, seed=7, control_variate=False)
+    assert abs(run.mean - hand[-1]) < 4.0 * run.mean_se
+
+
+def test_tests_counted_in_operating_time_fall_where_the_plan_reaches_them():
+    rbd = planned(inspection={"interval": 100.0, "basis": "operating"})
+    tests = rbd._inspection["a"]
+    # Every 100 operating hours: at 100 h, then at 1,400 h (1,100
+    # operating hours at a quarter's duty), none from 2,000 to 3,000 h
+    # (no running), the next at 3,100 h (1,300).
+    assert tests.due(0.0) == 100.0
+    assert tests.due(1000.0) == 1400.0
+    assert tests.due(2500.0) == 3100.0
+    # A failure at 2,000 h (1,250 operating hours) is found at 3,100 h.
+    assert tests.finds(2000.0) == 3100.0
+    assert tests.finds(1400.0) == 1400.0
+
+
+@pytest.mark.parametrize(
+    "inspection",
+    [
+        {"interval": 100.0, "basis": "operating"},
+        {"interval": 100.0, "offset": 50.0, "basis": "operating"},
+        {
+            "interval": 100.0,
+            "basis": "operating",
+            "coverage": 0.7,
+            "full_test": 300.0,
+        },
+    ],
+    ids=["every 100 h", "offset", "partial"],
+)
+def test_tests_counted_in_operating_time_against_the_operating_process(
+    inspection,
+):
+    against_operating_time({"inspection": inspection})
+
+
+@pytest.mark.parametrize(
+    "more, state",
+    [
+        ({}, NodeState(age=150.0)),
+        (
+            {"repair": {"model": "kijima1", "q": 0.5}},
+            NodeState(age=100.0, virtual_age=200.0),
+        ),
+        (
+            {
+                "preventive": {
+                    "policy": "age",
+                    "interval": 300.0,
+                    "basis": "operating",
+                }
+            },
+            NodeState(age=250.0),
+        ),
+        (
+            {
+                "preventive": {
+                    "policy": "block",
+                    "interval": 300.0,
+                    "basis": "operating",
+                }
+            },
+            NodeState(age=250.0, since_scheduled=120.0),
+        ),
+        (
+            {"inspection": {"interval": 100.0, "basis": "operating"}},
+            NodeState(since_scheduled=40.0),
+        ),
+    ],
+    ids=["age", "virtual age", "age replacement", "block phase", "tests"],
+)
+def test_a_state_is_in_operating_time(more, state):
+    on_plan, alone, hours = against_operating_time(more, state)
+    if not more or "preventive" in more and "age" in str(more):
+        # Exact too, through the plan: the one-node diagram's count from
+        # the same state at D(end).
+        got = on_plan.expected_events_by_window(
+            np.array([4000.0]), state={"a": state}
+        ).node_failures["a"][0]
+        want = alone.expected_events_by_window(
+            np.array([hours]), state={"a": state}
+        ).node_failures["a"][0]
+        assert math.isclose(got, want, rel_tol=1e-12)
+
+
+def test_a_stops_opportunity_is_an_age_in_operating_time():
+    more = {
+        "group": "g",
+        "preventive": {
+            "policy": "age",
+            "interval": 350.0,
+            "opportunity": 150.0,
+            "basis": "operating",
+            "cost": 0.5,
+        },
+    }
+    against_operating_time(more, diagram=[("s", "a"), ("a", "b"), ("b", "t")])

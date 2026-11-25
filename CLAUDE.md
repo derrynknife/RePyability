@@ -161,7 +161,11 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   `_ScheduledComponent`), so the exact methods refuse it and
   `_compiled.unsupported` hands it to Python. A task counted in
   operating time on such a plan carries it as its `_Preventive.clock`
-  (due in operating time, mapped back through the plan's inverse). The
+  (due in operating time, mapped back through the plan's inverse), and
+  a test as its `_Inspection.clock`; every age the loop keeps for such a
+  unit (a virtual age, `operated`, a stop's opportunity, a state's) is
+  in operating time (`ClockLife.operated_for`/`operated_between`, the
+  identity but for `PlannedLife`, whose `D(t)` is `t` before 0). The
   engine always runs on calendar time; an analysis's
   `schedule.CalendarContext` gives each unit its plan. One exception: a
   duty plan's unit whose repairs and tasks take no time (a task counted

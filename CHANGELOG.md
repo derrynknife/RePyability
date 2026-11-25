@@ -16,6 +16,16 @@ release between minors that only adds (0.19.1).
   of a diagram: each node after the first gets its own copy, built from
   the same arguments and models, so the diagram is the one with the
   copies given (it was refused, asking for `copy.deepcopy`).
+- On a duty plan that changes over time (a block's `"duty"` as a
+  `DutySchedule`, or a `CalendarContext`'s plan), the simulation now
+  takes a virtual age (a Kijima repair or a restoring task), tests
+  counted in operating time, a start from a state (an age, a virtual
+  age, the time since its last task or test, or down) and a maintenance
+  group's opportunity age, each counted in operating time. A unit whose
+  repairs and tasks take no time stays exact through its plan, from a
+  state too (minimal repair: `H(D(t))`). Still refused there:
+  replacement on condition, repair by a fitted process's own rule and
+  standby groups.
 - `OnRule(rule, at=)`: a unit plan's task on a recurrence rule's dates (a
   `"preventive"` spec's `"rule"` and `"at"`). Its dates are the
   calendar's: `CalendarContext.diagram` now also takes a diagram's edges
