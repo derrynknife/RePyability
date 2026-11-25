@@ -3466,8 +3466,9 @@ how many do we hold to be 95% sure a bad year loses under 300 h, and how
 many to be 90% sure no repair waits for one?" Who asks: the same owner,
 and the stores planner. What they know: each part's lead time, what a
 spare costs to hold, the spares held now. The analytic `spares_stock`
-gives the long run, the demand taken as going on while a repair waits;
-neither the stock's effect on downtime nor the chance of getting through
+gave the long run with the demand taken as going on while a repair waits
+(since corrected: a unit waiting for a spare makes no demand, a finite
+source, exact for a constant rate replaced in no time); neither the stock's effect on downtime nor the chance of getting through
 a horizon with no stock-out was answered. Solved with a shelf in the
 Python event loop (`rbd/_shelves.py`): a stock `S`, each spare used
 reordered at once and arriving `L` later, first in first out, so the

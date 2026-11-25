@@ -1879,8 +1879,8 @@ class RepairableRBD(RBD):
         ``method="simulate"``, the shelf is in the runs: each run starts
         with ``S`` on the shelf, a spare used is reordered at once, and a
         repair that finds the shelf empty waits for the next to arrive
-        (so the unit is down longer and its next failures come later,
-        which the long-run values below leave out). Stocks 0, 1, ... are
+        (so the unit is down longer and its next failures come later).
+        Stocks 0, 1, ... are
         run on one seed until each meets its targets: ``no_stockout`` (the
         chance of no stock-out at all over the horizon, met by its lower
         confidence bound at ``confidence``, so "90% sure, with 95%
@@ -1903,11 +1903,39 @@ class RepairableRBD(RBD):
         the component's replacements (see ``spares_demand``), in the long
         run: from a random time the first comes at the end of what is left
         of an up time, or after what is left of a repair or maintenance and
-        an up time, and the next after whole cycles. So the stock-out
-        probability is that of ``S`` or more replacements in a lead time
-        from a random time, and the fill rate that of fewer than ``S`` in
-        the lead time before a replacement. For a fleet, the systems'
-        demands add up. Worked out on a grid, to about 1e-6, for components
+        an up time, and the next after whole cycles. Were the demand to go
+        on while a repair waits for a spare, the stock-out probability
+        would be that of ``S`` or more replacements in a lead time from a
+        random time, and the fill rate that of fewer than ``S`` in the lead
+        time before a replacement (``on_order`` and
+        ``on_order_at_demand``). For a fleet, the systems' demands add up.
+
+        **A unit waiting for a spare makes no demand.** It is down until
+        the spare comes, so with ``n`` units on the shelf (the fleet times
+        the components of a part) and ``k > S`` on order, ``k - S`` are
+        waiting and only the rest can fail. The values for a stock take
+        that in, as a finite source (a machine-repairman model): a random
+        time finds ``k`` on order as often as ``on_order[k]`` times the
+        product, over ``j < k``, of the share of the units up, ``a_j = (n
+        - max(0, j - S)) / n``, and a demand as ``on_order_at_demand[k]``
+        times that and ``a_k``. For units with one constant failure rate,
+        replaced in no time and on no schedule, that is exact
+        (``SparesStock.exact``): Poisson demand reweighted so is the
+        finite source's distribution whatever the lead time's, and a
+        demand finds it weighed by the demand going on. One spare for one
+        such unit meets ``1 / (1 + lambda L)`` of demands, not
+        ``exp(-lambda L)``. Otherwise (repairs that take time, wear-out lives,
+        schedules, tests, rates that differ within a part) it is an
+        approximation: within the shelf simulation's error where the lead
+        time is short of a life, and in every case checked short of the
+        simulated fill rate (on the side of holding more), by little for a
+        constant rate with repairs that take time but by much for wear-out
+        lives with a lead time of several lives and common stock-outs,
+        whose demands the waits put in step with the orders' arrivals (a
+        fill rate of 0.02 where the shelf meets 0.30). Check such a stock
+        with ``method="simulate"``.
+
+        The counts are worked out on a grid, to about 1e-6, for components
         with corrective repair alone or under age replacement; and on its
         tests, for a component with hidden failures (from a random time,
         the next replacement is ``j`` tests on with probability ``P(C >=
@@ -2018,8 +2046,9 @@ class RepairableRBD(RBD):
         Examples
         --------
         A pump with a constant failure rate of 0.01 an hour, replaced in no
-        time, and 300 hours to get a spare: 3 are on order on average, and
-        7 on the shelf meet 96.6% of demands.
+        time, and 300 hours to get a spare: were the demand to go on, 3
+        would be on order on average; a pump waiting for a spare makes
+        none, and 7 on the shelf meet 97.8% of demands.
 
         >>> import surpyval as surv
         >>> from repyability import RepairableRBD
@@ -2036,7 +2065,7 @@ class RepairableRBD(RBD):
         >>> stock.stock
         7
         >>> round(stock.fill_rate, 4)
-        0.9665
+        0.9781
         """
         one_of("method", method, ("exact", "simulate"))
         if method == "simulate":

@@ -45,24 +45,64 @@ def test_constant_rates_and_instant_repair_give_poisson_demand(horizon, fleet):
     assert demand.method == "exact" and demand.fleet == fleet
 
 
+def machine_repairman(rate, lead, units, stock):
+    """The spares on order with ``stock`` on the shelf for ``units`` with a
+    constant failure ``rate``, replaced in no time, a unit waiting for a
+    spare making no demand: a birth-death chain, up ``rate * (units -
+    waiting)`` from each count and down ``count / lead`` (the lead time's
+    distribution does not matter). Returns the chances at a random time
+    and as a demand finds them."""
+    top = stock + units
+    chances = [1.0]
+    for k in range(top):
+        waiting = max(k - stock, 0)
+        chances.append(chances[-1] * rate * (units - waiting) * lead / (k + 1))
+    chances = np.array(chances) / sum(chances)
+    up = np.array([units - max(k - stock, 0) for k in range(top + 1)])
+    return chances, chances * up / (chances * up).sum()
+
+
 @pytest.mark.parametrize("fleet", [1, 3])
-def test_poisson_demand_gives_the_textbook_stock(fleet):
-    # Poisson demand: the spares on order are Poisson(rate * lead time *
-    # fleet), and a demand finds them so too.
+def test_poisson_demand_gives_the_finite_source_stock(fleet):
+    # Constant rates replaced in no time: were the demand to go on, the
+    # spares on order would be Poisson(rate * lead time * fleet), and a
+    # demand would find them so too. A unit waiting for a spare makes no
+    # demand, so a stock's values are the finite source's, exactly.
     stock = single(PUMP).spares_stock(
         300.0, fill_rate=0.95, stockout_probability=0.1, fleet=fleet
     )["c"]
     mean = 3.0 * fleet
+    counts = np.arange(len(stock.on_order))
+    np.testing.assert_allclose(
+        stock.on_order, poisson.pmf(counts, mean), atol=1e-15
+    )
+    assert stock.exact and stock.sources == fleet
     for s in range(12):
-        assert stock.fill_rate_for(s) == pytest.approx(
-            poisson.cdf(s - 1, mean), abs=2e-6
-        )
+        random, at_demand = machine_repairman(0.01, 300.0, fleet, s)
+        want = at_demand[:s].sum() if s else 0.0
+        assert stock.fill_rate_for(s) == pytest.approx(want, abs=1e-9)
         assert stock.stockout_probability_for(s) == pytest.approx(
-            poisson.sf(s - 1, mean), abs=2e-6
+            random[s:].sum(), abs=1e-9
         )
-    fewest = next(s for s in range(50) if poisson.cdf(s - 1, mean) >= 0.95)
+        np.testing.assert_allclose(
+            stock.on_order_for(s), random, rtol=1e-9, atol=1e-15
+        )
+        # More is met than the demand going on would have it.
+        assert stock.fill_rate_for(s) >= poisson.cdf(s - 1, mean) - 1e-12
+    fewest = next(s for s in range(50) if stock.fill_rate_for(s) >= 0.95)
     assert stock.stock == fewest
     assert stock.fill_rate >= 0.95 and stock.stockout_probability <= 0.1
+
+
+def test_one_spare_for_one_poisson_unit_by_hand():
+    # One unit, one spare: a demand is met unless the one before is still
+    # on order, and while that order and a wait for it run the unit is
+    # down: 1 / (1 + rate * lead), not exp(-rate * lead).
+    stock = single(PUMP).spares_stock(30.0, fill_rate=0.5)["c"]
+    assert stock.fill_rate_for(1) == pytest.approx(1 / 1.3, abs=1e-12)
+    assert stock.stockout_probability_for(1) == pytest.approx(
+        (0.3 + 0.045) / (1 + 0.3 + 0.045), abs=1e-12
+    )
 
 
 def renewal_demands(rng, life, repair, maintenance, age, until):

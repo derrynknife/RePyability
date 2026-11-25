@@ -136,6 +136,12 @@ Two kinds of component are counted otherwise (#147):
   l) / pi_q``, ``q'`` the place ``l`` tests before and ``pi`` the long-run
   shares of the places.
 
+A stock's values take in that a unit waiting for a spare makes no demand
+(``SparesStock._held``): the counts above, as if the demand went on, are
+reweighted by the share of the units still up at each number on order, a
+finite source. That is exact for Poisson demand (``_constant_rates``, whose
+counts are then Poisson in closed form) and an approximation otherwise.
+
 ``spares_demand`` and ``spares_stock`` here are the bodies of
 ``RepairableRBD``'s methods of those names, which call them.
 """
@@ -2247,6 +2253,34 @@ def _simulated_replacements(
     return {node: counts[:, column[node]] for node in nodes}
 
 
+def _constant_rates(models: Iterable) -> Optional[List[float]]:
+    """The failure rates of components replaced at a constant rate in no
+    time, on no schedule (their demand is Poisson), or None if any is
+    not: its life is not exponential from 0 (to 1e-12, at a spread of
+    ages), its repair takes time, or it is block-replaced or tested."""
+    rates = []
+    for model in models:
+        if not isinstance(model, Replacements) or not math.isinf(model.age):
+            return None
+        if float(np.ravel(model.repair(np.zeros(1)))[0]) < 1.0:
+            return None
+        mean = model.mean_cycle
+        ages = mean * np.array([0.0, 0.01, 0.1, 0.5, 1.0, 2.0, 5.0])
+        life = np.ravel(model.life(ages))
+        if np.max(np.abs(life - (1.0 - np.exp(-ages / mean)))) > 1e-12:
+            return None
+        rates.append(1.0 / mean)
+    return rates
+
+
+def _poisson(mean: float) -> np.ndarray:
+    """Poisson probabilities of ``0, 1, ...`` to a tail below ``_TAIL``."""
+    from scipy import stats
+
+    last = int(stats.poisson.isf(_TAIL, mean)) + 2 if mean > 0 else 0
+    return stats.poisson.pmf(np.arange(last + 1), mean)
+
+
 def spares_stock(
     rbd,
     lead_time: float,
@@ -2325,7 +2359,24 @@ def spares_stock(
                     * np.pad(seen, (0, size - len(seen)))
                 )
             at_demand = at_demand / at_demand.sum()
-        result = SparesStock(0, 0.0, 1.0, tau, fleet, on_order, at_demand)
+        sources = fleet * len(members)
+        constant = _constant_rates(models[m] for m in members)
+        exact = constant is not None and len(set(constant)) == 1
+        if constant is not None and exact:
+            # The finite source exactly: Poisson at the units' summed
+            # rate were the demand to go on, reweighted by those up.
+            on_order = at_demand = _poisson(sources * constant[0] * tau)
+        result = SparesStock(
+            0,
+            0.0,
+            1.0,
+            tau,
+            fleet,
+            on_order,
+            at_demand,
+            sources=sources,
+            exact=exact,
+        )
         stock = 0
         while not (
             (
@@ -2339,10 +2390,11 @@ def spares_stock(
             )
         ):
             stock += 1
+        held = result.fill_rate_for(stock)
         return dataclasses.replace(
             result,
             stock=stock,
-            fill_rate=result.fill_rate_for(stock),
+            fill_rate=held,
             stockout_probability=result.stockout_probability_for(stock),
         )
 
