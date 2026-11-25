@@ -435,12 +435,17 @@ class _ImperfectComponent(_StreamedComponent):
         self.count = self.tasks = 0
         self._state = None
 
-    def _process_life(self) -> float:
+    def _process_life(self, u: Optional[float] = None) -> float:
         """The life after a repair of a unit repaired by its fitted
         process's own rule: the quantile of its next failure, given its
-        state, at a uniform from its own stream (numpy's global RNG
-        without streams)."""
-        u = self._aged.draw() if self._aged is not None else np.random.random()
+        state, at the uniform ``u`` (by default from its own stream, or
+        numpy's global RNG without streams)."""
+        if u is None:
+            u = (
+                self._aged.draw()
+                if self._aged is not None
+                else np.random.random()
+            )
         process: Any = self._process
         return float(
             np.ravel(process.next_failure_qf(u, states=self._state))[0]
@@ -581,6 +586,13 @@ class _ScheduledComponent(_ImperfectComponent):
             if self._failure is not None
             else float(np.random.random())
         )
+        if self._state is not None:
+            # Repaired by its fitted process's own rule (on a duty plan
+            # that changes): the process's next failure, in operating
+            # time, run on through the plan.
+            return self._unit.reliability.run_on(
+                self.now, self._process_life(u)
+            )
         return self._unit.reliability.life_left(self.now, self.age, u)
 
     def _operated(self, t0: float, t1: float) -> float:

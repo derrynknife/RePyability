@@ -1177,9 +1177,10 @@ in `test_schedule_forecast.py`.
   at or after it). Replacement on condition judges the risk to the
   next inspection through the operating time to it, `1 - R(a + D(next)
   - D(now)) / R(a)`, `a` the operating age (by a measured level it is
-  refused). A repair by a fitted process's own rule and standby groups
-  are refused, saying so; the compiled engine hands such a unit to
-  Python.
+  refused). A repair by a fitted process's own rule draws the
+  process's next failure in operating time, given its state, and runs
+  it on through `D`. Standby groups are refused, saying so; the
+  compiled engine hands such a unit to Python.
 - **Checks:** `test_duty_plans.py`: a plan of one share is the duty share
   to the bit; the simulation against `M(D(t))` for run to failure, block
   and age replacement, and against the one-node diagram's own
@@ -1188,7 +1189,8 @@ in `test_schedule_forecast.py`.
   tests at an interval, an offset and partly covering, starts at an age,
   a virtual age, an age replacement's age, a block's and the tests'
   phases, a maintenance group's opportunity, and replacement on
-  condition inspected in operating time, exact to 1e-12 too), within
+  condition inspected in operating time, exact to 1e-12 too, and a
+  repair by G1's, ARA's and ARI's own rules), within
   four standard errors; replacement on condition inspected on the
   calendar replaces nothing while the plan runs nothing; minimal repair against `H(D(t))`; the exact methods against `M(D(t))` (to 1e-12 of
   the one-node diagram's count), an exponential life against its closed
