@@ -71,7 +71,10 @@ def duty_value(node, value) -> Union[float, Any]:
     """A node's duty, checked: a share of the time in ``(0, 1]``, or a
     duty plan that changes over time (a ``schedule.DutySchedule``, or the
     dict it saves as: from ``times[k]``, the share ``shares[k]``). A plan
-    of one share is that share."""
+    of one share is that share. A plan of a unit of use (its ``use``,
+    such as ``"km"``) gives rates of that use per unit of the diagram's
+    clock (400 km a day), any number from 0, for a life counted in it: a
+    plan of one rate is that rate."""
     from repyability.schedule import DutySchedule
 
     if isinstance(value, dict) and {"times", "shares"} <= set(value):
@@ -79,6 +82,7 @@ def duty_value(node, value) -> Union[float, Any]:
             str(value.get("unit", "hours")),
             tuple(float(t) for t in value["times"]),
             tuple(float(x) for x in value["shares"]),
+            value.get("use"),
         )
     if not isinstance(value, DutySchedule):
         return duty_fraction(node, value)
@@ -98,6 +102,15 @@ def duty_value(node, value) -> Union[float, Any]:
         )
     if not (np.all(np.isfinite(times)) and np.all(np.isfinite(shares))):
         raise ValueError(f"{lead} must have finite times and shares.")
+    if value.use is not None:
+        if np.any(shares < 0.0) or not np.any(shares):
+            raise ValueError(
+                f"{lead} must have rates of {value.use} per unit of time "
+                "of at least 0, at least one above 0."
+            )
+        if np.all(shares == shares[0]):
+            return float(shares[0])
+        return value
     if np.any(shares < 0.0) or np.any(shares > 1.0) or not np.any(shares):
         raise ValueError(
             f"{lead} must have shares of the time in [0, 1], at least one "

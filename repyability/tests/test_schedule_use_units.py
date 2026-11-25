@@ -134,7 +134,7 @@ def test_a_replacement_task_by_km(truck):
     )
 
 
-def test_a_service_by_km_is_refused(truck):
+def test_a_service_by_km_with_no_effect_is_its_cost(truck):
     from repyability.maintenance import UnitPlan
 
     task = Task(
@@ -143,5 +143,6 @@ def test_a_service_by_km_is_refused(truck):
         cost=100.0,
     )
     plan = UnitPlan(KM, repair="instant")
-    with pytest.raises(ValueError, match="calendar time"):
-        task_value(task, Services(plan), truck, unit="km")
+    # On the truck's km (test_duty_rates.py values one with an effect).
+    worth = task_value(task, Services(plan), truck, unit="km")
+    assert worth.total["value"] == -worth.total["task_cost"]

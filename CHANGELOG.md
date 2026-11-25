@@ -12,6 +12,13 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A life counted in a unit of use (km, miles, cycles, starts) on a
+  diagram: `CalendarContext(usage, duty={node: plan}, use={node: "km"})`
+  gives the block a duty that is that use's rate per unit of the
+  diagram's clock (400 km a day), read from the plan's meter
+  (`UsageForecast.schedule(unit, use=)`; a `DutySchedule` has `use`).
+  `events_by_period` and `task_value` with `Services` take it; a task in
+  operating time is counted in that use; the notes name the meter read.
 - `task_value` with `Services(plan, effect=Restoration(...))` values a
   restoring service on a duty plan that changes over time (weekday
   shifts), its virtual age counted in operating time; it was refused.
@@ -212,6 +219,12 @@ release between minors that only adds (0.19.1).
 
 ### Fixed
 
+- `task_value` with `Services` and an effect, on a duty plan of one
+  share below 1 (a `Rate` of hours a day), took `age=` as calendar time
+  rather than the operating age it is: the service's value now starts
+  from the right age. On 12 h a day from 4,000 operating hours, a
+  service as new is worth 2,939 (SE 94) against the replacement's exact
+  2,890, where it gave 965.
 - A parameter sensitivity or uncertainty no longer takes a regression
   model's parameters (its baseline's and its coefficients) as its
   distribution's: `model_parameters` gives None for one, as for any model

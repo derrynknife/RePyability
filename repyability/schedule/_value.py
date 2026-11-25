@@ -565,14 +565,18 @@ def _servicing(
             ),
             None,
         )
-    hours = UNITS[unit]
+    # The diagram's clock is calendar time: in the life's unit, or in
+    # hours for a life in a unit of use (its duty a rate of that use).
+    use = None if unit in UNITS else unit
+    clock_unit = "hours" if use is not None else unit
+    hours = UNITS[clock_unit]
     clock = done_s / 3600.0 / hours
     ends = seconds / 3600.0 / hours
     rate = 0.0 if not discount else per_unit(discount, hours)
     sim = simulated(
         does,
         usage,
-        unit,
+        clock_unit,
         age,
         clock,
         ends,
@@ -580,6 +584,7 @@ def _servicing(
         mc_samples,
         seed,
         confidence,
+        use=use,
     )
     return (
         _Plan(
@@ -790,12 +795,6 @@ def task_value(
         label = _model_label(getattr(part, "reliability", None))
     unit = _resolve_unit(unit, label, "life", notes, use=True)
     meter, scale = usage.reading(unit)
-    if isinstance(does, Services) and meter != "hours":
-        raise ValueError(
-            f"The life is counted in {unit}, and a service is valued on the "
-            "unit's diagram, whose clock is calendar time: give the life "
-            "in operating time, or value a replacement (Replaces) by use."
-        )
     if not (is_number(age) and 0.0 <= float(age) < np.inf):
         raise ValueError(f"age must be a number, at least 0; got {age!r}.")
     age = float(age)

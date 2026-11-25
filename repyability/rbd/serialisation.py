@@ -597,6 +597,7 @@ def _deserialise_component(d: dict) -> Any:
                     str(duty.get("unit", "hours")),
                     tuple(float(t) for t in duty["times"]),
                     tuple(float(x) for x in duty["shares"]),
+                    duty.get("use"),
                 )
             out["duty"] = duty
         if "covariates" in d:
@@ -921,15 +922,21 @@ def _duty_plan_dict(plan) -> dict:
     """A duty plan that changes over time (a ``DutySchedule``, or its
     dict) as JSON."""
     if isinstance(plan, dict):
-        unit, times, shares = (
+        unit, times, shares, use = (
             plan.get("unit", "hours"),
             plan["times"],
             plan["shares"],
+            plan.get("use"),
         )
     else:
         unit, times, shares = plan.unit, plan.times, plan.shares
-    return {
+        use = getattr(plan, "use", None)
+    out = {
         "unit": str(unit),
         "times": [float(t) for t in times],
         "shares": [float(x) for x in shares],
     }
+    if use is not None:
+        # Rates of a unit of use (km per hour), not shares of the time.
+        out["use"] = str(use)
+    return out

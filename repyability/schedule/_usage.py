@@ -240,18 +240,25 @@ class DutySchedule(_Plain):
     """The duty as steps over calendar time since the forecast's start:
     from ``times[k]`` (in ``unit``) the equipment runs ``shares[k]`` of
     the time (1 while running, 0 while off, the rate's share on a general
-    rate). Returned by ``UsageForecast.schedule``.
+    rate). Returned by ``UsageForecast.schedule``. For a life in a unit
+    of use (``use``, such as ``"km"``), each ``shares[k]`` is instead the
+    rate of that use per ``unit`` of time (400 km a day is ``16.67`` km
+    an hour), any number from 0.
 
     Attributes
     ----------
     unit : str
     times : tuple of float
     shares : tuple of float
+    use : str or None
+        The unit of use the shares are rates of; None for shares of the
+        time (a life in operating time).
     """
 
     unit: str
     times: Tuple[float, ...]
     shares: Tuple[float, ...]
+    use: Optional[str] = None
 
 
 @dataclass(frozen=True, init=False)
@@ -992,12 +999,40 @@ class UsageForecast:
             )
         return at_usage(self.rate(meter, per=per, start=start, end=end))
 
-    def schedule(self, unit: str = "hours") -> DutySchedule:
+    def schedule(self, unit: str = "hours", use=None) -> DutySchedule:
         """The duty as steps over calendar time since the forecast's start,
-        in ``unit``: the shape a duty that changes over time takes."""
+        in ``unit``: the shape a duty that changes over time takes. With
+        ``use``, a unit of use (``"km"``, ``"miles"``, ``"cycles"``, a
+        meter of the plan's own) read as ``reading`` reads it, each step's
+        rate of that use per ``unit`` of time: what a block whose life is
+        counted in it takes as its ``"duty"``.
+
+        Parameters
+        ----------
+        unit : str, optional
+            The unit of the times (and of the time in a rate).
+        use : str, optional
+            The unit of use of a life counted in one; None (the default)
+            for shares of the time.
+
+        Examples
+        --------
+        >>> from repyability.schedule import DutyPlan, Rate
+        >>> truck = DutyPlan(Rate(400, per="day", meter="km"))
+        >>> plan = truck.forecast("2027-01-01", "2027-02-01")
+        >>> steps = plan.schedule("hours", use="km")
+        >>> steps.times, [round(x, 4) for x in steps.shares], steps.use
+        ((0.0,), [16.6667], 'km')
+        """
         scale = self._unit(unit)
-        knots, values = self._map("hours")
-        row = values[0]
+        meter, per = ("hours", 1.0) if use is None else self.reading(use)
+        if use is not None and meter == "hours":
+            raise ValueError(
+                f"use={use!r} is a unit of time: give the schedule with no "
+                "use (shares of the time)."
+            )
+        knots, values = self._map(meter)
+        row = values[0] / per
         times: List[float] = []
         shares: List[float] = []
         for k in range(len(knots) - 1):
@@ -1005,13 +1040,18 @@ class UsageForecast:
             if t1 <= t0 or t1 <= self._start_s or t0 >= self._end_s:
                 continue
             share = float((row[k + 1] - row[k]) / ((t1 - t0) / _HOUR_S))
-            share = round(share, 12)
+            share = round(share * (1.0 if use is None else scale), 12)
             at = (max(t0, self._start_s) - self._start_s) / _HOUR_S / scale
             if shares and shares[-1] == share:
                 continue
             times.append(float(at))
             shares.append(share)
-        return DutySchedule(unit, tuple(times), tuple(shares))
+        return DutySchedule(
+            unit,
+            tuple(times),
+            tuple(shares),
+            None if use is None else use_unit(use) or use,
+        )
 
     # -- words and saving ----------------------------------------------------
 

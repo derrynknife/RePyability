@@ -970,6 +970,15 @@ def events_by_period(
         "The diagram's clock is calendar time from the forecast's start; "
         "running hours reach it through each block's duty plan."
     )
+    uses = {} if context is None else context.use
+    for node, use in uses.items():
+        assert context is not None
+        meter, _ = context.duty[node].reading(use)
+        notes.append(
+            f"The life of node {node!r} is counted in {use}, read from its "
+            f"duty plan's {meter!r} meter: its duty is that use's rate per "
+            f"{unit[:-1] if unit.endswith('s') else unit} of the clock."
+        )
     return EventsByPeriod(
         period=period,
         starts=found.starts,
