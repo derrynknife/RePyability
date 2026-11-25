@@ -18,7 +18,7 @@ import pytest
 import surpyval as surv
 
 from repyability import NodeState, NonRepairable, RepairableRBD
-from repyability.rbd import _compiled, _event_loop
+from repyability.rbd import _compiled, _event_loop, _events, _timeline_runs
 from repyability.rbd._duty import PlannedLife
 from repyability.rbd.serialisation import rbd_from_json, rbd_to_json
 from repyability.schedule import (
@@ -350,10 +350,10 @@ def test_the_compiled_engine_hands_it_to_python():
                 "preventive": {
                     "policy": "condition",
                     "interval": 50.0,
-                    "threshold": 0.1,
+                    "level": 5.0,
                 }
             },
-            "on condition",
+            "measured level",
         ),
         ({"standby": {"units": 2, "k": 1}}, "standby group"),
     ],
@@ -601,3 +601,49 @@ def test_a_stops_opportunity_is_an_age_in_operating_time():
         },
     }
     against_operating_time(more, diagram=[("s", "a"), ("a", "b"), ("b", "t")])
+
+
+# -- replacement on condition ----------------------------------------------
+
+
+def test_condition_judges_the_risk_through_the_operating_time():
+    # Inspected every 100 h of the calendar, replaced when the chance of
+    # failing before the next inspection passes 0.1: 1 - R(a + D(next) -
+    # D(now)) / R(a). At full duty the next 100 h are 100 operating hours
+    # (replaced at the first inspection past an age of 30); at a quarter's
+    # they are 25, so a unit renewed at 1,000 h waits to an operating age
+    # of 325 (1,300 h of the calendar); with no running from 2,000 to
+    # 3,000 h nothing is at risk and nothing is replaced.
+    cond = {"policy": "condition", "interval": 100.0, "threshold": 0.1}
+    rbd = planned(preventive=cond)
+    _, counted = _timeline_runs.simulate(
+        rbd, 4000.0, 500, 1, None, None, False, "python", None, 0, counted=True
+    )
+    events = counted["a"]
+    tasks = (events.kinds & _events.TALLY_PREVENTIVE) != 0
+    window = np.searchsorted(
+        [1000.0, 2000.0, 3000.0], events.times[tasks], side="right"
+    )
+    per = np.zeros((500, 4))
+    np.add.at(per, (events.history[tasks], window), 1.0)
+    assert per[:, 0].max() == 9.0  # at full duty, as by its age alone
+    assert per[:, 1].max() == 1.0  # by its age alone: up to 10
+    assert np.all(per[:, 2] == 0.0)
+
+
+def test_condition_on_the_plan_is_its_operating_process():
+    # Inspected every 50 operating hours, repaired and replaced at once:
+    # its operating-time process seen through the plan, so exact through
+    # it (the one-node diagram with no duty at D(end), to 1e-12) and the
+    # simulation on the calendar within four standard errors of it.
+    cond = {
+        "policy": "condition",
+        "interval": 50.0,
+        "threshold": 0.1,
+        "basis": "operating",
+        "cost": 0.3,
+    }
+    on_plan, alone, hours = against_operating_time({"preventive": cond})
+    got = on_plan.expected_cost(np.array([4000.0])).mean[0]
+    want = alone.expected_cost(np.array([hours])).mean[0]
+    assert math.isclose(got, want, rel_tol=1e-12)

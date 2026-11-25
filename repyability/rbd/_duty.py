@@ -39,9 +39,10 @@ def planned_refusals(node, spec: dict) -> None:
     """Refuse what a block on a duty plan that changes over time cannot
     go with: a repair by a fitted process's own rule (a Kijima virtual
     age is counted in operating time, ``PlannedLife.operated_between``);
-    replacement on condition, which judges the next inspection's risk at
-    the age alone; and a standby group, whose spares age on a clock of
-    their own."""
+    replacement on condition by a measured level (by a threshold on the
+    chance of failing, the risk is judged through the operating time to
+    the next inspection, ``_event_loop._replaced_at``); and a standby
+    group, whose spares age on a clock of their own."""
     lead = f"Component {node!r} runs on a duty plan that changes over time"
     preventive = spec.get("preventive")
     repair = spec.get("repair")
@@ -51,14 +52,16 @@ def planned_refusals(node, spec: dict) -> None:
             "which is not followed on a plan that changes yet: give a "
             "Kijima repair (kijima1 or kijima2), or the duty as one share."
         )
-    if isinstance(preventive, dict) and preventive.get("policy") == (
-        "condition"
+    if (
+        isinstance(preventive, dict)
+        and preventive.get("policy") == "condition"
+        and preventive.get("level") is not None
     ):
         raise NotImplementedError(
-            f"{lead}, and is replaced on condition, whose threshold judges "
-            "the chance of failing before the next inspection at the "
-            "unit's age alone: give it age or block replacement, or the "
-            "duty as one share."
+            f"{lead}, and is replaced on condition by its measured level, "
+            "whose degradation is not followed on a plan that changes "
+            "yet: give a threshold on the chance of failing, or the duty "
+            "as one share."
         )
     if spec.get("standby") is not None:
         raise NotImplementedError(

@@ -12,6 +12,14 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Replacement on condition (a threshold on the chance of failing before
+  the next inspection) on a duty plan that changes over time, which was
+  refused: the threshold judges the risk through the operating time to
+  the next inspection, `1 - R(a + D(next) - D(now)) / R(a)`, the age `a`
+  in operating time, so nothing is replaced while the plan runs nothing.
+  Inspected in operating time and done in zero time, the unit is exact
+  through its plan. The level form (a measured degradation) is still
+  refused there.
 - `events_by_period` on a duty plan that changes over time, which counts
   each period's events in the simulations' histories, now takes tasks in
   zero time (counted in calendar time), tests of hidden failures and a
@@ -59,8 +67,8 @@ release between minors that only adds (0.19.1).
   group's opportunity age, each counted in operating time. A unit whose
   repairs and tasks take no time stays exact through its plan, from a
   state too (minimal repair: `H(D(t))`). Still refused there:
-  replacement on condition, repair by a fitted process's own rule and
-  standby groups.
+  replacement on condition by a measured level, repair by a fitted
+  process's own rule and standby groups.
 - `OnRule(rule, at=)`: a unit plan's task on a recurrence rule's dates (a
   `"preventive"` spec's `"rule"` and `"at"`). Its dates are the
   calendar's: `CalendarContext.diagram` now also takes a diagram's edges

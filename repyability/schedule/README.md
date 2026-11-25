@@ -1174,9 +1174,12 @@ in `test_schedule_forecast.py`.
   Kijima repair or restoring task: the operating time since the last
   action), a stop's opportunity age, and tests counted in operating time
   (each falls when `D` reaches it; a failure is found by the first test
-  at or after it). Replacement on condition, a repair by a fitted
-  process's own rule and standby groups are refused, saying so; the
-  compiled engine hands such a unit to Python.
+  at or after it). Replacement on condition judges the risk to the
+  next inspection through the operating time to it, `1 - R(a + D(next)
+  - D(now)) / R(a)`, `a` the operating age (by a measured level it is
+  refused). A repair by a fitted process's own rule and standby groups
+  are refused, saying so; the compiled engine hands such a unit to
+  Python.
 - **Checks:** `test_duty_plans.py`: a plan of one share is the duty share
   to the bit; the simulation against `M(D(t))` for run to failure, block
   and age replacement, and against the one-node diagram's own
@@ -1184,8 +1187,10 @@ in `test_schedule_forecast.py`.
   and II, a restoring task, an age replacement with Kijima repairs,
   tests at an interval, an offset and partly covering, starts at an age,
   a virtual age, an age replacement's age, a block's and the tests'
-  phases, and a maintenance group's opportunity), within four standard
-  errors; minimal repair against `H(D(t))`; the exact methods against `M(D(t))` (to 1e-12 of
+  phases, a maintenance group's opportunity, and replacement on
+  condition inspected in operating time, exact to 1e-12 too), within
+  four standard errors; replacement on condition inspected on the
+  calendar replaces nothing while the plan runs nothing; minimal repair against `H(D(t))`; the exact methods against `M(D(t))` (to 1e-12 of
   the one-node diagram's count), an exponential life against its closed
   form (failures `λD(t)`, a present value of `cλ∫e^{-rs}s(s)ds`, to
   1e-7), and `events_by_period` against `failures_by_period` through the
@@ -1227,8 +1232,7 @@ in `test_schedule_forecast.py`.
   on such a plan whose repairs or tasks take time, or whose task is
   counted in calendar time, is simulated (UC-64); one whose repairs and
   tasks take no time is exact (from a state too). Replacement on
-  condition (its threshold would judge the risk to the next inspection
-  through the operating time to it), standby groups (spares ageing on a
+  condition by a measured level, standby groups (spares ageing on a
   clock of their own) and the compiled engine (`D` and `D⁻¹` at every
   draw) are not built on such a plan yet.
 

@@ -31,6 +31,7 @@ from repyability.rbd import (
     _ccf_groups,
     _crews,
     _curves,
+    _duty,
 )
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import (
@@ -2347,8 +2348,14 @@ def _renewal(
         renewed = t if start is None else start
         if restoring:
             # At virtual age v at the start of its sojourn, the unit is as
-            # one renewed v before (it ages as such until its next action).
-            renewed -= source.age
+            # one renewed v before (it ages as such until its next action;
+            # in operating time on a plan that changes).
+            plan = _duty.planned_life(rbd, node)
+            renewed = (
+                renewed - source.age
+                if plan is None
+                else plan.back_by(renewed, source.age)
+            )
         rbd._run_state._in_service[node] = (
             failure,
             _replaced_at(rbd, node, renewed, failure, schedule, t),
@@ -2559,13 +2566,23 @@ def _replaced_at(
         due = _due(rbd, node, schedule, due)
     if not dues:
         return math.inf
-    # Its ages at those inspections, and at the one after the last.
-    ages = np.array(dues + [due]) - renewed
+    # Its ages at those inspections, and at the one after the last: on a
+    # duty plan that changes, in operating time, so that the threshold
+    # judges the risk to the next inspection through the operating time to
+    # it, 1 - R(a + D(next) - D(now)) / R(a).
+    life = rbd.components[node].reliability
+    times = np.array(dues + [due])
+    plan = _duty.planned_life(rbd, node)
+    if plan is None:
+        ages = times - renewed
+    else:
+        ages = plan.operating(times) - plan.operating(renewed)
+        life = plan.model
     if schedule.older_than is not None:
         # At a shutdown: replaced once it is that old (see _shutdowns).
         above = np.flatnonzero(ages[:-1] >= schedule.older_than)
         return dues[above[0]] if above.size else math.inf
-    likely = _failures_between(rbd.components[node].reliability, ages)
+    likely = _failures_between(life, ages)
     above = np.flatnonzero(likely > schedule.threshold)
     return dues[above[0]] if above.size else math.inf
 
