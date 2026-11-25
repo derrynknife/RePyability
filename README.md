@@ -295,7 +295,7 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | Tasks counted in running hours (duty) | N | N | N | N | N | N | S | N | N | N | – | S |
 | A standby or load-sharing life, simulated | ✗ | ✗ | ✗ | ✗ `expected_npv` | ✗ | ✗ | ✗ `mean_availability_uncertainty`, `expected_npv_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | k-out-of-n | E | E | N | N | E N | N | S | E | – | N | – | S |
-| A nested RBD | E | E | N | E N | E N | N | S | E | – | – | – | S |
+| A nested RBD | E | E | N | E N | E N | N | S | E | – | N | – | S |
 | A junction | E | E | N | E N | E N | N | S | E | – | N | – | S |
 | Capacities | E | E | N | N | E N | N | S | E | – | N | E N | S |
 | Age replacement | N | N | N | N | N | N | S | N | N | N | – | S |

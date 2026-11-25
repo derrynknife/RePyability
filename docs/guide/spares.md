@@ -35,7 +35,11 @@ Each result is the distribution of the spares used: `probabilities` (of 0,
 probability that `s` spares last the horizon, and `stock(p)`, the fewest
 that last it with probability `p`. The components are counted from new, and
 a fleet's systems independently; `nodes` picks the components (by default
-all but a nested RBD, whose own `spares_demand` counts its components').
+all of them). A sub-system (a nested `RepairableRBD`) is counted by its
+components, each as `(node, component)`, exactly through its own models,
+the same as the system drawn flat; by simulation it is refused (give
+`nodes`, or call the sub-system's own), and so is a part pooling spares
+across levels.
 
 The seals' count is Poisson, as for any constant failure rate with instant
 replacement. The pumps' is not:

@@ -20,9 +20,16 @@ keeps the system up. Two exact routes cover what they can:
   ``L t``, as in ``_chain_transient``), and the mean time to absorption is
   one linear solve over the states where the system is up.
 
+A sub-system (a nested ``RepairableRBD``) with nothing coupling it to
+the rest (no repair crews or call-out of its own or around it, no
+common-cause, maintenance or shutdown groups in it) is the same, to its
+first failure, as its components drawn into the diagram in its place,
+each as ``(node, component)``: ``_flat`` draws it so for these two
+methods, and the routes above take the drawn diagram.
+
 Everything else (a life or repair that is not exponential in a redundant
 structure, scheduled maintenance, tests, standby groups, common-cause
-groups, nested diagrams) is simulated on request:
+groups, a coupled sub-system) is simulated on request:
 ``method="simulate"`` reads each history's first failure off
 ``simulate_timelines``.
 """
@@ -61,6 +68,100 @@ _SIMULATE = (
 
 def _refuse(why: str) -> NoReturn:
     raise NotImplementedError(why + _SIMULATE)
+
+
+def _coupling(rbd) -> Optional[str]:
+    """What ties a sub-system's components to each other beyond its
+    structure, or None."""
+    if _crews._crews_limited(rbd) or _crews._call_when(rbd):
+        return "repair crews"
+    if rbd.ccf_groups:
+        return "common-cause groups"
+    if rbd._maintenance:
+        return "maintenance groups"
+    if rbd._shutdowns:
+        return "shutdowns"
+    return None
+
+
+def _flat(rbd, state=None):
+    """The diagram with each sub-system drawn in its place (see the
+    module's notes), its components named ``(node, component)``, and the
+    state as given; the diagram itself if it has none. Raise if a
+    sub-system is coupled, or is given a state."""
+    from repyability.rbd.helper_classes import PerfectReliability
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    nested = [
+        node
+        for node, component in rbd.components.items()
+        if isinstance(component, RepairableRBD)
+    ]
+    if not nested:
+        return rbd
+    if _crews._crews_limited(rbd):
+        # Drawn in, its components' repairs would wait for the crews.
+        _refuse(
+            "The exact values do not cover a nested diagram (component "
+            f"{nested[0]!r}) beside repair crews that jobs wait for, "
+            "which its components' repairs, drawn into the diagram, would "
+            "wait for too"
+        )
+    if isinstance(state, dict) and any(node in state for node in nested):
+        given = next(node for node in nested if node in state)
+        _refuse(
+            "The exact values do not cover a nested diagram given a state "
+            f"(component {given!r})"
+        )
+    args = rbd._init_args
+    components = {
+        node: spec
+        for node, spec in args["components"].items()
+        if node not in nested
+    }
+    k = dict(args["k"] or {})
+    ports: Dict[Any, Tuple[Any, Any]] = {}
+    edges: list = []
+    for node in nested:
+        coupled = _coupling(rbd.components[node])
+        if coupled:
+            _refuse(
+                "The exact values do not cover a nested diagram "
+                f"(component {node!r}) with {coupled}, which tie its "
+                "components together"
+            )
+        inner = _flat(rbd.components[node])
+        given = inner._init_args
+        ports[node] = ((node, inner.input_node), (node, inner.output_node))
+        edges += [((node, u), (node, v)) for u, v in given["edges"]]
+        for name in inner.G.nodes:
+            components[(node, name)] = given["components"].get(
+                name, PerfectReliability
+            )
+        k.update(
+            {(node, name): value for name, value in (given["k"] or {}).items()}
+        )
+        if node in k:
+            k[ports[node][0]] = k.pop(node)
+    for u, v in args["edges"]:
+        edges.append(
+            (
+                ports[u][1] if u in ports else u,
+                ports[v][0] if v in ports else v,
+            )
+        )
+    # No job waits for a crew (above, and in each sub-system): drawn in,
+    # every component has one.
+    return RepairableRBD(
+        **dict(
+            args,
+            edges=edges,
+            components=components,
+            k=k or None,
+            repair_crews=None,
+            call_out=None,
+        )
+    )
 
 
 def _components_are_plain(rbd) -> None:
@@ -159,7 +260,8 @@ def _markov_rates(rbd) -> Tuple[Dict[Any, Tuple[float, float]], int]:
 def _require_exact(rbd) -> bool:
     """Raise if the first failure's exact values do not cover the diagram;
     otherwise whether it is worked out as a series (True) or by the
-    Markov chain (False)."""
+    Markov chain (False). A sub-system is drawn in (``_flat``)."""
+    rbd = _flat(rbd)
     structure = rbd._decomposition()
     if isinstance(structure, GraphStructure):
         raise NotImplementedError(structure.reason)
@@ -387,6 +489,7 @@ def _start(rbd, chain, states: dict) -> np.ndarray:
 
 
 def _exact_sf(rbd, x: np.ndarray, state) -> np.ndarray:
+    rbd = _flat(rbd, state)
     states = _curves._states(rbd, state)
     if _require_exact(rbd) and not any(s.stationary for s in states.values()):
         if _down_at_start(rbd, states):
@@ -466,6 +569,7 @@ def mean_time_to_first_failure(
                 "engine": None if engine == "auto" else engine,
             },
         )
+        rbd = _flat(rbd, state)
         states = _curves._states(rbd, state)
         if _require_exact(rbd) and not any(
             s.stationary for s in states.values()
