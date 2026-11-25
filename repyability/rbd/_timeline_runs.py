@@ -420,17 +420,7 @@ def simulate(
         )
         if antithetic and not complete:
             raise NotImplementedError(_UNSTREAMED)
-        if ages and engine == "numba":
-            raise NotImplementedError(
-                "A salvage by age needs the age of each unit in service at "
-                "the end of each run, which only the Python engine "
-                "records: give engine='python' or 'auto'."
-            )
-        chosen = (
-            "python"
-            if prefix or ages
-            else _engine(rbd, plan, engine, N, states)
-        )
+        chosen = "python" if prefix else _engine(rbd, plan, engine, N, states)
         tally = _event_loop._run(
             rbd,
             t_simulation,
@@ -461,7 +451,17 @@ def simulate(
             if hidden
             else None
         )
-        at_end = tally.histories.ages() if ages else None
+        at_end = None
+        if ages:
+            at_end = tally.histories.ages()
+            if at_end is None:
+                # numba's loop: from the histories (see _ages_at_end).
+                at_end = _ages_at_end(
+                    parts,
+                    tally.histories.counted(),
+                    t_simulation,
+                    [states.get(node) for node in rbd.components],
+                )
         events = (
             dict(zip(rbd.components, tally.histories.counted()))
             if counted
@@ -486,6 +486,41 @@ def simulate(
     if ages:
         return result, left_out, at_end
     return (result, left_out) if hidden else result
+
+
+def _ages_at_end(parts, counted, t_end: float, starts) -> np.ndarray:
+    """Each simulation's age of each component's unit in service at the
+    end, NaN for one down then, from its histories, as the Python loop
+    keeps it (``_replicate``'s ``new_at``): the unit was put in as new at
+    its last change up (a repair's or a task's end), or at its last task
+    in zero time (a counted ``TALLY_PREVENTIVE`` that changes nothing),
+    or, failing both, ``age`` before 0 from its state (new by default).
+    A unit whose age is no one number (``_npv.own_salvage_by_age``
+    refuses it) is not asked for. A row a simulation, a column a
+    component."""
+    from repyability.rbd._events import TALLY_PREVENTIVE
+
+    size = parts[0].size if parts else 0
+    out = np.full((size, len(parts)), math.nan)
+    for c, (data, events, start) in enumerate(zip(parts, counted, starts)):
+        before = -float(getattr(start, "age", 0.0) or 0.0)
+        tasks = (events.kinds & TALLY_PREVENTIVE) != 0
+        last_task = np.full(size, -math.inf)
+        np.maximum.at(last_task, events.history[tasks], events.times[tasks])
+        for s in range(size):
+            a, z = int(data.offsets[s]), int(data.offsets[s + 1])
+            up_at_start = bool(data.start[s])
+            if up_at_start == bool((z - a) % 2):
+                continue  # down at the end
+            # The changes that leave it up: every other, from the first
+            # (down at 0) or the second (up at 0).
+            ups = data.times[a + (1 if up_at_start else 0) : z : 2]
+            new = before
+            if ups.size:
+                new = max(new, float(ups[-1]))
+            new = max(new, float(last_task[s]))
+            out[s, c] = t_end - new
+    return out
 
 
 def with_costs(

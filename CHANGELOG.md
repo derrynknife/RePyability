@@ -12,6 +12,13 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A salvage by age in the simulated runs (`expected_npv` and the other
+  priced runs) takes the compiled engine (numba): each unit's age at the
+  end is worked out from the run's histories (its last change up, or its
+  last task in zero time), where `engine="numba"` refused and `"auto"`
+  ran Python. Checked to the bit against the Python loop's own ages, on
+  plain units, an age task in no time, a block task that takes time and
+  repair crews. Results are unchanged, the engines agreeing to the bit.
 - The long-run `spares_stock` finds the stock with the shelf in the runs
   where its approximation errs: each unit's demand in a lead time one or
   more on average, lives not at a constant rate (wear-out), and
