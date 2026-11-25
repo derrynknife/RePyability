@@ -192,11 +192,18 @@ sure["pump"].by_stock[2]["no_stockout"]   # -> 0.8169
   for the task, and waits for it.
 - **A test that finds a hidden failure** takes a spare, and the repair
   starts once the test is over and the spare is in.
-- It simulates one system (`fleet=1`), with `parts=` pooling shelves. The
-  shelf is simulated in Python only (the compiled engine refuses it), and
-  not yet for replacement on condition, maintenance groups or a
-  sub-system's components, nor (with repair crews) for tested units or a
-  unit a shutdown pauses, which are refused with the reason.
+- **A fleet** (`fleet=20`) draws on one shelf: its systems are run as one
+  diagram of their components (refused where repair crews, maintenance or
+  common-cause groups, shutdowns or sub-systems would couple them).
+- **A sub-system's components** each have a shelf of their own, keyed
+  `(node, component)`, run in the sub-system's own loop. A shelf shared
+  across levels (a top-level component and a sub-system's) is refused, as
+  the two loops' demands would come out of time order.
+- `parts=` pools shelves. The shelf is simulated in Python only (the
+  compiled engine refuses it), and not yet for replacement on condition,
+  maintenance groups, a sub-system's tasks, tests or crews, nor (with
+  repair crews) for tested units or a unit a shutdown pauses, which are
+  refused with the reason.
 
 To keep a bad year's *downtime* under a limit rather than avoid every
 stock-out, the spares are a lever of `least_spend_for_downtime` (see

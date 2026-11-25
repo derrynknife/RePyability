@@ -1896,6 +1896,12 @@ def _start_queue(
         start = states.get(component_id)
         if isinstance(component, RepairableRBD):
             source.initialize_event_queue(t_simulation, state=start)
+            nested_shelf = _shelves.inner(rbd._run_state._shelf, component_id)
+            if nested_shelf is not None:
+                # Its components' shelves, in its own loop (see _shelves).
+                getattr(source, "_rbd", source)._run_state._shelf = (
+                    nested_shelf
+                )
             component_status[component_id] = source.system_state
             if follow:
                 failed_at_start[component_id] = source.unplanned_down
@@ -2918,7 +2924,35 @@ def next_event(rbd, method, sources: Optional[dict]):
                 new_system_state,
             )
 
+        shelf = rbd._run_state._shelf
+        takes = None
+        if (
+            shelf is not None
+            and node in shelf.of
+            and not event.status
+            and not (event.preventive or event.inspection)
+        ):
+            # A replacement takes a spare (a repair, if its shelf says
+            # so), and its repair waits for one (see _shelves).
+            stock, repairs = shelf.of[node]
+            if (
+                repairs
+                or node not in rbd._imperfect
+                or sources[node].replacing
+            ):
+                takes = stock
         follow = _follow_up(rbd, event, sources[event.component])
+        if takes is not None:
+            ready = takes.take(event.time)
+            if ready > event.time and follow is not None:
+                follow = Event(
+                    follow.time + (ready - event.time),
+                    node,
+                    follow.status,
+                    follow.preventive,
+                    follow.inspection,
+                    follow.missed,
+                )
         if sound is not None and isinstance(sources[node], _StreamedRBD):
             sound.take(node, sources[node])
         next_event: Optional[Event] = (

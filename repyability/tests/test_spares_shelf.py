@@ -415,10 +415,6 @@ def test_the_simulated_stock_checks_its_arguments():
         rbd.spares_stock(10.0, method="simulate", horizon=10.0)
     with pytest.raises(ValueError, match="method='simulate'"):
         rbd.spares_stock(10.0, fill_rate=0.9, horizon=100.0)
-    with pytest.raises(NotImplementedError, match="fleet"):
-        rbd.spares_stock(
-            10.0, method="simulate", horizon=10.0, no_stockout=0.9, fleet=2
-        )
 
 
 def test_a_part_pools_its_members_shelf():
@@ -699,3 +695,99 @@ def test_a_crew_is_not_held_while_a_spare_is_on_its_way(group):
     assert abs(np.mean(batches) - exact) < 4 * se
     # Under no crews' 1 / (1 + lam L), by about 0.0005.
     assert np.mean(batches) < (1 / lam) / (1 / lam + lead)
+
+
+def nested_unit(lead_past=False):
+    inner = RepairableRBD(
+        [("s", "a"), ("a", "b"), ("b", "t")],
+        {
+            "a": {"reliability": E([FAIL]), "repairability": "instant"},
+            "b": {"reliability": E([2 * FAIL]), "repairability": "instant"},
+        },
+    )
+    return RepairableRBD(
+        [("s", "p"), ("p", "q"), ("q", "t")],
+        {
+            "p": {"reliability": E([FAIL]), "repairability": "instant"},
+            "q": inner,
+        },
+    )
+
+
+def test_a_sub_system_component_draws_on_a_shelf_in_its_own_loop():
+    rbd = nested_unit()
+    horizon, lead = 200_000.0, 300.0
+    # A stock no run uses up changes nothing.
+    of = {("q", "a"): "qa"}
+    plain = long_run(rbd, 20_000.0, 200, 3)[0]
+    held = long_run(shelved(rbd, 1000, lead, of=of), 20_000.0, 200, 3)[0]
+    assert np.array_equal(plain.uptimes, held.uptimes)
+    # No stock: every one of a's failures waits L, in the sub-system's
+    # loop, so a is up 1 / (1 + lam L) of the time in the long run and
+    # the system (p, a, b in series) as each alone.
+    run = shelved(rbd, 0, lead, of=of).availability(
+        horizon,
+        mc_samples=200,
+        seed=4,
+        control_variate=False,
+        conditional=False,
+    )
+    rows, _ = records(shelved(rbd, 0, lead, of=of), horizon, 50, 4, "qa")
+    assert all(r.demands == r.stockouts > 0 for r in rows)
+    assert all(
+        r.waited == pytest.approx(lead * r.demands, rel=1e-9) for r in rows
+    )
+    up = np.asarray(run.uptimes) / horizon
+    exact = 1 / (1 + FAIL * lead)
+    se = up.std(ddof=1) / math.sqrt(len(up))
+    assert abs(up.mean() - exact) < 4 * se
+
+
+def test_the_simulated_stock_counts_a_sub_system_components():
+    rbd = nested_unit()
+    found = rbd.spares_stock(
+        5000.0,
+        method="simulate",
+        horizon=2000.0,
+        no_stockout=0.95,
+        mc_samples=4000,
+        seed=7,
+    )
+    # Nothing ordered arrives: the stock is the Poisson's, mean 2 for p
+    # and a (5 spares for 95%), 4 for b (8).
+    assert set(found) == {"p", ("q", "a"), ("q", "b")}
+    assert found["p"].stock == found[("q", "a")].stock == 5
+    assert found[("q", "b")].stock == 8
+
+
+def test_a_shelf_across_levels_is_refused():
+    rbd = nested_unit()
+    with pytest.raises(NotImplementedError, match="two levels"):
+        shelved(rbd, 1, 10.0, of={"p": "x", ("q", "a"): "x"})
+
+
+def test_a_fleet_draws_on_one_shelf():
+    rbd = unit()
+    found = rbd.spares_stock(
+        5000.0,
+        method="simulate",
+        horizon=2000.0,
+        no_stockout=0.95,
+        mc_samples=4000,
+        seed=3,
+        fleet=2,
+    )["p"]
+    # Two systems: N(2000) is Poisson(4), P(N <= 8) = 0.979 (7: 0.949).
+    assert found.stock == 8
+    assert found.by_stock[7]["no_stockout"] == pytest.approx(
+        stats.poisson.cdf(7, 4.0), abs=4 * math.sqrt(0.949 * 0.051 / 4000)
+    )
+    crewed = RepairableRBD(
+        ONE,
+        {"p": {"reliability": E([FAIL]), "repairability": E([0.1])}},
+        repair_crews=1,
+    )
+    with pytest.raises(NotImplementedError, match="repair_crews"):
+        crewed.spares_stock(
+            10.0, method="simulate", horizon=10.0, no_stockout=0.9, fleet=2
+        )

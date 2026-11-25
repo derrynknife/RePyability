@@ -27,6 +27,16 @@ task, its spare used, is not done). A test that finds a hidden failure
 is a demand: the repair starts once the test is over and the spare is
 in. A unit replaced on condition takes none of this yet.
 
+A sub-system's (a nested RBD's) component draws on a shelf keyed
+``(node, component)``, run in the sub-system's own loop, which takes its
+events in time order (its parent asks it for its next change, and it
+runs ahead to it): a replacement there takes a spare as at the top
+level, its plain components and groups alike. So a shelf is either one
+sub-system's or the top level's: shared across levels, or across
+sub-systems, its demands would come out of time order, and it is
+refused. A fleet's systems draw on one shelf as one diagram of their
+copies (``fleet``).
+
 The shelf is the Python event loop's alone (``_compiled.unsupported``
 gives the reason to the compiled engine, which refuses rather than
 differ). It is held on a copy of the diagram (``shelved``), which only the
@@ -86,16 +96,60 @@ def shelf(stock, lead_time, repairs=False, what: str = "the shelf") -> Shelf:
     return Shelf(int(stock), float(lead), bool(repairs))
 
 
+def _inner_why_not(inner, node) -> Optional[str]:
+    """Why component ``node`` of a sub-system ``inner`` cannot draw on a
+    shelf in the sub-system's own loop, or None: it takes the plain
+    replacements (and a group's units) alone."""
+    from repyability.rbd import _crews
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    if isinstance(inner.components[node], RepairableRBD):
+        return "it is a nested RBD within a sub-system"
+    if node in inner._preventive or node in inner._inspection:
+        return (
+            "it has a preventive task or tests, which a sub-system's own "
+            "loop does not put off for a spare yet"
+        )
+    if node in inner._member_group or node in inner._outage_members:
+        return "it is renewed early, which a shelf is not simulated for yet"
+    if _crews._crews_limited(inner):
+        return (
+            "the sub-system has repair crews, which its own loop does not "
+            "take with a shelf yet"
+        )
+    return None
+
+
+def is_inner(rbd, key) -> bool:
+    """Whether ``key`` names a sub-system's component, ``(node,
+    component)``."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    return (
+        isinstance(key, tuple)
+        and key not in rbd.components
+        and len(key) == 2
+        and isinstance(rbd.components.get(key[0]), RepairableRBD)
+        and key[1] in rbd.components[key[0]].components
+    )
+
+
 def why_not(rbd, node) -> Optional[str]:
-    """Why component ``node`` cannot draw on a shelf in the simulation,
-    or None."""
+    """Why component ``node`` (or a sub-system's, ``(node, component)``)
+    cannot draw on a shelf in the simulation, or None."""
+    if is_inner(rbd, node):
+        return _inner_why_not(rbd.components[node[0]], node[1])
+    return _why_not(rbd, node)
+
+
+def _why_not(rbd, node) -> Optional[str]:
     from repyability.rbd import _crews, _shutdowns
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     if isinstance(rbd.components[node], RepairableRBD):
         return (
             "it is a nested RBD, whose components' spares are its own: "
-            "a shelf for a sub-system's components is not simulated yet"
+            "give its components' shelves as (node, component)"
         )
     schedule = rbd._preventive.get(node)
     if schedule is not None and schedule.policy == "condition":
@@ -127,7 +181,8 @@ def require(rbd, node, what: str) -> None:
     ``why_not``); ``what`` names where the shelf was asked for."""
     from repyability.rbd import _requirements
 
-    _requirements._require_component(rbd, node, what)
+    if not is_inner(rbd, node):
+        _requirements._require_component(rbd, node, what)
     reason = why_not(rbd, node)
     if reason is not None:
         raise NotImplementedError(
@@ -136,14 +191,81 @@ def require(rbd, node, what: str) -> None:
         )
 
 
+def _require_one_level(rbd, shelves: Shelves) -> None:
+    """Refuse a shelf shared across levels, or across sub-systems (see
+    the module's notes)."""
+    level: Dict[Hashable, Any] = {}
+    for key, name in shelves.of.items():
+        here = key[0] if is_inner(rbd, key) else None  # type: ignore[index]
+        if level.setdefault(name, here) != here:
+            raise NotImplementedError(
+                f"The shelf {name!r} is drawn on at two levels (the top "
+                "level's components, or one sub-system's, each have their "
+                "own loop, whose demands on one shelf would come out of "
+                "time order): a shelf across levels is not simulated yet; "
+                "give each level its own."
+            )
+
+
 def shelved(rbd, shelves: Shelves):
     """A copy of ``rbd`` whose simulations draw on ``shelves`` (none
     removes them). Its other methods are not for use: only the simulated
     routes that build it run it."""
+    _require_one_level(rbd, shelves)
     out = copy.copy(rbd)
     out.__dict__.pop("_run_state", None)
     out._shelves = shelves if shelves.shelves else None
     return out
+
+
+#: The diagram's settings a fleet's diagram of copies cannot carry: each
+#: would couple its systems, or name their nodes.
+_FLEET_REFUSES = (
+    "repair_crews",
+    "maintenance_groups",
+    "ccf_groups",
+    "shutdowns",
+    "call_out",
+)
+
+
+def fleet_of(rbd, fleet: int):
+    """One diagram of ``fleet`` copies of ``rbd``'s components, ``(j,
+    node)`` for the ``j``-th system's, each between one input and one
+    output (their structure does not change their events, as nothing
+    couples a component to the others), so that a shelf can be drawn on
+    across the fleet. Refused where something does couple them."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    args = rbd._init_args
+    given = [name for name in _FLEET_REFUSES if args.get(name)]
+    nested = [
+        node
+        for node, c in rbd.components.items()
+        if isinstance(c, RepairableRBD)
+    ]
+    if given or nested:
+        what = f"its {given[0]}" if given else f"the sub-system {nested[0]!r}"
+        raise NotImplementedError(
+            f"A fleet's shelf is simulated as one diagram of the systems' "
+            f"components, which {what} would couple or nest: "
+            "spares_stock(method='simulate') takes a fleet of diagrams "
+            "with no repair crews, maintenance or common-cause groups, "
+            "shutdowns, call-out crew or sub-systems. Give the fleet as "
+            "one diagram yourself, with parts= pooling its shelves."
+        )
+    source, sink = ("fleet", "input"), ("fleet", "output")
+    components, edges = {}, []
+    for j in range(fleet):
+        for node in rbd.components:
+            given = args["components"][node]
+            components[(j, node)] = (
+                dict(given) if isinstance(given, dict) else copy.copy(given)
+            )
+            edges += [(source, (j, node)), ((j, node), sink)]
+    return RepairableRBD(
+        edges, components, input_node=source, output_node=sink
+    )
 
 
 def of(rbd) -> Optional[Shelves]:
@@ -232,6 +354,22 @@ def start(shelves: Optional[Shelves]) -> Optional[Running]:
         {},
         {},
     )
+
+
+def inner(running: Optional[Running], node) -> Optional[Running]:
+    """The shelves sub-system ``node``'s own loop draws on in a
+    simulation: its components' (keyed ``(node, component)`` above), or
+    None."""
+    if running is None:
+        return None
+    of = {
+        key[1]: held
+        for key, held in running.of.items()
+        if isinstance(key, tuple) and len(key) == 2 and key[0] == node
+    }
+    if not of:
+        return None
+    return Running(running.stocks, of, {}, {}, {}, {})
 
 
 class Record(NamedTuple):

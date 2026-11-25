@@ -12,6 +12,15 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `spares_stock(method="simulate")` takes a sub-system's components, each
+  on a shelf of its own keyed `(node, component)` in the sub-system's
+  own loop (a shelf across levels is refused), and a fleet (`fleet=`):
+  its systems draw on one shelf, run as one diagram of their components
+  (refused where crews, groups, shutdowns or sub-systems would couple
+  them). Checked: a sub-system's unit with no stock is up `1 / (1 + λL)`
+  in the long run, and a fleet of two with nothing arriving in the
+  horizon holds the Poisson(4) stock, 8 for 95%.
+
 - The simulated shelf of spares (`spares_stock(method="simulate")`, the
   `spares` lever of `least_spend_for_downtime`) takes repair crews,
   preventive tasks and tests of hidden failures, which it refused. A
