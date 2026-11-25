@@ -52,12 +52,17 @@ def expected_cost_rate(
 def _own_cost_rate(rbd, working_nodes, broken_nodes) -> float:
     """This diagram's own long-run cost per unit time (the nodes held
     checked): its components' and its own, not its nested diagrams'."""
+    from repyability.rbd import _ccf_groups
+
     forced = set(working_nodes) | set(broken_nodes)
     setups = [group for group in rbd._maintenance.values() if group.setup_cost]
     if setups:
         _requirements._require_separate_setups(rbd)
 
     _shutdowns.require_exact(rbd)
+    # The common-cause groups' chains, before their members' own values
+    # (as the long run's route takes them).
+    _ccf_groups._require_ccf_frequencies(rbd)
     # The shutdowns' own costs, at each shut, and the repair crews'
     # salaries, paid whatever happens.
     rate = _shutdowns.cost_rate(rbd) + _crew_salaries(rbd)
@@ -170,7 +175,9 @@ def _node_actions(rbd, node, availability: float) -> Tuple[float, float]:
     if rbd._crews_couple():
         # Waiting for a crew, as while repaired, it cannot fail: it
         # fails at its constant rate while it is up.
+        # (A Shocks group's member fails at its shocks too.)
         life = _crews._crew_chain_rates(rbd)[node][0]
+        life += _requirements._shock_rate(rbd, node)
         return life * availability, 0.0
     if node in rbd._standby:
         # Each of its units' failures is a repair.

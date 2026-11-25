@@ -361,9 +361,24 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   member's too, each a `_Cause` on the cause streams, while a member's
   own life is its own model's (`_own_rate` is None). A cause names its
   members in the group's order; a strike's failures are then taken in the
-  diagram's order, as every failure at one instant is. No
-  chain copies them: `_ccf_rates` refuses the group for every exact
-  method. A `NonRepairableRBD` writes the same causes into its structure
+  diagram's order, as every failure at one instant is. For exponential
+  members the chains copy them (`_ccf_chain.causes` given each member's
+  own rate, `_ccf_rates` giving a tuple of them, and of repair rates): a
+  member's own cause is its life's and the shocks' that fail it alone,
+  the shared ones the shocks' at their own rates, so a rate-split group
+  stays the special case, bit for bit. A member's own values
+  (`node_availability`, its spares, its frequencies) are those of a unit
+  of the exponential life at its total rate
+  (`_requirements._own_failures`, a view of the diagram with the group
+  left out); members of other lives are simulated. A strike fails a
+  member before its own failure or task, cancelling what it had pending
+  (`_pending_event` too, for a maintenance group's stops), and tells a
+  member that keeps a virtual age the operating time it ran
+  (`_ImperfectComponent.struck`, from when its life started, which
+  `_clock` records): so scheduled maintenance, imperfect repair and
+  maintenance groups on members are simulated. From a state, a member of
+  a life of its own takes the strikes `_past_strikes` draws, as one of a
+  split rate does. A `NonRepairableRBD` writes the same causes into its structure
   (`shocks.written_shocks`) and is from then on the diagram written out;
   it saves the diagram as given (`_given_args`). `test_shock_nodes.py`
   and `test_repairable_shocks.py` check both.

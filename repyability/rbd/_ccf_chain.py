@@ -60,6 +60,7 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    Union,
 )
 
 import numpy as np
@@ -94,11 +95,31 @@ class GroupStates(NamedTuple):
     probabilities: np.ndarray
 
 
-def causes(model, members: Sequence[Hashable], rate: float) -> List[tuple]:
+#: The members' failure rate (one, which a group's model splits), or each
+#: member's own (a sequence, to which a ``Shocks`` group's shocks add).
+Rates = Union[float, Sequence[float]]
+
+
+def causes(model, members: Sequence[Hashable], rate: Rates) -> List[tuple]:
     """The group's causes: ``(member positions, rate)``, each member's own
-    first, then the shared ones (see ``ccf._Model._causes``)."""
-    own, shared = model._causes(tuple(members))
+    first, then the shared ones. ``rate`` is the members' failure rate,
+    which the group's model splits between them (see
+    ``ccf._Model._causes``), or, for a ``Shocks`` group, a sequence of each
+    member's own: a member's own cause is then its life's and the shocks'
+    that fail it alone, and the shared ones are the shocks' that fail more
+    than one, each at its own rate (see ``ccf.Shocks.causes``)."""
     position = {member: i for i, member in enumerate(members)}
+    if not isinstance(rate, (int, float)):
+        own_rates = [float(value) for value in rate]
+        shocks: List[Tuple[Tuple[int, ...], float]] = []
+        for struck, strikes in model.causes(tuple(members)):
+            places = tuple(sorted(position[m] for m in struck))
+            if len(places) == 1:
+                own_rates[places[0]] += strikes
+            else:
+                shocks.append((places, strikes))
+        return [((i,), value) for i, value in enumerate(own_rates)] + shocks
+    own, shared = model._causes(tuple(members))
     out: List[Tuple[Tuple[int, ...], float]] = [
         ((i,), own * rate) for i in range(len(members))
     ]
@@ -211,13 +232,14 @@ SHARED = -1
 def _revealed_moves(
     model,
     members: Sequence[Hashable],
-    rate: float,
-    repair: float,
+    rate: Rates,
+    repair: Rates,
     counts: Optional[Sequence[int]] = None,
 ) -> Tuple[int, List[Move]]:
     """The moves between the states of a group whose members' failures
     are revealed, each repaired at rate ``repair`` (independently: as many
-    repairs at once as are needed), its states those of ``_Counted``
+    repairs at once as are needed; for a ``Shocks`` group, a sequence of
+    each member's, see ``causes``), its states those of ``_Counted``
     (with ``counts`` copies of each member, by default one: each state
     then its own combination of the members up or down), and how many
     states it has. Each move is labelled with whose it is (see
@@ -246,17 +268,23 @@ def _revealed_moves(
                 i,
                 source[down],
                 space.index(fixed, space.missed)[down],
-                repair * space.found[down, i].astype(float),
+                _of(repair, i) * space.found[down, i].astype(float),
             )
         )
     return space.size, out
 
 
+def _of(rates: Rates, i: int) -> float:
+    """Member ``i``'s rate: the members' one, or its own of a
+    sequence."""
+    return rates if isinstance(rates, (int, float)) else float(rates[i])
+
+
 def _revealed_flow(
     model,
     members: Sequence[Hashable],
-    rate: float,
-    repair: float,
+    rate: Rates,
+    repair: Rates,
     counts: Optional[Sequence[int]] = None,
 ) -> np.ndarray:
     """The rates between the states of a group whose members' failures
@@ -271,8 +299,8 @@ def _revealed_flow(
 def revealed(
     model,
     members: Sequence[Hashable],
-    rate: float,
-    repair: float,
+    rate: Rates,
+    repair: Rates,
     counts: Optional[Sequence[int]] = None,
 ) -> GroupStates:
     """The long-run states of a group whose members' failures are
@@ -623,7 +651,7 @@ class _Hidden:
         self,
         model,
         members,
-        rate: float,
+        rate: Rates,
         coverage: float,
         counts: Optional[Sequence[int]] = None,
     ):
@@ -882,7 +910,7 @@ class _Timed(_Hidden):
         self,
         model,
         members,
-        rate: float,
+        rate: Rates,
         coverage: float,
         timings,
         lefts: Optional[Dict[int, "Left"]] = None,
@@ -1325,7 +1353,7 @@ def _shifted(tests, by: float) -> List[ProofTest]:
 def hidden(
     model,
     members: Sequence[Hashable],
-    rate: float,
+    rate: Rates,
     coverage: float,
     tests: Sequence[ProofTest],
     period: float,
@@ -1414,8 +1442,8 @@ class OverTime:
         cls,
         model,
         members,
-        rate: float,
-        repair: float,
+        rate: Rates,
+        repair: Rates,
         uniformized,
         start: Optional[Start] = None,
     ) -> "OverTime":
@@ -1452,7 +1480,7 @@ class OverTime:
         cls,
         model,
         members,
-        rate: float,
+        rate: Rates,
         coverage: float,
         tests,
         period,

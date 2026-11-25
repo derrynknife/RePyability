@@ -2053,7 +2053,7 @@ def _replacements(rbd, node, long_run: bool = False):
         "spares_demand(method='simulate')."
     )
     _requirements._require_reliabilities(rbd, node)
-    _requirements._require_own_failures(rbd, node, simulate)
+    rbd = _requirements._own_failures(rbd, node, simulate)
     if node in rbd._standby:
         raise NotImplementedError(
             f"Component {node!r} is {rbd._standby[node].what}, whose "

@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 from scipy.optimize import minimize, minimize_scalar
 from surpyval import ExactEventTime, NonParametric, Parametric
@@ -636,6 +638,18 @@ class NonRepairable:
             ages = np.concatenate([[0.0], inner, [t]])
             out = float(trapezoid(self.reliability_function(ages), ages))
 
+        return out
+
+    def _with_life(self, reliability) -> "NonRepairable":
+        """This unit with another life, a surpyval distribution, and
+        everything else (its repairs, prices and schedules) its own."""
+        out = copy.copy(self)
+        out.reliability = reliability
+        out.reliability_function = reliability.sf
+        out.model_parameterization = "parametric"
+        out.cost_rate = np.vectorize(
+            out._cost_rate, doc=self.cost_rate.__doc__
+        )
         return out
 
     def _cost_rate(self, t):

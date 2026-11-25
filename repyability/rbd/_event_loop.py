@@ -396,6 +396,8 @@ class _ImperfectComponent(_StreamedComponent):
         "_process",
         "_state",
         "_new",
+        "life_from",
+        "_x0",
     )
 
     def __init__(
@@ -429,6 +431,10 @@ class _ImperfectComponent(_StreamedComponent):
         self._process = None if imperfect is None else imperfect.process
         self._state: Any = None
         self._new: Any = None
+        # When its life drawn last started, and its operating time before
+        # then (its age at a start from a state), for a shock that fails
+        # it before that life ends (``struck``).
+        self.life_from = self._x0 = 0.0
 
     def reset(self):
         self._fails_next = True
@@ -468,6 +474,13 @@ class _ImperfectComponent(_StreamedComponent):
         # the operating time since its last repair (#269).
         super().life_drawn(x)
         self._x = x
+
+    def struck(self, t: float) -> None:
+        """A shock of a common-cause group has failed the working unit at
+        ``t``, before the failure drawn for it: its repair takes its
+        virtual age on by its operating time to ``t`` since its last
+        repair, not to the failure drawn."""
+        self._x = self._x0 + self._operated(self.life_from, t)
 
     @property
     def replacing(self) -> bool:
@@ -722,10 +735,13 @@ def _upgraded(rbd, node, run=None, path: tuple = ()) -> _UpgradedComponent:
 
 def _clock(source, t: float) -> None:
     """Tell a component on a covariate schedule, or an upgraded one, that
-    its next draw is made at ``t`` (a life starting then); nothing for
-    any other."""
+    its next draw is made at ``t`` (a life starting then), and one that
+    keeps a virtual age when its life (if that is drawn next) starts (see
+    ``_ImperfectComponent.struck``); nothing for any other."""
     if source.__class__ in (_ScheduledComponent, _UpgradedComponent):
         source.now = t
+    if isinstance(source, _ImperfectComponent):
+        source.life_from, source._x0 = t, 0.0
 
 
 def _stand_in(
@@ -1737,6 +1753,7 @@ def _context(
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     states = {} if states is None else states
+    members = {m for group in rbd.ccf_groups for m in group.members}
     plan, complete = _stream_plan(
         rbd, t_simulation, entropy, antithetic, states, prefix
     )
@@ -1765,7 +1782,9 @@ def _context(
         has_costs=has_costs,
         position={node: i for i, node in enumerate(nodes)},
         # Components with no maintenance or inspection that are not
-        # nested RBDs: their next event is simply their next draw.
+        # nested RBDs: their next event is simply their next draw (but
+        # for a common-cause group's member that keeps a virtual age,
+        # told when its life starts, see _ImperfectComponent.struck).
         plain={
             node
             for node, component in rbd.components.items()
@@ -1774,6 +1793,7 @@ def _context(
             and node not in rbd._standby
             and not isinstance(component, RepairableRBD)
             and scheduled(component) is None
+            and not (node in rbd._imperfect and node in members)
         },
         works=rbd._decomposition().structure_function(method),
         states=states,
@@ -2145,10 +2165,18 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
             )
             - since
         )
+        # A member of a Shocks group, of a life of its own: a shock that
+        # has failed it since it was last known up (see _past_strikes).
+        struck = rbd._run_state._ccf_struck.get(node)
+        if struck is not None:
+            life = min(life, struck)
     # Its operating time to the failure drawn, which its virtual age
     # counts (on a duty plan that changes, not the time itself).
     drawn = life if timed is None else timed.operated_for(0.0, life)
     source.life_drawn(start.age + drawn)
+    if isinstance(source, _ImperfectComponent):
+        # Its life counted from 0, after its age (see struck).
+        source.life_from, source._x0 = 0.0, start.age
     if inspection is not None:
         if life < 0.0:
             # Failed, unseen, since it was last known up.
@@ -2265,13 +2293,15 @@ def _follow_up(rbd, event: Event, source) -> Event:
     return Event(event.time + t, node, status)
 
 
-def _strike(rbd, event: Event, source) -> List[Event]:
+def _strike(rbd, event: Event, sources: dict) -> List[Event]:
     """A shared common cause strikes (#158, see ``_Cause``): each member
     it names that is up fails now, its own next event superseded (a
-    member down stays down), and with tests that can miss a failure,
-    one uniform decides for all its failures. Returns the events to
-    queue: the members' failures, and the cause's next strike."""
+    member down stays down; one that keeps a virtual age is told, see
+    ``_ImperfectComponent.struck``), and with tests that can miss a
+    failure, one uniform decides for all its failures. Returns the events
+    to queue: the members' failures, and the cause's next strike."""
     cause: Any = event.component
+    source = sources[cause]
     t = event.time
     status = rbd._run_state.component_status
     out: List[Event] = []
@@ -2282,6 +2312,12 @@ def _strike(rbd, event: Event, source) -> List[Event]:
         pending = rbd._run_state._ccf_pending.pop(member, None)
         if pending is not None and pending.time < rbd._run_state.t_simulation:
             rbd._run_state._cancelled[id(pending)] = pending
+        # A maintenance group's stop, or a shutdown, has no early renewal
+        # of it to cancel while it is down (see _stop).
+        rbd._run_state._pending_event.pop(member, None)
+        member_source = sources[member]
+        if isinstance(member_source, _ImperfectComponent):
+            member_source.struck(t)
         if coin is not None:
             rbd._run_state._ccf_coins[member] = coin
         out.append(Event(t, member, False))
@@ -2944,7 +2980,7 @@ def next_event(rbd, method, sources: Optional[dict]):
             continue  # superseded by an early renewal, or a strike
         if event.component.__class__ is _Cause:
             # A shared common cause strikes (#158, see _strike).
-            for follow in _strike(rbd, event, sources[event.component]):
+            for follow in _strike(rbd, event, sources):
                 rbd._run_state._event_queue.put(follow)
             continue
         renewing_early = False
@@ -3475,7 +3511,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         node = event.component
         if node.__class__ is _Cause:
             # A shared common cause strikes (#158).
-            for follow in _strike(rbd, event, sources[node]):
+            for follow in _strike(rbd, event, sources):
                 push(heap, entry(follow))
             continue
         if node.__class__ is _shelves.Arrival:
