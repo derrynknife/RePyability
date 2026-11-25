@@ -154,3 +154,28 @@ def test_a_part_of_identical_constant_rates_is_exact():
         SHORT, fill_rate=0.5, fleet=2, parts={"seal": ["a", "b"]}
     )["seal"]
     assert not found.exact and found.sources == 4
+
+
+def test_wear_out_with_a_long_lead_is_simulated_by_default():
+    # Weibull(1000, 3), a lead time of 3,000 h (3.4 lives), one unit, an
+    # 85% fill rate: the reweighting would hold 5 (0.824 at 4); the shelf
+    # in the runs meets it with 4. The long run finds it so by default,
+    # and says why; each stock tried against long runs of the shelf.
+    rbd, names = diagram(WEAR_OUT)
+    found = rbd.spares_stock(LONG, fill_rate=0.85)["p"]
+    assert found.method == "simulated" and not found.exact
+    assert "in step with the orders' arrivals" in found.reason
+    assert found.stock == 4
+    assert found.fill_rate == found.fill_rate_for(4) >= 0.85
+    for s in range(1, 5):
+        fill, fill_se, out, out_se = simulated(rbd, names, s, LONG, 41 + s)
+        # The default's runs are shorter (about 500 demands each): their
+        # own error is about as large again.
+        assert close(found.fill_rate_for(s), fill, 3 * fill_se), s
+        assert close(found.stockout_probability_for(s), out, 3 * out_se), s
+    again = rbd.spares_stock(LONG, fill_rate=0.85)["p"]
+    assert again.simulated == found.simulated
+    # A short lead time, and constant rates, stay worked out.
+    assert long_run(WEAR_OUT, SHORT).method == "approximate"
+    assert long_run(CONSTANT, LONG).method == "exact"
+    assert long_run(REPAIRED, LONG).method == "approximate"

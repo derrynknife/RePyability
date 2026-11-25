@@ -271,8 +271,14 @@ swapped = dict(pump, repairability="instant",
 shelf = RepairableRBD(edges, {"pump": swapped, "seal": seal})
 stock = shelf.spares_stock(2016.0, fill_rate=0.95, fleet=20, nodes=["pump"])["pump"]
 stock.stock       # -> 52
-stock.fill_rate   # -> 0.9596
+stock.fill_rate   # -> 0.9618
+stock.method      # -> 'simulated'
 ```
+
+Each pump's demand in the lead time is more than one, its life is not at a
+constant rate, and stock-outs are common one spare short, so the stock is
+found with the shelf in the runs (the approximation said 0.9596 for 52):
+`stock.reason` says so, and `stock.simulated` has every stock tried.
 
 A demand finds at least two pumps of its own system on order: those swapped
 at the two block times in the 12 weeks before it. When repairs or block
@@ -286,8 +292,11 @@ repaired in about 8 hours and swapped in about 4:
 ```python
 stock = calendar.spares_stock(2016.0, fill_rate=0.95, fleet=20, nodes=["pump"])["pump"]
 stock.stock       # -> 52
-stock.fill_rate   # -> 0.9667
+stock.fill_rate   # -> 0.9684
 ```
+
+(found with the shelf in the runs too, as above; the approximation said
+0.9667.)
 
 Their time out of service lowers their demand a little (1.160 replacements
 every 1,000 hours, against 1.165), and the same stock fills more of it.

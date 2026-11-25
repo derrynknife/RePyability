@@ -2337,6 +2337,21 @@ def _constant_rates(models: Iterable) -> Optional[List[float]]:
     return rates
 
 
+def _memoryless(model) -> bool:
+    """Whether a component's replacements come at a constant failure
+    rate, on no schedule (whatever its repairs take): its life is
+    exponential from 0 (as ``_constant_rates`` checks it)."""
+    if not isinstance(model, Replacements) or not math.isinf(model.age):
+        return False
+    ages = model.mean_cycle * np.array([0.01, 0.1, 0.5, 1.0, 2.0])
+    life = np.ravel(model.life(ages))
+    if not np.all((life > 0.0) & (life < 1.0)):
+        return False
+    # Exponential: the same scale -a / log(1 - F(a)) at every age.
+    scales = -ages / np.log1p(-life)
+    return bool(np.ptp(scales) <= 1e-9 * scales.mean())
+
+
 def _poisson(mean: float) -> np.ndarray:
     """Poisson probabilities of ``0, 1, ...`` to a tail below ``_TAIL``."""
     from scipy import stats
@@ -2354,6 +2369,8 @@ def spares_stock(
     nodes: Optional[Collection[Hashable]],
     fleet: int,
     parts: Optional[Mapping[Hashable, Collection[Hashable]]],
+    mc_samples: Optional[int] = None,
+    seed=None,
 ) -> Dict[Hashable, SparesStock]:
     """See ``RepairableRBD.spares_stock``."""
     tau = _horizon(lead_time)
@@ -2479,11 +2496,152 @@ def spares_stock(
                 nodes=None,
                 fleet=fleet,
                 parts=None,
+                mc_samples=mc_samples,
+                seed=seed,
             )
             out.update({(node, key): value for key, value in found.items()})
     for part, members in pools.items():
         out[part] = dataclasses.replace(stocked(members), members=members)
+    _simulated_long_run(
+        rbd,
+        out,
+        {node: (node,) for node in chosen},
+        pools,
+        tau,
+        fill_rate,
+        stockout_probability,
+        fleet,
+        mc_samples,
+        seed,
+    )
     return out
+
+
+#: A long-run stock is simulated (``_simulated_long_run``) where each
+#: unit's demand in a lead time is at least ``LONG_LEAD`` on average, its
+#: lives are not at one constant rate (wear-out lives), and stock-outs
+#: are common at the margin: one spare fewer than the approximation's
+#: stock leaves the shelf empty ``COMMON_STOCKOUT`` of the time or more.
+LONG_LEAD = 1.0
+COMMON_STOCKOUT = 0.1
+#: The runs of the simulated long run at each stock, by default, and each
+#: run's length in the shelf's demands (from new with a full shelf, whose
+#: start it outweighs).
+LONG_RUN_SAMPLES = 200
+LONG_RUN_DEMANDS = 500
+#: Its seed, by default: a long-run stock is the same at every call.
+LONG_RUN_SEED = 1
+
+
+def _simulated_long_run(
+    rbd,
+    out: Dict[Hashable, SparesStock],
+    singles: Dict[Hashable, Tuple[Hashable, ...]],
+    pools: Dict[Hashable, Tuple[Hashable, ...]],
+    tau: float,
+    fill_rate,
+    stockout_probability,
+    fleet: int,
+    mc_samples,
+    seed,
+) -> None:
+    """Where the long-run values are an approximation that errs (each
+    unit's demand in a lead time ``LONG_LEAD`` or more, lives not at a
+    constant rate, and stock-outs common at the margin, ``COMMON_STOCKOUT``:
+    wear-out lives with a lead time of a life or more, whose waits put the
+    demands in step with the orders' arrivals), find the stock with the
+    shelf in the runs instead: ``LONG_RUN_SAMPLES`` runs of
+    ``LONG_RUN_DEMANDS``
+    demands on average, at stocks 0, 1, ... until the fill rate and the
+    time out of stock over them meet the targets. The result says so
+    (``method``, ``reason``) and keeps every stock tried
+    (``simulated``); one the shelf cannot be simulated for stays the
+    approximation, with the reason."""
+    from repyability.rbd import _shelves
+
+    flagged = {}
+    for name, members in {**singles, **pools}.items():
+        result = out[name]
+        if result.exact or not result.sources:
+            continue
+        if all(_memoryless(_replacements(rbd, m, True)) for m in members):
+            continue  # constant rates: the approximation is close
+        per_unit = float(
+            np.dot(np.arange(len(result.on_order)), result.on_order)
+        ) / int(result.sources)
+        margin = result.stockout_probability_for(result.stock - 1)
+        if per_unit >= LONG_LEAD and margin >= COMMON_STOCKOUT:
+            flagged[name] = (members, per_unit)
+    for name, (members, per_unit) in flagged.items():
+        refused = next(
+            (
+                _shelves.why_not(rbd, m)
+                for m in members
+                if _shelves.why_not(rbd, m) is not None
+            ),
+            None,
+        )
+        lives = f"{per_unit:.3g}"
+        if refused is not None:
+            out[name] = dataclasses.replace(
+                out[name],
+                method="approximate",
+                reason=(
+                    f"Each unit's demand in a lead time is {lives} on "
+                    "average, where the long-run approximation holds more "
+                    "than needed, but the shelf cannot be simulated for "
+                    f"it, as {refused}."
+                ),
+            )
+            continue
+        rate = (
+            float(
+                np.dot(np.arange(len(out[name].on_order)), out[name].on_order)
+            )
+            / tau
+        )
+        found = spares_stock_simulated(
+            rbd,
+            tau,
+            horizon=LONG_RUN_DEMANDS / rate,
+            fill_rate=fill_rate,
+            stockout_probability=stockout_probability,
+            no_stockout=None,
+            nodes=None if name in pools else [name],
+            fleet=fleet,
+            parts={name: list(members)} if name in pools else None,
+            repairs=False,
+            mc_samples=LONG_RUN_SAMPLES if mc_samples is None else mc_samples,
+            seed=LONG_RUN_SEED if seed is None else seed,
+            confidence=0.95,
+        )[name]
+        out[name] = dataclasses.replace(
+            out[name],
+            stock=found.stock,
+            fill_rate=found.fill_rate,
+            stockout_probability=found.stockout_probability,
+            method="simulated",
+            reason=(
+                f"Each unit's demand in a lead time is {lives} on average "
+                f"(at least {LONG_LEAD:g}), its lives are not at a "
+                "constant rate, and stock-outs are "
+                "common at the margin: the long-run "
+                "approximation would hold more than needed, as the waits "
+                "put the demands in step with the orders' arrivals. The "
+                f"stock is the shelf's in {found.n_simulations} runs of "
+                f"{found.horizon:.6g} (about {LONG_RUN_DEMANDS} demands "
+                "each, from new)."
+            ),
+            simulated={
+                s: {
+                    "fill_rate": v["fill_rate"],
+                    "stockout_probability": min(
+                        v["stockout_probability"], 1.0
+                    ),
+                }
+                for s, v in found.by_stock.items()
+            },
+        )
 
 
 #: The most spares ``spares_stock(method="simulate")`` tries on a shelf.
@@ -2673,15 +2831,15 @@ def _targets(fill_rate, stockout_probability, no_stockout) -> None:
 
 
 def require_exact_stock(horizon, no_stockout, repairs, mc_samples, seed):
-    """Refuse what only ``spares_stock(method="simulate")`` takes."""
+    """Refuse what only ``spares_stock(method="simulate")`` takes (the
+    long run takes ``mc_samples`` and ``seed`` for a stock it simulates,
+    see ``_simulated_long_run``)."""
     given = [
         name
         for name, value, default in (
             ("horizon", horizon, None),
             ("no_stockout", no_stockout, None),
             ("repairs", repairs, False),
-            ("mc_samples", mc_samples, None),
-            ("seed", seed, None),
         )
         if value is not default
     ]
