@@ -929,7 +929,13 @@ in `test_schedule_forecast.py`.
     (`Condition(life, fresh=, stale=, lasts=)`: a regression life fitted
     with a "serviced or overdue" covariate, at `fresh` for `lasts` after
     each service and at `stale` otherwise, as a covariate schedule on
-    the diagram's clock, UC-41's `ScheduledLife`).
+    the diagram's clock, UC-41's `ScheduledLife`), or a **ramp**
+    (`Condition(life, since_service=True, fresh=, rate=, since=)`: a
+    covariate of the time since the last service, `fresh + rate × (t -
+    s)`, set back at each service). A ramp is surpyval's
+    `CovariatePath` (`SinceService.path()`), and each life is drawn
+    where `Hf_tvc` along it reaches `-log(1 - u)`, with no steps. A ramp
+    of slope 0 is the step it stays at.
 - **The answer, by hand:** the services are on 1 April, 1 July and 1
   October, 2,160, 4,344 and 6,552 h from the start (the forecast is
   8,760 h). Their present value is 800 × (1.07^(-90/365.25) +
@@ -1221,10 +1227,6 @@ in `test_schedule_forecast.py`.
   for the policies on dates, with `discounted_run_to_failure` and
   `age_replacement_value` where the usage keeps a steady pace) is not
   joined to it yet; a task's long run is (`Task.long_run_value`).
-- **A service on what the engine does not follow yet.** UC-67's
-  simulated effects keep the engine's limits: a covariate of the time
-  since the service (a ramp, not a step) is not a schedule the engine
-  takes, and surpyval has no ramp schedule yet.
 - A test that can miss a failure or that takes the device off line, and
   an inspection that finds a warning before the failure (on condition),
   are not valued on dates yet either.

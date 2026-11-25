@@ -12,6 +12,15 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A service whose effect is a covariate of the time since it, a ramp:
+  `schedule.Condition(life, since_service=True, fresh=, rate=, since=)`,
+  `fresh + rate × (t - s)` from the last service `s`. A block's
+  `"covariates"` also takes a surpyval `CovariatePath`, or the ramp's
+  `SinceService`. Each life is drawn along the path by surpyval's own
+  cumulative hazard (`Hf_tvc`), with no steps. Checked against the
+  closed form of a constant-baseline PH life through `task_value`, and
+  against `sf_tvc` for a Weibull PH life of shape 2. A ramp saves to
+  JSON; a path given as a function pickles only.
 - The compiled engine (numba) runs a diagram on a duty plan that changes
   over time, which it handed to the Python loop: `D` and `D⁻¹` at every
   draw (each life, an age or block task and the tests counted in

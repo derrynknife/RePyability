@@ -43,6 +43,10 @@ import numpy as np
 #: The most steps ``_solve`` takes (it ends long before, in practice in
 #: two or three).
 _MAX_STEPS = 2000
+#: The relative accuracy surpyval's quadrature works a cumulative hazard
+#: along a ``CovariatePath`` out to (its documented 1e-10), to which a
+#: life along one is found (``PathLife.life_left``).
+PATH_RTOL = 1e-10
 
 #: The components' spec keys a covariate schedule cannot go with, and why.
 _REFUSED_KEYS = {
@@ -363,15 +367,231 @@ class ScheduledLife(ClockLife):
         )
 
 
-def _solve(H, h, target, lo, hi, x, scale) -> float:
+class SinceService:
+    """A covariate that rises with the time since the last service:
+    ``fresh + rate * (t - s)``, ``s`` the last service at or before ``t``
+    on the diagram's clock (before the first, the last before 0, ``since``
+    before it). A vectorised function of time for surpyval's
+    ``CovariatePath.from_callable``, with its jumps at the services; plain
+    data, so a diagram given its path pickles and saves.
+
+    Parameters
+    ----------
+    times : sequence of float
+        The services, on the diagram's clock.
+    fresh, rate : sequence of float
+        The covariates just after a service, and how fast each rises per
+        unit of time since it.
+    since : float
+        The time since the last service before 0, at 0.
+    """
+
+    def __init__(self, times, fresh, rate, since: float = 0.0):
+        self.times = np.unique(np.asarray(times, dtype=float))
+        self.fresh = np.asarray(fresh, dtype=float)
+        self.rate = np.asarray(rate, dtype=float)
+        self.since = float(since)
+
+    def __call__(self, t) -> np.ndarray:
+        t = np.asarray(t, dtype=float)
+        last = np.full(t.shape, -self.since)
+        if self.times.size:
+            k = np.searchsorted(self.times, t, side="right") - 1
+            last = np.where(k >= 0, self.times[np.maximum(k, 0)], last)
+        return self.fresh + self.rate * (t - last)[..., np.newaxis]
+
+    @property
+    def p(self) -> int:
+        """How many covariates it gives."""
+        return int(self.fresh.size)
+
+    def path(self):
+        """Its surpyval ``CovariatePath``."""
+        from surpyval.univariate.regression import CovariatePath
+
+        return CovariatePath.from_callable(
+            self, p=self.fresh.size, breakpoints=self.times
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "since_service": {
+                "times": self.times.tolist(),
+                "fresh": self.fresh.tolist(),
+                "rate": self.rate.tolist(),
+                "since": self.since,
+            }
+        }
+
+
+class _Shifted:
+    """A covariate function read ``shift`` later: a path on a unit's own
+    ages, from the one on the diagram's clock (picklable)."""
+
+    def __init__(self, func, shift: float):
+        self.func = func
+        self.shift = float(shift)
+
+    def __call__(self, t) -> np.ndarray:
+        return np.asarray(self.func(np.asarray(t, dtype=float) + self.shift))
+
+
+class PathLife(ClockLife):
+    """A unit's life along a covariate path that changes continuously on
+    the diagram's clock (a surpyval ``CovariatePath``, or the time since
+    the last service, ``SinceService``, which gives one): its hazard at
+    age ``a`` at time ``t`` is the model's at ``Z(t)``. A unit put into
+    service at ``t0`` at age ``a0`` sees the path on its own ages,
+    ``Z(a - a0 + t0)``, along which surpyval works out its cumulative hazard
+    (``Hf_tvc``, by its own quadrature, or the cumulative exposure for
+    accelerated failure time or life); its life is where that reaches
+    ``-log(1 - u)``. As a ``ScheduledLife``, only the simulations take
+    it."""
+
+    lead = "runs on a covariate path"
+
+    def __init__(self, model: Any, path: Any, node: Any = None):
+        from surpyval.univariate.regression.kinds import (
+            HAZARD_BASED,
+            TIME_SCALING,
+        )
+
+        from .regression_node import _fitted_width, _is_semiparametric
+
+        lead = f"Component {node!r}: its covariate path"
+        #: Where the path jumps or kinks on the diagram's clock, for the
+        #: quadrature on each unit's ages: a service's times; None for a
+        #: path given as a function (surpyval's quadrature finds them).
+        self._breaks: Optional[np.ndarray] = None
+        if isinstance(path, SinceService):
+            self._breaks = path.times
+            path = path.path()
+        kind = getattr(model, "kind", None)
+        if kind is None or not callable(getattr(model, "Hf_tvc", None)):
+            raise ValueError(
+                f"{lead} needs a fitted surpyval regression model as its "
+                "reliability (e.g. surv.WeibullPH.fit(x, Z=...)), got a "
+                f"{type(model).__name__}."
+            )
+        if _is_semiparametric(model):
+            raise ValueError(
+                f"{lead}: its reliability is a semiparametric model (a "
+                "Cox model), whose baseline ends at the data, so lives "
+                "past it cannot be drawn. Fit a parametric regression "
+                "(e.g. surv.WeibullPH) in surpyval."
+            )
+        if kind in HAZARD_BASED:
+            self.clock = False
+        elif kind in TIME_SCALING:
+            self.clock = True
+        else:
+            raise ValueError(
+                f"{lead}: its reliability is a {kind} model, whose hazard "
+                "at a moment does not follow from the covariates then. Fit "
+                "a proportional hazards, additive hazards, accelerated "
+                "failure time or accelerated life model in surpyval."
+            )
+        if not path.start <= 0.0:
+            raise ValueError(
+                f"{lead} starts at {path.start:g}, and must say the "
+                "covariates from 0, the start of the diagram's time."
+            )
+        fitted = _fitted_width(model)
+        if fitted is not None and path.p != fitted:
+            raise ValueError(
+                f"{lead} has {path.p} column(s), and the model was fitted "
+                f"with {fitted}."
+            )
+        self.model = model
+        self.schedule = path
+        self.node = node
+
+    def sf(self, x):
+        raise self._no_reliability()
+
+    def ff(self, x):
+        raise self._no_reliability()
+
+    def Hf(self, x):
+        raise self._no_reliability()
+
+    def mean(self):
+        raise self._no_reliability("mean life")
+
+    def random(self, size):
+        raise self._no_reliability("draws without a start time")
+
+    def _row(self, t: float) -> np.ndarray:
+        """The covariates at ``t`` of the diagram's clock, as a row."""
+        return np.asarray(self.schedule([t]), dtype=float).reshape(1, -1)
+
+    def on_ages(self, t0: float, age: float):
+        """The path a unit put into service at ``t0`` at ``age`` sees on
+        its own ages: ``Z(a - age + t0)``."""
+        from surpyval.univariate.regression import CovariatePath
+
+        path = self.schedule
+        shift = t0 - age
+        breaks = None
+        if self._breaks is not None:
+            breaks = self._breaks - shift
+            breaks = breaks[breaks > 0.0]
+        return CovariatePath.from_callable(
+            _Shifted(path, shift),
+            p=path.p,
+            breakpoints=breaks if breaks is not None and breaks.size else None,
+        )
+
+    def life_left(self, t0: float, age: float, u: float) -> float:
+        """The operating time to failure of a unit put into (or back in)
+        service at ``t0`` at virtual ``age`` (0 for a new unit), from the
+        uniform ``u``: where its cumulative hazard along the path from
+        ``t0`` reaches ``-log(1 - u)`` (``inf`` if it never does)."""
+        exposure = -math.log1p(-u) if u < 1.0 else math.inf
+        if not exposure > 0.0:
+            return 0.0
+        if not math.isfinite(exposure):
+            return math.inf
+        model = self.model
+        path = self.on_ages(t0, age)
+        before = 0.0
+        if age > 0.0:
+            before = float(np.ravel(model.Hf_tvc(np.array([age]), path))[0])
+
+        def H(x: float) -> float:
+            return (
+                float(np.ravel(model.Hf_tvc(np.array([age + x]), path))[0])
+                - before
+            )
+
+        def h(x: float) -> float:
+            row = self._row(t0 + x)
+            return float(np.ravel(model.hf(np.array([age + x]), row))[0])
+
+        row = self._row(t0)
+        p = -math.expm1(-exposure)
+        guess = (
+            float(np.ravel(model.qf(np.array([p]), row))[0]) - age
+            if p < 1.0
+            else math.nan
+        )
+        scale = float(np.ravel(model.qf(np.array([0.5]), row))[0])
+        return _solve(H, h, exposure, 0.0, math.inf, guess, scale, PATH_RTOL)
+
+    def __repr__(self) -> str:
+        return f"PathLife({type(self.model).__name__}, path={self.schedule!r})"
+
+
+def _solve(H, h, target, lo, hi, x, scale, rtol: float = 0.0) -> float:
     """The age ``x`` in ``[lo, hi]`` at which the rising cumulative hazard
     ``H`` (hazard ``h``) reaches ``target``, ``H(lo) <= target`` and, for
     a finite ``hi``, ``H(hi) >= target``: Newton's steps from the guess
     ``x`` kept inside a bracket that each step narrows, halving it (or,
     with no upper end yet, doubling past ``lo`` by ``scale``) where a
-    step would leave it; to where ``H(x)`` is ``target`` to the last bits,
-    or the bracket's ends are neighbouring numbers. ``inf`` if ``H``
-    never reaches it."""
+    step would leave it; to where ``H(x)`` is ``target`` to the last bits
+    (or within ``rtol`` of it, the accuracy of an ``H`` worked out by
+    quadrature), or the bracket's ends are neighbouring numbers. ``inf``
+    if ``H`` never reaches it."""
     if not lo <= x <= hi:
         x = 0.5 * (lo + hi) if math.isfinite(hi) else lo + scale
     for _ in range(_MAX_STEPS):
@@ -382,7 +602,7 @@ def _solve(H, h, target, lo, hi, x, scale) -> float:
             hi = x
         else:
             lo = x
-        if abs(value - target) <= 4.0 * np.spacing(target):
+        if abs(value - target) <= max(4.0 * np.spacing(target), rtol * target):
             return x
         if math.isfinite(hi) and math.nextafter(lo, math.inf) >= hi:
             return hi
@@ -395,6 +615,17 @@ def _solve(H, h, target, lo, hi, x, scale) -> float:
         else:
             x = lo + 2.0 * max(lo - x, 0.0) + max(x, scale)
     return hi
+
+
+def scheduled_life(model, schedule, node) -> ClockLife:
+    """A block's life under ``schedule``: a ``ScheduledLife`` on a
+    surpyval ``StepSchedule`` (exact steps), or a ``PathLife`` along a
+    ``CovariatePath`` (a covariate that changes continuously)."""
+    from surpyval.univariate.regression import CovariatePath
+
+    if isinstance(schedule, (CovariatePath, SinceService)):
+        return PathLife(model, schedule, node)
+    return ScheduledLife(model, schedule, node)
 
 
 def on_schedules(components: dict) -> dict:
@@ -420,7 +651,7 @@ def on_schedules(components: dict) -> dict:
                             f"schedule, and is {why}: the two together "
                             "are not taken."
                         )
-                life = ScheduledLife(
+                life = scheduled_life(
                     component.get("reliability"), schedule, name
                 )
                 repair = component.get("repair")
@@ -517,13 +748,21 @@ def check_state(rbd, node, state, inspected: bool) -> None:
             "drawn from its last test, before the diagram's time starts. "
             "Leave it out (new)."
         )
-    if not isinstance(life, ScheduledLife):
+    if not isinstance(life, (ScheduledLife, PathLife)):
         # A duty plan's: the age is in operating time.
         model: Any = getattr(life, "model")
         if not float(np.ravel(model.sf(np.array([age])))[0]) > 0.0:
             raise ValueError(
                 f"Component {node!r} cannot be up at age {age:g} (in "
                 "operating time): its reliability there is 0."
+            )
+        return
+    if isinstance(life, PathLife):
+        row = life._row(0.0)
+        if not float(np.ravel(life.model.sf(np.array([age]), row))[0]) > 0:
+            raise ValueError(
+                f"Component {node!r} cannot be up at age {age:g}: its "
+                "reliability there, at the covariates at 0, is 0."
             )
         return
     k, _ = life._step_at(0.0)
@@ -537,7 +776,19 @@ def check_state(rbd, node, state, inspected: bool) -> None:
 def schedule_to_dict(schedule) -> dict:
     """A covariate schedule in a JSON-friendly form: its steps' edges (an
     open end as ``None``), its rows of covariates and its period (None
-    for one that is not cyclic)."""
+    for one that is not cyclic); a path of the time since a service
+    (``SinceService``) as its services and rates. Another
+    ``CovariatePath`` (a function of time) has no plain form."""
+    from surpyval.univariate.regression import CovariatePath
+
+    if isinstance(schedule, SinceService):
+        return schedule.to_dict()
+    if isinstance(schedule, CovariatePath):
+        raise NotImplementedError(
+            "A covariate path given as a function of time has no plain "
+            "form to save: keep the diagram in Python (pickle), or give "
+            "the covariates as a StepSchedule."
+        )
     return {
         "edges": [
             float(e) if math.isfinite(e) else None for e in schedule.edges
@@ -550,6 +801,12 @@ def schedule_to_dict(schedule) -> dict:
 def schedule_from_dict(d: dict):
     """The covariate schedule ``schedule_to_dict`` wrote."""
     from surpyval.univariate.regression import StepSchedule
+
+    if "since_service" in d:
+        ramp = d["since_service"]
+        return SinceService(
+            ramp["times"], ramp["fresh"], ramp["rate"], ramp["since"]
+        )
 
     edges = list(d["edges"])
     if edges[0] is None:

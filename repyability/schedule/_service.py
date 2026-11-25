@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
 
@@ -41,11 +41,21 @@ MC_SAMPLES = 4000
 @dataclass(frozen=True)
 class Condition:
     """What a service does, as a fitted condition: the unit's ``life`` is
-    a surpyval regression model fitted with a covariate that says whether
-    the unit is serviced, ``fresh`` for ``lasts`` (in the plan's unit of
-    time) after each service and ``stale`` otherwise (and throughout
-    without the service). Plain data for
-    [`Services`][repyability.schedule.Services].
+    a surpyval regression model fitted with a covariate of the service.
+    Plain data for [`Services`][repyability.schedule.Services]. Either:
+
+    - a **step** (the default): the covariate says whether the unit is
+      serviced, ``fresh`` for ``lasts`` (in the plan's unit of time)
+      after each service and ``stale`` otherwise (and throughout without
+      the service); or
+    - a **ramp** (``since_service=True``): the covariate is the time since
+      the last service, ``fresh + rate * (t - s)`` for the last service
+      ``s`` (by default ``fresh`` 0 and ``rate`` 1: the time since
+      itself), rising until the next service sets it back; before the
+      first (and throughout without the service) it counts from the last
+      service before the forecast, ``since`` before its start. The
+      engine follows the hazard along the ramp itself (surpyval's
+      ``Hf_tvc`` on a ``CovariatePath``), not in steps.
 
     Parameters
     ----------
@@ -53,35 +63,105 @@ class Condition:
         Proportional or additive hazards, or accelerated failure time,
         fitted with the covariate (as a block's ``"covariates"`` takes).
     fresh : sequence of float
-        The covariates in force while the unit is serviced.
+        The covariates in force while the unit is serviced (a ramp's just
+        after a service; by default 0).
     stale : sequence of float
-        The covariates in force while it is overdue (and throughout
-        without the service), as many as ``fresh``.
+        A step's covariates while it is overdue (and throughout without
+        the service), as many as ``fresh``. Not for a ramp.
     lasts : float
-        How long a service keeps the unit ``fresh``, more than 0.
+        How long a service keeps a step's unit ``fresh``, more than 0.
+        Not for a ramp.
+    since_service : bool
+        A ramp: the covariates rise with the time since the last service.
+    rate : sequence of float
+        A ramp's rise per unit of time since the service, one per
+        covariate (by default 1). A rate of 0 keeps it at ``fresh``.
+    since : float
+        A ramp's time since the last service at the forecast's start, by
+        default 0.
     """
 
     life: Any
-    fresh: Tuple[float, ...] = field(kw_only=True)
-    stale: Tuple[float, ...] = field(kw_only=True)
-    lasts: float = field(kw_only=True)
+    fresh: Optional[Sequence[float]] = field(default=None, kw_only=True)
+    stale: Optional[Sequence[float]] = field(default=None, kw_only=True)
+    lasts: Optional[float] = field(default=None, kw_only=True)
+    since_service: bool = field(default=False, kw_only=True)
+    rate: Optional[Sequence[float]] = field(default=None, kw_only=True)
+    since: float = field(default=0.0, kw_only=True)
 
     def __post_init__(self) -> None:
+        if self.since_service:
+            self._check_ramp()
+            return
+        for name in ("rate",):
+            if getattr(self, name) is not None:
+                raise ValueError(
+                    f"{name} is a ramp's (since_service=True); a step "
+                    "takes fresh, stale and lasts."
+                )
+        for name in ("fresh", "stale"):
+            if getattr(self, name) is None:
+                raise ValueError(
+                    f"A step condition needs {name}: the covariates while "
+                    "the unit is serviced (fresh) and overdue (stale), "
+                    "and how long a service lasts (lasts); or "
+                    "since_service=True for a ramp of the time since it."
+                )
         for name in ("fresh", "stale"):
             row = real_array(getattr(self, name), name).ravel()
             if not np.all(np.isfinite(row)):
                 raise ValueError(f"{name} must be finite covariates.")
             object.__setattr__(self, name, tuple(float(z) for z in row))
-        if len(self.fresh) != len(self.stale):
+        fresh, stale = self.fresh, self.stale
+        assert fresh is not None and stale is not None
+        if len(fresh) != len(stale):
             raise ValueError(
-                f"fresh has {len(self.fresh)} covariates and stale "
-                f"{len(self.stale)}: give the same covariates for both."
+                f"fresh has {len(fresh)} covariates and stale "
+                f"{len(stale)}: give the same covariates for both."
             )
-        if not (is_number(self.lasts) and 0.0 < float(self.lasts) < np.inf):
+        lasts = self.lasts
+        if not (
+            lasts is not None
+            and is_number(lasts)
+            and 0.0 < float(lasts) < np.inf
+        ):
             raise ValueError(
                 "lasts must be how long a service keeps the unit fresh, a "
                 f"number more than 0; got {self.lasts!r}."
             )
+
+    def _check_ramp(self) -> None:
+        """A ramp's fields, checked and filled in."""
+        for name in ("stale", "lasts"):
+            if getattr(self, name) is not None:
+                raise ValueError(
+                    f"{name} is a step's: a ramp (since_service=True) "
+                    "takes fresh, rate and since."
+                )
+        rows = {}
+        for name in ("fresh", "rate"):
+            value = getattr(self, name)
+            if value is not None:
+                row = real_array(value, name).ravel()
+                if not np.all(np.isfinite(row)):
+                    raise ValueError(f"{name} must be finite covariates.")
+                rows[name] = row
+        width = max((row.size for row in rows.values()), default=1)
+        fresh = rows.get("fresh", np.zeros(width))
+        rate = rows.get("rate", np.ones(width))
+        if fresh.size != rate.size:
+            raise ValueError(
+                f"fresh has {fresh.size} covariates and rate {rate.size}: "
+                "give one rate for each covariate."
+            )
+        if not (is_number(self.since) and 0.0 <= float(self.since) < np.inf):
+            raise ValueError(
+                "since must be the time since the last service at the "
+                f"forecast's start, a number from 0; got {self.since!r}."
+            )
+        object.__setattr__(self, "fresh", tuple(float(z) for z in fresh))
+        object.__setattr__(self, "rate", tuple(float(z) for z in rate))
+        object.__setattr__(self, "since", float(self.since))
 
     def schedule(self, times: np.ndarray):
         """The covariate schedule the services at ``times`` give.
@@ -94,11 +174,23 @@ class Condition:
         """
         from surpyval.univariate.regression import StepSchedule
 
+        if self.since_service:
+            assert self.fresh is not None and self.rate is not None
+            if not any(self.rate):
+                # A ramp of slope 0 is the step it stays at.
+                return StepSchedule.from_changepoints([0.0], [self.fresh])
+            from repyability.rbd._covariate_schedule import SinceService
+
+            return SinceService(
+                np.asarray(times, float), self.fresh, self.rate, self.since
+            )
+        assert self.fresh is not None and self.stale is not None
+        lasts = float(self.lasts)  # type: ignore[arg-type]
         # Each service keeps the unit fresh for ``lasts``; a service before
         # the last ran out keeps it fresh from then.
         stretches: list = []
         for t in np.unique(np.asarray(times, float)):
-            end = float(t) + float(self.lasts)
+            end = float(t) + lasts
             if stretches and t <= stretches[-1][1]:
                 stretches[-1][1] = end
             else:
@@ -112,14 +204,27 @@ class Condition:
                 values.append(self.fresh)
             points.append(end)
             values.append(self.stale)
-        return StepSchedule.from_changepoints(points, values)
+        # A change to the covariates it already has is none (with fresh
+        # as stale, one step throughout).
+        kept = [0] + [
+            k for k in range(1, len(values)) if values[k] != values[k - 1]
+        ]
+        return StepSchedule.from_changepoints(
+            [points[k] for k in kept], [values[k] for k in kept]
+        )
 
     def describe(self) -> str:
         """What the condition is, in words."""
+        if self.since_service:
+            return (
+                f"a fitted condition: covariates {list(self.fresh or ())} "
+                f"rising by {list(self.rate or ())} per unit of time since "
+                "the last service"
+            )
         return (
-            f"a fitted condition: covariates {list(self.fresh)} for "
-            f"{float(self.lasts):g} after each service, "
-            f"{list(self.stale)} otherwise"
+            f"a fitted condition: covariates {list(self.fresh or ())} for "
+            f"{float(self.lasts or 0.0):g} after each service, "
+            f"{list(self.stale or ())} otherwise"
         )
 
 
@@ -248,12 +353,21 @@ def effect_to_dict(effect) -> Optional[Dict[str, Any]]:
     if effect is None:
         return None
     if isinstance(effect, Condition):
+        if effect.since_service:
+            return {
+                "kind": "condition",
+                "life": serialise_model(effect.life),
+                "since_service": True,
+                "fresh": list(effect.fresh or ()),
+                "rate": list(effect.rate or ()),
+                "since": float(effect.since),
+            }
         return {
             "kind": "condition",
             "life": serialise_model(effect.life),
-            "fresh": list(effect.fresh),
-            "stale": list(effect.stale),
-            "lasts": float(effect.lasts),
+            "fresh": list(effect.fresh or ()),
+            "stale": list(effect.stale or ()),
+            "lasts": float(effect.lasts),  # type: ignore[arg-type]
         }
     if isinstance(effect, Restoration):
         if effect.process is not None:
@@ -295,7 +409,15 @@ def effect_from_dict(data):
     takes = {
         "none": (),
         "restoration": _RESTORATION_KEYS,
-        "condition": ("life", "fresh", "stale", "lasts"),
+        "condition": (
+            "life",
+            "fresh",
+            "stale",
+            "lasts",
+            "since_service",
+            "rate",
+            "since",
+        ),
     }
     if kind not in takes:
         raise ValueError(
@@ -316,7 +438,9 @@ def effect_from_dict(data):
         return Restoration(
             **{name: data[name] for name in _RESTORATION_KEYS if name in data}
         )
-    missing = [name for name in takes[kind] if name not in data]
+    ramp = bool(data.get("since_service", False))
+    needs = ("life",) if ramp else ("life", "fresh", "stale", "lasts")
+    missing = [name for name in needs if name not in data]
     if missing:
         raise ValueError(f"a 'condition' effect needs {missing}.")
     life = data["life"]
@@ -324,6 +448,14 @@ def effect_from_dict(data):
         raise ValueError(
             "a condition's life is a model as a diagram saves a node's "
             "(serialise_model's {'kind': 'surpyval', 'model': ...})."
+        )
+    if ramp:
+        return Condition(
+            deserialise_model(life),
+            since_service=True,
+            fresh=data.get("fresh"),
+            rate=data.get("rate"),
+            since=data.get("since", 0.0),
         )
     return Condition(
         deserialise_model(life),
