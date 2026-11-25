@@ -486,7 +486,9 @@ def _levers(rbd) -> List[_Lever]:
                     value,
                 )
             )
-        out += members_own
+        # By member, as the sensitivities report them (a Shocks group's
+        # members may differ in more than one).
+        out += sorted(members_own, key=lambda lever: names.index(lever.key))
     out += _shutdown_levers(args)
     crews = args.get("repair_crews")
     if crews is not None:

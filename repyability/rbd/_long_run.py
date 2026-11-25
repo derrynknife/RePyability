@@ -147,6 +147,7 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
         return r.REFUSED, str(
             r.refusal(partial(_requirements._require_no_plans, rbd))
         )
+    rbd = _shocked(rbd, node)
     if node in rbd._imperfect:
         # Passed _require_perfect_repair: minimally repaired and
         # replaced, a renewal cycle (#402).
@@ -247,10 +248,12 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
     return r.NUMERICAL, "age replacement: its mean up time, by quadrature"
 
 
-def _shocked(rbd, node) -> None:
-    """Raise for a member of a ``Shocks`` group: its long-run values
-    have no exact form (see ``_require_own_failures``)."""
-    _requirements._require_own_failures(
+def _shocked(rbd, node):
+    """The diagram a component's long-run values are worked out on: for a
+    member of a ``Shocks`` group, a view in which it fails as it does in
+    the group (see ``_own_failures``), else ``rbd``; raise for a member
+    whose failures have no exact form there."""
+    return _requirements._own_failures(
         rbd,
         node,
         "estimate its availability by simulation, with availability() "
@@ -418,7 +421,7 @@ def _node_availability(rbd, node) -> float:
         if node in chain.nodes:
             return chain.availability(node)
         return float(rbd.components[node].mean_availability())
-    _shocked(rbd, node)
+    rbd = _shocked(rbd, node)
     if node in rbd._imperfect:
         terms = _minimal_cycle_terms(rbd, node)
         return terms.up / terms.length
@@ -460,7 +463,7 @@ def _node_unavailability(rbd, node) -> float:
     not couple the components (see ``_long_run_unavailabilities``)."""
     _requirements._require_perfect_repair(rbd, node)
     _requirements._require_times(rbd, node)
-    _shocked(rbd, node)
+    rbd = _shocked(rbd, node)
     if node in rbd._imperfect:
         terms = _minimal_cycle_terms(rbd, node)
         return min(1.0, (terms.failed + terms.planned) / terms.length)
@@ -655,7 +658,7 @@ def replacement_cycle(rbd, node) -> ReplacementCycle:
     # The checks _node_long_run makes, in its order.
     _requirements._require_perfect_repair(rbd, node)
     _requirements._require_times(rbd, node)
-    _shocked(rbd, node)
+    rbd = _shocked(rbd, node)
     _requirements._require_no_opportunities(rbd, node)
     _requirements._require_block_models(rbd, node)
     cycle = _block_cycle(rbd, node)
@@ -1310,7 +1313,7 @@ def _node_frequencies(rbd, node) -> Tuple[float, float, float]:
     _require_not_upgraded(rbd, node)
     _requirements._require_perfect_repair(rbd, node)
     _requirements._require_times(rbd, node)
-    _shocked(rbd, node)
+    rbd = _shocked(rbd, node)
     component = rbd.components[node]
     if isinstance(component, RepairableRBD):
         failures, planned = _outage_frequencies(component)

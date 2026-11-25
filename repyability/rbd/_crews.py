@@ -31,6 +31,7 @@ from repyability.rbd._common import (
 from repyability.rbd._events import (
     _Unit,
 )
+from repyability.rbd.ccf import Shocks
 from repyability.rbd.results import CrewJob, CrewStates
 from repyability.rbd.routes import Refused
 
@@ -233,9 +234,14 @@ def _crew_causes(rbd, nodes) -> Tuple[Dict[Any, float], List[tuple]]:
                     f"it takes no member of a common-cause group repaired "
                     f"instantly, as member {member!r} of {where} is",
                 )
-        for struck, rate in _ccf_chain.causes(
-            group.model, members, rates[members[0]][0]
-        ):
+        # A Shocks group's shocks add to each member's own rate; the
+        # other models split the members' one.
+        lives = (
+            tuple(rates[member][0] for member in members)
+            if isinstance(group.model, Shocks)
+            else rates[members[0]][0]
+        )
+        for struck, rate in _ccf_chain.causes(group.model, members, lives):
             if len(struck) == 1:
                 if members[struck[0]] in place:
                     own[members[struck[0]]] = rate

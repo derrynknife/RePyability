@@ -671,12 +671,44 @@ on its own, and a tested member's failure waits, unseen, for its test (with
 a test that can miss, one coin for all the failures of a strike). A member
 that is down when a shock comes is not struck.
 
-A `RepairableRBD` simulates such a group, in Python, and its exact methods
-refuse it, naming the simulation:
+For members with exponential lives, tested or repaired, a `RepairableRBD`
+works such a group out exactly, as it does the groups above: each member
+fails, while it is up, at its own rate and at the rate of every shock that
+can fail it, and the shocks that fail several members at once are the
+group's shared causes, each at its own rate. The members may have rates,
+repairs and tests of their own. The long run, importance, the values over
+time, each member's own availability and its spares are then exact (with
+repair crews too, through their chain):
 
 ```python
 from repyability import Shocks
 
+pumps = RepairableRBD(
+    [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+    {
+        "a": {
+            "reliability": surv.Exponential.from_params([1e-3]),
+            "repairability": surv.Exponential.from_params([0.1]),
+        },
+        "b": {
+            "reliability": surv.Exponential.from_params([2e-3]),
+            "repairability": surv.Exponential.from_params([0.05]),
+        },
+    },
+    ccf_groups=[CCFGroup(["a", "b"], Shocks(rate=1e-3, p=0.5))],
+)
+pumps.analysis_routes()["mean_availability"].route   # 'exact'
+pumps.mean_availability()     # 0.997771
+pumps.node_availability()     # {'a': 0.98522, 'b': 0.95238}
+```
+
+Pump `a` alone is up `0.1 / (0.1 + 0.001 + 0.0005)` of the time: its own
+failures at 0.001 an hour and the shocks that fail it, at `1e-3 * 0.5`.
+
+For members of other lives, a `RepairableRBD` simulates the group, in
+Python, and its exact methods refuse it, naming the simulation:
+
+```python
 worn = {
     "reliability": surv.Weibull.from_params([300, 2.0]),
     "repairability": surv.Exponential.from_params([0.1]),
@@ -693,13 +725,16 @@ run = struck.availability(5000.0, mc_samples=2000, seed=0)
 
 For exponential members the shocks are the rate-split groups above, strike
 for strike: own failures at `2^-10` with lethal shocks at `2^-10` are a
-`BetaFactor(0.5)` pair of rate `2^-9`, and a seeded run of one is the
-other's. A member of a `Shocks` group may be tested or repaired, and
-started from its age; scheduled maintenance, imperfect repair or a
-maintenance group on a member is refused, as is a tested member started
-from a state (a shock may have failed it since its last test). Without
-repairs, the same model is exact: see [wear-out lives and
-ages](common-cause-ages.md).
+`BetaFactor(0.5)` pair of rate `2^-9`, so its exact values are the pair's
+and a seeded run of one is the other's. A member of a `Shocks` group may
+be tested or repaired, maintained on a schedule, repaired imperfectly, or
+in a maintenance group (simulated: a strike fails it before its own
+failure or task, and an imperfect repair then takes its virtual age on by
+the time it ran), and started from a state: a tested member last found
+working may have been failed, unseen, by a shock since its test, which the
+simulation draws (and, for exponential members, the chain starts from).
+Without repairs, the same model is exact for members of any lives: see
+[wear-out lives and ages](common-cause-ages.md).
 
 Common-cause groups can also be added to a diagram in the browser in
 [Reliafy](https://reliafy.com/guides/common-cause-group).

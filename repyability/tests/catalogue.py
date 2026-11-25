@@ -1348,6 +1348,79 @@ def repairable_kinds():
                 },
                 ccf_groups=[CCFGroup(["a", "b"], Shocks(1e-3, 0.5))],
             ),
+            # Exponential members, of lives and repairs of their own: the
+            # shocks' causes at their own rates in the groups' chains.
+            "shocks, exponential": RepairableRBD(
+                EDGES,
+                {
+                    "a": {
+                        "reliability": E([0.003]),
+                        "repairability": E([0.5]),
+                    },
+                    "b": {
+                        "reliability": E([0.001]),
+                        "repairability": E([0.2]),
+                    },
+                    "c": {
+                        "reliability": E([0.0005]),
+                        "repairability": E([0.5]),
+                    },
+                },
+                ccf_groups=[CCFGroup(["a", "b"], Shocks(2e-3, 0.6, 5e-4))],
+            ),
+            "shocks, exponential, tested": RepairableRBD(
+                EDGES,
+                {
+                    **{
+                        node: {
+                            "reliability": E([rate]),
+                            "repairability": "instant",
+                            "inspection": {"interval": interval},
+                        }
+                        for node, rate, interval in (
+                            ("a", 0.002, 100.0),
+                            ("b", 0.0005, 150.0),
+                        )
+                    },
+                    "c": {
+                        "reliability": E([0.0005]),
+                        "repairability": E([0.5]),
+                    },
+                },
+                ccf_groups=[CCFGroup(["a", "b"], Shocks(1e-3, 0.5, 2e-4))],
+            ),
+            # Members maintained on a schedule, repaired imperfectly and in
+            # a maintenance group, struck by shocks too (simulated).
+            "shocks, maintained": RepairableRBD(
+                EDGES,
+                {
+                    "a": {
+                        "reliability": W([400.0, 2.0]),
+                        "repairability": E([0.5]),
+                        "preventive": {
+                            "interval": 250.0,
+                            "opportunity": 150.0,
+                        },
+                        "group": "train",
+                    },
+                    "b": {
+                        "reliability": W([300.0, 2.0]),
+                        "repairability": E([0.5]),
+                        "repair": {"model": "kijima1", "q": 0.5},
+                    },
+                    "c": {
+                        "reliability": W([500.0, 1.5]),
+                        "repairability": E([0.5]),
+                        "preventive": {
+                            "interval": 300.0,
+                            "opportunity": 200.0,
+                        },
+                        "group": "train",
+                    },
+                },
+                maintenance_groups={"train": {"setup_cost": 5.0}},
+                ccf_groups=[CCFGroup(["a", "b"], Shocks(1e-3, 0.5))],
+            ),
             "common cause, Weibull": system(
                 unit(), ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))]
             ),

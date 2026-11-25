@@ -1002,9 +1002,12 @@ class Shocks(_Model):
     [`shock_nodes`][repyability.shock_nodes] does, so every analysis
     takes the shocks, given each member's own age too, and the causes are
     named among its nodes. A [`RepairableRBD`][repyability.RepairableRBD]
-    simulates them (its exact methods refuse, naming the simulation): a
-    strike fails the members it names that are up, in the diagram's
-    order, each then repaired, or found at its test, on its own.
+    works them out exactly for members of exponential lives (its groups'
+    chains taking each member's own rate, and the shocks that fail
+    several as shared causes at their own rates), and simulates them for
+    members of any lives: a strike fails the members it names that are
+    up, in the diagram's order, each then repaired, or found at its test,
+    on its own.
 
     Parameters
     ----------
@@ -1050,9 +1053,9 @@ class Shocks(_Model):
         gets: it has none."""
         return NotImplementedError(
             f"{self!r} adds shocks at a rate of their own to its members' "
-            "own lives and splits nothing, so no chain or split of the "
-            "group follows it. Estimate a repairable diagram's values by "
-            "simulation, with availability() or cost()."
+            "own lives and splits nothing: its causes are its shocks' "
+            "(Shocks.causes), which a repairable diagram's chains take "
+            "with each member's own rate."
         )
 
     def _causes(self, members) -> Tuple[float, list]:
@@ -1341,7 +1344,7 @@ def checked_groups(
             raise ValueError(
                 f"{group!r}: shocks at a rate of their own are taken by a "
                 "NonRepairableRBD, which writes their causes into its "
-                "structure, and simulated by a RepairableRBD, not here. "
+                "structure, and by a RepairableRBD, not here. "
                 "For a shock that fails every member, add an event or a "
                 "node in series with them."
             )

@@ -924,7 +924,7 @@ def _with_shared_causes(rbd, kept: Collection[int]):
     """``rbd`` rebuilt with only the common-cause groups at the places
     ``kept`` in ``rbd.ccf_groups``: the other groups' members keep their
     own causes (an exponential life at their own cause's rate, see
-    ``_ccf_groups._own_rate``), and their shared causes never strike."""
+    ``_ccf_groups._own_cause``), and their shared causes never strike."""
     from repyability.rbd.helper_classes import PerfectReliability
     from repyability.rbd.repairable_rbd import RepairableRBD
 
@@ -937,8 +937,7 @@ def _with_shared_causes(rbd, kept: Collection[int]):
             groups.append(group)
             continue
         for member in group.members:
-            own = _ccf_groups._own_rate(rbd, member)
-            assert own is not None  # refused (see _ccf_rates)
+            own = _ccf_groups._own_cause(rbd, group, member)
             spec = _as_spec(components[member])
             assert spec is not None
             components[member] = {

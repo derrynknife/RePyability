@@ -267,6 +267,6 @@ exponential.mean()     # -> 14736.8
   to be repaired on its own. Give a
   [`RepairableRBD`][repyability.RepairableRBD] the shocks as a group's
   model, `CCFGroup(members, Shocks(...))`: it
-  [simulates them](common-cause.md#shocks-at-a-rate-of-their-own), for
-  members of any lives, and its exact methods refuse, naming the
-  simulation.
+  [works them out exactly](common-cause.md#shocks-at-a-rate-of-their-own)
+  for members of exponential lives, and simulates them for members of
+  any lives (its exact methods then refuse, naming the simulation).

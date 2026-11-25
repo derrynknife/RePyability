@@ -178,20 +178,66 @@ def _require_times(rbd, node) -> None:
             )
 
 
-def _require_own_failures(rbd, node, simulate: str) -> None:
-    """Raise if a component also fails at shocks of a ``Shocks`` group:
-    its own models do not give its failures, which the group's shocks
-    add to. ``simulate`` says what to run instead."""
+def _shock_rate(rbd, node) -> float:
+    """The rate at which the shocks of a ``Shocks`` group strike a
+    component that is up: the sum of the rates of the causes that fail it
+    (see ``Shocks.causes``); 0 for one in no such group."""
     from repyability.rbd.ccf import Shocks
 
+    return sum(
+        rate
+        for group in rbd.ccf_groups
+        if node in group.members and isinstance(group.model, Shocks)
+        for struck, rate in group.model.causes(group.members)
+        if node in struck
+    )
+
+
+def _own_failures(rbd, node, simulate: str):
+    """The diagram a component's own values are worked out on: ``rbd``,
+    but for a member of a ``Shocks`` group, whose shocks fail it too, so
+    that its own life does not give its failures. A member of an
+    exponential life fails then as a unit of the exponential life at its
+    total rate, its own and that of every shock that can fail it (a shock
+    strikes it only while it is up, and its life and the shocks are
+    memoryless): a view of ``rbd`` with that unit in its place and the
+    group left out. Raise, saying ``simulate`` (what to run instead), for
+    a member of any other life."""
+    from surpyval import Exponential
+
+    from repyability.non_repairable import NonRepairable
+    from repyability.rbd._common import _constant_rate
+    from repyability.rbd.ccf import Shocks
+    from repyability.rbd.rbd import _Cache
+
     for group in rbd.ccf_groups:
-        if node in group.members and isinstance(group.model, Shocks):
+        if node not in group.members or not isinstance(group.model, Shocks):
+            continue
+        component = rbd.components[node]
+        own = (
+            _constant_rate(component.reliability)
+            if isinstance(component, NonRepairable)
+            else None
+        )
+        if own is None:
             raise NotImplementedError(
                 f"Component {node!r} is in common-cause group "
                 f"{list(group.members)}, whose shocks fail it too, at a "
                 "rate of their own, so its own life does not give its "
-                f"failures: {simulate}"
+                "failures (it would, with the shocks, for an exponential "
+                f"life, and its is not): {simulate}"
             )
+        total = own + _shock_rate(rbd, node)
+        view = rbd._shallow_copy(*_Cache.__slots__)
+        view.components = {
+            **rbd.components,
+            node: component._with_life(Exponential.from_params([total])),
+        }
+        view.ccf_groups = [
+            other for other in rbd.ccf_groups if other is not group
+        ]
+        return view
+    return rbd
 
 
 def _require_unscheduled_stages(rbd, node) -> None:

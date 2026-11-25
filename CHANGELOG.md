@@ -38,6 +38,36 @@ release between minors that only adds (0.19.1).
   failed), and the unit put in then has the new life. Simulated, with
   any task an upgrade takes; its values over a horizon refuse, naming
   the simulation. Saved by `rbd_to_dict`.
+- A `Shocks` group in a `RepairableRBD` is worked out exactly for
+  members with exponential lives, tested or repaired, which may have
+  rates, repairs and tests of their own: the long run, importance,
+  `pfd_breakdown`, the values over time (from new, from the members'
+  states or from the long run), each member's own `node_availability`,
+  `spares_demand` and `spares_stock`, and with repair crews through
+  their chain. The groups' chains take each member's own rate, to which
+  the shocks that fail it alone add, and the shocks that fail several
+  members as shared causes at their own rates. Checked against the
+  equivalent `BetaFactor` and `AlphaFactor` groups (equal to 1e-12),
+  against a Markov chain written out by hand (1e-10 in the long run, 1e-9
+  over time), against closed forms for a member's own availability, and
+  against the simulation (within four standard errors). A member of
+  another life still refuses its own values, saying what to simulate.
+- The simulation of a `Shocks` group takes members maintained on a
+  schedule, repaired imperfectly or in a maintenance group, which it
+  refused: a strike fails a member before its own failure or task, and an
+  imperfect repair takes its virtual age on by the time it ran (checked
+  against each member's process simulated by hand, within four standard
+  errors). It also takes a tested member started from a state, which it
+  refused: a shock may have failed it, unseen, since its last test, which
+  is drawn as for a group that splits the rate. These run in Python; the
+  compiled engine hands a diagram with common-cause groups over, as
+  before.
+- The values a `Shocks` group refused are now worked out, so
+  `availability()` and `cost()` take the exact values as their controls
+  for exponential members, as they do for the other groups: such a run's
+  estimate is the exact value where it was the plain simulation's. No
+  other seeded result changes, and a strike's failures keep their
+  order.
 
 - A salvage by age in the simulated runs (`npv_distribution`,
   `compare_npv`, `best_switch_time`, a service's values) for the units

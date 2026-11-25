@@ -56,18 +56,17 @@ def _has_ccf(rbd) -> bool:
     )
 
 
-def _ccf_rates(rbd, group) -> Tuple[float, Optional[float]]:
+def _ccf_rates(
+    rbd, group
+) -> Tuple["_ccf_chain.Rates", Optional["_ccf_chain.Rates"]]:
     """A common-cause group's members' failure rate, and their repair
     rate (None for hidden failures, found by tests), for its chain
-    (see ``_ccf_chain``); raise if the chain does not cover them."""
+    (see ``_ccf_chain``); for a ``Shocks`` group, whose shocks add to
+    its members' own lives, each member's own (tuples, in the group's
+    order, see ``_ccf_chain.causes``). Raise if the chain does not cover
+    them."""
     where = f"Common-cause group {list(group.members)}"
-    if isinstance(group.model, Shocks):
-        raise NotImplementedError(
-            f"{where}: its shocks come at a rate of their own while its "
-            "members keep their own lives, which no chain of the group "
-            "follows. Estimate the values by simulation, with "
-            "availability() or cost()."
-        )
+    shocked = isinstance(group.model, Shocks)
     if rbd._crews_couple():
         raise NotImplementedError(
             f"{where}: with limited repair crews its members wait for "
@@ -76,7 +75,7 @@ def _ccf_rates(rbd, group) -> Tuple[float, Optional[float]]:
             "group in where it works the values out). Estimate the "
             "values by simulation, with availability() or cost()."
         )
-    rates = set()
+    rates = []
     for member in group.members:
         for kinds, what in (
             (rbd._preventive, "scheduled maintenance"),
@@ -87,8 +86,22 @@ def _ccf_rates(rbd, group) -> Tuple[float, Optional[float]]:
                 raise NotImplementedError(
                     f"{where}: member {member!r} has {what}, which the "
                     "group's chain does not take in."
+                    + (
+                        " Estimate the values by simulation, with "
+                        "availability() or cost()."
+                        if shocked
+                        else ""
+                    )
                 )
         life = _constant_rate(rbd.components[member].reliability)
+        if life is None and shocked:
+            raise NotImplementedError(
+                f"{where}: its chain needs exponential lives (a constant "
+                "failure rate), to which its shocks add, and the life of "
+                f"member {member!r} is not. Estimate the values by "
+                "simulation, with availability() or cost(), which take "
+                "members of any lives."
+            )
         if life is None:
             raise NotImplementedError(
                 f"{where}: its chain needs exponential lives (a constant "
@@ -96,14 +109,16 @@ def _ccf_rates(rbd, group) -> Tuple[float, Optional[float]]:
                 "not. The simulations need one too, as the rate is "
                 "split between the causes."
             )
-        rates.add(life)
+        rates.append(life)
     tested = [member in rbd._inspection for member in group.members]
     if any(tested) and not all(tested):
         raise NotImplementedError(
             f"{where}: some members' failures are hidden and others' "
             "revealed; the group's chain takes one kind."
         )
-    life = rates.pop()
+    # A group that splits its members' rate has alike members (checked
+    # where it is given), so one rate.
+    lives = tuple(rates) if shocked else set(rates).pop()
     if all(tested):
         # Tests and repairs of no time, a fixed one or an exponential
         # one (#220).
@@ -116,17 +131,19 @@ def _ccf_rates(rbd, group) -> Tuple[float, Optional[float]]:
                 "the group's chain takes one, which a cause's failures "
                 "are found by alike."
             )
-        return life, None
-    component = rbd.components[group.members[0]]
-    repair = _constant_rate(component.time_to_replace)
-    if repair is None:
-        raise NotImplementedError(
-            f"{where}: the chain of members whose failures are revealed "
-            "needs exponential repairs, and theirs are not. Estimate the "
-            "values by simulation, with availability() or cost(), which "
-            "take repairs of any length."
-        )
-    return life, repair
+        return lives, None
+    repairs = []
+    for member in group.members if shocked else group.members[:1]:
+        repair = _constant_rate(rbd.components[member].time_to_replace)
+        if repair is None:
+            raise NotImplementedError(
+                f"{where}: the chain of members whose failures are "
+                "revealed needs exponential repairs, and theirs are not. "
+                "Estimate the values by simulation, with availability() "
+                "or cost(), which take repairs of any length."
+            )
+        repairs.append(repair)
+    return lives, (tuple(repairs) if shocked else repairs[0])
 
 
 def _ccf_timings(rbd, group) -> Optional[List["_ccf_chain.Timing"]]:
@@ -283,13 +300,35 @@ def _own_rate(rbd, node) -> Optional[float]:
     return None
 
 
+def _own_cause(rbd, group, member) -> float:
+    """The rate of a member's own cause in its group's chain (see
+    ``_ccf_chain.causes``): its share of the members' rate, or, in a
+    ``Shocks`` group, its own life's and that of the shocks that fail it
+    alone (for exponential members, as ``_ccf_rates`` refuses others)."""
+    if not isinstance(group.model, Shocks):
+        own = _own_rate(rbd, member)
+        assert own is not None  # refused (see _ccf_rates)
+        return own
+    lives, _ = _ccf_rates(rbd, group)
+    place = (group.members.index(member),)
+    return next(
+        rate
+        for struck, rate in _ccf_chain.causes(
+            group.model, group.members, lives
+        )
+        if struck == place
+    )
+
+
 def _require_groups_simulated(rbd, states: Optional[dict] = None):
     """Raise unless the simulation takes the common-cause groups in
-    (#158): each member's life exponential, as its rate is split between
-    the causes; no member maintained on a schedule, repaired
-    imperfectly, in a maintenance group, or started with a life of its
-    own. A member started from a state starts from it (#106): see
-    ``_past_strikes``."""
+    (#158): in a group that splits its members' rate, each member's life
+    exponential, as its rate is split between the causes, and no member
+    maintained on a schedule, repaired imperfectly, in a maintenance
+    group, or started with a life of its own; a ``Shocks`` group's
+    members, which keep their own lives, maintenance and repairs, take
+    any of these. A member started from a state starts from it (#106):
+    see ``_past_strikes``."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     for group in rbd.ccf_groups:
@@ -303,6 +342,14 @@ def _require_groups_simulated(rbd, states: Optional[dict] = None):
                     "between the causes, which needs exponential lives, "
                     f"and the life of member {member!r} is not."
                 )
+            start = (states or {}).get(member)
+            if shocked:
+                # A member keeps its own life, and its own maintenance
+                # and repairs, which a strike fails it before (see
+                # _event_loop._strike); from a state, a tested member may
+                # have been failed, unseen, by a shock since its last
+                # test (see _event_loop._past_strikes).
+                continue
             for kinds, what in (
                 (rbd._preventive, "scheduled maintenance"),
                 (rbd._imperfect, "imperfect repair"),
@@ -313,25 +360,7 @@ def _require_groups_simulated(rbd, states: Optional[dict] = None):
                         f"{where}: member {member!r} has {what}, which "
                         "the simulation of its group does not take in, "
                         "as yet."
-                        + (
-                            " Simulate the diagram with the member left "
-                            f"out of the group, or without its {what}."
-                            if shocked
-                            else ""
-                        )
                     )
-            start = (states or {}).get(member)
-            if shocked:
-                if start is not None and member in rbd._inspection:
-                    raise NotImplementedError(
-                        f"{where}: member {member!r} is tested and "
-                        "started from a state, and a shock may have "
-                        "failed it, unseen, since its last test, which "
-                        "the simulation does not draw for a member with "
-                        "a life of its own. Start it as new (leave it "
-                        "out of the states)."
-                    )
-                continue
             if start is not None and start.own_life:
                 raise NotImplementedError(
                     f"{where}: member {member!r} has a life of its own "
