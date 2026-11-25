@@ -30,6 +30,12 @@ release between minors that only adds (0.19.1).
   are upgraded units too, and pay it). Each `DowntimeDesign` gives its
   `upgrades` (the offer taken, from 1). A node with its own `"upgrade"`
   is refused.
+- `least_spend_for_downtime(uncertainty=, n_draws=100)`: the fitted
+  models' uncertainty, as `expected_npv_uncertainty` draws it. Each
+  design is run over the same draws, its runs shared among them and
+  pooled (the predictive distribution), and
+  `DowntimeRiskResult.uncertainty` says what was drawn and held, and
+  that the bound is then approximate.
 - Load-sharing groups on a `RepairableRBD`: a component spec's
   `"load_sharing"` (`"units"`, `"k"`, `"load"`), with an
   accelerated-failure-time `"reliability"`, makes the node a group of
