@@ -47,6 +47,14 @@ _MAX_STEPS = 2000
 #: along a ``CovariatePath`` out to (its documented 1e-10), to which a
 #: life along one is found (``PathLife.life_left``).
 PATH_RTOL = 1e-10
+#: The ages a life along a path is first looked for on (``PathLife``), in
+#: one call of surpyval's ``Hf_tvc``: dense enough that the cubic between
+#: two of them is within ``PATH_RTOL`` of the life in most draws, so that
+#: one more call confirms it.
+_GRID = 512
+#: The most times the reach of that grid is stretched (fourfold) to find
+#: where the cumulative hazard reaches a draw's target.
+_MAX_REACH = 12
 
 #: The components' spec keys a covariate schedule cannot go with, and why.
 _REFUSED_KEYS = {
@@ -546,7 +554,18 @@ class PathLife(ClockLife):
         """The operating time to failure of a unit put into (or back in)
         service at ``t0`` at virtual ``age`` (0 for a new unit), from the
         uniform ``u``: where its cumulative hazard along the path from
-        ``t0`` reaches ``-log(1 - u)`` (``inf`` if it never does)."""
+        ``t0`` reaches ``-log(1 - u)`` (``inf`` if it never does).
+
+        surpyval's ``Hf_tvc`` costs about the same for one age as for
+        hundreds, so the cumulative hazard is worked out in one call on a
+        grid of ages past the start (``_GRID`` of them, and every jump of
+        the path), and the life found on the cubic through the grid's two
+        ages either side of it (their cumulative hazards and hazards).
+        One more call checks it: within ``PATH_RTOL`` of the target, it
+        is the life; otherwise Newton's steps on ``Hf_tvc`` itself go on
+        from it, inside that bracket. So each life is where ``Hf_tvc``
+        reaches the target to ``PATH_RTOL``, as with Newton's steps from
+        the start, in two calls rather than five or more."""
         exposure = -math.log1p(-u) if u < 1.0 else math.inf
         if not exposure > 0.0:
             return 0.0
@@ -554,19 +573,23 @@ class PathLife(ClockLife):
             return math.inf
         model = self.model
         path = self.on_ages(t0, age)
-        before = 0.0
-        if age > 0.0:
-            before = float(np.ravel(model.Hf_tvc(np.array([age]), path))[0])
+
+        def Hs(x: np.ndarray) -> np.ndarray:
+            ages = np.concatenate(([age], age + x)) if age > 0.0 else age + x
+            out = np.ravel(model.Hf_tvc(ages, path))
+            return out[1:] - out[0] if age > 0.0 else out
 
         def H(x: float) -> float:
-            return (
-                float(np.ravel(model.Hf_tvc(np.array([age + x]), path))[0])
-                - before
+            return float(Hs(np.array([x]))[0])
+
+        def hs(x: np.ndarray) -> np.ndarray:
+            rows = np.asarray(self.schedule(t0 + x), dtype=float).reshape(
+                x.size, -1
             )
+            return np.ravel(model.hf(age + x, rows))
 
         def h(x: float) -> float:
-            row = self._row(t0 + x)
-            return float(np.ravel(model.hf(np.array([age + x]), row))[0])
+            return float(hs(np.array([x]))[0])
 
         row = self._row(t0)
         p = -math.expm1(-exposure)
@@ -576,10 +599,68 @@ class PathLife(ClockLife):
             else math.nan
         )
         scale = float(np.ravel(model.qf(np.array([0.5]), row))[0])
+        reach = 4.0 * max(guess if guess > 0.0 else 0.0, scale)
+        for _ in range(_MAX_REACH):
+            if not math.isfinite(reach):
+                break
+            grid = self._grid(t0, age, reach)
+            values = Hs(grid)
+            if values[-1] >= exposure:
+                k = int(np.searchsorted(values, exposure, side="left"))
+                lo, hi = grid[k - 1], grid[k]
+                if values[k] == exposure:
+                    return float(hi)
+                ends = hs(np.array([lo, hi]))
+                x = _on_cubic(lo, hi, values[k - 1], values[k], ends, exposure)
+                return _solve(
+                    H, h, exposure, float(lo), float(hi), x, scale, PATH_RTOL
+                )
+            reach *= 4.0
         return _solve(H, h, exposure, 0.0, math.inf, guess, scale, PATH_RTOL)
+
+    def _grid(self, t0: float, age: float, reach: float) -> np.ndarray:
+        """The ages past the start (from 0) a life is first looked for on:
+        ``_GRID`` across ``[0, reach]`` and the path's jumps there (on
+        the unit's ages, ``t0`` on)."""
+        grid = np.linspace(0.0, reach, _GRID)
+        if self._breaks is not None:
+            jumps = self._breaks - t0
+            grid = np.union1d(grid, jumps[(jumps > 0.0) & (jumps < reach)])
+        return grid
 
     def __repr__(self) -> str:
         return f"PathLife({type(self.model).__name__}, path={self.schedule!r})"
+
+
+def _on_cubic(lo, hi, H_lo, H_hi, slopes, target) -> float:
+    """Where the cubic through ``(lo, H_lo)`` and ``(hi, H_hi)`` with
+    slopes ``slopes`` there (Hermite's) reaches ``target``, which it
+    passes between: Newton's steps on the cubic, kept in the bracket;
+    the start of a search, not its answer."""
+    width = hi - lo
+    if not width > 0.0:
+        return float(hi)
+    d0, d1 = float(slopes[0]) * width, float(slopes[1]) * width
+    a, b = float(H_lo), float(H_hi)
+    s = (target - a) / (b - a) if b > a else 0.5
+    for _ in range(8):
+        s2, s3 = s * s, s * s * s
+        value = (
+            (2 * s3 - 3 * s2 + 1) * a
+            + (s3 - 2 * s2 + s) * d0
+            + (-2 * s3 + 3 * s2) * b
+            + (s3 - s2) * d1
+        )
+        slope = (
+            (6 * s2 - 6 * s) * a
+            + (3 * s2 - 4 * s + 1) * d0
+            + (-6 * s2 + 6 * s) * b
+            + (3 * s2 - 2 * s) * d1
+        )
+        if not slope > 0.0:
+            break
+        s = min(max(s - (value - target) / slope, 0.0), 1.0)
+    return float(lo + s * width)
 
 
 def _solve(H, h, target, lo, hi, x, scale, rtol: float = 0.0) -> float:
