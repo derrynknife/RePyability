@@ -2284,3 +2284,201 @@ def spares_stock(
     for part, members in pools.items():
         out[part] = dataclasses.replace(stocked(members), members=members)
     return out
+
+
+#: The most spares ``spares_stock(method="simulate")`` tries on a shelf.
+MAX_SIMULATED_STOCK = 200
+
+
+def _no_stockout_bound(runs: int, clear: int, confidence: float) -> float:
+    """The lower Clopper-Pearson bound, at ``confidence``, on the chance
+    of a run with no stock-out, from ``clear`` such runs of ``runs``."""
+    from scipy import stats
+
+    if clear == 0:
+        return 0.0
+    return float(stats.beta.ppf(1.0 - confidence, clear, runs - clear + 1))
+
+
+def _shelf_values(rows, horizon: float, confidence: float) -> dict:
+    """A shelf's values over its runs' records (see ``_shelves.Record``)."""
+    runs = len(rows)
+    demands = sum(row.demands for row in rows)
+    waited = sum(row.stockouts for row in rows)
+    clear = sum(1 for row in rows if row.stockouts == 0)
+    return {
+        "no_stockout": clear / runs,
+        "no_stockout_bound": _no_stockout_bound(runs, clear, confidence),
+        "fill_rate": 1.0 if demands == 0 else 1.0 - waited / demands,
+        "stockout_probability": float(
+            np.mean([row.out_of_stock for row in rows]) / horizon
+        ),
+        "mean_wait": float(np.mean([row.waited for row in rows])),
+        "mean_demand": demands / runs,
+    }
+
+
+def spares_stock_simulated(
+    rbd,
+    lead_time: float,
+    *,
+    horizon,
+    fill_rate: Optional[float],
+    stockout_probability: Optional[float],
+    no_stockout: Optional[float],
+    nodes,
+    fleet: int,
+    parts,
+    repairs: bool,
+    mc_samples: Optional[int],
+    seed,
+    confidence: float,
+) -> Dict[Hashable, Any]:
+    """``RepairableRBD.spares_stock(method="simulate")``: each component's
+    (and part's) shelf simulated at stocks 0, 1, ... on one seed, until
+    each meets its targets over ``horizon`` from new."""
+    from repyability.rbd import _event_loop, _npv_runs, _shelves
+    from repyability.rbd.results import SimulatedSparesStock
+    from repyability.utils import checks
+
+    _targets(fill_rate, stockout_probability, no_stockout)
+    if horizon is None:
+        raise ValueError(
+            "spares_stock(method='simulate') needs a horizon: the window "
+            "the shelf must get through, from new."
+        )
+    end = _horizon(horizon)
+    if end == 0.0:
+        raise ValueError(
+            "horizon must be more than 0: the window the shelf must get "
+            "through."
+        )
+    if _whole("fleet", fleet) != 1:
+        raise NotImplementedError(
+            "A fleet's systems would draw on one shelf, which couples "
+            "them: spares_stock(method='simulate') simulates one system "
+            "(fleet=1). Give the fleet as one diagram, its systems in "
+            "parallel or series, with parts= pooling their shelves."
+        )
+    level = checks.number_or_nan(confidence)
+    if not 0.0 < level < 1.0:
+        raise ValueError(f"confidence must be in (0, 1), got {confidence!r}.")
+    n = checks.whole_number(
+        10_000 if mc_samples is None else mc_samples, "mc_samples"
+    )
+    montecarlo.check_count(n, False, "mc_samples")
+    seed = _npv_runs._seed(seed)
+    chosen, pools, counted = _spares_counted(rbd, nodes, parts)
+    for node in counted:
+        _shelves.require(rbd, node, "spares_stock(method='simulate')")
+    members = {node: (node,) for node in chosen}
+    members.update(pools)
+
+    def meets(values: dict) -> bool:
+        return (
+            (fill_rate is None or values["fill_rate"] >= fill_rate)
+            and (
+                stockout_probability is None
+                or values["stockout_probability"] <= stockout_probability
+            )
+            and (
+                no_stockout is None
+                or values["no_stockout_bound"] >= no_stockout
+            )
+        )
+
+    tried: Dict[Hashable, Dict[int, dict]] = {name: {} for name in members}
+    found: Dict[Hashable, int] = {}
+    stock = 0
+    while len(found) < len(members):
+        if stock > MAX_SIMULATED_STOCK:
+            short = [name for name in members if name not in found]
+            raise ValueError(
+                f"No stock up to {MAX_SIMULATED_STOCK} meets the targets "
+                f"for {short!r} in {n} runs: a no_stockout target needs "
+                "enough runs for its bound to reach it (more mc_samples), "
+                "or ask for less."
+            )
+        left = {name: m for name, m in members.items() if name not in found}
+        shelves = _shelves.Shelves(
+            {
+                name: _shelves.shelf(stock, lead_time, repairs, "the shelf")
+                for name in left
+            },
+            {node: name for name, m in left.items() for node in m},
+        )
+        tally = _event_loop._run(
+            _shelves.shelved(rbd, shelves),
+            end,
+            set(),
+            set(),
+            "p",
+            n,
+            False,
+            seed,
+        )
+        runs = tally.shelves
+        assert runs is not None  # a run with shelves records them
+        for name in left:
+            values = _shelf_values([run[name] for run in runs], end, level)
+            tried[name][stock] = values
+            if meets(values):
+                found[name] = stock
+        stock += 1
+    out: Dict[Hashable, Any] = {}
+    for name, held in found.items():
+        values = tried[name][held]
+        out[name] = SimulatedSparesStock(
+            stock=held,
+            **values,
+            lead_time=float(lead_time),
+            horizon=end,
+            confidence=float(level),
+            by_stock={
+                s: {"stock": s, **v} for s, v in sorted(tried[name].items())
+            },
+            n_simulations=n,
+            seed=seed,
+            members=pools.get(name),
+        )
+    return out
+
+
+def _targets(fill_rate, stockout_probability, no_stockout) -> None:
+    """Check the simulated stock's targets: one at least, each a share."""
+    given = {
+        "fill_rate": fill_rate,
+        "stockout_probability": stockout_probability,
+        "no_stockout": no_stockout,
+    }
+    if all(target is None for target in given.values()):
+        raise ValueError(
+            "Give a no_stockout, a fill_rate or a stockout_probability (or "
+            "several)."
+        )
+    for name, target in given.items():
+        if target is not None and not 0.0 < target < 1.0:
+            raise ValueError(f"{name} must be in (0, 1), got {target!r}.")
+
+
+def require_exact_stock(horizon, no_stockout, repairs, mc_samples, seed):
+    """Refuse what only ``spares_stock(method="simulate")`` takes."""
+    given = [
+        name
+        for name, value, default in (
+            ("horizon", horizon, None),
+            ("no_stockout", no_stockout, None),
+            ("repairs", repairs, False),
+            ("mc_samples", mc_samples, None),
+            ("seed", seed, None),
+        )
+        if value is not default
+    ]
+    if given:
+        raise ValueError(
+            f"{', '.join(given)} {'is' if len(given) == 1 else 'are'} for "
+            "method='simulate' (a horizon from new, the shelf simulated); "
+            "the exact stock is the long run's: leave "
+            f"{'it' if len(given) == 1 else 'them'} out, or pass "
+            "method='simulate'."
+        )

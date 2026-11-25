@@ -34,6 +34,24 @@ release between minors that only adds (0.19.1).
   counted, and `shutdowns` is the shuts' starts (exact). A shut's hold is
   no longer counted as a preventive task there. No other result changes,
   and no seeded result.
+- A shelf of spares in the simulation, and two ways to ask how many to
+  hold. `spares_stock(lead_time, method="simulate", horizon=,
+  no_stockout=)` runs each component's (or part's) shelf: a stock
+  reordered one for one, each order arriving the lead time later, and a
+  repair that finds the shelf empty waiting for a spare (the unit down
+  meanwhile). It returns `SimulatedSparesStock`, the fewest spares whose
+  chance of no stock-out over the horizon has its lower confidence bound
+  (Clopper-Pearson, `confidence=0.95`) at the target, with the fill rate
+  and time out of stock (also targets) and every stock tried.
+  `least_spend_for_downtime(spares={node: {"price":, "lead_time":,
+  "max":, "stock":}})` adds spares to a node's shelf as a lever, at a
+  holding price each, every design run with the shelf; `DowntimeDesign`
+  has `spares`. A replacement takes a spare; a failure repaired
+  imperfectly takes one only with `repairs=True`. The shelf is the Python
+  loop's: the compiled engine refuses it; repair crews, preventive
+  tasks, tests of hidden failures, maintenance groups and a
+  sub-system's components are refused with the reason. No existing
+  number changes: a run without a shelf is as before.
 - The simulated runs (`npv_distribution`, `compare_npv`,
   `best_switch_time`, a service's `task_value`) take a unit's own salvage
   by age: each run credits `worth(age)` of the unit in service at its end

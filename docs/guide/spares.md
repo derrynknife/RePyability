@@ -131,6 +131,61 @@ default none then) still counts components on their own. Two members of
 one common-cause group are refused, as their shared causes replace them
 together.
 
+## How many to hold to be sure
+
+The stock above is the long run's, and it takes the demand as going on
+while a repair waits for a spare. To be *sure* of getting through a year
+(or any horizon) without a repair waiting, ask `spares_stock` to simulate
+the shelf, `method="simulate"`: each run starts with `S` on the shelf, a
+spare used is reordered at once and arrives the lead time later, and a
+repair that finds the shelf empty waits for the next to arrive, the unit
+down meanwhile (so its next failure comes later). Stocks 0, 1, 2, ... are
+run on one seed until each meets its target:
+
+```python
+sure = rbd.spares_stock(2016.0, method="simulate", horizon=8760.0,
+                        no_stockout=0.9, mc_samples=10000, seed=1)
+sure["pump"].stock                # -> 3
+sure["pump"].no_stockout          # -> 0.9927
+sure["pump"].no_stockout_bound    # -> 0.9911
+sure["pump"].by_stock[2]["no_stockout"]   # -> 0.8169
+```
+
+- **`no_stockout`** is the chance of no stock-out at all over the
+  horizon, from new with a full shelf. The target is met by its lower
+  confidence bound (Clopper-Pearson, at `confidence=0.95` by default), so
+  three pumps are "90% sure, with 95% confidence"; two get through only
+  82% of years. `fill_rate` and `stockout_probability` can be asked for
+  too, over the horizon (their estimates), and every stock tried is in
+  `by_stock`.
+- **What takes a spare:** each replacement, as `spares_demand` counts
+  them (a failure repaired as new, a group's unit failures). A failure
+  repaired imperfectly (the spec's `"repair"`) is a repair, and takes one
+  only with `repairs=True`.
+- **When the lead time is longer than the horizon**, nothing ordered
+  arrives in it, and the chance is exact without simulating:
+  `spares_demand(horizon)[node].covered(S)`.
+- It simulates one system (`fleet=1`), with `parts=` pooling shelves. The
+  shelf is simulated in Python only (the compiled engine refuses it), and
+  not yet with repair crews, preventive tasks, tests of hidden failures,
+  maintenance groups or for a sub-system's components, which are refused
+  with the reason.
+
+To keep a bad year's *downtime* under a limit rather than avoid every
+stock-out, the spares are a lever of `least_spend_for_downtime` (see
+[Costs](costs.md#downtime-you-can-be-sure-of)): each spare more on a
+node's shelf at its holding price, every design run with the shelf.
+
+```python
+found = rbd.least_spend_for_downtime(
+    8760.0, 200.0,
+    spares={"pump": {"price": 1500.0, "lead_time": 2016.0},
+            "seal": {"price": 50.0, "lead_time": 2016.0}},
+    mc_samples=2000, seed=1)
+found.design.spares["pump"], found.design.spares["seal"]   # (3, 4)
+found.design.spend    # -> 4700.0
+```
+
 ## Block replacement and proof tests
 
 Two kinds of component replace on a calendar, and are counted their own way

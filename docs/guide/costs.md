@@ -689,6 +689,13 @@ test interval through the candidates given, each at its tests' cost.
 `upgrades={node: {"reliability": better_life, "cost": price}}` (or a
 list of offers, tried in order) buys a better unit from the start, at
 its price for each unit, the node's copies included.
+`spares={node: {"price": p, "lead_time": L, "max": m}}` adds spares to
+a shelf for the node, from its `"stock"` held (by default none), each at
+`p` to hold over the horizon: every design is then run with the shelf, a
+repair that finds it empty waiting for a spare to arrive, and the node's
+copies drawing on it too. With that lever alone, "how many spares to
+hold to be 95% sure a bad year loses under 100 hours" is the design's
+`spares` (see [Spares](spares.md#how-many-to-hold-to-be-sure)).
 A design's spend is the levers' prices and the change in its expected
 cost of preventive tasks, inspections and crews over the horizon. The
 models are taken as known; `uncertainty=True` runs every design over

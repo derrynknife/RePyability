@@ -126,9 +126,12 @@ def _unsupported_level(
     from repyability.non_repairable import NonRepairable
     from repyability.rbd.repairable_rbd import RepairableRBD
 
-    from . import _crews
+    from . import _crews, _shelves
     from ._covariate_schedule import scheduled
 
+    if _shelves.of(rbd) is not None:
+        # A repair that waits for a spare is the Python loop's alone.
+        return "a shelf of spares"
     if rbd._too_meshed() is not None:
         # Its structure is the graph itself (modular.GraphStructure).
         return "a structure too meshed to work out"

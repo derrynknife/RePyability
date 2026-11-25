@@ -3461,6 +3461,52 @@ each drawn rate's exact distribution, whose 95th percentile is 914.9 h;
 4,000 runs give 917.2 h, against 846 h with the fitted rate taken as
 known.
 
+**Spares on the shelf (added after).** "Spares take a month to come:
+how many do we hold to be 95% sure a bad year loses under 300 h, and how
+many to be 90% sure no repair waits for one?" Who asks: the same owner,
+and the stores planner. What they know: each part's lead time, what a
+spare costs to hold, the spares held now. The analytic `spares_stock`
+gives the long run, the demand taken as going on while a repair waits;
+neither the stock's effect on downtime nor the chance of getting through
+a horizon with no stock-out was answered. Solved with a shelf in the
+Python event loop (`rbd/_shelves.py`): a stock `S`, each spare used
+reordered at once and arriving `L` later, first in first out, so the
+`k`-th demand's spare is ready at `max(t_k, t_{k-S} + L)` and its repair
+starts then. A replacement takes a spare (as `spares_demand` counts
+them: a failure repaired as new, a group's unit failures); a failure
+repaired imperfectly takes one only if the shelf says so (`repairs`).
+The draws are the run's without a shelf, so an unused stock changes
+nothing. The compiled engine refuses a shelf (`_compiled.unsupported`),
+as it must not differ. `least_spend_for_downtime(spares={node:
+{"price": p, "lead_time": L, "max": m, "stock": s}})` adds spares a step
+at `p` each, every design run with the shelf (the node's copies draw on
+it); `spares_stock(method="simulate", horizon=, no_stockout=)` runs
+stocks 0, 1, ... on one seed until the chance of no stock-out over the
+horizon has its lower Clopper-Pearson bound over the target.
+Hand-worked answers: (1) no stock and a lead time of 100 h on a unit
+failing every 1,000 h with 10 h repairs is the unit with repairs of
+`100 + Exp(0.1)`, exact over 10,000 h at 0.901396; 4,000 runs give
+0.901192 (-0.4 standard errors). (2) With nothing ordered arriving in
+the window, a bad window's downtime is under `Y` while the `(S + 1)`-th
+failure is after `T - Y`: `P(Poisson(λ(T - Y)) <= S)`, 0.815 at 4 and
+0.916 at 5 for a mean of 3, and at 90% the lever finds 5; the chance of
+no stock-out is `P(N(T) <= S)`, which the simulated stock matches at
+every stock. (3) One spare, 300 h lead time, a unit failing every
+1,000 h repaired in no time: the long-run fill rate is `exp(-0.3) =
+0.7408`, but a repair that waits keeps the unit down, so fewer demands
+find the shelf empty: the chain of the waits, `w' = max(0, L - w - U)`,
+gives 0.76923, and the simulation 0.76926. At three spares, where
+stock-outs are rare, the long-run fill rate and stock-out probability
+(0.99820 and 0.00229) and the simulation (0.99836, 0.00228) agree within
+two standard errors. Checks: `test_spares_shelf.py`, these, a stock no
+run uses up equal to no shelf bit for bit on each kind of node (plain,
+imperfect repair, standby and identical groups, common cause, beside a
+sub-system), the demands against `spares_demand`'s count, the bound's
+coverage (under the true chance in 184 of 200 seeded repeats at 90%),
+the refusals (repair crews, preventive tasks, tests, a sub-system's
+components, a fleet). Still to add: a shelf with crews, tasks and tests,
+and for a sub-system's components.
+
 ### UC-61: "Our plan has two outages a year that cost 300 each, and at each we renew the pump if it is past 500 hours. The expected NPV is fine; how bad could a run be?"
 
 - **Status:** built: `npv_distribution`, `compare_npv` and

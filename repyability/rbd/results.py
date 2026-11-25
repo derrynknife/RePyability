@@ -4384,6 +4384,103 @@ class SparesStock(_ResultMapping):
 
 
 @dataclass
+class SimulatedSparesStock(_ResultMapping):
+    """The stock of a component's spares (or a part's) that meets a target
+    over a horizon from new, simulated with the shelf in the runs: each
+    spare used is reordered at once and arrives a lead time later, and a
+    repair that finds the shelf empty waits for the next to arrive (so
+    the unit is down longer, and its next failures come later).
+
+    Returned (one per component or part) by
+    ``RepairableRBD.spares_stock(method="simulate")``. Like the other
+    result types it is also a read-only mapping of its fields.
+
+    Attributes
+    ----------
+    stock : int
+        The fewest spares that meet the targets.
+    no_stockout : float
+        With that stock, the share of runs in which no repair waited for a
+        spare over the horizon.
+    no_stockout_bound : float
+        Its lower confidence bound at ``confidence`` (Clopper-Pearson):
+        the chance of getting through the horizon without a stock-out is
+        at least this, with that confidence. A ``no_stockout`` target is
+        met by this bound.
+    fill_rate : float
+        With that stock, the share of demands met from the shelf at once,
+        over every run.
+    stockout_probability : float
+        With that stock, the mean share of the horizon with no spare on the
+        shelf.
+    mean_wait : float
+        With that stock, the mean time repairs waited for spares in a run,
+        in all.
+    mean_demand : float
+        With that stock, the mean spares used in a run.
+    lead_time : float
+        The time a spare ordered takes to arrive.
+    horizon : float
+        The window simulated, from new with a full shelf.
+    confidence : float
+        The level of ``no_stockout_bound``.
+    by_stock : dict
+        Every stock tried, from 0, to the values above at it (``"stock"``
+        and the same names).
+    n_simulations : int
+        The runs at each stock (every stock on the same seed).
+    seed : int
+        The seed, to repeat the runs.
+    members : tuple or None
+        The components whose spares a part pools, or None for one
+        component's.
+    method : str
+        ``"simulate"``.
+
+    Examples
+    --------
+    A pump failing about once a year, repaired in a day, with spares that
+    take two months to come: to be 90% sure (with 90% confidence) that no
+    repair waits for a spare in ten years, hold three (two get through
+    about 90% of runs, short of the bound):
+
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "pump"), ("pump", "t")],
+    ...     {
+    ...         "pump": {
+    ...             "reliability": surv.Exponential.from_params([1 / 8760]),
+    ...             "repairability": surv.Exponential.from_params([1 / 24]),
+    ...         }
+    ...     },
+    ... )
+    >>> found = rbd.spares_stock(
+    ...     1460.0, method="simulate", horizon=87600.0, no_stockout=0.9,
+    ...     confidence=0.9, mc_samples=2000, seed=1,
+    ... )["pump"]
+    >>> found.stock
+    3
+    """
+
+    stock: int
+    no_stockout: float
+    no_stockout_bound: float
+    fill_rate: float
+    stockout_probability: float
+    mean_wait: float
+    mean_demand: float
+    lead_time: float
+    horizon: float
+    confidence: float
+    by_stock: Dict[int, Dict[str, float]]
+    n_simulations: int
+    seed: int
+    members: Optional[tuple] = None
+    method: str = "simulate"
+
+
+@dataclass
 class TimelineSimulation(_ResultMapping):
     """Simulated up/down histories of a repairable system and its
     components, one per simulation, as timelines.
@@ -5419,7 +5516,8 @@ class DowntimeDesign(_ResultMapping):
         The call-out contract in force (None: none).
     spend : float
         What the levers cost beyond the diagram as given: their prices
-        (the copies', the upgrades' for each unit, the crews' more), and
+        (the copies', the upgrades' for each unit, the crews' more, the
+        spares' more), and
         the change in the expected cost of preventive tasks, inspections
         and crews (their salaries, call-out fees and time engaged) over
         the horizon.
@@ -5436,6 +5534,9 @@ class DowntimeDesign(_ResultMapping):
         ``bad_cost`` at the downtime's rate (None without one).
     unplanned : dict
         The unplanned downtime, in the same terms.
+    spares : dict
+        Each spares node's stock on its shelf, by node (empty without a
+        ``spares`` lever).
     """
 
     copies: Dict[Hashable, int]
@@ -5450,6 +5551,7 @@ class DowntimeDesign(_ResultMapping):
     meets: bool
     planned: Dict[str, Optional[float]]
     unplanned: Dict[str, Optional[float]]
+    spares: Dict[Hashable, int] = field(default_factory=dict)
 
 
 @dataclass
