@@ -4591,6 +4591,7 @@ class RepairableRBD(RBD):
         method: str = "p",
         state=None,
         retire_at=None,
+        retired=None,
         salvage=None,
         rate_sensitivity: bool = False,
         escalation: Optional[Dict[Hashable, float]] = None,
@@ -4663,11 +4664,23 @@ class RepairableRBD(RBD):
             Start from the components' current states rather than new, as
             for ``expected_cost``. By default None: every component new at
             0.
-        retire_at : float, optional
+        retire_at : float or dict, optional
             Retire the system at this time, more than 0 and no later than
             the horizon: nothing is earned or spent after it, and the
             equivalent annual cost is over the time to it. By default
-            None: it runs to the horizon.
+            None: it runs to the horizon. A dict ``{node: t}`` retires
+            those units alone (a unit's own ``retire_at`` in a diagram of
+            several does too): from ``t`` the unit is held as
+            ``retired`` says, its own costs stop, the system's go on
+            (its downtime and value as the diagram without the unit),
+            and its salvage is credited at ``t``. The units must not be
+            tied to the others (no shared crews, maintenance group,
+            common cause or shutdown).
+        retired : str or dict, optional
+            What a unit retired alone is taken as from its retirement:
+            ``"failed"`` (the default: removed, its paths lost) or
+            ``"junction"`` (always working, its paths kept); a dict of
+            one for each node.
         salvage : float or dict, optional
             What is left is worth at the end (the retirement, or the
             horizon), credited then and discounted from there: a number
@@ -4776,6 +4789,7 @@ class RepairableRBD(RBD):
             method=method,
             state=state,
             retire_at=retire_at,
+            retired=retired,
             salvage=salvage,
             rate_sensitivity=rate_sensitivity,
             escalation=escalation,

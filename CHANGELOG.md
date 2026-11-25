@@ -12,6 +12,14 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `expected_npv(retire_at={node: t}, retired="failed"|"junction")`
+  retires one unit inside a diagram of several (a unit's own
+  `retire_at` in such a diagram does too, where it was refused): from
+  `t` the unit is held failed (the default) or as a junction, its own
+  costs stop, the system's go on, and its salvage is credited at `t`.
+  `ExpectedNPV.retired_units` says which. A unit tied to the others
+  (shared crews, a maintenance group, a common cause, a shutdown) is
+  refused, as are the simulated runs and `plan_vs_actual`.
 - A life counted in a unit of use (km, miles, cycles, starts) on a
   diagram: `CalendarContext(usage, duty={node: plan}, use={node: "km"})`
   gives the block a duty that is that use's rate per unit of the

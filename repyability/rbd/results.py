@@ -2214,6 +2214,10 @@ class ExpectedNPV(_ResultMapping):
     retire_at : float or None
         When the system is retired, before the horizon: nothing is earned
         or spent after it. None if it runs to the horizon.
+    retired_units : dict or None
+        Each unit retired alone (``retire_at={node: t}``): its time
+        (``"at"``) and what it is taken as from then (``"as"``,
+        ``"failed"`` or ``"junction"``); None with none.
     rate_sensitivity : float or None
         How the NPV moves with the continuous discount rate, ``d npv /
         d r``, per unit of the rate per unit time (times a change of
@@ -2305,6 +2309,7 @@ class ExpectedNPV(_ResultMapping):
     inflation: Optional[float] = None
     escalation: Dict[Hashable, float] = field(default_factory=dict)
     value_schedule: Any = None
+    retired_units: Optional[Dict[Hashable, Dict[str, Any]]] = None
 
     @property
     def annuity_factor(self) -> float:

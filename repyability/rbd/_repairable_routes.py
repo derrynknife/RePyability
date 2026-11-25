@@ -6,7 +6,6 @@ checks it against the methods on every catalogue diagram.
 """
 
 import dataclasses
-import math
 from functools import partial
 from typing import (
     Dict,
@@ -385,9 +384,7 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         )
     else:
         out["expected_npv"] = uptime
-    retiring = r.refusal(
-        lambda: _npv.own_terms(rbd, math.inf, None, None, None)
-    )
+    retiring = r.refusal(lambda: _npv.check_own_retirements(rbd))
     if retiring is not None:
         out["expected_npv"] = r.refused(retiring, tuple(rbd._valuation))
     unvalued = _nested_costs.refusal_unvalued(rbd)
