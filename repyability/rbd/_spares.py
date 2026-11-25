@@ -2489,13 +2489,7 @@ def spares_stock_simulated(
             "horizon must be more than 0: the window the shelf must get "
             "through."
         )
-    if _whole("fleet", fleet) != 1:
-        raise NotImplementedError(
-            "A fleet's systems would draw on one shelf, which couples "
-            "them: spares_stock(method='simulate') simulates one system "
-            "(fleet=1). Give the fleet as one diagram, its systems in "
-            "parallel or series, with parts= pooling their shelves."
-        )
+    fleet = _whole("fleet", fleet)
     level = checks.number_or_nan(confidence)
     if not 0.0 < level < 1.0:
         raise ValueError(f"confidence must be in (0, 1), got {confidence!r}.")
@@ -2505,20 +2499,27 @@ def spares_stock_simulated(
     montecarlo.check_count(n, False, "mc_samples")
     seed = _npv_runs._seed(seed)
     chosen, pools, counted = _spares_counted(rbd, nodes, parts)
-    nested = _nested(rbd) if nodes is None and parts is None else []
-    if nested:
-        raise NotImplementedError(
-            f"spares_stock(method='simulate'): node {nested[0]!r} is a "
-            "nested RBD, and a shelf for a sub-system's components is not "
-            "simulated yet: use the sub-system's own "
-            "spares_stock(method='simulate'), or give the top-level "
-            "components, nodes="
-            f"{[n for n in rbd.components if n not in nested]!r}."
-        )
+    if nodes is None and parts is None:
+        # Each sub-system's components too, on shelves of their own in
+        # its own loop, as (node, component).
+        for node in _nested(rbd):
+            inner = rbd.components[node]
+            chosen += [(node, c) for c in _spares_nodes(inner, None)]
+            counted += [(node, c) for c in _spares_nodes(inner, None)]
     for node in counted:
         _shelves.require(rbd, node, "spares_stock(method='simulate')")
-    members = {node: (node,) for node in chosen}
+    members: Dict[Hashable, Tuple[Hashable, ...]] = {
+        node: (node,) for node in chosen
+    }
     members.update(pools)
+    run_rbd = rbd
+    if fleet > 1:
+        # One shelf for the fleet's systems: one diagram of their copies.
+        run_rbd = _shelves.fleet_of(rbd, fleet)
+        members = {
+            name: tuple((j, node) for j in range(fleet) for node in m)
+            for name, m in members.items()
+        }
 
     def meets(values: dict) -> bool:
         return (
@@ -2554,7 +2555,7 @@ def spares_stock_simulated(
             {node: name for name, m in left.items() for node in m},
         )
         tally = _event_loop._run(
-            _shelves.shelved(rbd, shelves),
+            _shelves.shelved(run_rbd, shelves),
             end,
             set(),
             set(),

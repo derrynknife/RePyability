@@ -1994,10 +1994,13 @@ class RepairableRBD(RBD):
         nodes : Collection[Hashable], optional
             The components, by default every component (none when
             ``parts`` are given), a nested RBD's each as ``(node,
-            component)``, as for ``spares_demand`` (simulated, a nested
-            RBD's are refused).
+            component)``, as for ``spares_demand`` (simulated, each on a
+            shelf of its own in the sub-system's loop).
         fleet : int, optional
-            How many systems share the stock, by default 1.
+            How many systems share the stock, by default 1. Simulated,
+            the fleet's systems draw on one shelf, run as one diagram of
+            their components (refused where crews, groups, shutdowns or
+            sub-systems would couple them).
         parts : dict, optional
             ``{part: [nodes]}``: the components that draw on one shelf, as
             for ``spares_demand``.

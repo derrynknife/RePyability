@@ -250,12 +250,18 @@ def test_a_coupled_sub_system_keeps_its_refusal():
     )
 
 
-def test_the_simulated_shelf_refuses_a_sub_system():
+def test_the_simulated_shelf_takes_a_sub_system_by_its_components():
     nested, _ = pumps_and_pair()
-    with pytest.raises(NotImplementedError, match="sub-system"):
-        nested.spares_stock(
-            100.0, method="simulate", horizon=1000.0, no_stockout=0.9
-        )
+    found = nested.spares_stock(
+        100.0,
+        method="simulate",
+        horizon=1000.0,
+        no_stockout=0.9,
+        mc_samples=500,
+        seed=1,
+    )
+    inner = [k for k in found if isinstance(k, tuple)]
+    assert inner and all(k[0] == "q" for k in inner)
     with pytest.raises(NotImplementedError, match="nested RBD"):
         nested.least_spend_for_downtime(
             1000.0, 10.0, spares={"q": {"price": 1.0, "lead_time": 10.0}}
