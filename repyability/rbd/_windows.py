@@ -501,9 +501,80 @@ def expected_cost(
     discount_rate: float,
     cells: Optional[dict] = None,
 ) -> ExpectedCost:
-    """See ``RepairableRBD.expected_cost``. With ``cells`` (a dict), it is
+    """See ``RepairableRBD.expected_cost``: this diagram's own costs
+    (``_own_cost``), and its nested diagrams', each labelled with where
+    it falls (see ``_nested_costs``). With ``cells`` (a dict), it is
     filled with each component's cost by category, ``{(node, category):
     values}``, as ``expected_npv``'s cash-flow table needs."""
+    from repyability.rbd import _nested_costs
+
+    own = _own_cost(
+        rbd,
+        t,
+        working_nodes,
+        broken_nodes,
+        method,
+        state,
+        discount_rate=discount_rate,
+        cells=cells,
+    )
+    nested = _nested_costs.priced(rbd)
+    if not nested:
+        return own
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
+    _nested_costs.require(rbd, working | broken)
+    windows = nonnegative_times(t)
+    ends = windows.ravel()
+    states = _curves._states(rbd, state, working | broken)
+    rate = _discount_rate(discount_rate)
+    mean = np.ravel(own.mean).astype(float)
+    categories = {
+        category: np.ravel(own.by_category[category]).astype(float)
+        for category in _CATEGORIES
+    }
+    components = {
+        node: np.ravel(values).astype(float)
+        for node, values in own.by_component.items()
+    }
+    for category, label, values in _nested_costs.window_parts(
+        rbd, ends, rate, working, broken, states
+    ):
+        values = np.ravel(values)
+        mean = mean + values
+        categories[category] = categories[category] + values
+        components[label] = components.get(label, 0.0) + values
+        if cells is not None:
+            cell = (label, category)
+            cells[cell] = cells.get(cell, 0.0) + values
+    return ExpectedCost(
+        window=own.window,
+        mean=_shaped(mean, t, windows),
+        by_category={
+            category: _shaped(values, t, windows)
+            for category, values in categories.items()
+        },
+        by_component={
+            label: _shaped(values, t, windows)
+            for label, values in components.items()
+        },
+        acquisition_cost=rbd.acquisition_cost,
+        discount_rate=own.discount_rate,
+    )
+
+
+def _own_cost(
+    rbd,
+    t,
+    working_nodes: Optional[Collection[Hashable]],
+    broken_nodes: Optional[Collection[Hashable]],
+    method: str,
+    state,
+    *,
+    discount_rate: float,
+    cells: Optional[dict] = None,
+) -> ExpectedCost:
+    """This diagram's own expected costs (see ``expected_cost``): its
+    components' and its own, not its nested diagrams'."""
     _requirements._require_costs(rbd)
     rate = _discount_rate(discount_rate)
     if rate > 0.0 and rbd.has_costs:
@@ -654,7 +725,7 @@ def _discounted_cost(
         component's, as rows. The longest window is worked out too, so
         that every call's curves reach it, and are shared."""
         own: Optional[dict] = {} if cells is not None else None
-        got = expected_cost(
+        got = _own_cost(
             rbd,
             np.append(times, horizon),
             working_nodes,

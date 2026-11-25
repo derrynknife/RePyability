@@ -1219,6 +1219,7 @@ def _stream_specs(
     prefix: tuple = (),
     specs: Optional[dict] = None,
     states: Optional[dict] = None,
+    priced: Optional[bool] = None,
 ) -> Tuple[dict, bool]:
     """The streams this RBD's simulations draw from (see ``_streams``),
     by name, nested RBDs' included; and whether every draw comes from
@@ -1226,7 +1227,9 @@ def _stream_specs(
     a surpyval parametric one, or a subclass of the component classes)
     has none, nor has a maintenance or test time that cannot: they draw
     from numpy's global RNG. ``prefix`` is this RBD's place in the RBD
-    simulated: only that RBD's own costs are drawn. A component started
+    simulated: only that RBD's own costs are drawn (or, ``priced``, this
+    RBD's, at its place: a nested RBD simulated alone, see
+    ``_nested_costs``). A component started
     from a state in ``states`` (see ``_simulation_states``) that draws
     what is left of its life or repair has a stream for that too."""
     from repyability.rbd.repairable_rbd import RepairableRBD
@@ -1333,7 +1336,7 @@ def _stream_specs(
         ):
             # When it last struck before 0 (#106).
             add(prefix + cause.struck, _streams.CAUSE_START, _uniforms, 1.0)
-    if not prefix:
+    if (not prefix) if priced is None else priced:
         for node, node_costs in rbd.costs.items():
             expected = _expected_draws(rbd, node, t_simulation)
             for key, kind in _streams.COST_KINDS.items():
@@ -1343,7 +1346,7 @@ def _stream_specs(
                 count = expected[
                     "action" if key in _ACTION_COST_KEYS else "repair"
                 ]
-                add((node,), kind, _streams.cost_sampler(cost), count)
+                add(prefix + (node,), kind, _streams.cost_sampler(cost), count)
     return specs, complete
 
 
@@ -1425,10 +1428,15 @@ def _stream_plan(
     entropy,
     antithetic: bool,
     states: Optional[dict] = None,
+    prefix: tuple = (),
 ) -> Tuple[_streams.Plan, bool]:
     """A run's streams, and whether every draw comes from one; the
-    components start from ``states``."""
-    specs, complete = _stream_specs(rbd, t_simulation, states=states)
+    components start from ``states``. ``prefix`` is the RBD's place in a
+    system it is nested in, for a nested RBD simulated alone (see
+    ``_nested_costs``): its streams are named as in the system."""
+    specs, complete = _stream_specs(
+        rbd, t_simulation, prefix, states=states, priced=True
+    )
     return _streams.Plan(entropy, antithetic, specs), complete
 
 
@@ -1500,7 +1508,9 @@ def _own_draws(rbd, node, own: float) -> "_StreamedComponent":
     )
 
 
-def _keyed_charges(rbd, run: _streams.Run, sources: dict) -> Tuple[
+def _keyed_charges(
+    rbd, run: _streams.Run, sources: dict, prefix: tuple = ()
+) -> Tuple[
     dict[Any, list[tuple[int, Any]]],
     dict[Any, Any],
     dict[Any, Any],
@@ -1519,7 +1529,7 @@ def _keyed_charges(rbd, run: _streams.Run, sources: dict) -> Tuple[
         cost = rbd.costs[node][key]
         if isinstance(cost, float):
             return _Fixed(cost)
-        return run.stream((node,), _streams.COST_KINDS[key])
+        return run.stream(prefix + (node,), _streams.COST_KINDS[key])
 
     failures = {
         node: [
@@ -1616,23 +1626,25 @@ def _context(
     antithetic: bool,
     states: Optional[dict] = None,
     history: bool = False,
+    prefix: tuple = (),
 ) -> "_Context":
     """Everything a run's simulations share: the streams, what each
     component draws from, the charges, the structure function, and the
     components' ``states`` at the start (checked, as
     ``_simulation_states`` gives them; None for new). With
     ``history``, each simulation records its histories (see
-    ``_replicate``)."""
+    ``_replicate``). ``prefix`` is the RBD's place in a system it is
+    nested in (see ``_stream_plan``)."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     states = {} if states is None else states
     plan, complete = _stream_plan(
-        rbd, t_simulation, entropy, antithetic, states
+        rbd, t_simulation, entropy, antithetic, states, prefix
     )
     run = _streams.Run(plan, reseed=not complete)
     has_costs = rbd.has_costs
     nodes = list(rbd.components)
-    sources = _streamed_components(rbd, run)
+    sources = _streamed_components(rbd, run, prefix=prefix)
     return _Context(
         t_simulation=t_simulation,
         working=set(working_nodes),
@@ -1642,7 +1654,9 @@ def _context(
         run=run,
         sources=sources,
         charges=(
-            _keyed_charges(rbd, run, sources) if has_costs else ({}, {}, {})
+            _keyed_charges(rbd, run, sources, prefix)
+            if has_costs
+            else ({}, {}, {})
         ),
         downtime_cost_rates={
             node: c["downtime_cost"]
@@ -2771,6 +2785,8 @@ def _run_alone(
     curve_points: Optional[int] = None,
     sharded: Optional[tuple] = None,
     histories: bool = False,
+    prefix: tuple = (),
+    nested_costs: bool = True,
 ) -> "_Tally":
     """Run ``N`` simulations, from simulation ``first`` (then more,
     while ``stop`` asks for them), and return their totals: each from
@@ -2796,8 +2812,15 @@ def _run_alone(
     ``_ShardRunner``), on the engine each shard's worker chooses. With
     ``histories``, the tally keeps each simulation's histories in place
     of every total (see ``simulate_timelines``), on the Python engine
-    or numba's.
+    or numba's. A nested RBD that carries costs is charged them, each
+    simulation's from a run of it alone (see ``_nested_costs``), but in
+    a sharded run's parent (its shards charge them), with
+    ``replacements``, or not ``nested_costs`` (a run for its histories
+    alone). ``prefix`` is the RBD's place
+    in a system it is nested in, for such a run alone (in Python).
     """
+    from repyability.rbd import _nested_costs
+
     _ccf_groups._require_free_members(rbd, working_nodes, broken_nodes)
     _ccf_groups._require_groups_simulated(rbd, states)
     t_simulation = simulation_window(t_simulation)
@@ -2819,10 +2842,20 @@ def _run_alone(
             if seed is None:
                 after = np.random.get_state()
         plan, complete = _stream_plan(
-            rbd, t_simulation, entropy, antithetic, states
+            rbd, t_simulation, entropy, antithetic, states, prefix
         )
         if (antithetic or common) and not complete:
             raise NotImplementedError(_UNSTREAMED)
+        held = set(working_nodes) | set(broken_nodes)
+        nested = (
+            []
+            if sharded is not None or replacements or not nested_costs
+            else _nested_costs.simulated(rbd, working_nodes, broken_nodes)
+        )
+        if nested:
+            _nested_costs.require(rbd, held, simulated=True, states=states)
+        if prefix:
+            engine = "python"
         engine = _runs._simulation_engine(
             rbd,
             engine,
@@ -2879,6 +2912,7 @@ def _run_alone(
                     antithetic,
                     states,
                     histories,
+                    prefix,
                 ),
                 jobs,
             )
@@ -2889,6 +2923,22 @@ def _run_alone(
         while True:
             runner(start, goal)
             tally.charge_crews(goal - start, salaries * t_simulation)
+            if nested:
+                _nested_costs.charge(
+                    tally,
+                    rbd,
+                    nested,
+                    start,
+                    goal,
+                    t_simulation,
+                    working_nodes,
+                    broken_nodes,
+                    entropy,
+                    antithetic,
+                    states,
+                    jobs,
+                    prefix,
+                )
             more = 0 if stop is None else stop(tally)
             if not more:
                 break

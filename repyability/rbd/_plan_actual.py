@@ -35,7 +35,7 @@ from typing import Any, Dict, Hashable, List, Optional, Tuple
 
 import numpy as np
 
-from repyability.rbd import _npv, _pricing, _requirements
+from repyability.rbd import _nested_costs, _npv, _pricing, _requirements
 from repyability.rbd._model_utils import is_fixed_probability
 from repyability.rbd.node_state import NodeState
 from repyability.rbd.results import ExpectedNPV, PlanVsActual
@@ -316,7 +316,9 @@ def _priced_log(rbd, logs, ends: np.ndarray, money, skip) -> List[dict]:
         else None
     )
     data = {node: logs[node]._data for node in rbd.costs}
-    return _pricing.priced(rbd, data, system, ends, money, skip).rows()
+    ledger = _pricing.priced(rbd, data, system, ends, money, skip)
+    _nested_costs.price_logs(rbd, logs, ledger, money)
+    return ledger.rows()
 
 
 # -- the analysis -----------------------------------------------------------
@@ -420,10 +422,13 @@ def _from(value_rate, now: float):
     )
 
 
-def _row_growth(money, category: str, component) -> float:
-    """The growth of a cash-flow row's stream (see ``_npv.Money``)."""
+def _row_growth(money, category: str, component, rbd=None) -> float:
+    """The growth of a cash-flow row's stream (see ``_npv.Money``): a
+    nested diagram's, as its node's."""
     if component is None or category in ("value", "salvage"):
         return money.growth(category)
+    if rbd is not None:
+        component = _nested_costs.owner(rbd, component)
     return money.growth(component, category)
 
 
@@ -521,7 +526,9 @@ def plan_vs_actual(
                 )
             )
 
-    left_out = _pricing.unrecorded(rbd)
+    left_out = _pricing.unrecorded(rbd) + _nested_costs.unlogged(
+        rbd, plan.cash_flows
+    )
     skip = {(category, node) for category, node, _ in left_out}
     before = [r for r in plan.cash_flows if r["period"] <= so_far]
     expected = [
@@ -536,7 +543,7 @@ def plan_vs_actual(
         for r in rest.cash_flows:
             # The rest's amounts are from now: each stream grown to now
             # and discounted back to the start.
-            g = _row_growth(money, r["category"], r["component"])
+            g = _row_growth(money, r["category"], r["component"], rbd)
             rest_rows.append(
                 _pricing.row(
                     r["period"] + so_far,

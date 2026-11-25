@@ -1154,9 +1154,6 @@ def _twin(diagram) -> Tuple["RepairableRBD", List[str]]:
     for node, value in args["components"].items():
         if isinstance(value, RepairableRBD):
             nested, inner = _twin(value)
-            # Its costs are not the twin's to count, as the system's
-            # construction has said.
-            nested._costs_reported = True
             specs[node] = nested
             changes.extend(f"{what} in {node!r}" for what in inner)
         elif isinstance(value, dict):

@@ -22,6 +22,7 @@ from repyability.rbd import (
     _first_failure,
     _intervals,
     _long_run,
+    _nested_costs,
     _npv,
     _npv_runs,
     _plan_actual,
@@ -239,10 +240,15 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         "No running cost is priced: the cost is the acquisition cost "
         "alone, exactly.",
     )
+    # A nested diagram that carries costs, tied to this one (see
+    # _nested_costs.refusal).
+    tied = r.refusal(partial(_nested_costs.require, rbd))
     if unpriced:
         give(("expected_cost_rate", "total_cost"), r.refused(unpriced))
     elif not rbd.has_costs:
         give(("expected_cost_rate", "total_cost"), acquisition_only)
+    elif tied:
+        give(("expected_cost_rate", "total_cost"), r.refused(tied))
     else:
         setups = r.refusal(
             partial(_requirements._require_separate_setups, rbd)
@@ -359,7 +365,11 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
     out["expected_cost"] = (
         r.refused(unpriced)
         if unpriced
-        else (window if rbd.has_costs else acquisition_only)
+        else (
+            (r.refused(tied) if tied else window)
+            if rbd.has_costs
+            else acquisition_only
+        )
     )
     # The net present value is the window's costs, discounted, less the
     # discounted expected time up: it is as exact as the worse of them.
@@ -380,6 +390,9 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
     )
     if retiring is not None:
         out["expected_npv"] = r.refused(retiring, tuple(rbd._valuation))
+    unvalued = _nested_costs.refusal_unvalued(rbd)
+    if unvalued is not None and out["expected_npv"].route != r.REFUSED:
+        out["expected_npv"] = r.refused(unvalued)
     out["plan_vs_actual"] = _plan_actual.route(rbd, out["expected_npv"])
     # A group's members' MTTF and MTTR are their group's: the
     # availability allocations hold them, and a member's copies join its
@@ -562,6 +575,12 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         "do not come from a stream."
     )
     groups = r.refusal(partial(_ccf_groups._require_groups_simulated, rbd))
+    timelines_groups = groups
+    # A run charges a nested diagram's costs from its own run alone (see
+    # _nested_costs.refusal), which simulate_timelines does not.
+    groups = groups or r.refusal(
+        partial(_nested_costs.require, rbd, frozenset(), True)
+    )
     given = r.refusal(partial(_requirements._require_capacities_given, rbd))
     engine, why = _runs._engine_choice(rbd, capacity=rbd._has_capacity())
     causes = (
@@ -612,8 +631,8 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
     )
     engine, why = _timeline_runs.engine_choice(rbd, plan)
     out["simulate_timelines"] = (
-        r.refused(groups)
-        if groups
+        r.refused(timelines_groups)
+        if timelines_groups
         else r.AnalysisRoute(
             r.SIMULATED,
             "The simulations availability runs, their histories kept "

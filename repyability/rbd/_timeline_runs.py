@@ -279,10 +279,14 @@ def simulate(
     start: int,
     state=None,
     hidden: bool = False,
+    prefix: tuple = (),
 ):
     """``simulate_timelines``: validated, run, and returned as a
     ``TimelineSimulation``; with ``hidden``, with each component's holds
-    and hidden changes too (``Records.hidden``, for pricing the runs)."""
+    and hidden changes too (``Records.hidden``, for pricing the runs).
+    ``prefix`` is the RBD's place in a system it is nested in: its
+    streams are named as there, and it runs in Python (a nested RBD's
+    histories alone, for pricing them, see ``_nested_costs``)."""
     from repyability.rbd._runs import _UNSTREAMED
     from repyability.rbd.results import TimelineSimulation
 
@@ -334,11 +338,16 @@ def simulate(
         if seed is None:
             after = np.random.get_state()
         plan, complete = _event_loop._stream_plan(
-            rbd, t_simulation, entropy, antithetic, states=states
+            rbd,
+            t_simulation,
+            entropy,
+            antithetic,
+            states=states,
+            prefix=prefix,
         )
         if antithetic and not complete:
             raise NotImplementedError(_UNSTREAMED)
-        chosen = _engine(rbd, plan, engine, N, states)
+        chosen = "python" if prefix else _engine(rbd, plan, engine, N, states)
         tally = _event_loop._run(
             rbd,
             t_simulation,
@@ -355,6 +364,10 @@ def simulate(
             first=start,
             states=states,
             histories=True,
+            prefix=prefix,
+            # (Its histories alone: a nested RBD's costs are priced
+            # from its own, see _nested_costs.)
+            nested_costs=False,
         )
         assert tally.histories is not None
         parts, recorded = tally.histories.data(t_simulation)

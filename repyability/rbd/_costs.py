@@ -34,12 +34,24 @@ def expected_cost_rate(
     working_nodes: Optional[Collection[Hashable]],
     broken_nodes: Optional[Collection[Hashable]],
 ) -> float:
-    """See ``RepairableRBD.expected_cost_rate``."""
+    """See ``RepairableRBD.expected_cost_rate``: this diagram's own cost
+    rate and its nested diagrams' (see ``_nested_costs``)."""
+    from repyability.rbd import _nested_costs
+
     _requirements._require_costs(rbd)
     if not rbd.has_costs:
         return 0.0  # an acquisition cost alone: no running cost
-
     working_nodes, broken_nodes = rbd._held_nodes(working_nodes, broken_nodes)
+    nested = 0.0
+    if _nested_costs.priced(rbd):
+        _nested_costs.require(rbd, set(working_nodes) | set(broken_nodes))
+        nested = _nested_costs.rate(rbd, working_nodes, broken_nodes)[0]
+    return _own_cost_rate(rbd, working_nodes, broken_nodes) + nested
+
+
+def _own_cost_rate(rbd, working_nodes, broken_nodes) -> float:
+    """This diagram's own long-run cost per unit time (the nodes held
+    checked): its components' and its own, not its nested diagrams'."""
     forced = set(working_nodes) | set(broken_nodes)
     setups = [group for group in rbd._maintenance.values() if group.setup_cost]
     if setups:
@@ -215,8 +227,11 @@ def node_action_rates(
 
 
 def acquisition_cost(rbd) -> float:
-    """See ``RepairableRBD.acquisition_cost``."""
-    return float(sum(rbd.acquisition_costs.values()))
+    """See ``RepairableRBD.acquisition_cost``: the components', and each
+    nested diagram's (see ``_nested_costs.acquisitions``)."""
+    from repyability.rbd import _nested_costs
+
+    return float(sum(_nested_costs.acquisitions(rbd).values()))
 
 
 def total_cost(

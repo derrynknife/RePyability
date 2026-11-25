@@ -156,7 +156,7 @@ def _runs(twin, horizon, switch, rates, money, n, seed, engine, state):
                 value[part] += rates[k] * present
             else:
                 cost[part] += present
-    cost += sum(float(p) for p in twin.acquisition_costs.values() if p)
+    cost += twin.acquisition_cost
     return value - cost, value, cost, used
 
 

@@ -92,7 +92,9 @@ def unrecorded(rbd) -> List[Tuple[str, Optional[Hashable], str]]:
                 out.append(("inspection", node, _INSPECTIONS))
     if any(spec.setup_cost for spec in rbd._maintenance.values()):
         out.append(("setup", None, _SETUP))
-    for node, price in rbd.acquisition_costs.items():
+    from repyability.rbd import _nested_costs
+
+    for node, price in _nested_costs.acquisitions(rbd).items():
         if price:
             out.append(("acquisition", node, _BOUGHT))
     for node, own in getattr(rbd, "_valuation", {}).items():
@@ -141,6 +143,8 @@ def priced(
     skip,
     size: int = 1,
     hidden: Optional[Mapping[Any, Any]] = None,
+    ledger: Optional[Ledger] = None,
+    where: tuple = (),
 ) -> Ledger:
     """The cash flows the histories imply over ``[0, ends[-1]]``, by
     period, category and component, history by history, priced with the
@@ -154,8 +158,25 @@ def priced(
     ``hidden`` gives, under shutdowns, each component's holds and the
     changes down they hid
     (``_timeline_runs.Hidden``): a hold is no task, and a hidden change
-    is charged as a recorded one would be."""
-    ledger = Ledger(ends, money.rate, size)
+    is charged as a recorded one would be.
+
+    With ``where``, ``rbd`` is the nested RBD at that path of a system,
+    its histories its own (see ``_nested_costs``), priced into the
+    system's ``ledger``: each of its components labelled with its path,
+    and what it pays itself (its downtime, as its node's, and its crews)
+    with its node's label; it earns no value, and each stream grows as
+    the system's node it is in."""
+    if ledger is None:
+        ledger = Ledger(ends, money.rate, size)
+    head = where[:1]
+
+    def label(node):
+        return where + (node,) if where else node
+
+    def growth(node, category):
+        return money.growth(*(head or (node,)), category)
+
+    own = (where[0] if len(where) == 1 else where) if where else None
     for node, costs in rbd.costs.items():
         data = logs[node]
         history, times, down, planned = changes(data)
@@ -180,8 +201,8 @@ def priced(
                     times[mask],
                     _mean_cost(costs[key]),
                     category,
-                    node,
-                    money.growth(node, category),
+                    label(node),
+                    growth(node, category),
                 )
         rate_down = costs.get("downtime_cost", 0.0)
         if rate_down:
@@ -189,10 +210,20 @@ def priced(
                 *spans(data, up=False),
                 rate_down,
                 "component_downtime",
-                node,
-                money.growth(node, "component_downtime"),
+                label(node),
+                growth(node, "component_downtime"),
             )
-    if rbd.downtime_cost_rate or money.earns:
+    if where:
+        if rbd.downtime_cost_rate:
+            # The nested system down: its node down.
+            ledger.spans(
+                *spans(system, up=False),
+                rbd.downtime_cost_rate,
+                "component_downtime",
+                own,
+                money.growth(*head, "component_downtime"),
+            )
+    elif rbd.downtime_cost_rate or money.earns:
         ledger.spans(
             *spans(system, up=False),
             rbd.downtime_cost_rate,
@@ -223,8 +254,8 @@ def priced(
                 at[keep],
                 upgrade.cost,
                 "capital",
-                node,
-                money.growth(node, "capital"),
+                label(node),
+                growth(node, "capital"),
             )
     # The repair crews' salaries, the same in every history.
     ledger.spans(
@@ -233,7 +264,7 @@ def priced(
         np.full(size, ledger.ends[-1]),
         _crew_salaries(rbd),
         "crews",
-        None,
-        money.growth("crews"),
+        own,
+        money.growth(*head, "crews"),
     )
     return ledger

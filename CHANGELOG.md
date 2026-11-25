@@ -123,6 +123,44 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- **A nested `RepairableRBD`'s costs are counted in the diagram it is a
+  node of** (they were left out, with a warning, which is gone). Its
+  repairs, tasks, tests, its components' and its own downtime costs, its
+  crews' salaries and call-outs, set-ups and capital go into the outer
+  diagram's `expected_cost_rate`, `total_cost`, `expected_cost`
+  (discounted too), `cost`, `availability().cost`, `expected_npv`,
+  `npv_distribution`, `compare_npv` and `plan_vs_actual`, by category,
+  each labelled with where it falls: `(node, component)` for a
+  component inside it (the path, deeper), and the node's name for what
+  the nested diagram pays itself. Its `downtime_cost_rate` is counted as
+  the outer diagram's `component_downtime` (its node down). Its
+  `acquisition_cost` is the node's purchase price in `acquisition_cost`,
+  `total_cost` and the NPVs (not a node the redundancy allocations give
+  copies to). `has_costs` is true when a nested diagram carries costs.
+  Exact values add the nested diagram's own expected costs; a
+  simulation adds, simulation by simulation, those of a run of the
+  nested diagram alone, under the random streams of its place in the
+  outer diagram, which draws exactly what it draws inside the outer run,
+  so both engines agree to the bit and the compiled engine is unchanged.
+  A nested node held working costs nothing, held broken its own downtime
+  cost throughout. Refused, with the reason: a nested diagram with a
+  downtime cost in a shutdown's scope, a simulation of one whose draws
+  are not all streamed, and a valuation of one whose units carry their
+  own salvage, escalation or retirement. See the costs guide's "A
+  subsystem's costs".
+
+  **Intentional number change**: every cost of a diagram with a nested
+  diagram that carries costs goes up by the nested diagram's (nothing
+  changes for any other diagram). For the guide's example, a pump pair
+  (repairs at 200, its own downtime at 50) nested in a station, the
+  station's `expected_cost_rate` goes from 56.0235 to 92.8004. Seeded,
+  a crewed pump pair (repairs at 7) nested in series with a unit
+  (`availability(600.0, mc_samples=150, seed=5)`): the mean cost goes
+  from 120.394 to 175.601, its repairs from 7.087 to 62.294. Seeded
+  results of diagrams with no nested costs are unchanged
+  (`seeded_event_loop.json` is as it was). A conditional run's modules
+  now carry their nested diagrams' costs, and a module shard's partial
+  their labels.
 - **Events at one instant are taken in a stated order** in a
   `RepairableRBD` simulation, on both engines: failures, then planned
   stops, then restorations; within each, a shared common cause or a

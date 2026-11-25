@@ -81,6 +81,56 @@ replacement is [below](system-maintenance.md#preventive-maintenance)). A cost mu
 non-negative; an unknown key (such as `repair_costs`) raises `ValueError`
 rather than being priced at zero.
 
+### A subsystem's costs
+
+A nested `RepairableRBD` (see [Nested repairable RBDs](repairable.md#nested-repairable-rbds))
+brings its costs with it. Whatever it pays (its components' repairs and
+tasks, their downtime costs, its own `downtime_cost_rate`, its crews'
+salaries and set-ups, an upgrade's capital) is counted in every cost the
+outer diagram works out: `expected_cost_rate`, `total_cost`,
+`expected_cost`, `cost` and `availability().cost`, `expected_npv`,
+`npv_distribution` and `plan_vs_actual`. Each amount keeps its category
+and is labelled with where it falls: a component of the subsystem at
+node `"pumps"` is `("pumps", "A")` (deeper, the path down), and what the
+subsystem pays itself is `"pumps"`'s. Its `downtime_cost_rate` is the
+cost of that node being down, so the outer diagram counts it as
+`component_downtime`; the outer `system_downtime` stays the outer
+system's. Its `acquisition_cost` (its components') is the node's
+purchase price.
+
+```python
+pumps = RepairableRBD(
+    [("s", "A"), ("s", "B"), ("A", "t"), ("B", "t")],
+    {"A": unit(0.1, 1.0, repair_cost=200.0), "B": unit(0.1, 1.0, repair_cost=200.0)},
+    downtime_cost_rate=50.0,
+)
+station = RepairableRBD(
+    [("s", "pumps"), ("pumps", "C"), ("C", "t")],
+    {"pumps": pumps, "C": unit(0.02, 0.5, repair_cost=500.0)},
+    downtime_cost_rate=1000.0,
+)
+pumps.expected_cost_rate()     # -> 36.7769   2 * 200 / 11, and 50 * (1/11)**2
+station.expected_cost_rate()   # -> 92.8004   the pumps' 36.7769 and the rest's 56.0235
+window = station.expected_cost(100.0)
+window.by_component   # -> {'C': 962.28, ('pumps', 'A'): 1819.83, ('pumps', 'B'): 1819.83, 'pumps': 40.76}
+```
+
+A subsystem runs on its own: nothing outside it changes what happens in
+it (it has crews of its own), so its costs are its own methods'. The
+exact values add its expected costs; a simulation adds, simulation by
+simulation, those of a run of the subsystem alone, whose random numbers
+are named by its place in the outer diagram, so that it draws exactly
+what it draws inside the outer run (on either engine). Held working
+(`working_nodes`), a subsystem costs nothing; held broken, its own
+downtime cost throughout. Two things refuse, naming the node: a
+subsystem with a downtime cost in a shutdown's scope (the shut holds it
+off line as the outer diagram sees it, which its own downtime does not
+take), and, for a simulation, one whose draws do not all come from a
+stream (a model other than a surpyval parametric one). A plan against a
+log compares what the subsystem's log gives (its downtime and its crews)
+and carries the rest as planned (`not_compared`): the log is the
+subsystem's, not its components'.
+
 ## The long-run cost rate (exact)
 
 ```python
