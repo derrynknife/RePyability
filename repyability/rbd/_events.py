@@ -45,6 +45,23 @@ FAILURE, STOP, RESTORATION = 0, 1, 2
 _CLASS_SHIFT = 32
 _NODES_FROM = 1 << 31
 
+#: What a component's event counts as, as bits, where the loops record a
+#: run's histories (see ``_timeline_runs.Block.events``): a failure, a
+#: corrective action (a failure's, or a hidden failure's when a test finds
+#: it), a preventive task (a renewal in place or an outage) and a test.
+#: Each loop records every event of these at the system's level as it
+#: takes it, whether or not it changes the component's state (a task or
+#: test in zero time changes none), so a history counts each one.
+#: ``TALLY_PLANNED`` and ``TALLY_KEPT`` are the compiled loop's own, which
+#: keeps its changes and these in one record: a planned change down, and
+#: an event that changes nothing.
+TALLY_PLANNED, TALLY_KEPT = 1, 2
+TALLY_FAILURE, TALLY_CORRECTIVE, TALLY_PREVENTIVE, TALLY_TEST = 4, 8, 16, 32
+#: The bits that count an event.
+TALLY_COUNTED = (
+    TALLY_FAILURE | TALLY_CORRECTIVE | TALLY_PREVENTIVE | TALLY_TEST
+)
+
 
 def tie_class(event: "Event") -> int:
     """The class of ``event`` among events at one instant (``FAILURE``,

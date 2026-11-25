@@ -12,6 +12,16 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `events_by_period` on a duty plan that changes over time, which counts
+  each period's events in the simulations' histories, now takes tasks in
+  zero time (counted in calendar time), tests of hidden failures and a
+  site's shutdowns (each was refused): both engines record each
+  component's events as the loop counts them, those that change no
+  state included, so `node_preventive`, `node_inspections` and
+  `node_corrective` (a hidden failure's at the test that finds it) are
+  counted, and `shutdowns` is the shuts' starts (exact). A shut's hold is
+  no longer counted as a preventive task there. No other result changes,
+  and no seeded result.
 - The simulated runs (`npv_distribution`, `compare_npv`,
   `best_switch_time`, a service's `task_value`) take a unit's own salvage
   by age: each run credits `worth(age)` of the unit in service at its end

@@ -816,8 +816,9 @@ def events_by_period(
         (a task counted in operating time) is its operating-time process
         seen through the plan, exact too; otherwise each unit's life is
         drawn in operating time and put on the calendar by its plan, so
-        the events are the means of the simulations' histories, and the
-        cost's means simulated too.
+        the events are the means of the simulations' histories (every
+        task and test counted, those in zero time too, and a shut's
+        starts exact), and the cost's means simulated too.
     period : str, optional
         ``"day"``, ``"week"``, ``"month"`` (the default), ``"quarter"`` or
         ``"year"``.
@@ -1001,50 +1002,36 @@ def _runs_of(rbd, mc_samples) -> int:
     return int(mc_samples) if mc_samples is not None else 1000
 
 
-def _traced(rbd) -> None:
-    """Refuse what a history does not show: a task or test that takes no
-    time (it leaves no outage), and the tests of hidden failures (a
-    failure is found later than it happens)."""
-    lead = (
-        "The events by period of a diagram whose duty plan changes over "
-        "time are counted in the simulations' histories"
-    )
-    for node, task in rbd._preventive.items():
-        if task.duration is None:
-            raise NotImplementedError(
-                f"{lead}, where a preventive task that takes no time "
-                f"(node {node!r}) leaves no trace: give it the time it "
-                "takes, or the duty as one share."
-            )
-    if rbd._inspection:
-        node = next(iter(rbd._inspection))
-        raise NotImplementedError(
-            f"{lead}, which do not count the tests of hidden failures "
-            f"(node {node!r}) yet: give the duty as one share."
-        )
-    if rbd._shutdowns:
-        raise NotImplementedError(
-            f"{lead}, which do not count a site's shutdowns yet: give the "
-            "duty as one share."
-        )
-
-
 def _history_events(rbd, ends, state, mc_samples, seed):
     """Each window's expected events (an ``EventsByWindow``), the means
-    over the simulations' histories (``simulate_timelines``): a change
-    down that is not planned is a failure, a planned one a preventive
-    task, and each outage's time in a window its downtime there."""
+    over the simulations' histories: each component's events as the loop
+    counts them (failures, corrective actions, tasks and tests, those in
+    zero time and a hidden failure's finding included), each change of
+    the system's (a failure, or planned), and each outage's time in a
+    window its downtime there; a shut's starts are planned, so exact."""
+    from repyability.rbd import _events, _shutdowns, _timeline_runs
     from repyability.rbd.results import EventsByWindow
 
-    _traced(rbd)
     ends = np.asarray(ends, dtype=float)
-    runs = rbd.simulate_timelines(
+    runs, counted = _timeline_runs.simulate(
+        rbd,
         float(ends[-1]),
-        state=state,
-        mc_samples=mc_samples if mc_samples is not None else 1000,
-        seed=seed,
+        mc_samples if mc_samples is not None else 1000,
+        seed,
+        None,
+        None,
+        False,
+        "auto",
+        None,
+        0,
+        state,
+        counted=True,
     )
     starts = np.concatenate(([0.0], ends[:-1]))
+
+    def binned(times) -> np.ndarray:
+        window = np.searchsorted(ends, times, side="right")
+        return np.bincount(window[window < ends.size], minlength=ends.size)
 
     def tally(lines):
         out = {k: np.zeros(ends.size) for k in ("f", "p", "d", "pd")}
@@ -1054,10 +1041,8 @@ def _history_events(rbd, ends, state, mc_samples, seed):
             times, planned = line.changes, line.planned
             down = np.arange(0 if line.up else 1, times.size, 2)
             at = times[down]
-            window = np.searchsorted(ends, at, side="right")
-            inside = window < ends.size
-            np.add.at(out["f"], window[inside & ~planned[down]], 1.0)
-            np.add.at(out["p"], window[inside & planned[down]], 1.0)
+            out["f"] += binned(at[~planned[down]])
+            out["p"] += binned(at[planned[down]])
             # Outages: from each change down to the next change up.
             begin = list(at)
             finish = [
@@ -1077,21 +1062,31 @@ def _history_events(rbd, ends, state, mc_samples, seed):
                     out["pd"] += span
         return {k: v / n for k, v in out.items()}
 
+    n = runs.n_simulations
+
+    def per_node(bit: int) -> dict:
+        return {
+            node: binned(events.times[(events.kinds & bit) != 0]) / n
+            for node, events in counted.items()
+        }
+
     system = tally(runs.system)
     nodes = {node: tally(lines) for node, lines in runs.components.items()}
-    zeros = {node: np.zeros(ends.size) for node in nodes}
+    shuts = np.diff(
+        _shutdowns.started_before(rbd, ends).astype(float), prepend=0.0
+    )
     return EventsByWindow(
         starts=starts,
         ends=ends,
         system_failures=system["f"],
         system_planned_outages=system["p"],
         system_downtime=system["d"],
-        node_failures={n: v["f"] for n, v in nodes.items()},
-        node_corrective={n: v["f"] for n, v in nodes.items()},
-        node_preventive={n: v["p"] for n, v in nodes.items()},
-        node_inspections=zeros,
+        node_failures=per_node(_events.TALLY_FAILURE),
+        node_corrective=per_node(_events.TALLY_CORRECTIVE),
+        node_preventive=per_node(_events.TALLY_PREVENTIVE),
+        node_inspections=per_node(_events.TALLY_TEST),
         node_downtime={n: v["d"] for n, v in nodes.items()},
-        shutdowns=np.zeros(ends.size),
+        shutdowns=shuts,
         system_planned_downtime=system["pd"],
         system_unplanned_downtime=system["d"] - system["pd"],
         node_planned_downtime={n: v["pd"] for n, v in nodes.items()},

@@ -30,6 +30,7 @@ from repyability.rbd import (
     _ccf_groups,
     _compiled,
     _event_loop,
+    _events,
     _streams,
     _timeline_runs,
     modular,
@@ -814,6 +815,68 @@ def test_every_engine_records_the_same_histories(name):
             )
             assert compiled.engine == "numba"
             assert same_runs(runs, compiled)
+
+
+def counted_events(rbd, engine: str, t: float, n: int, seed: int):
+    """Each component's counted events (``Records.counted``) on
+    ``engine``."""
+    tally = _event_loop._run(
+        rbd,
+        t,
+        set(),
+        set(),
+        "p",
+        n,
+        False,
+        seed,
+        False,
+        engine=engine,
+        entropy=_streams.entropy_of(seed),
+        histories=True,
+    )
+    return tally.histories.counted()
+
+
+@needs_numba
+@pytest.mark.filterwarnings("ignore::FutureWarning")
+@pytest.mark.parametrize("name", sorted(every_architecture()))
+def test_every_engine_counts_the_same_events(name):
+    # The events each loop counts as it takes them (tasks and tests in
+    # zero time included), to the last bit.
+    rbd = every_architecture()[name]
+    plan = _event_loop._stream_plan(rbd, 300.0, 0, False)[0]
+    if _compiled.unsupported(rbd, plan, None, numba=True) is not None:
+        pytest.skip("the compiled engine does not simulate it")
+    python = counted_events(rbd, "python", 300.0, 30, 3)
+    compiled = counted_events(rbd, "numba", 300.0, 30, 3)
+    for a, b in zip(python, compiled):
+        for x, y in zip(a, b):
+            assert np.array_equal(x, y)
+
+
+def test_a_history_counts_what_changes_no_state():
+    # A block task in zero time and tests that find nothing change no
+    # state, yet each is counted, once per run on its schedule.
+    rbd = RepairableRBD(
+        PAR3,
+        {
+            "a": unit(
+                50,
+                2.0,
+                "instant",
+                preventive={"interval": 20.0, "policy": "block"},
+            ),
+            "b": unit(55, 2.0),
+            "c": unit(60, 2.0, "instant", inspection={"interval": 15.0}),
+        },
+    )
+    for engine in ["python"] + (["numba"] if _compiled.available() else []):
+        a, _, c = counted_events(rbd, engine, 100.0, 10, 4)
+        tasks = a.kinds & _events.TALLY_PREVENTIVE != 0
+        tests = c.kinds & _events.TALLY_TEST != 0
+        # Due at 20, 40, 60 and 80 in each run, and tests every 15.
+        assert np.bincount(a.history[tasks], minlength=10).tolist() == [4] * 10
+        assert np.bincount(c.history[tests], minlength=10).tolist() == [6] * 10
 
 
 def ties():
