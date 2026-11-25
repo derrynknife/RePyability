@@ -105,6 +105,7 @@ NOT_NODES = {
     # A maintenance plan's parts (the plan itself is a node).
     "AgePolicy",
     "AtShutdown",
+    "OnRule",
     "BlockPolicy",
     "CalendarReplacement",
     "ConditionPolicy",

@@ -111,6 +111,17 @@ class ClockLife:
     def life_left(self, t0: float, age: float, u: float) -> float:
         raise NotImplementedError  # pragma: no cover - each has its own
 
+    def operated_between(self, t0: float, t1: float) -> float:
+        """The unit's operating time from ``t0`` to ``t1`` of the
+        diagram's clock, which a virtual age counts: the time itself, but
+        on a duty plan that changes (``_duty.PlannedLife``)."""
+        return t1 - t0
+
+    def operated_for(self, t0: float, x: float) -> float:
+        """The unit's operating time over the ``x`` of the diagram's clock
+        from ``t0``: ``x`` itself (but on a duty plan that changes)."""
+        return x
+
     def _no_reliability(self, what: str = "reliability") -> Exception:
         """The refusal of the exact and numerical methods (see
         ``is_simulated``), one message whatever ``what`` they need."""
@@ -474,25 +485,11 @@ def check_state(rbd, node, state, inspected: bool) -> None:
     none), with a life of its own, at an age on a clock that changes
     speed (accelerated failure time or life), or at an age since a test
     (its life would start before 0); and one that cannot be up at its
-    age at the covariates in force at 0."""
+    age at the covariates in force at 0 (on a duty plan that changes, at
+    its age in operating time)."""
     life = scheduled(rbd.components[node])
     assert life is not None
     lead = f"Component {node!r} {life.lead}"
-    if getattr(life, "new_only", False) and not (
-        state.alive
-        and not state.age
-        and not state.virtual_age
-        and state.since_scheduled is None
-        and not state.stationary
-        and not state.own_life
-        and not state.maintenance
-    ):
-        raise NotImplementedError(
-            f"{lead}, which says its operating time from the diagram's 0 "
-            "on, not before: a state other than new (an age, a task last "
-            "done, down) is not taken on it. Leave it out (new), or give "
-            "its duty as one share."
-        )
     if state.stationary:
         raise NotImplementedError(
             f"{lead}, so it has no long-run state: give its state now, or "
@@ -520,7 +517,15 @@ def check_state(rbd, node, state, inspected: bool) -> None:
             "drawn from its last test, before the diagram's time starts. "
             "Leave it out (new)."
         )
-    assert isinstance(life, ScheduledLife)  # a duty plan's has clock
+    if not isinstance(life, ScheduledLife):
+        # A duty plan's: the age is in operating time.
+        model: Any = getattr(life, "model")
+        if not float(np.ravel(model.sf(np.array([age])))[0]) > 0.0:
+            raise ValueError(
+                f"Component {node!r} cannot be up at age {age:g} (in "
+                "operating time): its reliability there is 0."
+            )
+        return
     k, _ = life._step_at(0.0)
     if not life._curves(k)[0](age) < math.inf:
         raise ValueError(

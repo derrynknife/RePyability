@@ -191,5 +191,8 @@ def test_refusals(serviced_life):
     shifts = DutyPlan(Shifts("Mon-Fri", "06:00", "22:00")).forecast(
         "2027-01-01", "2028-01-01"
     )
-    with pytest.raises(NotImplementedError, match="virtual age"):
-        task_value(SERVICE, Services(PLAN, Restoration(q=0.5)), shifts, seed=1)
+    # A fitted condition's covariates on a duty plan are not taken (a
+    # virtual age there is: test_a_service_on_a_duty_plan_that_changes).
+    condition = Condition(serviced_life, fresh=[1.0], stale=[2.0], lasts=1.0)
+    with pytest.raises(ValueError, match="covariate schedule"):
+        task_value(SERVICE, Services(PLAN, condition), shifts, seed=1)

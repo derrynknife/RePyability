@@ -488,7 +488,7 @@ class _ImperfectComponent(_StreamedComponent):
             self.reset()
             return
         restoration: Any = self._restoration
-        x = t - self.since
+        x = self._operated(self.since, t)
         if restoration.kijima == "to_age":
             # To a given virtual age, whatever its age before (#570).
             self.age = restoration.q
@@ -499,6 +499,18 @@ class _ImperfectComponent(_StreamedComponent):
         self._fails_next = True
         self.operated = 0.0
         self.tasks += 1
+
+    def _operated(self, t0: float, t1: float) -> float:
+        """Its operating time from ``t0`` to ``t1``, which its virtual
+        age counts: the time itself (but on a duty plan that changes,
+        ``_ScheduledComponent``)."""
+        return t1 - t0
+
+    def renewed_before(self, t: float) -> float:
+        """When a unit as old as its operating time since it was renewed
+        or last maintained (``operated``) at ``t`` was renewed, which age
+        replacement counts from."""
+        return t - self.operated
 
     def _life(self) -> float:
         """The unit's next life: by its fitted process's rule, given its
@@ -565,6 +577,23 @@ class _ScheduledComponent(_ImperfectComponent):
             else float(np.random.random())
         )
         return self._unit.reliability.life_left(self.now, self.age, u)
+
+    def _operated(self, t0: float, t1: float) -> float:
+        return self._unit.reliability.operated_between(t0, t1)
+
+    def renewed_before(self, t: float) -> float:
+        back_by = getattr(self._unit.reliability, "back_by", None)
+        if back_by is None:
+            return t - self.operated
+        return back_by(t, self.operated)
+
+    def next_event(self):
+        x, repaired = super().next_event()
+        if not repaired:
+            # The life drawn from ``now``, in the operating time its
+            # virtual age counts.
+            self._x = self._unit.reliability.operated_for(self.now, x)
+        return x, repaired
 
 
 class _UpgradedComponent(_StreamedComponent):
@@ -2037,7 +2066,10 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
             )
             - since
         )
-    source.life_drawn(start.age + life)
+    # Its operating time to the failure drawn, which its virtual age
+    # counts (on a duty plan that changes, not the time itself).
+    drawn = life if timed is None else timed.operated_for(0.0, life)
+    source.life_drawn(start.age + drawn)
     if inspection is not None:
         if life < 0.0:
             # Failed, unseen, since it was last known up.
@@ -2093,6 +2125,15 @@ def _due(rbd, node, schedule, t: float) -> float:
     if isinstance(schedule, _Inspection):
         # The phase places the calendar: no offset.
         schedule = schedule.without_offset()
+    clock = schedule.clock
+    if clock is not None:
+        # In operating time on a plan that changes: the phase is too.
+        plain = schedule._replace(clock=None)
+        at = float(clock.operating(t))
+        due = plain.due(at + phase) - phase
+        if not due > at:
+            due += schedule.interval
+        return clock.inverse(due)
     due = schedule.due(t + phase) - phase
     return due if due > t else due + schedule.interval
 
@@ -2106,6 +2147,16 @@ def _finds(rbd, node, inspection: _Inspection, t: float) -> float:
     if phase is None:
         return inspection.finds(t)
     inspection = inspection.without_offset()
+    clock = inspection.clock
+    if clock is not None:
+        # In operating time on a plan that changes: the phase is too.
+        plain = inspection._replace(clock=None)
+        at = float(clock.operating(t))
+        found = plain.finds(at + phase) - phase
+        if found < at or found < 0.0:
+            found += inspection.interval
+        when = clock.inverse(found)
+        return when if when >= t else clock.inverse(found + plain.interval)
     found = inspection.finds(t + phase) - phase
     if found < t or found < 0.0:
         found += inspection.interval
@@ -2303,7 +2354,9 @@ def _renewal(
         # Back from an imperfect repair, the unit is as old as its
         # operating time since it was renewed or last maintained, which
         # age replacement counts.
-        start = t - source.operated if _keeps_virtual_age(rbd, node) else t
+        start = (
+            source.renewed_before(t) if _keeps_virtual_age(rbd, node) else t
+        )
     if schedule.policy == "calendar":
         # On the calendar policy's thresholds, from when the unit was put
         # in; charged its opportunity's price when it falls.
@@ -2421,7 +2474,14 @@ def _stop(rbd, group, t: float, trigger=None) -> List[Event]:
         ):
             continue
         schedule = rbd._preventive[member]
-        if t - rbd._run_state._renewed_at[member] < schedule.opportunity:
+        renewed = rbd._run_state._renewed_at[member]
+        age = (
+            t - renewed
+            if schedule.clock is None
+            # Counted in operating time on a plan that changes.
+            else schedule.clock.operated_between(renewed, t)
+        )
+        if age < schedule.opportunity:
             continue
         pending = rbd._run_state._pending_event.get(member)
         if pending is not None and pending.time <= t:

@@ -72,7 +72,9 @@ class NodeState:
         distributions. In a ``RepairableRBD`` it is on the diagram's
         clock: for a component that operates part of the time (a spec's
         ``"duty"``), the calendar time since it was put into service,
-        its operating age being ``duty * age``.
+        its operating age being ``duty * age``. On a duty plan that
+        changes over time, whose past is not given, it is the operating
+        age itself (as are ``virtual_age`` and ``since_scheduled``).
     alive : bool, optional
         Whether the component is currently working, by default ``True``.
     down_for : float, optional
