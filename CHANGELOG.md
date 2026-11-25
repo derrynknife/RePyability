@@ -20,7 +20,15 @@ release between minors that only adds (0.19.1).
   them). Checked: a sub-system's unit with no stock is up `1 / (1 + λL)`
   in the long run, and a fleet of two with nothing arriving in the
   horizon holds the Poisson(4) stock, 8 for 95%.
-
+- `least_spend_for_downtime` takes two more levers: an upgrade at a
+  later time (an `upgrades` offer with `"at": t`, the spec's own upgrade
+  then) and `units={node: {"price":, "max":}}`, one unit more inside a
+  standby, load-sharing or identical group a step. `DowntimeDesign.units`
+  gives the units added. Checked: the upgrade's design is the spec's
+  upgrade run for run, its mean downtime 211.4 h simulated against 211.1
+  h exact (the old pump's to the upgrade, the better one's after, +0.1
+  SE); a 1-of-1 identical group given a unit is the 1-of-2 group run for
+  run, down 72.7 h a year against 8760 / 121 = 72.4 h (+0.4 SE).
 - The simulated shelf of spares (`spares_stock(method="simulate")`, the
   `spares` lever of `least_spend_for_downtime`) takes repair crews,
   preventive tasks and tests of hidden failures, which it refused. A

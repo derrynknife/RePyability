@@ -5265,6 +5265,7 @@ class RepairableRBD(RBD):
         uncertainty: Any = None,
         n_draws: int = 100,
         spares: Optional[Mapping] = None,
+        units: Optional[Mapping] = None,
     ):
         """The least spend that keeps a bad run's downtime under
         ``limit``: "I want to be 95% sure I don't lose more than this on
@@ -5326,7 +5327,16 @@ class RepairableRBD(RBD):
             ``{node: offer or list of offers, tried in order}``, each
             offer ``{"reliability": better life, "cost": price per
             unit}``: the node's units have the better life from the
-            start, at the price for each (the copies too).
+            start, at the price for each (the copies too). With ``"at":
+            t``, the upgrade is made at ``t`` (the spec's own
+            ``"upgrade"``): the unit in service then is replaced, and
+            every unit put in from then on has the better life; its price
+            is paid whether or not a run reaches ``t``.
+        units : dict, optional
+            ``{node: {"price": p, "max": m}}`` for a node that is a group
+            of units (standby, load-sharing or identical): one unit more
+            inside the group at each step, at ``p`` each (a copy of the
+            group has them too), up to ``m`` more (by default no bound).
         max_units : dict, optional
             ``{node: most copies}``; by default none.
         crews : dict, optional
@@ -5442,6 +5452,7 @@ class RepairableRBD(RBD):
             uncertainty=uncertainty,
             n_draws=n_draws,
             spares=spares,
+            units=units,
         )
 
     def best_switch_time(

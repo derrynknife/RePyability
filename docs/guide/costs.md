@@ -688,7 +688,13 @@ For hidden failures, `inspections={node: [intervals]}` moves a unit's
 test interval through the candidates given, each at its tests' cost.
 `upgrades={node: {"reliability": better_life, "cost": price}}` (or a
 list of offers, tried in order) buys a better unit from the start, at
-its price for each unit, the node's copies included.
+its price for each unit, the node's copies included; an offer with
+`"at": t` makes the upgrade at `t` instead (the unit in service then is
+replaced, and every unit put in from then on is the better one), its
+price paid whether or not a run reaches `t`. `units={node: {"price": p,
+"max": m}}` adds a unit inside a standby, load-sharing or identical
+group at `p` each (a copy of the group has it too), where copying the
+whole group (`redundancy=`) would add a group.
 `spares={node: {"price": p, "lead_time": L, "max": m}}` adds spares to
 a shelf for the node, from its `"stock"` held (by default none), each at
 `p` to hold over the horizon: every design is then run with the shelf, a
