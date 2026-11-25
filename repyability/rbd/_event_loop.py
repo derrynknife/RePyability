@@ -517,6 +517,19 @@ class _ImperfectComponent(_StreamedComponent):
         ``_ScheduledComponent``)."""
         return t1 - t0
 
+    def age_at(self, since: float, t: float) -> float:
+        """The unit's age at ``t`` in a sojourn that started at ``since``
+        (the end of its last repair or task): its virtual age then plus
+        its operating time since (``_operated``); repaired by its fitted
+        process's own rule, the age the process's life sees then (its
+        ``advance`` without a failure: the virtual age for ARA, the time
+        since the failure on the life's own scale for G1)."""
+        x = self._operated(since, t)
+        if self._state is None:
+            return self.age + x
+        process: Any = self._process
+        return float(process.advance(self._state, [x], failed=False).age[0])
+
     def renewed_before(self, t: float) -> float:
         """When a unit as old as its operating time since it was renewed
         or last maintained (``operated``) at ``t`` was renewed, which age
@@ -2689,6 +2702,31 @@ def _no_change_tally(event: Event) -> int:
     return TALLY_TEST
 
 
+def _end_ages(rbd, index, status, new_at, sources, t_end: float) -> list:
+    """Each component's age at ``t_end`` of its units in service then (a
+    salvage by age, see ``_npv_runs._credit_by_age``), NaN for one down
+    then (a failure unseen by its tests included), laid out by
+    ``_timeline_runs.age_slots``: a standby group's units each (their
+    used life, ``_StandbyGroup.ages``); a unit that keeps a virtual age,
+    or whose life is on the diagram's clock, its stand-in's age then
+    (``_ImperfectComponent.age_at``: its virtual age, in operating time);
+    any other, the time since it was put in as new (``new_at``), less its
+    tests off line since."""
+    groups = rbd._run_state._groups
+    out: list = []
+    for node, c in index.items():
+        group = groups.get(node) if groups else None
+        if group is not None:
+            out.extend(group.ages(t_end))
+        elif not status[node]:
+            out.append(math.nan)
+        elif isinstance(sources[node], _ImperfectComponent):
+            out.append(sources[node].age_at(new_at[c], t_end))
+        else:
+            out.append(t_end - new_at[c])
+    return out
+
+
 def _change_tally(event: Event, hidden: bool) -> int:
     """What a change down counts as (``_events.TALLY_*``): a task's
     outage, a test off line, or a failure, a corrective action at once
@@ -3314,7 +3352,11 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     # With history: when each component's unit in service was put in as
     # new (a renewing repair's end, a renewal by a task, from a state its
     # age before 0), for its age at the end (a salvage by age, see
-    # _npv_runs.salvage_by_age); a unit down at the start has none yet.
+    # _end_ages); a unit down at the start has none yet. For a unit that
+    # keeps a virtual age, the start of its sojourn (its age then is its
+    # stand-in's); for one with hidden failures, put later by each test
+    # that took it off line while it worked (it does not age then), from
+    # when the test took it down (off_at).
     new_at = (
         [
             -float(getattr(ctx.states.get(node), "age", 0.0) or 0.0)
@@ -3323,6 +3365,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         if history
         else []
     )
+    off_at = [0.0] * n if history else []
     # The system's state, and its up and down time until ``since``, its
     # last change; each component's last change, and the system's up and
     # down time until then.
@@ -3531,14 +3574,14 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
                     (event.time, _no_change_tally(event))
                 )
             if event.preventive:
+                if history:
+                    # Renewed in place, or (restored partly) a sojourn
+                    # starts from the virtual age the task left.
+                    new_at[index[node]] = event.time
                 if not restoring or node not in restoring:
                     replaced[index[node]] += 1
-                    if history:
-                        new_at[index[node]] = event.time
                 elif sources[node].task_replaces:
                     replaced[index[node]] += 1
-                    if history:
-                        new_at[index[node]] = event.time
                 rep_cost += pay(node, 2, preventive_charges.get(node))
                 # Replaced on condition: at an inspection, charged too.
                 rep_cost += pay(node, 3, inspection_charges.get(node))
@@ -3604,12 +3647,21 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             )
         if history and not event.status:
             counted_of[c].append((t, _change_tally(event, node in inspected)))
+            if event.inspection and node in inspected:
+                off_at[c] = t  # a working unit off line for its test
         # When a spare is ready for the repair this failure starts.
         spare_at = None
         if event.status:
             restored[c] += 1
             if history:
-                new_at[c] = t
+                # Back from a test, the unit is as old as it was when the
+                # test took it off line; otherwise put in as new (or, one
+                # keeping a virtual age, at the start of a sojourn).
+                new_at[c] = (
+                    new_at[c] + (t - off_at[c])
+                    if event.inspection and node in inspected
+                    else t
+                )
         elif event.preventive:
             # A planned outage: charged the preventive cost, and the
             # inspection's if replaced on condition (a nested RBD's own
@@ -3799,10 +3851,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             system_record,
             held_of if shut_record else None,
             hidden_of if shut_record else None,
-            [
-                t_simulation - new_at[c] if status[node] else math.nan
-                for node, c in index.items()
-            ],
+            _end_ages(rbd, index, status, new_at, sources, t_simulation),
             counted_of,
         )
         if history

@@ -846,7 +846,13 @@ class UnitPlan:
     salvage : float or callable, optional
         What the unit is worth at the end, in money: a number, or a
         function of the age of the unit in service (taking an array of
-        ages); negative for a cost of disposal.
+        ages); negative for a cost of disposal. In the simulated runs a
+        unit down at the end (in its repair, or failed unseen by its
+        tests) is worth nothing; the age is its virtual age where it
+        keeps one, and its operating time on a duty plan; a group's
+        units are each worth the function at its own age (a spare's the
+        life it has used up waiting); and inside a nested diagram each
+        unit is credited by its own salvage.
     escalation : float, optional
         The continuous growth rate per unit of time of every price of the
         unit, of either sign.

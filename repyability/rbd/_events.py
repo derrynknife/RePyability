@@ -18,6 +18,7 @@ from typing import (
     Any,
     Dict,
     Hashable,
+    List,
     NamedTuple,
     Optional,
     Tuple,
@@ -290,6 +291,7 @@ class _StandbyGroup:
         "_operating",
         "_spares",
         "_life",
+        "_drawn",
         "_since",
         "_version",
         "_events",
@@ -326,6 +328,9 @@ class _StandbyGroup:
         # Each unit's life left, as of ``_since``; and a count that a
         # queued event of the unit's must match to be current.
         self._life = [0.0] * arrangement.units
+        # Each unit's life when it was drawn (put into service as new),
+        # for its used life at the end (``ages``).
+        self._drawn = [0.0] * arrangement.units
         self._since = [0.0] * arrangement.units
         self._version = [0] * arrangement.units
         self._events: list = []
@@ -339,7 +344,7 @@ class _StandbyGroup:
             # Every unit operates, at the rate they share.
             self._rate = self._rates[arrangement.units - 1]
         for unit in range(arrangement.units):
-            self._life[unit] = self._draws.life(unit)
+            self._life[unit] = self._drawn[unit] = self._draws.life(unit)
             if self._rates is not None or unit < self._k:
                 self._operate(unit, 0.0)
             else:
@@ -393,7 +398,7 @@ class _StandbyGroup:
     def _advance_shared(self, t: float, kind: int, unit: int) -> int:
         """``advance`` for a group with ``rates``: how many units failed."""
         if kind == _UNIT_REPAIRED:
-            self._life[unit] = self._draws.life(unit)
+            self._life[unit] = self._drawn[unit] = self._draws.life(unit)
             self._since[unit] = t
             self._operating.add(unit)
             self._share(t)
@@ -484,6 +489,25 @@ class _StandbyGroup:
             if started is not None:
                 _event_loop._crew_started(self._rbd, started)
 
+    def ages(self, t: float) -> List[float]:
+        """Each unit's age at ``t`` (the end of the run), NaN for one in
+        its repair: the life it has used up since it was put into service
+        as new, at its rate while it operates and at ``dormancy_factor``
+        while it waits as a spare (a salvage by age credits each unit's
+        worth at it)."""
+        out = []
+        for unit, drawn in enumerate(self._drawn):
+            if unit in self._operating:
+                rate = self._rate
+            elif unit in self._spares:
+                rate = self._dormancy
+            else:
+                out.append(math.nan)
+                continue
+            used = rate * self._ran(self._since[unit], t) if rate else 0.0
+            out.append(drawn - max(self._life[unit] - used, 0.0))
+        return out
+
     def advance(self, t: float) -> Tuple[bool, int]:
         """Take the group's event at ``t`` (its ``entry``): whether it is up
         after it, and how many of its units failed (each is repaired)."""
@@ -506,7 +530,7 @@ class _StandbyGroup:
             return self.up, failures
         if kind == _UNIT_REPAIRED:
             self._released(unit, t)
-            self._life[unit] = self._draws.life(unit)
+            self._life[unit] = self._drawn[unit] = self._draws.life(unit)
             if len(self._operating) < self._k:
                 self._operate(unit, t)
             else:
