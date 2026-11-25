@@ -73,7 +73,7 @@ dependencies = [
 # engine="auto" when it pays). 0.60 is the first numba for numpy 2.
 fast = ["numba>=0.60"]
 dev = [
-    "black==26.3.1",
+    "black==26.10.1",
     # Pinned with black and mypy, and in step with .pre-commit-config.yaml.
     "isort==9.0.1",
     "flake8==7.4.1",
