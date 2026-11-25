@@ -4,8 +4,10 @@
 plain ``NonRepairable`` units, standby groups of them or nested RBDs,
 under age or block replacement, inspected for hidden failures or neither,
 and with as many repair crews as needed or fewer (#155), operation for
-operation, over arrays: the same heap (``heapq``'s algorithm, so equal
-times come out in the same order), the same arithmetic in the same order,
+operation, over arrays: the same heap (``heapq``'s algorithm, ordered by
+the same key: the time, then at one instant the event's class and its
+node's place, see ``_events._EventQueue``), the same arithmetic in the same
+order,
 and the draws read from the same keyed streams (see ``_streams``). Each
 simulation's results go to its own row of the output arrays, so the rows
 can be worked out in any order, on any number of threads, and a
@@ -35,23 +37,51 @@ _NODE, _SERIES, _PARALLEL = 0, 1, 2
 _FAIL, _RESTORE, _PM_START, _PM_END, _PM_IN_PLACE = 0, 1, 2, 3, 4
 _TEST_UP, _TEST_DOWN, _TEST_MISSED = 5, 6, 7
 # A standby group's next event, as its entry in the heap (an entry an
-# earlier one has superseded is skipped: its tag is not the group's); and a
-# unit's repair waiting for a repair crew.
-_GROUP, _UNIT_JOB = 8, 9
+# earlier one has superseded is skipped: its tag is not the group's), a
+# unit failing or, ``_GROUP_UP``, a unit's repair done; and a unit's repair
+# waiting for a repair crew.
+_GROUP, _UNIT_JOB, _GROUP_UP = 8, 9, 10
 # A standby group's units' own events (``_StandbyGroup``): a unit failing
 # in operation, a spare failing in standby, a repair done.
 _UNIT_FAILS, _SPARE_FAILS, _UNIT_REPAIRED = 0, 1, 2
 
 
+# Each kind's class at one instant (``_events.tie_class``): 0 a failure, 1
+# a planned stop, 2 a restoration (a nested RBD's side heap's states, 1 for
+# sound and 0 for failed, are a restoration's and a failure's).
+_TIE_CLASS = np.array([0, 2, 1, 2, 2, 2, 1, 1, 0, 2, 2], dtype=np.int64)
+
+
+@njit(cache=True, inline="always")
+def _tie_class(state):
+    """The class at one instant of an event of kind ``state``."""
+    return _TIE_CLASS[state]
+
+
+@njit(cache=True, inline="always")
+def _comes_first(t, c, state, times, nodes, states, k):
+    """Whether ``(t, c, state)`` comes before entry ``k`` of the heap: by
+    time, then at one instant by class, then by node (the event queue's
+    order, ``_events._EventQueue``). The times are compared first and
+    once: a heap's comparisons go either way at random, and only a tie,
+    rare and so well predicted, reads the classes and nodes (measured:
+    as fast as comparing the times alone)."""
+    u = times[k]
+    if t == u:  # rare, so the branch is well predicted
+        a, b = _TIE_CLASS[state], _TIE_CLASS[states[k]]
+        return (a < b) | ((a == b) & (c < nodes[k]))
+    return t < u
+
+
 @njit(cache=True, inline="always")
 def _push(heap, size, t, c, state, tag):
-    """``heapq.heappush`` of ``(t, c, state, tag)``, ordered by ``t``
-    alone; ``heap`` is the arrays of the four."""
+    """``heapq.heappush`` of ``(t, c, state, tag)``, ordered by
+    ``_comes_first``; ``heap`` is the arrays of the four."""
     times, nodes, states, tags = heap
     pos = size
     while pos > 0:
         parent = (pos - 1) >> 1
-        if t < times[parent]:
+        if _comes_first(t, c, state, times, nodes, states, parent):
             times[pos] = times[parent]
             nodes[pos] = nodes[parent]
             states[pos] = states[parent]
@@ -80,7 +110,15 @@ def _pop(heap, size):
         child = 1
         while child < size:
             right = child + 1
-            if right < size and not times[child] < times[right]:
+            if right < size and not _comes_first(
+                times[child],
+                nodes[child],
+                states[child],
+                times,
+                nodes,
+                states,
+                right,
+            ):
                 child = right
             times[pos] = times[child]
             nodes[pos] = nodes[child]
@@ -90,7 +128,7 @@ def _pop(heap, size):
             child = 2 * pos + 1
         while pos > 0:
             parent = (pos - 1) >> 1
-            if t < times[parent]:
+            if _comes_first(t, c, state, times, nodes, states, parent):
                 times[pos] = times[parent]
                 nodes[pos] = nodes[parent]
                 states[pos] = states[parent]
@@ -562,7 +600,9 @@ def _arm(g, c, t_end, first, count, units, groups, heap, size, tags):
     tags[0] += 1
     entry_tag[g] = tags[0]
     entry_time[g] = units[2][best]
-    return _push(heap, size, units[2][best], c, _GROUP, tags[0])
+    # Ranked at its instant as its unit's event (see _events._EventQueue).
+    kind = _GROUP_UP if units[4][best] == _UNIT_REPAIRED else _GROUP
+    return _push(heap, size, units[2][best], c, kind, tags[0])
 
 
 @njit(cache=True, inline="always")
@@ -1135,7 +1175,7 @@ def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
                 if _catch_up(split, sound, level_ud, status, L, t) < 0:
                     code = -1
                     break
-            grouped = kind_now == _GROUP
+            grouped = kind_now == _GROUP or kind_now == _GROUP_UP
             broken = False
             if grouped:
                 # A standby group's own event (RepairableRBD._StandbyGroup.

@@ -30,6 +30,7 @@ from repyability.rbd import (
     _compiled,
     _crews,
     _event_loop,
+    _events,
     _streams,
     _time_order,
 )
@@ -263,10 +264,12 @@ def test_each_simulation_draws_from_the_start_of_its_columns():
 
 def reference(rbd, t_end, n, seed, working=(), broken=(), antithetic=False):
     """Each simulation of ``rbd``'s plain components stepped through with a
-    ``heapq`` of events, drawing from the streams' definition, and measured
-    with the timeline functions: per simulation, the system's up time, the
-    components' up and overlap times, the counts, the system's changes and
-    the cost."""
+    ``heapq`` of events, ordered at one instant as the event queue states
+    (failures, then restorations, each by the node's place: see
+    ``_events._EventQueue``), drawing from the streams' definition, and
+    measured with the timeline functions: per simulation, the system's up
+    time, the components' up and overlap times, the counts, the system's
+    changes and the cost."""
     draws = KeyedDraws(rbd, t_end, seed, antithetic)
     nodes = list(rbd.components)
     index = {node: c for c, node in enumerate(nodes)}
@@ -278,13 +281,15 @@ def reference(rbd, t_end, n, seed, working=(), broken=(), antithetic=False):
             if node not in working and node not in broken:
                 t = draws.next((node,), _streams.FAILURE, r)
                 if t < t_end:
-                    heapq.heappush(heap, (t, Event(t, node, False)))
+                    heapq.heappush(
+                        heap, (t, 0, index[node], Event(t, node, False))
+                    )
         up = rbd.is_system_working(status, "p")
         system = [(0.0, 1 if up else 0)]
         events, counts = [], np.zeros((4, len(nodes)), int)
         charges = []
         while heap:
-            t, event = heapq.heappop(heap)
+            t, _, _, event = heapq.heappop(heap)
             node, c = event.component, index[event.component]
             status[node] = event.status
             events.append((t, c, 1 if event.status else -1))
@@ -307,7 +312,13 @@ def reference(rbd, t_end, n, seed, working=(), broken=(), antithetic=False):
             t_next = t + draws.next((node,), kind, r)
             if t_next < t_end:
                 heapq.heappush(
-                    heap, (t_next, Event(t_next, node, not event.status))
+                    heap,
+                    (
+                        t_next,
+                        0 if event.status else 2,
+                        c,
+                        Event(t_next, node, not event.status),
+                    ),
                 )
         system.append((t_end, 0))
         starts = [1 if node not in broken else 0 for node in nodes]
@@ -1797,9 +1808,19 @@ def test_the_compiled_engine_runs_out_and_carries_on(monkeypatch):
 
 
 @needs_numba
-def test_the_compiled_heap_releases_ties_as_heapq_does():
+def test_the_compiled_heap_releases_ties_as_the_queue_does():
+    # Both order by time, then at one instant by class and node (see
+    # _events._EventQueue): the kinds' classes as the queue's events'.
     from repyability.rbd import _kernel
 
+    kinds = [  # (kernel kind, status, preventive, inspection)
+        (_kernel._FAIL, False, False, False),
+        (_kernel._RESTORE, True, False, False),
+        (_kernel._PM_START, False, True, False),
+        (_kernel._PM_END, True, True, False),
+        (_kernel._TEST_DOWN, False, False, True),
+        (_kernel._TEST_UP, True, False, True),
+    ]
     rng = np.random.default_rng(5)
     size = 64
     arrays = (
@@ -1808,16 +1829,19 @@ def test_the_compiled_heap_releases_ties_as_heapq_does():
         np.empty(size, np.int8),
         np.empty(size, np.int64),
     )
-    heap: list = []
+    queue = _events._EventQueue(range(5000))
     count = 0
     for step in range(5000):
         if rng.random() < 0.55 and count < size or count == 0:
             t = float(rng.integers(0, 12))
-            count = _kernel._push.py_func(arrays, count, t, step, 1, -step)
-            heapq.heappush(heap, (t, Event(t, step, True)))
+            kind, status, preventive, inspection = kinds[
+                rng.integers(len(kinds))
+            ]
+            count = _kernel._push.py_func(arrays, count, t, step, kind, -step)
+            queue.put(Event(t, step, status, preventive, inspection))
         else:
             t, node, _, tag, count = _kernel._pop.py_func(arrays, count)
-            expected = heapq.heappop(heap)[1]
+            expected = queue.get()
             assert (t, node, tag) == (
                 expected.time,
                 expected.component,

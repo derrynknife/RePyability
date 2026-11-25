@@ -12,15 +12,15 @@ these tests hold the fast path to that reference:
   must end in exactly the same state;
 - the per-sample loops of the warm-standby and load-sharing simulations run
   for every sample at once: same arithmetic, same tie-breaks;
-- the repairable simulation's event queue drops ``queue.PriorityQueue``'s
-  locking but keeps its heap, so events come out in the same order;
 - composite nodes (standby, repeated, load-sharing, regression, nested RBDs)
   replay their ``random(1)`` for a whole block of samples, so an RBD
   containing them is batched too;
 - minimal cut sets are read off the exact engine's decomposition instead of
   Berge's algorithm (the minimal cut sets are unique, so they must match
   exactly), and that decomposition runs on an explicit stack;
-- the repairable simulation's event loop queues ``(time, event)`` pairs,
+- the repairable simulation's event loop queues ``(time, rank, event)``
+  entries (the order at one instant is tested in
+  ``test_event_order``),
   skips the structure function where a coherent system cannot change, and
   draws a plain component's next event directly. It has no slow path left
   to compare with, so seeded results recorded when its draws last changed
@@ -38,7 +38,6 @@ Counts and RNG states are compared exactly.
 
 import dataclasses
 import json
-import queue
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Dict
@@ -59,7 +58,6 @@ from repyability import (
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _event_loop,
-    _events,
     _sampling,
     _streams,
     non_repairable_rbd,
@@ -964,24 +962,6 @@ def test_nested_rbds_step_by_hand_as_before_after_a_simulation():
     assert step_by_hand(used, 2000.0) == expected
     assert_same_rng_state(rng_state(), after_fresh)
     assert len(expected) > 10
-
-
-def test_event_queue_pops_in_priority_queue_order():
-    # Equal times are where two heaps could disagree; use many.
-    rng = np.random.default_rng(27)
-    ours = _events._EventQueue()
-    theirs: queue.PriorityQueue = queue.PriorityQueue()
-    for step in range(2000):
-        if rng.random() < 0.6 or theirs.empty():
-            event = _events.Event(
-                float(rng.integers(0, 20)), step, bool(rng.random() < 0.5)
-            )
-            ours.put(event)
-            theirs.put(event)
-        else:
-            assert ours.get() is theirs.get()
-        assert ours.qsize() == theirs.qsize()
-        assert ours.empty() == theirs.empty()
 
 
 # -- the event loop's speedups ------------------------------------------------

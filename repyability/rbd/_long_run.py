@@ -329,7 +329,7 @@ def _crew_chain_route(rbd) -> "AnalysisRoute":
         + (
             " A common-cause group's shared causes strike in the chain: "
             "the members up fail at once and join the queue in the "
-            "group's order."
+            "diagram's order."
             if rbd.ccf_groups
             else ""
         ),

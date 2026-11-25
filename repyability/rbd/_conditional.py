@@ -90,10 +90,11 @@ class Paths:
 def paths(histories: List[Any], n: int, end: float) -> Paths:
     """The modules' joint histories from each module's (``_Data``, one
     history per simulation, see ``repyability.timelines``). Changes of
-    several modules at one instant are taken as the event loop takes them:
-    failures first, then planned outages (a maintenance group's stop
-    follows the failure that opens it), then restorations, a module's own
-    changes at one instant together and in their order."""
+    several modules at one instant are taken as the event loop takes them
+    (the rule of ``_events._EventQueue``) failures first, then
+    planned outages (a maintenance group's stop follows the failure that
+    opens it), then restorations, by module in the diagram's order, a
+    module's own changes at one instant together and in their order."""
     sims, times, modules, downs, planned, ranks = [], [], [], [], [], []
     start = np.zeros(n, dtype=np.int64)
     for j, data in enumerate(histories):

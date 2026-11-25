@@ -28,12 +28,11 @@ state. ``calls`` is the rate at which it is called in each state and
 With common-cause groups (``shared``, #251), a shared cause strikes at its
 rate and fails the components it names that are up, at once, as the
 simulation's does (``_event_loop._strike``): they join the queue one after
-another in the cause's order, each as a failure of its own would. The
-simulation takes the first that way, and the others in the order its event
-queue releases events at one time, which is the cause's order for one
-other and not a rule for more: the chain takes causes of two components
-(``MAX_STRUCK``). A component of a group fails on its own at its own
-cause's rate, which is what ``failure_rates`` then holds.
+another in the diagram's order, each as a failure of its own would, which
+is the order the simulation's event queue takes failures at one instant
+in (``_events._EventQueue``), however many the cause strikes. A
+component of a group fails on its own at its own cause's rate, which is
+what ``failure_rates`` then holds.
 
 A component may stand for several alike copies (``copies``, for the
 redundancy allocation's designs): a state then says how many of them are
@@ -72,9 +71,6 @@ import numpy as np
 
 #: The most states the chain is solved for.
 MAX_STATES = 15_000
-
-#: The most components a shared cause may strike (see the module docstring).
-MAX_STRUCK = 2
 
 #: A state: the components under repair (sorted), and those waiting, in the
 #: order the crews will take them.
@@ -308,7 +304,7 @@ def _enumerate(
             if after != state or call:
                 reach(source, after, up[i] * rate, i, call)
         for struck, rate, group in shared:
-            # Those up fail one after another, in the cause's order.
+            # Those up fail one after another, in the diagram's order.
             after, called = state, 0
             for i in struck:
                 if up[i]:
@@ -361,7 +357,7 @@ def solve(
         is none).
     shared : sequence, optional
         The common-cause groups' shared causes, each ``(positions of the
-        components it strikes, in its order; its rate; its group's
+        components it strikes, in the order they fail in; its rate; its group's
         place)``; ``failure_rates`` are then the components' own causes'.
     copies : Sequence[int], optional
         How many alike copies each component stands for (one each, by

@@ -121,6 +121,32 @@ release between minors that only adds (0.19.1).
   `availability()` on such a diagram now take the exact means by default
   (`control_variate=False` for the simulations' own).
 
+### Changed
+
+- **Events at one instant are taken in a stated order** in a
+  `RepairableRBD` simulation, on both engines: failures, then planned
+  stops, then restorations; within each, a shared common cause or a
+  shutdown before the nodes, and the nodes in the diagram's order. Until
+  now the order of ties came from the shape of the event queue's heap. The
+  repair crews' Markov chain now takes common-cause strikes of any number
+  of members (three or more were refused), and queues a strike's members
+  in the diagram's order rather than the order the group names them in.
+  See the simulation guide's "Events at one instant". This changes
+  results only where events tie:
+  - the exact long-run and over-time values with repair crews and a
+    common-cause group that names its members in another order than the
+    diagram's (a group `["b", "a"]` on a diagram whose components are `a`
+    then `b` is now repaired `a` first, as `["a", "b"]` is);
+  - seeded simulations with ties. On the test catalogue's diagrams, three
+    seeded results changed and none other: the restoration criticality
+    index of a system with tested `Shocks` (1.4008 to 1.4224 over 150
+    simulations) and of a shutdown of the line with its tasks (1.0086 to
+    1.0220), where tests or tasks end at one instant, and a cost total in
+    its last bit (2927.857805877194 to 2927.8578058771946). Every count,
+    up time and availability was unchanged.
+- `engines.API` is now 4: an engine from another package must take ties
+  in the same order to give the same results as the built-in engines.
+
 ### Fixed
 
 - A parameter sensitivity or uncertainty no longer takes a regression

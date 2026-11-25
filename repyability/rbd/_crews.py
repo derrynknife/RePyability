@@ -211,15 +211,17 @@ def _crew_causes(rbd, nodes) -> Tuple[Dict[Any, float], List[tuple]]:
     common-cause groups (#251), as the simulation strikes them (see
     ``_ccf_groups._shared_causes``): each node's own cause's rate (its
     failure rate, outside the groups), and the shared causes, each ``(the
-    places in nodes of the members it strikes, in its order; its rate;
-    its group's place)``. A member not among ``nodes`` (held working, it
-    never fails, and held broken it is never repaired) is struck no more,
-    and the causes it shares still strike the others. Raise if the chain
-    does not take a group in: a cause that strikes more than
-    ``_crew_chain.MAX_STRUCK`` members, or a member repaired instantly."""
+    places in nodes of the members it strikes, in the diagram's order,
+    which is the order the simulation's queue takes failures at one
+    instant in (see ``_events._EventQueue``); its rate; its group's
+    place)``. A member not among ``nodes`` (held working, it never fails,
+    and held broken it is never repaired) is struck no more, and the
+    causes it shares still strike the others. Raise if the chain does not
+    take a group in: a member repaired instantly."""
     rates = _crew_chain_rates(rbd)
     own = {node: rates[node][0] for node in nodes}
     place = {node: k for k, node in enumerate(nodes)}
+    order = {node: k for k, node in enumerate(rbd.components)}
     shared: List[tuple] = []
     for g, group in enumerate(rbd.ccf_groups):
         members = list(group.members)
@@ -238,17 +240,10 @@ def _crew_causes(rbd, nodes) -> Tuple[Dict[Any, float], List[tuple]]:
                 if members[struck[0]] in place:
                     own[members[struck[0]]] = rate
                 continue
-            if len(struck) > crew_chain.MAX_STRUCK:
-                _no_crew_chain(
-                    rbd,
-                    "it takes shared causes that strike "
-                    f"{crew_chain.MAX_STRUCK} components, and {where} "
-                    f"({group.model!r}) has one that strikes "
-                    f"{len(struck)}: the simulation queues components "
-                    "struck at one instant in the order its event queue "
-                    "releases them, which is a rule only for two",
-                )
-            left = [members[i] for i in struck if members[i] in place]
+            left = sorted(
+                (members[i] for i in struck if members[i] in place),
+                key=order.__getitem__,
+            )
             if len(left) == 1:
                 own[left[0]] += rate
             elif left:

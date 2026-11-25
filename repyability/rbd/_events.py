@@ -33,30 +33,89 @@ if TYPE_CHECKING:
 _UNIT_FAILS, _SPARE_FAILS, _UNIT_REPAIRED = 0, 1, 2
 
 
+#: The classes of event at one instant, in the order they are taken (see
+#: ``_EventQueue``): a failure, a planned stop (maintenance or a test
+#: taking a unit down, a shutdown starting) and a restoration (any event
+#: that leaves its node up).
+FAILURE, STOP, RESTORATION = 0, 1, 2
+
+#: How far a tie's class is shifted above a place in its rank, and where
+#: the nodes' places start, after the causes' and shutdowns' (a diagram has
+#: fewer of either than this).
+_CLASS_SHIFT = 32
+_NODES_FROM = 1 << 31
+
+
+def tie_class(event: "Event") -> int:
+    """The class of ``event`` among events at one instant (``FAILURE``,
+    ``STOP`` or ``RESTORATION``; see ``_EventQueue``)."""
+    if event.status:
+        return RESTORATION
+    if event.preventive or event.inspection:
+        return STOP
+    return FAILURE
+
+
 class _EventQueue:
-    """The simulation's event queue.
+    """The simulation's event queue: a heap (``heapq``) of ``(time, rank,
+    event)`` entries.
 
-    ``queue.PriorityQueue`` is this same heap (``heappush``/``heappop``) plus
-    thread locking on every operation, which a single-threaded simulation
-    only pays for; events come out in exactly the same order.
+    **Events at one instant are taken in a stated order**: by their
+    class, failures first, then planned stops (maintenance or a test that
+    takes a unit down, a shutdown's start), then restorations (every event
+    that leaves its node up: a repair's end, maintenance in zero time, a
+    test that finds a unit working, a shutdown's end); and within a class
+    the diagram's shared common causes and shutdowns first, in the order
+    they were first queued, then the nodes, by their place in the diagram
+    (their order in ``components``). A standby or load-sharing group's
+    event is its next unit's: a unit failing, a failure, and a repair done,
+    a restoration. So the members a common cause strikes at one instant
+    fail in the diagram's order, a failure at the instant of another node's
+    repair is taken before it, as the conditional runs' paths take them
+    (``_conditional.paths``), and a shutdown that ends as the work done in
+    it does lets its nodes go before their own restorations. A node has one
+    event in the queue that is taken (an entry superseded is skipped,
+    wherever it falls), so the rank orders every tie that matters. The
+    compiled engine's heap (``_kernel._push``, ``_pop``) orders by the same
+    key.
 
-    The heap holds ``(time, event)`` pairs, so that times compare as floats
-    rather than through the events' own ordering. Two events at the same time
-    compare equal either way, so ties come out as they would with the events
-    alone. (A ``(time, counter, event)`` entry would release ties in the
-    order they were queued instead, which changes the results.)
+    ``rank`` is ``class << 32 | place`` (a node's place from ``1 << 31``),
+    one integer, so that entries compare as a float and an integer rather
+    than through the events.
     """
 
-    __slots__ = ("_heap",)
+    __slots__ = ("_heap", "_places", "_others")
 
-    def __init__(self):
+    def __init__(self, nodes=()):
         self._heap: list = []
+        self._places = {node: _NODES_FROM + k for k, node in enumerate(nodes)}
+        # The causes' and shutdowns' places, by identity (a cause is a
+        # dataclass, which two causes could be equal as).
+        self._others: Dict[int, int] = {}
 
-    def put(self, event: "Event") -> None:
-        heapq.heappush(self._heap, (event.time, event))
+    def rank(self, event: "Event", tie: Optional[int] = None) -> int:
+        """``event``'s rank among events at its time: its class (``tie``
+        when given) above its node's place."""
+        node = event.component
+        place = self._places.get(node)
+        if place is None:
+            others = self._others
+            place = others.get(id(node))
+            if place is None:
+                place = others[id(node)] = len(others)
+        if tie is None:
+            tie = tie_class(event)
+        return (tie << _CLASS_SHIFT) | place
+
+    def entry(self, event: "Event", tie: Optional[int] = None) -> tuple:
+        """``event``'s entry in the heap."""
+        return (event.time, self.rank(event, tie), event)
+
+    def put(self, event: "Event", tie: Optional[int] = None) -> None:
+        heapq.heappush(self._heap, self.entry(event, tie))
 
     def get(self) -> "Event":
-        return heapq.heappop(self._heap)[1]
+        return heapq.heappop(self._heap)[2]
 
     def empty(self) -> bool:
         return not self._heap
@@ -324,7 +383,9 @@ class _StandbyGroup:
             self.entry = None
             return
         self.entry = Event(events[0][0], self._node, self.up)
-        self._rbd._run_state._event_queue.put(self.entry)
+        # Ranked at its instant as its unit's event (see _EventQueue).
+        tie = RESTORATION if events[0][2] == _UNIT_REPAIRED else FAILURE
+        self._rbd._run_state._event_queue.put(self.entry, tie)
 
     def holds(self, event: "Event") -> bool:
         """Whether ``event``, from the RBD's queue, is the group's current

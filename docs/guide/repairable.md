@@ -853,8 +853,9 @@ birth-death chain, and the system is down when all three are.)
   no crew, and the others share them. The chain takes
   [common-cause groups](common-cause.md) in too: a shared cause fails the
   members it names that are up at once, and they join the queue in the
-  group's order (causes that strike two members; more refuse, for the
-  simulation).
+  diagram's order, as the simulation takes [events at one
+  instant](simulation.md#events-at-one-instant), however many a cause
+  strikes.
 - **Over time.** From new, or from the components' states, the same chain
   is followed over time by uniformization: its state after a Poisson
   number of steps of a discrete chain, taken until it has settled at its

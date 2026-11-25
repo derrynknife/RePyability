@@ -4,8 +4,9 @@ With limited repair crews a shared cause's failures queue for the crews
 with the other components', so a group's own chain does not follow them:
 the crews' chain takes the groups in. A shared cause strikes at its rate
 and fails the members it names that are up, which join the queue one
-after another in the cause's order, as the simulation's do
-(``_event_loop._strike``). Here: the chain against states solved by hand,
+after another in the diagram's order, as the simulation's do
+(``_event_loop._strike``, the event queue taking failures at one instant
+in the diagram's order). Here: the chain against states solved by hand,
 against the chain without groups, against the groups' own chain where no
 job waits, and against the simulation (which is given nothing of the
 chain); the failure frequency against the chain's own flows; and what
@@ -56,10 +57,12 @@ def pair(beta=BETA, crews=1, model=None, **options):
     )
 
 
-def ladder(members="ab", crews=1, model=None, priority=None, **options):
+def ladder(
+    members="ab", crews=1, model=None, priority=None, order="ab", **options
+):
     components = {
         m: unit(priority=(priority or {}).get(m, 0), repair_cost=3.0)
-        for m in "ab"
+        for m in order
     }
     components["z"] = unit(0.03, 0.2)
     return RepairableRBD(
@@ -125,7 +128,7 @@ def test_two_members_and_one_crew_are_the_chain_solved_by_hand():
     assert rbd.system_failure_frequency() == pytest.approx(
         float((beta * lam * p0 + lam * p1) / total), rel=1e-13
     )
-    # A strike queues the members in the cause's order: a is repaired
+    # A strike queues the members in the diagram's order: a is repaired
     # first. The states with both down: a's repair with b waiting, from
     # the strike or b's failure; b's with a waiting, from a's failure.
     chain = _crews._crew_chain(rbd)
@@ -211,13 +214,15 @@ def test_the_failure_frequency_is_the_chain_s_flows(members, crews):
     )
 
 
-def test_the_order_of_a_cause_s_members_is_the_queue_s():
-    # Struck together with the crew free, the first in the cause's order
+def test_the_diagram_s_order_is_the_queue_s():
+    # Struck together with the crew free, the first in the diagram's order
     # is repaired first, whatever the priorities (they order the jobs
-    # that wait): a first keeps the system up more.
-    first, last = ladder("ab"), ladder("ba")
+    # that wait) and the order the group names them in: a first keeps the
+    # system up more.
+    first, last = ladder("ab"), ladder("ab", order="ba")
+    assert ladder("ba").mean_availability() == first.mean_availability()
     assert first.mean_availability() > last.mean_availability() + 1e-3
-    urgent = ladder("ba", priority={"a": 1})
+    urgent = ladder("ab", order="ba", priority={"a": 1})
     assert urgent.mean_availability() > last.mean_availability()
     assert urgent.mean_availability() < first.mean_availability()
 
@@ -313,10 +318,17 @@ def call_out():
     [
         lambda: ladder("ab"),
         lambda: ladder("ba", crews=2, priority={"a": 1}),
+        lambda: ladder("ab", order="ba"),
         call_out,
         lambda: ladder("ab", model=BetaFactor(0.3)),
     ],
-    ids=["one crew", "two crews", "two groups, a call-out crew", "by Q"],
+    ids=[
+        "one crew",
+        "two crews",
+        "the diagram's order",
+        "two groups, a call-out crew",
+        "by Q",
+    ],
 )
 def test_the_simulation_agrees_with_the_chain(build):
     T, n = 300.0, 6000
@@ -376,32 +388,69 @@ def test_the_report_says_the_chain_has_the_groups():
         assert report[method].route == r.NUMERICAL, method
 
 
-def test_a_cause_of_three_members_is_left_to_the_simulation():
-    rbd = RepairableRBD(
+def triple(members="abc", order="abc", crews=1):
+    """Three alike units in parallel, one crew, a group whose shared causes
+    strike two or all three."""
+    return RepairableRBD(
         [("s", n) for n in "abc"] + [(n, "t") for n in "abc"],
-        {n: unit() for n in "abc"},
-        repair_crews=1,
-        ccf_groups=[CCFGroup(list("abc"), BetaFactor(0.2, basis="rate"))],
-    )
-    with pytest.raises(NotImplementedError, match="one that strikes 3") as e:
-        rbd.mean_availability()
-    assert "availability() or cost()" in str(e.value)
-    with pytest.raises(NotImplementedError, match="one that strikes 3"):
-        rbd.point_availability(10.0)
-    report = rbd.analysis_routes()
-    assert report["mean_availability"].route == r.REFUSED
-    assert report["availability"].route == r.SIMULATED
-    rbd.availability(50.0, mc_samples=20, seed=1)
-    # Three members whose causes strike two at most are taken.
-    pairs = RepairableRBD(
-        [("s", n) for n in "abc"] + [(n, "t") for n in "abc"],
-        {n: unit() for n in "abc"},
-        repair_crews=1,
+        {n: unit() for n in order},
+        repair_crews=crews,
         ccf_groups=[
-            CCFGroup(list("abc"), AlphaFactor([0.7, 0.3, 0.0], basis="rate"))
+            CCFGroup(
+                list(members), AlphaFactor([0.6, 0.25, 0.15], basis="rate")
+            )
         ],
     )
-    assert 0.0 < pairs.mean_availability() < 1.0
+
+
+def test_a_cause_of_three_members_is_the_chain_s():
+    # The chain takes a strike of any number: the simulation's
+    # queue takes failures at one instant in the diagram's order. Before,
+    # three or more refused, as the simulation took them in the order of
+    # its heap's shape.
+    rbd = triple()
+    report = rbd.analysis_routes()
+    assert report["mean_availability"].route == r.EXACT
+    assert report["point_availability"].route == r.NUMERICAL
+    assert 0.0 < rbd.mean_availability() < 1.0
+    # The order the group names its members in changes nothing.
+    for members in ("bca", "cab", "acb"):
+        assert triple(members).mean_availability() == pytest.approx(
+            rbd.mean_availability(), rel=1e-13
+        )
+
+
+@pytest.mark.parametrize("members", ["abc", "acb", "bca", "cba"])
+def test_three_struck_at_once_agree_with_the_chain(members):
+    # The case that showed the heap's order: a three-member group
+    # with one crew, at four orders of the group's members. Before, two of
+    # the four were about 3 standard errors off the chain in 20,000 runs.
+    # The ladder's a and b are in series with z: which of the three a crew
+    # takes first matters.
+    T, n = 300.0, 20_000
+    rbd = RepairableRBD(
+        LADDER,
+        {"a": unit(), "b": unit(), "z": unit()},
+        repair_crews=1,
+        ccf_groups=[
+            CCFGroup(
+                list(members.replace("c", "z")), BetaFactor(0.4, basis="rate")
+            )
+        ],
+    )
+    run = rbd.availability(
+        T, mc_samples=n, seed=20261125, control_variate=False
+    )
+    events = rbd.expected_events(T)
+    down = T - np.asarray(run.uptimes)
+    assert abs(down.mean() - events.system_downtime) < 4.0 * (
+        down.std(ddof=1) / math.sqrt(n)
+    )
+    for node in rbd.nodes:
+        node_down = run.node_downtime[node] / n
+        assert node_down == pytest.approx(
+            events.node_downtime[node], rel=0.02
+        ), node
 
 
 def test_members_the_chain_has_no_place_for_refuse():
