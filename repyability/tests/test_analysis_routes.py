@@ -1208,6 +1208,32 @@ def test_the_readme_says_what_is_simulated():
                 ("availability", "simulated"),
             )
         ],
+        "An upgraded part (another life from a time)": [
+            (repairable[name], analysis, route)
+            for name in (
+                "upgraded at a time",
+                "upgraded at a time, block-replaced",
+                "upgraded at a time, age-replaced",
+                "upgraded at a time, tested",
+            )
+            for analysis, route in (
+                ("expected_npv", "numerical"),
+                ("point_availability", "numerical"),
+                ("availability", "simulated"),
+            )
+        ]
+        + [
+            (
+                repairable["upgraded at a time, the unit in service kept"],
+                "expected_npv",
+                "refused",
+            ),
+            (
+                repairable["upgraded at a time, the unit in service kept"],
+                "availability",
+                "simulated",
+            ),
+        ],
         "Spares with repair crews, standby groups, opportunistic "
         "maintenance, imperfect repair or partial restoration": [
             (crew, "spares_stock", "refused"),

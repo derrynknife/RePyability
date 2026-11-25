@@ -508,6 +508,59 @@ def _upgraded(rbd) -> str:
     return f"Component {node!r} is upgraded at {upgrade.at:g}"
 
 
+def _upgrade_kind(rbd, node) -> Optional[str]:
+    """How an upgraded component's values over a horizon are worked out
+    (None if it is not upgraded): ``"plan"``, as the stretches of a plan
+    (an upgrade alone, or with block replacement, see
+    ``_curves._plan_curve``); ``"age"``, under age replacement, its
+    renewal equation on each side of the upgrade, and ``"tests"``, with
+    tests, its tests' model on each side (see
+    ``_curves._upgraded_curve``); ``"kept"``, the unit in service kept
+    past the upgrade (``replace_in_service`` False), not worked out."""
+    upgrade = rbd._upgrades.get(node)
+    if upgrade is None:
+        return None
+    if upgrade.kept:
+        return "kept"
+    if node in rbd._inspection:
+        return "tests"
+    if rbd._preventive[node].policy == "age":
+        return "age"
+    return "plan"
+
+
+def _require_upgrade_followed(rbd, node) -> None:
+    """Raise unless an upgraded component's values over a horizon are
+    worked out (see ``_upgrade_kind``): not for a unit kept in service
+    past the upgrade, nor with tests other than in no time, repaired in
+    no time, finding every failure, on a period of their own."""
+    kind = _upgrade_kind(rbd, node)
+    if kind == "kept":
+        raise NotImplementedError(
+            f"Component {node!r} keeps the unit in service at its upgrade "
+            "(replace_in_service False) until its next failure or due "
+            "replacement, whose values over a horizon are not worked out "
+            "yet: estimate them by simulation, with availability() or "
+            "cost() (or npv_distribution())."
+        )
+    if kind != "tests":
+        return
+    inspection = rbd._inspection[node]
+    if not (
+        _instant_tests(rbd, node)
+        and not inspection.partial
+        and inspection.times is None
+        and inspection.clock is None
+    ):
+        raise NotImplementedError(
+            f"Component {node!r} has tests and is upgraded at a time, "
+            "whose values over a horizon are worked out for tests and "
+            "repairs in no time that find every failure, on a period of "
+            "their own: estimate them by simulation, with availability() "
+            "or cost() (or npv_distribution())."
+        )
+
+
 def _require_no_plans(rbd) -> None:
     """Raise if a component is replaced at the times of a plan, which
     ends, or upgraded at a time: the diagram has then no long run (nor a
@@ -540,7 +593,17 @@ def _require_no_plans(rbd) -> None:
 def _check_plan_state(rbd, node, state) -> None:
     """Refuse a state that a component replaced at the times of a plan
     cannot be given: a ``since_scheduled`` (its plan's times, from now,
-    place its replacements) and the long-run state (it has none)."""
+    place its replacements) and the long-run state (it has none). An
+    upgraded component with tests has no long-run state either, but its
+    tests' calendar is its own (a since_scheduled places it)."""
+    if node in rbd._upgrades and node in rbd._inspection:
+        if state.stationary:
+            raise ValueError(
+                f"Component {node!r} is upgraded at a time, so it has no "
+                "long-run state: give its age now (NodeState(age=...)), or "
+                "leave it out (new)."
+            )
+        return
     schedule = rbd._preventive.get(node)
     if schedule is None or (
         schedule.plan is None and node not in rbd._upgrades

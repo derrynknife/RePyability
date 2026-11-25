@@ -169,7 +169,13 @@ def test_the_simulation_agrees_from_new_and_from_a_state():
 @pytest.mark.parametrize(
     "more",
     [
-        {"preventive": {"policy": "age", "interval": 100.0}},
+        {
+            "preventive": {
+                "policy": "condition",
+                "interval": 100.0,
+                "threshold": 0.1,
+            }
+        },
         {"preventive": {**TASK, "replace_at": [100.0], "interval": None}},
     ],
 )
@@ -178,9 +184,9 @@ def test_other_tasks_on_an_upgraded_part_are_refused(more):
         one(upgrade={"at": 400.0, "reliability": LIFE}, **more)
     assert str(error.value) == (
         "Component 'a' has an upgrade and a preventive task other than "
-        "block replacement on its own interval ('policy': 'block'), which "
-        "are not taken together yet: give it block replacement, or one or "
-        "the other."
+        "block replacement on its own interval ('policy': 'block') or age "
+        "replacement ('policy': 'age'), which are not taken together yet: "
+        "give it one of those, or one or the other."
     )
 
 

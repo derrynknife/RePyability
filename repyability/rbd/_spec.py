@@ -83,7 +83,7 @@ COMPONENT_SPEC_KEYS = (
 VALUATION_KEYS = ("salvage", "escalation", "retire_at")
 
 #: The keys of a component's ``"upgrade"`` spec.
-UPGRADE_KEYS = ("at", "reliability", "cost")
+UPGRADE_KEYS = ("at", "reliability", "cost", "replace_in_service")
 
 #: The models of imperfect repair a spec's ``"repair"`` can name.
 REPAIR_MODELS = ("kijima1", "kijima2")
@@ -1005,8 +1005,10 @@ def _validate_level(node, spec: dict, policy: str, life) -> Optional[float]:
 def _validate_upgrade(node, spec: dict) -> _Upgrade:
     """A component spec's ``"upgrade"``, validated: the time (in the
     diagram's time from 0) from which its units have another life, that
-    life, and the capital cost charged then. An upgraded component is a
-    plain one: its schedule is the upgrade."""
+    life, the capital cost charged then, and whether the unit in service
+    then stays in service (``replace_in_service`` False). An upgraded
+    component takes block or age replacement on its own interval, or
+    tests, and no other task."""
     from repyability.utils.checks import no_distribution
 
     upgrade = spec["upgrade"]
@@ -1025,7 +1027,7 @@ def _validate_upgrade(node, spec: dict) -> _Upgrade:
     task = spec.get("preventive")
     if task is not None and not (
         isinstance(task, dict)
-        and task.get("policy") == "block"
+        and (task.get("policy") or "age") in ("block", "age")
         and not any(
             task.get(key) is not None
             for key in (
@@ -1041,11 +1043,11 @@ def _validate_upgrade(node, spec: dict) -> _Upgrade:
         raise ValueError(
             f"Component {node!r} has an upgrade and a preventive task "
             "other than block replacement on its own interval ('policy': "
-            "'block'), which are not taken together yet: give it block "
-            "replacement, or one or the other."
+            "'block') or age replacement ('policy': 'age'), which are not "
+            "taken together yet: give it one of those, or one or the "
+            "other."
         )
     for key, what in (
-        ("inspection", "an inspection"),
         ("standby", "standby units"),
         ("repair", "an imperfect repair"),
         ("replace_after", "an imperfect repair"),
@@ -1084,7 +1086,15 @@ def _validate_upgrade(node, spec: dict) -> _Upgrade:
     cost = 0.0
     if upgrade.get("cost") is not None:
         cost = _validate_cost(node, "the upgrade's cost", upgrade["cost"])
-    return _Upgrade(at, life, cost)
+    replace = upgrade.get("replace_in_service", True)
+    if not isinstance(replace, (bool, np.bool_)):
+        raise ValueError(
+            f"Component {node!r}: the upgrade's replace_in_service must be "
+            "True (the unit in service at the upgrade is replaced then, "
+            "the default) or False (it stays until its next failure or "
+            f"due replacement), got {replace!r}."
+        )
+    return _Upgrade(at, life, cost, not bool(replace))
 
 
 def _group_key(spec: dict) -> Optional[str]:

@@ -809,9 +809,57 @@ gives the upgrade's worth run by run, with its spread. An upgraded
 component may also be under block replacement on its own interval
 (`"preventive": {"policy": "block", ...}`): it is replaced every
 interval with the life in service, and at the upgrade's time as at a
-block time (at its cost and in its time, beside the capital cost). Age
-replacement, tests and the other tasks are not taken with an upgrade
-yet.
+block time (at its cost and in its time, beside the capital cost). Under
+age replacement (`"policy": "age"`) the unit up at the upgrade is
+replaced as at its age (at its cost and in its time), and each unit's
+age is counted from when it was put in, so the new unit's clock starts
+at the upgrade; its curve is its renewal equation up to the upgrade,
+and from there the new life's, from the states the unit may be in
+then (up and replaced, or still in a repair or a replacement, which
+ends with the new life). With tests (`"inspection"`), the unit in
+service at the upgrade is replaced in no time, a unit failed unseen
+too (a test due then is not done), and the new unit is tested on the
+same calendar: worked out over a
+horizon for tests and repairs in no time that find every failure, and
+simulated otherwise. The other tasks are not taken with an upgrade yet.
+
+By default the unit in service at the upgrade is replaced then. With
+`"replace_in_service": False` it stays until its next failure or due
+replacement (its age, its block time, or a test that finds it failed),
+and the unit put in then has the new life: a part bought now and fitted
+when the old one comes out. That is simulated (`availability`, `cost`,
+`npv_distribution`, `compare_npv`); its values over a horizon refuse,
+saying so.
+
+```python
+newer = surv.Weibull.from_params([12000.0, 2.0])
+
+def upgraded_pump(**more):
+    return RepairableRBD(
+        [("in", "pump"), ("pump", "out")],
+        {"pump": {
+            "reliability": surv.Weibull.from_params([6000.0, 2.0]),
+            "repairability": surv.Exponential.from_params([1 / 24.0]),
+            "repair_cost": 5000.0,
+            "preventive": {
+                "policy": "age", "interval": 4000.0, "cost": 2500.0,
+                "duration": surv.ExactEventTime.from_params([12.0]),
+            },
+            "upgrade": {"at": 26280.0, "reliability": newer,
+                        "cost": 40000.0, **more},
+        }},
+        downtime_cost_rate=400.0,
+    )
+
+swapped = upgraded_pump()
+held = upgraded_pump(replace_in_service=False)
+swapped.mission_availability(70080.0)            # -> 0.99613
+swapped.expected_cost(70080.0).mean              # -> 204836.6
+swapped.compare_npv(held, 70080.0, discount_rate=math.log(1.08) / 8760.0,
+                    mc_samples=2000, seed=1)
+# -> mean -1258.3 (standard error 114.2): fitting the new pump when the
+#    old one comes out is worth about 1,260 more over eight years
+```
 
 ### A plan against what happened
 

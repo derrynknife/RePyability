@@ -141,6 +141,12 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
         message = r.refusal(partial(check, node))
         if message:
             return r.REFUSED, message
+    if node in rbd._upgrades:
+        # Another life from a time: no long run of its own (the
+        # long-run methods ask the diagram after its upgrades).
+        return r.REFUSED, str(
+            r.refusal(partial(_requirements._require_no_plans, rbd))
+        )
     if node in rbd._imperfect:
         # Passed _require_perfect_repair: minimally repaired and
         # replaced, a renewal cycle (#402).
@@ -392,11 +398,19 @@ def node_availability(rbd) -> dict[Hashable, float]:
     return out
 
 
+def _require_not_upgraded(rbd, node) -> None:
+    """Raise for an upgraded component: it has no long run of its own
+    (see ``after_upgrades``)."""
+    if node in rbd._upgrades:
+        _requirements._require_no_plans(rbd)
+
+
 def _node_availability(rbd, node) -> float:
     """A component's long-run availability (see ``node_availability``):
     with limited repair crews, its long-run probability of being up in
     their Markov chain, or a nested RBD's own, as it has crews of its
     own."""
+    _require_not_upgraded(rbd, node)
     _requirements._require_perfect_repair(rbd, node)
     _requirements._require_times(rbd, node)
     if rbd._crews_couple():
@@ -1293,6 +1307,7 @@ def _node_frequencies(rbd, node) -> Tuple[float, float, float]:
     from its renewal cycle for one under age replacement."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
+    _require_not_upgraded(rbd, node)
     _requirements._require_perfect_repair(rbd, node)
     _requirements._require_times(rbd, node)
     _shocked(rbd, node)
@@ -1622,6 +1637,23 @@ def after_upgrades(rbd):
             components[node] = spec
         twin = type(rbd)(**{**rbd._init_args, "components": components})
         rbd._upgraded_twin = twin
+    return twin
+
+
+def before_upgrades(rbd):
+    """The diagram as it is until its upgrades: each upgraded component
+    with its own life and no upgrade (its tasks and tests kept), for its
+    values up to an upgrade (see ``_curves._upgraded_curve``). Built
+    once and kept."""
+    twin = getattr(rbd, "_unupgraded_twin", None)
+    if twin is None:
+        components = dict(rbd._init_args["components"])
+        for node in rbd._upgrades:
+            spec = dict(components[node])
+            spec.pop("upgrade")
+            components[node] = spec
+        twin = type(rbd)(**{**rbd._init_args, "components": components})
+        rbd._unupgraded_twin = twin
     return twin
 
 

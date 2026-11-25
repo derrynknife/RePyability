@@ -778,6 +778,46 @@ def repairable_kinds():
                     repair_cost=5.0,
                 ),
             ),
+            # Upgraded and age-replaced: the unit up at the upgrade
+            # replaced as at its age, over a horizon (UC-72).
+            "upgraded at a time, age-replaced": system(
+                unit(
+                    preventive={
+                        "interval": 200.0,
+                        "cost": 3.0,
+                        "duration": surv.ExactEventTime.from_params([2.0]),
+                    },
+                    upgrade={
+                        "at": 300.0,
+                        "reliability": W([900, 2.0]),
+                        "cost": 50.0,
+                    },
+                    repair_cost=5.0,
+                ),
+            ),
+            # Upgraded with tests: the unit in service replaced at the
+            # upgrade, and the new one tested on the same calendar.
+            "upgraded at a time, tested": system(
+                unit(
+                    repairability="instant",
+                    inspection={"interval": 100.0, "cost": 1.0},
+                    upgrade={"at": 250.0, "reliability": W([900, 2.0])},
+                    repair_cost=5.0,
+                ),
+            ),
+            # Upgraded, the unit in service kept until it fails or is
+            # due: simulated.
+            "upgraded at a time, the unit in service kept": system(
+                unit(
+                    preventive={"interval": 200.0, "cost": 3.0},
+                    upgrade={
+                        "at": 250.0,
+                        "reliability": W([900, 2.0]),
+                        "replace_in_service": False,
+                    },
+                    repair_cost=5.0,
+                ),
+            ),
             "block replacement, in no time": system(
                 unit(
                     repairability="instant",

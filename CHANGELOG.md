@@ -12,6 +12,33 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- An upgraded component (a spec's `"upgrade"`) may be under age
+  replacement (`"preventive"` with `"policy": "age"`) or tested for
+  hidden failures (`"inspection"`), which were refused. Under age
+  replacement the unit up at the upgrade is replaced as at its age (at
+  its cost and in its time, beside the capital cost) and every unit put
+  in from then has the new life, its age counted from when it was put
+  in; with tests, the unit in service, working or failed unseen, is
+  replaced in no time, and the new unit is tested on the same calendar.
+  Over a horizon (`point_availability`, `expected_events`,
+  `expected_cost`, `expected_npv`) the old life's curve is followed to
+  the upgrade and the new life's from the states the unit may be in
+  then (up and replaced, or still in a repair or replacement, which ends
+  with the new life), for tests and repairs in no time that find every
+  failure; tests that take time or miss failures are simulated. The
+  Python loop simulates them (the compiled engine leaves an upgrade to
+  it, naming it). Checked against a memoryless unit's chain and a tested
+  unit's closed form, against age replacement alone for an upgrade to
+  the same life, and against 20,000 simulations from new and from
+  states (UC-72 of the maintenance README). No seeded result changes.
+- The upgrade's `"replace_in_service"` (and `Upgrade(replace_in_service=)`
+  in a `UnitPlan`): True by default (the unit in service at the upgrade
+  is replaced then); False keeps it in service until its next failure or
+  due replacement (its age, its block time, or a test that finds it
+  failed), and the unit put in then has the new life. Simulated, with
+  any task an upgrade takes; its values over a horizon refuse, naming
+  the simulation. Saved by `rbd_to_dict`.
+
 - A salvage by age in the simulated runs (`npv_distribution`,
   `compare_npv`, `best_switch_time`, a service's values) for the units
   it refused, whose age at the end is more than the time since they were

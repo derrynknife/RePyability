@@ -902,10 +902,10 @@ class _Preventive(NamedTuple):
     #: shortest of theirs and ``duration`` the longest, which only size
     #: the simulation's streams; None at one shutdown or none.
     shuts: Optional[Tuple[Tuple[Any, Any], ...]] = None
-    #: Under ``"block"`` on its own interval, for an upgraded component
-    #: (see ``_Upgrade``): the upgrade's time, at which the unit is
-    #: replaced as at a block time (at its cost and in its time); None
-    #: for none.
+    #: Under ``"block"`` or ``"age"`` on its own interval, for an
+    #: upgraded component (see ``_Upgrade``): the upgrade's time, at
+    #: which the unit up is replaced as at a block time or its age (at
+    #: its cost and in its time); None for none (or a unit kept).
     upgrade_at: Optional[float] = None
 
     #: Counted in operating time on a duty plan that changes over time
@@ -975,13 +975,20 @@ class _Preventive(NamedTuple):
 
 class _Upgrade(NamedTuple):
     """A component's upgrade (its spec's ``"upgrade"``): at the time
-    ``at`` the unit in service is replaced, in no time, by one of the life
-    ``life``, as is every unit put into service after it, for the capital
-    cost ``cost``, charged then."""
+    ``at`` the unit in service is replaced by one of the life ``life``,
+    as is every unit put into service after it, for the capital cost
+    ``cost``, charged then. The replacement is in no time, or as its
+    block or age replacement's (at its cost and in its time); a unit
+    then in a repair (or a test) is replaced by the new life once it is
+    over. With ``kept`` (its spec's ``"replace_in_service": False``),
+    the unit in service at ``at`` is not replaced then: it stays until
+    its next failure or due replacement, and the unit put into service
+    then has the new life."""
 
     at: float
     life: Any
     cost: float
+    kept: bool = False
 
 
 class _Imperfect(NamedTuple):
@@ -1048,6 +1055,11 @@ class _Inspection(NamedTuple):
     #: the plan's operating time reaches the time it is due at in
     #: operating time; None on the diagram's clock.
     clock: Any = None
+    #: For an upgraded component (see ``_Upgrade``): the upgrade's time,
+    #: at which the unit in service (working, or failed unseen) is
+    #: replaced in no time by one of the new life (a test due then is
+    #: not done); None for none (or a unit kept in service).
+    upgrade_at: Optional[float] = None
 
     @property
     def partial(self) -> bool:

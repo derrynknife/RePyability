@@ -67,6 +67,7 @@ from repyability.rbd._long_run import (
 )
 from repyability.rbd._model_utils import (
     MODEL_ERRORS,
+    distribution_name,
     failure_time_scale,
     is_fixed_probability,
     model_mean,
@@ -76,6 +77,7 @@ from repyability.rbd._point_availability import (
     First,
     InspectionCurve,
     MinimalRepairCurve,
+    MixedCurve,
     PartialTestCurve,
     PlanCurve,
     ShiftedCurve,
@@ -83,6 +85,7 @@ from repyability.rbd._point_availability import (
     SteadyCurve,
     SystemCurve,
     TimeChangedCurve,
+    failed_at,
 )
 from repyability.rbd._point_availability import knots as point_knots
 from repyability.rbd._point_availability import unit_curve
@@ -280,6 +283,11 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
         message = r.refusal(
             partial(_requirements._require_tested_exact, rbd, node)
         )
+    upgraded = _requirements._upgrade_kind(rbd, node)
+    if not message and upgraded is not None:
+        message = r.refusal(
+            partial(_requirements._require_upgrade_followed, rbd, node)
+        )
     schedule = rbd._preventive.get(node)
     calendar = schedule is not None and schedule.policy != "age"
     if not message and calendar:
@@ -288,6 +296,19 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
         )
     if message:
         return r.REFUSED, message
+    if upgraded == "age":
+        return (
+            r.NUMERICAL,
+            "its renewal equation, solved on a grid up to its upgrade, and "
+            "from there with the new life, from the states it may be in "
+            "then",
+        )
+    if upgraded == "tests":
+        return (
+            r.NUMERICAL,
+            "its tests' model up to its upgrade, and from there a new "
+            "unit of the new life's, on the tests' calendar",
+        )
     if calendar and schedule.level is not None:  # type: ignore
         return (
             r.NUMERICAL,
@@ -637,6 +658,8 @@ def _node_curve(
         return TimeChangedCurve(inner, plan)
     if node in rbd._standby:
         return _standby_curve(rbd, node, start)
+    if _requirements._upgrade_kind(rbd, node) not in (None, "plan"):
+        return _upgraded_curve(rbd, node, horizon, degrading, start)
     if node in rbd._imperfect or node not in rbd._inspection:
         # An imperfectly repaired component's goes through
         # _minimal_repair_curve, which refuses one whose failures are
@@ -1809,6 +1832,7 @@ def _unit_curve(
     stages: bool = False,
     start: Optional[NodeState] = None,
     unscheduled: bool = False,
+    first: Optional[First] = None,
 ):
     """A component's point availability from new over ``[0, horizon]``
     (see ``_point_availability.unit_curve``): on a grid of
@@ -1823,7 +1847,9 @@ def _unit_curve(
     see ``_block_curve``. ``start`` starts it from a state rather than
     new (see ``point_availability``). ``unscheduled`` leaves out its
     preventive maintenance, and follows it to the horizon: the head of a
-    block-replacement curve, up to its first block time."""
+    block-replacement curve, up to its first block time. ``first``, in
+    place of a ``start``, gives the unit at 0 itself (see
+    ``_upgraded_curve``)."""
     _requirements._require_time_models(rbd, node)
     _requirements._require_no_opportunities(rbd, node)
     _requirements._require_full_restoration(rbd, node)
@@ -1879,8 +1905,7 @@ def _unit_curve(
                 None if stage_model is None else stage_model.stage_fractions()
             ),
         )
-    first = None
-    if _draws_start(start):
+    if first is None and _draws_start(start):
         first = _first_unit(
             rbd,
             node,
@@ -2225,6 +2250,252 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     results = followed(lengths[1:], reached)
     tail = curve(results, edges[1 : len(lengths)] - length)  # noqa: E203
     return StartedBlockCurve(head, tail, length)
+
+
+def _upgraded_curve(
+    rbd, node, horizon: float, stages: bool, start: Optional[NodeState]
+):
+    """An upgraded component's point availability and events over
+    ``[0, horizon]`` under age replacement or tests (see
+    ``_requirements._upgrade_kind``): its own curve up to the upgrade's
+    time ``at`` (the diagram before its upgrades), and from there the
+    new life's, from the states the unit may be in then (see
+    ``MixedCurve``), as ``StartedBlockCurve`` joins them.
+
+    At ``at`` the unit up is replaced: under age replacement as at its
+    age (at its cost and in its time; a replacement due then is that
+    one), with tests in no time (a unit failed unseen too, uncounted; a
+    test due then is not done, the new unit working). A unit in a
+    repair, or in its age replacement, at ``at`` is back with the new
+    life once it is over: what is left of it is worked out from the
+    failures and replacements before ``at`` (see ``_ongoing``). With
+    tests, the new unit is tested on the component's calendar."""
+    _requirements._require_upgrade_followed(rbd, node)
+    if stages:
+        raise NotImplementedError(
+            f"Component {node!r} is upgraded at a time, whose stages over "
+            "time are not followed across it: estimate them by "
+            "simulation, with availability()."
+        )
+    at = rbd._upgrades[node].at
+    before = _long_run.before_upgrades(rbd)
+    after = _long_run.after_upgrades(rbd)
+    rest = max(horizon - at, 0.0)
+    just_before = np.array([np.nextafter(at, 0.0)])
+    if node in rbd._inspection:
+        head = _node_curve(
+            before,
+            node,
+            before.components[node],
+            at,
+            True,
+            False,
+            False,
+            start,
+        )
+        up = float(head.at(just_before)[0])
+        tests = rbd._inspection[node]
+        # The new unit's tests: on the component's calendar (shifted by
+        # a state's phase, as the simulation's ``_event_loop._due``), the
+        # next after ``at`` (one due at ``at`` is not done).
+        shift = None if start is None else start.since_scheduled
+        if shift or (shift is not None and tests.offset):
+            plain = tests.without_offset()
+            due = plain.due(at + shift) - shift  # type: ignore[operator]
+            if not due > at:
+                due += tests.interval
+        else:
+            due = tests.due(at)
+        phase = tests.interval - (due - at)
+        tail = _node_curve(
+            after,
+            node,
+            after.components[node],
+            rest,
+            True,
+            False,
+            False,
+            NodeState(age=0.0, since_scheduled=max(phase, 0.0)),
+        )
+        return StartedBlockCurve(
+            head, MixedCurve([(1.0, tail)], (up, 0.0, 0.0)), at
+        )
+    head = _unit_curve(before, node, at, counts=True, start=start)
+    up = float(head.at(just_before)[0])
+    repairing = float(np.clip(failed_at(head, just_before)[0], 0.0, 1.0))
+    duration = rbd._preventive[node].duration
+    # What the unit started down in, if it did: a repair or a task.
+    own = None
+    if start is not None and not start.alive:
+        own = (bool(start.maintenance), _own_down(rbd, node, start))
+    repair = _ongoing(
+        head,
+        "failures",
+        rbd.components[node].time_to_replace,
+        at,
+        own[1] if own is not None and not own[0] else None,
+    )
+    parts = []
+    if repair is not None and repairing > 0.0:
+        sf, splits = repair
+        parts.append(
+            (
+                repairing,
+                _unit_curve(
+                    after,
+                    node,
+                    rest,
+                    counts=True,
+                    first=First(down_sf=sf, down_splits=splits),
+                ),
+            )
+        )
+    else:
+        repairing = 0.0
+    replaced = 1.0 - repairing
+    if duration is None:
+        # Replaced in no time: new at ``at``.
+        parts.append((replaced, _unit_curve(after, node, rest, counts=True)))
+        action = (up, 0.0, 0.0)
+    else:
+        # In a replacement from ``at``: those up then, and those whose
+        # age replacement is under way.
+        maintained = max(replaced - up, 0.0)
+        going = _ongoing(
+            head,
+            "planned",
+            duration,
+            at,
+            own[1] if own is not None and own[0] else None,
+        )
+        splits = point_knots(duration)
+        if going is None:
+            maintained = 0.0
+        else:
+            splits = np.union1d(splits, going[1])
+
+        def left(s, going=going, maintained=maintained):
+            out = up * _sf_values(duration.sf, s)
+            if maintained > 0.0:
+                out = out + maintained * going[0](s)  # type: ignore
+            return out / (up + maintained)
+
+        parts.append(
+            (
+                replaced,
+                _unit_curve(
+                    after,
+                    node,
+                    rest,
+                    counts=True,
+                    first=First(
+                        down_sf=left, down_splits=splits, maintenance=True
+                    ),
+                ),
+            )
+        )
+        takes = float(_sf_values(duration.sf, np.zeros(1))[0])
+        action = (up, up, up * takes)
+    return StartedBlockCurve(head, MixedCurve(parts, action), at)
+
+
+def _own_down(rbd, node, start: NodeState):
+    """The survival function of what is left of the repair or
+    replacement a component started in (see ``_first_unit``)."""
+    model = (
+        rbd._preventive[node].duration
+        if start.maintenance
+        else rbd.components[node].time_to_replace
+    )
+    r = float(start.down_for)
+    left = float(_sf_values(model.sf, np.array([r]))[0])
+
+    def sf(s):
+        return _sf_values(model.sf, r + np.asarray(s, dtype=float)) / left
+
+    return sf
+
+
+#: The cells a down period's start is counted in, back from the time at
+#: which what is left of it is worked out (see ``_ongoing``).
+_ONGOING_CELLS = 2000
+
+
+def _ongoing(head, key: str, model, at: float, own=None):
+    """What is left at ``at`` of the down periods of a unit's curve
+    ``head`` that start at its events ``key`` (``"failures"``, its
+    repairs; ``"planned"``, its replacements that take time), each
+    lasting a time of ``model``, and of the one it started in at 0
+    (``own``, the survival function of what is left of it): the
+    survival function of what is left, given that one is going on at
+    ``at``, and its quantiles; None if none can be.
+
+    The probability that one started before ``at`` is still going on a
+    time ``s`` after it is the integral of ``P(T > at - u + s)`` against
+    the expected starts by ``u``: those at exact times (the curve's
+    atoms) each on its own, the rest at a constant rate in each of
+    ``_ONGOING_CELLS`` cells back from ``at``, each cell's integral of
+    ``P(T > v)`` exact (``integral_0^x P(T > v) dv`` at the cells'
+    ends), tabulated a cell apart in ``s``."""
+    from repyability.rbd._block_replacement import _cumulative
+
+    if model is None:
+        return None
+    fixed = None
+    if distribution_name(model) == "ExactEventTime":
+        fixed = float(np.ravel(model.params)[0])
+        if fixed <= 0.0:
+            return None
+        reach = fixed
+    else:
+        reach = float(np.ravel(model.qf(np.array([1.0 - 1e-12])))[0])
+    if not (np.isfinite(reach) and reach > 0.0):
+        reach = at
+
+    def survives(v):
+        return np.clip(_sf_values(model.sf, np.asarray(v, dtype=float)), 0, 1)
+
+    h = min(reach, at) / _ONGOING_CELLS
+    cells = min(_ONGOING_CELLS + 1, int(np.floor(at / h + 1e-9)))
+    lags = int(np.ceil(reach / h)) + 1
+    edges = at - h * np.arange(cells + 1)
+    atoms = head.atoms(at)
+    weights = getattr(atoms, "failure" if key == "failures" else "planned")
+    keep = weights > 0.0
+    times, weights = atoms.times[keep], weights[keep]
+    order = np.argsort(times, kind="stable")
+    times, weights = times[order], weights[order]
+    running = np.concatenate([[0.0], np.cumsum(weights)])
+    counts = np.asarray(head.events(edges)[key], dtype=float)
+    counts = counts - running[np.searchsorted(times, edges, side="left")]
+    density = np.maximum(counts[:-1] - counts[1:], 0.0) / h
+    grid = h * np.arange(cells + lags + 1)
+    if fixed is not None:
+        spent = np.minimum(grid, fixed)
+    else:
+        spent = _cumulative(survives, grid)
+    s = h * np.arange(lags)
+    left = np.correlate(np.diff(spent), density, mode="valid")[:lags]
+    if times.size:
+        left = left + survives(at - times[None, :] + s[:, None]) @ weights
+    if own is not None:
+        left = left + np.asarray(own(at + s), dtype=float)
+    total = float(left[0])
+    if not total > 0.0:
+        return None
+    left = np.clip(left / total, 0.0, 1.0)
+    left = np.minimum.accumulate(left)
+
+    def sf(x):
+        x = np.asarray(x, dtype=float)
+        return np.interp(x, s, left, right=0.0)
+
+    # Its quantiles, for the grid's cells (see ``point_knots``).
+    from repyability.rbd._point_availability import _KNOT_PROBABILITIES
+
+    wanted = 1.0 - _KNOT_PROBABILITIES
+    falls = np.interp(wanted, left[::-1], s[::-1])
+    return sf, np.unique(falls[falls > 0.0])
 
 
 def _knots(duration) -> np.ndarray:
