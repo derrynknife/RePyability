@@ -13,7 +13,13 @@ import numpy as np
 import pytest
 import surpyval as surv
 
-from repyability import BetaFactor, CCFGroup, FaultTree
+from repyability import (
+    MGL,
+    AlphaFactor,
+    BetaFactor,
+    CCFGroup,
+    FaultTree,
+)
 from repyability.tests.catalogue import fault_tree_kinds
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
@@ -323,21 +329,6 @@ def wrapped(expression: str = '<float value="0.1"/>', gate: str = "") -> str:
                 gate='<cardinality min="1" max="1"><basic-event name="a"/>'
                 '<basic-event name="b"/></cardinality>'
             ),
-        ),
-        *(
-            (
-                model,
-                '<opsa-mef><define-fault-tree name="FT">'
-                '<define-gate name="top"><or><basic-event name="a"/>'
-                '<basic-event name="b"/></or></define-gate>'
-                f'<define-CCF-group name="g" model="{model}">'
-                '<members><basic-event name="a"/><basic-event name="b"/>'
-                '</members><distribution><float value="0.1"/></distribution>'
-                '<factors><factor level="1"><float value="0.9"/></factor>'
-                '<factor level="2"><float value="0.1"/></factor></factors>'
-                "</define-CCF-group></define-fault-tree></opsa-mef>",
-            )
-            for model in ("MGL", "alpha-factor", "phi-factor")
         ),
         (
             "define-event-tree",
@@ -756,3 +747,228 @@ def test_the_writer_refuses_a_repaired_event_the_format_has_not(spec, match):
         tree.to_open_psa()
     # At a time, each event is its unavailability.
     assert "<float" in tree.to_open_psa(t=10.0)
+
+
+# -- common-cause models -----------------------------------------------------
+
+VOTE = {"top": ("or", ["vote", "d"]), "vote": ("vote", 2, ["a", "b", "c"])}
+ALIKE = {"a": E([0.001]), "b": E([0.001]), "c": E([0.001]), "d": 0.01}
+CCF_TIMES = np.array([1.0, 10.0, 50.0])
+
+
+@pytest.mark.parametrize(
+    "model, written, again",
+    [
+        (BetaFactor(0.1), "beta-factor", BetaFactor(0.1)),
+        (
+            MGL(0.1, 0.3, shocks="independent"),
+            "MGL",
+            MGL(0.1, 0.3, shocks="independent"),
+        ),
+        (
+            AlphaFactor(
+                [0.95, 0.04, 0.01],
+                testing="non-staggered",
+                shocks="independent",
+            ),
+            "alpha-factor",
+            AlphaFactor(
+                [0.95, 0.04, 0.01],
+                testing="non-staggered",
+                shocks="independent",
+            ),
+        ),
+        # Staggered alpha factors as the non-staggered ones of the same
+        # Q_k: alpha_k / k, scaled.
+        (
+            AlphaFactor([0.95, 0.04, 0.01], shocks="independent"),
+            "alpha-factor",
+            None,
+        ),
+    ],
+)
+def test_a_common_cause_group_reads_back_as_it_was_written(
+    model, written, again
+):
+    tree = FaultTree(
+        VOTE, ALIKE, ccf_groups=[CCFGroup(["a", "b", "c"], model)]
+    )
+    document = tree.to_open_psa()
+    assert f'model="{written}"' in document
+    read = FaultTree.from_open_psa(document)
+    assert list(read.ccf_groups[0].members) == ["a", "b", "c"]
+    if again is not None:
+        assert read.ccf_groups[0].model == again
+    else:
+        alphas = np.array([0.95, 0.04 / 2, 0.01 / 3])
+        np.testing.assert_allclose(
+            read.ccf_groups[0].model.alphas, alphas / alphas.sum(), rtol=1e-15
+        )
+    np.testing.assert_allclose(
+        read.top_event_probability(CCF_TIMES),
+        tree.top_event_probability(CCF_TIMES),
+        rtol=1e-15,
+        atol=0,
+    )
+
+
+def test_a_beta_factor_is_written_at_the_level_of_its_group():
+    tree = FaultTree(
+        VOTE, ALIKE, ccf_groups=[CCFGroup(["a", "b", "c"], BetaFactor(0.1))]
+    )
+    assert '<factor level="3">' in tree.to_open_psa()
+
+
+def test_a_two_member_mgl_has_one_shared_cause_either_way():
+    pair = {"top": ("and", ["a", "b"])}
+    tree = FaultTree(
+        pair,
+        {"a": E([0.001]), "b": E([0.001])},
+        ccf_groups=[CCFGroup(["a", "b"], MGL(0.2))],
+    )
+    again = FaultTree.from_open_psa(tree.to_open_psa())
+    assert again.ccf_groups[0].model == MGL(0.2)
+    assert again.top_event_probability(100.0) == pytest.approx(
+        tree.top_event_probability(100.0), rel=1e-15, abs=0
+    )
+
+
+def mef_group(model: str, factors, q: float = 0.05, n: int = 3) -> str:
+    """A document of ``n`` members in a group of ``model``, each failing
+    with ``q``, under a 2-out-of-n vote."""
+    names = "abcd"[:n]
+    members = "".join(f'<basic-event name="{m}"/>' for m in names)
+    written = "".join(
+        f'<factor level="{level}"><float value="{v}"/></factor>'
+        for level, v in factors
+    )
+    return (
+        '<opsa-mef><define-fault-tree name="FT"><define-gate name="top">'
+        f'<atleast min="2">{members}</atleast></define-gate>'
+        f'<define-CCF-group name="g" model="{model}"><members>{members}'
+        f'</members><distribution><float value="{q}"/></distribution>'
+        f"<factors>{written}</factors></define-CCF-group>"
+        "</define-fault-tree></opsa-mef>"
+    )
+
+
+def two_out_of(n: int, q_k) -> float:
+    """The probability that 2 or more of ``n`` members fail, each specific
+    set of ``k`` failing as an independent basic event with ``q_k[k-1]``
+    (the format's expansion of a group), every state enumerated."""
+    from itertools import combinations, product
+
+    sets = [
+        (frozenset(s), q_k[k - 1])
+        for k in range(1, n + 1)
+        for s in combinations(range(n), k)
+    ]
+    total = 0.0
+    for state in product((0, 1), repeat=len(sets)):
+        p, failed = 1.0, set()
+        for on, (members, q) in zip(state, sets):
+            p *= q if on else 1.0 - q
+            if on:
+                failed |= members
+        total += p * (len(failed) >= 2)
+    return total
+
+
+Q = 0.05
+
+
+@pytest.mark.parametrize(
+    "model, factors, q_k",
+    [
+        # MGL, n = 3: Q_1 = (1 - b) Q, Q_2 = b (1 - g) Q / 2, Q_3 = b g Q.
+        (
+            "MGL",
+            [(2, 0.1), (3, 0.3)],
+            [0.9 * Q, 0.1 * 0.7 * Q / 2, 0.1 * 0.3 * Q],
+        ),
+        # The format's example of four members: rho 0.1, 0.2, 0.3.
+        (
+            "MGL",
+            [(2, 0.1), (3, 0.2), (4, 0.3)],
+            [
+                0.9 * Q,
+                0.1 * 0.8 * Q / 3,
+                0.1 * 0.2 * 0.7 * Q / 3,
+                0.1 * 0.2 * 0.3 * Q,
+            ],
+        ),
+        # alpha-factor: Q_k = k / C(n-1, k-1) alpha_k / sum(i alpha_i) Q.
+        (
+            "alpha-factor",
+            [(1, 0.95), (2, 0.04), (3, 0.01)],
+            [
+                0.95 / 1.06 * Q,
+                2 / 2 * 0.04 / 1.06 * Q,
+                3 * 0.01 / 1.06 * Q,
+            ],
+        ),
+        # phi-factor: Q_k = phi_k Q, a member's sets summing to Q.
+        (
+            "phi-factor",
+            [(1, 0.9), (2, 0.03), (3, 0.04)],
+            [0.9 * Q, 0.03 * Q, 0.04 * Q],
+        ),
+    ],
+)
+def test_a_common_cause_group_is_the_mef_formula(model, factors, q_k):
+    n = len(q_k)
+    tree = FaultTree.from_open_psa(mef_group(model, factors, Q, n))
+    assert tree.top_event_probability() == pytest.approx(
+        two_out_of(n, q_k), rel=1e-13
+    )
+
+
+@pytest.mark.parametrize(
+    "tree, match",
+    [
+        (fault_tree_kinds()["common cause, MGL"], "basis='rate'"),
+        (fault_tree_kinds()["common cause by rate"], "basis='rate'"),
+        (
+            FaultTree(
+                VOTE,
+                ALIKE,
+                ccf_groups=[CCFGroup(["a", "b", "c"], MGL(0.1, 0.3))],
+            ),
+            "shocks='independent'",
+        ),
+        (
+            FaultTree(
+                VOTE,
+                ALIKE,
+                ccf_groups=[
+                    CCFGroup(["a", "b", "c"], AlphaFactor([0.9, 0.08, 0.02]))
+                ],
+            ),
+            "shocks='independent'",
+        ),
+    ],
+)
+def test_a_group_the_format_has_not_is_refused_saying_why(tree, match):
+    with pytest.raises(NotImplementedError, match=match):
+        tree.to_open_psa()
+
+
+def test_a_group_read_that_no_model_here_holds_is_refused_saying_why():
+    # SCRAM's phi factors sum to 1 themselves: a member then fails with
+    # 1.06 Q through its sets, which no model here holds.
+    with pytest.raises(NotImplementedError, match="1.06 Q"):
+        FaultTree.from_open_psa(
+            mef_group("phi-factor", [(1, 0.9), (2, 0.06), (3, 0.04)])
+        )
+    with pytest.raises(ValueError, match="level \\[2, 3\\].*\\[2\\]"):
+        FaultTree.from_open_psa(mef_group("MGL", [(2, 0.1)]))
+    with pytest.raises(ValueError, match="not an MEF common-cause model"):
+        FaultTree.from_open_psa(mef_group("delta-factor", [(2, 0.1)]))
+    # Members not below the top event: the group's sets cannot be kept.
+    partial = mef_group("MGL", [(2, 0.1), (3, 0.3)]).replace(
+        '<atleast min="2"><basic-event name="a"/><basic-event name="b"/>'
+        '<basic-event name="c"/></atleast>',
+        '<and><basic-event name="a"/><basic-event name="b"/></and>',
+    )
+    with pytest.raises(NotImplementedError, match="\\['c'\\].*top="):
+        FaultTree.from_open_psa(partial)

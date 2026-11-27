@@ -4959,11 +4959,12 @@ class FaultTree:
         and NOT gates, an FDEP gate as its static equivalent (each event
         it forces an OR of the event and its triggers), events given as
         probabilities, exponential and Weibull lives as expressions of the
-        mission time, common-cause groups of the beta-factor model
-        splitting a probability, and repaired and tested events of
-        exponential lives and repairs as ``GLM`` and ``periodic-test``
-        expressions. A name that is not an MEF identifier is made one,
-        the name as given kept as its ``label``.
+        mission time, common-cause groups splitting a probability (a
+        ``BetaFactor``, an ``MGL`` and an ``AlphaFactor`` as the format's
+        beta-factor, MGL and alpha-factor models), and repaired and tested
+        events of exponential lives and repairs as ``GLM`` and
+        ``periodic-test`` expressions. A name that is not an MEF
+        identifier is made one, the name as given kept as its ``label``.
 
         Parameters
         ----------
@@ -4989,7 +4990,10 @@ class FaultTree:
             expression for (a repaired event's life or repair that is not
             exponential, a test time that is not fixed, an inspection's
             other options), unless ``t`` is given; and for a common-cause
-            group of another model or basis.
+            group splitting the failure rate, an ``MGL`` or ``AlphaFactor``
+            of three or more members whose shared causes exclude each other
+            (the format's are independent: ``shocks="independent"``), and
+            a group of another model.
 
         Examples
         --------
@@ -5033,11 +5037,12 @@ class FaultTree:
         (so the tree keeps its time dependence), or as the value of any
         other expression (``float``, ``parameter``, arithmetic) at
         ``mission_time``. House events read as probabilities 0 and 1, a
-        ``beta-factor`` common-cause group as a ``BetaFactor``
-        ``CCFGroup``, and a ``GLM`` or ``periodic-test`` of the mission
-        time as a repaired or tested event's component spec, where it is
-        one. A name the writer made an identifier comes back from
-        its ``label``; names read as text.
+        common-cause group of the ``beta-factor``, ``MGL``,
+        ``alpha-factor`` or ``phi-factor`` model as a ``CCFGroup`` of a
+        ``BetaFactor``, an ``MGL`` or an ``AlphaFactor``, and a ``GLM`` or
+        ``periodic-test`` of the mission time as a repaired or tested
+        event's component spec, where it is one. A name the writer made an
+        identifier comes back from its ``label``; names read as text.
 
         Parameters
         ----------
@@ -5071,10 +5076,10 @@ class FaultTree:
         NotImplementedError
             For what is not read, named with the reason: a ``GLM`` or
             ``periodic-test`` that is not a repaired or tested event's (a
-            failure on demand, a test that misses failures, ...), the
-            MGL, alpha-factor and phi-factor common-cause models, the
-            ``iff``, ``imply`` and ``cardinality`` formulas, uncertainty
-            deviates, and event trees.
+            failure on demand, a test that misses failures, ...), a
+            ``phi-factor`` group whose members' sets do not add up to their
+            probability, the ``iff``, ``imply`` and ``cardinality``
+            formulas, uncertainty deviates, and event trees.
 
         Examples
         --------

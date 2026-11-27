@@ -591,8 +591,16 @@ standby and load sharing, see [Redundancy models](redundancy-models.md).
 document, the XML that PRA tools read: the OR, AND, VOTE (`atleast`) and
 NOT gates, an FDEP gate as its static equivalent, events given as
 probabilities, exponential and Weibull lives as expressions of the mission
-time, and common-cause groups of the beta-factor model splitting a
-probability. [Repaired and tested events](#repaired-and-tested-events)
+time, and common-cause groups splitting a probability: a `BetaFactor` as
+the format's beta-factor model (its factor at the level of the whole
+group), an `MGL` as its MGL model, and an `AlphaFactor` as its
+alpha-factor model (whose formula is the non-staggered scheme's: staggered
+alpha factors are written as the non-staggered ones of the same
+probabilities). The format takes each set's probability as an
+independent basic event, so an `MGL` or `AlphaFactor` of three or more
+members is written with `shocks="independent"` and refused otherwise; a
+group splitting the failure rate (`basis="rate"`) has no form in the
+format and is refused. [Repaired and tested events](#repaired-and-tested-events)
 are written as the format's `GLM` (an exponential life and repair) and
 `periodic-test` (an exponential life found by tests every `interval`, the
 first at its `offset` or else at the interval: 4 arguments for an instant
@@ -620,8 +628,14 @@ in a gate becomes a gate of its own, named after it (`"G1/1"`, ...). A
 basic event's `exponential` or `Weibull` of the mission time becomes the
 surpyval life, so the tree keeps its time dependence; any other expression
 (a `float`, a `parameter`, arithmetic) is its value, at `mission_time=` if
-it reads the mission time. House events are probabilities 0 and 1, and a
-`beta-factor` group is a `BetaFactor` `CCFGroup`. A `GLM` or
+it reads the mission time. House events are probabilities 0 and 1. A
+`beta-factor` group is a `BetaFactor` `CCFGroup`, an `MGL` group an `MGL`
+and an `alpha-factor` group a non-staggered `AlphaFactor`, each of three or
+more members with `shocks="independent"`, as the format means them. A
+`phi-factor` group, whose factors are each specific set's share of `Q`,
+is the staggered `AlphaFactor` of the same shares where a member's sets
+add up to `Q`, as every model here has them, and refused, saying so,
+where they do not. A `GLM` or
 `periodic-test` of the mission time is a repaired or tested event's
 component spec, where it is one: a `GLM` with no failure on demand
 (`gamma` 0), and a `periodic-test` whose first test falls within its first
@@ -650,9 +664,7 @@ gates that are no gate's input `top=`. A document that declares a document
 type or an entity is refused before it is parsed (an entity can expand
 without bound or read a file). What the reader does not take is refused by
 its element name, saying what to do: a `GLM` or `periodic-test` inside
-another expression, the MGL,
-alpha-factor and phi-factor common-cause models (build the group with
-`MGL` or `AlphaFactor`), the `iff`, `imply` and `cardinality` formulas,
+another expression, the `iff`, `imply` and `cardinality` formulas,
 uncertainty deviates, and event trees.
 
 ## The model and its limits
