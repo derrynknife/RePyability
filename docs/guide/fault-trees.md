@@ -620,7 +620,14 @@ again is the tree it was:
 ```python
 again = FaultTree.from_open_psa(cooling.to_open_psa())
 again.gates == cooling.gates                       # True
-FaultTree.from_open_psa("model.xml", tree="FT-1", mission_time=8760.0)
+
+import tempfile
+from pathlib import Path
+
+path = Path(tempfile.mkdtemp()) / "model.xml"
+path.write_text(cooling.to_open_psa(name="FT-1"))
+from_file = FaultTree.from_open_psa(path, tree="FT-1", mission_time=8760.0)
+from_file.gates == cooling.gates                   # True
 ```
 
 A document with several fault trees needs `tree=`, and one with several

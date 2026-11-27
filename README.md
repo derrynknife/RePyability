@@ -27,7 +27,9 @@ taking already-fitted lifetime models (from
 - **Networks**: networks whose links fail, undirected or directed: the
   exact reliability of the connection between two terminals, several, or
   every node (K-terminal and all-terminal reliability), by a decision
-  diagram that keeps meshed networks fast.
+  diagram that keeps meshed networks fast; with repaired links, the
+  connection's availability over time and in the long run, and how often
+  it is lost.
 - **Phased missions**: missions through phases (take-off, cruise,
   landing), each with its own diagram over the same components: the exact
   mission reliability and the chance of failing in each phase, with
@@ -187,14 +189,14 @@ Which analyses each model type has (the method; — where it has none):
 | A mission's results from one run | — | — | — | — | `summary` | — |
 | **Availability and outages** | | | | | | |
 | Reliability and mean time to the first failure | — | `first_failure_sf` | — | — | — | — |
-| Long-run availability | — | `mean_availability` | — | — | — | — |
+| Long-run availability | — | `mean_availability` | — | `mean_availability` | — | — |
 | Each node's availability | — | `node_availability` | — | — | — | — |
-| Availability over time | — | `point_availability` | `point_unavailability` | — | — | — |
-| Over a mission | — | `mission_availability` | — | — | — | — |
-| Unavailability (precise when small) | — | `mean_unavailability` | `mean_unavailability` | — | — | — |
-| Failure frequency, MTBF | — | `system_failure_frequency` | `system_failure_frequency` | — | — | — |
+| Availability over time | — | `point_availability` | `point_unavailability` | `point_availability` | — | — |
+| Over a mission | — | `mission_availability` | — | `mission_availability` | — | — |
+| Unavailability (precise when small) | — | `mean_unavailability` | `mean_unavailability` | `mean_unavailability` | — | — |
+| Failure frequency, MTBF | — | `system_failure_frequency` | `system_failure_frequency` | `system_failure_frequency` | — | — |
 | Mean up and down times | — | `mean_up_time` | — | — | — | — |
-| Expected failures and events in a window | — | `expected_events` | `expected_failures` | — | — | — |
+| Expected failures and events in a window | — | `expected_events` | `expected_failures` | `expected_failures` | — | — |
 | Simulated availability (distribution) | — | `availability` | — | — | — | — |
 | Simulated histories | — | `simulate_timelines` | — | — | — | — |
 | Each simulation's values, common random numbers | — | `simulation_samples` | — | — | — | — |
