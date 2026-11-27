@@ -129,7 +129,8 @@ def _require_capacities_given(rbd) -> None:
     if own:
         raise NotImplementedError(
             f"Node(s) {sorted(own, key=str)} take their capacity from "
-            "their models (a DegradingNode's stages, or a nested RBD's "
+            "their models (a DegradingNode's stages, a Markov "
+            "component's states, or a nested RBD's "
             "capacities), which the simulation does not follow. Give "
             "them a capacity, or use capacity_distribution() for the "
             "long run."

@@ -298,6 +298,7 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | A fitted degradation process | E | N | N | E N | E N | E N | S | E N | – | S |
 | Cold standby (convolved) | N | N | N | N | N | N | S | N | – | S |
 | Standby with no reliability of its own | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | N; ✗ `allocate_redundancy` | – | S |
+| A Markov component with a lifetime | E | N | N | E N | E N | E N | S | E N | – | S |
 | Load sharing | E | N | N | E N | E N | E N | S | E N | – | S |
 | A repeated node | E | N | N | E N | E N | E N | S | E N | – | S |
 | A repeated standby node | N | N | N | N | N | N | S | N | – | S |
@@ -350,6 +351,8 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | Minimal repair, repairs that take time | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | S; ✗ `mean_availability_uncertainty`, `expected_cost_rate_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Limited repair crews | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A standby group | E | E | N | E N | E N | E N | S | E | – | ✗ | – | S |
+| A Markov component (states and rates) | E | E | N | E N | E N | E N | S | E | – | ✗ | – | S |
+| A Markov component with a capacity in each state | E | E | N | N | E N | E N | S | E | – | ✗ | E N | S; ✗ `availability` |
 | A beta-factor group, revealed failures | E | E | N | N | E N | E N | S | E | – | N | – | S |
 | A beta-factor group, tested | E | E | N | E N | E N | E N | S | E | – | N | – | S |
 | An alpha-factor group, revealed failures | E | E | N | N | E N | E N | S | E | – | N | – | S |
@@ -383,7 +386,10 @@ places, nested diagrams):
   probabilities (a diagram refuses a non-parametric fit, such as
   Kaplan–Meier: fit a parametric distribution in surpyval); a unit of a
   surpyval joint model of readings and failures, given its readings
-  (`JointNode`, from now); repeated nodes; standby of Exponential units
+  (`JointNode`, from now); repeated nodes; a component given as a Markov chain
+  (`MarkovComponent`: its states, the rates between them and the states
+  it works in, with a lifetime or restored by its own transitions);
+  standby of Exponential units
   (any number operating, any dormancy); cold standby with one or two
   units operating (any units) or more (identical units); warm standby
   with one unit operating, and hot standby (any units); spares that may
@@ -440,6 +446,7 @@ places, nested diagrams):
 | Common-cause groups in a repairable diagram | For exponential lives, tested or repaired: the long run, importance and the allocations exact (a beta-factor member's copies join its group, and the availability allocations keep the members' availability), and numerical where the members' tests and repairs take time (#220): a fixed or an exponential time exactly, any other length on pieces of the time since the test (#106); the values over time numerical (the groups' Markov chains), from new, from the members' states or from the long run (#106), and the simulations draw the shared causes, from new or from the members' states, in Python. Shocks at a rate of their own (`Shocks`: each failing each member with a probability, the members of any lives, each then repaired or found at its test on its own): for exponential members, tested or repaired, of rates, repairs and tests of their own, exact as the groups that split the rate are (the long run, importance, the values over time, a member's own availability and spares, and with repair crews), and simulated, in Python, for members of any lives, maintained on a schedule, repaired imperfectly, in a maintenance group or started from a state (a tested member perhaps failed, unseen, by a shock since its last test). Members of other lives in the groups that split the rate refused, as are copies of members whose tests or repairs take time, tests and repairs that can run into the next test, and members held | Other lives: a shared cause has no one rate for members of different ages, so they need a model first. Shocks at their own rate are that model for members of any lives, exact for exponential members and otherwise simulated; their chain would need each member's age, so yes, in general. Without repairs, [the guide](docs/guide/common-cause-ages.md) has a second: a share of the hazard of members of one age. |
 | Shared repair crews | For exponential lives and repairs, the long run and importance exact, and the values over time numerical (the same Markov chain, followed by uniformization), and the redundancy allocation exact (each design's chain, its copies queueing for the crews), but the allocations of availability targets; common-cause groups in the same chain, a strike's members queueing in the diagram's order; other lives simulated. The maintenance and test intervals are chosen as if every repair started at once on request (`assume_unlimited_crews=True`), for a plan to simulate with the crews | Other lives: yes, in general. |
 | Standby groups (a duty unit and its spares, repaired) | For exponential units, the long run and importance exact, and the values over time numerical (the units' Markov chain, followed by uniformization); other units simulated | Other units: yes, in general. |
+| Markov components (states and the rates between them) | The long run, importance and long-run capacity exact (the chain's long-run distribution), and the values over time, the expected events and costs over a window and the capacity over time numerical (the chain followed from its start by uniformization); the simulations draw its times in each state and its next states, in Python. Refused: repair crews in its diagram, membership of a common-cause group, maintenance, tests and spares on it (write them as states and rates), the exact first failure (bracketed by `first_failure_bounds`), the spares analyses, and a simulation that follows its states' capacities | No: the chain is exact. The first failure of a diagram with one is the joint chain with its failed states made absorbing; the simulations could follow the capacity of the state it is in. |
 | Opportunistic maintenance (renewals at a group's stops) | Simulated | Yes: each member's renewals depend on the others' ages. |
 | Imperfect repair (Kijima), with or without replacement at the *N*-th failure | Simulated; but minimal repair (`q = 1`, or a fitted Crow-AMSAA, Duane or Cox-Lewis process) is numerical over a window from new, and its long run, replaced at the *N*-th failure or at an age, is exact (a renewal cycle; Cox-Lewis's with a failure limit by quadrature, #402); without a replacement its long run is refused | Yes, in general: a repair does not renew the unit. Minimal repair's values over time with replacement could be numerical, as a renewal of its cycle. |
 | Preventive maintenance that restores a unit only partly (Kijima), with or without replacement at every *N*-th task | Simulated (availability, cost, timelines and the spares used, in Python), from new or from the unit's virtual age; the exact and numerical analyses refused | Yes, in general: a task does not renew the unit, so its failures are not a renewal process's. |

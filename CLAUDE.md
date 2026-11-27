@@ -323,6 +323,23 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   with its copies drawn out. Likewise a standby group's chain (`_standby_chain.py`) copies
   `_events._StandbyGroup`'s rules (switching, spares, repairs), checked by
   `test_repairable_standby.py`.
+- **A `MarkovComponent` (`repyability/rbd/markov_node.py`) rides the
+  standby groups' rails in a `RepairableRBD`**: it is in `rbd._standby`
+  as `_events.MARKOV` (key `"markov"`, one unit), so whatever handles or
+  refuses a group of units handles or refuses it; where a group's chain
+  is built from its units' rates, `_long_run._group_chain` gives the
+  component's own (its generator, long-run distribution, up states and
+  failure rates), and `_curves._standby_curve` follows it from its
+  `start` with a vector more for its down states (#237) and one for each
+  working state (its capacities, as a `DegradingNode`'s stages). The
+  loop's `_events._MarkovUnit` draws what the chain states: an
+  exponential time in each state at its total rate out (`SOJOURN`), the
+  next state by the rates' shares (`MOVE`), the state at 0
+  (`MARKOV_START`); a failure is a move from a working state to a failed
+  one. A change to one goes into the other: `test_markov_component.py`
+  checks the chain against closed forms and a matrix exponential, and
+  the simulation against the chain. A site that reads a group's units
+  (`arrangement.units`, its life's rate) must branch on the key.
 - **A phased mission's Markov chain (`repyability/rbd/_mission_chain.py`)
   copies the simulation's take-overs** (`_mission_runs._take_over`,
   `_after_standby`, `draw_switches`): spares called on in the phase's

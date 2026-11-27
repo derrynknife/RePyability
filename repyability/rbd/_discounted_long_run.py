@@ -113,6 +113,8 @@ def require_discounted(rbd) -> None:
         schedule = rbd._preventive.get(node)
         if isinstance(component, RepairableRBD):
             refuse(f"the nested RBD {node!r}")
+        if node in rbd._standby and rbd._standby[node].key == "markov":
+            refuse(f"the Markov component {node!r}")
         if node in rbd._standby:
             refuse(f"the standby group {node!r}")
         if node in rbd._inspection and not _tested_cycle(rbd, node):

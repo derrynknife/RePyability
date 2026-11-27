@@ -9,6 +9,7 @@ and standby groups' Markov chains (``_crew_chain``, ``_standby_chain``)
 copy these rules, and the compiled engine (``_kernel``) the loop's.
 """
 
+import bisect
 import heapq
 import math
 from collections import deque
@@ -560,6 +561,151 @@ class _StandbyGroup:
         self.up = len(self._operating) == self._k
         self._arm()
         return self.up, failures
+
+
+class _MarkovDraws:
+    """What a Markov component draws during a simulation: the uniforms
+    of its times in each state, of its next states and of its state at
+    0, from streams of its own (see ``_streams``), or from numpy's
+    global RNG."""
+
+    __slots__ = ("_sojourns", "_moves", "_start")
+
+    def __init__(self, sojourns=None, moves=None, start=None):
+        self._sojourns = sojourns
+        self._moves = moves
+        self._start = start
+
+    @staticmethod
+    def _uniform(stream) -> float:
+        if stream is None:
+            return float(np.random.random())
+        return float(stream.draw())
+
+    def sojourn(self) -> float:
+        """A time in a state left at rate 1: an exponential draw."""
+        return -math.log1p(-self._uniform(self._sojourns))
+
+    def move(self) -> float:
+        return self._uniform(self._moves)
+
+    def start(self) -> float:
+        return self._uniform(self._start)
+
+
+class _MarkovUnit:
+    """A Markov component during one simulation (``MarkovComponent``;
+    see ``RepairableRBD``).
+
+    It starts in a state drawn from its start, stays in each state for
+    an exponential time at the state's total rate out, and moves to a
+    next state chosen by the rates' shares, each from a uniform of its
+    own. It is up in its working states, and a move from a working
+    state to a failed one is a failure.
+
+    As a standby group does (``_StandbyGroup``), it has one event in the
+    RBD's queue, ``entry``: its next move. The RBD passes that event to
+    ``advance``, which returns its state after it.
+    """
+
+    __slots__ = (
+        "_rbd",
+        "_node",
+        "_draws",
+        "_end",
+        "_out",
+        "_targets",
+        "_shares",
+        "_works",
+        "_next",
+        "state",
+        "entry",
+        "up",
+    )
+
+    def __init__(self, rbd, node, component, draws, t_simulation: float):
+        self._rbd = rbd
+        self._node = node
+        self._draws = (
+            draws if isinstance(draws, _MarkovDraws) else _MarkovDraws()
+        )
+        self._end = t_simulation
+        generator = component._generator
+        size = len(generator)
+        self._out = [-float(generator[i, i]) for i in range(size)]
+        # Each state's next states, and their rates' shares summed up.
+        self._targets = [
+            [j for j in range(size) if j != i and generator[i, j] > 0.0]
+            for i in range(size)
+        ]
+        self._shares = [
+            _shares([float(generator[i, j]) for j in self._targets[i]])
+            for i in range(size)
+        ]
+        self._works = [bool(up) for up in component._up]
+        started = [i for i in range(size) if component._start[i] > 0.0]
+        if len(started) == 1:
+            self.state = started[0]
+        else:
+            shares = _shares([float(component._start[i]) for i in started])
+            self.state = started[_chosen(shares, self._draws.start())]
+        self._next = self.state
+        self.up = self._works[self.state]
+        self.entry: Optional["Event"] = None
+        self._arm(0.0)
+
+    def _arm(self, t: float) -> None:
+        """Draw the time in the state entered at ``t`` and the state
+        after it, and queue that move in the RBD's queue."""
+        rate = self._out[self.state]
+        self.entry = None
+        if rate == 0.0:
+            return  # a state it never leaves
+        time = t + self._draws.sojourn() / rate
+        chosen = _chosen(self._shares[self.state], self._draws.move())
+        self._next = self._targets[self.state][chosen]
+        if time >= self._end:
+            return
+        self.entry = Event(time, self._node, self.up)
+        # Ranked at its instant as the change it makes (see _EventQueue).
+        tie = RESTORATION if self._works[self._next] else FAILURE
+        self._rbd._run_state._event_queue.put(self.entry, tie)
+
+    def holds(self, event: "Event") -> bool:
+        """Whether ``event``, from the RBD's queue, is its current one."""
+        return event is self.entry
+
+    def ages(self, t: float) -> List[float]:
+        """Its age at ``t``: none (NaN), as its states carry no age."""
+        return [math.nan]
+
+    def advance(self, t: float) -> Tuple[bool, int]:
+        """Take its move at ``t`` (its ``entry``): whether it is up
+        after it, and how many failures it made (1 for a move from a
+        working state to a failed one)."""
+        was = self.up
+        self.state = self._next
+        self.up = self._works[self.state]
+        self._arm(t)
+        return self.up, int(was and not self.up)
+
+
+def _shares(weights: List[float]) -> List[float]:
+    """The weights' shares of their sum, summed up: the last is 1."""
+    total = math.fsum(weights)
+    out, running = [], 0.0
+    for weight in weights:
+        running += weight
+        out.append(running / total)
+    if out:
+        out[-1] = 1.0
+    return out
+
+
+def _chosen(shares: List[float], u: float) -> int:
+    """Which of the choices with these summed shares the uniform ``u``
+    takes."""
+    return min(bisect.bisect_right(shares, u), len(shares) - 1)
 
 
 class _Crews:
@@ -1244,4 +1390,9 @@ GROUP_KINDS = {
     "standby": "a standby group",
     "load_sharing": "a load-sharing group",
     "identical": "a block of identical units",
+    "markov": "a Markov component",
 }
+
+#: A Markov component (``MarkovComponent``) as a group: one unit, whose
+#: states and moves are its chain's (see ``_MarkovUnit``).
+MARKOV = _Standby(1, 1, 0.0, 1.0, None, "markov")

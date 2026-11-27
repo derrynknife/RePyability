@@ -35,7 +35,6 @@ from repyability.rbd import (
     _repairable_capacity,
     _requirements,
     _shutdowns,
-    _standby_chain,
     _windows,
 )
 from repyability.rbd._block_replacement import (
@@ -251,6 +250,11 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
         message = r.refusal(partial(_long_run._standby_rates, rbd, node))
         if message:
             return r.REFUSED, message
+        if rbd._standby[node].key == "markov":
+            return (
+                r.NUMERICAL,
+                "its Markov chain, followed over time by uniformization",
+            )
         return (
             r.NUMERICAL,
             "its units' Markov chain, followed over time by " "uniformization",
@@ -947,6 +951,12 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
         # A standby group in its long-run state starts its units'
         # chain from its long-run distribution.
         return
+    if node in rbd._standby and rbd._standby[node].key == "markov":
+        raise NotImplementedError(
+            f"Component {node!r} is a Markov component, whose state at 0 "
+            "is its own start: build it with start= (a state, or the "
+            "probability of each), and leave it out here."
+        )
     if node in rbd._standby:
         raise NotImplementedError(
             f"Component {node!r} is {rbd._standby[node].what}, whose "
@@ -1253,6 +1263,10 @@ def _nodes_down_at(rbd, curves: dict, x: np.ndarray, states) -> dict:
                 x, partial(_closed_form_at, rbd, node, states)
             )
             continue
+        if getattr(curve, "has_down", False):
+            # A Markov component's, summed over its failed states.
+            failures[node] = curve.down_at(x)
+            continue
         down = _closed_form_down(rbd, node, x, states)
         failures[node] = 1.0 - curve.at(x) if down is None else down
     return failures
@@ -1331,20 +1345,13 @@ def _standby_curve(rbd, node, start: Optional[NodeState] = None):
     """A standby group over time (see ``_chain_transient.ChainCurve``):
     its units' Markov chain from every unit ready, or, for a
     ``start`` that is stationary, from its long-run distribution."""
-    life, repair = _long_run._standby_rates(rbd, node)
     arrangement = rbd._standby[node]
-    group = _standby_chain.chain(
-        arrangement.units,
-        arrangement.k,
-        life,
-        repair,
-        arrangement.dormancy_factor,
-        arrangement.switching_probability,
-        rbd.repair_crews if _crews._crews_limited(rbd) else None,
-        arrangement.rates,
-    )
+    group = _long_run._group_chain(rbd, node)
     if start is not None and start.stationary:
         initial = group.probabilities
+    elif arrangement.key == "markov":
+        # From the start it was given.
+        initial = rbd.components[node]._start
     else:
         initial = np.zeros(len(group.states))
         initial[0] = 1.0
@@ -1353,7 +1360,19 @@ def _standby_curve(rbd, node, start: Optional[NodeState] = None):
         group.generator,
         initial,
         group.probabilities,
-        np.column_stack([group.up, group.failures, group.unit_failures]),
+        np.column_stack(
+            [group.up, group.failures, group.unit_failures]
+            + (
+                # Whether it is down, and in each state it works in.
+                [1.0 - group.up]
+                + [
+                    (np.arange(len(group.up)) == i).astype(float)
+                    for i in np.flatnonzero(group.up)
+                ]
+                if arrangement.key == "markov"
+                else []
+            )
+        ),
     )
     return _chain_transient.ChainCurve(chain)
 
