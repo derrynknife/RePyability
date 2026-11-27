@@ -218,6 +218,7 @@ Which analyses each model type has (the method; — where it has none):
 | A replaced component's renewal cycle | — | `replacement_cycle` | — | — | — | — |
 | Planned and unplanned downtime, failures the plan avoids | — | `maintenance_effect` | — | — | — | — |
 | Spares demand and stock | — | `spares_demand` | — | — | — | — |
+| Repairable spares over bases and a depot | — | `spares_front` | — | — | — | — |
 | **Structure** | | | | | | |
 | Minimal path and cut sets | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | — |
 | Prime implicants (NOT gates) | — | — | `prime_implicants` | — | — | — |

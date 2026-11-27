@@ -4908,6 +4908,60 @@ class SimulatedSparesStock(_ResultMapping):
     method: str = "simulate"
 
 
+@dataclass(frozen=True)
+class SparesAllocation(_ResultMapping):
+    """A stock of repairable spares over two echelons: what each base and
+    the depot behind them hold of each part, with the spend, the expected
+    backorders and the availability it gives.
+
+    Returned by ``RepairableRBD.spares_allocation`` and, one per point of
+    the front, by ``RepairableRBD.spares_front``. Like the other result
+    types it is also a read-only mapping of its fields.
+
+    Attributes
+    ----------
+    spend : float
+        The price of every spare held, at the bases and the depot.
+    availability : float
+        The fraction of the fleet's systems not waiting for a part: the
+        bases' availabilities weighed by their systems.
+    backorders : float
+        The expected number of parts the bases' systems are waiting for,
+        over every part and base.
+    depot_stock : dict
+        The depot's stock of each part, ``{part: spares}``.
+    base_stock : dict
+        Each base's stock of each part, ``{base: {part: spares}}``.
+    base_availability : dict
+        Each base's availability: the product over parts of ``(1 - EBO /
+        (N Z))^Z``, with ``EBO`` the base's expected backorders of the
+        part, ``N`` its systems and ``Z`` the part's number in a system.
+    base_backorders : dict
+        Each base's expected backorders of each part, ``{base: {part:
+        backorders}}``.
+    depot_backorders : dict
+        The depot's expected backorders of each part: the bases' orders
+        it has yet to send.
+    depot_delay : dict
+        How long a base's order of each part waits at the depot for one
+        to send, on average (before the order-and-ship time).
+    method : str
+        ``"vari-metric"`` (a base's pipeline with its variance, a
+        negative binomial) or ``"metric"`` (a Poisson pipeline).
+    """
+
+    spend: float
+    availability: float
+    backorders: float
+    depot_stock: Dict[Hashable, int]
+    base_stock: Dict[Hashable, Dict[Hashable, int]]
+    base_availability: Dict[Hashable, float]
+    base_backorders: Dict[Hashable, Dict[Hashable, float]]
+    depot_backorders: Dict[Hashable, float]
+    depot_delay: Dict[Hashable, float]
+    method: str
+
+
 @dataclass
 class TimelineSimulation(_ResultMapping):
     """Simulated up/down histories of a repairable system and its

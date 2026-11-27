@@ -185,6 +185,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("maintenance_effect",),
             ),
             ("Spares demand and stock", ("spares_demand", "spares_stock")),
+            (
+                "Repairable spares over bases and a depot",
+                ("spares_front", "spares_allocation"),
+            ),
         ],
     ),
     (

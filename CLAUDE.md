@@ -619,6 +619,18 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   `catalogue.event_tree_kinds()` (a new method needs its call in
   `EVENT_TREE_CALLS`).
 
+- **Spares over echelons (`repyability/rbd/_echelons.py`, UC-74) have
+  one statement of a base's pipeline** (`_base_pipeline`: its mean, and
+  its variance, which METRIC sets to the mean), and one distribution
+  from a mean and variance (`_pipeline`). The front is marginal analysis
+  on each part's lower convex hull of backorders against the count held
+  (`_Curve`, a step given only once no count further on can change it),
+  so each point has the fewest backorders at its spend or less.
+  `test_spares_echelons.py` checks it against the model written out term
+  by term, a search of every stock vector, `spares_stock` for one site,
+  and a simulation of the two echelons written in the test (exact where
+  resupply times are independent; VARI-METRIC closer elsewhere).
+
 - **A measure that is a function of the system's values lives once, in
   `repyability/rbd/_measures.py`** (#314, #315): the ratios (improvement
   potential, the risk worths, criticality, Fussell-Vesely from numerators),

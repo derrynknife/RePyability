@@ -93,7 +93,7 @@ Not yet single:
 | UC-68 | "95% sure": the least spend that keeps a bad year's downtime (hours or cost) under a limit, with the frontier and both planned and unplanned downtime | **Built** (simulated): `RepairableRBD.least_spend_for_downtime` and `UnitPlan.least_spend_for_downtime`, with redundancy, interval, test-interval, upgrade, crew and call-out levers, and parameter uncertainty (`uncertainty=`); risk measures in `repyability.value._risk` |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 | UC-73 | A unit that fails on demand, called on at set times (planned starts, a recurrence rule) or at a rate that changes over the year: its availability, failures and cost over a window | **Built**: a spec's (and a `UnitPlan`'s) `"demand_times"`, exact over a window and simulated; `"demand_plan"`, exact over a window where repairs take no time and simulated otherwise; `"demand_basis"` for demands counted in operating time |
-| UC-74 | Repairable spares for a fleet at several bases with a depot behind them: each site's stock of each part for a fleet availability target at the least spend, and the whole front of spend against availability | Proposed, answered by hand |
+| UC-74 | Repairable spares for a fleet at several bases with a depot behind them: each site's stock of each part for a fleet availability target at the least spend, and the whole front of spend against availability | **Built**: `RepairableRBD.spares_front` and `spares_allocation` (a series diagram; METRIC and VARI-METRIC) |
 
 ## How a use case is added
 
@@ -4191,7 +4191,8 @@ fixed times.
 
 ### UC-74: "We run 20 systems from two bases, 12 and 8, with a depot behind them. A failed part is swapped from the base's shelf and repaired, at the base if it can be and at the depot if not. How many of each part should each base and the depot hold so that 95% of the fleet is not waiting for a part, at the least spend, and what does each dollar more buy?"
 
-- **Status:** proposed, answered by hand.
+- **Status:** built: `RepairableRBD.spares_front` and
+  `spares_allocation` (`rbd/_echelons.py`), numerical.
 - **Who asks, and why:** the support planner of a fleet, buying its
   repairable spares. A spare at the depot shortens every base's wait a
   little, a spare at a base only that base's but by more, and a dear
@@ -4291,13 +4292,25 @@ fixed times.
   at the depot with a fixed depot repair time), within four standard
   errors, and elsewhere VARI-METRIC closer to it than METRIC; times and
   rates scale with the unit.
+  The runs (2,000, fixed before running, each 20,000 h after 6,000 h
+  of warm-up) gave, for the pumps with 3 at the depot and 2 and 1 at the
+  bases: the depot's backorders 1.4931 (standard error 0.0091) against
+  1.5032, an order's wait 212.2 h (1.1) against 214.7, and the bases'
+  backorders 0.2767 (0.0031) and 0.3270 (0.0030) against VARI-METRIC's
+  0.2735 and 0.3248, and METRIC's 0.1959 and 0.2834.
 - **Learned / open questions:** the demand is taken as going on while a
   system waits, as METRIC takes it, where `spares_stock` slows it (a
   system waiting for a part makes no demand): close where backorders are
   few, which is where a target puts the stock. A count of a part off
   the hull (cheaper than the next point, but with fewer backorders
   removed per dollar than it) is not on the front, as in the textbook's
-  marginal analysis. Left for later, each its own use case: parts
+  marginal analysis; one on the hull's line is kept. The split of a
+  part's count is not nested from one point to the next (a valve at the
+  depot at 27,000 is two at the bases at 30,000). The availability's
+  product over parts is exact, given the backorders, for one of each
+  part in a system; with several of a part it takes a system's places
+  as independent. The methods are on the diagram for its demand rates
+  and refuse one that is not a series system. Left for later, each its own use case: parts
   within parts (MOD-METRIC), a redundant diagram (a missing part that
   need not ground the system), cannibalisation, lateral supply between
   bases, and a base with repair times or a ship time of its own.

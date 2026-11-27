@@ -12,6 +12,22 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `RepairableRBD.spares_front(bases, parts, budget=, target_availability=)`
+  and `spares_allocation(...)`: repairable spares over two echelons, the
+  bases a fleet's systems run from and a depot behind them (Sherbrooke's
+  METRIC and VARI-METRIC). Each part has a price, the chance a failure
+  is repaired at the base, the base's and the depot's repair times and
+  the order-and-ship time; its demand is the diagram's long-run
+  replacement rate, or a `"demand_rate"` given. The front is the spend
+  against the fleet's availability by marginal analysis, each point (a
+  `SparesAllocation`) with every site's stock of every part, the
+  expected backorders and each base's availability; the allocation is
+  its cheapest point for a target, or its best within a budget. A base's
+  pipeline has its variance by default (a negative binomial);
+  `method="metric"` gives the textbook's Poisson numbers. Every part is
+  taken as needed: a diagram that is not a series system is refused.
+  See the spares guide, "Bases and a depot".
+
 - An upgraded component that keeps the unit in service until its next
   failure or due replacement (the upgrade's `"replace_in_service":
   False`) is worked out over a horizon on its own or under age
