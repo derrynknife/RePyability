@@ -599,6 +599,11 @@ def _availability_curves(
                 plain.append((node, start, node in degrading))
         if memo is not None and key is not None:
             memo[(key, counts)] = curves[node]
+    # A fault tree's events that are not repaired, and so no components,
+    # follow curves of their own (see _event_curves.Structured).
+    unrepaired = getattr(rbd, "_unrepaired_curves", None)
+    if unrepaired is not None:
+        curves.update(unrepaired())
     # The nodes a shutdown holds off line, held down inside its windows
     # (see _shutdowns.MaskedCurve).
     return _shutdowns.masked_curves(rbd, curves)

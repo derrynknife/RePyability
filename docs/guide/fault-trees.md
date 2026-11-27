@@ -365,8 +365,40 @@ The time to the top event (`sf`, `mean`, `bx_life`, ...) refuses such a
 tree: the top event does not stay. A tree with NOT gates gives `Q(t)` and
 its averages, and refuses the frequencies (a non-coherent top event can
 also start when an event is repaired). An event takes those three keys
-only, and every event of the tree must be repaired or tested;
-common-cause groups and dynamic gates are refused.
+only; dynamic gates are refused.
+
+Repaired events can sit beside fixed probabilities (a failure on demand,
+a human error) and lives that are not repaired over the mission. A fixed
+probability is down with it at every time and never starts the top event
+over time; a life that is not repaired is down from its end on, `F(t)`,
+and fails at its density:
+
+```python
+mixed = FaultTree(
+    {"no cooling": ("or", ["no flow", "operator"]),
+     "no flow": ("and", ["pump", "seal"])},
+    {"pump": pump, "seal": surv.Weibull.from_params([20000.0, 2.0]),
+     "operator": 1e-3},
+)
+mixed.point_unavailability(8760.0)  # -> 0.002727  after a year
+mixed.expected_failures(8760.0)     # -> 0.5253    in the first year
+```
+
+A tree with a life that is not repaired has no long run (once such an
+event has occurred it stays), so `mean_unavailability()` and
+`system_failure_frequency()` refuse it, while its values over a window
+stay; and `to_repairable_rbd()` refuses a mixed tree, a diagram's
+components being repaired.
+
+Common-cause groups over repaired events (`ccf_groups`) split their
+members' failure rates, as a `RepairableRBD`'s do: the tree's values over
+time and in the long run are then its groups' chains', each conditioned
+on within the smallest part of the tree holding its members, the same as
+the diagram with the same groups gives. Such a tree refuses
+`failure_frequency(t)` (ask `expected_failures(t)` or
+`system_failure_frequency()`) and the importance measures for now
+(convert it with `to_repairable_rbd()`), and a group's members must be
+repaired events.
 `to_repairable_rbd()` draws the tree as a `RepairableRBD`, for costs,
 spares, crews, maintenance and simulation; a tree with an event that feeds
 several gates cannot be drawn so (a diagram holds a component in one

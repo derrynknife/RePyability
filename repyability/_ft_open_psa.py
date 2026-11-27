@@ -279,6 +279,14 @@ def to_open_psa(tree, t: Optional[float], name: str) -> str:
             f"this tree has {', '.join(kinds)} gate(s): it cannot be "
             "exported. (An FDEP gate alone is, as its static equivalent.)"
         )
+    if tree.is_repairable and tree.ccf_groups:
+        raise NotImplementedError(
+            "The Open-PSA Model Exchange Format's common-cause groups "
+            "split their members' probabilities, and this tree's groups "
+            "over repaired events split their failure rates, which the "
+            "format cannot hold: convert the tree with "
+            "to_repairable_rbd(), or export it without its groups."
+        )
     members = {}
     models = [_ccf_model(group) for group in tree.ccf_groups]
     for i, group in enumerate(tree.ccf_groups):
@@ -286,10 +294,9 @@ def to_open_psa(tree, t: Optional[float], name: str) -> str:
             members[m] = i
     events = dict(tree.events)
     if tree.is_repairable and t is not None:
-        from repyability.rbd._event_curves import down_at
-
-        # Each event's unavailability at t, worked out in its own right.
-        down = down_at(tree._repaired, np.array([t]))
+        # Each event's unavailability at t, worked out in its own right
+        # (a fixed probability's, its own).
+        _, down = tree._event_probabilities(np.array([t]))
         events = {e: float(np.ravel(down[e])[0]) for e in events}
     gates = tree._gates
     groups = [_Group(i) for i in range(len(tree.ccf_groups))]

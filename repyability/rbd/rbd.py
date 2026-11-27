@@ -1975,16 +1975,24 @@ class RBD:
             )
 
         importance = {
-            node: full(gradient.get(node, 0.0)) for node in self.nodes
+            node: full(gradient.get(node, 0.0))
+            for node in self._evaluated_nodes()
         }
         return importance, full(works), full(fails), p, q
+
+    def _evaluated_nodes(self) -> list:
+        """The nodes whose probabilities the structure is evaluated at
+        (``_node_arrays``) and whose importances ``_importances`` gives:
+        the diagram's own (a fault tree's events that are not components
+        add to them, see ``_event_curves.Structured``)."""
+        return self.nodes
 
     def _node_arrays(self, node_probabilities: Dict) -> tuple[dict, int]:
         """Each intermediate node's probability as a 1-d array, and their
         common length."""
         arrays: dict = {}
         lengths = set()
-        for node in self.nodes:
+        for node in self._evaluated_nodes():
             arrays[node] = np.atleast_1d(node_probabilities[node])
             lengths.add(len(arrays[node]))
         if len(lengths) > 1:

@@ -12,6 +12,31 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A `FaultTree` of repaired or tested events may now mix them with fixed
+  probabilities (a per-demand failure, a human error) and lives that are
+  not repaired over the mission, which it refused before. A fixed
+  probability is down with it at every time and never starts the top
+  event over time; a life that is not repaired is down from its end on,
+  `F(t)`, and fails at its density. `point_unavailability`,
+  `mean_unavailability(t)`, `failure_frequency`, `expected_failures` and
+  the importance measures take both; the long run
+  (`mean_unavailability()`, `system_failure_frequency`) takes fixed
+  probabilities and refuses a life that is not repaired, which has none.
+  `to_repairable_rbd()` refuses a mixed tree, as a diagram's components
+  are repaired. An `EventTree` may likewise mix repaired headings with
+  protection layers and probabilities. Checked against closed forms,
+  numerical integrals, a unit started in its steady state in the
+  diagram (to 1e-12) and a seeded simulation (within 4 standard errors);
+  trees that mix nothing give the same values to the bit.
+- Common-cause groups over a `FaultTree`'s repaired events (`ccf_groups`,
+  which it refused before): its values over time and in the long run are
+  its groups' chains', conditioned on module by module over the tree's
+  structure, as a `RepairableRBD` with the same groups gives them (to
+  1e-12), and `to_repairable_rbd()` passes the groups on. Such a tree
+  refuses `failure_frequency(t)`, the importance measures and the Open-PSA
+  export for now, naming what to use; a group's members must be repaired
+  events.
+
 - A life that wears out with a demand mode beside it, in one component
   of a `RepairableRBD` (a pump that wears and may fail to start): a
   spec's `"demand": {"probability": p, "rate": d}` beside its
