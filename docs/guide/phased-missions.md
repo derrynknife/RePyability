@@ -249,13 +249,17 @@ shared = PhasedMission(
     ],
     ccf_groups=[CCFGroup(["e1", "e2"], BetaFactor(0.1, basis="rate"))],
 )
-shared.unreliability()                           # -> 0.004044
-shared.phase_failure_probabilities()["cruise"]   # -> 0.002134
+shared.unreliability()                            # -> 0.003867
+shared.phase_failure_probabilities()["cruise"]    # -> 0.002130
+shared.phase_failure_probabilities()["landing"]   # -> 0.001730
 ```
 
 A tenth of each engine's failures now take the other with it, which the
-cruise does not survive: its risk rises, while the take-off's and the
-landing's, which need both engines anyway, do not.
+cruise does not survive: its risk rises (from 0.002039). The take-off and
+the landing need both engines anyway, and there a shared failure is one
+failure where two separate ones had two chances: splitting the rate
+keeps each engine's own life, so the pair's first failure comes a little
+later, and the landing's risk falls (from 0.001917).
 
 Each shared cause is written into the phases' diagrams as a component of
 its own, in series with every member it fails, and named `("cause",
@@ -266,7 +270,7 @@ measures name it, and a member's own entry is that of its own failures:
 
 ```python
 worth = shared.birnbaum_importance()
-list(worth)        # -> ['e1', 'e2', ('cause', ('e1', 'e2')), 'gear', 'nav']
+list(worth)        # -> ['e1', 'gear', ('cause', ('e1', 'e2')), 'e2', 'nav']
 ```
 
 `levers()` lists a group's levers under the tuple of its members: their
