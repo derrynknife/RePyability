@@ -350,6 +350,20 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   change to one goes into the other: `test_mission_standby_chain.py`
   checks the chain against closed forms, the decision diagram and the
   simulation.
+- **A phased mission's chain copies the simulation's repairs too**
+  (`repyability/rbd/_mission_repairs.py`, `PhasedMission`'s
+  `repairability`): a repaired block is under repair from its failure
+  and then new, whatever the phase; the mission fails at the first
+  instant the phase's diagram is down, and at a phase's start if it is
+  down then; at one instant failures come first, then a phase's start,
+  then restorations (`play`'s `restore`: strictly before the failure and
+  the phase's end). The chain (`_mission_chain._Phase.moves`' repair
+  moves, `entered`, `resolve`) follows the same rules: a change to one
+  goes into the other. A mission with repairs has no block on standby
+  and no repaired member of a group. `test_mission_repairs.py` checks
+  the chain against chains written out and `first_failure_sf`, the
+  simulation against the chain, the order at one instant, and that
+  missions without repairs play as they did (recorded).
 - **A phased mission's common-cause groups are written into its
   phases' diagrams (`repyability/rbd/_mission_ccf.py`)**: each shared
   cause a component `("cause", members)` after every place of each

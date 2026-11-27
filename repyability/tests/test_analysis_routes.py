@@ -945,6 +945,7 @@ def test_the_readme_says_what_is_simulated():
     # (say, warm standby made exact), the README must change with it.
     readme = source("README.md").read_text()
     nonrepairable, repairable = nonrepairable_kinds(), repairable_kinds()
+    missions = mission_kinds()
 
     def alone(node):
         return NonRepairableRBD([("s", "a"), ("a", "t")], {"a": node})
@@ -1112,6 +1113,18 @@ def test_the_readme_says_what_is_simulated():
         ],
         "Phased missions and networks too large for their decision "
         "diagrams": [],
+        "Phased missions with blocks repaired during their phases, or on "
+        "standby": [
+            (missions["repair_exact"], "reliability", "exact"),
+            (missions["repair_exact"], "birnbaum_importance", "exact"),
+            (missions["repair_exact"], "fussell_vesely", "refused"),
+            (missions["repair"], "reliability", "refused"),
+            (missions["repair"], "reliability_interval", "simulated"),
+            (missions["repair"], "summary", "simulated"),
+            (missions["standby_exact"], "reliability", "exact"),
+            (missions["standby"], "reliability", "refused"),
+            (missions["standby"], "summary", "simulated"),
+        ],
         "Block diagrams too meshed for their decision diagrams": [
             (nonrepairable["too meshed"], "random", "simulated"),
             (

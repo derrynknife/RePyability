@@ -44,6 +44,49 @@ release between minors that only adds (0.19.1).
   `NonRepairableRBD` (its capacities taken by `capacity_distribution`)
   or the `"reliability"` of a repairable component's spec. See the
   guide's "Markov components".
+- `FaultTree.to_open_psa` and `FaultTree.from_open_psa` exchange the
+  MGL and alpha-factor common-cause models, and read the phi-factor
+  model. The format takes each specific set's probability `Q_k` as an
+  independent basic event, which is `shocks="independent"`: an `MGL` or
+  `AlphaFactor` of three or more members is written with it (and refused
+  with the default, exclusive shocks, which differ at second order), and
+  read with it. The format's alpha-factor formula is the non-staggered
+  scheme's, so an `alpha-factor` group reads as
+  `AlphaFactor(..., testing="non-staggered")`, and staggered alpha
+  factors are written as the non-staggered ones of the same `Q_k`. A
+  `phi-factor` group reads as the staggered `AlphaFactor` of the same
+  shares where a member's sets add up to its probability, and is refused,
+  naming the sum, where they do not (as when the factors themselves sum
+  to 1). A group splitting the failure rate is still refused, now saying
+  the format has no form for it.
+
+- `PhasedMission` takes repair during its phases (`repairability=`, on
+  the constructor and `from_diagram`: each repaired block's model of its
+  repair times). A repaired block is under repair from the moment it
+  fails and then runs again as good as new, whatever the phase by then,
+  so a phase's diagram can go down and come back: the mission fails at
+  the first instant the diagram of the phase under way is down, and at a
+  phase's start if its diagram is down then (it does not wait for a
+  repair). Exact where every life has a constant failure rate in every
+  phase and every repair is exponential: the mission's Markov chain over
+  the blocks' states, carried through the phases, a phase's down states
+  absorbing, which gives `reliability`, `phase_failure_probabilities`,
+  `reliability_over_time`, `expected_mission_time`, `failure_drivers`,
+  `summary`, the importance measures (a block held working, or failed
+  and never repaired), `parameter_sensitivity` and the levers (a repair
+  model's as `repairability.<name>`); one phase is
+  `RepairableRBD.first_failure_sf`. Other lives and repairs are
+  simulated, each repaired block's lives and repairs drawn as it fails
+  and comes back (`method="simulate"`, `reliability_interval`, `summary`,
+  `compare` with common random numbers), and the exact routes refuse,
+  naming the simulation. At one instant failures come before a phase's
+  start, and restorations after it. A repaired block is working or not
+  needed in each phase, is in no common-cause group, and a mission with
+  repairs takes no block on standby; Fussell-Vesely, Barlow-Proschan and
+  the cut sets refuse such a mission. Missions without repairs play as
+  before, to the last bit. Repair between phases or missions (a
+  turnaround) is not modelled.
+
 - `FaultTree.to_open_psa` and `FaultTree.from_open_psa` exchange trees of
   repaired and tested events. An event with an exponential life and
   repair is written as the format's `GLM` (no failure on demand), and a
@@ -713,6 +756,10 @@ release between minors that only adds (0.19.1).
   before.
 
 ### Changed
+
+- `FaultTree.to_open_psa` writes a beta-factor group's factor at the
+  level of the whole group (the number of members), not at 2, as SCRAM
+  requires for a group of three or more; the reader takes either.
 
 - `FaultTree.to_open_psa` keeps the name of a common-cause group's member
   that it makes an identifier, as an attribute of the group
