@@ -1062,6 +1062,12 @@ def repairable_kinds():
             "fixed probability": system(
                 {"reliability": FIXED(0.1), "repairability": repair}
             ),
+            # A probability of failing per demand with the demands' rate
+            # (a pump that may fail to start): an exponential life of
+            # rate d p, which every route takes.
+            "demand": system(
+                unit(reliability=FIXED(0.1), demand_rate=0.05, repair_cost=5.0)
+            ),
             "mixture life": system(
                 unit(reliability=mixture_life(), replace_cost=10.0)
             ),

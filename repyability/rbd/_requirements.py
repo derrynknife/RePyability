@@ -209,8 +209,16 @@ def _require_times(rbd, node) -> None:
                 f"Component {node!r}: its {what} model is a probability, "
                 "not a distribution of times, so it has no mean time or "
                 "availability over time: a unit fails at once with that "
-                "probability, or never. Estimate the system by "
-                "simulation, with availability()."
+                "probability, or never. "
+                + (
+                    "For a probability of failing per demand, give its "
+                    "spec a demand_rate (the demands per unit of time), "
+                    "which makes its failures a life; or estimate the "
+                    "system by simulation, with availability()."
+                    if what == "reliability"
+                    else "Estimate the system by simulation, with "
+                    "availability()."
+                )
             )
 
 

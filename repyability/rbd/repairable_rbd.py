@@ -412,6 +412,17 @@ class RepairableRBD(RBD):
           loop. A unit replaced on condition, renewed early (a
           maintenance group, a shutdown's renewals) or tested with repair
           crews is refused, saying what to do.
+          ``"demand_rate"``, on a component whose ``"reliability"`` is a
+          probability of failing per demand
+          (``surpyval.FixedEventProbability``, a pump that may fail to
+          start), is the rate at which demands come: a Poisson process,
+          each demand failing a working unit with that probability, so
+          that its failures are an exponential life of rate the demand
+          rate times the probability, which every analysis takes. Its
+          levers are the probability and the rate; a probability of 0
+          makes it a junction. A life that wears out cannot take one:
+          draw the demand mode as a component of its own, in series
+          (see the guide's "Failing on demand").
           ``"covariates"``, a surpyval ``StepSchedule``, runs a block
           whose ``"reliability"`` is a fitted surpyval regression model
           (proportional or additive hazards, accelerated failure time or
@@ -1015,6 +1026,10 @@ class RepairableRBD(RBD):
         # Load-sharing groups and blocks of identical units, checked
         # before a duty or covariates change the specs: each node's group
         # and the life its units draw (see _spec._validate_units_group).
+        # A probability of failing per demand with a demand rate is the
+        # exponential life its demands make (see _spec.on_demand), the
+        # spec as given keeping the probability and the rate.
+        components = _spec.on_demand(components)
         units_groups: dict[Any, Tuple[_Standby, Any]] = {}
         for name, component in components.items():
             if isinstance(component, dict) and any(
