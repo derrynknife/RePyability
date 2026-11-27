@@ -939,9 +939,8 @@ def test_the_readme_says_what_is_simulated():
             for name in (
                 "maintained",
                 "inspected",
-                "common cause, Weibull",
-                "standby group, Weibull",
                 "instrument air",
+                "koon",
             )
             for analysis, route in (
                 ("first_failure_sf", "refused"),

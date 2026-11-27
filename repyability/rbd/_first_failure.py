@@ -455,9 +455,9 @@ def _node_times(
 def _phases_fit(rbd) -> None:
     """Raise if the diagram's lives and repairs cannot be followed as
     phases: a time with no distribution function or scale, or a module
-    whose chain, at the fewest levels a value is extrapolated from, has
-    too many states."""
-    level = _phase_type.LEVELS[_phase_type.FEWEST - 1]
+    whose chain, a level past the fewest a value is extrapolated from
+    (few values settle in fewer), has too many states."""
+    level = _phase_type.LEVELS[_phase_type.FEWEST]
     for module in _modules(rbd)[1]:
         count = 1
         for node in module:

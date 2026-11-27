@@ -286,11 +286,10 @@ def test_a_chain_too_large_is_refused_with_what_to_use_instead():
     assert rbd.analysis_routes()["first_failure_sf"].route == "refused"
 
 
-def test_values_that_do_not_settle_say_how_far_they_agree(monkeypatch):
-    rbd = pair(W([100.0, 2.0]), W([10.0, 2.0]))
-    monkeypatch.setattr(_first_failure, "MAX_PHASE_STATES", 20_000)
+def test_values_that_do_not_settle_say_how_far_they_agree():
+    rbd = pair(W([100.0, 2.0]), E([0.1]))
     with pytest.raises(_phase_type.NotSettled, match="agree to") as error:
-        rbd.first_failure_sf(TIMES, rtol=1e-6)
+        rbd.first_failure_sf(TIMES, rtol=1e-9)
     assert "first_failure_bounds" in str(error.value)
     assert "looser rtol" in str(error.value)
 

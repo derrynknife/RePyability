@@ -204,10 +204,11 @@ def test_a_common_cause_group_brackets_its_simulated_first_failure():
         {n: unit(E([0.002]), E([0.5])) for n in "ab"},
         ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
     )
-    with pytest.raises(NotImplementedError, match="first_failure_bounds"):
-        rbd.first_failure_sf(100.0)
     x = np.array([100.0, 1000.0, 3000.0])
     bounds = rbd.first_failure_bounds(x)
+    exact = rbd.first_failure_sf(x)
+    assert np.all(bounds.lower <= exact + W_RTOL)
+    assert np.all(exact <= bounds.upper + Q_ATOL)
     simulated = rbd.first_failure_sf(
         x, method="simulate", mc_samples=10_000, seed=13
     )
