@@ -350,7 +350,8 @@ def test_a_duty_moves_the_demands_with_their_basis(basis):
         ({"probability": P, "rate": 0.0}, "finite number above 0"),
         ({"probability": P, "rate": math.inf}, "finite number above 0"),
         ({"probability": P}, "finite number above 0"),
-        ({"probability": P, "rate": D, "times": [1.0]}, "a dict of"),
+        ({"probability": P, "rate": D, "times": [1.0]}, "give one"),
+        ({"probability": P, "rate": D, "every": 1.0}, "a dict of"),
         (0.1, "a dict of"),
     ],
 )

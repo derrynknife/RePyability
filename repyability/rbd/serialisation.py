@@ -435,10 +435,20 @@ def _serialise_component(value) -> dict:
         if value.get("demand_plan") is not None:
             out["demand_plan"] = _demand_plan_dict(value["demand_plan"])
         if value.get("demand") is not None:
-            # A demand mode beside the life: its probability and rate.
+            # A demand mode beside the life: its probability, and its
+            # rate, set times or plan.
+            demand = dict(value["demand"])
             out["demand"] = {
-                key: float(number) for key, number in value["demand"].items()
+                key: float(demand[key])
+                for key in ("probability", "rate")
+                if demand.get(key) is not None
             }
+            if demand.get("times") is not None:
+                out["demand"]["times"] = [
+                    float(t) for t in np.ravel(demand["times"])
+                ]
+            if demand.get("plan") is not None:
+                out["demand"]["plan"] = _demand_plan_dict(demand["plan"])
         if value.get("demand_basis") is not None:
             out["demand_basis"] = str(value["demand_basis"])
         if value.get("duty") is not None:
