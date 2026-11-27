@@ -175,12 +175,12 @@ Which analyses each model type has (the method; — where it has none):
 | Reliability and mean time to the first failure | — | `first_failure_sf` | — | — | — |
 | Long-run availability | — | `mean_availability` | — | — | — |
 | Each node's availability | — | `node_availability` | — | — | — |
-| Availability over time | — | `point_availability` | — | — | — |
+| Availability over time | — | `point_availability` | `point_unavailability` | — | — |
 | Over a mission | — | `mission_availability` | — | — | — |
-| Unavailability (precise when small) | — | `mean_unavailability` | — | — | — |
-| Failure frequency, MTBF | — | `system_failure_frequency` | — | — | — |
+| Unavailability (precise when small) | — | `mean_unavailability` | `mean_unavailability` | — | — |
+| Failure frequency, MTBF | — | `system_failure_frequency` | `system_failure_frequency` | — | — |
 | Mean up and down times | — | `mean_up_time` | — | — | — |
-| Expected failures and events in a window | — | `expected_events` | — | — | — |
+| Expected failures and events in a window | — | `expected_events` | `expected_failures` | — | — |
 | Simulated availability (distribution) | — | `availability` | — | — | — |
 | Simulated histories | — | `simulate_timelines` | — | — | — |
 | Each simulation's values, common random numbers | — | `simulation_samples` | — | — | — |
@@ -377,7 +377,12 @@ places, nested diagrams):
   with repairs and block replacements in no time). Common-cause groups of
   members with exponential lives, tested or repaired, take nothing away:
   the long-run values, importance and allocations stay exact, and the
-  values over time from new numerical.
+  values over time from new numerical;
+- **fault trees of repaired or tested events** (repeated events, VOTE and
+  NOT gates included): the top event's unavailability over time, its
+  average over a window and in the long run, and, for a coherent tree, its
+  failure frequency and expected occurrences, from the tree's own decision
+  diagram over the events' curves.
 
 **Simulated**, or refused with the simulation to run instead:
 

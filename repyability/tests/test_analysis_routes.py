@@ -1317,10 +1317,13 @@ def test_the_readme_says_what_is_simulated():
 def uncertain_event(tree):
     """An event's model parameter known to within 5%: the first event,
     outside the common-cause groups, whose model has parameters (a
-    probability's is ``p``)."""
+    probability's is ``p``; a repaired event's, its life's)."""
     members = {m for g in tree.ccf_groups for m in g.members}
     for event in tree.events:
-        spec = parametric_spec(tree._event_model(event))
+        model = tree._event_model(event)
+        if isinstance(model, dict):
+            model = model["reliability"]
+        spec = parametric_spec(model)
         if spec is not None and event not in members:
             name, value = spec[2][0], spec[1][0]
             return {event: {name: st.uniform(0.95 * value, 0.1 * value)}}
@@ -1349,8 +1352,13 @@ FAULT_TREE_CALLS = {
             "barlow_proschan_importance",
             "parameter_sensitivity",
             "conditional_probabilities",
+            "point_unavailability",
+            "mean_unavailability",
+            "failure_frequency",
+            "expected_failures",
         )
     },
+    "system_failure_frequency": lambda tree: tree.system_failure_frequency(),
     "time_to_reliability": lambda tree: tree.time_to_reliability(0.5),
     "bx_life": lambda tree: tree.bx_life(10),
     "mean": lambda tree: tree.mean(),
@@ -1391,6 +1399,7 @@ def test_the_fault_tree_report_covers_every_public_analysis():
         "to_dict",
         "to_json",
         "to_rbd",
+        "to_repairable_rbd",
         "occurs",
         "get_min_cut_sets",
         "get_min_path_sets",

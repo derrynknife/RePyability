@@ -300,6 +300,73 @@ timed.analysis_routes()["mean"].route     # 'numerical'
 cooling.analysis_routes()["mean"].route   # 'refused'   no event has a lifetime
 ```
 
+## Repaired and tested events
+
+In a plant the basic events are mostly components that are repaired when
+they fail, or hidden failures found by a periodic proof test, so the top
+event comes and goes. Give such an event a component spec, as a
+[`RepairableRBD`](repairable.md)'s component takes one: its
+`"reliability"`, its `"repairability"` and, for a tested event, its
+`"inspection"`. The tree then gives the standard results of IEC 61025 and
+ISO/TR 12489, each event new at 0:
+
+- `point_unavailability(t)`, the probability `Q(t)` that the top event is
+  in effect at `t` (`top_event_probability(t)` gives the same);
+- `mean_unavailability(t)`, its average over `[0, t]`, and with `t` left
+  out its long-run value (the steady state, or the average over the
+  tests' common period: a safety function's PFDavg);
+- `failure_frequency(t)`, the top event's expected occurrences per unit
+  time at `t`, `w(t) = Σ I_B^i(t) w_i(t)`, each event's failure intensity
+  where it is critical; `expected_failures(t)`, its integral; and
+  `system_failure_frequency()`, its long-run value.
+
+Here the pumps fail once in 1000 h and take 10 h to repair, and the
+valve's failures are hidden until its monthly test:
+
+```python
+E = surv.Exponential.from_params
+pump = {"reliability": E([1e-3]), "repairability": E([0.1])}
+valve = {
+    "reliability": E([2e-5]),
+    "repairability": "instant",
+    "inspection": {"interval": 720.0},
+}
+plant = FaultTree(
+    {"no cooling": ("or", ["valve", "no flow"]),
+     "no flow": ("and", ["pump 1", "pump 2"])},
+    {"pump 1": pump, "pump 2": pump, "valve": valve},
+)
+plant.point_unavailability(700.0)   # -> 0.01400   just before the valve's test
+plant.point_unavailability(721.0)   # -> 0.000118  just after it
+plant.mean_unavailability(720.0)    # -> 0.007261  over the first month
+plant.mean_unavailability()         # -> 0.007263  in the long run
+plant.failure_frequency(700.0)      # -> 3.905e-05 occurrences per hour then
+plant.expected_failures(8760.0)     # -> 0.3443    in the first year
+plant.system_failure_frequency()    # -> 3.932e-05 in the long run
+```
+
+Each event's probability of being down at `t` is worked out as a
+`RepairableRBD`'s component's is (in closed form for an exponential life
+and repair, otherwise from its renewal or test cycle's curve, to about
+`1e-7`), and the top event's from the tree's own decision diagram, so
+repeated events, VOTE and NOT gates stay exact; a small `Q` keeps its
+digits. The importance measures at `t` read the same probabilities:
+
+```python
+plant.birnbaum_importance(700.0)    # {'pump 1': 0.0098, 'pump 2': 0.0098, 'valve': 0.9999}
+```
+
+The time to the top event (`sf`, `mean`, `bx_life`, ...) refuses such a
+tree: the top event does not stay. A tree with NOT gates gives `Q(t)` and
+its averages, and refuses the frequencies (a non-coherent top event can
+also start when an event is repaired). An event takes those three keys
+only, and every event of the tree must be repaired or tested;
+common-cause groups and dynamic gates are refused.
+`to_repairable_rbd()` draws the tree as a `RepairableRBD`, for costs,
+spares, crews, maintenance and simulation; a tree with an event that feeds
+several gates cannot be drawn so (a diagram holds a component in one
+place), and its own methods are the way to it.
+
 ## From diagrams to trees and back
 
 `FaultTree.from_rbd(rbd)` turns a `NonRepairableRBD` into the tree of its
@@ -540,6 +607,8 @@ print(cooling.to_open_psa().splitlines()[3])
   [Redundancy models](redundancy-models.md).
 - **Independent basic events,** but for the events they share and their
   [common causes](#common-causes).
-- **Non-repairable.** A tree gives the probability that the top event has
-  occurred by `t`. For availability with repair, build a
-  [`RepairableRBD`](repairable.md).
+- **Repair.** A tree of lifetime models gives the probability that the
+  top event has occurred by `t`; a tree of [repaired and tested
+  events](#repaired-and-tested-events) gives its unavailability and
+  failure frequency over time. For costs, crews and maintenance, draw it
+  as a [`RepairableRBD`](repairable.md) (`to_repairable_rbd()`).

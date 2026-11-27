@@ -1046,11 +1046,13 @@ def lifetime_trees():
     from repyability.tests.catalogue import fault_tree_kinds
 
     # The coherent, static trees, which have a block diagram to agree with
-    # (the routes tests check the others refuse what they do not give).
+    # (the routes tests check the others refuse what they do not give);
+    # those of repaired events have no lifetime (their own tests are in
+    # test_fault_tree_repairable.py).
     trees = {
         name: tree
         for name, tree in fault_tree_kinds().items()
-        if tree.is_coherent and not tree.is_dynamic
+        if tree.is_coherent and not tree.is_dynamic and not tree.is_repairable
     }
     trees.update({f"random {seed}": lifetime_tree(seed) for seed in range(8)})
     trees.update(
