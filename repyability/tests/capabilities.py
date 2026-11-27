@@ -569,6 +569,18 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
             "An upgrade, the unit in service kept",
             "upgraded at a time, the unit in service kept",
         ),
+        (
+            "An upgrade, block-replaced, the unit in service kept",
+            "upgraded at a time, block-replaced, the unit in service kept",
+        ),
+        (
+            "An upgrade, tested, the unit in service kept",
+            "upgraded at a time, tested, the unit in service kept",
+        ),
+        (
+            "An upgrade, tests that take time",
+            "upgraded at a time, tests that take time",
+        ),
         ("A shelf of spares", "a shelf of spares"),
         ("Imperfect repair (Kijima)", "imperfect repair"),
         ("Minimal repair", "minimal repair in no time"),

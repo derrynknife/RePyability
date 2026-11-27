@@ -34,6 +34,22 @@ release between minors that only adds (0.19.1).
   0.7 over 1,200 h, 0.958258 against 0.958306 (+0.1 SE) and 0.3385
   against 0.3382 (-0.1 SE). A sure switch's values are unchanged to the
   bit.
+- An upgraded component's values over a horizon (`point_availability`,
+  `mission_availability`, `expected_events`, `expected_cost`,
+  `expected_npv`) no longer refuse, from new or from a state, when the
+  unit in service is kept (`"replace_in_service": False`) under block
+  replacement or with tests and repairs in no time that find every
+  failure, nor when it is replaced at the upgrade with tests or repairs
+  of fixed lengths or tests that miss failures. A unit kept is the
+  component's own values with the units put in from the upgrade given
+  the new life (only the block stretch holding the upgrade is split);
+  upgraded to its own life, it is the component, to 1e-12. A unit
+  replaced is replaced as the simulation does: up or failed unseen at
+  the upgrade, off line for its test once the test is over, in a test
+  that found it failed or its repair once that is over. Tests or
+  repairs of varying length, and a unit kept with tests that take time
+  or miss, are still simulated. No seeded result changes.
+
 - The long-run values of a warm standby pair (two units, one needed, a
   spare that ages at `"dormancy_factor"` while it waits and can fail in
   standby, a sure switch) of any lives and repairs with one repair at a
@@ -1147,6 +1163,15 @@ release between minors that only adds (0.19.1).
   in the same order to give the same results as the built-in engines.
 
 ### Fixed
+
+- The values over a horizon of an upgraded component with tests in no
+  time took its curve from the upgrade on to settle to a constant once
+  it had settled, where a tested unit's repeats every test interval: a
+  memoryless unit's integrals past that point were wrong (0.954 for
+  0.936 mission availability over 1,000 hours of a unit failing at
+  1/200 an hour, then 1/800, tested every 50). They now follow the
+  repeating curve; a life whose curve had not settled by the horizon is
+  unchanged.
 
 - A surpyval model with a hazard ratio (`hr=`) draws its lifetimes with
   it in a `NonRepairableRBD`'s and a `PhasedMission`'s simulations

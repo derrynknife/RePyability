@@ -1467,6 +1467,10 @@ def test_the_readme_says_what_is_simulated():
                 "upgraded at a time, age-replaced",
                 "upgraded at a time, tested",
                 "upgraded at a time, the unit in service kept",
+                "upgraded at a time, block-replaced, the unit in service "
+                "kept",
+                "upgraded at a time, tested, the unit in service kept",
+                "upgraded at a time, tests that take time",
             )
             for analysis, route in (
                 ("expected_npv", "numerical"),
