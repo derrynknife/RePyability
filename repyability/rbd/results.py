@@ -3521,12 +3521,17 @@ class TornadoRow(_ResultMapping):
         The lever's name, as ``Lever`` names it.
     base : float
         The lever's value in the diagram.
-    low, high : float
-        The lever's low and high: the range given, or by default a share
-        (``relative``) of its scale either way (one fewer and one more of
-        a lever that counts), cut to the lever's range of values.
-    value_low, value_high : float
-        The system's value with the lever at ``low`` and at ``high``.
+    low : float
+        The lever's low: the range's lower end given, or by default its
+        value less a share (``relative``) of its scale (one fewer for a
+        lever that counts), cut to the lever's range of values.
+    high : float
+        The lever's high, likewise: its value plus the share (one more
+        for a lever that counts), cut to its range of values.
+    value_low : float
+        The system's value with the lever at ``low``.
+    value_high : float
+        The system's value with the lever at ``high``.
     swing : float
         ``abs(value_high - value_low)``, by which the rows are sorted.
     cut : bool

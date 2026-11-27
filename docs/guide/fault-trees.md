@@ -291,6 +291,11 @@ spread.nominal                      # -> 0.7751
 spread.interval(0.9)                # (0.733, 0.804)
 ```
 
+A B-life comes with its band the same way: `bx_life_uncertainty(10, ...)`
+and `time_to_reliability_uncertainty(0.9, ...)` find each draw's time by
+inverting its exact probability, from the same draws (several levels at
+once come from one set of draws), and give the diagram's own result.
+
 `analysis_routes()` says, without running anything, how each of the tree's
 analyses is computed, as a diagram's does: exact, numerical, simulated, or
 refused and why.

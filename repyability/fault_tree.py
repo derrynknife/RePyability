@@ -93,6 +93,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from repyability.rbd.repairable_rbd import RepairableRBD
     from repyability.rbd.results import (
         ConditionalProbabilities,
+        ConfidenceInterval,
         ImportanceTable,
         Lever,
         PrimeImplicant,
@@ -258,6 +259,7 @@ def _parse_event(name, model):
 #: What a tree with dynamic gates gives (the rest is refused, saying so).
 _DYNAMIC_GIVES = frozenset(
     {
+        "compare",
         "top_event_probability",
         "ff",
         "sf",
@@ -270,6 +272,7 @@ _DYNAMIC_GIVES = frozenset(
 #: What a tree with NOT gates gives.
 _NON_COHERENT_GIVES = frozenset(
     {
+        "compare",
         "top_event_probability",
         "ff",
         "sf",
@@ -302,6 +305,8 @@ _NEEDS_A_LIFETIME = frozenset(
         "random",
         "time_to_reliability",
         "bx_life",
+        "time_to_reliability_uncertainty",
+        "bx_life_uncertainty",
         "barlow_proschan_importance",
         "mean_uncertainty",
     }
@@ -314,6 +319,7 @@ _NEEDS_A_DIAGRAM = frozenset({"to_rbd", "sf_uncertainty"})
 #: goes, or is not worked out for repaired events yet.
 _REPAIRABLE_GIVES = frozenset(
     {
+        "compare",
         "top_event_probability",
         "point_unavailability",
         "mean_unavailability",
@@ -1721,6 +1727,195 @@ class FaultTree:
             entropy = np.random.SeedSequence(checked_seed(seed)).entropy
             return self._dynamic.simulate(self.top, size, entropy)
         return self._rbd().random(size, seed=seed)
+
+    def compare(
+        self,
+        other: "FaultTree",
+        t: Optional[float] = None,
+        mc_samples: int = 100_000,
+        seed=None,
+        *,
+        quantity: Optional[str] = None,
+        confidence: float = 0.95,
+        method: Optional[str] = None,
+    ) -> "ConfidenceInterval":
+        """How much later (or sooner) this tree's top event occurs than
+        ``other``'s on average, or how much more likely it is by ``t``:
+        exactly where both are worked out, and otherwise by simulation
+        with common random numbers, as
+        [`NonRepairableRBD.compare`][repyability.NonRepairableRBD.compare]
+        compares two diagrams.
+
+        ``quantity="mean"`` (the default for trees with a time to the top
+        event, given no ``t``) is the difference of the mean times to the
+        top event: exact where ``mean`` works out both, and otherwise (a
+        tree with dynamic gates, say), or with ``method="simulate"``, the
+        mean of ``mc_samples`` paired differences of the trees' simulated
+        times, an event of the same name in both drawing the same random
+        numbers (the same quantile of its own model). A static tree's
+        times are its diagram's (``to_rbd()``), so the comparison is the
+        diagrams' on the same seed; a tree with dynamic gates simulates
+        its own. ``quantity="top_event_probability"`` (the default given
+        ``t``, or for a tree of probabilities or of repaired events) is
+        the exact difference of the top event probabilities at ``t``.
+
+        Parameters
+        ----------
+        other : FaultTree
+            The tree to compare with.
+        t : float, optional
+            The time of the top event probabilities, for
+            ``quantity="top_event_probability"``; left out for a tree
+            whose probabilities do not depend on time.
+        mc_samples : int, optional
+            Simulated, the number of times of each tree, by default
+            100_000.
+        seed : int, optional
+            Simulated, the seed, by default None.
+        quantity : str, optional
+            ``"mean"`` or ``"top_event_probability"``; by default as above.
+        confidence : float, optional
+            The confidence level of the interval, by default 0.95.
+        method : str, optional
+            None (the default): exact where both values are, else
+            simulated. ``"exact"``: refused where a value is not exact.
+            ``"simulate"``: simulated whatever (the mean only).
+
+        Returns
+        -------
+        ConfidenceInterval
+            This tree's value minus ``other``'s: exact (``method="exact"``
+            in the result, with no error), or the mean of the paired
+            differences (``"simulated"``), with its standard error and a
+            normal interval.
+
+        Raises
+        ------
+        TypeError
+            If ``other`` is not a ``FaultTree``: convert a diagram with
+            ``FaultTree.from_rbd`` (or the tree with ``to_rbd``).
+        ValueError
+            If ``mc_samples``, ``confidence``, ``method`` or ``quantity``
+            is not valid, ``t`` is left out for a tree whose probabilities
+            depend on time, or ``method="simulate"`` is asked of the top
+            event probability.
+        NotImplementedError
+            Where the trees refuse the quantity (the mean of a tree with
+            NOT gates, say).
+
+        Examples
+        --------
+        Either of two exponential events, the second's rate cut from 0.03
+        to 0.02: the mean time to the top event rises from 25 to 33.3.
+
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> E = surv.Exponential.from_params
+        >>> def tree(rate):
+        ...     events = {"a": E([0.01]), "b": E([rate])}
+        ...     return FaultTree({"top": ("or", ["a", "b"])}, events)
+        >>> gain = tree(0.02).compare(tree(0.03))
+        >>> round(gain.estimate, 4), gain.method
+        (8.3333, 'exact')
+        >>> tree(0.02).compare(tree(0.03), 10.0).method
+        'exact'
+        """
+        from repyability.rbd import _paired
+
+        self._refuse("compare")
+        _paired.check(method, mc_samples, confidence)
+        _paired.same_kind(
+            self,
+            other,
+            "convert a diagram with FaultTree.from_rbd(), or the tree with "
+            "to_rbd(), to compare it with a NonRepairableRBD",
+        )
+        quantity = self._compare_quantity(t, quantity)
+        other._refuse("compare")
+        other._compare_quantity(t, quantity)
+        if quantity == "top_event_probability":
+            if method == "simulate":
+                raise ValueError(
+                    "The top event probabilities are compared exactly: "
+                    "method='simulate' compares the mean times to the top "
+                    "event (quantity='mean')."
+                )
+            return _paired.exact(
+                float(self.top_event_probability(t))
+                - float(other.top_event_probability(t)),
+                confidence,
+            )
+        if method != "simulate":
+            try:
+                exact = float(self.mean() - other.mean())
+            except (NotImplementedError, ValueError):
+                if method == "exact":
+                    raise
+            else:
+                return _paired.exact(exact, confidence)
+        key = _paired.key(seed)
+        differences = self._keyed_lifetimes(
+            mc_samples, key
+        ) - other._keyed_lifetimes(mc_samples, key)
+        return _paired.simulated(differences, confidence)
+
+    def _compare_quantity(self, t, quantity: Optional[str]) -> str:
+        """The quantity ``compare`` takes: ``quantity`` as given, or by
+        default the top event probability given ``t`` or for a tree with
+        no time to its top event, else the mean; raising what refuses
+        it."""
+        one_of("quantity", quantity, (None, "mean", "top_event_probability"))
+        if quantity is None:
+            timed = t is None and self._times_to_top()
+            quantity = "mean" if timed else "top_event_probability"
+        if quantity == "top_event_probability":
+            if t is None and not self.is_fixed:
+                raise Refused(
+                    "compare() of the top event probabilities needs the time "
+                    "t: an event's probability depends on time"
+                    + (
+                        "."
+                        if self._times_to_top()
+                        else ", and the tree has no time to its top event "
+                        "to compare the means of."
+                    )
+                )
+            return quantity
+        if t is not None:
+            raise ValueError(
+                "t is the time of the top event probability, which the mean "
+                "time to the top event does not take: leave t out, or ask "
+                "for quantity='top_event_probability'."
+            )
+        self._refuse("random")
+        self._require_varying_lifetimes()
+        return quantity
+
+    def _times_to_top(self) -> bool:
+        """Whether the tree has times to its top event to compare (as
+        ``random`` draws them)."""
+        try:
+            self._refuse("random")
+            self._require_varying_lifetimes()
+        except (NotImplementedError, ValueError):
+            return False
+        return True
+
+    def _keyed_lifetimes(self, n: int, key: int) -> np.ndarray:
+        """``n`` times to the top event, each event drawing its uniforms
+        from its own stream keyed by ``key`` and its name (common random
+        numbers, see ``compare``): the diagram's, or with dynamic gates
+        the tree's own simulation."""
+        from repyability.rbd import _paired
+
+        if self._dynamic is not None:
+            return self._dynamic.simulate(
+                self.top,
+                n,
+                None,
+                lambda event: _paired.element(key, event, 0, n),
+            )
+        return self._rbd()._keyed_lifetimes(n, key)
 
     def time_to_reliability(self, target, upper_bound: Optional[float] = None):
         """The time at which the probability that the top event has not
@@ -3568,6 +3763,172 @@ class FaultTree:
             t, uncertainty, n_draws=n_draws, seed=seed, sampling=sampling
         )
 
+    def time_to_reliability_uncertainty(
+        self,
+        target: ArrayLike,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+        upper_bound: Optional[float] = None,
+    ) -> "UncertaintyResult":
+        """The time at which the probability that the top event has not
+        occurred falls to ``target``, over plausible event models
+        (parameter uncertainty).
+
+        As [`sf_uncertainty`][repyability.FaultTree.sf_uncertainty] draws
+        the events' models (the draws are those of the tree's diagram,
+        ``to_rbd``), and each draw's time is found as
+        [`time_to_reliability`][repyability.FaultTree.time_to_reliability]
+        finds it, from the draw's exact probability, the common-cause
+        groups in it.
+
+        Parameters
+        ----------
+        target : float or array_like
+            The reliability level, in (0, 1), or levels: each a row of
+            draws, from the same parameter draws.
+        uncertainty : dict, optional
+            ``{event or tuple of events: uncertainty}``, and ``{CCFGroup:
+            uncertainty}``, as for ``sf_uncertainty`` (by default, every
+            fitted event).
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seeds the draws, for reproducible results.
+        sampling : str, optional
+            ``"random"`` (the default), or ``"sobol"`` for the points of a
+            scrambled Sobol sequence.
+        upper_bound : float, optional
+            An upper bound for each draw's search, at which its
+            probability is below ``target``; found by doubling if None.
+
+        Returns
+        -------
+        UncertaintyResult
+            The time of every draw (``samples``), the time with the
+            events' own models (``nominal``), and summaries such as
+            ``interval`` (see
+            [`UncertaintyResult`][repyability.UncertaintyResult]).
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is not in (0, 1), every event is a probability
+            (the reliability is constant in time), a draw's reliability
+            starts below ``target`` or cannot be bracketed, or as for
+            ``sf_uncertainty``.
+        NotImplementedError
+            For a tree with dynamic or NOT gates, or repaired events, as
+            for ``time_to_reliability``.
+
+        Examples
+        --------
+        >>> import scipy.stats as st
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> pump = surv.Exponential.from_params([0.002])
+        >>> tree = FaultTree(
+        ...     {"no flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": pump, "pump 2": pump},
+        ... )
+        >>> rate = {"failure_rate": st.uniform(0.001, 0.002)}
+        >>> result = tree.time_to_reliability_uncertainty(
+        ...     0.9, {("pump 1", "pump 2"): rate}, n_draws=500, seed=1
+        ... )
+        >>> round(result.nominal, 1)
+        190.1
+        >>> lower, upper = result.interval(0.9)
+        >>> round(lower, 1), round(upper, 1)
+        (130.7, 344.2)
+        >>> result.band
+        'given'
+        """
+        self._refuse("time_to_reliability_uncertainty")
+        self._require_time_varying()
+        return self._rbd().time_to_reliability_uncertainty(
+            target,
+            uncertainty,
+            n_draws=n_draws,
+            seed=seed,
+            sampling=sampling,
+            upper_bound=upper_bound,
+        )
+
+    def bx_life_uncertainty(
+        self,
+        x: ArrayLike,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+        upper_bound: Optional[float] = None,
+    ) -> "UncertaintyResult":
+        """The Bx life, the time by which the top event has occurred in
+        ``x`` percent of systems (the B10 life for ``x = 10``), over
+        plausible event models (parameter uncertainty):
+        ``time_to_reliability_uncertainty(1 - x / 100, ...)``.
+
+        Parameters
+        ----------
+        x : float or array_like
+            The percentage in which the top event has occurred, in
+            (0, 100), or percentages: each a row of draws, from the same
+            parameter draws.
+        uncertainty : dict, optional
+            As for ``time_to_reliability_uncertainty``.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seeds the draws, for reproducible results.
+        sampling : str, optional
+            ``"random"`` (the default) or ``"sobol"``.
+        upper_bound : float, optional
+            As for ``time_to_reliability_uncertainty``.
+
+        Returns
+        -------
+        UncertaintyResult
+            The Bx life of every draw, the nominal one, and their
+            summaries.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is not in (0, 100), or as for
+            ``time_to_reliability_uncertainty``.
+        NotImplementedError
+            As for ``time_to_reliability_uncertainty``.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["c"])},
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> b10 = tree.bx_life_uncertainty(
+        ...     10, {"c": [surv.Weibull.from_params([100, 2])]}, n_draws=3
+        ... )
+        >>> round(b10.nominal, 2)  # the tree's B10 life
+        32.46
+        """
+        self._refuse("bx_life_uncertainty")
+        x = real_array(x, "x")
+        if not np.all((0.0 < x) & (x < 100.0)):
+            raise ValueError("x must be a percentage in (0, 100).")
+        return self.time_to_reliability_uncertainty(
+            1.0 - x / 100.0,
+            uncertainty,
+            n_draws=n_draws,
+            seed=seed,
+            sampling=sampling,
+            upper_bound=upper_bound,
+        )
+
     def mean_uncertainty(
         self,
         uncertainty: Optional[Dict[Hashable, Any]] = None,
@@ -3876,6 +4237,18 @@ class FaultTree:
             "The events' model parameters drawn from their uncertainty, and "
             "the exact top event probability for each draw." + drawn,
         )
+        for name in ("time_to_reliability_uncertainty", "bx_life_uncertainty"):
+            out[name] = (
+                r.refused(fixed)
+                if fixed
+                else built(
+                    r.SIMULATED,
+                    "The events' model parameters drawn from their "
+                    "uncertainty, and the time found for each draw by "
+                    "inverting its exact probability that the top event has "
+                    "not occurred." + drawn,
+                )
+            )
         out["mean_uncertainty"] = (
             r.refused(lifetimes)
             if lifetimes
@@ -3900,7 +4273,46 @@ class FaultTree:
             )
         )
         self._repaired_routes(out, built)
+        out["compare"] = self._compare_route(out)
         return with_importances(out)
+
+    def _compare_route(self, out: dict) -> AnalysisRoute:
+        """The route of ``compare(other)`` with no ``t``, from those of
+        the quantity it takes: the top event probability's, or the mean's
+        where that is worked out, else simulated."""
+        from repyability.rbd import routes as r
+
+        refused = r.refusal(lambda: self._refuse("compare")) or r.refusal(
+            lambda: self._compare_quantity(None, None)
+        )
+        if refused:
+            return r.refused(refused)
+        if not self._times_to_top():
+            top = out["top_event_probability"]
+            return (
+                top
+                if top.route == r.REFUSED
+                else dataclasses.replace(
+                    top,
+                    reason="The difference of the two trees' top event "
+                    "probabilities: " + top.reason,
+                )
+            )
+        mean = out["mean"]
+        if mean.route != r.REFUSED:
+            return dataclasses.replace(
+                mean,
+                reason="The difference of the two trees' mean times to the "
+                "top event (see mean), where the other's is worked out too; "
+                "otherwise, or with method='simulate', simulated times to "
+                "it, with common random numbers.",
+            )
+        return AnalysisRoute(
+            r.SIMULATED,
+            "Simulated times to the top event of both trees, an event of "
+            "the same name drawing the same random numbers in both (common "
+            "random numbers).",
+        )
 
     def _repaired_routes(self, out: dict, built) -> None:
         """The routes of the analyses of repaired events, in ``out``:

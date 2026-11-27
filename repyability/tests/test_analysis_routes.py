@@ -486,11 +486,20 @@ NETWORK_CALLS = {
     "time_to_reliability": lambda net: net.time_to_reliability(0.5),
     "bx_life": lambda net: net.bx_life(10),
     "random": lambda net: net.random(200, seed=1),
+    "compare": lambda net: net.compare(net, mc_samples=2000, seed=1),
     "sf_uncertainty": lambda net: net.sf_uncertainty(
         X, uncertain_element(net), n_draws=20, seed=1
     ),
     "mean_uncertainty": lambda net: net.mean_uncertainty(
         uncertain_element(net), n_draws=5, seed=1
+    ),
+    "time_to_reliability_uncertainty": (
+        lambda net: net.time_to_reliability_uncertainty(
+            0.5, uncertain_element(net), n_draws=2, seed=1
+        )
+    ),
+    "bx_life_uncertainty": lambda net: net.bx_life_uncertainty(
+        10, uncertain_element(net), n_draws=2, seed=1
     ),
 }
 
@@ -628,6 +637,9 @@ PHASED_CALLS = {
         lambda mission: mission.failure_drivers(mc_samples=200, seed=1)
     ),
     "summary": lambda mission: mission.summary(mc_samples=200, seed=1),
+    "compare": lambda mission: mission.compare(
+        mission, mc_samples=2000, seed=1
+    ),
 }
 
 
@@ -1398,6 +1410,7 @@ FAULT_TREE_CALLS = {
     "bx_life": lambda tree: tree.bx_life(10),
     "mean": lambda tree: tree.mean(),
     "random": lambda tree: tree.random(200, seed=1),
+    "compare": lambda tree: tree.compare(tree, mc_samples=2000, seed=1),
     "structural_importance": lambda tree: tree.structural_importance(),
     "importances": lambda tree: tree.importances(X),
     "sf_uncertainty": lambda tree: tree.sf_uncertainty(
@@ -1405,6 +1418,14 @@ FAULT_TREE_CALLS = {
     ),
     "mean_uncertainty": lambda tree: tree.mean_uncertainty(
         uncertain_event(tree), n_draws=2, seed=1
+    ),
+    "time_to_reliability_uncertainty": (
+        lambda tree: tree.time_to_reliability_uncertainty(
+            0.5, uncertain_event(tree), n_draws=2, seed=1
+        )
+    ),
+    "bx_life_uncertainty": lambda tree: tree.bx_life_uncertainty(
+        10, uncertain_event(tree), n_draws=2, seed=1
     ),
 }
 
