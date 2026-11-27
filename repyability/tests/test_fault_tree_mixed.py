@@ -472,6 +472,41 @@ def test_common_cause_failure_frequency_against_its_chain():
     assert ranked[frozenset({"a", "b"})] == pytest.approx(both[2], rel=1e-12)
 
 
+def test_the_failure_frequency_at_0_is_the_initial_intensity():
+    # New at 0, every event is up: the top event happens at 0 only
+    # through a, at its density then, 1/50 (a log-logistic of shape 1);
+    # b's density is 0 then, and d's, infinite, is not critical, as e is
+    # up.
+    tree = FaultTree(
+        {
+            "top": ("or", ["a", "cb", "de"]),
+            "cb": ("and", ["c", "b"]),
+            "de": ("and", ["d", "e"]),
+        },
+        {
+            "a": {
+                "reliability": surv.LogLogistic.from_params([50.0, 1.0]),
+                "repairability": E([0.5]),
+            },
+            "b": {
+                "reliability": W([80.0, 1.5]),
+                "repairability": surv.LogNormal.from_params([1.0, 0.5]),
+            },
+            "c": 0.2,
+            "d": {"reliability": W([120.0, 0.8]), "repairability": E([0.4])},
+            "e": unit(0.004, 0.5),
+        },
+    )
+    assert tree.failure_frequency(0.0) == pytest.approx(0.02, rel=1e-12)
+    at = tree.failure_frequency([0.0, 1e-7, 0.5])
+    assert np.isfinite(at).all()
+    # With a common-cause group: the pair's shared cause, at a tenth of
+    # a member's rate, and c's own failures, w_ab + w_c.
+    assert common_cause().failure_frequency(0.0) == pytest.approx(
+        0.1 * 0.002 + 0.0005, rel=1e-12
+    )
+
+
 @pytest.mark.parametrize("tested", [False, True])
 def test_common_cause_failure_frequency_integrates_to_expected_failures(
     tested,
