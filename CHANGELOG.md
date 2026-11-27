@@ -12,6 +12,21 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A `Network` of repaired elements may now mix them with fixed
+  probabilities and lives that are not repaired, which it refused before
+  (as a `FaultTree` does): a probability is down with it at every time
+  and never starts a loss of the connection over time; a life that is not
+  repaired is down from its failure on. The values over time, the
+  importance measures and the capacity over time take both; the long run
+  (`mean_availability`, `mean_unavailability`,
+  `system_failure_frequency`, `capacity_distribution()`) takes
+  probabilities and refuses a life that is not repaired, naming the
+  values over a window. A repaired element also takes an `"inspection"`
+  (a hidden failure found by periodic tests), as a diagram's component.
+  Checked against closed forms, the fault tree of the network's cut
+  sets, every state enumerated in exact fractions and the `RepairableRBD`
+  of the same tested components.
+
 - `RepairableRBD.first_failure_sf` and `mean_time_to_first_failure` work
   out a redundant structure whose lives or repairs are not exponential
   (Weibull, gamma, lognormal, any model with a distribution function)
