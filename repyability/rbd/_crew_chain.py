@@ -69,6 +69,8 @@ from typing import (
 
 import numpy as np
 
+from repyability.rbd._phase_type import Phases, exponential
+
 #: The most states the chain is solved for.
 MAX_STATES = 15_000
 
@@ -98,7 +100,7 @@ class CrewChain(NamedTuple):
 
     nodes: Tuple[Hashable, ...]
     up: np.ndarray
-    probabilities: np.ndarray
+    probabilities: Any
     states: Tuple[State, ...] = ()
     generator: Any = None
     transitions: Any = None
@@ -212,31 +214,49 @@ def state_count(
     return count + ways.get(crews, 0) - math.comb(timed, crews)
 
 
+def _phased(rate) -> Phases:
+    """A rate as the one phase of its exponential time; phases as given."""
+    return rate if isinstance(rate, Phases) else exponential(rate)
+
+
 def _enumerate(
-    failure_rates: Sequence[float],
-    repair_rates: Sequence[float],
+    failure_rates: Sequence[Any],
+    repair_rates: Sequence[Any],
     priorities: Sequence[float],
     crews: int,
     call_when: int = 0,
     limit: int = 0,
     shared: Sequence[Tuple[Tuple[int, ...], float, int]] = (),
     copies: Optional[Sequence[int]] = None,
+    start: State = ((), ()),
 ) -> Tuple[
-    List[State], List[int], List[int], List[float], List[int], List[int]
+    List[State],
+    List[int],
+    List[int],
+    List[float],
+    List[int],
+    List[int],
+    List[Tuple[int, ...]],
 ]:
-    """The states reached from the one with every component up, and the
+    """The states reached from ``start`` (by default the one with every
+    component up), and the
     transitions between them: sources, targets, rates, the component
     whose failure or repair each is (or, for a strike of one of the
     ``shared`` causes, each ``(components struck, rate, group)``, the
-    number of components plus its group), and how many times it calls
+    number of components plus its group), how many times it calls
     the call-out crew (``call_when`` waiting jobs do; see the module
-    docstring). With a ``limit``, it stops once it has reached that many
-    states. With ``copies``, each component stands for that many alike
-    ones (see the module docstring)."""
-    instant = [math.isinf(rate) for rate in repair_rates]
-    start: State = ((), ())
-    index = {start: 0}
-    states = [start]
+    docstring), and each state's phases. With a ``limit``, it stops once
+    it has reached that many states. With ``copies``, each component
+    stands for that many alike ones (see the module docstring). A rate
+    is that of an exponential time, or a time's ``Phases``."""
+    lives = [_phased(rate) for rate in failure_rates]
+    repairs = [_phased(rate) for rate in repair_rates]
+    instant = [math.isinf(repair.rates[0]) for repair in repairs]
+    count = len(lives)
+    # A state here is (under repair, waiting, each component's phase).
+    first = (start[0], start[1], (0,) * count)
+    index = {first: 0}
+    states = [first]
     sources: List[int] = []
     targets: List[int] = []
     rates: List[float] = []
@@ -245,7 +265,7 @@ def _enumerate(
 
     def reach(
         source: int,
-        state: State,
+        state: tuple,
         rate: float,
         component: int,
         call: int = 0,
@@ -260,49 +280,71 @@ def _enumerate(
         components.append(component)
         calls.append(call)
 
-    def taken(serving: tuple, waiting: tuple) -> State:
+    def at(phases: tuple, i: int, phase: int) -> tuple:
+        return phases[:i] + (phase,) + phases[i + 1 :]
+
+    def taken(serving: tuple, waiting: tuple, phases: tuple) -> tuple:
         """A crew takes the next waiting job, and an instant one is done
         at once, so it goes on to the one after."""
         while waiting:
             head, waiting = waiting[0], waiting[1:]
             if not instant[head]:
-                return tuple(sorted(serving + (head,))), waiting
-        return serving, waiting
+                return (
+                    tuple(sorted(serving + (head,))),
+                    waiting,
+                    at(phases, head, repairs[head].fresh),
+                )
+            phases = at(phases, head, lives[head].fresh)
+        return serving, waiting, phases
 
-    def failed(state: State, i: int) -> Tuple[State, int]:
+    def failed(state: tuple, i: int) -> Tuple[tuple, int]:
         """The state once component ``i``, up in ``state``, has failed,
         and whether that called the call-out crew."""
-        serving, queue = state
+        serving, queue, phases = state
         if len(serving) < crews:
             if instant[i]:
-                return state, 0  # repaired at once: nothing changes
-            return (tuple(sorted(serving + (i,))), queue), 0
+                # Repaired at once: a new life starts.
+                return (serving, queue, at(phases, i, lives[i].fresh)), 0
+            return (
+                tuple(sorted(serving + (i,))),
+                queue,
+                at(phases, i, repairs[i].fresh),
+            ), 0
         # Behind every waiting job of the same priority or higher.
         place = len(queue)
         while place and priorities[queue[place - 1]] < priorities[i]:
             place -= 1
         waiting = queue[:place] + (i,) + queue[place:]
+        phases = at(phases, i, 0)
         if call_when and len(serving) == crews and len(waiting) >= call_when:
             # The call-out crew comes, and takes the first of them.
-            return taken(serving, waiting), 1
-        return (serving, waiting), 0
+            return taken(serving, waiting, phases), 1
+        return (serving, waiting, phases), 0
 
-    count = len(failure_rates)
     alike = [1] * count if copies is None else list(copies)
     source = 0
     while source < len(states) and not (limit and len(states) >= limit):
         state = states[source]
-        serving, queue = state
+        serving, queue, phases = state
         # How many of each component's copies are up.
         up = list(alike)
         for i in serving + queue:
             up[i] -= 1
-        for i, rate in enumerate(failure_rates):
+        for i, life in enumerate(lives):
             if not up[i]:
                 continue
+            phase = phases[i]
+            rate, ends = life.rates[phase], life.ends[phase]
             after, call = failed(state, i)
-            if after != state or call:
-                reach(source, after, up[i] * rate, i, call)
+            if ends and (after != state or call):
+                reach(source, after, up[i] * rate * ends, i, call)
+            if ends < 1.0 and not life.last(phase):
+                reach(
+                    source,
+                    (serving, queue, at(phases, i, phase + 1)),
+                    rate * (1.0 - ends),
+                    i,
+                )
         for struck, rate, group in shared:
             # Those up fail one after another, in the diagram's order.
             after, called = state, 0
@@ -316,27 +358,47 @@ def _enumerate(
             # One of its copies under repair is done.
             place = serving.index(i)
             rest = serving[:place] + serving[place + 1 :]
+            phase = phases[i]
+            rate, ends = repairs[i].rates[phase], repairs[i].ends[phase]
             # The crew takes the next job; with none, the call-out crew
             # (engaged with a job more than the crews under repair) goes.
-            reach(
-                source,
-                taken(rest, queue),
-                serving.count(i) * repair_rates[i],
-                i,
-            )
+            if ends:
+                reach(
+                    source,
+                    taken(rest, queue, at(phases, i, lives[i].fresh)),
+                    serving.count(i) * rate * ends,
+                    i,
+                )
+            if ends < 1.0 and not repairs[i].last(phase):
+                reach(
+                    source,
+                    (serving, queue, at(phases, i, phase + 1)),
+                    rate * (1.0 - ends),
+                    i,
+                )
         source += 1
-    return states, sources, targets, rates, components, calls
+    return (
+        [state[:2] for state in states],
+        sources,
+        targets,
+        rates,
+        components,
+        calls,
+        [state[2] for state in states],
+    )
 
 
 def solve(
     nodes: Sequence[Hashable],
-    failure_rates: Sequence[float],
-    repair_rates: Sequence[float],
+    failure_rates: Sequence[Any],
+    repair_rates: Sequence[Any],
     priorities: Sequence[float],
     crews: int,
     call_when: int = 0,
     shared: Sequence[Tuple[Tuple[int, ...], float, int]] = (),
     copies: Optional[Sequence[int]] = None,
+    start: Optional[State] = None,
+    limit: int = 0,
 ) -> CrewChain:
     """The chain of ``nodes`` with these failure and repair rates (``inf``
     for an instant repair) and priorities (higher first), sharing ``crews``
@@ -363,6 +425,15 @@ def solve(
         How many alike copies each component stands for (one each, by
         default): ``working`` then counts those up, and ``up`` says
         whether any is. Not with ``shared`` causes.
+    start : State, optional
+        The state the chain is followed from, for a chain over time
+        alone: its long-run distribution is then not worked out
+        (``probabilities`` is None), and ``states[0]`` is ``start`` with
+        every component in the phase its time at the start begins in. A
+        rate may then be a time's ``Phases`` (see ``_phase_type``).
+    limit : int, optional
+        With ``start``: stop once this many states are reached (0: no
+        limit); the chain is then not whole.
 
     Returns
     -------
@@ -373,15 +444,16 @@ def solve(
     from scipy import sparse
     from scipy.sparse.linalg import splu
 
-    states, sources, targets, rates, components, called = _enumerate(
+    states, sources, targets, rates, components, called, _ = _enumerate(
         failure_rates,
         repair_rates,
         priorities,
         crews,
         call_when,
-        0,
+        limit,
         shared,
         copies,
+        ((), ()) if start is None else start,
     )
     size = len(states)
     groups = 1 + max((group for _, _, group in shared), default=-1)
@@ -414,11 +486,11 @@ def solve(
         np.array(rates, dtype=float),
         np.array(components, dtype=np.intp),
     )
-    if size == 1:
+    if size == 1 or start is not None:
         return CrewChain(
             tuple(nodes),
             up,
-            np.ones(1),
+            np.ones(1) if start is None else None,
             tuple(states),
             generator,
             transitions,

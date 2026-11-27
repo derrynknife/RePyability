@@ -26,6 +26,37 @@ release between minors that only adds (0.19.1).
   Checked against closed forms, the fault tree of the network's cut
   sets, every state enumerated in exact fractions and the `RepairableRBD`
   of the same tested components.
+
+- `RepairableRBD.first_failure_sf` and `mean_time_to_first_failure` work
+  out a redundant structure whose lives or repairs are not exponential
+  (Weibull, gamma, lognormal, any model with a distribution function)
+  without simulating, where they refused: in the Markov chain whose
+  system-down states absorb, each such time is followed as phases (a
+  mixture of Erlangs on a grid of ages, which converges to the time as the
+  grid is refined), the grid halved and the values extrapolated until
+  they agree to the new `rtol` (1e-3 by default: of each probability
+  of failing, or of the mean). A gamma time of
+  whole shape (an Erlang) has its own phases and is exact. Repair crews
+  that jobs wait for are taken as before, with phases; each series
+  factor of the structure is chained alone, and a state gives a unit's
+  age or how long its repair has gone on. A chain of more than 400,000
+  states (more than two units that are not exponential in one redundant
+  part, as a rule), or values that do not settle to `rtol`, refuse,
+  saying how far they agreed and naming `first_failure_bounds` and the
+  simulation; a start in the long-run state is refused with phases.
+  Common-cause groups and standby groups (load-sharing groups and blocks
+  of identical units too) of units with exponential lives and repairs
+  are in the chain, exactly, where they were refused: a group's shared
+  causes strike in it as in the repair crews' chain, and a standby
+  group's own chain goes beside the rest. Scheduled maintenance and
+  tests stay refused (a fixed interval is no time a chain's phases
+  follow), and the refusal says so.
+  `analysis_routes()` reports the route. Exponential diagrams keep their
+  values, to rounding: the survival's steps are now summed off the
+  threaded BLAS, and a chain started with units down is listed from that
+  state, which moves a value by up to about 1e-15 (1e-13 of a mean). A
+  chain that can never fail now gives exactly 1. No seeded result
+  changes.
 - Link capacities in a `Network` (`capacity={link: amount}`): the network
   delivers the maximum flow between its two terminals, each working link
   carrying up to its capacity (either way, unless the network is
