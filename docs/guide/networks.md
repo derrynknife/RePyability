@@ -186,10 +186,10 @@ and each node that can fail, a component spec as a
 ```python
 repair = surv.LogNormal.from_params([-5.0, 0.8])        # 81 hours on average, in years
 long_repair = surv.LogNormal.from_params([-4.0, 0.8])   # 221 hours
-line = {"reliability": surv.Exponential.from_params([0.1]), "repairability": repair}
-cable = {"reliability": surv.Exponential.from_params([0.05]), "repairability": long_repair}
+line_spec = {"reliability": surv.Exponential.from_params([0.1]), "repairability": repair}
+cable_spec = {"reliability": surv.Exponential.from_params([0.05]), "repairability": long_repair}
 supply = Network(
-    {name: (u, v, cable if name in ("AB", "CL") else line)
+    {name: (u, v, cable_spec if name in ("AB", "CL") else line_spec)
      for name, (u, v, _) in links.items()},
     source="G", target="L",
 )
@@ -220,13 +220,32 @@ supply.system_failure_frequency()    # -> 0.00035790   in the long run: one ever
   `fussell_vesely(x)`, the risk worths, `joint_importance`,
   `differential_importance`, `importances(x)`) are taken at the elements'
   availabilities at `x`.
+- **Hidden failures.** An element whose failures are found by periodic
+  tests takes its `"inspection"` in its spec, as a diagram's component
+  does (see [Repairable systems](repairable.md)): it stays down from its
+  failure until the test that finds it.
+- **Mixed with elements that are not repaired.** The other links and
+  nodes may be probabilities (a breaker that fails to close: down with its
+  probability at every time, and never the start of a loss over time) and
+  lifetime models (down from their failure on). With a life that is not
+  repaired the network has no long run, so `mean_availability`,
+  `mean_unavailability` and `system_failure_frequency` refuse it, naming
+  the values over a window.
+
+```python
+standby = Network(
+    {"line": ("G", "L", line_spec), "tie": ("G", "L", 0.02)},   # the tie closes 98 times in 100
+    source="G", target="L",
+)
+standby.mean_unavailability()        # -> 1.8541e-05   0.02 times the line's
+```
+
 - **Not yet.** A repaired network has no time at which its terminals part
   for good, so `sf`, `mean`, the B-lives and `random` refuse it; so do the
   levers, `parameter_sensitivity`, `tornado` and `to_rbd`. An element
-  takes a life and a repair only (no tests, maintenance, crews or costs),
-  every element is repaired or none is, and a repaired network is not
-  simulated. A network that can be drawn as a block diagram has all of
-  those as a `RepairableRBD`.
+  takes a life, a repair and tests only (no preventive maintenance, crews
+  or costs), and a repaired network is not simulated. A network that can
+  be drawn as a block diagram has all of those as a `RepairableRBD`.
 
 ## Capacity
 
@@ -257,7 +276,7 @@ distribution at a time and `mission_capacity(t)` its average over
 
 ```python
 rated_supply = Network(
-    {name: (u, v, cable if name in ("AB", "CL") else line)
+    {name: (u, v, cable_spec if name in ("AB", "CL") else line_spec)
      for name, (u, v, _) in links.items()},
     source="G", target="L", capacity=rating,
 )

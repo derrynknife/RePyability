@@ -259,6 +259,8 @@ def require_capacity(net, name: str) -> None:
             "give each link's throughput with capacity={link: amount} "
             "when building the network."
         )
+    if name == "capacity_distribution" and net.is_repairable:
+        net._refuse_unrepaired(name)
     if name != "capacity_distribution" and not net.is_repairable:
         raise Refused(
             f"{name}() works on repaired elements, and this network has "
@@ -388,9 +390,11 @@ def capacity_distribution(
             )
         from repyability.rbd import _long_run
 
-        p, q, weights = _long_run._long_run_unavailabilities(
+        _, q, weights = _long_run._long_run_unavailabilities(
             net._repaired, None, None
         )
+        q = net._with_fixed(q, len(weights))
+        p = {name: 1.0 - q[name] for name in net.models}
         if samples is None:
             levels, rows = _exact(net, p, q, len(weights))
             return CapacityDistribution(levels, rows @ weights)
@@ -463,7 +467,9 @@ def mission_capacity(net, t, method: str, mc_samples, seed):
     curves, states = _event_curves._curves_to(rbd, ends)
 
     def rows_at(x: np.ndarray):
-        q = _curves._nodes_down_at(rbd, curves, x, states)
+        q = net._with_fixed(
+            _curves._nodes_down_at(rbd, curves, x, states), len(x)
+        )
         p = {name: 1.0 - value for name, value in q.items()}
         return _exact(net, p, q, len(x), every=True)
 

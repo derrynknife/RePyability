@@ -59,7 +59,11 @@ repaired: each one's curve comes from the repairable machinery
 no renewal code here, and the connection's availability, unavailability
 and failure frequency over time and in the long run follow from the same
 diagram at the elements' probabilities. Such a network refuses what needs
-a time at which its terminals part for good (``_refuse_repaired``).
+a time at which its terminals part for good (``_refuse_repaired``). Its
+other elements may be fixed probabilities and lives that are not repaired,
+which the same diagram takes as inputs of their own (as a fault tree's,
+see ``rbd/_event_curves.py``); with such a life it has no long run
+(``_refuse_unrepaired``).
 
 Links given a capacity carry up to it, and the network delivers the
 maximum flow between its two terminals: its distribution, at a time, in
@@ -180,8 +184,19 @@ _FAIL, _WORK = 0, 1
 # are joined, and that they are parted.
 _JOINED, _PARTED = (0.0, 1.0), (1.0, 0.0)
 
-#: The keys a repaired element's spec may have: its life and its repair.
-ELEMENT_SPEC_KEYS = ("reliability", "repairability")
+#: The keys a repaired element's spec may have: its life, its repair and,
+#: for a hidden failure found by periodic tests, its tests.
+ELEMENT_SPEC_KEYS = ("reliability", "repairability", "inspection")
+
+#: The long-run values, which a life that is not repaired has none of.
+_LONG_RUN = frozenset(
+    {
+        "mean_availability",
+        "mean_unavailability",
+        "system_failure_frequency",
+        "capacity_distribution",
+    }
+)
 
 #: The analyses of a network of repaired elements alone: its values over
 #: time and in the long run. A network of lifetimes or probabilities
@@ -299,11 +314,14 @@ class Network:
         ``FixedEventProbability``). Two links may join the same two
         nodes. A link that is repaired takes a component spec in place of
         the model, ``{"reliability": life, "repairability": repair}``, as
-        a [`RepairableRBD`][repyability.RepairableRBD]'s component: the
-        network then gives the connection's availability and how often
-        it is lost (see
-        [`point_availability`][repyability.Network.point_availability]),
-        and every link and failing node must be given one.
+        a [`RepairableRBD`][repyability.RepairableRBD]'s component (with
+        an ``"inspection"`` for a hidden failure found by periodic
+        tests): the network then gives the connection's availability and
+        how often it is lost (see
+        [`point_availability`][repyability.Network.point_availability]).
+        The other elements may be probabilities (down with them at every
+        time) and lives that are not repaired (down from their failure
+        on, so that the network has no long run).
     source : Hashable, optional
         One terminal: a node of the network.
     target : Hashable, optional
@@ -339,7 +357,7 @@ class Network:
         Each element's model (or a repaired one's spec), by name: the
         links', then the nodes'.
     is_repairable : bool
-        Whether the elements are repaired.
+        Whether some elements are repaired.
     terminals : tuple
         The terminals.
     source, target : Hashable
@@ -360,12 +378,11 @@ class Network:
         node in ``nodes`` is in no link, the terminals are the same node
         or fewer than two, both ``terminals`` and a source or target are
         given, a node has the name of a link, a repaired element's
-        spec has a key other than its life and repair, or a capacity is
-        not a positive number or is not a link's.
+        spec has a key other than its life, repair and tests, or a
+        capacity is not a positive number or is not a link's.
     NotImplementedError
-        If a directed network is given more than two terminals, some
-        elements are repaired and others not, or capacities are given
-        with more than two terminals.
+        If a directed network is given more than two terminals, or
+        capacities are given with more than two terminals.
 
     Examples
     --------
@@ -485,15 +502,6 @@ class Network:
         #: Whether the elements are repaired components, whose connection
         #: comes and goes (see ``point_availability``).
         self.is_repairable = bool(specs)
-        if specs and len(specs) < len(self.models):
-            others = sorted(map(str, set(self.models) - set(specs)))
-            raise NotImplementedError(
-                f"Element(s) {others} are probabilities or lifetime models "
-                f"while {sorted(map(str, specs))} are repaired components: "
-                "a network mixing them is not supported yet. Give every "
-                "link, and every node that can fail, a component spec "
-                "('reliability' and 'repairability')."
-            )
         self.capacity = self._capacities(capacity)
         # The flow graph and the capacity's states, once worked out, or
         # why they were refused (see ``rbd/_network_capacity.py``).
@@ -506,10 +514,26 @@ class Network:
         if self.is_repairable:
             from repyability.rbd._event_curves import Structured
 
-            # The elements as one diagram's components, over the
-            # network's own structure: their curves, and the values over
+            # The repaired elements as one diagram's components, over
+            # the network's own structure, the others its fixed inputs
+            # and lives of their own: their curves, and the values over
             # time.
-            self._repaired = Structured(self.models, _Joined(self))
+            fixed, lives = {}, {}
+            for name, model in self.models.items():
+                if isinstance(model, dict):
+                    continue
+                if is_fixed_probability(model):
+                    fixed[name] = float(
+                        np.ravel(np.asarray(model.ff(1.0), dtype=float))[0]
+                    )
+                else:
+                    lives[name] = model
+            self._repaired = Structured(
+                {name: self.models[name] for name in specs},
+                _Joined(self),
+                fixed=fixed,
+                lives=lives,
+            )
             self.unit: Optional[str] = self._repaired.unit
         else:
             self.unit = diagram_unit(self.models, "network")
@@ -620,20 +644,22 @@ class Network:
     @classmethod
     def _element(cls, what: str, model):
         """An element's model (see ``_model``), or the spec of a repaired
-        one: a dict of its ``"reliability"`` and ``"repairability"``, as a
-        ``RepairableRBD``'s component's (its values are checked as a
-        component's are, when the elements' diagram is built)."""
+        one: a dict of its ``"reliability"``, its ``"repairability"`` and,
+        for a hidden failure found by periodic tests, its
+        ``"inspection"``, as a ``RepairableRBD``'s component's (its values
+        are checked as a component's are, when the elements' diagram is
+        built)."""
         if not isinstance(model, Mapping):
             return cls._model(what, model)
         unknown = set(model) - set(ELEMENT_SPEC_KEYS)
         if unknown:
             raise ValueError(
                 f"{what} has key(s) {sorted(map(str, unknown))}: a repaired "
-                "element of a network takes 'reliability' and "
-                "'repairability' only. Tests, preventive maintenance, "
-                "crews, costs and the rest are not worked out for a "
-                "network yet: a RepairableRBD takes them, for a network "
-                "that can be drawn as a block diagram."
+                "element of a network takes 'reliability', 'repairability' "
+                "and 'inspection' only. Preventive maintenance, crews, "
+                "costs and the rest are not worked out for a network yet: "
+                "a RepairableRBD takes them, for a network that can be "
+                "drawn as a block diagram."
             )
         return dict(model)
 
@@ -921,9 +947,40 @@ class Network:
             raise ValueError(
                 "x must be 0 or more: the repaired elements are new at 0."
             )
-        down = down_at(self._repaired, x.ravel())
+        down = self._with_fixed(down_at(self._repaired, x.ravel()), x.size)
         q = {name: down[name].reshape(x.shape) for name in names}
         return {name: 1.0 - value for name, value in q.items()}, q
+
+    def _with_fixed(self, down: dict, size: int) -> dict:
+        """The elements' probabilities of being ``down`` (``size`` of
+        each), with those of the elements given as fixed probabilities:
+        down with it at every time."""
+        return {
+            **down,
+            **{
+                name: np.full(size, value)
+                for name, value in self._repaired._fixed.items()
+            },
+        }
+
+    def _refuse_unrepaired(self, name: str) -> None:
+        """Raise if the long-run analysis ``name`` is asked of a network
+        whose repaired elements are mixed with lives that are not
+        repaired, which has no long run."""
+        lives = sorted(map(str, self._repaired._lives))
+        if lives and name in _LONG_RUN:
+            over = (
+                "point_capacity(x) and mission_capacity(t)"
+                if name == "capacity_distribution"
+                else "mission_unavailability(t) and expected_failures(t)"
+            )
+            raise NotImplementedError(
+                f"Element(s) {lives} are lives that are not repaired, so "
+                "the network has no long run: once such an element has "
+                f"failed, it stays failed. Ask for its values over time, "
+                f"{over}, or give each a component spec ('reliability' and "
+                "'repairability') to have it repaired."
+            )
 
     def _refuse_repaired(self, name: str) -> None:
         """Raise if the analysis ``name`` does not apply to this network's
@@ -943,6 +1000,7 @@ class Network:
                 "repaired."
             )
         if name in _REPAIRED_GIVES:
+            self._refuse_unrepaired(name)
             return
         if name in _NEEDS_A_LIFETIME:
             raise NotImplementedError(
@@ -4539,6 +4597,9 @@ class Network:
             "The point unavailability integrated over the window, on "
             "pieces between the elements' curves' bends, to its own size.",
         )
+        no_long_run = r.refusal(
+            functools.partial(self._refuse_unrepaired, "mean_availability")
+        )
         out["mean_availability"] = AnalysisRoute(
             r.EXACT,
             "The network's decision diagram over the elements' long-run "
@@ -4550,6 +4611,9 @@ class Network:
             "unavailabilities, MTTR / (MTTF + MTTR), as a sum of products "
             "of its own.",
         )
+        if no_long_run:
+            for name in ("mean_availability", "mean_unavailability"):
+                out[name] = r.refused(no_long_run)
         for name, route, reason in (
             (
                 "failure_frequency",
@@ -4572,11 +4636,15 @@ class Network:
                 "Birnbaum importance at the long-run values, summed.",
             ),
         ):
-            out[name] = r.with_nodes(
-                route,
-                reason,
-                intensity_routes(self._repaired, name),
-                "failure intensities",
+            out[name] = (
+                r.refused(no_long_run)
+                if no_long_run and name == "system_failure_frequency"
+                else r.with_nodes(
+                    route,
+                    reason,
+                    intensity_routes(self._repaired, name),
+                    "failure intensities",
+                )
             )
 
     def _capacity_routes(self, out: dict, built) -> None:
