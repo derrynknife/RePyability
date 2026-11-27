@@ -35,6 +35,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from repyability.utils.checks import (
+    is_number,
     no_distribution,
     one_of,
     real_array,
@@ -113,6 +114,7 @@ from .results import (
     RateBreakdown,
     RedundancyAllocation,
     ReliabilityRedundancyAllocation,
+    TornadoResult,
     UncertaintyImportance,
     UncertaintyResult,
 )
@@ -5772,6 +5774,16 @@ class NonRepairableRBD(RBD):
                 else ""
             ),
         )
+        out["tornado"] = built(
+            r.EXACT,
+            "The exact reliability with each parameter at its low and at "
+            "its high, the RBD rebuilt"
+            + (
+                ", summed over the common-cause groups' outcomes."
+                if grouped
+                else "."
+            ),
+        )
         # Each node's own values need no structure; the uncertainty's draws
         # are each worked out exactly.
         return self._meshed_routes(
@@ -8642,6 +8654,112 @@ class NonRepairableRBD(RBD):
         0.7788
         """
         return _sensitivity.with_levers(self, values)
+
+    def tornado(
+        self,
+        x: Optional[float] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        *,
+        quantity: str = "reliability",
+        ranges: Optional[dict] = None,
+        relative: float = _sensitivity.TORNADO_RELATIVE,
+    ) -> TornadoResult:
+        """The numbers of a tornado chart: the system's reliability at
+        ``x`` with each parameter at its low and at its high, every other
+        at its value, the parameters sorted by how far they swing it.
+
+        Where ``parameter_sensitivity`` gives each parameter's slope, this
+        gives what a range of it does: each end is the RBD rebuilt with
+        the parameter there (as ``with_levers`` builds it), its
+        reliability worked out exactly (``sf``). A parameter's range is
+        ``ranges[lever]`` where given, and otherwise a share ``relative``
+        of its scale either way: of its value, or for a parameter on a
+        log scale (a LogNormal's ``mu``) of 1, which moves the time it is
+        the log of by that share. A range is cut to the parameter's range
+        of values (``Lever.bounds``: a probability's to ``[0, 1]``), and
+        its row says so. A regression node's covariate has no relative
+        change (its zero is its unit's), nor has a parameter at 0, so
+        without a range they are listed in ``skipped``, as is one whose
+        RBD cannot be built or worked out at an end, with the reason.
+
+        Parameters
+        ----------
+        x : float, optional
+            One time. May be left out only for a fixed-probability RBD.
+        working_nodes, broken_nodes : Collection[Hashable], optional
+            Nodes held working or failed, as for ``sf``.
+        quantity : str, optional
+            ``"reliability"``, the one quantity.
+        ranges : dict, optional
+            ``{lever: (low, high)}``, each lever by its
+            [`Lever`][repyability.Lever] (from ``levers()``) or its
+            ``(key, name)``.
+        relative : float, optional
+            The share of each parameter's scale it moves either way where
+            no range is given, in ``(0, 1)``; by default 0.1.
+
+        Returns
+        -------
+        TornadoResult
+            The base reliability, a [`TornadoRow`][repyability.TornadoRow]
+            for each parameter, the largest swing first, and those
+            skipped.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is left out for a time-varying RBD or is not one
+            time, or a range or share is not valid.
+        NotImplementedError
+            Where ``sf`` refuses the RBD.
+
+        Examples
+        --------
+        Two exponential units in series, failing at 0.01 and 0.02 an
+        hour: at 10 hours the system survives with probability
+        ``exp(-0.3)``, and a tenth more or less on the second's rate
+        swings it the more:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {"a": E([0.01]), "b": E([0.02])},
+        ... )
+        >>> result = rbd.tornado(10)
+        >>> round(result.base_value, 4)
+        0.7408
+        >>> for row in result.rows:
+        ...     print(row.key, round(row.value_low, 4),
+        ...           round(row.value_high, 4))
+        b 0.7558 0.7261
+        a 0.7483 0.7334
+        """
+        one_of("quantity", quantity, ("reliability",))
+        if x is None:
+            if not self.is_fixed:
+                raise ValueError(
+                    "x is required: this RBD is time-varying (at least one "
+                    "node model's probability depends on time)."
+                )
+            x = 1.0
+        if np.ndim(x) != 0 or not is_number(x):
+            raise ValueError(
+                "tornado takes one time x (its rows are sorted by the swing "
+                f"there), got {x!r}: call it once for each time."
+            )
+        self._held_nodes(working_nodes, broken_nodes)
+
+        def evaluate(rbd) -> float:
+            return float(
+                np.ravel(rbd.sf(float(x), working_nodes, broken_nodes))[0]
+            )
+
+        return _sensitivity._tornado(
+            self, evaluate, quantity, ranges, relative
+        )
 
     def differential_importance(
         self,

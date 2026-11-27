@@ -96,6 +96,10 @@
 
 ::: repyability.Lever
 
+::: repyability.TornadoResult
+
+::: repyability.TornadoRow
+
 ::: repyability.StressStrengthResult
 
 ::: repyability.StressStrengthCurve

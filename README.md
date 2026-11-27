@@ -235,6 +235,7 @@ Which analyses each model type has (the method; — where it has none):
 | All measures given a state | `importances_given_state` | — | — | — | — |
 | Top event given each event | — | — | `conditional_probabilities` | — | — |
 | Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — | — |
+| Tornado data (each lever at its low and high) | `tornado` | `tornado` | `tornado` | — | — |
 | **Uncertainty** | | | | | |
 | Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | `sf_uncertainty` | `sf_uncertainty` | `reliability_interval` |
 | Of the MTTF | `mean_uncertainty` | — | `mean_uncertainty` | `mean_uncertainty` | — |
@@ -256,26 +257,26 @@ How each family of analyses is worked out on a diagram with each kind of node or
 
 | | Reliability | MTTF | B-life | Given a state | Importance | Sensitivity | Uncertainty | Allocation | Capacity | Simulation |
 |---|---|---|---|---|---|---|---|---|---|---|
-| A surpyval model | E | N | N | E N | E N | N | S | E N | – | S |
-| A fitted model (with its covariance) | E | N | N | E N | E N | N | S | E N | – | S |
-| A fit with a cure share and zero-inflation | E | N | N | E N | E N | N | S | E N | – | S |
-| A probability per demand | E | – | – | E | E | N | S | E N | – | S |
-| A mixture (`MixtureModel`) | E | N | N | E N | E N | N | S | E N | – | S |
-| A regression node (covariates) | E | N | N | E N | E N | N | S | E N | – | S |
+| A surpyval model | E | N | N | E N | E N | E N | S | E N | – | S |
+| A fitted model (with its covariance) | E | N | N | E N | E N | E N | S | E N | – | S |
+| A fit with a cure share and zero-inflation | E | N | N | E N | E N | E N | S | E N | – | S |
+| A probability per demand | E | – | – | E | E | E N | S | E N | – | S |
+| A mixture (`MixtureModel`) | E | N | N | E N | E N | E N | S | E N | – | S |
+| A regression node (covariates) | E | N | N | E N | E N | E N | S | E N | – | S |
 | A joint model's unit, given its readings | N | N | N | N | N | N | S | N | – | S |
 | A degrading node | N | N | N | N | N | N | S | N | N | S |
-| A fitted degradation process | E | N | N | E N | E N | N | S | E N | – | S |
+| A fitted degradation process | E | N | N | E N | E N | E N | S | E N | – | S |
 | Cold standby (convolved) | N | N | N | N | N | N | S | N | – | S |
 | Standby with no reliability of its own | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | N; ✗ `allocate_redundancy` | – | S |
-| Load sharing | E | N | N | E N | E N | N | S | E N | – | S |
-| A repeated node | E | N | N | E N | E N | N | S | E N | – | S |
+| Load sharing | E | N | N | E N | E N | E N | S | E N | – | S |
+| A repeated node | E | N | N | E N | E N | E N | S | E N | – | S |
 | A repeated standby node | N | N | N | N | N | N | S | N | – | S |
-| A nested RBD | E | N | N | E N | E N | N | S | E N | – | S |
-| A junction | E | N | N | E N | E N | N | S | E N | – | S |
-| A beta-factor common-cause group | E | ✗ | N | ✗ | E N | N | S; ✗ `mean_uncertainty` | E N | – | S |
-| An MGL common-cause group | E | ✗ | N | ✗ | E N | N | S; ✗ `mean_uncertainty` | E N | – | S |
-| An alpha-factor common-cause group | E | ✗ | N | ✗ | E N | N | S; ✗ `mean_uncertainty` | E N | – | S |
-| Capacities | E | N | N | E N | E N | N | S | E N | E | S |
+| A nested RBD | E | N | N | E N | E N | E N | S | E N | – | S |
+| A junction | E | N | N | E N | E N | E N | S | E N | – | S |
+| A beta-factor common-cause group | E | ✗ | N | ✗ | E N | E N | S; ✗ `mean_uncertainty` | E N | – | S |
+| An MGL common-cause group | E | ✗ | N | ✗ | E N | E N | S; ✗ `mean_uncertainty` | E N | – | S |
+| An alpha-factor common-cause group | E | ✗ | N | ✗ | E N | E N | S; ✗ `mean_uncertainty` | E N | – | S |
+| Capacities | E | N | N | E N | E N | E N | S | E N | E | S |
 | A structure too meshed to work out | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | S |
 
 </details>
@@ -284,21 +285,21 @@ How each family of analyses is worked out on a diagram with each kind of node or
 
 | | Long run | Frequency | Over time | Costs | Importance | Sensitivity | Uncertainty | Allocation | Intervals | Spares | Capacity | Simulation |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Any life and repair | E | E | N | E N | E N | N | S | E | – | N | – | S |
-| A fitted life | E | E | N | N | E N | N | S | E | – | N | – | S |
+| Any life and repair | E | E | N | E N | E N | E N | S | E | – | N | – | S |
+| A fitted life | E | E | N | N | E N | E N | S | E | – | N | – | S |
 | A fitted Crow-AMSAA process | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | S; ✗ `mean_availability_uncertainty`, `expected_cost_rate_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A fitted G1, ARA or ARI process | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A probability per demand | ✗ | ✗ | ✗ | ✗ `expected_npv` | ✗ | ✗ | ✗ `mean_availability_uncertainty`, `expected_npv_uncertainty` | ✗ | – | N | ✗ `capacity_distribution` | S |
-| A probability per demand, with a demand rate | E | E | N | E N | E N | N | S | E | – | N | – | S |
-| A mixture life | E | E | N | E N | E N | N | S | E | – | N | – | S |
-| A fitted degradation process life | E | E | N | N | E N | N | S | E | – | N | – | S |
+| A probability per demand, with a demand rate | E | E | N | E N | E N | E N | S | E | – | N | – | S |
+| A mixture life | E | E | N | E N | E N | E N | S | E | – | N | – | S |
+| A fitted degradation process life | E | E | N | N | E N | E N | S | E | – | N | – | S |
 | Operated part of the time (duty) | N | N | N | N | N | N | S | N | – | N | – | S |
 | Tasks counted in running hours (duty) | N | N | N | N | N | N | S | N | N | N | – | S |
 | A standby or load-sharing life, simulated | ✗ | ✗ | ✗ | ✗ `expected_npv` | ✗ | ✗ | ✗ `mean_availability_uncertainty`, `expected_npv_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
-| k-out-of-n | E | E | N | N | E N | N | S | E | – | N | – | S |
-| A nested RBD | E | E | N | E N | E N | N | S | E | – | N | – | S |
-| A junction | E | E | N | E N | E N | N | S | E | – | N | – | S |
-| Capacities | E | E | N | N | E N | N | S | E | – | N | E N | S |
+| k-out-of-n | E | E | N | N | E N | E N | S | E | – | N | – | S |
+| A nested RBD | E | E | N | E N | E N | E N | S | E | – | N | – | S |
+| A junction | E | E | N | E N | E N | E N | S | E | – | N | – | S |
+| Capacities | E | E | N | N | E N | E N | S | E | – | N | E N | S |
 | Age replacement | N | N | N | N | N | N | S | N | N | N | – | S |
 | Block replacement | N | N | N | N | N | N | S | N | – | N | – | S |
 | Opportunistic maintenance | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ `optimal_replacement_intervals` | ✗ | ✗ `capacity_distribution` | S |
@@ -307,7 +308,7 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | Hidden failures, tested | N | N | N | N | N | N | S | N | – | N | – | S |
 | Tests that take time | N | N | N | N | N | N | S | N | – | N | – | S |
 | Tests that can miss a failure | N | N | N | N | N | N | S | N | – | N | – | S |
-| An upgrade (another life from a time) | E | E | N | E N | E N | N | S | E; ✗ `allocate_redundancy` | – | ✗ | – | S |
+| An upgrade (another life from a time) | E | E | N | E N | E N | E N | S | E; ✗ `allocate_redundancy` | – | ✗ | – | S |
 | An upgrade, age-replaced | N | N | N | N | N | N | S | N; ✗ `allocate_redundancy` | ✗ `optimal_replacement_intervals` | ✗ | – | S |
 | An upgrade, tested | N | N | N | N | N | N | S | N; ✗ `allocate_redundancy` | ✗ `optimal_inspection_intervals` | N | – | S |
 | An upgrade, the unit in service kept | N | N | ✗ | N; ✗ `expected_cost`, `expected_npv` | N; ✗ `availability_rate` | N | S; ✗ `expected_npv_uncertainty` | N; ✗ `allocate_redundancy` | ✗ `optimal_replacement_intervals` | ✗ | – | S |
@@ -316,10 +317,10 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | Minimal repair | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | S; ✗ `mean_availability_uncertainty`, `expected_cost_rate_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Minimal repair, repairs that take time | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | S; ✗ `mean_availability_uncertainty`, `expected_cost_rate_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Limited repair crews | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
-| A standby group | E | E | N | E N | E N | N | S | E | – | ✗ | – | S |
-| A beta-factor group, revealed failures | E | E | N | N | E N | N | S | E | – | N | – | S |
-| A beta-factor group, tested | E | E | N | E N | E N | N | S | E | – | N | – | S |
-| An alpha-factor group, revealed failures | E | E | N | N | E N | N | S | E | – | N | – | S |
+| A standby group | E | E | N | E N | E N | E N | S | E | – | ✗ | – | S |
+| A beta-factor group, revealed failures | E | E | N | N | E N | E N | S | E | – | N | – | S |
+| A beta-factor group, tested | E | E | N | E N | E N | E N | S | E | – | N | – | S |
+| An alpha-factor group, revealed failures | E | E | N | N | E N | E N | S | E | – | N | – | S |
 | A group whose tests take time | N | N | N | N | N | N | S | N | – | N | – | S |
 | A structure too meshed to work out | ✗ | ✗ | ✗ | E; ✗ `expected_cost`, `expected_npv` | ✗ | ✗ | S; ✗ `mean_availability_uncertainty`, `expected_npv_uncertainty` | ✗ | – | N | – | S |
 

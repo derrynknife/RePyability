@@ -105,6 +105,7 @@ NONREPAIRABLE_CALLS = {
             "reliability_rate",
             "barlow_proschan_importance",
             "parameter_sensitivity",
+            "tornado",
             "capacity_distribution",
         )
     },
@@ -250,6 +251,7 @@ REPAIRABLE_CALLS = {
             "barlow_proschan_importance",
             "pfd_breakdown",
             "parameter_sensitivity",
+            "tornado",
             "expected_cost_rate",
             "capacity_distribution",
             "optimal_replacement_intervals",
@@ -1355,6 +1357,7 @@ FAULT_TREE_CALLS = {
             "joint_importance",
             "barlow_proschan_importance",
             "parameter_sensitivity",
+            "tornado",
             "conditional_probabilities",
             "point_unavailability",
             "mean_unavailability",

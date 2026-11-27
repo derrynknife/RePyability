@@ -12,6 +12,19 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Tornado data: `tornado()` on `RepairableRBD`, `NonRepairableRBD` and
+  `FaultTree` gives the system's availability or cost rate (the
+  reliability at `x`, the top event probability at `t`) with each lever
+  of `levers()` at its low and at its high, every other at its value,
+  each end the diagram rebuilt as `with_levers` builds it and worked out
+  exactly or numerically. A `TornadoResult` holds the base value, a
+  `TornadoRow` per lever (its low and high, the values there and the
+  swing), sorted by the swing, and the levers skipped with the reason. By
+  default a lever moves a tenth of its scale either way (`relative=`; a
+  log-scale parameter's of 1, a counting lever one fewer and one more),
+  cut to its range of values; `ranges=` gives a lever its own range,
+  which a regression node's covariate needs. A quantity only simulation
+  gives is refused.
 - A probability of failing per demand in a `RepairableRBD` (a pump's
   fail to start on demand): a component spec's `"demand_rate"`, with its
   `"reliability"` a `surpyval.FixedEventProbability`, makes the demands a
