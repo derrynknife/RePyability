@@ -41,6 +41,7 @@ from repyability.rbd._model_utils import (
 )
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import perfect_class
+from repyability.rbd.markov_node import MarkovComponent
 from repyability.rbd.rbd import RBD, Pairs, _check_on_infeasible_rbd
 from repyability.rbd.results import (
     AvailabilityAllocation,
@@ -122,6 +123,7 @@ from repyability.rbd._event_loop import (
     _validate_priority,
 )
 from repyability.rbd._events import (
+    MARKOV,
     _Imperfect,
     _Inspection,
     _Preventive,
@@ -505,6 +507,13 @@ class RepairableRBD(RBD):
           reliability model with a time-to-replace model. Each node gets
           its own copy, so one object can be given for several identical
           nodes.
+        - A [`MarkovComponent`][repyability.MarkovComponent] that is
+          restored by its own transitions: its states, the rates between
+          them and the states it works in, as it is or in a spec with
+          its prices (``{"reliability": <it>, "repair_cost": ...,
+          "downtime_cost": ...}``, and no ``"repairability"``). It is
+          independent of the other components; see the guide's Markov
+          components.
         - A nested ``RepairableRBD``, which acts as one node that is up
           while its own system is up. In a simulation it runs its own
           simulation, on the same clock. It is not copied, so give each
@@ -693,7 +702,7 @@ class RepairableRBD(RBD):
     components : dict
         Node name -> the model the node is simulated with: a
         ``NonRepairable`` (built from the spec dict, or a copy of the one
-        given) or a nested ``RepairableRBD``.
+        given), a ``MarkovComponent`` or a nested ``RepairableRBD``.
     repairability : dict
         Node name -> its time-to-repair model (an ``ExactEventTime`` at 0
         for ``"instant"``), or None for a nested ``RepairableRBD``.
@@ -1125,8 +1134,31 @@ class RepairableRBD(RBD):
         repairability = {}
         nested: set = set()
         for name, component in components.items():
+            if _spec._markov_spec(component):
+                # A Markov component with its prices: per failure, per
+                # unit of its down time, and to buy.
+                _spec._validate_markov_spec(name, component)
+                node_costs = {}
+                for key in self.COST_KEYS:
+                    if component.get(key) is None:
+                        continue
+                    cost = _spec._validate_component_cost(
+                        name, key, component[key]
+                    )
+                    if not (isinstance(cost, float) and cost == 0.0):
+                        node_costs[key] = cost
+                if node_costs:
+                    self.costs[name] = node_costs
+                if component.get("acquisition_cost") is not None:
+                    acquisition = _spec._validate_cost(
+                        name, "acquisition_cost", component["acquisition_cost"]
+                    )
+                    if acquisition:
+                        self.acquisition_costs[name] = acquisition
+                component = components[name] = component["reliability"]
             if isinstance(component, dict):
                 _spec._validate_component_spec(name, component)
+                _spec._refuse_life_capacities(name, component, capacity)
                 node_costs = {}
                 for key in self.COST_KEYS:
                     if component.get(key) is None:
@@ -1281,6 +1313,13 @@ class RepairableRBD(RBD):
                     raise type(error)(f"Component {name!r}: {error}") from None
                 reliability[name] = life
                 repairability[name] = repair_model
+            elif isinstance(component, MarkovComponent):
+                # Its states and moves are its own chain's: a group of
+                # one unit (see _events.MARKOV).
+                _spec._validate_markov(name, component)
+                self._standby[name] = MARKOV
+                reliability[name] = component
+                repairability[name] = None
             elif isinstance(component, RepairableRBD):
                 if id(component) in nested:
                     # One sub-system drawn at several nodes: a nested
@@ -1336,6 +1375,7 @@ class RepairableRBD(RBD):
                 )
         self.components = components
         self.repairability = copy(repairability)
+        _spec._refuse_markov_crews(self)
         self._maintenance = _spec._validate_groups(self, maintenance_groups)
         self.ccf_groups = _spec._validate_ccf_groups(self, ccf_groups)
         _shutdowns.check(self)
@@ -1361,7 +1401,20 @@ class RepairableRBD(RBD):
         counts = [
             (len(getattr(self, "_preventive", {})), "maintained"),
             (len(getattr(self, "_inspection", {})), "tested"),
-            (len(getattr(self, "_standby", {})), "standby group(s)"),
+            (
+                sum(
+                    a.key != "markov"
+                    for a in getattr(self, "_standby", {}).values()
+                ),
+                "standby group(s)",
+            ),
+            (
+                sum(
+                    a.key == "markov"
+                    for a in getattr(self, "_standby", {}).values()
+                ),
+                "Markov component(s)",
+            ),
             (len(getattr(self, "_imperfect", {})), "repaired imperfectly"),
             (
                 len(getattr(self, "_restoring", {})),
@@ -6269,14 +6322,18 @@ class RepairableRBD(RBD):
     def _capacity_models(self) -> dict:
         """``{node: model}`` for the nodes with no capacity entry whose model
         has a capacity distribution of its own: a nested ``RepairableRBD``
-        with capacities, or a component whose reliability is a
-        ``DegradingNode``."""
+        with capacities, a component whose reliability is a
+        ``DegradingNode``, or a ``MarkovComponent`` with a capacity in
+        each state (its working states as a degrading node's stages)."""
         out: Dict[Any, Any] = {}
         for node, component in self.components.items():
             if node in self.capacity:
                 continue
             if isinstance(component, RepairableRBD):
                 if component._has_capacity():
+                    out[node] = component
+            elif isinstance(component, MarkovComponent):
+                if component.capacity is not None:
                     out[node] = component
             elif isinstance(component.reliability, DegradingNode):
                 out[node] = component.reliability

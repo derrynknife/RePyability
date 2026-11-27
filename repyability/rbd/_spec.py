@@ -228,6 +228,14 @@ def _validate_ccf_groups(rbd, ccf_groups) -> list:
             isinstance(rbd.components[member], RepairableRBD)
             or member in rbd._standby
         ):
+            if member in rbd._standby and rbd._standby[member].key == "markov":
+                raise ValueError(
+                    f"CCF group member {member!r} is a Markov component, "
+                    "which fails by its own chain's moves, not at a "
+                    "failure rate a shared cause takes a share of: write "
+                    "the shared cause as a component in series, or give "
+                    "the member a life and a repair."
+                )
             raise ValueError(
                 f"CCF group member {member!r} is a nested RBD or a "
                 "standby group: a group's members are single "
@@ -626,7 +634,8 @@ def _unknown_component(node, component) -> str:
 
     kinds = (
         "Give a spec dict with 'reliability' and 'repairability', a "
-        "NonRepairable, or a nested RepairableRBD (or, for a junction "
+        "NonRepairable, a MarkovComponent, or a nested RepairableRBD (or, "
+        "for a junction "
         "that never fails, such as a k-out-of-n vote point, "
         "PerfectReliability)."
     )
@@ -1332,6 +1341,92 @@ def _validate_standby(node, spec: dict) -> _Standby:
         float(fractions["dormancy_factor"]),
         float(fractions["switching_probability"]),
     )
+
+
+def _validate_markov(node, component) -> None:
+    """Raise if a ``MarkovComponent`` cannot be a repairable component:
+    it has no way back from its failed states."""
+    if not component.repairable:
+        raise ValueError(
+            f"Component {node!r} is a Markov component with no way back "
+            "from its failed states: it has a lifetime, not repairs of "
+            "its own. Give it as the life of a spec, {'reliability': "
+            "<it>, 'repairability': <its repair times, or 'instant'>}, "
+            "or give the transitions that restore it."
+        )
+
+
+#: The keys a Markov component's spec may carry: itself and its prices.
+MARKOV_SPEC_KEYS = ("reliability",) + COST_KEYS + ("acquisition_cost",)
+
+
+def _refuse_markov_crews(rbd) -> None:
+    """Raise if the diagram has repair crews and a Markov component,
+    whose restorations are transitions of its chain, not jobs a crew
+    takes."""
+    if rbd.repair_crews is None:
+        return
+    for node, arrangement in rbd._standby.items():
+        if arrangement.key == "markov":
+            raise ValueError(
+                f"Component {node!r} is a Markov component, restored at "
+                "its own transitions' rates: it cannot wait for the "
+                f"diagram's repair crews (repair_crews={rbd.repair_crews}"
+                "). Write its waiting into its chain's states and rates, "
+                "or put the components that share crews in a nested "
+                "RepairableRBD with the crews."
+            )
+
+
+def _refuse_life_capacities(node, spec: dict, capacity) -> None:
+    """Raise if a spec's life is a Markov component with a capacity in
+    each state and the node has no capacity of its own: its states are
+    not followed through its repairs."""
+    from repyability.rbd.markov_node import MarkovComponent
+
+    life = spec.get("reliability")
+    if (
+        isinstance(life, MarkovComponent)
+        and life.capacity is not None
+        and node not in (capacity or {})
+    ):
+        raise ValueError(
+            f"Component {node!r}: its life is a Markov component with a "
+            "capacity in each state, which is not followed through the "
+            "repairs of a spec's 'repairability'. Give the node a "
+            "capacity (capacity={node: level}), or write the repair into "
+            "the chain (a transition back from its failed states) and "
+            "give it as the component."
+        )
+
+
+def _markov_spec(component) -> bool:
+    """Whether a component is a spec dict of a repairable Markov
+    component (``{"reliability": MarkovComponent(...), ...}``): the
+    component with its prices, and no repairs but its own transitions."""
+    from repyability.rbd.markov_node import MarkovComponent
+
+    if not isinstance(component, dict):
+        return False
+    life = component.get("reliability")
+    return isinstance(life, MarkovComponent) and life.repairable
+
+
+def _validate_markov_spec(node, spec: dict) -> None:
+    """Raise if a Markov component's spec has more than it takes: it is
+    restored by its own transitions, so it has no repair times,
+    maintenance, tests, spares or group."""
+    unknown = sorted(map(str, set(spec) - set(MARKOV_SPEC_KEYS)))
+    if unknown:
+        raise ValueError(
+            f"Component {node!r} is a Markov component that is restored "
+            f"by its own transitions, so its spec takes no {unknown}: "
+            f"only {', '.join(MARKOV_SPEC_KEYS)}. Write a repair, a task "
+            "or a test as states and transitions of its chain; or, for "
+            "a component repaired at the times of a model, leave out "
+            "the transitions back from its failed states and give "
+            "'repairability'."
+        )
 
 
 def _validate_inspection(

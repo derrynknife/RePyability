@@ -88,6 +88,7 @@ from repyability.rbd._bayesian_life import PosteriorPredictive
 from repyability.rbd._model_utils import (
     MODEL_ERRORS,
     is_mixture,
+    markov_spec,
     parametric_spec,
 )
 from repyability.utils.checks import seed as check_seed
@@ -234,7 +235,7 @@ def _spec(model, label: str):
             "its posterior, not values to redraw one by one: give 'fit', "
             "which draws from the posterior itself, or a list of models."
         )
-    spec = parametric_spec(model)
+    spec = parametric_spec(model) or markov_spec(model)
     if spec is None:
         raise ValueError(
             f"{label}: its model has no parameters to draw (it is not a "
@@ -773,6 +774,13 @@ def _closest(unknown: list, names: list) -> str:
     return ""
 
 
+def _model_name(model) -> str:
+    """A model's kind for a message: its distribution's name."""
+    if markov_spec(model) is not None:
+        return "Markov component"
+    return getattr(getattr(model, "dist", None), "name", "model")
+
+
 def _parameter_draws(
     model, priors: Mapping, n: int, rng: np.random.Generator, label: str
 ) -> list:
@@ -782,7 +790,7 @@ def _parameter_draws(
     if unknown:
         raise ValueError(
             f"{label}: {sorted(map(str, unknown))} are not parameters of its "
-            f"{getattr(model.dist, 'name', 'model')} model, whose parameters "
+            f"{_model_name(model)} model, whose parameters "
             f"are {names}.{_closest(unknown, names)}"
         )
     columns = np.tile(np.asarray(spec.params, dtype=float), (n, 1))
@@ -981,7 +989,7 @@ def model_values(model) -> np.ndarray:
     takes them."""
     if rebuilt_by_surpyval(model):
         return np.asarray(_redrawable(model, "").params, dtype=float)
-    spec = parametric_spec(model)
+    spec = parametric_spec(model) or markov_spec(model)
     assert spec is not None  # a varied model is parametric
     return np.asarray(spec.params, dtype=float)
 
@@ -992,7 +1000,7 @@ def moved_model(model, values, label: str):
     surpyval refuses them (a step past a parameter's range, which it does
     not give for these models)."""
     if not rebuilt_by_surpyval(model):
-        spec = parametric_spec(model)
+        spec = parametric_spec(model) or markov_spec(model)
         assert spec is not None  # a varied model is parametric
         return spec.build(list(values))
     built = _tried(
@@ -1063,7 +1071,7 @@ def varied_parameters(model, spec: Any, label: str):
         if unknown:
             raise ValueError(
                 f"{label}: {sorted(map(str, unknown))} are not parameters of "
-                f"its {getattr(model.dist, 'name', 'model')} model, whose "
+                f"its {_model_name(model)} model, whose "
                 f"parameters are {names}."
             )
         params = np.asarray(parameters.params, dtype=float)

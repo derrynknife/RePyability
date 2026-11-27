@@ -10,6 +10,8 @@ models provided here (see [Building an RBD](../guide/building.md) and
 
 ::: repyability.DegradingNode
 
+::: repyability.MarkovComponent
+
 ::: repyability.RepeatedNode
 
 ::: repyability.RepeatedStandbyNode

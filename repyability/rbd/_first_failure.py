@@ -215,6 +215,8 @@ def _components_are_plain(rbd) -> None:
             (rbd._imperfect, "imperfect repair"),
         ):
             if node in table:
+                if table is rbd._standby and table[node].key == "markov":
+                    what = "a Markov component's own chain"
                 _refuse(
                     f"The exact values do not cover {what}, which "
                     f"component {node!r} has"

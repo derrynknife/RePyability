@@ -127,6 +127,7 @@ from repyability.rbd.helper_classes import (
 )
 from repyability.rbd.joint_node import JointNode
 from repyability.rbd.load_sharing_node import LoadSharingModel
+from repyability.rbd.markov_node import MarkovComponent
 from repyability.rbd.node_state import NodeState
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 from repyability.rbd.phased_mission import PhasedMission
@@ -241,6 +242,7 @@ __all__ = [
     "StandbyModel",
     "DegradingNode",
     "LoadSharingModel",
+    "MarkovComponent",
     "RepeatedNode",
     "RepeatedStandbyNode",
     # Helpers
