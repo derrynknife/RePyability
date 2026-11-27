@@ -567,16 +567,49 @@ duo.mean_time_to_first_failure()               # -> 650.0
 
 The last line is the textbook mean for a repaired pair, `(3 lam + mu) / (2 lam^2)`. Without repairs the same pair would last `1.5 / lam` = 150 hours on average.
 
-It is exact in two cases:
+It is worked out without simulating in three cases, the first two exactly:
 
 - **A series structure**: the product of each component's survival, from its state. Any life distributions work, and the repair times do not matter.
 - **Exponential lives and repairs** (or instant repairs), with any `repair_crews`: the components' states form a Markov chain, as for [repair crews](#repair-crews). The states in which the system is down are made absorbing, so the reliability is the chain's chance of not being absorbed by `t`, and the mean time is one linear solve.
 
-A sub-system (a nested `RepairableRBD`) is drawn into the diagram in its place for these two, its components each as `(node, component)`, so it takes the same route as the system drawn flat, unless something couples it (repair crews that jobs wait for, in it or beside it; common-cause, maintenance or shutdown groups in it) or it is given a state. Anything else (Weibull lives in a redundant structure, scheduled maintenance, tests, standby and common-cause groups, a coupled sub-system) refuses and says why. `method="simulate"` then estimates it from simulated histories (the share with no failure by `t`; the mean needs a `t_simulation` and is a lower bound if some runs do not fail by then). Pass `state` to start from the plant as it is now, as `point_availability` does; a unit that is down is in a repair.
+- **Any other lives and repairs** (Weibull, gamma, lognormal, a fitted model), in the same chain, each followed as *phases*. A chain's states hold no clock, so a time that is not exponential is written as a run of exponential steps over a grid of ages, ending from each step with the chance the time ends in that stretch of ages (a mixture of Erlangs). As the grid is refined the phases' time converges to the time itself; the grid is halved, and the values extrapolated, until they agree to `rtol` (1e-3 of each probability of failing, by default, those under a thousandth of the largest asked for held to that thousandth's; of the mean for `mean_time_to_first_failure`). A gamma life of whole shape (an Erlang) has phases of its own, and is exact.
+
+```python
+part = {
+    "reliability": surv.Weibull.from_params([1000, 2]),
+    "repairability": surv.LogNormal.from_params([np.log(10), 0.5]),
+}
+wear = RepairableRBD(
+    [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")], {"a": part, "b": part}
+)
+wear.first_failure_sf([300.0, 1000.0, 2000.0])  # array([0.99927, 0.98477, 0.95649])
+wear.mean_time_to_first_failure()               # -> 35541
+```
+
+Each series factor of the structure is chained on its own (the first failure of independent parts in series is the first of theirs), so what limits this route is the largest redundant part: the chain's states are the product of its units' phases, which is affordable for two units that are not exponential, and for a few more only over a short time. A chain too large, or values that do not settle to `rtol`, refuse, saying how far the values agreed (a looser `rtol` takes them).
+
+Common-cause groups and standby groups (load-sharing groups and blocks of identical units too) are in the chain when their units have exponential lives and repairs, exactly: a group's shared causes strike its members together, as the simulation's do, and a standby group's own chain of its units goes beside the rest, from every unit ready or, with `state="stationary"`, from its long-run state.
+
+```python
+from repyability import BetaFactor, CCFGroup
+
+duo_part = {
+    "reliability": surv.Exponential.from_params([0.01]),
+    "repairability": surv.Exponential.from_params([0.1]),
+}
+tied = RepairableRBD(     # the exponential pair above, a tenth of its failures shared
+    [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+    {"a": duo_part, "b": duo_part},
+    ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+)
+tied.mean_time_to_first_failure()   # -> 441.4 (650 without the common cause)
+```
+
+A sub-system (a nested `RepairableRBD`) is drawn into the diagram in its place for these, its components each as `(node, component)`, so it takes the same route as the system drawn flat, unless something couples it (repair crews that jobs wait for, in it or beside it; common-cause, maintenance or shutdown groups in it) or it is given a state. Anything else (scheduled maintenance and tests, whose fixed intervals no chain's phases follow; common-cause or standby groups of units that are not exponential; a coupled sub-system; a chain of phases too large) refuses and says why. `method="simulate"` then estimates it from simulated histories (the share with no failure by `t`; the mean needs a `t_simulation` and is a lower bound if some runs do not fail by then). Pass `state` to start from the plant as it is now, as `point_availability` does; a unit that is down is in a repair.
 
 ### Bounds where the exact values refuse
 
-Two values worked out without simulating bracket the first failure wherever the expected events are (Weibull lives in a redundant structure, maintenance, tests, standby and common-cause groups included). The system has failed by `t` at least as often as it is down at `t`, and no more often than its expected number of failures in `[0, t)`: with `Q` the unavailability and `W(t)` the expected failures, `1 - Q(0) - W(t) <= R(t) <= 1 - Q(t)`. `first_failure_bounds` returns both, with the values they come from:
+Two values worked out without simulating bracket the first failure wherever the expected events are (maintenance, tests, groups of units that wear, and redundant parts too large to follow as phases included). The system has failed by `t` at least as often as it is down at `t`, and no more often than its expected number of failures in `[0, t)`: with `Q` the unavailability and `W(t)` the expected failures, `1 - Q(0) - W(t) <= R(t) <= 1 - Q(t)`. `first_failure_bounds` returns both, with the values they come from:
 
 ```python
 part = {
