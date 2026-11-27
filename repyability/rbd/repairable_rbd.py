@@ -74,6 +74,7 @@ from repyability.rbd.results import (
     SparesDemand,
     SparesStock,
     TimelineSimulation,
+    TornadoResult,
     TotalCostAllocation,
     UncertaintyImportance,
     UncertaintyResult,
@@ -9287,6 +9288,118 @@ class RepairableRBD(RBD):
         8.0
         """
         return _sensitivity.with_levers(self, values)
+
+    def tornado(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        *,
+        x=None,
+        window=None,
+        state=None,
+        quantity: str = "availability",
+        ranges: Optional[dict] = None,
+        relative: float = _sensitivity.TORNADO_RELATIVE,
+    ) -> TornadoResult:
+        """The numbers of a tornado chart: the system's availability (or
+        cost rate) with each lever at its low and at its high, every other
+        lever at its value, the levers sorted by how far they swing it.
+
+        Where ``parameter_sensitivity`` gives each lever's slope at its
+        value, this gives what a range of it does. Each end is the
+        diagram rebuilt with the lever there (as ``with_levers`` builds
+        it), its value worked out as by default: in the long run (exact,
+        or numerical as its components' are), or at the time ``x`` or over
+        ``[0, window)`` (from new, or from ``state``). A quantity that
+        could only be simulated is refused: a difference of two
+        simulations is mostly their noise (``compare`` the diagram with
+        ``with_levers``' takes common draws).
+
+        A lever's range is ``ranges[lever]`` where given, and otherwise a
+        share ``relative`` of its scale either way: of its value (a
+        scale, a rate, a shape, an interval), or for a parameter on a log
+        scale (a LogNormal's ``mu``) of 1, which moves the time it is the
+        log of by that share; a lever that counts (standby units, repair
+        crews) one fewer and one more. A range is cut to the lever's
+        range of values (``Lever.bounds``), and its row says so. A
+        regression node's covariate has no relative change (its zero is
+        its unit's), nor has a lever at 0, so without a range they are
+        listed in ``skipped``, as is a lever whose diagram cannot be
+        built or worked out at an end, with the reason.
+
+        Parameters
+        ----------
+        working_nodes, broken_nodes : Collection[Hashable], optional
+            Nodes held working or failed, as for ``mean_availability``.
+        x : float, optional
+            One time, for the point availability then.
+        window : float, optional
+            A window's length, for the mission availability (or the mean
+            cost per unit time) over ``[0, window)``.
+        state : optional
+            Where the components start from, with ``x`` or ``window``.
+        quantity : str, optional
+            ``"availability"`` (the default) or ``"cost_rate"`` (in the
+            long run or over a window).
+        ranges : dict, optional
+            ``{lever: (low, high)}``, each lever by its
+            [`Lever`][repyability.Lever] (from ``levers()``) or its
+            ``(key, name)``.
+        relative : float, optional
+            The share of each lever's scale it moves either way where no
+            range is given, in ``(0, 1)``; by default 0.1.
+
+        Returns
+        -------
+        TornadoResult
+            The base value, a [`TornadoRow`][repyability.TornadoRow] for
+            each lever (its low and high, the values there and the swing),
+            the largest swing first, and the levers skipped.
+
+        Raises
+        ------
+        ValueError
+            For a quantity, time, window, range or share that is not
+            valid, or a lever the diagram does not have.
+        NotImplementedError
+            Where the quantity is not worked out exactly or numerically
+            for this diagram (as ``mean_availability`` and the rest
+            refuse it).
+
+        Examples
+        --------
+        A unit failing at 0.01 an hour, repaired at 0.1 an hour,
+        available ``100 / 110`` of the time. A tenth more or less on its
+        repair rate swings that from 0.9 to 0.9167, a little more than
+        the same on its failure rate does:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> rbd = RepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": {"reliability": E([0.01]), "repairability": E([0.1])}},
+        ... )
+        >>> result = rbd.tornado()
+        >>> round(result.base_value, 4)
+        0.9091
+        >>> for row in result.rows:
+        ...     print(row.name, round(row.value_low, 4),
+        ...           round(row.value_high, 4))
+        repairability.failure_rate 0.9 0.9167
+        reliability.failure_rate 0.9174 0.9009
+        """
+        return _sensitivity.tornado(
+            self,
+            working_nodes,
+            broken_nodes,
+            x=x,
+            window=window,
+            state=state,
+            quantity=quantity,
+            ranges=ranges,
+            relative=relative,
+        )
 
     @_long_run.follows_upgrades
     def mean_availability_uncertainty(

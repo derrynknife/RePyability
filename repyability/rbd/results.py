@@ -3310,6 +3310,82 @@ class Lever(_ResultMapping):
     calendar: bool = False
 
 
+@dataclass(frozen=True)
+class TornadoRow(_ResultMapping):
+    """One lever's row of a [`TornadoResult`][repyability.TornadoResult]:
+    the system's value with the lever at its low and at its high, every
+    other lever at its value.
+
+    Attributes
+    ----------
+    key : Hashable
+        Whose lever it is, as [`Lever`][repyability.Lever] keys it.
+    name : str
+        The lever's name, as ``Lever`` names it.
+    base : float
+        The lever's value in the diagram.
+    low, high : float
+        The lever's low and high: the range given, or by default a share
+        (``relative``) of its scale either way (one fewer and one more of
+        a lever that counts), cut to the lever's range of values.
+    value_low, value_high : float
+        The system's value with the lever at ``low`` and at ``high``.
+    swing : float
+        ``abs(value_high - value_low)``, by which the rows are sorted.
+    cut : bool
+        Whether the range was cut to the lever's range of values (a
+        probability's to ``[0, 1]``, say).
+    """
+
+    key: Hashable
+    name: str
+    base: float
+    low: float
+    high: float
+    value_low: float
+    value_high: float
+    swing: float
+    cut: bool
+
+
+@dataclass
+class TornadoResult(_ResultMapping):
+    """The numbers of a tornado chart: which levers move the system's
+    value most, and by how much. ``tornado()`` of a
+    [`RepairableRBD`][repyability.RepairableRBD.tornado],
+    [`NonRepairableRBD`][repyability.NonRepairableRBD.tornado] or
+    [`FaultTree`][repyability.FaultTree.tornado] gives it; drawing the
+    chart is left to the caller.
+
+    Attributes
+    ----------
+    quantity : str
+        What the values are of: ``"availability"`` or ``"cost_rate"`` (a
+        repairable diagram), ``"reliability"`` (a non-repairable one) or
+        ``"top_event_probability"`` (a fault tree).
+    base_value : float
+        The system's value with every lever at its value.
+    rows : list of TornadoRow
+        A row for each lever, sorted by its swing, the largest first.
+    skipped : list of dict
+        The levers left out, each ``{"key", "name", "reason"}``: a
+        covariate or a lever at 0 given no range, or one whose diagram at
+        an end cannot be built or worked out.
+    """
+
+    quantity: str
+    base_value: float
+    rows: List[TornadoRow]
+    skipped: List[Dict[str, Any]]
+
+    def __repr__(self) -> str:
+        return (
+            f"TornadoResult(quantity={self.quantity!r}, "
+            f"base_value={self.base_value:.6g}, rows={len(self.rows)}, "
+            f"skipped={len(self.skipped)})"
+        )
+
+
 def _meeting(levels: np.ndarray, demand: float) -> np.ndarray:
     """Which ``levels`` meet ``demand``. A level within rounding of it
     meets it: capacities that add up to the demand exactly (three units of
