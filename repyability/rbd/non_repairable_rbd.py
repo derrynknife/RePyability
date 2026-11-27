@@ -9,7 +9,6 @@ import functools
 import inspect
 import math
 import pickle
-import zlib
 from copy import copy
 from dataclasses import dataclass, field
 from queue import PriorityQueue
@@ -46,7 +45,7 @@ from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from . import _ccf_modules
 from . import _montecarlo as montecarlo
-from . import _sensitivity
+from . import _paired, _sensitivity
 from . import capacity as _capacity
 from . import redundancy_allocation
 from ._bayesian_life import PosteriorPredictive, as_life
@@ -7010,13 +7009,13 @@ class NonRepairableRBD(RBD):
         Two independent estimates from 20_000 lifetimes each would give it
         with a standard error of about 0.42.
         """
-        if method not in (None, "exact", "simulate"):
-            raise ValueError(
-                "method must be None (exact where both MTTFs are), 'exact' "
-                f"or 'simulate', got {method!r}."
-            )
-        montecarlo.check_count(mc_samples, False, "mc_samples")
-        montecarlo.check_confidence(confidence)
+        _paired.check(method, mc_samples, confidence)
+        _paired.same_kind(
+            self,
+            other,
+            "convert a fault tree with to_rbd() or FaultTree.from_rbd() "
+            "to compare it with a diagram",
+        )
         if method != "simulate":
             try:
                 exact = float(self._exact_mean() - other._exact_mean())
@@ -7024,31 +7023,12 @@ class NonRepairableRBD(RBD):
                 if method == "exact":
                     raise
             else:
-                return ConfidenceInterval(
-                    estimate=exact,
-                    lower=exact,
-                    upper=exact,
-                    confidence=confidence,
-                    standard_error=0.0,
-                    n_samples=0,
-                    method="exact",
-                )
-        key = int(np.random.SeedSequence(seed).generate_state(1, np.uint64)[0])
+                return _paired.exact(exact, confidence)
+        key = _paired.key(seed)
         differences = self._keyed_lifetimes(
             mc_samples, key
         ) - other._keyed_lifetimes(mc_samples, key)
-        estimate = float(np.mean(differences))
-        standard_error = montecarlo.standard_error(differences, False)
-        z = montecarlo.z_value(confidence)
-        return ConfidenceInterval(
-            estimate=estimate,
-            lower=estimate - z * standard_error,
-            upper=estimate + z * standard_error,
-            confidence=confidence,
-            standard_error=standard_error,
-            n_samples=mc_samples,
-            method="simulated",
-        )
+        return _paired.simulated(differences, confidence)
 
     def _keyed_lifetimes(self, n: int, key: int) -> np.ndarray:
         """``n`` lifetimes in which each component draws its uniforms from
@@ -7056,9 +7036,8 @@ class NonRepairableRBD(RBD):
         place in its draw (common random numbers, see ``compare``)."""
         self._require_replayable()
 
-        def stream(name: str, j: int) -> np.ndarray:
-            crc = zlib.crc32(name.encode())
-            return np.random.default_rng([key, crc, j]).random(n)
+        def stream(label: str, j: int) -> np.ndarray:
+            return _paired.uniforms(key, label, j, n)
 
         lifetimes = {}
         for drawn in self._draw_order():

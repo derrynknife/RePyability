@@ -38,6 +38,7 @@ uncertainty draws the elements' models as a diagram's
 (``rbd/uncertainty.py``), each draw worked out exactly.
 """
 
+import dataclasses
 import json
 from collections import deque
 from typing import (
@@ -60,6 +61,7 @@ from numpy.typing import ArrayLike
 from repyability._version import __version__
 from repyability.rbd import _measures
 from repyability.rbd import _montecarlo as montecarlo
+from repyability.rbd import _paired
 from repyability.rbd._differential import check as check_differential
 from repyability.rbd._differential import shares
 from repyability.rbd._importances import with_importances
@@ -79,7 +81,11 @@ from repyability.rbd.non_repairable_rbd import (
     check_x,
 )
 from repyability.rbd.rbd import Pairs, _set_order
-from repyability.rbd.results import ImportanceTable, UncertaintyResult
+from repyability.rbd.results import (
+    ConfidenceInterval,
+    ImportanceTable,
+    UncertaintyResult,
+)
 from repyability.rbd.routes import AnalysisRoute, Refused
 from repyability.rbd.shannon import _minimal_cut_sets, _shannon_plan
 from repyability.rbd.uncertainty import (
@@ -2000,6 +2006,103 @@ class Network:
             return float(np.mean(lives))
         return self._mean_of(self.models)
 
+    def compare(
+        self,
+        other: "Network",
+        mc_samples: int = 100_000,
+        seed=None,
+        *,
+        confidence: float = 0.95,
+        method: Optional[str] = None,
+    ) -> ConfidenceInterval:
+        """How much longer (or shorter) this network keeps its terminals
+        joined than ``other`` on average: exactly where ``mean`` works out
+        both, and otherwise by simulation with common random numbers, as
+        [`NonRepairableRBD.compare`][repyability.NonRepairableRBD.compare]
+        compares two diagrams.
+
+        Simulated, both networks' lifetimes are drawn ``mc_samples``
+        times, a link or node of the same name in both drawing the same
+        random numbers (the same quantile of its own model), so the
+        differences come from how the networks differ, not from chance.
+        The draws are keyed by name for the comparison alone: ``random``
+        draws as it did.
+
+        Parameters
+        ----------
+        other : Network
+            The network to compare with.
+        mc_samples : int, optional
+            Simulated, the number of lifetimes of each, by default 100_000.
+        seed : int, optional
+            Simulated, the seed, by default None.
+        confidence : float, optional
+            The confidence level of the interval, by default 0.95.
+        method : str, optional
+            None (the default): exact where both means are, else simulated.
+            ``"exact"``: refused where a mean is not exact.
+            ``"simulate"``: simulated whatever.
+
+        Returns
+        -------
+        ConfidenceInterval
+            This network's mean lifetime minus ``other``'s: exact
+            (``method="exact"``, with no error), or the mean of the paired
+            differences (``"simulated"``), with its standard error and a
+            normal interval.
+
+        Raises
+        ------
+        TypeError
+            If ``other`` is not a ``Network``.
+        ValueError
+            If ``mc_samples``, ``confidence`` or ``method`` is not valid,
+            or a network has no lifetimes (every model a probability).
+        NotImplementedError
+            Simulated, if an element's draws cannot be replayed from
+            uniforms.
+
+        Examples
+        --------
+        A second link alongside the first, each failing at 0.01: the mean
+        rises from 100 to 150.
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> E = surv.Exponential.from_params
+        >>> one = Network({"a": ("s", "t", E([0.01]))}, "s", "t")
+        >>> two = Network(
+        ...     {"a": ("s", "t", E([0.01])), "b": ("s", "t", E([0.01]))},
+        ...     "s",
+        ...     "t",
+        ... )
+        >>> gain = two.compare(one)
+        >>> round(gain.estimate, 6), gain.method
+        (50.0, 'exact')
+        """
+        _paired.check(method, mc_samples, confidence)
+        _paired.same_kind(
+            self,
+            other,
+            "a network compares with another network (a diagram's compare "
+            "takes diagrams)",
+        )
+        for network in (self, other):
+            network._require_lifetimes("mean lifetime")
+        if method != "simulate":
+            try:
+                exact = float(self.mean() - other.mean())
+            except (NotImplementedError, ValueError):
+                if method == "exact":
+                    raise
+            else:
+                return _paired.exact(exact, confidence)
+        key = _paired.key(seed)
+        differences = self._keyed_lifetimes(
+            mc_samples, key
+        ) - other._keyed_lifetimes(mc_samples, key)
+        return _paired.simulated(differences, confidence)
+
     # ------------------------------------------------------------------
     # Simulation
     # ------------------------------------------------------------------
@@ -2049,6 +2152,43 @@ class Network:
                 block = u[:, start : start + sampler.width]
                 start += sampler.width
                 lives[name] = np.asarray(sampler.draw(block), dtype=float)
+        return self._lifetimes(lives, size)
+
+    def _keyed_lifetimes(self, n: int, key: int) -> np.ndarray:
+        """``n`` lifetimes in which each element draws its uniforms from a
+        stream of its own, keyed by ``key`` and its name (common random
+        numbers, see ``compare``)."""
+        self._require_replayable()
+        lives: Dict[Hashable, np.ndarray] = {}
+        for name, model in self.models.items():
+            sampler = lifetime_sampler(model)
+            assert sampler is not None
+            u = np.column_stack(
+                [
+                    _paired.element(key, name, j, n)
+                    for j in range(sampler.width)
+                ]
+            )
+            lives[name] = np.asarray(sampler.draw(u), dtype=float)
+        return self._lifetimes(lives, n)
+
+    def _require_replayable(self) -> None:
+        """Raise unless every element's draws can be replayed from
+        uniforms, as common random numbers (``compare``) need."""
+        for name, model in self.models.items():
+            if lifetime_sampler(model) is None:
+                raise NotImplementedError(
+                    "Common random numbers need every element's draws to be "
+                    "replayable from uniforms (surpyval parametric "
+                    "distributions and the composite models built from "
+                    f"them); those of {name!r} are not."
+                )
+
+    def _lifetimes(
+        self, lives: Dict[Hashable, np.ndarray], size: int
+    ) -> np.ndarray:
+        """The network's ``size`` lifetimes, each element's in ``lives``:
+        the longest-lasting path's."""
         # A link lasts no longer than the failing nodes it joins.
         index: Dict[Hashable, int] = {}
         for u_, v_ in self.links.values():
@@ -2446,6 +2586,28 @@ class Network:
             for name in out:
                 if name not in ("random", "path_sets", "minimal_path_sets"):
                     out[name] = r.refused(too_large)
+        replay = r.refusal(self._require_replayable)
+        if lifetimes:
+            out["compare"] = r.refused(lifetimes)
+        elif out["mean"].route != r.REFUSED:
+            out["compare"] = dataclasses.replace(
+                out["mean"],
+                reason="The difference of the two networks' mean lifetimes "
+                "(see mean), where the other's is worked out too; otherwise, "
+                "or with method='simulate', simulated lifetimes of both, "
+                "with common random numbers.",
+            )
+        else:
+            out["compare"] = (
+                r.refused(replay)
+                if replay
+                else AnalysisRoute(
+                    r.SIMULATED,
+                    "Simulated lifetimes of both networks, a link or node "
+                    "of the same name drawing the same random numbers in "
+                    "both (common random numbers).",
+                )
+            )
         return with_importances(out)
 
     def __repr__(self) -> str:
