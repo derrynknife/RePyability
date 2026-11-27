@@ -576,7 +576,8 @@ def networks():
     terminals, with every node a terminal, and with its links one way;
     and the bridge with repaired links and a repaired node, between two
     terminals and between them all; and the bridge with capacities on
-    its links, of lifetimes, repaired, and one way."""
+    its links, of lifetimes, repaired, and one way; and the bridge one
+    way with three terminals, with all, and with a link back (a cycle)."""
     capacity = {"a": 3, "b": 2, "c": 1, "d": 2}
     lifetimes = {
         name: (u, v, W([100 + 10 * i, 1.5]))
@@ -649,6 +650,26 @@ def networks():
         ),
         "directed": Network(
             lifetimes, "s", "t", nodes={"x": E([0.01])}, directed=True
+        ),
+        "directed three terminals": Network(
+            lifetimes,
+            source="s",
+            terminals=["t", "y"],
+            nodes={"x": E([0.01])},
+            directed=True,
+        ),
+        "directed all terminals": Network(
+            lifetimes, source="s", terminals="all", directed=True
+        ),
+        "directed with a cycle": Network(
+            {**lifetimes, "back": ("y", "x", W([90, 1.5]))},
+            "s",
+            "t",
+            nodes={"x": E([0.01])},
+            directed=True,
+        ),
+        "repaired directed all terminals": Network(
+            repaired, source="s", terminals="all", directed=True
         ),
         "bridge": Network(
             {
@@ -1542,8 +1563,18 @@ def test_the_readme_says_what_is_simulated():
                 "simulated",
             ),
             (
+                repairable["life with demands at set times"],
+                "mission_availability",
+                "numerical",
+            ),
+            (
                 repairable["life with a demand plan"],
                 "point_availability",
+                "numerical",
+            ),
+            (
+                repairable["life with a demand plan"],
+                "mean_availability",
                 "refused",
             ),
             (

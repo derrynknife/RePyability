@@ -29,12 +29,51 @@ release between minors that only adds (0.19.1).
   1e-12); the redundancy allocation with crews refuses it, naming
   `compare()`.
 
+- The values over a window of a life that wears out with demands at
+  set times or on a plan beside it (a spec's `"demand"` with `"times"`
+  or `"plan"`), which only the simulations gave: `point_availability`,
+  `mission_availability`, `expected_failures`, `expected_cost` and what
+  is made of them are now numerical, from new or up at an age, by a
+  renewal equation on the diagram's clock solved forward on a grid whose
+  points take in the demands (`_demand_renewal.PlannedDemandsCurve`).
+  The failures at set demands are exact atoms; the rest is second order
+  in the step. With a life that never fails it equals the set-times
+  demand component to 1e-12; a plan of one rate equals the rate's own
+  route; the hand-worked case (Weibull(40, 1.5), one demand at 50 with
+  0.3, repairs of 35, over 68) is 4e-6 off the nested integrals, and
+  seeded simulations at set times, on a plan and from an age agree within
+  4 standard errors. Its long run and mean lives are still refused, as
+  are a unit down at 0, imperfect repair, tasks, tests, groups and
+  shutdowns over a window (simulated); a window of more than about 80
+  typical up times is refused (`MAX_STEPS` grid points).
+
+- A directed `Network` (`directed=True`) takes more than two terminals,
+  which it refused: `Network(links, source="G", terminals=[...],
+  directed=True)` works while the source reaches every terminal along
+  working one-way links, and `terminals="all"` (with the `source`) while
+  it reaches every node; a list with no `source` is reached from its
+  first node. Every method works on it as on two terminals (the
+  importance measures, the path and cut sets, the B-lives, the
+  uncertainty, `compare`, the levers, the simulation, repaired links and
+  saving); `to_rbd()` and capacities stay two terminals', and say so.
+  Checked against every state enumerated in exact arithmetic on 32
+  directed graphs with cycles (1e-13), and against the undirected
+  network where every link works each way.
+- A directed network's exact values come from a decision diagram built
+  from the network, as an undirected one's do, in place of its listed
+  paths: a state says which nodes the source has reached and which of
+  the others each leads to, so cycles are allowed and the diagram grows
+  with the network's width, not its paths. A mesh of more than 100,000
+  simple paths, which refused (or needed `to_rbd()`, without cycles), is
+  worked out: an 11-by-11 grid of links right and down (184,756 paths)
+  in 0.2 s, and a 6-by-6 grid with a link each way (1.3 million paths,
+  with cycles) in 0.3 s. It follows at most 64 nodes at once, and refuses
+  past that or past `MAX_STATES`, saying to simulate.
 - `AnalysisRoute.may_refuse`: for a route that is not refused but whose
   call can still refuse depending on what is asked, when it does and
   what to use instead (`analysis_routes()` prints it as "numerical (may
   refuse)"). The first failure's routes by a chain, and by phases (whose
   values may not settle to `rtol`), say so.
-
 - A fault tree with common-cause groups over repaired events gives its
   failure frequency at a time, `failure_frequency(t)`, and its
   probability-based measures at a time (Birnbaum, criticality, RAW, RRW,
@@ -1096,6 +1135,10 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- A directed `Network`'s exact values come from its decision diagram
+  rather than from its listed paths, so they differ in the last digits
+  (by up to 1e-15 in the tests' networks). `repyability.network.METHOD =
+  "paths"` gives the old ones. Its simulated lifetimes are unchanged.
 - `FaultTree.to_open_psa` writes a beta-factor group's factor at the
   level of the whole group (the number of members), not at 2, as SCRAM
   requires for a group of three or more; the reader takes either.
@@ -1231,6 +1274,11 @@ release between minors that only adds (0.19.1).
 
 ### Fixed
 
+- An undirected `Network` whose decision diagram's states take more
+  than one 64-bit word (a frontier of about 13 nodes or more) merges its
+  equal states, which it did not: such a network kept every state
+  apart and passed `MAX_STATES` (or took long) where its diagram is
+  small. The values are unchanged, bit for bit.
 - `FaultTree.failure_frequency(t)` and `Network.failure_frequency(t)`
   with repaired events gave NaN at `t = 0` where an event whose density
   starts infinite (a Weibull life of shape below 1) was not critical
@@ -1240,7 +1288,6 @@ release between minors that only adds (0.19.1).
   where it is not; a repaired event's intensity at 0 is its life's
   density exactly, where the differences on its curve gave about it
   (-5.6e-8 for a Weibull of shape 1.5, 1.55 for one of shape 0.8).
-
 - `first_failure_sf` and `mean_time_to_first_failure` with lives or
   repairs followed as phases refused small redundant diagrams the guide
   works out (`NotSettled`): the pair of Weibull lives and lognormal
