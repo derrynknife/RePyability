@@ -223,7 +223,9 @@ def test_what_the_chains_do_not_cover_is_refused():
     spec = {
         "reliability": W([100.0, 1.5]),
         "repairability": E([0.5]),
-        "standby": {},
+        # A warm spare (a cold pair of any lives has its long run worked
+        # out: test_standby_cycle.py, test_standby_both.py).
+        "standby": {"dormancy_factor": 0.5},
     }
     rbd = RepairableRBD([("s", "g"), ("g", "t")], {"g": spec})
     routes = rbd.analysis_routes()

@@ -1427,6 +1427,18 @@ def repairable_kinds():
                 repair_crews=1,
                 downtime_cost_rate=5.0,
             ),
+            "cold standby pair, Weibull, a crew each": RepairableRBD(
+                [("s", "a"), ("a", "t")],
+                {
+                    "a": {
+                        "reliability": W([1000.0, 2.5]),
+                        "repairability": W([300.0, 1.5]),
+                        "standby": {"units": 2, "k": 1},
+                        "repair_cost": 3.0,
+                    }
+                },
+                downtime_cost_rate=5.0,
+            ),
             "common cause, tested": RepairableRBD(
                 EDGES,
                 {

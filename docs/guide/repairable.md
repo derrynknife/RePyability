@@ -1085,8 +1085,18 @@ the pair is up 0.9910.)
   cycle by quadrature, to about 1e-10, for Weibull wear-out lives as for
   any: Weibull(1,000 h, 2.5) lives and Weibull(300 h, 1.5) repairs give
   0.98830, and 400 runs of 1,000,000 h 0.98834 (+0.4 standard errors).
-  Warm spares, a switch that can fail, more units, both repaired at once and
-  values over time are simulated, for now.
+  With both units repaired at once (a crew each, the default) the pair is
+  not afresh after a down period: the unit still under repair is some way
+  into it. Each time a unit starts to operate, what follows depends only
+  on how long the other's repair has run, so the pair is a Markov renewal
+  process on that time, and its equation is solved on a grid, halved
+  until two solutions agree to 1e-8. The same lives and repairs give
+  0.991724 (down 0.0083 of the time against 0.0117 with one crew), and
+  400 runs of 1,000,000 h 0.991722 (0.0 standard errors). A pair under
+  repair nearly all the time (lives a small fraction of the repairs) may
+  warn that the grid did not settle, or be refused.
+  Warm spares, a switch that can fail, more units and values over time are
+  simulated, for now.
 - **Simulation.** `availability`, `cost` and `compare` simulate groups
   whatever their units' models, in Python.
 
