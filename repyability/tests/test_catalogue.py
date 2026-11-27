@@ -67,6 +67,10 @@ NOT_NODES = {
     # A calendar of opportunities, priced (#319): a calendar policy's input.
     "Calendar",
     "CCFGroup",
+    # A safety function builds its own diagrams from its channels.
+    "SafetyChannel",
+    "SafetyFunction",
+    "EventTree",
     "ComponentOption",
     "FailureLimitPolicy",
     "FaultTree",

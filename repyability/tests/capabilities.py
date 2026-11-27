@@ -20,6 +20,7 @@ import warnings
 from typing import Dict, List, Tuple
 
 from repyability import (
+    EventTree,
     FaultTree,
     Network,
     NonRepairableRBD,
@@ -38,6 +39,7 @@ MODELS = {
     "FaultTree": FaultTree,
     "Network": Network,
     "PhasedMission": PhasedMission,
+    "EventTree": EventTree,
 }
 
 #: The classes that build a model type's diagrams and take their results
@@ -236,6 +238,20 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ),
             ("Export to Open-PSA (MEF)", ("to_open_psa",)),
             ("Import from Open-PSA (MEF)", ("from_open_psa",)),
+        ],
+    ),
+    (
+        "Event trees (an initiating event through its barriers)",
+        [
+            (
+                "Each sequence's probability and frequency",
+                ("sequence_probabilities", "sequence_frequencies"),
+            ),
+            ("Each outcome's frequency", ("outcome_frequencies",)),
+            (
+                "Each sequence as one fault tree (its prime implicants)",
+                ("sequence_tree",),
+            ),
         ],
     ),
     (
