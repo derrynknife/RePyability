@@ -1536,24 +1536,39 @@ def _nested_curve(
 
 
 def _crew_nested(rbd, forced) -> list:
-    """The nested RBDs the crews' chain is followed over time with:
-    those not held working or broken. Raise if there are too many."""
+    """The nodes the crews' chain is followed over time beside, each
+    independent of it, as a pattern up or down: the nested RBDs (with
+    crews of their own) and the Markov components (restored by their own
+    transitions, see ``_crews._crew_served``), those not held working or
+    broken. Raise if there are too many."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     nested = [
         node
         for node, component in rbd.components.items()
-        if isinstance(component, RepairableRBD) and node not in forced
+        if (isinstance(component, RepairableRBD) or _crews._markov(rbd, node))
+        and node not in forced
     ]
     if len(nested) > _MAX_CREW_NESTED:
         raise NotImplementedError(
             f"With limited repair crews, the availability over time is "
-            "worked out for each pattern of the nested RBDs up and down: "
-            f"{len(nested)} nested RBDs are more than the "
+            "worked out for each pattern of the nested RBDs and Markov "
+            f"components up and down: {len(nested)} are more than the "
             f"{_MAX_CREW_NESTED} it takes. Simulate it with "
             "availability()."
         )
     return nested
+
+
+def _beside_crews(
+    rbd, node, horizon: float, counts=False, start=None, stages=False
+):
+    """The curve of a node beside the crews' chain (``_crew_nested``):
+    a nested RBD's, or a Markov component's own chain (with its
+    ``stages``, its capacity's, as ``_availability_curves``'s)."""
+    return _node_curve(
+        rbd, node, rbd.components[node], horizon, counts, False, stages, start
+    )
 
 
 def _crew_vectors(
@@ -1730,12 +1745,7 @@ def _crew_curve(
         np.column_stack(vectors),
     )
     curves = {
-        node: _nested_curve(
-            rbd.components[node],
-            horizon,
-            counts=counts,
-            start=states.get(node),
-        )
+        node: _beside_crews(rbd, node, horizon, counts, states.get(node))
         for node in nested
     }
     return _chain_transient.CrewCurve(rbd, uniformized, curves)
@@ -1895,12 +1905,7 @@ def _crew_window(
         )
         horizon = float(np.max(ends)) if len(ends) else 0.0
         curves = {
-            node: _nested_curve(
-                rbd.components[node],
-                horizon,
-                counts=True,
-                start=states.get(node),
-            )
+            node: _beside_crews(rbd, node, horizon, True, states.get(node))
             for node in nested
         }
         totals = _windows._window_counts(

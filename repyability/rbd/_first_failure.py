@@ -248,7 +248,9 @@ def _groups_fit(rbd) -> None:
     standby groups in: they are chains of exponential units."""
     for node in rbd._standby:
         what = rbd._standby[node].what
-        if rbd._crews_couple():
+        # A Markov component takes no crew (``_crews._crew_served``): its
+        # chain goes beside the crews' as it does beside the rest.
+        if rbd._crews_couple() and not _crews._markov(rbd, node):
             _refuse(
                 f"The exact values do not cover {what} (component "
                 f"{node!r}) whose units wait for repair crews with other "

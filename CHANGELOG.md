@@ -38,6 +38,23 @@ release between minors that only adds (0.19.1).
   failing switch takes some 3 to 15 s where the sure one takes about
   one (more for a switch that never works).
 
+- A `MarkovComponent` with a capacity in each state is simulated:
+  `availability()` (and `cost()`), which refused such a diagram, follow
+  the state it is in, at that state's level (the capacity's time at
+  each level, its mean and the demand delivered). Checked against
+  `mission_capacity`, within four standard errors, and, alone in
+  series, against the system's up and down time simulation by
+  simulation. Seeded results without such a component are unchanged.
+- A diagram with `repair_crews` takes a `MarkovComponent`, which it
+  refused at construction: the component takes no crew (it is restored
+  by its own transitions), and the crews serve the other components,
+  their chain beside the component's own, as beside a nested
+  `RepairableRBD` with crews of its own. The long run, the values over
+  time and over a window, the importance measures and the first failure
+  are those of the same diagram with the crewed components nested (to
+  1e-12); the redundancy allocation with crews refuses it, naming
+  `compare()`.
+
 - The values over a window of a life that wears out with demands at
   set times or on a plan beside it (a spec's `"demand"` with `"times"`
   or `"plan"`), which only the simulations gave: `point_availability`,

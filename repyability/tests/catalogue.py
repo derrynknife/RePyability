@@ -1477,6 +1477,28 @@ def repairable_kinds():
             "one repair crew": system(
                 unit(priority=1), repair_crews=1, downtime_cost_rate=5.0
             ),
+            # A Markov component takes no crew: the crew serves the
+            # other two, and it is independent of them.
+            "Markov component beside one repair crew": RepairableRBD(
+                EDGES,
+                {
+                    "a": {
+                        "reliability": markov_unit(),
+                        "repair_cost": 5.0,
+                        "downtime_cost": 2.0,
+                    },
+                    **{
+                        n: {
+                            "reliability": E([0.01]),
+                            "repairability": E([0.2]),
+                            "repair_cost": 1.0,
+                        }
+                        for n in "bc"
+                    },
+                },
+                repair_crews=1,
+                downtime_cost_rate=3.0,
+            ),
             "enough repair crews": system(unit(), repair_crews=3),
             "paid repair crews": system(
                 unit(priority=1, repair_cost=2.0),

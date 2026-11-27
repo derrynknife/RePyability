@@ -38,13 +38,14 @@ from repyability.rbd.routes import Refused
 
 def _crew_served(rbd) -> list:
     """The jobs the repair crews work on, by key: this RBD's own
-    components, not a nested RBD's (which has crews of its own), and
-    each unit of a standby group (``_Unit(node, unit)``)."""
+    components, not a nested RBD's (which has crews of its own) nor a
+    Markov component's (restored by its own transitions), and each unit
+    of a standby group (``_Unit(node, unit)``)."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     served: list = []
     for node, component in rbd.components.items():
-        if isinstance(component, RepairableRBD):
+        if isinstance(component, RepairableRBD) or _markov(rbd, node):
             continue
         arrangement = rbd._standby.get(node)
         if arrangement is None:
@@ -54,6 +55,14 @@ def _crew_served(rbd) -> list:
                 _Unit(node, unit) for unit in range(arrangement.units)
             )
     return served
+
+
+def _markov(rbd, node) -> bool:
+    """Whether ``node`` is a Markov component: restored by its own
+    transitions, it takes no repair crew, and beside the crews it is
+    independent of the rest, as a nested RBD is."""
+    arrangement = rbd._standby.get(node)
+    return arrangement is not None and arrangement.key == "markov"
 
 
 def _crews_limited(rbd) -> bool:
@@ -143,6 +152,8 @@ def _crew_chain_rates(rbd) -> Dict[Any, Tuple[float, float]]:
     not exponential, or more states than it is solved for."""
     assert rbd.repair_crews is not None  # limited crews only
     for node in rbd._standby:
+        if _markov(rbd, node):
+            continue  # no crew's job (``_crew_served``)
         _no_crew_chain(
             rbd,
             "it has no place for a standby group, which component "
