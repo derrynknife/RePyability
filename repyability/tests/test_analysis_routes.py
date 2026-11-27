@@ -597,6 +597,34 @@ def networks():
             lifetimes, "s", "t", directed=True, capacity=capacity
         ),
         "repaired bridge": Network(repaired, "s", "t", nodes={"x": hub}),
+        # Repaired links beside a probability and a life that is not
+        # repaired (no long run), and beside a probability alone; a link
+        # whose hidden failures are found by tests.
+        "mixed bridge": Network(
+            {**repaired, "c": ("x", "y", 0.05), "e": lifetimes["e"]},
+            "s",
+            "t",
+            capacity=capacity,
+        ),
+        "repaired bridge with a probability": Network(
+            {**repaired, "c": ("x", "y", 0.05)}, "s", "t", capacity=capacity
+        ),
+        "tested bridge": Network(
+            {
+                **repaired,
+                "c": (
+                    "x",
+                    "y",
+                    {
+                        "reliability": E([0.002]),
+                        "repairability": E([0.5]),
+                        "inspection": {"interval": 40.0},
+                    },
+                ),
+            },
+            "s",
+            "t",
+        ),
         "repaired all terminals": Network(repaired, terminals="all"),
         "three terminals": Network(
             lifetimes, terminals=["s", "t", "x"], nodes={"x": E([0.01])}
