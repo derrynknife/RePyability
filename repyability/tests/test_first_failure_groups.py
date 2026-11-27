@@ -7,8 +7,6 @@ Checked against chains written out by hand, the bracket of
 ``first_failure_bounds`` and seeded simulations of the diagrams of
 ``test_ccf_over_time.py`` and ``test_repairable_standby.py``."""
 
-import math
-
 import numpy as np
 import pytest
 import surpyval as surv

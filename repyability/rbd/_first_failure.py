@@ -283,7 +283,7 @@ def _groups_fit(rbd) -> None:
                 )
 
 
-def _member_rates(rbd) -> Dict[Any, Tuple[float, float]]:
+def _member_rates(rbd) -> Dict[Any, tuple]:
     """The failure and repair rates of the common-cause groups' members."""
     return {
         member: (
