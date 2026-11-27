@@ -3555,8 +3555,9 @@ class TornadoResult(_ResultMapping):
     """The numbers of a tornado chart: which levers move the system's
     value most, and by how much. ``tornado()`` of a
     [`RepairableRBD`][repyability.RepairableRBD.tornado],
-    [`NonRepairableRBD`][repyability.NonRepairableRBD.tornado] or
-    [`FaultTree`][repyability.FaultTree.tornado] gives it; drawing the
+    [`NonRepairableRBD`][repyability.NonRepairableRBD.tornado],
+    [`FaultTree`][repyability.FaultTree.tornado] or
+    [`Network`][repyability.Network.tornado] gives it; drawing the
     chart is left to the caller.
 
     Attributes

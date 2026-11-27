@@ -260,7 +260,7 @@ Which analyses each model type has (the method; — where it has none):
 | All measures given a state | `importances_given_state` | — | — | — | — | — |
 | Top event given each event | — | — | `conditional_probabilities` | — | — | — |
 | Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — | — |
-| Tornado data (each lever at its low and high) | `tornado` | `tornado` | `tornado` | — | — | — |
+| Tornado data (each lever at its low and high) | `tornado` | `tornado` | `tornado` | `tornado` | — | — |
 | **Uncertainty** | | | | | | |
 | Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | `sf_uncertainty` | `sf_uncertainty` | `reliability_interval` | — |
 | Of the MTTF | `mean_uncertainty` | — | `mean_uncertainty` | `mean_uncertainty` | — | — |

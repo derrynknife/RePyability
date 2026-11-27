@@ -115,6 +115,7 @@ from repyability.rbd.uncertainty import (
     shares_fit,
 )
 from repyability.utils.checks import (
+    is_number,
     no_distribution,
     one_of,
     real_array,
@@ -125,7 +126,7 @@ from repyability.utils.json_io import read_json, write_json
 from repyability.utils.wrappers import numpy_seed
 
 if TYPE_CHECKING:  # pragma: no cover
-    from repyability.rbd.results import Lever
+    from repyability.rbd.results import Lever, TornadoResult
 
 #: How the exact values are worked out: ``"bdd"`` (the default), by the
 #: decision diagram built from the network, or ``"paths"``, by the Shannon
@@ -1891,6 +1892,101 @@ class Network:
 
         return _sensitivity.with_levers(self, values)
 
+    def tornado(
+        self,
+        x: Optional[float] = None,
+        *,
+        quantity: str = "reliability",
+        ranges: Optional[dict] = None,
+        relative: float = 0.1,
+    ) -> "TornadoResult":
+        """The numbers of a tornado chart: the network's reliability at
+        ``x`` with each parameter at its low and at its high, every other
+        at its value, the parameters sorted by how far they swing it.
+
+        As [`NonRepairableRBD.tornado`][repyability.NonRepairableRBD.tornado]
+        gives a diagram's: where ``parameter_sensitivity`` gives each
+        parameter's slope, this gives what a range of it does, each end
+        the network rebuilt with the parameter there (as ``with_levers``
+        builds it) and its reliability worked out exactly (``sf``). A
+        parameter's range is ``ranges[lever]`` where given, and otherwise
+        a share ``relative`` of its scale either way: of its value, or
+        for a parameter on a log scale (a LogNormal's ``mu``) of 1. A
+        range is cut to the parameter's range of values (``Lever.bounds``:
+        a probability's to ``[0, 1]``), and its row says so; a parameter
+        at 0 has no relative change, so without a range it is listed in
+        ``skipped``, as is one whose network cannot be built or worked
+        out at an end, with the reason.
+
+        Parameters
+        ----------
+        x : float, optional
+            One time. May be left out only if every model is a fixed
+            probability.
+        quantity : str, optional
+            ``"reliability"``, the one quantity.
+        ranges : dict, optional
+            ``{lever: (low, high)}``, each lever by its
+            [`Lever`][repyability.Lever] (from ``levers()``) or its
+            ``(key, name)``.
+        relative : float, optional
+            The share of each parameter's scale it moves either way where
+            no range is given, in ``(0, 1)``; by default 0.1.
+
+        Returns
+        -------
+        TornadoResult
+            The base reliability, a [`TornadoRow`][repyability.TornadoRow]
+            for each parameter, the largest swing first, and those
+            skipped.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is left out for a network that varies with time or is
+            not one time, or a range or share is not valid.
+        NotImplementedError
+            Where ``sf`` refuses the network.
+
+        Examples
+        --------
+        Two links in series, failing at 0.01 and 0.02 an hour: at 10
+        hours the terminals are joined with probability ``exp(-0.3)``,
+        and a tenth more or less on the second's rate swings it the more:
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> E = surv.Exponential.from_params
+        >>> net = Network(
+        ...     {"a": ("s", "x", E([0.01])), "b": ("x", "t", E([0.02]))},
+        ...     "s",
+        ...     "t",
+        ... )
+        >>> result = net.tornado(10)
+        >>> round(result.base_value, 4)
+        0.7408
+        >>> for row in result.rows:
+        ...     print(row.key, round(row.value_low, 4),
+        ...           round(row.value_high, 4))
+        b 0.7558 0.7261
+        a 0.7483 0.7334
+        """
+        from repyability.rbd import _sensitivity
+
+        one_of("quantity", quantity, ("reliability",))
+        if x is not None and (np.ndim(x) != 0 or not is_number(x)):
+            raise ValueError(
+                "tornado takes one time x (its rows are sorted by the swing "
+                f"there), got {x!r}: call it once for each time."
+            )
+
+        def evaluate(net) -> float:
+            return float(np.ravel(net.sf(x))[0])
+
+        return _sensitivity._tornado(
+            self, evaluate, quantity, ranges, relative
+        )
+
     def time_to_reliability(self, target, upper_bound: Optional[float] = None):
         """The time at which the reliability falls to ``target``: the
         inverse of ``sf``, by root-finding, as
@@ -3234,6 +3330,11 @@ class Network:
             r.NUMERICAL,
             "The exact Birnbaum importance times each parameter's "
             "derivative, by differences.",
+        )
+        out["tornado"] = built(
+            r.EXACT,
+            "The exact reliability with each parameter at its low and at "
+            "its high, the network rebuilt.",
         )
         fixed = r.refusal(self._require_time_varying)
         give(
