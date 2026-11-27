@@ -718,18 +718,91 @@ def test_a_repaired_network_has_no_lifetime(call):
         call(exponential_bridge())
 
 
-@pytest.mark.parametrize(
-    "call",
-    [
-        lambda net: net.levers(),
-        lambda net: net.with_levers({}),
-        lambda net: net.parameter_sensitivity(1.0),
-        lambda net: net.tornado(1.0),
-    ],
-)
-def test_what_a_repaired_network_does_not_give_yet(call):
-    with pytest.raises(NotImplementedError, match="not available .* yet"):
-        call(exponential_bridge())
+@pytest.mark.parametrize("name", sorted(drawn_networks()))
+def test_the_levers_are_the_drawn_diagrams(name):
+    # The levers of the elements' specs, named as a diagram's component's;
+    # the sensitivity and the tornado those of the diagram drawn, which
+    # works them out its own way (a lever's sensitivity, differences of
+    # values that agree to 1e-12 over a step of 1e-5 or 1e-2 of the
+    # lever: to 1e-6).
+    net = drawn_networks()[name]
+    rbd = net.to_rbd()
+    ours = [(lever.key, lever.name, lever.value) for lever in net.levers()]
+    theirs = [(lever.key, lever.name, lever.value) for lever in rbd.levers()]
+    assert sorted(ours, key=str) == sorted(theirs, key=str)
+    for x in (None, 50.0, TIMES[1:]):
+        sens = net.parameter_sensitivity(x)
+        expected = rbd.parameter_sensitivity(x=x)
+        assert set(sens) == set(expected)
+        for key, values in expected.items():
+            for lever, value in values.items():
+                np.testing.assert_allclose(
+                    sens[key][lever], value, rtol=1e-6, atol=1e-14
+                )
+    for x in (None, 50.0):
+        ours = net.tornado(x)
+        theirs = rbd.tornado(x=x)
+        assert ours.base_value == pytest.approx(theirs.base_value, rel=1e-12)
+        mine = {(row.key, row.name): row for row in ours.rows}
+        for row in theirs.rows:
+            other = mine[(row.key, row.name)]
+            assert (other.low, other.high) == (row.low, row.high)
+            assert other.value_low == pytest.approx(row.value_low, rel=1e-12)
+            assert other.value_high == pytest.approx(row.value_high, rel=1e-12)
+    lever = net.levers()[0]
+    moved = net.with_levers({lever: lever.value * 2})
+    np.testing.assert_allclose(
+        moved.point_unavailability(TIMES),
+        rbd.with_levers(
+            {(lever.key, lever.name): lever.value * 2}
+        ).point_unavailability(TIMES),
+        rtol=1e-12,
+        atol=0,
+    )
+
+
+def test_a_lever_moves_the_bridge_by_its_birnbaum_importance():
+    # Only the element's curve moves: the network's availability moves
+    # by its Birnbaum importance times the element's own availability's
+    # change, the element worked out alone as a network of one link.
+    net = exponential_bridge()
+    x, h = 30.0, 1e-2
+    sens = net.parameter_sensitivity(x)
+    birnbaum = net.birnbaum_importance(x)
+    for name in ("a", "c"):
+        lam, mu = exponential()[name]
+        for lever, value in (
+            ("reliability.failure_rate", lam),
+            ("repairability.failure_rate", mu),
+        ):
+
+            def alone(v):
+                rates = {
+                    "reliability.failure_rate": lam,
+                    "repairability.failure_rate": mu,
+                    lever: v,
+                }
+                link = spec(
+                    E([rates["reliability.failure_rate"]]),
+                    E([rates["repairability.failure_rate"]]),
+                )
+                one = Network({"l": ("s", "t", link)}, "s", "t")
+                return float(one.point_unavailability(x))
+
+            step = h * value
+            own = -(alone(value + step) - alone(value - step)) / (2 * step)
+            assert sens[name][lever] == pytest.approx(
+                birnbaum[name] * own, rel=1e-9
+            ), (name, lever)
+    assert net.analysis_routes()["parameter_sensitivity"].route == "numerical"
+
+
+def test_the_tornado_of_a_repaired_network_refuses_reliability():
+    with pytest.raises(NotImplementedError, match="point_availability"):
+        exponential_bridge().tornado(1.0, quantity="reliability")
+    lives = Network({"a": ("s", "t", W([100.0, 2.0]))}, "s", "t")
+    with pytest.raises(Refused, match="component specs"):
+        lives.tornado(1.0, quantity="availability")
 
 
 def test_every_public_method_is_given_or_refused():

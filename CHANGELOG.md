@@ -12,6 +12,17 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A network of repaired elements has levers: `levers()` and
+  `with_levers` take its elements' specs' parameters (named as a
+  diagram's component's, `"reliability.failure_rate"`, ...),
+  `parameter_sensitivity(x)` gives its availability's derivative in each
+  at `x`, or in the long run with `x` left out, and `tornado(x)` (its
+  `quantity` now `"availability"` by default for such a network) the
+  availability with each at its low and high. They are the drawn
+  diagram's (`to_rbd`) where it can be drawn. `parameter_sensitivity`'s
+  `rel_step` is now None by default, 1e-5 as before for a network that is
+  not repaired.
+
 - A network of repaired elements is simulated: `Network.availability(t)`
   runs its histories as a `RepairableRBD`'s `availability` does, as the
   network's drawn diagram where it can be drawn (`to_rbd`) and otherwise

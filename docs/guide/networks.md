@@ -292,10 +292,18 @@ standby.mean_unavailability()        # -> 1.8541e-05   0.02 times the line's
   states (exponential lives and repairs, others as phases), and
   `method="simulate"` reads each simulated history's first loss
   otherwise. Both need every element repaired.
+- **Levers.** `levers()` lists the parameters of the elements' specs (their
+  lives', repairs' and tests', named as a diagram's component's:
+  `"reliability.failure_rate"`, ...), and `with_levers` sets them.
+  `parameter_sensitivity(x)` gives the availability's derivative in each
+  at `x` (in the long run with `x` left out), and `tornado(x)` the
+  availability with each at its low and high: the network rebuilt each
+  time, as a `RepairableRBD` gives them.
 - **Not yet.** A repaired network has no time at which its terminals part
-  for good, so `sf`, `mean`, the B-lives and `random` refuse it; so do the
-  levers, `parameter_sensitivity` and `tornado`. An element takes a life,
-  a repair and tests only (no preventive maintenance, crews or costs).
+  for good, so `sf`, `mean`, the B-lives and `random` refuse it. An
+  element takes a life, a repair and tests only (no preventive
+  maintenance, crews or costs), and the parameters' uncertainty is not
+  drawn for it.
 
 ## Capacity
 
