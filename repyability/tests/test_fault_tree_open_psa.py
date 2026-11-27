@@ -21,9 +21,12 @@ T = np.array([5.0, 40.0, 120.0, 400.0])
 
 
 def exported():
-    """The catalogue's trees the writer exports, by kind."""
+    """The catalogue's trees of probabilities and lifetimes the writer
+    exports, by kind (the repaired ones are checked below)."""
     out = {}
     for kind, tree in fault_tree_kinds().items():
+        if tree.is_repairable:
+            continue
         try:
             tree.to_open_psa()
         except NotImplementedError:
@@ -274,15 +277,16 @@ def wrapped(expression: str = '<float value="0.1"/>', gate: str = "") -> str:
         (
             "GLM",
             wrapped(
-                '<GLM><float value="0"/><float value="0.01"/>'
-                '<float value="0.1"/><system-mission-time/></GLM>'
+                '<mul><float value="2"/><GLM><float value="0"/>'
+                '<float value="0.01"/><float value="0.1"/>'
+                "<system-mission-time/></GLM></mul>"
             ),
         ),
         (
             "periodic-test",
             wrapped(
                 '<periodic-test><float value="0.01"/><float value="100"/>'
-                '<float value="0"/><system-mission-time/></periodic-test>'
+                '<float value="0"/><float value="10"/></periodic-test>'
             ),
         ),
         (
@@ -431,3 +435,324 @@ def test_the_tree_and_top_choose_what_is_read():
     assert tree.gates == {"other": ("and", ["a", "b"])}
     with pytest.raises(ValueError, match="mission_time must be"):
         FaultTree.from_open_psa(wrapped(), mission_time=-1.0)
+
+
+# -- repaired and tested events ----------------------------------------------
+
+REPAIRED = {
+    kind: tree
+    for kind, tree in fault_tree_kinds().items()
+    if tree.is_repairable
+}
+#: Times between the tests of the catalogue's tested events (a value at a
+#: test is the one just after it, which a tool may give as the one before).
+TIMES = np.array([3.0, 39.5, 50.5, 77.0, 123.4, 301.0, 1234.5])
+
+
+def same_specs(again: dict, tree: dict) -> None:
+    """Each event's spec read back is the one written: its life and
+    repair by their parameters, and its inspection as given."""
+    assert set(again) == set(tree)
+    for name, spec in again.items():
+        original = tree[name]
+        assert set(spec) == set(original)
+        for key in ("reliability", "repairability"):
+            if isinstance(original[key], str):
+                assert spec[key] == original[key]
+            else:
+                assert list(spec[key].params) == list(original[key].params)
+                assert spec[key].dist.name == original[key].dist.name
+        if "inspection" in original:
+            given = {k: float(v) for k, v in original["inspection"].items()}
+            assert spec["inspection"] == given
+
+
+def test_the_repaired_catalogue_trees_are_exported_or_refused_by_event():
+    """Every repaired tree of the catalogue: as GLM and periodic-test
+    expressions where its events' models are the format's, and refused,
+    naming the event and its model, where they are not."""
+    assert set(REPAIRED) == {
+        "repaired",
+        "tested",
+        "repeated, repaired",
+        "repaired, not gate",
+    }
+    for kind, tree in REPAIRED.items():
+        if kind == "tested":
+            continue
+        with pytest.raises(
+            NotImplementedError,
+            match="Repaired event 'a': its life is a Weibull.*pass t",
+        ):
+            tree.to_open_psa()
+
+
+def exponential(tree: FaultTree) -> FaultTree:
+    """``tree`` with each event's life and repair exponential, of the
+    same means, so the format holds it."""
+    specs = {}
+    for name, spec in tree.events.items():
+        spec = dict(spec)
+        for key in ("reliability", "repairability"):
+            if not isinstance(spec[key], str):
+                spec[key] = E([1.0 / float(spec[key].mean())])
+        specs[name] = spec
+    return FaultTree(tree.gates, specs, top=tree.top)
+
+
+@pytest.mark.parametrize("kind", sorted(REPAIRED))
+def test_a_repaired_tree_reads_back_as_it_was_written(kind):
+    tree = REPAIRED[kind]
+    if kind != "tested":
+        tree = exponential(tree)
+    document = tree.to_open_psa()
+    again = FaultTree.from_open_psa(document)
+    assert again.gates == tree.gates and again.top == tree.top
+    same_specs(again.events, tree.events)
+    np.testing.assert_allclose(
+        again.point_unavailability(TIMES),
+        tree.point_unavailability(TIMES),
+        rtol=1e-15,
+        atol=0,
+    )
+    if kind == "tested":
+        # Each form of the periodic test, and the GLM.
+        assert document.count("<periodic-test>") == 2
+        assert document.count("<GLM>") == 1
+        assert '<bool value="false"/>' in document
+
+
+@pytest.mark.parametrize("kind", sorted(REPAIRED))
+def test_a_repaired_tree_at_a_time_is_its_events_unavailabilities(kind):
+    tree = REPAIRED[kind]
+    again = FaultTree.from_open_psa(tree.to_open_psa(t=40.0))
+    assert again.is_fixed and again.gates == tree.gates
+    assert again.top_event_probability() == pytest.approx(
+        float(tree.point_unavailability(40.0)), rel=1e-15, abs=0
+    )
+
+
+def single(expression: str) -> str:
+    """A document of one basic event, the top gate's only input."""
+    return (
+        '<opsa-mef><define-fault-tree name="FT"><define-gate name="top">'
+        '<or><basic-event name="a"/></or></define-gate>'
+        f'<define-basic-event name="a">{expression}</define-basic-event>'
+        "</define-fault-tree></opsa-mef>"
+    )
+
+
+def floats(*values) -> str:
+    return "".join(f'<float value="{v}"/>' for v in values)
+
+
+MISSION = "<system-mission-time/>"
+
+
+def test_a_glm_is_the_formula_of_the_mef():
+    lam, mu = 0.003, 0.08
+    tree = FaultTree.from_open_psa(
+        single(f"<GLM>{floats(0, lam, mu)}{MISSION}</GLM>")
+    )
+    r = lam + mu
+    # P(t) = lambda / r - (lambda - gamma r) / r exp(-r t), gamma = 0.
+    expected = lam / r - lam / r * np.exp(-r * TIMES)
+    np.testing.assert_allclose(
+        tree.point_unavailability(TIMES), expected, rtol=1e-13
+    )
+    # Never repaired (mu = 0): the exponential life itself.
+    life = FaultTree.from_open_psa(
+        single(f"<GLM>{floats(0, lam, 0)}{MISSION}</GLM>")
+    )
+    assert not life.is_repairable
+    assert life.top_event_probability(100.0) == pytest.approx(
+        -np.expm1(-lam * 100.0), rel=1e-15
+    )
+
+
+def periodic_test(lam, mu, tau, theta, test, t):
+    """The MEF's periodic test, its unavailability at ``t`` (not at a
+    test): a multi-phase Markov chain, as the format describes it, of a
+    unit available (A), failed unseen (F), in repair (R), off line in its
+    test (T), and found failed in its test (W); with no failure in a test
+    (lambda* = 0), none caused by it (gamma = 0), off line in it (x = 0),
+    every failure found (sigma = 1) and good restarts (omega = 0). Tests
+    at theta, theta + tau, ..., instant for ``test = 0``; a unit in repair
+    is not tested; a failure found is repaired from the test's end, at
+    once for ``mu = None``."""
+    from scipy.linalg import expm
+
+    A, F, R, T, W = range(5)
+    rates = np.zeros((5, 5))
+    rates[A, F] = lam
+    if mu is not None:
+        rates[R, A] = mu
+    rates -= np.diag(rates.sum(axis=1))
+    p, now, start = np.eye(5)[A], 0.0, theta
+
+    def run(p, until):
+        return p @ expm(rates * (until - now))
+
+    while t >= start:
+        p, now = run(p, start), start
+        if test > 0.0:
+            p[T], p[A] = p[A], 0.0
+            p[W], p[F] = p[F], 0.0
+            if t < start + test:
+                return 1.0 - run(p, t)[A]
+            p, now = run(p, start + test), start + test
+            p[A], p[T] = p[A] + p[T], 0.0
+            p[R], p[W] = p[R] + p[W], 0.0
+        else:
+            p[A if mu is None else R] += p[F]
+            p[F] = 0.0
+        start += tau
+    return 1.0 - run(p, t)[A]
+
+
+@pytest.mark.parametrize(
+    "args, expression",
+    [
+        # 4 arguments: an instant repair, the first test at tau, within
+        # the first interval, and at 0 (a test of a new unit, so at tau).
+        ((0.004, None, 50.0, 50.0, 0.0), floats(0.004, 50, 50)),
+        ((0.004, None, 50.0, 20.0, 0.0), floats(0.004, 50, 20)),
+        ((0.004, None, 50.0, 0.0, 0.0), floats(0.004, 50, 0)),
+        # 5 arguments: a repair rate.
+        ((0.004, 0.05, 50.0, 30.0, 0.0), floats(0.004, 0.05, 50, 30)),
+        # 11 arguments: a test that takes time.
+        (
+            (0.01, 0.02, 50.0, 10.0, 3.0),
+            floats(0.01, 0, 0.02, 50, 10, 0, 3)
+            + '<bool value="false"/>'
+            + floats(1, 0),
+        ),
+    ],
+)
+def test_a_periodic_test_is_the_mef_multi_phase_chain(args, expression):
+    tree = FaultTree.from_open_psa(
+        single(f"<periodic-test>{expression}{MISSION}</periodic-test>")
+    )
+    expected = [periodic_test(*args, t) for t in TIMES]
+    # A tested unit's values with a repair that takes time are worked out
+    # numerically (to some 1e-9 here); with an instant repair, in closed
+    # form.
+    rtol = 1e-13 if args[1] is None else 1e-8
+    np.testing.assert_allclose(
+        tree.point_unavailability(TIMES), expected, rtol=rtol
+    )
+
+
+TEST_11 = (
+    "<periodic-test>"
+    + floats(0.01, "{lam_test}", 0.02, 50, 10, "{gamma}", 3)
+    + '<float value="{x}"/>'
+    + floats("{sigma}", "{omega}")
+    + MISSION
+    + "</periodic-test>"
+)
+
+
+@pytest.mark.parametrize(
+    "expression, match",
+    [
+        (f"<GLM>{floats(0.1, 0.01, 0.1)}{MISSION}</GLM>", "gamma = 0.1"),
+        *(
+            (
+                TEST_11.format(
+                    **{
+                        "lam_test": 0,
+                        "gamma": 0,
+                        "x": 0,
+                        "sigma": 1,
+                        "omega": 0,
+                        name: value,
+                    }
+                ),
+                match,
+            )
+            for name, value, match in (
+                ("lam_test", 0.001, "lambda\\* .* = 0.001"),
+                ("gamma", 0.01, "gamma .* = 0.01"),
+                ("x", 1, "x .* = 1.0"),
+                ("sigma", 0.9, "sigma .* = 0.9"),
+                ("omega", 0.05, "omega .* = 0.05"),
+            )
+        ),
+        (
+            f"<periodic-test>{floats(0.01, 50, 70)}{MISSION}</periodic-test>",
+            "first test at theta = 70.0",
+        ),
+        (
+            f"<periodic-test>{floats(0.01, 0, 50, 30)}{MISSION}"
+            "</periodic-test>",
+            "repair rate of 0",
+        ),
+    ],
+)
+def test_a_repaired_or_tested_form_not_held_is_refused_saying_why(
+    expression, match
+):
+    with pytest.raises(NotImplementedError, match=match):
+        FaultTree.from_open_psa(single(expression))
+
+
+def test_a_periodic_test_needs_its_arguments():
+    with pytest.raises(ValueError, match="takes 4 or 5 or 11 arguments"):
+        FaultTree.from_open_psa(
+            single(
+                f"<periodic-test>{floats(0.01, 50)}{MISSION}</periodic-test>"
+            )
+        )
+    with pytest.raises(ValueError, match="positive, finite rate"):
+        FaultTree.from_open_psa(
+            single(f"<GLM>{floats(0, 0, 0.1)}{MISSION}</GLM>")
+        )
+
+
+@pytest.mark.parametrize(
+    "spec, match",
+    [
+        (
+            {"reliability": E([0.01]), "repairability": W([5.0, 2.0])},
+            "its repair time is a Weibull",
+        ),
+        (
+            {
+                "reliability": E([0.01]),
+                "repairability": "instant",
+                "inspection": {
+                    "interval": 50.0,
+                    "coverage": 0.9,
+                    "full_test": 500.0,
+                },
+            },
+            "\\['coverage', 'full_test'\\]",
+        ),
+        (
+            {
+                "reliability": E([0.01]),
+                "repairability": E([0.5]),
+                "inspection": {"interval": 50.0, "duration": E([1.0])},
+            },
+            "time drawn from",
+        ),
+        (
+            {
+                "reliability": E([0.01]),
+                "repairability": "instant",
+                "inspection": {"interval": 50.0, "duration": 1.0},
+            },
+            "repaired at once after a test that takes time",
+        ),
+    ],
+)
+def test_the_writer_refuses_a_repaired_event_the_format_has_not(spec, match):
+    tree = FaultTree(
+        {"top": ("or", ["a", "b"])},
+        {"a": spec, "b": {"reliability": E([0.01]), "repairability": E([1])}},
+    )
+    with pytest.raises(NotImplementedError, match=match):
+        tree.to_open_psa()
+    # At a time, each event is its unavailability.
+    assert "<float" in tree.to_open_psa(t=10.0)

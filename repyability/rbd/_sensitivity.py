@@ -556,11 +556,18 @@ def _mission_levers(mission) -> List[_Lever]:
     """Every lever of a phased ``mission``, as its ``parameter_sensitivity``
     reports them: each component's model's parameters, by their own names
     (the model replaced in every phase's diagram that uses it, or in the
-    one diagram of a mission drawn so), then each phase's duration, under
+    one diagram of a mission drawn so), a common-cause group's under the
+    tuple of its members where its first member comes (its members' one
+    model's, then its own, ``ccf_beta``, ..., as a diagram's), then each
+    phase's duration, under
     ``None`` as ``phase.<name>.duration``. ``build`` gives the arguments
     ``PhasedMission._from_args`` takes."""
     import dataclasses
 
+    from .ccf import CCFGroup, Shocks
+    from .ccf import parameter_bounds as ccf_parameter_bounds
+    from .ccf import parameters as ccf_parameters
+    from .ccf import with_parameters as with_ccf_parameters
     from .non_repairable_rbd import NonRepairableRBD
 
     args = mission._init_args
@@ -577,7 +584,7 @@ def _mission_levers(mission) -> List[_Lever]:
             }
         )
 
-    def build_model(model, node) -> dict:
+    def build_model(model, node, args) -> dict:
         if drawn:
             return {**args, "rbd": with_model(args["rbd"], node, model)}
         made: Dict[int, Any] = {}
@@ -598,13 +605,67 @@ def _mission_levers(mission) -> List[_Lever]:
         return {**args, "phases": phases}
 
     out: List[_Lever] = []
-    for node, model in mission.components.items():
+    groups = mission.ccf_groups
+    grouped = {
+        member: g for g, group in enumerate(groups) for member in group.members
+    }
+    listed: set = set()
+
+    def group_levers(g: int) -> None:
+        """A group's levers, under the tuple of its members: its
+        members' one model's (each member's own, for shocks at a rate of
+        their own, whose members' models may differ), then its own."""
+        group = groups[g]
+        names = tuple(group.members)
+        shared = not isinstance(group.model, Shocks)
+        for member in names[:1] if shared else names:
+            for name, value, moved, bounds, scale in _model_levers(
+                "", mission._given[member], lambda m: m
+            ):
+
+                def build(v, moved=moved, member=member) -> dict:
+                    made = args
+                    for one in names if shared else (member,):
+                        made = build_model(moved(v), one, made)
+                    return made
+
+                key = names if shared else member
+                out.append(
+                    _Lever(key, name, value, False, build, None, bounds, scale)
+                )
+        for letter, value in ccf_parameters(group.model).items():
+
+            def build_ccf(v, g=g, letter=letter, group=group) -> dict:
+                model = with_ccf_parameters(group.model, {letter: v})
+                changed = list(groups)
+                changed[g] = CCFGroup(group.members, model)
+                return {**args, "ccf_groups": changed}
+
+            out.append(
+                _Lever(
+                    names,
+                    f"ccf_{letter}",
+                    value,
+                    False,
+                    build_ccf,
+                    None,
+                    ccf_parameter_bounds(group.model, letter),
+                    value,
+                )
+            )
+
+    for node, model in mission._given.items():
+        if node in grouped:
+            if grouped[node] not in listed:
+                listed.add(grouped[node])
+                group_levers(grouped[node])
+            continue
         for name, value, moved, bounds, scale in _model_levers(
             "", model, lambda m: m
         ):
 
             def build(v, moved=moved, node=node) -> dict:
-                return build_model(moved(v), node)
+                return build_model(moved(v), node, args)
 
             out.append(
                 _Lever(node, name, value, False, build, node, bounds, scale)

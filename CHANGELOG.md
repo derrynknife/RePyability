@@ -44,6 +44,40 @@ release between minors that only adds (0.19.1).
   `NonRepairableRBD` (its capacities taken by `capacity_distribution`)
   or the `"reliability"` of a repairable component's spec. See the
   guide's "Markov components".
+- `FaultTree.to_open_psa` and `FaultTree.from_open_psa` exchange trees of
+  repaired and tested events. An event with an exponential life and
+  repair is written as the format's `GLM` (no failure on demand), and a
+  tested one with an exponential life as its `periodic-test`: 4 arguments
+  with an instant repair, 5 with an exponential repair, and 11 for a test
+  that takes a fixed time (the unit off line and not ageing in it, every
+  failure found). The reader takes these forms back as component specs;
+  a `GLM` with a failure on demand, a `periodic-test` whose first test
+  falls past its first interval, and an 11-argument form with a failure
+  in or caused by the test, a unit available in it, a test that can miss
+  a failure or a bad restart are refused, naming what they have. Other
+  lives and repairs, a test time that is not fixed and an inspection's
+  other options are refused by the writer, naming the event;
+  `to_open_psa(t)` writes each repaired event's unavailability at `t`.
+
+- `PhasedMission` takes common-cause groups (`ccf_groups=`, on the
+  constructor and `from_diagram`): a shared cause that strikes in one
+  phase fails its members from then on. A group's model has a life for
+  each cause: one that splits the failure rate (`BetaFactor`, `MGL` or
+  `AlphaFactor` with `basis="rate"`, the members on one surpyval
+  parametric model, each cause's life taken through surpyval's hazard
+  ratio) or `Shocks` at a rate of their own (members of any models); one
+  that splits a failure probability is refused, naming these. Each
+  shared cause is written into the phases' diagrams as a component
+  `("cause", members)` in series with every member it fails, so every
+  analysis takes it: the exact values (its segments in the decision
+  diagram, repeated across its members), the simulation (one life per
+  cause), the importance measures and cut sets (which name the causes; a
+  member's entry is its own failures'), `levers()` and
+  `parameter_sensitivity()` (a group's under the tuple of its members:
+  their model's, then `ccf_beta`, ...), and saving. A phase's diagram
+  with groups of its own is still refused, now naming the mission's
+  argument.
+
 - A `Network`'s links and nodes can be repaired. Give each a component
   spec (`{"reliability": ..., "repairability": ...}`, as a
   `RepairableRBD`'s component's) and the network gives the connection's
@@ -811,6 +845,13 @@ release between minors that only adds (0.19.1).
 
 ### Fixed
 
+- A surpyval model with a hazard ratio (`hr=`) draws its lifetimes with
+  it in a `NonRepairableRBD`'s and a `PhasedMission`'s simulations
+  (`random`, `method="simulate"`): the batched draws took the
+  distribution's quantile function, without the ratio, so the simulated
+  lives were those of the model at `hr=1` (a Weibull `[100, 2]` at
+  `hr=0.3` drew a mean life of 88.6, not 161.8). Seeded results change
+  for such models only.
 - A `RepairableRBD` with a test or task whose `"duration"` is a number
   saves and loads (`to_dict`): it was refused as a model it could not
   save. The number is saved as it is.

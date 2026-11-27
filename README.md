@@ -32,7 +32,9 @@ taking already-fitted lifetime models (from
   it is lost.
 - **Phased missions**: missions through phases (take-off, cruise,
   landing), each with its own diagram over the same components: the exact
-  mission reliability and the chance of failing in each phase.
+  mission reliability and the chance of failing in each phase, with
+  common-cause groups whose causes fail their members from the phase they
+  strike in.
 - **Importance**: Birnbaum, improvement potential, RAW, RRW, criticality,
   Fussell–Vesely, structural importance and parameter sensitivity, on
   repairable systems in the long run or over time.
