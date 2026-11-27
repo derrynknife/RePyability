@@ -111,6 +111,30 @@ def test_the_results_of_the_exact_methods_go_through_json(repairable):
     assert as_json(results[5])["members"] == ["a", "b"]
 
 
+def test_a_safety_function_s_results_go_through_json():
+    from repyability import SafetyChannel, SafetyFunction, sil_band
+
+    channel = SafetyChannel(
+        2e-6, 3e-6, 5e-6, repair=8.0, proof_test_interval=8760.0
+    )
+    function = SafetyFunction({"a": channel, "b": channel}, 1, beta=0.1)
+    result = function.results("low_demand")
+    out = as_json(result)
+    assert set(out) == fields_of(result)
+    assert out["sil"]["sil"] == 3 and out["sil"]["measure"] == "pfd_avg"
+    assert out["pfd_breakdown"]["pfd_avg"] == result.pfd_avg
+    assert out["safe_failure_fraction"] == {"a": 0.8, "b": 0.8}
+    # A PFH's band has no risk reduction factor.
+    assert (
+        as_json(sil_band(3e-8, "high_demand"))["risk_reduction_factor"] is None
+    )
+    formulas = as_json(function.simplified_formulas())
+    assert len(formulas["down_times"]) == 2
+    assert set(function.analysis_routes().to_dict()) == set(
+        function.analysis_routes()
+    )
+
+
 def test_the_single_unit_policies_go_through_json():
     from repyability import (
         FailureLimitPolicy,

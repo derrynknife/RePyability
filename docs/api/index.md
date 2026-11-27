@@ -8,7 +8,7 @@ explanations and runnable examples, see the [user guide](../guide/index.md).
 - [RBD (the base class)](rbd.md)
 - [NonRepairableRBD](nonrepairable.md)
 - [RepairableRBD](repairable.md)
-- [Fault trees, phased missions and networks](other-systems.md)
+- [Fault trees, phased missions, networks and safety functions](other-systems.md)
 - [Node models](nodes.md)
 - [Components and maintenance](components.md)
 - [Unit plans](unit-plans.md)
