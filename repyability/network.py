@@ -51,10 +51,21 @@ element's minimal cut sets (``modular._critical_closures``), as a
 diagram's core's do. The B-lives invert ``sf``, and the parameter
 uncertainty draws the elements' models as a diagram's
 (``rbd/uncertainty.py``), each draw worked out exactly.
+
+Links and nodes given a life and a repair (a component spec each) are
+repaired: each one's curve comes from the repairable machinery
+(``rbd/_event_curves.py``: the elements as the components of a private
+``RepairableRBD`` evaluated over the network's plan, ``_Joined``), with
+no renewal code here, and the connection's availability, unavailability
+and failure frequency over time and in the long run follow from the same
+diagram at the elements' probabilities. Such a network refuses what needs
+a time at which its terminals part for good (``_refuse_repaired``).
 """
 
 import dataclasses
+import functools
 import json
+import types
 from collections import deque
 from typing import (
     TYPE_CHECKING,
@@ -155,8 +166,84 @@ _FAIL, _WORK = 0, 1
 # are joined, and that they are parted.
 _JOINED, _PARTED = (0.0, 1.0), (1.0, 0.0)
 
+#: The keys a repaired element's spec may have: its life and its repair.
+ELEMENT_SPEC_KEYS = ("reliability", "repairability")
+
+#: The analyses of a network of repaired elements alone: its values over
+#: time and in the long run. A network of lifetimes or probabilities
+#: refuses them.
+_REPAIRED_OWN = frozenset(
+    {
+        "point_availability",
+        "point_unavailability",
+        "mission_availability",
+        "mission_unavailability",
+        "mean_availability",
+        "mean_unavailability",
+        "failure_frequency",
+        "expected_failures",
+        "system_failure_frequency",
+    }
+)
+#: What a network of repaired elements gives besides: what is made of
+#: its elements' probabilities of being down at a time, the structure,
+#: and saving. Everything else public refuses it (see
+#: ``Network._refuse_repaired``), a method added later too.
+_REPAIRED_GIVES = _REPAIRED_OWN | frozenset(
+    {
+        "importances",
+        "birnbaum_importance",
+        "improvement_potential",
+        "risk_achievement_worth",
+        "risk_reduction_worth",
+        "criticality_importance",
+        "fussell_vesely",
+        "joint_importance",
+        "differential_importance",
+        "structural_importance",
+        "path_sets",
+        "cut_sets",
+        "minimal_path_sets",
+        "minimal_cut_sets",
+        "analysis_routes",
+        "to_dict",
+        "to_json",
+    }
+)
+#: The analyses that need a time at which the terminals part for good.
+_NEEDS_A_LIFETIME = frozenset(
+    {
+        "sf",
+        "ff",
+        "Hf",
+        "df",
+        "hf",
+        "mean",
+        "random",
+        "compare",
+        "time_to_reliability",
+        "bx_life",
+        "barlow_proschan_importance",
+        "sf_uncertainty",
+        "mean_uncertainty",
+        "time_to_reliability_uncertainty",
+        "bx_life_uncertainty",
+    }
+)
+
 # A decision's outcome that is no state: the terminals parted, joined.
 _NONE_FAIL, _NONE_WORK = -1, -2
+
+
+class _TooLarge(NotImplementedError):
+    """A network too large to work out exactly: ``what`` is too large,
+    the ``limit`` (a name of this module) it passes, and the ``advice``
+    for a network of lifetimes."""
+
+    def __init__(self, what: str, limit: str, advice: str):
+        super().__init__(f"{what} {advice}")
+        self.what = what
+        self.limit = limit
 
 
 @refuse_removed_names
@@ -193,15 +280,21 @@ class Network:
         ``sf`` and ``ff``, such as a fitted surpyval distribution), or the
         probability that it has failed (a number, taken as a
         ``FixedEventProbability``). Two links may join the same two
-        nodes.
+        nodes. A link that is repaired takes a component spec in place of
+        the model, ``{"reliability": life, "repairability": repair}``, as
+        a [`RepairableRBD`][repyability.RepairableRBD]'s component: the
+        network then gives the connection's availability and how often
+        it is lost (see
+        [`point_availability`][repyability.Network.point_availability]),
+        and every link and failing node must be given one.
     source : Hashable, optional
         One terminal: a node of the network.
     target : Hashable, optional
         The other terminal, another node. Give both, or ``terminals``.
     nodes : dict, optional
         The nodes that can fail, each mapped to its model (or the
-        probability that it has failed), by default none. Their names must
-        differ from the links'.
+        probability that it has failed, or a repaired node's spec), by
+        default none. Their names must differ from the links'.
     terminals : list or "all", optional
         The nodes that must stay connected to each other, two or more, in
         place of ``source`` and ``target``; ``"all"`` for every node of
@@ -219,7 +312,10 @@ class Network:
     links : dict
         Each link's two nodes, by name.
     models : dict
-        Each element's model, by name: the links', then the nodes'.
+        Each element's model (or a repaired one's spec), by name: the
+        links', then the nodes'.
+    is_repairable : bool
+        Whether the elements are repaired.
     terminals : tuple
         The terminals.
     source, target : Hashable
@@ -237,9 +333,11 @@ class Network:
         different nodes, a model has no ``sf`` or ``ff``, a terminal or a
         node in ``nodes`` is in no link, the terminals are the same node
         or fewer than two, both ``terminals`` and a source or target are
-        given, or a node has the name of a link.
+        given, a node has the name of a link, or a repaired element's
+        spec has a key other than its life and repair.
     NotImplementedError
-        If a directed network is given more than two terminals.
+        If a directed network is given more than two terminals, or some
+        elements are repaired and others not.
 
     Examples
     --------
@@ -314,7 +412,7 @@ class Network:
             u, v, model = link
             if u == v:
                 raise ValueError(f"Link {name!r} joins node {u!r} to itself.")
-            model = self._model(f"Link {name!r}", model)
+            model = self._element(f"Link {name!r}", model)
             self.links[name] = (u, v)
             self.models[name] = model
             adjacent.setdefault(u, []).append((name, v))
@@ -345,7 +443,7 @@ class Network:
                 raise ValueError(
                     f"Node {node!r} has the name of a link: name them apart."
                 )
-            model = self._model(f"Node {node!r}", model)
+            model = self._element(f"Node {node!r}", model)
             self.nodes[node] = self.models[node] = model
         self.source, self.target = source, target
         self._adjacent = adjacent
@@ -354,12 +452,35 @@ class Network:
         self._out = out if self.directed else adjacent
         # The unit the models are in (None if they name none); a warning
         # names the links and nodes when they name different units.
-        self.unit: Optional[str] = diagram_unit(self.models, "network")
-        self.is_fixed = all(
-            is_fixed_probability(m) for m in self.models.values()
-        )
+        specs = [e for e, m in self.models.items() if isinstance(m, dict)]
+        #: Whether the elements are repaired components, whose connection
+        #: comes and goes (see ``point_availability``).
+        self.is_repairable = bool(specs)
+        if specs and len(specs) < len(self.models):
+            others = sorted(map(str, set(self.models) - set(specs)))
+            raise NotImplementedError(
+                f"Element(s) {others} are probabilities or lifetime models "
+                f"while {sorted(map(str, specs))} are repaired components: "
+                "a network mixing them is not supported yet. Give every "
+                "link, and every node that can fail, a component spec "
+                "('reliability' and 'repairability')."
+            )
         self._paths: Optional[List[frozenset]] = None
         self._plan: Optional[_Plan] = None
+        self._repaired: Any = None
+        if self.is_repairable:
+            from repyability.rbd._event_curves import Structured
+
+            # The elements as one diagram's components, over the
+            # network's own structure: their curves, and the values over
+            # time.
+            self._repaired = Structured(self.models, _Joined(self))
+            self.unit: Optional[str] = self._repaired.unit
+        else:
+            self.unit = diagram_unit(self.models, "network")
+        self.is_fixed = not specs and all(
+            is_fixed_probability(m) for m in self.models.values()
+        )
         # The decision diagrams of each element's minimal cut sets, and
         # path sets, once built (see ``_failed_sets``).
         self._closures: Dict[str, tuple] = {}
@@ -414,6 +535,26 @@ class Network:
                     f"Terminal {terminal!r} is in no link of the network."
                 )
         return found, every
+
+    @classmethod
+    def _element(cls, what: str, model):
+        """An element's model (see ``_model``), or the spec of a repaired
+        one: a dict of its ``"reliability"`` and ``"repairability"``, as a
+        ``RepairableRBD``'s component's (its values are checked as a
+        component's are, when the elements' diagram is built)."""
+        if not isinstance(model, Mapping):
+            return cls._model(what, model)
+        unknown = set(model) - set(ELEMENT_SPEC_KEYS)
+        if unknown:
+            raise ValueError(
+                f"{what} has key(s) {sorted(map(str, unknown))}: a repaired "
+                "element of a network takes 'reliability' and "
+                "'repairability' only. Tests, preventive maintenance, "
+                "crews, costs and the rest are not worked out for a "
+                "network yet: a RepairableRBD takes them, for a network "
+                "that can be drawn as a block diagram."
+            )
+        return dict(model)
 
     @staticmethod
     def _model(what: str, model):
@@ -478,10 +619,11 @@ class Network:
             if other == self.target:
                 paths.append(frozenset(step))
                 if len(paths) > MAX_PATHS:
-                    raise NotImplementedError(
+                    raise _TooLarge(
                         f"The network has more than {MAX_PATHS:,} paths "
-                        "between its terminals, too many to list. "
-                        + (
+                        "between its terminals, too many to list.",
+                        "MAX_PATHS",
+                        (
                             "A directed network's exact values come from "
                             "its paths: simulate it (method='simulate'), "
                             "or, if it has no cycle, work it out as a "
@@ -490,7 +632,7 @@ class Network:
                             else "Its exact values come from its decision "
                             "diagram (network.METHOD = 'bdd', the "
                             "default), or simulate it: method='simulate'."
-                        )
+                        ),
                     )
                 continue
             stack.append((other, step, visited | {other}, 0))
@@ -648,8 +790,16 @@ class Network:
                         order, self.links, set(self.nodes), self.terminals
                     )
             except NotImplementedError as refusal:
+                if self.is_repairable and isinstance(refusal, _TooLarge):
+                    # The advice is to simulate, which is not there yet.
+                    refusal = NotImplementedError(
+                        f"{refusal.what} A network of repaired elements is "
+                        "not simulated yet: the limit, "
+                        f"repyability.network.{refusal.limit}, can be "
+                        "raised."
+                    )
                 self._refused = str(refusal)
-                raise
+                raise refusal from None
         return self._plan
 
     # ------------------------------------------------------------------
@@ -662,6 +812,8 @@ class Network:
         """Each named element's probabilities of working and of failing at
         times ``x``, from its model's ``sf`` and ``ff`` (the ``models``
         given by name, else its own)."""
+        if self._repaired is not None:
+            return self._availabilities(x, names)
         models = self.models if models is None else models
         p: Dict[Hashable, np.ndarray] = {}
         q: Dict[Hashable, np.ndarray] = {}
@@ -677,6 +829,57 @@ class Network:
                     x.shape
                 )
         return p, q
+
+    def _availabilities(self, x: np.ndarray, names) -> Tuple[dict, dict]:
+        """Each named repaired element's probabilities of being up and of
+        being down at times ``x``, new at 0, the second worked out in its
+        own right (see ``rbd._event_curves.down_at``)."""
+        from repyability.rbd._event_curves import down_at
+
+        if (x < 0.0).any():
+            raise ValueError(
+                "x must be 0 or more: the repaired elements are new at 0."
+            )
+        down = down_at(self._repaired, x.ravel())
+        q = {name: down[name].reshape(x.shape) for name in names}
+        return {name: 1.0 - value for name, value in q.items()}, q
+
+    def _refuse_repaired(self, name: str) -> None:
+        """Raise if the analysis ``name`` does not apply to this network's
+        elements: those of repaired elements (see ``point_availability``)
+        refuse a network of probabilities or lifetimes, and a network of
+        repaired elements refuses what needs a time at which its
+        terminals part for good, or is not worked out for it yet."""
+        if not self.is_repairable:
+            if name not in _REPAIRED_OWN:
+                return
+            raise Refused(
+                f"{name}() works on repaired elements, and this network "
+                "has none: once its terminals are parted they stay parted "
+                "(sf gives the probability that they are still joined at "
+                "x). Give the links, and the nodes that can fail, component "
+                "specs ('reliability' and 'repairability') to have them "
+                "repaired."
+            )
+        if name in _REPAIRED_GIVES:
+            return
+        if name in _NEEDS_A_LIFETIME:
+            raise NotImplementedError(
+                f"{name}() needs a time at which the terminals part for "
+                "good, which a network of repaired elements does not have: "
+                "its connection comes and goes as they fail and are "
+                "repaired. Ask for point_availability (the probability "
+                "that the terminals are joined at x), mean_availability, "
+                "failure_frequency or expected_failures."
+            )
+        raise NotImplementedError(
+            f"{name}() is not available for a network of repaired elements "
+            "yet. Its values over time and in the long run are "
+            "(point_availability, mission_availability, mean_availability, "
+            "failure_frequency, expected_failures, "
+            "system_failure_frequency), and the importance measures at "
+            "its elements' availabilities at a time (importances)."
+        )
 
     def _inputs(
         self, x: np.ndarray, hold: Optional[Mapping[Hashable, bool]] = None
@@ -2870,6 +3073,475 @@ class Network:
     # Saving
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Repaired elements
+    # ------------------------------------------------------------------
+
+    def _repaired_times(self, t, name: str) -> Tuple[np.ndarray, tuple]:
+        """The times ``t`` of the analysis ``name`` of repaired elements
+        as a row, and their shape (``()`` for a number), once the
+        analysis applies."""
+        self._refuse_repaired(name)
+        times = real_array(t, "t")
+        if (times < 0.0).any():
+            raise ValueError(
+                "t must be 0 or more: the repaired elements are new at 0."
+            )
+        return times.reshape(-1), times.shape
+
+    @staticmethod
+    def _shaped(values, shape: tuple):
+        """``values`` (a row) in ``shape``: a float for a number."""
+        values = np.asarray(values, dtype=float).reshape(shape)
+        return float(values) if shape == () else values
+
+    def point_availability(self, x: ArrayLike):
+        """The probability that the terminals are connected at ``x``,
+        ``A(x)``, the elements repaired and new at 0.
+
+        Each element is down at ``x`` with its probability as a
+        [`RepairableRBD`][repyability.RepairableRBD]'s component is (in
+        closed form for an exponential life and repair, ``lambda /
+        (lambda + mu) (1 - exp(-(lambda + mu) x))``, else from its
+        renewal cycle's curve, to about 1e-7), independently of the
+        others, and up with one less; the connection's probability
+        follows from the network's decision diagram at those, exactly,
+        so it is one less
+        [`point_unavailability`][repyability.Network.point_unavailability]
+        to rounding.
+
+        Parameters
+        ----------
+        x : array_like
+            Time/s, 0 or more: a number or an array.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            ``A(x)``, a float for a number ``x`` and an array for an
+            array.
+
+        Raises
+        ------
+        ValueError
+            If the network's elements are not repaired (a ``Refused``),
+            or a time is negative.
+        NotImplementedError
+            If the network is too large to work out exactly.
+
+        Examples
+        --------
+        Two lines between a plant and a town, each failing at rate 0.01
+        and repaired at rate 0.5: either carries the load, so the town is
+        cut off with probability ``q(x) ** 2``, ``q(x) = (1 / 51) (1 -
+        exp(-0.51 x))``.
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> line = {
+        ...     "reliability": surv.Exponential.from_params([0.01]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ... }
+        >>> net = Network(
+        ...     {"north": ("plant", "town", line),
+        ...      "south": ("plant", "town", line)},
+        ...     "plant", "town",
+        ... )
+        >>> round(net.point_availability(10.0), 6)
+        0.99962
+        >>> f"{net.point_unavailability(10.0):.6e}"
+        '3.797938e-04'
+        """
+        times, shape = self._repaired_times(x, "point_availability")
+        return self._shaped(self._value(times), shape)
+
+    def point_unavailability(self, x: ArrayLike):
+        """The probability that the terminals are parted at ``x``,
+        ``Q(x) = 1 - A(x)``, the elements repaired and new at 0 (see
+        [`point_availability`][repyability.Network.point_availability]).
+
+        It is worked out as itself, from each element's probability of
+        being down (its own closed form or curve) through the decision
+        diagram's sum of products, not as one less the availability, so a
+        small one keeps its digits.
+
+        Parameters
+        ----------
+        x : array_like
+            Time/s, 0 or more: a number or an array.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            ``Q(x)``, a float for a number ``x`` and an array for an
+            array.
+
+        Raises
+        ------
+        ValueError
+            If the network's elements are not repaired (a ``Refused``),
+            or a time is negative.
+        NotImplementedError
+            If the network is too large to work out exactly.
+
+        Examples
+        --------
+        Three lines in parallel, each down with probability about
+        ``2e-6`` in the long run: the connection is lost with their
+        product, far below what one less an availability could hold.
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> line = {
+        ...     "reliability": surv.Exponential.from_params([1e-6]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ... }
+        >>> net = Network(
+        ...     {name: ("s", "t", line) for name in "abc"}, "s", "t"
+        ... )
+        >>> f"{net.point_unavailability(1000.0):.4e}"
+        '8.0000e-18'
+        """
+        times, shape = self._repaired_times(x, "point_unavailability")
+        return self._shaped(self._value(times, _PARTED), shape)
+
+    def mission_availability(self, t: ArrayLike):
+        """The average of the point availability over ``[0, t]``: the
+        expected fraction of the window during which the terminals are
+        connected, the elements repaired and new at 0.
+
+        It is one less
+        [`mission_unavailability`][repyability.Network.mission_unavailability],
+        which is integrated to its own size, so the two agree to
+        rounding.
+
+        Parameters
+        ----------
+        t : array_like
+            The window/s' ends, 0 or more: a number or an array.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The average, a float for a number ``t`` and an array for an
+            array.
+
+        Raises
+        ------
+        ValueError
+            If the network's elements are not repaired (a ``Refused``),
+            or a time is negative.
+        NotImplementedError
+            If the network is too large to work out exactly.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> line = {
+        ...     "reliability": surv.Exponential.from_params([0.01]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ... }
+        >>> net = Network({"a": ("s", "t", line)}, "s", "t")
+        >>> round(net.mission_availability(100.0), 5)
+        0.98078
+        """
+        times, shape = self._repaired_times(t, "mission_availability")
+        parted = self._repaired.mission_unavailability(times)
+        return self._shaped(1.0 - np.asarray(parted, dtype=float), shape)
+
+    def mission_unavailability(self, t: ArrayLike):
+        """The average of the point unavailability over ``[0, t]``: the
+        expected fraction of the window during which the terminals are
+        parted, the elements repaired and new at 0.
+
+        ``Q(x)`` (see
+        [`point_unavailability`][repyability.Network.point_unavailability])
+        is integrated on the pieces between the elements' curves' bends,
+        halved until the quadrature agrees with its halves', to its own
+        size, so a small one keeps its digits (as
+        [`mission_unavailability`][repyability.RepairableRBD.mission_unavailability]
+        integrates a diagram's).
+
+        Parameters
+        ----------
+        t : array_like
+            The window/s' ends, 0 or more: a number or an array.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The average, a float for a number ``t`` and an array for an
+            array.
+
+        Raises
+        ------
+        ValueError
+            If the network's elements are not repaired (a ``Refused``),
+            or a time is negative.
+        NotImplementedError
+            If the network is too large to work out exactly.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> line = {
+        ...     "reliability": surv.Exponential.from_params([0.01]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ... }
+        >>> net = Network({"a": ("s", "t", line)}, "s", "t")
+        >>> round(net.mission_unavailability(100.0), 5)
+        0.01922
+        """
+        times, shape = self._repaired_times(t, "mission_unavailability")
+        return self._shaped(
+            self._repaired.mission_unavailability(times), shape
+        )
+
+    def mean_availability(self) -> float:
+        """The long-run fraction of time the terminals are connected, the
+        elements repaired: the network's decision diagram at each
+        element's long-run availability, ``MTTF / (MTTF + MTTR)``,
+        exactly (as
+        [`mean_availability`][repyability.RepairableRBD.mean_availability]
+        gives a diagram's).
+
+        Returns
+        -------
+        float
+            The long-run availability of the connection.
+
+        Raises
+        ------
+        ValueError
+            If the network's elements are not repaired (a ``Refused``).
+        NotImplementedError
+            If the network is too large to work out exactly.
+
+        Examples
+        --------
+        The bridge network, every link with a Weibull life of mean 90.27
+        and a mean repair of 10, so up ``p = 0.90027`` of the time in the
+        long run: ``2p^2 + 2p^3 - 5p^4 + 2p^5``.
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> link = {
+        ...     "reliability": surv.Weibull.from_params([100.0, 1.5]),
+        ...     "repairability": surv.Exponential.from_params([0.1]),
+        ... }
+        >>> bridge = Network(
+        ...     {"a": ("s", "x", link), "b": ("s", "y", link),
+        ...      "c": ("x", "y", link), "d": ("x", "t", link),
+        ...      "e": ("y", "t", link)},
+        ...     "s", "t",
+        ... )
+        >>> round(bridge.mean_availability(), 4)
+        0.9786
+        """
+        self._refuse_repaired("mean_availability")
+        return float(self._repaired.mean_availability())
+
+    def mean_unavailability(self) -> float:
+        """The long-run fraction of time the terminals are parted, the
+        elements repaired: one less
+        [`mean_availability`][repyability.Network.mean_availability],
+        worked out in its own right from each element's long-run
+        unavailability, ``MTTR / (MTTF + MTTR)``, so a small one keeps
+        its digits.
+
+        Returns
+        -------
+        float
+            The long-run unavailability of the connection.
+
+        Raises
+        ------
+        ValueError
+            If the network's elements are not repaired (a ``Refused``).
+        NotImplementedError
+            If the network is too large to work out exactly.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> line = {
+        ...     "reliability": surv.Exponential.from_params([1e-6]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ... }
+        >>> net = Network(
+        ...     {name: ("s", "t", line) for name in "abc"}, "s", "t"
+        ... )
+        >>> f"{net.mean_unavailability():.4e}"
+        '8.0000e-18'
+        """
+        self._refuse_repaired("mean_unavailability")
+        return float(self._repaired.mean_unavailability())
+
+    def failure_frequency(self, t: ArrayLike):
+        """How often the connection is lost at ``t``, ``w(t)``: the
+        expected number of times per unit time that the terminals are
+        parted then, the elements repaired and new at 0.
+
+        An element's failure parts the terminals when the element is
+        critical then: when they are joined with it up and parted with it
+        down. The elements failing and being repaired independently,
+        that is so with probability ``I_B^i(t)``, its Birnbaum importance
+        at the elements' availabilities then, so
+
+        ```text
+        w(t) = sum_i I_B^i(t) w_i(t)
+        ```
+
+        ``w_i(t)`` the element's failure intensity: ``lambda A_i(t)`` for
+        one of constant failure rate (it fails only while it works),
+        else the rate of change of its expected failures, by differences
+        on its renewal curve's grid. Its integral is
+        [`expected_failures`][repyability.Network.expected_failures],
+        and its long-run value
+        [`system_failure_frequency`][repyability.Network.system_failure_frequency].
+
+        Parameters
+        ----------
+        t : array_like
+            Time/s, 0 or more: a number or an array.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            ``w(t)``, a float for a number ``t`` and an array for an
+            array.
+
+        Raises
+        ------
+        ValueError
+            If the network's elements are not repaired (a ``Refused``),
+            or a time is negative.
+        NotImplementedError
+            If the network is too large to work out exactly.
+
+        Examples
+        --------
+        Two links one after the other, failing at rates 0.01 and 0.02 and
+        repaired at rate 0.5, once settled: ``A_2 w_1 + A_1 w_2``, ``w_i =
+        lambda_i A_i``.
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> E = surv.Exponential.from_params
+        >>> net = Network(
+        ...     {"a": ("s", "x", {"reliability": E([0.01]),
+        ...                       "repairability": E([0.5])}),
+        ...      "b": ("x", "t", {"reliability": E([0.02]),
+        ...                       "repairability": E([0.5])})},
+        ...     "s", "t",
+        ... )
+        >>> round(net.failure_frequency(1000.0), 6)
+        0.028281
+        >>> round(net.system_failure_frequency(), 6)
+        0.028281
+        """
+        from repyability.rbd._event_curves import failure_frequency
+
+        times, shape = self._repaired_times(t, "failure_frequency")
+        return self._shaped(failure_frequency(self._repaired, times), shape)
+
+    def expected_failures(self, t: ArrayLike):
+        """The expected number of times the connection is lost in ``[0,
+        t)``, the elements repaired and new at 0: the integral of
+        [`failure_frequency`][repyability.Network.failure_frequency], as
+        [`expected_failures`][repyability.RepairableRBD.expected_failures]
+        counts a diagram's system failures (each element's expected
+        failures from its renewal equation, weighed by its Birnbaum
+        importance over time, and extended exactly once the elements'
+        curves have settled).
+
+        Parameters
+        ----------
+        t : array_like
+            The window/s' ends, 0 or more: a number or an array.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The expected count, a float for a number ``t`` and an array
+            for an array.
+
+        Raises
+        ------
+        ValueError
+            If the network's elements are not repaired (a ``Refused``),
+            or a time is negative.
+        NotImplementedError
+            If the network is too large to work out exactly.
+
+        Examples
+        --------
+        One link failing at rate 0.01, repaired at rate 0.5: ``(lambda mu
+        / (lambda + mu)) t + (lambda / (lambda + mu)) ** 2 (1 -
+        exp(-(lambda + mu) t))``.
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> E = surv.Exponential.from_params
+        >>> net = Network(
+        ...     {"a": ("s", "t", {"reliability": E([0.01]),
+        ...                       "repairability": E([0.5])})},
+        ...     "s", "t",
+        ... )
+        >>> round(net.expected_failures(100.0), 5)
+        0.98078
+        """
+        times, shape = self._repaired_times(t, "expected_failures")
+        return self._shaped(self._repaired.expected_failures(times), shape)
+
+    def system_failure_frequency(self) -> float:
+        """How often the connection is lost in the long run: the expected
+        number of times per unit time that the terminals are parted once
+        the repaired elements have settled, ``sum_i I_B^i w_i`` at their
+        long-run values (see
+        [`failure_frequency`][repyability.Network.failure_frequency]),
+        as
+        [`system_failure_frequency`][repyability.RepairableRBD.system_failure_frequency]
+        gives a diagram's. Its reciprocal is the mean time between losses
+        of the connection.
+
+        Returns
+        -------
+        float
+            Expected losses of the connection per unit time, in the long
+            run.
+
+        Raises
+        ------
+        ValueError
+            If the network's elements are not repaired (a ``Refused``).
+        NotImplementedError
+            If the network is too large to work out exactly.
+
+        Examples
+        --------
+        Two lines side by side, failing at rates 0.01 and 0.02 and
+        repaired at rate 0.5: ``q_1 w_2 + q_2 w_1``.
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> E = surv.Exponential.from_params
+        >>> net = Network(
+        ...     {"a": ("s", "t", {"reliability": E([0.01]),
+        ...                       "repairability": E([0.5])}),
+        ...      "b": ("s", "t", {"reliability": E([0.02]),
+        ...                       "repairability": E([0.5])})},
+        ...     "s", "t",
+        ... )
+        >>> f"{net.system_failure_frequency():.6e}"
+        '7.541478e-04'
+        """
+        self._refuse_repaired("system_failure_frequency")
+        return float(self._repaired.system_failure_frequency())
+
     def to_dict(self) -> dict:
         """The network as a JSON-friendly dict (see ``from_dict``), as a
         diagram saves its nodes (see
@@ -2901,7 +3573,15 @@ class Network:
         >>> d["type"], d["links"][0]["nodes"]
         ('Network', [0, 1])
         """
-        from repyability.rbd.serialisation import serialise_model
+        from repyability.rbd.serialisation import (
+            _serialise_component,
+            serialise_model,
+        )
+
+        def saved(model) -> dict:
+            if isinstance(model, dict):
+                return {"component": _serialise_component(model)}
+            return {"model": serialise_model(model)}
 
         return {
             "repyability_version": __version__,
@@ -2916,12 +3596,12 @@ class Network:
                 {
                     "link": name,
                     "nodes": [u, v],
-                    "model": serialise_model(self.models[name]),
+                    **saved(self.models[name]),
                 }
                 for name, (u, v) in self.links.items()
             ],
             "nodes": [
-                {"node": name, "model": serialise_model(model)}
+                {"node": name, **saved(model)}
                 for name, model in self.nodes.items()
             ],
         }
@@ -2959,9 +3639,15 @@ class Network:
         True
         """
         from repyability.rbd.serialisation import (
+            _deserialise_component,
             _node_name,
             deserialise_model,
         )
+
+        def loaded(e: dict):
+            if "component" in e:
+                return _deserialise_component(e["component"])
+            return deserialise_model(e["model"])
 
         if d.get("type") != "Network":
             raise ValueError(f"Not a network: type {d.get('type')!r}.")
@@ -2969,13 +3655,12 @@ class Network:
             _node_name(e["link"]): (
                 _node_name(e["nodes"][0]),
                 _node_name(e["nodes"][1]),
-                deserialise_model(e["model"]),
+                loaded(e),
             )
             for e in d["links"]
         }
         nodes = {
-            _node_name(e["node"]): deserialise_model(e["model"])
-            for e in d.get("nodes") or ()
+            _node_name(e["node"]): loaded(e) for e in d.get("nodes") or ()
         }
         directed = bool(d.get("directed", False))
         # A save from before a network took more than two terminals has
@@ -3240,7 +3925,16 @@ class Network:
         """
         from repyability.rbd import routes as r
 
-        elements = {name: r.model_route(m) for name, m in self.models.items()}
+        if self._repaired is not None:
+            from repyability.rbd._event_curves import down_routes
+
+            elements = down_routes(self._repaired)
+            effect = "probabilities of being down"
+        else:
+            elements = {
+                name: r.model_route(m) for name, m in self.models.items()
+            }
+            effect = "reliabilities"
         out: Dict[str, AnalysisRoute] = {}
 
         def give(names, route) -> None:
@@ -3248,7 +3942,7 @@ class Network:
                 out[name] = route
 
         def built(route, reason):
-            return r.with_nodes(route, reason, elements, "reliabilities")
+            return r.with_nodes(route, reason, elements, effect)
 
         give(
             ("sf", "ff"),
@@ -3417,7 +4111,10 @@ class Network:
             for name in out:
                 if name not in ("random", "path_sets", "minimal_path_sets"):
                     out[name] = r.refused(too_large)
-        replay = r.refusal(self._require_replayable)
+        # (A repaired network's lifetime analyses are refused below.)
+        replay = (
+            None if self.is_repairable else r.refusal(self._require_replayable)
+        )
         if lifetimes:
             out["compare"] = r.refused(lifetimes)
         elif out["mean"].route != r.REFUSED:
@@ -3439,7 +4136,89 @@ class Network:
                     "both (common random numbers).",
                 )
             )
+        self._repaired_routes(out, built, too_large)
         return with_importances(out)
+
+    def _repaired_routes(self, out: dict, built, too_large) -> None:
+        """The routes of the analyses of repaired elements, in ``out``:
+        refused for a network without them; for a network of them, how
+        each is worked out, and what the network refuses (in place of the
+        routes of a network of lifetimes)."""
+        from repyability.rbd import routes as r
+
+        for name in _REPAIRED_OWN | set(out):
+            reason = r.refusal(functools.partial(self._refuse_repaired, name))
+            if reason:
+                out[name] = r.refused(reason)
+        if self._repaired is None:
+            return
+        if too_large:
+            for name in _REPAIRED_OWN:
+                out[name] = r.refused(too_large)
+            return
+        from repyability.rbd._event_curves import intensity_routes
+
+        out["point_availability"] = built(
+            r.EXACT,
+            "The network's decision diagram over the elements' "
+            "availabilities at x, each one less its probability of being "
+            "down.",
+        )
+        out["point_unavailability"] = built(
+            r.EXACT,
+            "The network's decision diagram over the elements' "
+            "probabilities of being down at x, each worked out in its own "
+            "right.",
+        )
+        out["mission_availability"] = built(
+            r.NUMERICAL,
+            "One less the mission unavailability, which is integrated "
+            "over the window to its own size.",
+        )
+        out["mission_unavailability"] = built(
+            r.NUMERICAL,
+            "The point unavailability integrated over the window, on "
+            "pieces between the elements' curves' bends, to its own size.",
+        )
+        out["mean_availability"] = AnalysisRoute(
+            r.EXACT,
+            "The network's decision diagram over the elements' long-run "
+            "availabilities, MTTF / (MTTF + MTTR).",
+        )
+        out["mean_unavailability"] = AnalysisRoute(
+            r.EXACT,
+            "The network's decision diagram over the elements' long-run "
+            "unavailabilities, MTTR / (MTTF + MTTR), as a sum of products "
+            "of its own.",
+        )
+        for name, route, reason in (
+            (
+                "failure_frequency",
+                r.EXACT,
+                "Each element's failure intensity times its Birnbaum "
+                "importance from the network's decision diagram, summed.",
+            ),
+            (
+                "expected_failures",
+                r.NUMERICAL,
+                "Each element's expected failures weighed by its Birnbaum "
+                "importance over time, integrated on pieces between the "
+                "elements' curves' bends (to about 1e-7), and extended "
+                "exactly once they have settled.",
+            ),
+            (
+                "system_failure_frequency",
+                r.EXACT,
+                "Each element's long-run failure frequency times its "
+                "Birnbaum importance at the long-run values, summed.",
+            ),
+        ):
+            out[name] = r.with_nodes(
+                route,
+                reason,
+                intensity_routes(self._repaired, name),
+                "failure intensities",
+            )
 
     def __repr__(self) -> str:
         unit = "" if self.unit is None else f", unit {self.unit!r}"
@@ -3454,6 +4233,30 @@ class Network:
             f"Network({len(self.links)} {links}, {len(self.nodes)} failing "
             f"nodes, {joined}{unit})"
         )
+
+
+def _refusing_repaired(name: str, method):
+    """``method`` (the analysis ``name``), refusing a network of repaired
+    elements first (see ``Network._refuse_repaired``)."""
+
+    @functools.wraps(method)
+    def wrap(self, *args, **kwargs):
+        self._refuse_repaired(name)
+        return method(self, *args, **kwargs)
+
+    return wrap
+
+
+# Every public method but those a network of repaired elements gives
+# refuses one, a method added later too.
+for _name, _method in list(vars(Network).items()):
+    if (
+        isinstance(_method, types.FunctionType)
+        and not _name.startswith("_")
+        and _name not in _REPAIRED_GIVES
+    ):
+        setattr(Network, _name, _refusing_repaired(_name, _method))
+del _name, _method
 
 
 def _link_order(
@@ -3542,6 +4345,93 @@ class _Plan(NamedTuple):
                 )
             )
         return steps, self.root
+
+
+class _Joined:
+    """A network's connection as the structure of a diagram of its
+    elements (what ``rbd._event_curves.Structured`` evaluates in place of
+    a diagram's ``modular.Decomposition``): the probabilities that the
+    terminals are joined and parted, and their gradient, from the
+    network's plan, which is built when first asked for."""
+
+    #: No reduced diagram (the capacity analysis's).
+    flow = None
+
+    def __init__(self, network: "Network"):
+        self._network = network
+
+    @property
+    def plan(self) -> "_Plan":
+        return self._network._decomposition()
+
+    @property
+    def nodes(self) -> frozenset:
+        """The elements the connection depends on."""
+        return frozenset(self.plan.names)
+
+    @property
+    def always_works(self) -> bool:
+        return self.plan.root == _WORK
+
+    @staticmethod
+    def _shape(shape) -> tuple:
+        if shape is None:
+            return ()
+        return (shape,) if isinstance(shape, (int, np.integer)) else shape
+
+    def probabilities(
+        self,
+        p: dict,
+        q: Optional[dict] = None,
+        shape=None,
+        works: bool = True,
+        fails: bool = True,
+    ) -> tuple:
+        """The probabilities that the terminals are joined and that they
+        are parted (None for the one not asked for), from each element's
+        probability of working ``p`` and of failing ``q`` (by default ``1
+        - p``): each a sum of products of its own."""
+        plan, size = self.plan, self._shape(shape)
+        if q is None:
+            q = {name: 1.0 - np.asarray(p[name], float) for name in plan.names}
+        joined = _evaluate(plan, p, q, size, _JOINED) if works else None
+        parted = _evaluate(plan, p, q, size, _PARTED) if fails else None
+        if shape is None:
+            return (
+                None if joined is None else float(joined),
+                None if parted is None else float(parted),
+            )
+        return joined, parted
+
+    def value_and_gradient(self, p: dict, q: dict, shape=None) -> tuple:
+        """The probabilities that the terminals are joined and parted,
+        and the derivative of the first with respect to each element's
+        probability of working (its Birnbaum importance), taken from
+        whichever of the two is the smaller, so that it is not a
+        difference of values near 1 (see ``Network._birnbaum``)."""
+        plan, size = self.plan, self._shape(shape)
+        joined, up = _value_and_gradient(plan, p, q, size, _JOINED)
+        parted, down = _value_and_gradient(plan, p, q, size, _PARTED)
+        from_parted = np.asarray(parted) <= np.asarray(joined)
+        gradient = {
+            name: np.where(from_parted, -down[name], up[name]) + 0.0
+            for name in up
+        }
+        if shape is None:
+            return (
+                float(joined),
+                float(parted),
+                {name: float(value) for name, value in gradient.items()},
+            )
+        return joined, parted, gradient
+
+    def works(self, status: Mapping, method: str = "p") -> bool:
+        """Whether the terminals are joined, given whether each element
+        works (truthy) or has failed (falsy)."""
+        plan = self.plan
+        p = {name: 1.0 if status[name] else 0.0 for name in plan.names}
+        q = {name: 1.0 - value for name, value in p.items()}
+        return bool(_evaluate(plan, p, q, (), _JOINED) > 0.5)
 
 
 def _dual(steps: list, root: int) -> Tuple[list, int]:
@@ -3954,11 +4844,12 @@ def _frontier_plan(
         outcomes.append((codes[0], codes[1]))
         states += len(unique)
         if states > MAX_STATES:
-            raise NotImplementedError(
+            raise _TooLarge(
                 "The network's decision diagram has more than "
                 f"{MAX_STATES:,} states (ways its frontier can be joined "
-                "up), too many to work out exactly. Simulate it: "
-                "method='simulate'."
+                "up), too many to work out exactly.",
+                "MAX_STATES",
+                "Simulate it: method='simulate'.",
             )
         state = unique
 

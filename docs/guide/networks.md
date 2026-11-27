@@ -171,8 +171,62 @@ in order of their lives, longest first, until the terminals are joined.
 grid.sf(1.0, method="simulate", mc_samples=200_000, seed=1)   # -> 0.98477   simulated
 ```
 
-Links fail independently, as a diagram's nodes do. The network is not
-repairable: a link that fails stays failed.
+Links fail independently, as a diagram's nodes do. Given lifetime models,
+a link that fails stays failed; given a life and a repair, it comes back
+(next).
+
+## Repaired links
+
+A line that fails is repaired, and the question becomes how much of the
+time the load is connected and how often it is cut off. Give each link,
+and each node that can fail, a component spec as a
+[`RepairableRBD`](repairable.md) takes one, its `"reliability"` and its
+`"repairability"`, every element new at 0:
+
+```python
+repair = surv.LogNormal.from_params([-5.0, 0.8])        # 81 hours on average, in years
+long_repair = surv.LogNormal.from_params([-4.0, 0.8])   # 221 hours
+line = {"reliability": surv.Exponential.from_params([0.1]), "repairability": repair}
+cable = {"reliability": surv.Exponential.from_params([0.05]), "repairability": long_repair}
+supply = Network(
+    {name: (u, v, cable if name in ("AB", "CL") else line)
+     for name, (u, v, _) in links.items()},
+    source="G", target="L",
+)
+supply.point_availability(1.0)       # -> 0.99999797   connected at a year
+supply.point_unavailability(1.0)     # -> 2.0289e-06
+supply.mission_unavailability(1.0)   # -> 1.9862e-06   the share of the first year cut off
+supply.mean_unavailability()         # -> 2.0289e-06   in the long run: 1.07 minutes a year
+supply.failure_frequency(1.0)        # -> 0.00035790   losses of the connection per year, then
+supply.expected_failures(10.0)       # -> 0.0035738    in the first ten years
+supply.system_failure_frequency()    # -> 0.00035790   in the long run: one every 2,794 years
+```
+
+- **How.** Each element's probability of being down at a time is a
+  diagram's component's (in closed form for an exponential life and
+  repair, else from its renewal curve, to about `1e-7`), and the elements
+  fail and are repaired independently, so the connection's follows from
+  the same decision diagram at those probabilities, exactly. The
+  unavailability is worked out as itself, a sum of products, so a small
+  one keeps its digits, and the availability is one less.
+- **How often.** A link's failure cuts the load off when the link is
+  critical then, so the frequency is each link's failure intensity times
+  its Birnbaum importance, summed; `expected_failures(t)` is its integral
+  and `system_failure_frequency()` its long-run value.
+- **Any connection.** Several terminals, all of them and directed links
+  work the same way.
+- **Importance.** The measures made of the elements' probabilities
+  (`birnbaum_importance(x)`, `criticality_importance(x)`,
+  `fussell_vesely(x)`, the risk worths, `joint_importance`,
+  `differential_importance`, `importances(x)`) are taken at the elements'
+  availabilities at `x`.
+- **Not yet.** A repaired network has no time at which its terminals part
+  for good, so `sf`, `mean`, the B-lives and `random` refuse it; so do the
+  levers, `parameter_sensitivity`, `tornado` and `to_rbd`. An element
+  takes a life and a repair only (no tests, maintenance, crews or costs),
+  every element is repaired or none is, and a repaired network is not
+  simulated. A network that can be drawn as a block diagram has all of
+  those as a `RepairableRBD`.
 
 ## Importance, lives, uncertainty and saving
 
