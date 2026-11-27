@@ -659,14 +659,18 @@ def mission():
 
 @pytest.mark.parametrize(
     "limit, expected",
-    [(None, {"exact", "simulated"}), (5, {"refused", "simulated"})],
+    [
+        (None, {"exact", "numerical", "simulated"}),
+        (5, {"refused", "simulated"}),
+    ],
     ids=["worked out", "too large"],
 )
 def test_every_mission_method_does_what_the_report_says(
     limit, expected, monkeypatch
 ):
-    # A mission's analyses are exact, or refused once its decision diagram
-    # passes the limit, and its interval simulated (#316).
+    # A mission's analyses are exact (numerical where integrated or
+    # differenced), or refused once its decision diagram passes the
+    # limit, and its interval simulated (#316).
     if limit is not None:
         monkeypatch.setattr(phased_mission, "MAX_NODES", limit)
     phased = mission()
