@@ -30,7 +30,6 @@ release between minors that only adds (0.19.1).
   shutdowns over a window (simulated); a window of more than about 80
   typical up times is refused (`MAX_STEPS` grid points).
 
-
 - A directed `Network` (`directed=True`) takes more than two terminals,
   which it refused: `Network(links, source="G", terminals=[...],
   directed=True)` works while the source reaches every terminal along
