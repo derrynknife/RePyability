@@ -227,7 +227,7 @@ supply.point_unavailability(1.0)     # -> 2.0289e-06
 supply.mission_unavailability(1.0)   # -> 1.9862e-06   the share of the first year cut off
 supply.mean_unavailability()         # -> 2.0289e-06   in the long run: 1.07 minutes a year
 supply.failure_frequency(1.0)        # -> 0.00035790   losses of the connection per year, then
-supply.expected_failures(10.0)       # -> 0.0035738    in the first ten years
+supply.expected_failures(10.0)       # -> 0.0035740    in the first ten years
 supply.system_failure_frequency()    # -> 0.00035790   in the long run: one every 2,794 years
 ```
 

@@ -179,8 +179,8 @@ def test_a_series_parallel_network_is_its_diagram(name):
         )
     # The network's availability is one less its unavailability, each
     # element's from its closed form or its curve of being down; the
-    # diagram's is from the curves of being up, to its stated 4e-6 (4e-7
-    # away from the start).
+    # diagram's is from the curves of being up (on their grids, 3.2e-9
+    # apart before the early grids, with their stated 4e-6 allowed).
     for method in ("point_availability", "mission_availability"):
         ours = getattr(net, method)(TIMES)
         np.testing.assert_allclose(
@@ -189,7 +189,7 @@ def test_a_series_parallel_network_is_its_diagram(name):
             rtol=1e-15,
         )
         np.testing.assert_allclose(
-            ours, getattr(rbd, method)(TIMES), rtol=0, atol=4e-6
+            ours, getattr(rbd, method)(TIMES), rtol=0, atol=2e-9
         )
     for method in LONG_RUN:
         assert getattr(net, method)() == pytest.approx(
@@ -630,13 +630,10 @@ def test_a_number_gives_a_float_and_an_array_an_array():
         assert isinstance(one, float), method
         many = getattr(net, method)([[10.0, 20.0], [30.0, 40.0]])
         assert many.shape == (2, 2), method
-        # Exactly for the values at a time; the integrals over a window
-        # are worked out on a grid to the last time asked for (to about
-        # 1e-7).
-        exact = method.startswith("point") or method == "failure_frequency"
-        assert many[0, 0] == pytest.approx(
-            one, rel=1e-12 if exact else 0, abs=0 if exact else 1e-6
-        ), method
+        # Whatever else is asked for: the elements' curves are their
+        # closed forms (on a grid to the last time asked for, the
+        # integrals over a window were 1e-7 apart).
+        assert many[0, 0] == pytest.approx(one, rel=1e-12, abs=0), method
     for method in LONG_RUN:
         assert isinstance(getattr(net, method)(), float)
 

@@ -1550,6 +1550,51 @@ release between minors that only adds (0.19.1).
   components move by up to those sizes (typically in the 7th digit);
   any other life, repair or state goes through the grid as before.
   Seeded and simulated results do not change.
+- A component whose values over time come from its renewal grid (any
+  life and repair but the exponential pair above: a Weibull life, a
+  lognormal or fixed repair, a unit down at 0 or at an age, age
+  replacement, an upgrade) is now followed from 0 on *early grids* too.
+  The grid's step is sized by the life and the last time asked for, so
+  a repair many times shorter started and ended within its first steps:
+  the values there were off, and changed with which other times were
+  asked. Each early grid has a quarter of the step of the one before,
+  down to a step across which the curve is all but a line (to 1e-8, as
+  repairs start and end, and as the life first bends: a Weibull's of
+  shape below 1 has a density unbounded at 0), and is the curve up to
+  its end. A fixed repair time, at which the curve bends, is put on the
+  grid's points (with the replacement age, where both are whole
+  multiples of one step). For a life of scale 500 and a repair of mean
+  2, asked at 0.1 to 40 together with 1000, against one grid of 8,192
+  steps an hour:
+
+  | life / repair | `point_availability` | `expected_failures` | `mission_availability` (to 3, 40) |
+  |---|---|---|---|
+  | Weibull, shape 1.5 / exponential | 2.4e-6, now 2.7e-10 | 1.8e-8, 1.5e-9 | 3.3e-7, 1.5e-10 |
+  | Weibull, shape 0.8 / exponential | 2.7e-4, now 6.5e-10 | 2.0e-7, 1.6e-8 | 3.4e-5, 2.5e-10 |
+  | exponential / lognormal (0.5, 0.5) | 1.2e-5, now 3.2e-9 | 9.3e-8, 5.6e-9 | 5.9e-6, 1.4e-9 |
+  | exponential / lognormal (0, 1.5) | 1.9e-5, now 5.2e-10 | 9.3e-8, 3.5e-10 | 5.2e-6, 3.5e-10 |
+  | exponential / fixed 2 | 7.7e-5, now 5.7e-10 | 9.6e-8, 1.4e-10 | 7.0e-6, 9.8e-11 |
+  | exponential pair, down at 0 | 2.6e-5, now 4.5e-9 | 1.1e-5, 2.5e-9 | 7.3e-6, 1.1e-9 |
+  | Weibull 1.5 / exponential, aged 100 | 1.1e-5, now 1.2e-9 | 4.1e-8, 3.3e-9 | 4.4e-6, 3.7e-10 |
+
+  The value at one time no longer depends on the other times asked (to
+  the sizes in the table's "now"). The curve's last grid point, which
+  held half of its renewals, is now as the others (a unit down at 0 was
+  7.1e-7 off at the last time asked for). After an upgrade, what is
+  left of a repair under way is read from its table by a monotone cubic
+  (taken as linear, it was 2e-5 off, as much as the curve after the
+  upgrade then was). Values over time of diagrams, fault trees and
+  networks with such components move by up to the sizes above:
+  typically in the 5th to 7th digit within the first repair times of
+  the start (a `mission_availability` to 100 by 8.5e-6 for a diagram of
+  90 such components; the networks guide's `expected_failures(10.0)`
+  reads 0.0035740, where it read 0.0035738), and in the 9th after. Left
+  as they were: the
+  first steps after each replacement at a fixed age (about 1e-6, as
+  the start was), and `expected_failures` far from the start (about
+  1e-7: sums of times on the grid are spread a little wider than the
+  times are). A curve takes about twice as long to work out. Seeded
+  and simulated results do not change.
 
 ## [0.20] - 2026-11-22
 

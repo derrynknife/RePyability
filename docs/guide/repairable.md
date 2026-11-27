@@ -493,7 +493,8 @@ plant.mission_availability([10.0, 100.0, 1000.0]) # array([0.962 , 0.9544, 0.953
 ```
 
 Each component's `A(t)` follows from the distributions of its up and down
-times by the renewal equation, solved numerically to about `1e-7` (a
+times by the renewal equation, solved numerically to about `1e-8`, from
+the first minutes on, however short the repairs are against the life (a
 component with an exponential life and an exponential repair, new at 0,
 has it in closed form); the
 components fail and are repaired independently, so the system's is the

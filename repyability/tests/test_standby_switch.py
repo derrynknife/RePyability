@@ -320,6 +320,28 @@ def test_over_time_a_switch_that_never_works_is_one_unit():
     assert curve.events(x)["corrective"] == pytest.approx(failures, rel=1e-12)
 
 
+def test_over_time_a_switch_that_never_works_is_one_weibull_unit():
+    # The same with Weibull(1000, 2.5) lives and Weibull(300, 1.5)
+    # repairs, against the one unit's own curve on its renewal grid:
+    # 6.2e-8 apart at most (1.0e-7 before that grid's early grids, and
+    # 2.3e-7 at 900 h on the grid this was first tried on). The unit's
+    # expected failures are 1.9e-7 off far from the start (its grid's
+    # sums of times are spread a little wider than the times are).
+    life, repair = W([1000.0, 2.5]), W([300.0, 1.5])
+    curve = _standby_cycle.over_time(life, repair, 1.0, 8000, 0.0)
+    unit = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {"a": {"reliability": life, "repairability": repair}},
+    )
+    x = curve.times[97::97]
+    assert curve.down_at(x) == pytest.approx(
+        unit.point_unavailability(x), abs=1e-7
+    )
+    assert curve.events(x)["failures"] == pytest.approx(
+        np.ravel(unit.expected_failures(x)), abs=3e-7
+    )
+
+
 @pytest.mark.parametrize(
     "life, repair, switching, window, seed",
     [

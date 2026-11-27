@@ -65,13 +65,13 @@ def test_an_or_of_a_repaired_event_and_a_probability():
         p + (1.0 - p) * mean_q_closed(rate, repair, x),
         rtol=1e-12,
     )
-    # The event's expected failures come from its renewal equation on a
-    # grid, to about 1e-7 (see RepairableRBD.expected_failures); the
+    # The event's expected failures are its closed form's (an exponential
+    # life and repair; on its renewal grid they were about 1e-7 off); the
     # probability leaves them as the event's alone gives them, times 1 - p.
     np.testing.assert_allclose(
         tree.expected_failures(x),
         (1.0 - p) * failures_closed(rate, repair, x),
-        atol=1e-7,
+        rtol=1e-12,
     )
     alone = FaultTree({"top": ("or", ["a"])}, {"a": unit(rate, repair)})
     np.testing.assert_allclose(
@@ -125,7 +125,7 @@ def test_an_and_with_a_weibull_life_that_is_not_repaired():
         assert tree.mean_unavailability(end) == pytest.approx(
             mean / end, rel=1e-9
         )
-        assert tree.expected_failures(end) == pytest.approx(count, rel=1e-7)
+        assert tree.expected_failures(end) == pytest.approx(count, rel=1e-10)
     # Once b has failed it stays: no long run.
     for call in (tree.mean_unavailability, tree.system_failure_frequency):
         with pytest.raises(NotImplementedError, match="no long run"):

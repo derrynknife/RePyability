@@ -131,16 +131,17 @@ def test_a_revealed_pair_against_its_chain():
         return pair * c_up(t) + (1.0 - p[3]) * c_up(t) * c_rate
 
     x = np.array([1.0, 5.0, 20.0, 100.0, 1000.0])
-    # The other component's curve is on a grid (to about 4e-6 early on).
+    # The other component's curve is its closed form (on a grid it was
+    # about 4e-6 off early on).
     np.testing.assert_allclose(
-        rbd.point_availability(x), [up(t) for t in x], atol=8e-6
+        rbd.point_availability(x), [up(t) for t in x], atol=1e-12
     )
     mission = integrate.quad(up, 0.0, 500.0, limit=500)[0] / 500.0
-    assert rbd.mission_availability(500.0) == pytest.approx(mission, abs=1e-7)
+    assert rbd.mission_availability(500.0) == pytest.approx(mission, abs=1e-10)
     failures = integrate.quad(failing, 0.0, 500.0, limit=500)[0]
-    assert rbd.expected_failures(500.0) == pytest.approx(failures, rel=1e-6)
+    assert rbd.expected_failures(500.0) == pytest.approx(failures, rel=1e-10)
     events = rbd.expected_events(500.0)
-    assert events.system_failures == pytest.approx(failures, rel=1e-6)
+    assert events.system_failures == pytest.approx(failures, rel=1e-10)
 
 
 def test_a_pair_tested_together_in_closed_form():

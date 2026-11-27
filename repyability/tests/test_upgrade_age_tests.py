@@ -86,7 +86,7 @@ def test_a_memoryless_unit_upgraded_to_its_own_life_is_age_replacement():
         1000.0
     )
     assert mine.node_failures["a"] == pytest.approx(
-        theirs.node_failures["a"], abs=1e-6
+        theirs.node_failures["a"], abs=2e-7
     )
     # Its replacements: age replacement's to the upgrade, the one at it,
     # and from there those of a unit new (replaced) or in a repair (its
@@ -100,7 +100,7 @@ def test_a_memoryless_unit_upgraded_to_its_own_life_is_age_replacement():
     )
     assert mine.node_preventive["a"] == pytest.approx(
         alone.expected_events(400.0).node_preventive["a"] + up + after,
-        rel=1e-6,
+        rel=1e-9,
     )
 
 
@@ -155,8 +155,10 @@ def test_a_memoryless_unit_against_its_chain():
     def rate_at(s):
         return lam if s < at else new
 
+    # (6.4e-7 off just after the upgrade before the early grids, and
+    # what is left of a repair read from its table by a cubic.)
     np.testing.assert_allclose(
-        rbd.point_availability(t), two_state(t, rate_at, mu, at), atol=1e-6
+        rbd.point_availability(t), two_state(t, rate_at, mu, at), atol=1e-7
     )
 
 
@@ -376,12 +378,12 @@ def test_a_memoryless_unit_kept_in_service_against_its_chain():
     np.testing.assert_allclose(
         rbd.point_availability(before),
         two_state(before, lambda s: lam, mu, at),
-        atol=1e-6,
+        atol=1e-7,
     )
     np.testing.assert_allclose(
         rbd.point_availability(after),
         kept_chain(after, lam, new, mu, at, float(up_at)),
-        atol=1e-6,
+        atol=3e-7,
     )
 
 

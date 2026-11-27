@@ -310,7 +310,9 @@ def test_a_run_from_a_state_starts_the_nested_diagram_from_its_own():
     state = {"sub": {"a": NodeState(age=40.0), "b": NodeState(alive=False)}}
     system = alone(sub)
     exact = system.expected_cost(T, state=state)
-    assert exact.mean == sub.expected_cost(T, state=state["sub"]).mean
+    # The same parts, added up in another order (a last bit apart).
+    own = sub.expected_cost(T, state=state["sub"])
+    assert exact.mean == pytest.approx(own.mean, rel=1e-14)
     got = system.cost(
         T, mc_samples=200, seed=4, control_variate=False, state=state
     )

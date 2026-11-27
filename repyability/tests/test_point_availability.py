@@ -596,14 +596,146 @@ def test_the_error_falls_as_the_square_of_the_step(monkeypatch):
         monkeypatch.setattr(_curves, "_POINT_STEPS", steps)
         points.append(rbd.point_availability(t))
         missions.append(rbd.mission_availability(windows))
-    # Against the finest: the default grid is some 16 times closer than
-    # one of a quarter of its steps.
-    for values in [points, missions]:
-        coarse = np.abs(values[0] - values[2]).max()
-        default = np.abs(values[1] - values[2]).max()
-        assert coarse / default > 8.0
+    # Against the finest, past the early grids (256 steps of the grid,
+    # some 20 h on the coarsest): the default grid is some 16 times
+    # closer than one of a quarter of its steps.
+    late = t > 50.0
+    coarse = np.abs(points[0] - points[2])[late].max()
+    default = np.abs(points[1] - points[2])[late].max()
+    assert coarse / default > 8.0
+    # Before that the early grids' steps follow the repair time, whatever
+    # the grid's own (the coarsest was 1.5e-7 off at 3 h without them),
+    # and so does the start of a mission.
+    assert np.abs(points[0] - points[2])[~late].max() < 5e-9
+    assert np.abs(missions[0] - missions[2]).max() < 5e-9
     assert np.abs(points[1] - points[2]).max() < 5e-8
     assert np.abs(missions[1] - missions[2]).max() < 5e-9
+
+
+def _on_one_grid(rbd, horizon, steps, **state):
+    """The curve and expected failures of the one component of ``rbd``
+    (``c``) on one grid of ``steps`` steps to ``horizon``, with no early
+    grids: what ``unit_curve`` is given, worked out by ``_grid_curve``."""
+    given = {}
+    plain = _curves.unit_curve
+
+    def kept(*arguments, **more):
+        given["arguments"], given["more"] = arguments, more
+        return plain(*arguments, **more)
+
+    _curves.unit_curve = kept
+    try:
+        rbd.expected_failures(horizon, **state)
+    finally:
+        _curves.unit_curve = plain
+    models = given["arguments"][:4]
+    return point_availability._grid_curve(
+        *models, horizon / steps, steps, **given["more"]
+    )
+
+
+SHORT_REPAIRS = {
+    "weibull-1.5": (W([500.0, 1.5]), E([0.5]), {}),
+    "weibull-0.8": (W([500.0, 0.8]), E([0.5]), {}),
+    "lognormal": (E([0.002]), LN([0.5, 0.5]), {}),
+    "lognormal-wide": (E([0.002]), LN([0.0, 1.5]), {}),
+    "lognormal-narrow": (E([0.002]), LN([0.7, 0.05]), {}),
+    "fixed": (E([0.002]), FIXED([2.0]), {}),
+    "fixed-short": (E([0.002]), FIXED([0.1]), {}),
+    "weibull-fixed": (W([500.0, 3.0]), FIXED([2.0]), {}),
+    "down": (E([0.002]), E([0.5]), {"c": NodeState(alive=False)}),
+    "aged": (W([500.0, 1.5]), E([0.5]), {"c": NodeState(age=100.0)}),
+}
+
+
+@pytest.mark.parametrize("name", sorted(SHORT_REPAIRS))
+def test_a_short_repair_is_resolved_from_the_start(name, monkeypatch):
+    # A repair some 250 times shorter than the life, with a life or a
+    # repair that is not exponential (or a unit down at 0): the grid's
+    # step follows the life and the last time asked for, and the early
+    # grids the repair. Against one grid of an 8,192nd of an hour (and,
+    # at 1000 h, the grid 16 times finer). Without the early grids the
+    # values at 0.1 to 40 h, asked with 1000 h, were 2.4e-6 off (Weibull
+    # 1.5), 2.7e-4 (Weibull 0.8), 1.2e-5 and 1.9e-5 (lognormal repairs),
+    # 7.7e-5 (a fixed repair, a tenth of an hour before it ends), 2.6e-5
+    # (down at 0) and 1.1e-5 (aged); the expected failures up to 2e-7
+    # (1.1e-5 down at 0) and a mission's availability up to 3.4e-5. Now
+    # 4.5e-9 at most (the failures 1.6e-8).
+    life, repair, state = SHORT_REPAIRS[name]
+    more = {"state": state} if state else {}
+    rbd = alone(unit(life, repair))
+    early = np.array([0.1, 0.25, 0.5, 1.0, 1.9, 2.1, 3.0, 4.1, 10.0, 40.0])
+    t = np.append(early, 1000.0)
+    fine = _on_one_grid(rbd, 64.0, 2**19, **more)
+    found = rbd.point_availability(t, **more)
+    np.testing.assert_allclose(found[:-1], fine.at(early), atol=2e-8)
+    np.testing.assert_allclose(
+        np.ravel(rbd.expected_failures(t, **more))[:-1],
+        fine.events(early)["failures"],
+        atol=2e-8,
+    )
+    # Whatever else is asked for, and from either side.
+    for i in (0, 2, 6):
+        alone_ = rbd.point_availability(t[i : i + 1], **more)[0]
+        assert alone_ == pytest.approx(found[i], abs=2e-8)
+    np.testing.assert_allclose(
+        found, 1.0 - rbd.point_unavailability(t, **more), atol=1e-15
+    )
+    monkeypatch.setattr(_curves, "_POINT_STEPS", 16_000)
+    finer = alone(unit(life, repair)).point_availability(t, **more)
+    monkeypatch.undo()
+    assert found[-1] == pytest.approx(finer[-1], abs=5e-9)
+    # A mission from 0 takes the start in.
+    step = 64.0 / 2**19
+    for end in (3.0, 40.0):
+        k = int(round(end / step))
+        values = fine.at(fine.times[: k + 1])
+        mean = (values.sum() - 0.5 * (values[0] + values[-1])) / k
+        assert rbd.mission_availability(np.array([end, 1000.0]), **more)[
+            0
+        ] == pytest.approx(mean, abs=2e-8)
+
+
+def test_a_fixed_repair_time_is_on_the_grid():
+    # An exponential life repaired in exactly d: down at t <= d if failed
+    # by then, and up to 2 d if it failed in the last d (whether up or in
+    # a repair d before). The curve bends at d, which the grid has on its
+    # points: 7.7e-5 off at 1.9 with d = 2 between two of them.
+    lam, d = 0.002, 2.0
+    rbd = alone(unit(E([lam]), FIXED([d])))
+    t = np.array([0.5, 1.0, 1.9, 2.0, 2.1, 3.0, 3.9, 1000.0])
+    a = np.maximum(t - d, 0.0)
+    down = np.where(
+        t <= d,
+        -np.expm1(-lam * t),
+        np.exp(-lam * a) * -np.expm1(-lam * d)
+        + (-np.expm1(-lam * a) - lam * a * np.exp(-lam * a)),
+    )
+    np.testing.assert_allclose(
+        rbd.point_unavailability(t)[:-1], down[:-1], atol=1e-9
+    )
+    # With a replacement age of a whole number of repair times, both are.
+    aged = alone(unit(E([lam]), FIXED([d]), preventive=age(300.0)))
+    np.testing.assert_allclose(
+        aged.point_unavailability(t)[:-1], down[:-1], atol=1e-9
+    )
+
+
+def test_the_last_point_of_a_grid_is_as_the_others():
+    # A unit down at 0, in closed form: every failure is a later unit's,
+    # on the grid, whose last point held half of its renewals (7.1e-7 off
+    # at the last time asked for, and 1.6e-5 on a grid of half an hour).
+    lam, mu = 0.002, 0.5
+    s = lam + mu
+    rbd = alone(unit(E([lam]), E([mu])))
+    state = {"c": NodeState(alive=False)}
+    for t in ([1000.0], [40.0, 1100.0], [3.0, 777.0]):
+        t = np.array(t)
+        np.testing.assert_allclose(
+            rbd.point_availability(t, state=state),
+            mu / s * -np.expm1(-s * t),
+            atol=2e-9,
+        )
 
 
 def test_later_maintenance_on_a_grid_of_its_own(monkeypatch):

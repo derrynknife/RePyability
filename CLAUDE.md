@@ -538,6 +538,30 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   `test_identical_components_share_one_curve` checks the shared curves
   against a curve each.
 
+- **A plain unit's curve is its closed form, or its renewal grid with
+  early grids.** A component with an exponential life and an exponential
+  or instant repair, and nothing else (new at 0, or up at any age; no
+  maintenance, tests or stages), has an
+  `ExponentialCurve` (`_curves._closed_form_curve`, from
+  `_closed_form_rates`): its availability one less the unavailability's
+  closed form (`_closed_form_down`, which `point_unavailability` takes
+  too), and its expected failures exact, whatever times are asked.
+  Anything new that makes a unit more than its two rates must make
+  `_closed_form_rates` leave it out. Every other unit goes through
+  `_point_availability.unit_curve`: a grid whose step follows the life
+  and the last time asked for (`_curves._unit_curve`), and, from 0,
+  *early grids*, each a quarter of the step of the one before, down to
+  a step across which the curve is all but a line as a repair starts
+  and ends (`_fine`) and the life first bends (`_bend`), each the
+  curve up to its own end
+  (`GridCurve.early`); a fixed repair time is on the grid's points
+  (`on_grid`). All are `_grid_curve`, the one set of equations, so a
+  change to them is a change to every grid; a new method of `GridCurve`
+  takes its early grid's values up to its end (`_early`).
+  `test_point_availability.py` checks the closed form against its
+  formulas and the grids against one grid of an 8,192nd of an hour
+  (`test_a_short_repair_is_resolved_from_the_start`).
+
 - **`analysis_routes()` (both RBD classes) must agree with the methods.** It
   says, without running anything, whether each public analysis is exact,
   numerical, simulated or refused. Refusals go through checks the report
