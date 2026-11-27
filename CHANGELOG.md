@@ -1244,6 +1244,15 @@ release between minors that only adds (0.19.1).
   equal states, which it did not: such a network kept every state
   apart and passed `MAX_STATES` (or took long) where its diagram is
   small. The values are unchanged, bit for bit.
+- `FaultTree.failure_frequency(t)` and `Network.failure_frequency(t)`
+  with repaired events gave NaN at `t = 0` where an event whose density
+  starts infinite (a Weibull life of shape below 1) was not critical
+  (a mixed bridge's, for one): its infinite intensity met an importance
+  of 0. The frequency at 0 is now the initial failure intensity, each
+  event at its life's density at 0 where it is critical and nothing
+  where it is not; a repaired event's intensity at 0 is its life's
+  density exactly, where the differences on its curve gave about it
+  (-5.6e-8 for a Weibull of shape 1.5, 1.55 for one of shape 0.8).
 - `first_failure_sf` and `mean_time_to_first_failure` with lives or
   repairs followed as phases refused small redundant diagrams the guide
   works out (`NotSettled`): the pair of Weibull lives and lognormal
