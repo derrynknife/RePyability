@@ -34,6 +34,28 @@ release between minors that only adds (0.19.1).
   (-0.2 SE). Trees without such groups give the same values to the bit.
   `to_open_psa()` still refuses such a tree, the format's groups
   splitting probabilities, not rates.
+- `SafetyFunction.vote(k, *functions, beta=..., beta_detected=...,
+  beta_safe=...)`: a vote of votes (a 2oo4 arrangement wired as 1oo2 of
+  2oo2, say), each function voted on a vote, a vote of votes or votes in
+  series, with a cause shared by every channel beneath the vote. It acts
+  when `k` of the functions act and trips spuriously when `k` of them
+  trip. Checked against the multi-phase Markov chain of the four channels
+  (1e-8) and against the plain vote where each function is one channel
+  (equal).
+- `SafetyFunction.to_dict`, `from_dict`, `to_json` and `from_json`: a
+  function saved with each channel once (its models in surpyval's
+  format) and rebuilt through its constructors.
+- `SafetyFunction.measure_uncertainty(measure, uncertainty)`: the PFDavg,
+  the PFH or the spurious-trip rate over uncertain channel rates (from
+  distributions, or a fitted life from its fit), as an
+  `UncertaintyResult`.
+- `SafetyFunction.simplified_formulas()` takes a proof test that can miss
+  (IEC 61508-6 B.3.2.5: `PTC T1 + (1 - PTC) T2` for `T1` in the down
+  times and the common cause), which it refused. Its PFDavg reproduces
+  the fifteen subsystem values of a published worked example (The 61508
+  Association's "SIL Calculations" slides, 2024) to the three figures
+  printed; the guide sets them beside the exact values.
+
 - A cold standby pair with one repair at a time and a switch that can
   fail (`"switching_probability"` below 1) is followed over time, from
   new or from its long-run state, which was refused: `point_availability`,

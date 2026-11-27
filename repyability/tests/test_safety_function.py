@@ -12,6 +12,7 @@ import math
 import numpy as np
 import pytest
 import surpyval as surv
+from scipy import stats
 from scipy.linalg import expm
 
 from repyability import (
@@ -344,7 +345,16 @@ def integrated(generator, start, interval):
 
 
 def dangerous_chain(
-    n, k, du, dd, mttr, mrt, interval, beta=0.0, beta_detected=0.0
+    n,
+    k,
+    du,
+    dd,
+    mttr,
+    mrt,
+    interval,
+    beta=0.0,
+    beta_detected=0.0,
+    works=None,
 ):
     """The function's PFDavg and PFH (all of it, and the part an
     undetected failure completes) from the chain of its channels, written
@@ -352,7 +362,9 @@ def dangerous_chain(
     1) until the test, which starts their repair (state 2, over at rate 1
     / mrt, or at once), and its detected failures are repaired at rate 1 /
     mttr; a shared cause fails every channel that is up in its kind. The
-    chain runs from test to test, its states mapped at each."""
+    chain runs from test to test, its states mapped at each. ``works``
+    says from which channels are up whether the function acts (by
+    default, ``k`` of them)."""
     kinds = [(u, d) for u in range(3 if mrt > 0 else 2) for d in range(2)]
     states = list(itertools.product(kinds, repeat=n))
     index = {state: i for i, state in enumerate(states)}
@@ -393,8 +405,16 @@ def dangerous_chain(
     for state, i in index.items():
         found = [c for c in range(n) if state[c][0] == 1]
         tested[i, changed(state, found, 0, 2 if mrt > 0 else 0)] = 1.0
+    if works is None:
+
+        def works(up):
+            return sum(up) >= k
+
     down = np.array(
-        [sum(pair == (0, 0) for pair in state) < k for state in states]
+        [
+            not works(tuple(pair == (0, 0) for pair in state))
+            for state in states
+        ]
     )
     period = expm(generator * interval) @ tested
     # The distribution just after a test, in the long run.
@@ -414,9 +434,11 @@ def dangerous_chain(
     )
 
 
-def safe_chain(n, k, rate, mttr, beta=0.0):
+def safe_chain(n, k, rate, mttr, beta=0.0, trips=None):
     """The long-run frequency at which ``k`` of ``n`` channels come to be
-    failed safe together, from their chain's steady state."""
+    failed safe together (or ``trips`` says from which channels have
+    failed safe that the function has tripped), from their chain's steady
+    state."""
     states = list(itertools.product(range(2), repeat=n))
     index = {state: i for i, state in enumerate(states)}
     size = len(states)
@@ -440,7 +462,12 @@ def safe_chain(n, k, rate, mttr, beta=0.0):
     steady = np.linalg.lstsq(
         system, np.append(np.zeros(size), 1.0), rcond=None
     )[0]
-    tripped = np.array([sum(state) >= k for state in states])
+    if trips is None:
+
+        def trips(failed):
+            return sum(failed) >= k
+
+    tripped = np.array([bool(trips(state)) for state in states])
     return steady @ (rates[:, tripped].sum(axis=1) * ~tripped)
 
 
@@ -626,15 +653,172 @@ def test_the_formulas_are_refused_where_the_annex_has_none():
         SafetyFunction(
             {"a": channel(), "b": channel(du=3e-6)}, 1
         ).simplified_formulas()
-    with pytest.raises(NotImplementedError, match="finds every failure"):
-        vote(
-            1, 2, channel(proof_test_coverage=0.9, full_test=5 * T1)
+    with pytest.raises(NotImplementedError, match="votes on votes"):
+        SafetyFunction.vote(
+            1,
+            SafetyFunction({"a": channel()}, 1),
+            SafetyFunction({"b": channel()}, 1),
         ).simplified_formulas()
     with pytest.raises(NotImplementedError, match="several in series"):
         SafetyFunction.series(
             SafetyFunction({"a": channel()}, 1),
             SafetyFunction({"b": channel()}, 1),
         ).simplified_formulas()
+
+
+# A published worked example of the simplified formulas: The 61508
+# Association, "SIL Calculations: Practical Guidance in the use of IEC
+# 61508-6:2010" (I. Dolan, 7 June 2024,
+# https://61508.org/wp-content/uploads/2024/11/10B-SIL-Calculations-and-use-of-IEC-61508-6.pdf):
+# the rates on slide 11, the PFDavg of each subsystem on slides 11 (as
+# given), 14 (the 2oo3 votes' betas times 1.5, as IEC 61508-6 Table D.5
+# has them) and 21 (with proof test coverage), each to the three figures
+# printed. The slides do not state MRT, taken as the MTTR, nor T2 for the
+# coverage (10 years reproduces all five), and print the 2oo3 input
+# modules' beta_D times 1.5 (1.5%) as 2%. Each element: vote, lambda_DU,
+# lambda_DD, MTTR, then (beta, beta_D, PTC, PFDavg) on each slide.
+YEAR = 8760.0
+DECK = {
+    "pressure transmitters": (
+        (2, 3),
+        5.00e-7,
+        8.00e-7,
+        8.0,
+        [
+            (0.10, 0.10, 1.0, 2.36e-4),
+            (0.15, 0.15, 1.0, 3.44e-4),
+            (0.15, 0.15, 0.90, 6.76e-4),
+        ],
+    ),
+    "analogue inputs": (
+        (2, 3),
+        7.06e-9,
+        8.86e-7,
+        8.0,
+        [
+            (0.02, 0.01, 1.0, 6.97e-7),
+            (0.03, 0.015, 1.0, 1.04e-6),
+            (0.03, 0.015, 0.98, 1.21e-6),
+        ],
+    ),
+    "processors": (
+        (1, 2),
+        4.90e-9,
+        1.28e-6,
+        8.0,
+        [
+            (0.02, 0.01, 1.0, 5.34e-7),
+            (0.02, 0.01, 1.0, 5.34e-7),
+            (0.02, 0.01, 0.98, 6.12e-7),
+        ],
+    ),
+    "digital outputs": (
+        (1, 2),
+        6.81e-9,
+        8.61e-7,
+        8.0,
+        [
+            (0.02, 0.01, 1.0, 6.68e-7),
+            (0.02, 0.01, 1.0, 6.68e-7),
+            (0.02, 0.01, 0.98, 7.76e-7),
+        ],
+    ),
+    "valve assemblies": (
+        (1, 2),
+        2.10e-6,
+        4.00e-7,
+        120.0,
+        [
+            (0.10, 0.10, 1.0, 1.05e-3),
+            (0.10, 0.10, 1.0, 1.05e-3),
+            (0.10, 0.10, 0.85, 2.71e-3),
+        ],
+    ),
+}
+# Each slide's total PFDavg, the subsystems' sum.
+DECK_TOTALS = (1.29e-3, 1.40e-3, 3.39e-3)
+
+
+def deck_function(element, slide):
+    (k, n), du, dd, mttr, rows = DECK[element]
+    beta, beta_d, coverage, _ = rows[slide]
+    unit = SafetyChannel(
+        du,
+        dangerous_detected=dd,
+        repair=mttr,
+        proof_test_interval=YEAR,
+        proof_test_coverage=coverage,
+        full_test=None if coverage == 1.0 else 10 * YEAR,
+    )
+    return vote(k, n, unit, beta=beta, beta_detected=beta_d)
+
+
+@pytest.mark.parametrize("slide", [0, 1, 2])
+@pytest.mark.parametrize("element", sorted(DECK))
+def test_the_simplified_formulas_reproduce_a_published_example(element, slide):
+    published = DECK[element][-1][slide][-1]
+    value = deck_function(element, slide).simplified_formulas().pfd_avg
+    assert float(f"{value:.2e}") == published
+
+
+@pytest.mark.parametrize("slide", [0, 1, 2])
+def test_the_published_example_s_totals(slide):
+    total = sum(
+        deck_function(element, slide).simplified_formulas().pfd_avg
+        for element in DECK
+    )
+    assert float(f"{total:.2e}") == DECK_TOTALS[slide]
+
+
+def test_the_published_example_against_the_exact_values():
+    # The exact PFDavg of each vote lies below the formulas' (they err
+    # high): by 0.16% for the transmitters to 10.8% for the processors.
+    # There the common-cause detected failures are a fifth of the value,
+    # and after one both channels are repaired at once, so a 1oo2 vote is
+    # back at the first repair (half the MTTR, for exponential repairs)
+    # where the formula counts the whole MTTR. With tests that miss, 1.0%
+    # to 9.3%.
+    gaps = {}
+    for element in DECK:
+        for slide in (0, 2):
+            function = deck_function(element, slide)
+            simplified = function.simplified_formulas().pfd_avg
+            gaps[element, slide] = simplified / function.pfd_avg() - 1.0
+    assert all(0.0 < gap < 0.15 for gap in gaps.values()), gaps
+
+
+def test_a_test_that_misses_in_the_formulas():
+    # B.3.2.5: a covered failure waits as in T1, a missed one as in T2;
+    # the 1oo2 formula with both written out.
+    du, dd, mrt, coverage, t2 = RATES["du"], RATES["dd"], 24.0, 0.9, 5 * T1
+    unit = channel(
+        **RATES,
+        undetected_repair=mrt,
+        proof_test_coverage=coverage,
+        full_test=t2,
+    )
+    function = vote(1, 2, unit, beta=0.1, beta_detected=0.05)
+    lam = du + dd
+
+    def down(j):
+        waits = coverage * (T1 / (j + 1) + mrt) + (1 - coverage) * (
+            t2 / (j + 1) + mrt
+        )
+        return du / lam * waits + dd / lam * MTTR
+
+    own = 0.95 * dd + 0.9 * du
+    pfd = (
+        2 * own**2 * down(1) * down(2)
+        + 0.05 * dd * MTTR
+        + 0.1
+        * du
+        * (coverage * (T1 / 2 + mrt) + (1 - coverage) * (t2 / 2 + mrt))
+    )
+    simplified = function.simplified_formulas()
+    assert simplified.pfd_avg == pytest.approx(pfd, rel=1e-13)
+    assert simplified.down_times == pytest.approx(
+        (down(1), down(2)), rel=1e-13
+    )
 
 
 # -- a proof test that can miss ---------------------------------------------
@@ -709,6 +893,244 @@ def test_votes_in_series_are_one_function():
         SafetyFunction.series()
     with pytest.raises(ValueError, match="takes SafetyFunctions"):
         SafetyFunction.series(sensors, "valves")
+
+
+# -- votes of votes ---------------------------------------------------------
+
+
+def pairs(k_inner=2, unit=None, **options):
+    unit = channel(**RATES) if unit is None else unit
+    first = SafetyFunction({"c0": unit, "c1": unit}, k_inner)
+    second = SafetyFunction({"c2": unit, "c3": unit}, k_inner)
+    return SafetyFunction.vote(1, first, second, **options)
+
+
+def either_pair(up):
+    return (up[0] and up[1]) or (up[2] and up[3])
+
+
+@pytest.mark.parametrize(
+    "beta, beta_detected", [(0.0, 0.0), (0.1, 0.05), (1.0, 1.0)]
+)
+@pytest.mark.parametrize("mrt", [0.0, 24.0])
+def test_1oo2_of_2oo2_against_the_chain_of_its_channels(
+    beta, beta_detected, mrt
+):
+    # The pairs' cause is shared by all four channels.
+    unit = channel(**RATES, undetected_repair=mrt)
+    function = pairs(unit=unit, beta=beta, beta_detected=beta_detected)
+    pfd, pfh, undetected = dangerous_chain(
+        4,
+        None,
+        RATES["du"],
+        RATES["dd"],
+        MTTR,
+        mrt,
+        T1,
+        beta,
+        beta_detected,
+        works=either_pair,
+    )
+    assert function.pfd_avg() == pytest.approx(pfd, rel=1e-8)
+    assert function.pfh() == pytest.approx(pfh, rel=1e-8)
+    assert function.pfh(undetected_only=True) == pytest.approx(
+        undetected, rel=1e-8
+    )
+
+
+@pytest.mark.parametrize("beta", [0.0, 0.1])
+def test_1oo2_of_2oo2_trips_when_a_pair_does(beta):
+    function = pairs(beta_safe=beta)
+    exact = safe_chain(4, None, RATES["safe"], MTTR, beta, trips=either_pair)
+    assert function.spurious_trip_rate() == pytest.approx(exact, rel=1e-9)
+
+
+def test_a_vote_of_chains_in_series():
+    # 1oo2 of two sensor-and-logic chains: it acts while either chain
+    # does, which is the pairs' structure, and trips when any channel
+    # fails safe, as either chain then does.
+    unit = channel(**RATES, undetected_repair=0.0)
+    chains = [
+        SafetyFunction.series(
+            SafetyFunction({f"c{2 * i}": unit}, 1),
+            SafetyFunction({f"c{2 * i + 1}": unit}, 1),
+        )
+        for i in range(2)
+    ]
+    function = SafetyFunction.vote(1, *chains)
+    assert repr(function) == (
+        "SafetyFunction(1oo2([1oo1, 1oo1], [1oo1, 1oo1]); "
+        "channels=['c0', 'c1', 'c2', 'c3'])"
+    )
+    pfd, pfh, _ = dangerous_chain(
+        4, None, RATES["du"], RATES["dd"], MTTR, 0.0, T1, works=either_pair
+    )
+    assert function.pfd_avg() == pytest.approx(pfd, rel=1e-8)
+    assert function.pfh() == pytest.approx(pfh, rel=1e-8)
+    exact = safe_chain(4, None, RATES["safe"], MTTR, trips=any)
+    assert function.spurious_trip_rate() == pytest.approx(exact, rel=1e-9)
+
+
+def test_a_vote_of_single_channels_is_the_vote_of_channels():
+    unit = channel(**RATES)
+    voted = SafetyFunction.vote(
+        2, *(SafetyFunction({f"c{i}": unit}, 1) for i in range(3))
+    )
+    plain = vote(2, 3, unit)
+    assert voted.pfd_avg() == plain.pfd_avg()
+    assert voted.pfh() == plain.pfh()
+    assert voted.spurious_trip_rate() == plain.spurious_trip_rate()
+
+
+def test_a_vote_of_votes_refuses_what_it_cannot_be():
+    unit = channel()
+    pair = SafetyFunction({"a": unit, "b": unit}, 2)
+    other = SafetyFunction({"c": unit, "d": unit}, 2)
+    with pytest.raises(ValueError, match="at most the number of functions"):
+        SafetyFunction.vote(3, pair, other)
+    with pytest.raises(ValueError, match="k must be a whole number"):
+        SafetyFunction.vote(0, pair, other)
+    with pytest.raises(ValueError, match="voted on must name their"):
+        SafetyFunction.vote(1, pair, pair)
+    with pytest.raises(ValueError, match="vote needs at least one"):
+        SafetyFunction.vote(1)
+    with pytest.raises(ValueError, match="vote takes SafetyFunctions"):
+        SafetyFunction.vote(1, pair, "valves")
+    differ = SafetyFunction({"c": unit, "d": channel(du=3e-6)}, 2)
+    with pytest.raises(ValueError, match="beneath the vote alike"):
+        SafetyFunction.vote(1, pair, differ, beta=0.1)
+    shared = SafetyFunction({"c": unit, "d": unit}, 2, beta=0.1)
+    with pytest.raises(ValueError, match="share one of that kind already"):
+        SafetyFunction.vote(1, pair, shared, beta=0.1)
+    # A cause of another kind is no clash.
+    both = SafetyFunction.vote(1, pair, shared, beta_safe=0.1)
+    assert len(both.safe.ccf_groups) == 1
+
+
+def test_simplified_formulas_are_refused_for_a_vote_of_votes():
+    report = pairs().analysis_routes()
+    assert report["simplified_formulas"].route == routes.REFUSED
+    assert "votes on votes" in report["simplified_formulas"].reason
+
+
+# -- saving -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", sorted(safety_function_kinds()))
+def test_a_function_round_trips_through_json(name):
+    function = safety_function_kinds()[name]
+    again = SafetyFunction.from_json(function.to_json())
+    assert repr(again) == repr(function)
+    assert again.pfd_avg() == function.pfd_avg()
+    assert again.pfh() == function.pfh()
+    assert again.spurious_trip_rate() == function.spurious_trip_rate()
+    assert again.to_dict() == function.to_dict()
+
+
+def test_tuple_names_and_files_round_trip(tmp_path):
+    unit = channel()
+    function = SafetyFunction({("pt", 1): unit, ("pt", 2): unit}, 1, beta=0.1)
+    path = tmp_path / "function.json"
+    assert function.to_json(path) is None
+    again = SafetyFunction.from_json(path)
+    assert list(again.channels) == [("pt", 1), ("pt", 2)]
+    # Channels alike are saved once and loaded as one.
+    assert len(function.to_dict()["channels"]) == 1
+    assert again.channels[("pt", 1)] is again.channels[("pt", 2)]
+
+
+def test_from_dict_refuses_what_is_not_a_function():
+    with pytest.raises(ValueError, match='"type" is "SafetyFunction"'):
+        SafetyFunction.from_dict({"type": "RepairableRBD"})
+    saved = vote(1, 2).to_dict()
+    saved["function"]["kind"] = "parallel"
+    with pytest.raises(ValueError, match="Unknown part"):
+        SafetyFunction.from_dict(saved)
+
+
+# -- uncertain rates --------------------------------------------------------
+
+
+def test_each_draw_is_the_function_with_its_rate():
+    # The draws through the rate's quantile function at the seeded
+    # generator's uniforms, the function rebuilt with each.
+    rate = stats.gamma(3, scale=1 / 1.5e6)
+    function = vote(1, 2, beta=0.1)
+    result = function.measure_uncertainty(
+        "pfh",
+        {("c0", "c1"): {"dangerous_undetected": rate}},
+        n_draws=3,
+        seed=7,
+    )
+    drawn = rate.ppf(np.random.default_rng(7).random(3))
+    for value, du in zip(result.samples, drawn):
+        assert value == vote(1, 2, channel(du=du), beta=0.1).pfh()
+    assert result.nominal == function.pfh()
+    assert result.band == "given"
+    assert json.loads(json.dumps(result.to_dict()))["n_draws"] == 3
+
+
+@pytest.mark.parametrize(
+    "measure", ["pfd_avg", "pfh", "pfh_undetected", "spurious_trip_rate"]
+)
+def test_every_measure_is_drawn(measure):
+    rate = stats.gamma(4, scale=5e-6 / 4)
+    function = vote(2, 3)
+    result = function.measure_uncertainty(
+        measure,
+        {("c0", "c1", "c2"): {"safe": rate, "dangerous_detected": rate}},
+        n_draws=2,
+        seed=0,
+        sampling="sobol",
+    )
+    assert result.samples.shape == (2,)
+    assert result.nominal == function._measure(measure)
+
+
+def test_a_fitted_life_is_drawn_by_default():
+    failures = np.array([2.1e5, 3.4e5, 4.0e5, 5.2e5, 6.1e5, 7.7e5])
+    life = surv.Weibull.fit(failures)
+    unit = channel(du=life, undetected_repair="instant")
+    function = vote(1, 2, unit)
+    result = function.measure_uncertainty("pfd_avg", n_draws=2, seed=3)
+    assert result.band == "confidence"
+    explicit = function.measure_uncertainty(
+        "pfd_avg", {("c0", "c1"): "fit"}, n_draws=2, seed=3
+    )
+    assert np.array_equal(result.samples, explicit.samples)
+
+
+def test_uncertainty_refuses_what_it_cannot_draw():
+    rate = stats.gamma(3, scale=1e-6)
+    function = vote(1, 2, beta=0.1)
+    with pytest.raises(routes.Refused, match="needs what is uncertain"):
+        function.measure_uncertainty("pfd_avg")
+    with pytest.raises(ValueError, match="measure must be"):
+        function.measure_uncertainty("pfd", {"c0": {"safe": rate}})
+    with pytest.raises(ValueError, match="not a channel"):
+        function.measure_uncertainty("pfd_avg", {"x": {"safe": rate}})
+    with pytest.raises(ValueError, match="not a rate"):
+        function.measure_uncertainty("pfd_avg", {"c0": {"beta": rate}})
+    with pytest.raises(ValueError, match="draw their rates together"):
+        function.measure_uncertainty(
+            "pfd_avg", {"c0": {"dangerous_undetected": rate}}
+        )
+    with pytest.raises(ValueError, match="drawn twice"):
+        function.measure_uncertainty(
+            "pfd_avg",
+            {("c0", "c1"): {"safe": rate}, "c1": {"safe": rate}},
+        )
+    differ = SafetyFunction({"a": channel(), "b": channel(safe=1e-6)}, 1)
+    with pytest.raises(ValueError, match="not one population"):
+        differ.measure_uncertainty("pfd_avg", {("a", "b"): {"safe": rate}})
+    with pytest.raises(ValueError, match="at least 0"):
+        differ.measure_uncertainty(
+            "pfd_avg", {"a": {"safe": stats.norm(0, 1)}}, n_draws=20, seed=0
+        )
+    with pytest.raises(TypeError, match="n_draws"):
+        differ.measure_uncertainty(
+            "pfd_avg", {"a": {"safe": rate}}, mc_samples=10
+        )
 
 
 # -- the results in one call ------------------------------------------------
@@ -812,6 +1234,16 @@ SAFETY_CALLS = {
     "sil": lambda function: function.sil("high_demand"),
     "results": lambda function: function.results("low_demand"),
     "simplified_formulas": lambda function: function.simplified_formulas(),
+    "measure_uncertainty": lambda function: function.measure_uncertainty(
+        "pfd_avg",
+        {
+            tuple(function.channels): {
+                "dangerous_detected": stats.gamma(3, scale=1e-6)
+            }
+        },
+        n_draws=2,
+        seed=0,
+    ),
 }
 
 
@@ -830,7 +1262,15 @@ def test_the_report_covers_every_public_analysis():
         for name, _ in inspect.getmembers(SafetyFunction, callable)
         if not name.startswith("_")
     }
-    assert set(SAFETY_CALLS) == public - {"analysis_routes", "series"}
+    assert set(SAFETY_CALLS) == public - {
+        "analysis_routes",
+        "series",
+        "vote",
+        "to_dict",
+        "from_dict",
+        "to_json",
+        "from_json",
+    }
 
 
 def test_the_routes_are_the_diagrams_own():

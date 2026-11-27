@@ -246,6 +246,9 @@ Which analyses each model type has (the method; — where it has none):
 | Spurious-trip rate | — | `SafetyFunction.spurious_trip_rate` | — | — | — | — |
 | SIL band, safe failure fraction | — | `SafetyFunction.sil` | — | — | — | — |
 | Every result in one call, votes in series | — | `SafetyFunction.results` | — | — | — | — |
+| Votes of votes (2oo4 as 1oo2 of 2oo2) | — | `SafetyFunction.vote` | — | — | — | — |
+| A result over uncertain failure rates | — | `SafetyFunction.measure_uncertainty` | — | — | — | — |
+| Saving and loading (dict, JSON) | — | `SafetyFunction.to_dict` | — | — | — | — |
 | IEC 61508-6's simplified formulas, to compare | — | `SafetyFunction.simplified_formulas` | — | — | — | — |
 | How each result is computed | — | `SafetyFunction.analysis_routes` | — | — | — | — |
 | **Importance measures** | | | | | | |

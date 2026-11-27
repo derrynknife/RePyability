@@ -2148,7 +2148,8 @@ def safety_function_kinds():
     single channel of undetected failures, voted channels with
     diagnostics, repair and common cause of each kind, a proof test that
     can miss, staggered tests, detected failures that trip, a fitted life,
-    and votes in series."""
+    votes in series, and a vote of votes with a cause shared across
+    them."""
     from repyability import SafetyChannel, SafetyFunction
 
     def channel(du=2e-6, dd=3e-6, safe=5e-6, **options):
@@ -2185,6 +2186,13 @@ def safety_function_kinds():
         "votes in series": SafetyFunction.series(
             vote(2, 3, channel(), beta=0.1),
             SafetyFunction({"valve": channel(du=5e-6)}, 1),
+        ),
+        "a vote of votes": SafetyFunction.vote(
+            1,
+            SafetyFunction({"a1": channel(), "a2": channel()}, 2),
+            SafetyFunction({"b1": channel(), "b2": channel()}, 2),
+            beta=0.1,
+            beta_safe=0.05,
         ),
     }
 
