@@ -39,6 +39,7 @@ from repyability.rbd import (
 )
 from repyability.rbd._bayesian_life import PosteriorPredictive
 from repyability.rbd._covariate_schedule import on_clock
+from repyability.rbd._importances import with_importances
 from repyability.rbd._runs import (  # noqa: E402,F401
     _UNSTREAMED,
     failure_criticality_index_per_component_failures,
@@ -1005,4 +1006,4 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                     f"upgrade ignored): {route.reason}",
                 )
             out[name] = route
-    return r.AnalysisRoutes(sorted(out.items()))
+    return with_importances(out)

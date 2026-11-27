@@ -76,6 +76,8 @@
 
 ::: repyability.ConditionalProbabilities
 
+::: repyability.ImportanceTable
+
 ::: repyability.PrimeImplicant
 
 ::: repyability.ModelParameters

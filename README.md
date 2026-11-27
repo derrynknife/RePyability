@@ -232,6 +232,7 @@ Which analyses each model type has (the method; — where it has none):
 | Each block's part in each phase's failures | — | — | — | — | `failure_drivers` |
 | Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — |
 | Uncertainty importance | `uncertainty_importance` | `uncertainty_importance` | — | — | — |
+| Every measure in one call | `importances` | `importances` | `importances` | `importances` | `importances` |
 | All measures given a state | `importances_given_state` | — | — | — | — |
 | Top event given each event | — | — | `conditional_probabilities` | — | — |
 | Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — | — |

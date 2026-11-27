@@ -12,6 +12,18 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `importances`, on `NonRepairableRBD`, `RepairableRBD`, `FaultTree`,
+  `Network` and `PhasedMission`: every importance measure the model has,
+  in one call, as an `ImportanceTable`. Its `measures` are what each
+  method returns (the Birnbaum importance is `birnbaum_importance`'s
+  result, and so on), `refused` names each measure the model cannot work
+  out with its reason (a simulated one is listed as such unless
+  `simulate=True`), and `rows()` gives one plain dict per component for a
+  table (the joint importance, which is per pair, is left out of it). It
+  raises, naming each reason, when no measure can be worked out. Its
+  route in `analysis_routes()` is the worst of the measures it runs.
+  No existing result changes.
+
 - A shelf of spares in a component's spec: `"spares": {"stock": S,
   "lead_time": L}` (and optionally `"repairs"`), also a `UnitPlan`'s
   `spares`. Every simulation takes it (`availability`, `cost`,
