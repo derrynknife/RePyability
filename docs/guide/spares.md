@@ -223,6 +223,43 @@ found.design.spares["pump"], found.design.spares["seal"]   # (3, 4)
 found.design.spend    # -> 4700.0
 ```
 
+## A shelf in the diagram
+
+The shelf can be part of the diagram itself, a component's `"spares"`:
+its `"stock"` at the start, its `"lead_time"`, and optionally
+`"repairs"` (whether a failure repaired imperfectly takes a spare). Every
+simulation then runs with it: `availability()`, `cost()`,
+`simulate_timelines()`, `spares_demand(method="simulate")` and the rest,
+on the rules above, in Python.
+
+```python
+rbd = RepairableRBD(edges, {
+    "pump": {"reliability": pump_life, "repairability": pump_repair,
+             "spares": {"stock": 2, "lead_time": 2016.0}},
+    ...
+})
+rbd.availability(8760.0, mc_samples=2000, seed=1)
+```
+
+- **The exact and numerical analyses refuse the node** (the long run,
+  the values over time, the expected events and costs, the importance
+  measures, the spares used exactly, ...), saying to simulate: none of
+  them takes the waits for a spare. `analysis_routes()` says which.
+- **`spares_stock(method="simulate")` and the `spares` lever** try shelves
+  of their own on the nodes they are given; the other nodes keep their
+  own. The lever starts from the node's shelf: its stock, lead time and
+  `repairs` are the lever's defaults, so `spares={"pump": {"price":
+  1500.0}}` is enough. A node's copies draw on its shelf.
+- **A sub-system's component** keeps its shelf in the sub-system's own
+  loop, as `(node, component)` above. A shelf two levels down is refused.
+- **What it does not take** is refused when the diagram is built, saying
+  what to do: replacement on condition (replace at an age or on a block,
+  whose task waits for its spare), a maintenance group or a shutdown's
+  renewals (take the unit out of them), tests with repair crews (no
+  crews, so each repair has its own), and, in a sub-system, tasks, tests
+  or repair crews (simulate the sub-system as a diagram of its own). The
+  diagram saves and loads with its shelves.
+
 ## Block replacement and proof tests
 
 Two kinds of component replace on a calendar, and are counted their own way

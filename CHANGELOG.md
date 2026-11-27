@@ -12,6 +12,27 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A shelf of spares in a component's spec: `"spares": {"stock": S,
+  "lead_time": L}` (and optionally `"repairs"`), also a `UnitPlan`'s
+  `spares`. Every simulation takes it (`availability`, `cost`,
+  `simulate_timelines`, `spares_demand(method="simulate")`, ...), on the
+  rules of the shelf that `spares_stock(method="simulate")` and the
+  `spares` lever of `least_spend_for_downtime` already ran, and a seeded
+  run with it is the run with the same shelf given there, bit for bit.
+  A sub-system's component keeps its shelf in the sub-system's own loop.
+  Every exact and numerical analysis refuses a node with a shelf, saying
+  to simulate, but those of the node probabilities given or of the
+  structure alone (`analysis_routes()` says which). The compiled engine
+  refuses a shelf, and `engine="auto"` runs Python. `spares_stock(method=
+  "simulate")` and the `spares` lever try their own shelves on the nodes
+  they are given, the other nodes keeping theirs; the lever takes the
+  node's stock, lead time and `repairs` as its defaults, and a node's
+  copies draw on its shelf. What a shelf is not simulated for (a unit
+  replaced on condition, renewed early in a maintenance group or at a
+  shutdown, tested with repair crews; in a sub-system, tasks, tests or
+  repair crews; a shelf two levels down) is refused when the diagram is
+  built. Saved and loaded with the diagram. No seeded result changes.
+
 - An upgraded component (a spec's `"upgrade"`) may be under age
   replacement (`"preventive"` with `"policy": "age"`) or tested for
   hidden failures (`"inspection"`), which were refused. Under age
@@ -360,6 +381,12 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- The refusals of a shelf of spares (`spares_stock(method="simulate")`,
+  the `spares` lever, and now a component's `"spares"`) say what to do as
+  well as why: replace the unit at an age or on a block rather than on
+  condition, take it out of its maintenance group or a shutdown's
+  renewals, give the diagram (or a sub-system) no repair crews, or give
+  the node no shelf.
 - Long-run spares stocks for wear-out lives with long lead times and
   common stock-outs change (see Added): the stock can fall by one or
   more, and its fill rate and stock-out probability are the shelf's in

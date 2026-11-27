@@ -984,6 +984,7 @@ def _long_run_grid(rbd) -> Tuple[np.ndarray, np.ndarray]:
     middles of the grids' cells.
     """
     _shutdowns.require_exact(rbd)
+    _requirements._require_no_shelves(rbd)
     _crews._require_unlimited_crews(rbd)
     _requirements._require_calendars(rbd)
     blocks = _block_nodes(rbd)

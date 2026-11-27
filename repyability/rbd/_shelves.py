@@ -39,10 +39,17 @@ copies (``fleet``).
 
 The shelf is the Python event loop's alone (``_compiled.unsupported``
 gives the reason to the compiled engine, which refuses rather than
-differ). It is held on a copy of the diagram (``shelved``), which only the
-simulated routes that take it build: ``spares_stock(method="simulate")``
-and ``least_spend_for_downtime``'s ``spares`` lever. Refused, with the
-reason: replacement on condition, maintenance groups, early renewals at
+differ). A component's spec gives its own (``"spares"``: a shelf for the
+node alone, named ``Own(node)``, and ``Own((node, component))`` for a
+sub-system's component), which the diagram holds (``own``), so every
+simulation takes it and every exact method refuses the node
+(``_requirements._require_no_shelf``, where they check its models). The
+simulated routes that try shelves of their own,
+``spares_stock(method="simulate")`` and ``least_spend_for_downtime``'s
+``spares`` lever, run a copy of the diagram (``shelved``) whose shelves
+are theirs over the spec's: a node they give a shelf draws on theirs,
+the others on their own. Refused, with the reason and what to do:
+replacement on condition, maintenance groups, early renewals at
 shutdowns and nested RBDs; with repair crews, tests of hidden failures
 and a node a shutdown pauses.
 """
@@ -75,6 +82,41 @@ class Shelves(NamedTuple):
     of: Dict[Hashable, Hashable]
 
 
+@dataclass(frozen=True)
+class Own:
+    """The name of the shelf a component's spec gives it (its
+    ``"spares"``): a dataclass, so equal to no node or part name that a
+    route's own shelves are named by."""
+
+    node: Any
+
+
+#: The keys of a component spec's ``"spares"``.
+SPEC_KEYS = ("stock", "lead_time", "repairs")
+
+
+def from_spec(node, spares) -> Shelf:
+    """A component spec's ``"spares"`` (``SPEC_KEYS``), checked."""
+    if (
+        not isinstance(spares, dict)
+        or set(spares) - set(SPEC_KEYS)
+        or not {"stock", "lead_time"} <= set(spares)
+    ):
+        raise ValueError(
+            f"Component {node!r}: spares must be a dict of 'stock' (the "
+            "spares on its shelf at the start, a whole number), "
+            "'lead_time' (the time a spare ordered takes to arrive) and "
+            "optionally 'repairs' (whether a failure repaired imperfectly "
+            f"takes a spare too, by default False); got {spares!r}."
+        )
+    return shelf(
+        spares["stock"],
+        spares["lead_time"],
+        spares.get("repairs", False),
+        f"the shelf of component {node!r}",
+    )
+
+
 def shelf(stock, lead_time, repairs=False, what: str = "the shelf") -> Shelf:
     """A shelf's settings, checked."""
     if not (checks.is_number(stock) and int(stock) == stock and stock >= 0):
@@ -104,18 +146,29 @@ def _inner_why_not(inner, node) -> Optional[str]:
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     if isinstance(inner.components[node], RepairableRBD):
-        return "it is a nested RBD within a sub-system"
+        return (
+            "it is a nested RBD within a sub-system, two levels down, "
+            "which a shelf is not simulated for: give it no shelf"
+        )
     if node in inner._preventive or node in inner._inspection:
         return (
             "it has a preventive task or tests, which a sub-system's own "
-            "loop does not put off for a spare yet"
+            "loop does not put off for a spare yet: give the shelf to the "
+            "sub-system simulated as a diagram of its own, or give the "
+            "component no shelf"
         )
     if node in inner._member_group or node in inner._outage_members:
-        return "it is renewed early, which a shelf is not simulated for yet"
+        return (
+            "it is renewed early, which a shelf is not simulated for yet: "
+            "take it out of its maintenance group and the shutdowns' "
+            "renewals, or give it no shelf"
+        )
     if _crews._crews_limited(inner):
         return (
             "the sub-system has repair crews, which its own loop does not "
-            "take with a shelf yet"
+            "take with a shelf yet: give the sub-system no repair_crews "
+            "(each repair then has a crew of its own), or give the "
+            "component no shelf"
         )
     return None
 
@@ -155,23 +208,32 @@ def _why_not(rbd, node) -> Optional[str]:
     if schedule is not None and schedule.policy == "condition":
         return (
             "it is replaced on condition, whose replacement with the shelf "
-            "empty is not simulated yet"
+            "empty is not simulated yet: replace it at an age or on a "
+            "block ('policy': 'age' or 'block'), whose task waits for its "
+            "spare, or give it no shelf"
         )
     if node in rbd._member_group or node in rbd._outage_members:
         return (
             "it is renewed early (at its maintenance group's stops or at "
-            "shutdowns), which a shelf is not simulated for yet"
+            "shutdowns), which a shelf is not simulated for yet: take it "
+            "out of its maintenance group and the shutdowns' renewals, or "
+            "give it no shelf"
         )
     if _crews._crews_limited(rbd):
         if node in rbd._inspection:
             return (
                 "its failures are found by tests, and with repair crews a "
-                "test's job waiting for its spare is not simulated yet"
+                "test's job waiting for its spare is not simulated yet: give "
+                "the diagram no repair_crews (each repair then has a crew of "
+                "its own), or give it no shelf"
             )
         if any(paused for _, paused in _shutdowns.holding(rbd, node)):
             return (
                 "a shutdown pauses it, and with repair crews a job waiting "
-                "for its spare through a pause is not simulated yet"
+                "for its spare through a pause is not simulated yet: give "
+                "the diagram no repair_crews (each repair then has a crew of "
+                "its own), give the shutdown 'idle_ageing': True (the unit "
+                "ages while it is held), or give it no shelf"
             )
     return None
 
@@ -207,14 +269,69 @@ def _require_one_level(rbd, shelves: Shelves) -> None:
             )
 
 
+def own(rbd) -> Optional[Shelves]:
+    """The shelves the components' specs give (their ``"spares"``), each
+    named ``Own(node)``, a sub-system's components' as ``(node,
+    component)``, or None: worked out once, when the diagram is built
+    (``check_own``)."""
+    return rbd.__dict__.get("_own_shelves")
+
+
+def check_own(rbd, given: Dict[Hashable, Shelf]) -> Optional[Shelves]:
+    """The shelves of a diagram being built, from its components' specs
+    (``given``, by node) and its sub-systems' own, each checked as
+    ``require`` checks a route's (so a shelf no simulation takes is
+    refused when the diagram is built), or None."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    shelves: Dict[Hashable, Shelf] = {}
+    of: Dict[Hashable, Hashable] = {}
+    for node, settings in given.items():
+        require(rbd, node, f"The 'spares' of component {node!r}")
+        shelves[Own(node)] = settings
+        of[node] = Own(node)
+    for node, component in rbd.components.items():
+        inner = (
+            own(component) if isinstance(component, RepairableRBD) else None
+        )
+        if inner is None:
+            continue
+        for key, name in inner.of.items():
+            where = f"The 'spares' of component {key!r} of sub-system {node!r}"
+            if isinstance(key, tuple) and is_inner(component, key):
+                raise NotImplementedError(
+                    f"{where}: component {key[1]!r} is two levels down, in "
+                    f"a sub-system of sub-system {node!r}, which a shelf "
+                    "is not simulated for: give it no shelf."
+                )
+            require(rbd, (node, key), where)
+            shelves[Own((node, key))] = inner.shelves[name]
+            of[(node, key)] = Own((node, key))
+    return Shelves(shelves, of) if shelves else None
+
+
+def merged(rbd, shelves: Shelves) -> Optional[Shelves]:
+    """``shelves`` over the diagram's own (see ``own``): a node they
+    name draws on theirs, the others on their own; or None if there are
+    none."""
+    base = own(rbd)
+    of = {**({} if base is None else base.of), **shelves.of}
+    held = {**({} if base is None else base.shelves), **shelves.shelves}
+    used = set(of.values())
+    out = Shelves({k: v for k, v in held.items() if k in used}, of)
+    return out if out.shelves else None
+
+
 def shelved(rbd, shelves: Shelves):
-    """A copy of ``rbd`` whose simulations draw on ``shelves`` (none
-    removes them). Its other methods are not for use: only the simulated
-    routes that build it run it."""
-    _require_one_level(rbd, shelves)
+    """A copy of ``rbd`` whose simulations draw on ``shelves``, over its
+    components' own (see ``merged``). Its other methods are not for use:
+    only the simulated routes that build it run it."""
+    out_shelves = merged(rbd, shelves)
+    if out_shelves is not None:
+        _require_one_level(rbd, out_shelves)
     out = copy.copy(rbd)
     out.__dict__.pop("_run_state", None)
-    out._shelves = shelves if shelves.shelves else None
+    out._shelves = out_shelves
     return out
 
 
@@ -269,8 +386,19 @@ def fleet_of(rbd, fleet: int):
 
 
 def of(rbd) -> Optional[Shelves]:
-    """The shelves a diagram's simulations draw on, or None."""
-    return rbd.__dict__.get("_shelves")
+    """The shelves a diagram's simulations draw on: a route's over the
+    components' own (``shelved``), or their own (``own``), or None."""
+    held = rbd.__dict__
+    if "_shelves" in held:
+        return held["_shelves"]
+    return held.get("_own_shelves")
+
+
+def held(rbd, node) -> bool:
+    """Whether component ``node`` draws on a shelf in the simulations,
+    which no exact method takes."""
+    shelves = of(rbd)
+    return shelves is not None and node in shelves.of
 
 
 class _Stock:

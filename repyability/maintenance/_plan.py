@@ -767,6 +767,7 @@ _OWN_KEYS = (
     "retire_at",
     "load_sharing",
     "identical",
+    "spares",
 )
 
 
@@ -799,8 +800,9 @@ class UnitPlan:
     ``priority`` (the crews' queue, higher first), ``group`` (its
     maintenance group's name), ``standby`` (a dict, making the node a
     standby group of such units), ``duty`` (the share of the time it
-    operates, for a life in operating hours) and ``covariates`` (a
-    surpyval ``StepSchedule``) are as in the spec.
+    operates, for a life in operating hours), ``covariates`` (a
+    surpyval ``StepSchedule``) and ``spares`` (its shelf of spares) are
+    as in the spec.
 
     Three terms are the unit's own money, which a valuation
     (``expected_npv``) takes as it takes its arguments of the same names
@@ -874,6 +876,9 @@ class UnitPlan:
     identical : dict, optional
         Makes the node a block of identical units, each repaired on its
         own, as a spec's ``"identical"``.
+    spares : dict, optional
+        Its shelf of spares, as a spec's ``"spares"``: ``"stock"``,
+        ``"lead_time"`` and optionally ``"repairs"``.
 
     Examples
     --------
@@ -906,6 +911,7 @@ class UnitPlan:
     retire_at: Optional[float] = None
     load_sharing: Optional[dict] = None
     identical: Optional[dict] = None
+    spares: Optional[dict] = None
 
     #: The node a plan valued alone is in its one-node diagram
     #: (``diagram()``): what its results' tables name.

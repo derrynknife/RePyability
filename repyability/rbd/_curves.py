@@ -243,6 +243,9 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
         if inner.route == r.REFUSED:
             return r.REFUSED, inner.reason
         return inner.route, f"a nested RBD's availability, {inner.route}"
+    shelf = r.refusal(partial(_requirements._require_no_shelf, rbd, node))
+    if shelf:
+        return r.REFUSED, shelf
     if node in rbd._standby:
         message = r.refusal(partial(_long_run._standby_rates, rbd, node))
         if message:
@@ -635,6 +638,8 @@ def _node_curve(
 
     if isinstance(component, RepairableRBD):
         return _nested_curve(component, horizon, counts, stages, start)
+    # (Every kind of unit's curve below: none takes a shelf of spares.)
+    _requirements._require_no_shelf(rbd, node)
     plan = _duty.planned_life(rbd, node)
     if plan is not None:
         why = _duty.time_change_blocker(rbd, node)

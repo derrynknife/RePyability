@@ -399,26 +399,33 @@ SPARES_KEYS = ("price", "lead_time", "max", "stock", "repairs")
 def _spares_lever(rbd, node, spec) -> _Lever:
     """``spares[node]``: spares more on the node's shelf, each at its
     ``"price"`` (its holding cost over the horizon), up to ``"max"`` more,
-    from the shelf's ``"stock"`` as given (by default 0), with its
-    ``"lead_time"`` and whether ``"repairs"`` take a spare."""
+    from the shelf's ``"stock"`` as given, with its ``"lead_time"`` and
+    whether ``"repairs"`` take a spare: by default those of the node's
+    own shelf (its spec's ``"spares"``), and with none a stock of 0 (a
+    lead time is then needed)."""
+    held = _own_shelf(rbd, node)
+    needed = {"price"} if held is not None else {"price", "lead_time"}
     if (
         not isinstance(spec, Mapping)
         or set(spec) - set(SPARES_KEYS)
-        or not {"price", "lead_time"} <= set(spec)
+        or not needed <= set(spec)
     ):
         raise ValueError(
             f"spares[{node!r}] must be a dict of 'price' (what each spare "
             "more on the shelf costs to hold over the horizon) and "
-            "'lead_time' (the time a spare ordered takes to arrive), and "
-            "optionally 'max' (the most spares more), 'stock' (the spares "
-            "held now, by default 0) and 'repairs' (whether a failure "
-            f"repaired imperfectly takes a spare too); got {spec!r}."
+            "'lead_time' (the time a spare ordered takes to arrive, by "
+            "default its spec's 'spares'), and optionally 'max' (the most "
+            "spares more), 'stock' (the spares held now, by default its "
+            "spec's, or 0) and 'repairs' (whether a failure repaired "
+            f"imperfectly takes a spare too); got {spec!r}."
         )
     _shelves.require(rbd, node, "spares")
+    if held is None:
+        held = _shelves.Shelf(0, math.nan)
     shelf = _shelves.shelf(
-        spec.get("stock", 0),
-        spec["lead_time"],
-        spec.get("repairs", False),
+        spec.get("stock", held.stock),
+        spec.get("lead_time", held.lead_time),
+        spec.get("repairs", held.repairs),
         f"the shelf of node {node!r}",
     )
     return _Lever(
@@ -430,10 +437,19 @@ def _spares_lever(rbd, node, spec) -> _Lever:
     )
 
 
+def _own_shelf(rbd, node) -> Optional[_shelves.Shelf]:
+    """The shelf of node ``node``'s spec (its ``"spares"``), or None."""
+    own = _shelves.own(rbd)
+    if own is None or node not in own.of:
+        return None
+    return own.shelves[own.of[node]]
+
+
 def _shelved(rbd, diagram, levers: Sequence[_Lever], state: Sequence[int]):
     """``diagram`` (a design of ``rbd``) with each spares lever's shelf at
     its step: its stock as given and as many more, its node's copies
-    drawing on it too."""
+    drawing on it too; and a node with a shelf of its own (its spec's)
+    and no lever, its copies drawing on that one."""
     shelves, of = {}, {}
     copies = {v.node: s for v, s in zip(levers, state) if v.kind == "copies"}
     for lever, step in zip(levers, state):
@@ -446,7 +462,13 @@ def _shelved(rbd, diagram, levers: Sequence[_Lever], state: Sequence[int]):
         of[lever.node] = lever.node
         for index in range(1, copies.get(lever.node, 0) + 1):
             of[_copy_name(rbd, lever.node, index)] = lever.node
-    if not shelves:
+    for node, count in copies.items():
+        held = _own_shelf(rbd, node)
+        if node in of or held is None:
+            continue
+        for index in range(1, count + 1):
+            of[_copy_name(rbd, node, index)] = _shelves.Own(node)
+    if not of:
         return diagram
     return _shelves.shelved(diagram, _shelves.Shelves(shelves, of))
 

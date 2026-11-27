@@ -1234,6 +1234,24 @@ def test_the_readme_says_what_is_simulated():
                 "simulated",
             ),
         ],
+        'A shelf of spares (a component\'s `"spares"`: a stock reordered '
+        "one for one, each order arriving a lead time later)": [
+            (repairable[name], analysis, route)
+            for name in ("a shelf of spares", "a sub-system's shelf of spares")
+            for analysis, route in (
+                ("availability", "simulated"),
+                ("simulate_timelines", "simulated"),
+                ("least_spend_for_downtime", "simulated"),
+                ("mean_availability", "refused"),
+                ("mission_availability", "refused"),
+                ("spares_demand", "refused"),
+                ("structural_importance", "exact"),
+            )
+        ]
+        + [
+            (repairable["a shelf of spares"], "cost", "simulated"),
+            (repairable["a shelf of spares"], "expected_cost", "refused"),
+        ],
         "Spares with repair crews, standby groups, opportunistic "
         "maintenance, imperfect repair or partial restoration": [
             (crew, "spares_stock", "refused"),

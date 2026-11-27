@@ -3548,6 +3548,35 @@ spare comes. Checks: `test_spares_shelf.py`. Still refused, with the
 reason: replacement on condition, maintenance groups, early renewals at
 shutdowns, and with crews, tested units and units a shutdown pauses.
 
+**The shelf in the diagram (added after).** "Our pump holds two spares
+with a 12-week lead time: what is its availability and cost over the
+year, and its timelines?" Who asks: the owner who has a shelf, not one
+to size. What they know: the stock held and the lead time. Before, the
+shelf lived only in `spares_stock(method="simulate")` and the `spares`
+lever, so every other simulation took a spare as always at hand. Solved
+as a spec key, `"spares": {"stock", "lead_time", "repairs"}`, held as
+the diagram's shelves (each node's own, a sub-system's component's in
+the sub-system's loop) and drawn on by every simulation through the
+same loop; the routes that try their own shelves put theirs over the
+spec's. The risk is an exact method that ignores the shelf: one check,
+`_requirements._require_no_shelf`, sits in the checks of a node's
+models that the exact routes make, in each unit's curve over time, and
+(for every node at once) in the long-run grid and the crews' and
+common-cause groups' chains, so all refuse but those of the given
+probabilities or the structure alone. Building it showed the checks of
+the models were not enough alone: a standby group's or a tested unit's
+values over time, a block-replaced unit's long run and the chains do
+not make them, and refused nothing until the check was put there too;
+a test now runs every method on each kind of node a shelf takes. What the shelf is not
+simulated for is refused when the diagram is built, with what to do; a
+unit a shutdown pauses with crews is refused by the shutdowns' own
+check first. Hand-worked answer: the spec's shelf is the shelf given to
+the loop, bit for bit, on every kind of node it takes, so (1) of the
+first shelf answer holds for it (0.901396 exact). Checks:
+`test_spares_shelf.py`, and the catalogue's two diagrams with a shelf
+(`test_analysis_routes.py`, `test_catalogue.py`). Still not simulated:
+a shelf across levels, and the compiled engine's shelf.
+
 ### UC-61: "Our plan has two outages a year that cost 300 each, and at each we renew the pump if it is past 500 hours. The expected NPV is fine; how bad could a run be?"
 
 - **Status:** built: `npv_distribution`, `compare_npv` and

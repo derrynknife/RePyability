@@ -262,7 +262,9 @@ def _require_crew_chain(rbd) -> None:
     cannot be computed: the Markov chain does not cover the components
     (see ``_crew_chain_rates``) or their common-cause groups (#251, see
     ``_crew_causes``), or nested RBDs' calendars fall together (see
-    ``_require_calendars``)."""
+    ``_require_calendars``), or a component draws on a shelf of spares
+    (see ``_require_no_shelves``)."""
+    _requirements._require_no_shelves(rbd)
     rates = _crew_chain_rates(rbd)
     if rbd.ccf_groups:
         _crew_causes(rbd, list(rates))
