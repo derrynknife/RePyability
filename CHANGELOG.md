@@ -30,7 +30,15 @@ release between minors that only adds (0.19.1).
   the nodes say where the part sits in the diagram, and the rate replaces
   their own. A part with a `"demand_rate"` that is no component of the
   diagram is needed by every system, as before.
-
+- `Network.to_rbd()` draws a network of repaired elements as a
+  `RepairableRBD`, each element a component with its spec, whose values
+  over time and in the long run are the network's (to 1e-12; its mission
+  availability to the diagram's own 4e-6), and which takes the costs,
+  crews, maintenance and spares a network does not. It also draws a
+  network whose links work both ways, where every path between the
+  terminals crosses each link the same way (a series-parallel network),
+  which it refused before; a bridge, whose middle link is crossed both
+  ways, still refuses, now with a `NotImplementedError` naming the link.
 - `SafetyFunction.levers()` and `with_levers()`: each channel's rates,
   repairs and proof test (once for channels sharing a cause, which move
   together), a model's parameters in place of a rate, and each vote's

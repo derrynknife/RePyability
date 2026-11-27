@@ -671,9 +671,35 @@ def test_what_to_rbd_draws_and_refuses():
     assert rbd.input_node == "input (network)" and rbd.output_node == "output"
     assert rbd.sf() == pytest.approx(net.sf(), rel=1e-14)
     assert net.sf() == pytest.approx(0.95 * (1 - 0.2 * (1 - 0.9 * 0.9)))
-    undirected = Network({"a": ("s", "t", 0.1)}, "s", "t")
-    with pytest.raises(ValueError, match="directed=True"):
-        undirected.to_rbd()
+    # Links that work both ways are drawn where every path crosses each
+    # the same way (a series-parallel network), and not otherwise.
+    undirected = Network(
+        {"a": ("s", "x", 0.1), "b": ("t", "x", 0.2), "c": ("s", "t", 0.3)},
+        "s",
+        "t",
+    )
+    drawn = undirected.to_rbd()
+    assert sorted(drawn.G.edges, key=str) == sorted(
+        [
+            ("input", "s"),
+            ("s", "a"),
+            ("a", "x"),
+            ("x", "b"),
+            ("b", "t"),
+            ("s", "c"),
+            ("c", "t"),
+            ("t", "output"),
+        ],
+        key=str,
+    )
+    assert drawn.sf() == pytest.approx(undirected.sf(), rel=1e-14)
+    bridge = Network(
+        {name: (u, v, 0.1) for name, (u, v) in GRAPHS["bridge"].items()},
+        "s",
+        "t",
+    )
+    with pytest.raises(NotImplementedError, match="crossed both ways"):
+        bridge.to_rbd()
     apart = Network(
         {"a": ("x", "s", 0.1), "b": ("x", "t", 0.1)}, "s", "t", directed=True
     )
