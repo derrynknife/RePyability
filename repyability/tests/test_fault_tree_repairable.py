@@ -73,12 +73,12 @@ def test_one_event():
         mean_q_closed(rate, repair, window),
         rtol=1e-9,
     )
-    # Counted from the event's renewal equation on a grid, to about 1e-7
-    # (see RepairableRBD.expected_failures).
+    # In closed form, as the event's curve is (the renewal grid's count
+    # was 8.7e-8 off, 3.6e-6 of it).
     np.testing.assert_allclose(
         tree.expected_failures(window),
         failures_closed(rate, repair, window),
-        atol=1e-7,
+        rtol=1e-12,
     )
     assert tree.mean_unavailability() == pytest.approx(
         rate / (rate + repair), rel=1e-13
