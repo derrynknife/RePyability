@@ -42,6 +42,26 @@ release between minors that only adds (0.19.1).
   state, which moves a value by up to about 1e-15 (1e-13 of a mean). A
   chain that can never fail now gives exactly 1. No seeded result
   changes.
+- Link capacities in a `Network` (`capacity={link: amount}`): the network
+  delivers the maximum flow between its two terminals, each working link
+  carrying up to its capacity (either way, unless the network is
+  directed) and a link given none limiting nothing.
+  `capacity_distribution(x)` gives the exact distribution of what is
+  delivered at `x`, a `CapacityDistribution` (`meets`, `mean`,
+  `delivered_fraction`); with repaired links, `capacity_distribution()`
+  is the long-run distribution, `point_capacity(x)` the distribution at a
+  time and `mission_capacity(t)` its average over a window. The exact
+  values enumerate the states of the links and nodes that change the
+  flow, each with the product of its elements' probabilities; a network
+  of more than `repyability.network.MAX_CAPACITY_STATES` (100,000) such
+  states refuses, pointing to `method="simulate"`, which draws the
+  elements' states (`mc_samples`, `seed`). Capacities take two terminals,
+  are saved with the network, and `to_rbd()` passes a directed network's
+  on to its diagram. Checked against the least cut of every state and
+  the distribution of every state enumerated in exact fractions, a
+  `RepairableRBD`'s capacity analysis of the same series-parallel system
+  (to 1e-9), closed forms, and the seeded simulation (within 4 standard
+  errors).
 - A `FaultTree` of repaired or tested events may now mix them with fixed
   probabilities (a per-demand failure, a human error) and lives that are
   not repaired over the mission, which it refused before. A fixed

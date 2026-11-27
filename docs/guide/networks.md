@@ -228,6 +228,68 @@ supply.system_failure_frequency()    # -> 0.00035790   in the long run: one ever
   simulated. A network that can be drawn as a block diagram has all of
   those as a `RepairableRBD`.
 
+## Capacity
+
+A line carries only so much. Give each link the most it carries with
+`capacity={link: amount}`, and the network delivers the maximum flow from
+the `source` to the `target`: a link carries up to its capacity while it
+works (either way, unless the network is directed), a link given none
+limits nothing, and a failed link, or a link at a failed node, carries
+nothing. `capacity_distribution(x)` gives the distribution of what is
+delivered at `x`, a
+[`CapacityDistribution`](capacity.md) as a diagram's:
+
+```python
+rating = {"GA": 60, "GB": 60, "AB": 30, "AC": 40, "BC": 40, "CL": 70, "BL": 50}
+rated = Network(links, source="G", target="L", capacity=rating)
+delivered = rated.capacity_distribution(1.0)
+delivered.levels.tolist()           # [0.0, 30.0, 40.0, 50.0, 60.0, 70.0, 90.0, 100.0, 120.0]
+delivered.meets(100)                # -> 0.57695   a load of 100 is met at a year
+delivered.delivered_fraction(100)   # -> 0.85217   the share of it delivered, on average
+delivered.mean                      # -> 96.194
+delivered.meets(1)                  # -> 0.98509   something is delivered: sf(1.0)
+```
+
+With repaired links, `capacity_distribution()` is the long-run
+distribution (the fraction of time at each level), `point_capacity(x)` the
+distribution at a time and `mission_capacity(t)` its average over
+`[0, t]`:
+
+```python
+rated_supply = Network(
+    {name: (u, v, cable if name in ("AB", "CL") else line)
+     for name, (u, v, _) in links.items()},
+    source="G", target="L", capacity=rating,
+)
+rated_supply.point_capacity(1.0).meets(100)                   # -> 0.99412
+rated_supply.mission_capacity(1.0).delivered_fraction(100)    # -> 0.99819   of the first year's load
+rated_supply.capacity_distribution().delivered_fraction(100)  # -> 0.99817   in the long run
+rated_supply.capacity_distribution().mean                     # -> 119.67
+```
+
+- **How.** The maximum flow is worked out for the states of the links and
+  nodes that change it: the elements are decided one at a time, and a
+  branch ends as soon as the flow through those known to work equals the
+  flow with the undecided ones working too. Each end's probability is a
+  product of the elements' probabilities, so the distribution is exact
+  (to the elements' own accuracy over time), and the capacity is positive
+  exactly when the terminals are connected. The grid above has 59 such
+  states, of its 128.
+- **Larger networks.** One of more than
+  `repyability.network.MAX_CAPACITY_STATES` (100,000) states refuses,
+  pointing to `method="simulate"`, which draws the elements' states
+  (`mc_samples` of them, by default 10,000, seeded with `seed`) and works
+  out the maximum flow of each distinct one:
+
+```python
+rated.capacity_distribution(1.0, method="simulate", mc_samples=200_000, seed=1).meets(100)   # -> 0.57820   simulated
+```
+
+- **Two terminals.** A flow runs from a source to a target, so capacities
+  take two terminals; they are the links' (a node passes whatever its
+  links bring while it works). `to_rbd()` passes a directed network's
+  capacities on to its diagram's nodes.
+
 ## Importance, lives, uncertainty and saving
 
 The importance measures of a block diagram (see [Importance
