@@ -12,6 +12,16 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `Network.to_rbd()` draws a network of repaired elements as a
+  `RepairableRBD`, each element a component with its spec, whose values
+  over time and in the long run are the network's (to 1e-12; its mission
+  availability to the diagram's own 4e-6), and which takes the costs,
+  crews, maintenance and spares a network does not. It also draws a
+  network whose links work both ways, where every path between the
+  terminals crosses each link the same way (a series-parallel network),
+  which it refused before; a bridge, whose middle link is crossed both
+  ways, still refuses, now with a `NotImplementedError` naming the link.
+
 - An upgraded component with tests no longer refuses its values over a
   horizon (`point_availability`, `mission_availability`,
   `expected_events`, `expected_cost`, `expected_npv`) when its tests or

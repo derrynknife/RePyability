@@ -197,6 +197,67 @@ def test_a_series_parallel_network_is_its_diagram(name):
         ), method
 
 
+def drawn_networks():
+    """Repaired networks that can be drawn as a block diagram: the
+    series-parallel ones (links that work both ways) and the bridge with
+    its links one way (no cycle)."""
+    cases = {name: net for name, (net, _) in series_parallel().items()}
+    c = general()
+    cases["directed bridge with a node"] = Network(
+        {n: (u, v, c[n]) for n, (u, v) in BRIDGE.items()},
+        "s",
+        "t",
+        nodes={"x": spec(W([300.0, 1.2]), E([0.2]))},
+        directed=True,
+    )
+    return cases
+
+
+@pytest.mark.parametrize("name", sorted(drawn_networks()))
+def test_a_drawn_network_is_its_repairable_diagram(name):
+    # to_rbd() draws the repaired elements as a RepairableRBD's
+    # components, whose values are the network's.
+    net = drawn_networks()[name]
+    rbd = net.to_rbd()
+    assert isinstance(rbd, RepairableRBD)
+    assert set(rbd.nodes) == set(net.models)
+    # The network's mission availability is one less its mission
+    # unavailability, integrated to its own size; the diagram integrates
+    # its availability, to its stated 4e-6 (they differ by up to 3.3e-9
+    # here). Its mission unavailability is the network's.
+    np.testing.assert_allclose(
+        rbd.mission_availability(TIMES),
+        net.mission_availability(TIMES),
+        rtol=0,
+        atol=4e-6,
+    )
+    for method in set(OVER_TIME) - {"mission_availability"}:
+        np.testing.assert_allclose(
+            getattr(rbd, method)(TIMES),
+            getattr(net, method)(TIMES),
+            rtol=1e-12,
+            atol=0,
+            err_msg=method,
+        )
+    for method in LONG_RUN:
+        assert getattr(rbd, method)() == pytest.approx(
+            getattr(net, method)(), rel=1e-12, abs=0
+        ), method
+
+
+def test_what_to_rbd_refuses_of_a_repaired_network():
+    # The bridge's middle link is crossed both ways; a probability
+    # beside repaired links is no component of a RepairableRBD.
+    with pytest.raises(NotImplementedError, match="'c' is crossed both"):
+        exponential_bridge().to_rbd()
+    net, _ = series_parallel()["parallel"]
+    mixed = Network(
+        {"a": ("s", "t", net.models["a"]), "p": ("s", "t", 0.1)}, "s", "t"
+    )
+    with pytest.raises(NotImplementedError, match=r"\['p'\] are prob"):
+        mixed.to_rbd()
+
+
 @pytest.mark.parametrize("name", sorted(series_parallel()))
 def test_the_failure_frequency_integrates_to_the_expected_failures(name):
     # The integral of w(t) over a window is the diagram's expected
@@ -664,7 +725,6 @@ def test_a_repaired_network_has_no_lifetime(call):
         lambda net: net.with_levers({}),
         lambda net: net.parameter_sensitivity(1.0),
         lambda net: net.tornado(1.0),
-        lambda net: net.to_rbd(),
     ],
 )
 def test_what_a_repaired_network_does_not_give_yet(call):
