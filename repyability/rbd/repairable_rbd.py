@@ -2283,8 +2283,11 @@ class RepairableRBD(RBD):
         Sherbrooke's METRIC and VARI-METRIC (see the
         [spares guide](../guide/spares.md#bases-and-a-depot)), chosen by
         marginal analysis. A base's availability is the diagram's, each
-        place of a part empty with the chance its backorders give,
-        independently: a part with a stand-in need not ground a system.
+        place of a part empty with the chance its backorders give: a
+        part with a stand-in need not ground a system. A part's places
+        that stand in for each other are taken together, the base's
+        backorders being holes in places drawn evenly, so a pair is
+        missing both more often than two places on their own would be.
         The demand is taken as going on while a system waits.
 
         Parameters

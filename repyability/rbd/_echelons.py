@@ -22,11 +22,19 @@ repair times' distribution (Palm's theorem):
   with ``f`` the base's share of the depot's demand, and a negative
   binomial of that mean and variance (``_base_pipeline``, one statement
   for both);
-- a base's backorders with ``s`` held are ``E[(X - s)+]``, and each of
-  the part's ``N Z`` places there is empty with chance ``EBO / (N Z)``;
-- a base's availability is the diagram's chance of working with each
-  place holding its part independently (``_up``): where every part is
-  needed, the product over parts of ``(1 - EBO / (N Z))^Z``.
+- a base's backorders with ``s`` held are ``B = (X - s)+``, of mean
+  ``EBO``, and each of the part's ``P = N Z`` places there is empty with
+  chance ``EBO / P``;
+- a base's availability is the diagram's chance of working (``_up``).
+  A place the system needs is taken on its own, as the textbook takes
+  it: where every part is needed, the product over parts of ``(1 - EBO
+  / P)^Z``. A part's places that stand in for each other are taken
+  together (``_together``): the base's ``min(B, P)`` holes are in places
+  drawn evenly from the ``P``, so a set of ``j`` places is empty with
+  chance ``E[B (B - 1) ... (B - j + 1)] / (P (P - 1) ... (P - j + 1))``,
+  not ``(EBO / P)^j`` (``_holes``, a pair's both with ``E[B (B - 1)] /
+  (P (P - 1))``): backorders vary more than their mean says, and two
+  holes at once are likelier for it.
 
 A base's repair fraction, repair time and ship time may each be its own
 (``_Part`` keeps them per base).
@@ -70,6 +78,11 @@ _TAIL = 1e-18
 OBJECTIVES = ("auto", "backorders", "availability")
 #: An availability's rounding: a loss of availability within it is none.
 _NOISE = 8.0 * float(np.finfo(float).eps)
+#: The most of a part's places in a system taken together: the chance of
+#: working given each number of holes among them comes from as many values
+#: of the diagram, through a matrix whose condition number grows about
+#: 2.6-fold a place (3.6e6 at 16), so an availability is within 1e-9.
+MOST_TOGETHER = 16
 #: The spec's keys that may differ by base.
 _BY_BASE = ("base_repair_fraction", "base_repair_time", "ship_time")
 #: What a part's spec may hold.
@@ -192,17 +205,118 @@ def _base_pipeline(
     return mean, own + share * (1.0 - share) * owed + share**2 * spread
 
 
+def _base_pipelines(
+    part: _Part, depot: _Depot, depot_stock: int, method: str
+) -> List[np.ndarray]:
+    """Each base's pipeline of a part with ``depot_stock`` at the depot:
+    the chance that more than ``0, 1, ...`` are in it."""
+    return [
+        _pipeline(*_base_pipeline(part, depot, base, depot_stock, method))
+        for base in range(len(part.demand))
+    ]
+
+
 def _base_backorders(
     part: _Part, depot: _Depot, depot_stock: int, method: str
 ) -> List[np.ndarray]:
     """Each base's expected backorders of a part at each stock of its
     own, with ``depot_stock`` at the depot."""
     return [
-        _backorders(
-            _pipeline(*_base_pipeline(part, depot, base, depot_stock, method))
-        )[0]
-        for base in range(len(part.demand))
+        _backorders(more)[0]
+        for more in _base_pipelines(part, depot, depot_stock, method)
     ]
+
+
+# -- places that stand in for each other -------------------------------------
+
+
+def _together(drawn, part: _Part) -> Tuple[Hashable, ...]:
+    """The components of a part whose holes are taken together: those
+    the system can do without, where there are two or more (each a whole
+    number of the part's places). A component the system needs is taken
+    on its own, as every place of a series system is."""
+    if drawn is None or len(part.nodes) < 2:
+        return ()
+    if part.quantity % len(part.nodes):
+        return ()
+    held = dict.fromkeys(drawn.nodes, 1.0)
+    spare = tuple(
+        node
+        for node in part.nodes
+        if float(np.ravel(drawn.system_probability({**held, node: 0.0}))[0])
+        > 0.0
+    )
+    if len(spare) < 2:
+        return ()
+    places = len(spare) * (part.quantity // len(part.nodes))
+    if places > MOST_TOGETHER:
+        raise NotImplementedError(
+            f"Part {part.name!r} has {places} places in a system that "
+            "stand in for each other, and their holes are worked out "
+            f"together for up to {MOST_TOGETHER}. Give its components as "
+            "parts of their own (each with its 'nodes', price and "
+            "times): their holes are then taken as independent, which "
+            "understates the chance of several missing at once."
+        )
+    return spare
+
+
+def _holes(more: np.ndarray, places: int, drawn: int) -> np.ndarray:
+    """The chance of ``0, 1, ..., drawn`` holes among ``drawn`` places
+    of a base's ``places``, at each stock ``s = 0, 1, ...`` (a row each,
+    and a last row for a stock past the pipeline's tail: no hole), from
+    the pipeline's ``more[k] = P(X > k)``: the ``min((X - s)+, places)``
+    holes are in places drawn evenly, so those among ``drawn`` of them
+    are hypergeometric given the backorders.
+
+    Summed by parts over the backorders ``b``, ``P(B >= b)`` times the
+    hypergeometric's change from ``b - 1`` to ``b``, so that no small
+    chance is a difference of large ones."""
+    from scipy.special import comb
+
+    most = min(places, len(more))
+    empty = np.arange(most + 1)[:, None]
+    among = np.arange(drawn + 1)[None, :]
+    given = (
+        comb(empty, among)
+        * comb(places - empty, drawn - among)
+        / comb(places, drawn)
+    )
+    change = np.diff(given, axis=0)
+    padded = np.concatenate((more, np.zeros(most)))
+    out = np.zeros((len(more) + 1, drawn + 1))
+    out[:, 0] = 1.0
+    for holes in range(drawn + 1):
+        out[:-1, holes] += np.correlate(padded, change[:, holes], "valid")[
+            : len(more)
+        ]
+    return out
+
+
+class _Law(NamedTuple):
+    """A part's places taken together at a base: the components, how
+    many places each is, and the chance of each number of holes among
+    them all (a row, or a row for each stock)."""
+
+    nodes: Tuple[Hashable, ...]
+    each: int
+    holes: np.ndarray
+
+
+def _given_holes(count: int) -> np.ndarray:
+    """What turns a function's values with each of ``count`` places
+    empty on its own with chance ``k / count``, ``k = 0, ..., count``,
+    into its means given ``0, ..., count`` of them empty, drawn evenly:
+    the inverse of the binomial chances of each number of holes at each
+    of those chances (a function of the places' states is a polynomial
+    of degree ``count`` in the chance, and those are its coefficients on
+    the binomials')."""
+    from scipy import stats
+
+    chance = np.arange(count + 1) / count
+    return np.linalg.inv(
+        stats.binom.pmf(np.arange(count + 1)[None, :], count, chance[:, None])
+    )
 
 
 # -- one part's best stocks --------------------------------------------------
@@ -271,18 +385,57 @@ class _Curve:
         self.method = method
         self.depot = _depot(part)
         self.fleet: Optional["_Fleet"] = None
+        self._more: Dict[int, List[np.ndarray]] = {}
         self._owed: Dict[int, List[np.ndarray]] = {}
+        self._holes: Dict[Tuple[int, int], np.ndarray] = {}
+        self._joint: Optional[Tuple[Hashable, ...]] = None
         self.most = 8
         self.at = 0
         self._hull()
 
+    def more(self, depot_stock: int) -> List[np.ndarray]:
+        """Each base's pipeline: the chance of more than ``0, 1, ...``."""
+        if depot_stock not in self._more:
+            self._more[depot_stock] = _base_pipelines(
+                self.part, self.depot, depot_stock, self.method
+            )
+        return self._more[depot_stock]
+
     def owed(self, depot_stock: int) -> List[np.ndarray]:
         """Each base's expected backorders at each stock of its own."""
         if depot_stock not in self._owed:
-            self._owed[depot_stock] = _base_backorders(
-                self.part, self.depot, depot_stock, self.method
-            )
+            self._owed[depot_stock] = [
+                _backorders(more)[0] for more in self.more(depot_stock)
+            ]
         return self._owed[depot_stock]
+
+    def law(
+        self,
+        drawn,
+        fleets: np.ndarray,
+        base: int,
+        depot_stock: Optional[int] = None,
+    ) -> Optional[_Law]:
+        """The holes among the part's places that stand in for each
+        other in a system at a base (None: it has none): at the stock
+        reached, or with ``depot_stock`` at each stock of the base's own
+        (a row each, and a last one for none owed)."""
+        if self._joint is None:
+            self._joint = _together(drawn, self.part)
+        if not self._joint:
+            return None
+        each = self.part.quantity // len(self.part.nodes)
+        at = self.held().depot if depot_stock is None else depot_stock
+        if (at, base) not in self._holes:
+            self._holes[at, base] = _holes(
+                self.more(at)[base],
+                int(fleets[base]) * self.part.quantity,
+                each * len(self._joint),
+            )
+        holes = self._holes[at, base]
+        if depot_stock is None:
+            holes = holes[min(self.held().bases[base], len(holes) - 1)]
+        return _Law(self._joint, each, holes)
 
     def _losses(self, depot_stock: int) -> List[np.ndarray]:
         if self.fleet is None:
@@ -347,14 +500,29 @@ def _working(part: _Part, base: int, fleets: np.ndarray, short):
     return np.maximum(1.0 - short / places, 0.0)
 
 
-def _up(drawn, parts: Sequence[_Part], working: Sequence):
+def _up(
+    drawn,
+    parts: Sequence[_Part],
+    working: Sequence,
+    laws: Optional[Sequence[Optional[_Law]]] = None,
+):
     """The chance that a system works, ``working[i]`` the chance that a
-    place of ``parts[i]`` holds one (numbers, or arrays of one length),
-    the places independent: the diagram ``drawn`` at each component's
-    chance, times that of every part it does not draw. With no diagram
-    every part is needed, and it is the product over the parts."""
+    place of ``parts[i]`` holds one (numbers, or arrays of one length):
+    the diagram ``drawn`` at each component's chance, times that of
+    every part it does not draw. With no diagram every part is needed,
+    and it is the product over the parts.
+
+    Each place is taken on its own, but those of a part with a law
+    (``laws[i]``, its places that stand in for each other): the diagram
+    is worked out with each of those empty on its own at a chance ``k /
+    count`` for every ``k``, which gives its chance of working given
+    each number of holes among them (``_given_holes``), and that is
+    weighed by the law. With several such parts, at every combination
+    of their chances."""
     needed = 1.0
-    chances = None if drawn is None else dict.fromkeys(drawn.nodes, 1.0)
+    chances: Optional[Dict[Hashable, Any]] = (
+        None if drawn is None else dict.fromkeys(drawn.nodes, 1.0)
+    )
     for part, chance in zip(parts, working):
         if chances is None or not part.nodes:
             needed = needed * chance**part.quantity
@@ -365,9 +533,28 @@ def _up(drawn, parts: Sequence[_Part], working: Sequence):
     if chances is None:
         return needed
     length = max(np.size(chance) for chance in chances.values())
-    return needed * drawn.system_probability(
-        {n: np.broadcast_to(c, (length,)) for n, c in chances.items()}
-    )
+    joint = [law for law in laws or () if law is not None]
+    if not joint:
+        return needed * drawn.system_probability(
+            {n: np.broadcast_to(c, (length,)) for n, c in chances.items()}
+        )
+    length = max([length] + [len(np.atleast_2d(law.holes)) for law in joint])
+    counts = [law.each * len(law.nodes) + 1 for law in joint]
+    for axis, law in enumerate(joint):
+        shape = [1] * (len(joint) + 1)
+        shape[axis] = counts[axis]
+        filled = 1.0 - np.arange(counts[axis]) / (counts[axis] - 1)
+        for node in law.nodes:
+            chances[node] = (filled**law.each).reshape(shape)
+    whole = (*counts, length)
+    up = drawn.system_probability(
+        {n: np.broadcast_to(c, whole).ravel() for n, c in chances.items()}
+    ).reshape(whole)
+    for law, count in zip(joint, counts):
+        given = np.tensordot(_given_holes(count - 1), up, 1)
+        holes = np.broadcast_to(np.atleast_2d(law.holes), (length, count))
+        up = np.einsum("lh,h...l->...l", holes, given)
+    return needed * up
 
 
 class _Fleet:
@@ -400,8 +587,17 @@ class _Fleet:
                 )
                 for other in self.curves
             ]
+            laws = [
+                other.law(
+                    self.drawn,
+                    self.fleets,
+                    base,
+                    depot_stock if other is curve else None,
+                )
+                for other in self.curves
+            ]
             up = np.broadcast_to(
-                _up(self.drawn, self.parts, working), (len(owed) + 1,)
+                _up(self.drawn, self.parts, working, laws), (len(owed) + 1,)
             )
             lost = self.fleets[base] / self.fleets.sum() * (up[-1] - up[:-1])
             out.append(np.where(lost > _NOISE, lost, 0.0))
@@ -424,6 +620,7 @@ def _allocation(
     stock: Dict[Hashable, Dict[Hashable, int]] = {site: {} for site in sites}
     owed: Dict[Hashable, Dict[Hashable, float]] = {site: {} for site in sites}
     working: List[List[float]] = [[] for _ in sites]
+    laws: List[List[Optional[_Law]]] = [[] for _ in sites]
     for curve in curves:
         part, held = curve.part, curve.held()
         spend += part.price * (held.depot + sum(held.bases))
@@ -438,9 +635,13 @@ def _allocation(
             short = curve.short(j)
             owed[site][part.name] = short
             working[j].append(_working(part, j, fleets, short))
+            laws[j].append(curve.law(drawn, fleets, j))
     parts = [curve.part for curve in curves]
     up = np.array(
-        [float(np.ravel(_up(drawn, parts, each))[0]) for each in working]
+        [
+            float(np.ravel(_up(drawn, parts, each, law))[0])
+            for each, law in zip(working, laws)
+        ]
     )
     return SparesAllocation(
         spend=spend,
