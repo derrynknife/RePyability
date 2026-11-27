@@ -113,7 +113,10 @@ Every method works on a directed network, and it may have cycles.
 `to_rbd()` gives the `NonRepairableRBD` of the same graph, each link and
 failing node a node of the diagram and the other nodes junctions, for a
 network of two terminals whose links from the source to the target have no
-cycle (a diagram has none).
+cycle (a diagram has none). A network whose links work both ways is drawn
+too where every path between the terminals crosses each link the same way
+(a series-parallel network: a bridge's middle link is crossed both ways,
+so it is not drawn).
 
 Given `terminals`, a directed network works while the `source` reaches
 every one of them along working links (the paths may share links, and
@@ -266,12 +269,17 @@ standby = Network(
 standby.mean_unavailability()        # -> 1.8541e-05   0.02 times the line's
 ```
 
+- **As a block diagram.** `to_rbd()` draws a repaired network that can
+  be drawn (see [Directed links](#directed-links)) as a `RepairableRBD`,
+  each element a component with its spec: its values are the network's,
+  and it takes what the network does not, such as costs, crews,
+  maintenance and spares (give its components the fuller specs). Every
+  element must then be repaired.
 - **Not yet.** A repaired network has no time at which its terminals part
   for good, so `sf`, `mean`, the B-lives and `random` refuse it; so do the
-  levers, `parameter_sensitivity`, `tornado` and `to_rbd`. An element
-  takes a life, a repair and tests only (no preventive maintenance, crews
-  or costs), and a repaired network is not simulated. A network that can
-  be drawn as a block diagram has all of those as a `RepairableRBD`.
+  levers, `parameter_sensitivity` and `tornado`. An element takes a life,
+  a repair and tests only (no preventive maintenance, crews or costs), and
+  a repaired network is not simulated.
 
 ## Capacity
 

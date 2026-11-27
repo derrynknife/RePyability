@@ -238,6 +238,7 @@ _REPAIRED_GIVES = _REPAIRED_OWN | frozenset(
         "analysis_routes",
         "to_dict",
         "to_json",
+        "to_rbd",
         "capacity_distribution",
         "point_capacity",
         "mission_capacity",
@@ -736,30 +737,52 @@ class Network:
         NotImplementedError
             If there are more than ``MAX_PATHS``.
         """
-        if self._paths is not None:
-            return self._paths
-        failing = set(self.nodes)
-        paths: List[frozenset] = []
-        start = [self.source] if self.source in failing else []
+        if self._paths is None:
+            failing = set(self.nodes)
+            start = [self.source] if self.source in failing else []
+            self._paths = [
+                frozenset(
+                    start
+                    + [
+                        element
+                        for name, _, other in steps
+                        for element in (
+                            (name, other) if other in failing else (name,)
+                        )
+                    ]
+                )
+                for steps in self._walks()
+            ]
+        return self._paths
+
+    def _walks(self):
+        """Each simple path between the two terminals (see
+        ``_simple_paths``), as its steps from the source, each ``(link,
+        from node, to node)``.
+
+        Raises
+        ------
+        NotImplementedError
+            Once there are more than ``MAX_PATHS``.
+        """
+        count = 0
         # Depth first, without recursion: each entry is a node, the
-        # elements of the path so far, the nodes on it and the next of the
+        # steps of the path so far, the nodes on it and the next of the
         # node's links to try.
-        stack: list = [(self.source, start, {self.source}, 0)]
+        stack: list = [(self.source, [], {self.source}, 0)]
         while stack:
-            node, elements, visited, i = stack.pop()
+            node, steps, visited, i = stack.pop()
             around = self._out[node]
             if i >= len(around):
                 continue
-            stack.append((node, elements, visited, i + 1))
+            stack.append((node, steps, visited, i + 1))
             name, other = around[i]
             if other in visited:
                 continue
-            step = elements + [name]
-            if other in failing:
-                step = step + [other]
+            step = steps + [(name, node, other)]
             if other == self.target:
-                paths.append(frozenset(step))
-                if len(paths) > MAX_PATHS:
+                count += 1
+                if count > MAX_PATHS:
                     raise _TooLarge(
                         f"The network has more than {MAX_PATHS:,} paths "
                         "between its terminals, too many to list.",
@@ -768,10 +791,9 @@ class Network:
                         "diagram (network.METHOD = 'bdd', the "
                         "default), or simulate it: method='simulate'.",
                     )
+                yield step
                 continue
             stack.append((other, step, visited | {other}, 0))
-        self._paths = paths
-        return paths
 
     def path_sets(self) -> Set[frozenset]:
         """The minimal path sets, as a set: for each simple path between
@@ -4250,20 +4272,30 @@ class Network:
     # As a diagram
     # ------------------------------------------------------------------
 
-    def to_rbd(self) -> NonRepairableRBD:
-        """The reliability block diagram of a directed network: the same
-        graph, each link and each node that can fail a node of the diagram
-        with its model, and each other node a junction
-        ([`PerfectReliability`][repyability.PerfectReliability]).
+    def to_rbd(self) -> Any:
+        """The reliability block diagram of the network: the same graph,
+        each link and each node that can fail a node of the diagram with
+        its model, and each other node a junction
+        ([`PerfectReliability`][repyability.PerfectReliability]). A
+        network of repaired elements gives a
+        [`RepairableRBD`][repyability.RepairableRBD], each element a
+        component with its spec, which takes what the network does not:
+        costs, crews, maintenance (give its components the fuller specs),
+        spares and the rest.
 
         The diagram has the links that lie on a way from the source to the
         target; the others cannot join them, and are left out. A diagram
-        has no cycle, so a network with one among those links is not
-        drawn: its own methods work it out.
+        is followed one way and has no cycle, so a network is drawn where
+        its links can be: a directed one with no cycle among those links,
+        and one whose links work both ways (``directed=False``) where every
+        path between the terminals crosses each link the same way, as in a
+        series-parallel network (a bridge's middle link is crossed both
+        ways, so a bridge is not drawn). Its own methods work out the
+        others.
 
         Returns
         -------
-        NonRepairableRBD
+        NonRepairableRBD or RepairableRBD
             The diagram, from input node ``"input"`` to output node
             ``"output"`` (renamed if a link or node has that name). A
             node that cannot fail keeps its name, unless a link has it.
@@ -4271,11 +4303,15 @@ class Network:
         Raises
         ------
         ValueError
-            If the network is not directed (a link that works both ways
-            is not an edge of a diagram), or no way leads from the source
-            to the target.
+            If the network has more than two terminals, or no way leads
+            from the source to the target.
         NotImplementedError
-            If the links between the source and the target have a cycle.
+            If the links between the source and the target have a cycle,
+            a link that works both ways is crossed both ways by the paths
+            between the terminals, the paths are too many to list
+            (``MAX_PATHS``, for links that work both ways), or repaired
+            elements are mixed with probabilities or lives that are not
+            repaired (a ``RepairableRBD``'s components are all repaired).
 
         Examples
         --------
@@ -4290,13 +4326,8 @@ class Network:
         (0.962, 0.962)
         """
         from repyability.rbd.helper_classes import PerfectReliability
+        from repyability.rbd.repairable_rbd import RepairableRBD
 
-        if not self.directed:
-            raise Refused(
-                "to_rbd() draws a directed network (directed=True): a "
-                "link that works both ways is not an edge of a reliability "
-                "block diagram, which is followed one way."
-            )
         if len(self.terminals) > 2:
             raise Refused(
                 "to_rbd() draws a network of two terminals, a diagram's "
@@ -4304,12 +4335,31 @@ class Network:
                 "The network's own methods work it out (sf, the importance "
                 "measures, random)."
             )
-        # The links on a way from the source to the target: none into the
-        # source or out of the target, each from a node the source reaches
-        # to one that reaches the target.
+        if self.is_repairable:
+            plain = sorted(
+                str(name)
+                for name, model in self.models.items()
+                if not isinstance(model, dict)
+            )
+            if plain:
+                raise NotImplementedError(
+                    f"Element(s) {plain} are probabilities or lives that "
+                    "are not repaired, beside repaired ones, and a "
+                    "RepairableRBD's components are all repaired: give "
+                    "each a component spec ('reliability' and "
+                    "'repairability') to draw the network, or ask the "
+                    "network itself (point_availability, "
+                    "mission_unavailability, expected_failures, ...)."
+                )
+        # The links on a way from the source to the target, each in the
+        # direction it is followed: none into the source or out of the
+        # target, each from a node the source reaches to one that reaches
+        # the target.
         arcs = {
             name: (u, v)
-            for name, (u, v) in self.links.items()
+            for name, (u, v) in (
+                self.links if self.directed else self._oriented()
+            ).items()
             if v != self.source and u != self.target
         }
 
@@ -4388,7 +4438,8 @@ class Network:
         for name, (u, v) in arcs.items():
             edges += [(drawn[u], name), (name, drawn[v])]
             models[name] = self.models[name]
-        return NonRepairableRBD(
+        diagram = RepairableRBD if self.is_repairable else NonRepairableRBD
+        return diagram(
             edges,
             models,
             input_node=ends[0],
@@ -4400,6 +4451,31 @@ class Network:
             }
             or None,
         )
+
+    def _oriented(self) -> Dict[Hashable, Tuple[Hashable, Hashable]]:
+        """The links of a network whose links work both ways that lie on
+        a path between the terminals, each as the ``(from, to)`` that
+        every such path crosses it in (see ``to_rbd``).
+
+        Raises
+        ------
+        NotImplementedError
+            If some link is crossed both ways, or the paths are more than
+            ``MAX_PATHS``.
+        """
+        arcs: Dict[Hashable, Tuple[Hashable, Hashable]] = {}
+        for steps in self._walks():
+            for name, u, v in steps:
+                if arcs.setdefault(name, (u, v)) != (u, v):
+                    raise NotImplementedError(
+                        f"Link {name!r} is crossed both ways by the paths "
+                        f"between the terminals ({u!r} to {v!r} and {v!r} "
+                        f"to {u!r}), and a reliability block diagram is "
+                        "followed one way, so the network is not drawn (a "
+                        "bridge is not series-parallel). The network's own "
+                        "methods work it out."
+                    )
+        return arcs
 
     # ------------------------------------------------------------------
     # The routes
