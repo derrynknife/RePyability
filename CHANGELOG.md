@@ -12,6 +12,26 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A `Network`'s links and nodes can be repaired. Give each a component
+  spec (`{"reliability": ..., "repairability": ...}`, as a
+  `RepairableRBD`'s component's) and the network gives the connection's
+  `point_availability(x)` and `point_unavailability(x)` (the latter
+  worked out as itself, so a small one keeps its digits),
+  `mission_availability(t)` and `mission_unavailability(t)`,
+  `mean_availability()` and `mean_unavailability()` in the long run, and
+  how often the connection is lost: `failure_frequency(t)`,
+  `expected_failures(t)` and `system_failure_frequency()`. Each element's
+  curve is a diagram's component's, and the connection follows from the
+  network's own decision diagram, so two terminals, several, all of them
+  and directed links all work; the importance measures made of the
+  elements' probabilities are taken at their availabilities at `x`. What
+  needs a time at which the terminals part for good (`sf`, `mean`, the
+  B-lives, `random`) refuses a repaired network, as do the levers,
+  `parameter_sensitivity`, `tornado` and `to_rbd` for now; an element
+  takes a life and a repair only, every element is repaired or none is,
+  and a repaired network is not simulated. `to_dict` saves the specs;
+  `analysis_routes()` and the capability matrix show the new methods.
+
 - `PhasedMission` saves and loads (`to_dict`, `to_json`, `from_dict`,
   `from_json`), a mission drawn as one diagram with its blocks' settings
   and vote counts by phase; and it has the measures the other models
@@ -31,6 +51,7 @@ release between minors that only adds (0.19.1).
   mission. There is no structural importance for a mission (a
   component's state is one per phase). `analysis_routes()`, the
   capability matrix and the phased missions guide show them.
+
 - `Network.tornado(x)`: the numbers of a tornado chart for a network, as
   the diagrams and `FaultTree` give them: the exact reliability at `x`
   with each link's and failing node's parameter at its low and at its
