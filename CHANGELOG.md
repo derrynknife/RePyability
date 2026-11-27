@@ -12,6 +12,22 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `SafetyFunction.levers()` and `with_levers()`: each channel's rates,
+  repairs and proof test (once for channels sharing a cause, which move
+  together), a model's parameters in place of a rate, and each vote's
+  betas, keyed by the tuple of its channels; a proof test interval takes
+  the full test with it.
+- `SafetyFunction.measure_uncertainty` draws a vote's `beta`,
+  `beta_detected` and `beta_safe` under the tuple of the vote's
+  channels, which it refused. Seeded draws of rates are unchanged.
+- The safety-function guide says how far the simplified formulas with a
+  proof test that misses lie from the exact values (the PFH of 1oo2 and
+  2oo3 is right to first order; the PFDavg of 1oo2 and the PFH of 1oo3
+  are high by 10.1% at PTC 90%, T2 = 5 T1, however small the rate), and
+  how conservative `detected_trips=True` is for a channel holding an
+  undetected failure (exactly `(1 + λDD MTTR)^(N - M + 1)` on the PFDavg
+  of 1oo1 and 1oo2).
+
 - The long-run values of a warm standby pair with one repair at a time
   whose switch can fail (`"dormancy_factor"` above 0 with
   `"switching_probability"` below 1, `repair_crews=1`), which were
