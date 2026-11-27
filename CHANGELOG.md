@@ -32,6 +32,55 @@ release between minors that only adds (0.19.1).
   component's state is one per phase). `analysis_routes()`, the
   capability matrix and the phased missions guide show them.
 
+- Demand plans for a probability of failing per demand in a
+  `RepairableRBD` (a `"reliability"` that is a
+  `surpyval.FixedEventProbability`), beside `"demand_rate"`:
+  `"demand_times"`, the set times the unit is called on (a recurrence
+  rule's through `CalendarContext.rule_times`), a life that ends only at
+  one of them and is not restarted by a repair; its values over a window
+  (`point_availability`, `mission_availability`, `expected_failures`,
+  `expected_cost`) are exact, a sum over the demands, its long run is
+  refused, and the Python engine simulates it, drawing the demands a unit
+  survives from its own failure stream. `"demand_plan"`, the demands per
+  unit of time from each of its times (`{"times", "rates"}` or a
+  `schedule.DutySchedule`): an exponential life in demands on the plan's
+  clock, as a duty plan that changes over time, worked out over a window
+  where its repairs take no time and simulated otherwise. A duty with a
+  demand plan or rate is refused unless `"demand_basis": "operating"`
+  says it is counted in operating time, which the duty then puts on the
+  calendar (a demand rate with a duty was refused before). `UnitPlan`
+  takes `demand_times`, `demand_plan` and `demand_basis`; they are saved,
+  and the probability is the lever. Seeded results of every other node
+  are unchanged.
+- `df`, `hf`, `Hf`, `parameter_sensitivity`, `levers` and `with_levers` on
+  `Network`, as `NonRepairableRBD` and `FaultTree` have them. `Hf` is exact
+  from the reliability and unreliability; `df` and `hf` differ the exact
+  reliability with a step relative to the time (and, at 0, to the
+  elements' typical life), so no unit of time matters; `parameter_sensitivity`
+  is each element's Birnbaum importance times how far its model's
+  reliability moves with a parameter, and `levers` and `with_levers` list
+  and move those parameters, each with the range its model accepts.
+  `analysis_routes()` and the capability matrix show them.
+- `EventTree(initiator, headings, sequences=None)`: an event tree. The
+  initiator is a frequency, or a `FaultTree` of repaired events whose
+  `system_failure_frequency()` it is; each heading a `FaultTree` (its top
+  event, the barrier failing) or a probability (a protection layer, for
+  LOPA); the paths `{path: outcome}` give each heading's success, failure
+  or None (not asked), and must partition the initiator (by default every
+  combination is its own outcome). `sequence_probabilities(t)`,
+  `sequence_frequencies(t)` and `outcome_frequencies(t)` are exact where
+  headings share basic events: each sequence is one fault tree, the AND
+  of each failed heading's top and the NOT of each succeeded one's, over
+  the headings' gates and their events (one event to a name; two models
+  for one name are refused), evaluated by the NOT-gate decision diagram
+  (`sequence_tree(path)` returns it). `approximation="rare_event"` leaves
+  out the successes, as other tools quantify a sequence, and
+  `"independent"` takes the product of the branches.
+  `birnbaum_importance(outcome, t)` and `fussell_vesely(outcome, t)` give
+  each event's importance to an outcome's frequency; `analysis_routes()`,
+  `to_dict`/`from_dict` and JSON. New results `SequenceProbabilities`,
+  `SequenceFrequencies` and `OutcomeFrequencies`; a guide page, "Event
+  trees".
 - `bx_life_uncertainty` and `time_to_reliability_uncertainty` on
   `FaultTree` and `Network`: a B-life, or the time to a reliability, with
   its band over the uncertainty of the events' or links' models, as

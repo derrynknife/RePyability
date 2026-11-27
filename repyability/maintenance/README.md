@@ -92,6 +92,7 @@ Not yet single:
 | UC-64 | What a part costs per year once upgraded: the long run of the diagram with the new life, the time before the upgrade ignored | **Built**: the long-run methods of a diagram with an `"upgrade"` give the values of the diagram after it |
 | UC-68 | "95% sure": the least spend that keeps a bad year's downtime (hours or cost) under a limit, with the frontier and both planned and unplanned downtime | **Built** (simulated): `RepairableRBD.least_spend_for_downtime` and `UnitPlan.least_spend_for_downtime`, with redundancy, interval, test-interval, upgrade, crew and call-out levers, and parameter uncertainty (`uncertainty=`); risk measures in `repyability.value._risk` |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
+| UC-73 | A unit that fails on demand, called on at set times (planned starts, a recurrence rule) or at a rate that changes over the year: its availability, failures and cost over a window | **Built**: a spec's (and a `UnitPlan`'s) `"demand_times"`, exact over a window and simulated; `"demand_plan"`, exact over a window where repairs take no time and simulated otherwise; `"demand_basis"` for demands counted in operating time |
 
 ## How a use case is added
 
@@ -3822,6 +3823,77 @@ life, to the bit, seeded runs included; the closed form; the levers,
 saving, units and refusals. Left: a unit that wears out and may also
 fail on a demand (two components in series for now), and demands at
 fixed times.
+
+### UC-73: "The standby generator is started at three planned outages next year, and it fails to start on 10% of starts. How available is it, how many failed starts do we expect, and what do the repairs cost? And the fire pump, called on more in summer than in winter?"
+
+- **Status:** built: a component spec's `"demand_times"` (a list of
+  times, such as `CalendarContext.rule_times(rule)` of a recurrence
+  rule) or `"demand_plan"` (demands per unit of time from given times),
+  on a `"reliability"` that is a `surpyval.FixedEventProbability`, with
+  `"demand_basis"` saying whether the plan is on the diagram's clock
+  (the default) or in the block's operating time; a `UnitPlan`'s fields
+  of the same names.
+- **Who asks:** the reliability engineer of the previous paragraph, whose
+  demands do not come at random at a steady rate: a standby unit started
+  at planned outages or proof runs, on dates the plan fixes, or a pump
+  called on by a season (more fires in summer, fewer starts at
+  weekends).
+- **What they know:** the probability `p` of failing per demand, the
+  dates of the demands (or the expected demands per day through the
+  year), and the repair time.
+- **Today:** a `"demand_rate"` makes the demands a Poisson process at
+  one rate, so a demand plan has to be averaged into a rate, which puts
+  the risk at the wrong times: a window between two outages sees
+  failures it cannot have.
+- **The answer, by hand:** demands at 10, 20 and 30 days, `p = 0.1`, a
+  failed start repaired in exactly 15 days. A demand meets the generator
+  working unless a repair is under way. The first fails it with chance
+  `f1 = 0.1`; at day 20 the repair from day 10 (to day 25) is under way
+  if there was one, so `f2 = 0.1 (1 - 0.1) = 0.09`; at day 30 that one
+  is over and only day 20's (to day 35) can be under way, so `f3 = 0.1
+  (1 - 0.09) = 0.091`. **0.281** failed starts; over days 0 to 50 the
+  generator is down for `15 x 0.281 = 4.215` days, available **0.9157**;
+  at day 22 it is down if day 10's or day 20's start failed, available
+  `1 - 0.19 = 0.81`.
+- **How it is solved:** demands at set times are a life that can end
+  only at them, which does not restart with a repair: the plan is on the
+  calendar. A unit is up for demand `k` unless one of its earlier
+  failures is still being repaired, and at most one is, so the chance
+  that demand `k` fails it is `f_k = p (1 - sum_{j<k} f_j P(R >= t_k -
+  t_j))`, `R` the repair time, and the point availability `A(t) = 1 -
+  sum_{t_k <= t} f_k P(R > t - t_k)`: exact at every time, the expected
+  failures `sum f_k` over a window, and a window's integrals on pieces
+  broken at the demands and the repair's quantiles. A unit repaired at
+  `t0` meets the demands after `t0` (one repaired at a demand's instant
+  is not called on by it). The simulation draws, for a unit put into
+  service, the number of demands it survives, geometric, from its own
+  failure stream, and takes the demand that many on. A rate that changes
+  is the duty plans' machinery: the expected demands `Λ(t)` by time `t`,
+  piecewise linear, and the life `Exponential(p)` counted in demands,
+  put on the diagram's clock by `Λ⁻¹` (survival `exp(-p Λ(t))` from
+  new); a constant rate is `"demand_rate"` itself.
+- **The clock:** a demand plan is on the diagram's clock by default, and
+  then a `"duty"` is refused (it would stretch the demands as though
+  they came only while the block runs). With `"demand_basis":
+  "operating"`, the plan is in the block's operating time, and the duty
+  puts it on the calendar: the times `t_k` at `D⁻¹(t_k)`, a rate
+  `λ(D(t)) D'(t)`, a `"demand_rate"` `d` times the share. This settles
+  the refusal of a demand rate with a duty.
+- **Checks** (`test_demand_plans.py`): the hand-worked generator to
+  1e-12 (point availability, failures and availability over windows),
+  and a seeded simulation (its design fixed before it ran) within four
+  standard errors; demands equally spaced at `h` with `p = λ h`
+  converging on the exponential life of rate `λ` as `h` shrinks; a rate
+  that changes against `exp(-p Λ(t))`, simulated with no repair and
+  exactly in a repair of no time; seeded runs of a diagram's other nodes
+  unchanged by a plan on one; the routes, catalogue kinds, levers,
+  saving and refusals.
+- **Learned / left:** the long-run analyses are refused (a list of
+  times ends, so its long run is that of a unit never called on), as are
+  imperfect repair and tasks (the curve has no place for them), which the
+  simulations take. A rate that changes is exact only where its repairs
+  and tasks take no time, as duty plans are; else simulated. A unit with
+  a life and a demand mode in one component is a separate use case.
 
 
 ### UC-25: "How much of our downtime and lost production is planned and how much is from failures, and how many failures does the plan avoid each year against running to failure?"

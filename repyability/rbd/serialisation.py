@@ -415,6 +415,14 @@ def _serialise_component(value) -> dict:
             out["replace_after"] = int(value["replace_after"])
         if value.get("demand_rate") is not None:
             out["demand_rate"] = float(value["demand_rate"])
+        if value.get("demand_times") is not None:
+            out["demand_times"] = [
+                float(t) for t in np.ravel(value["demand_times"])
+            ]
+        if value.get("demand_plan") is not None:
+            out["demand_plan"] = _demand_plan_dict(value["demand_plan"])
+        if value.get("demand_basis") is not None:
+            out["demand_basis"] = str(value["demand_basis"])
         if value.get("duty") is not None:
             duty = value["duty"]
             # A share, or a duty plan that changes over time (its dict).
@@ -609,8 +617,13 @@ def _deserialise_component(d: dict) -> Any:
             out["repair"] = dict(d["repair"])
         if "replace_after" in d:
             out["replace_after"] = d["replace_after"]
-        if "demand_rate" in d:
-            out["demand_rate"] = d["demand_rate"]
+        for key in ("demand_rate", "demand_basis"):
+            if key in d:
+                out[key] = d[key]
+        if "demand_times" in d:
+            out["demand_times"] = list(d["demand_times"])
+        if "demand_plan" in d:
+            out["demand_plan"] = dict(d["demand_plan"])
         if "duty" in d:
             duty = d["duty"]
             if isinstance(duty, dict):
@@ -939,6 +952,24 @@ def rbd_to_json(rbd: RBD, **json_kwargs) -> str:
 def rbd_from_json(s: str) -> RBD:
     """Reconstruct an RBD from a JSON string."""
     return rbd_from_dict(json.loads(s))
+
+
+def _demand_plan_dict(plan) -> dict:
+    """A demand plan (a dict of ``"times"`` and ``"rates"``, or a
+    ``DutySchedule`` of its rates) as JSON, a dict of them."""
+    if isinstance(plan, dict):
+        unit, times, rates = (
+            plan.get("unit", "hours"),
+            plan["times"],
+            plan["rates"],
+        )
+    else:
+        unit, times, rates = plan.unit, plan.times, plan.shares
+    return {
+        "unit": str(unit),
+        "times": [float(t) for t in np.ravel(times)],
+        "rates": [float(r) for r in np.ravel(rates)],
+    }
 
 
 def _duty_plan_dict(plan) -> dict:

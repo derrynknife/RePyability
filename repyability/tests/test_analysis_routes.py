@@ -465,6 +465,10 @@ NETWORK_CALLS = {
         for name in (
             "sf",
             "ff",
+            "Hf",
+            "df",
+            "hf",
+            "parameter_sensitivity",
             "birnbaum_importance",
             "improvement_potential",
             "risk_achievement_worth",
@@ -555,8 +559,10 @@ def test_the_network_report_covers_every_public_analysis():
         "analysis_routes",
         "from_dict",
         "from_json",
+        "levers",
         "to_dict",
         "to_json",
+        "with_levers",
     }
 
 
@@ -1318,6 +1324,12 @@ def test_the_readme_says_what_is_simulated():
             (repairable["demand"], "availability", "simulated"),
             (repairable["fixed probability"], "mean_availability", "refused"),
             (repairable["fixed probability"], "availability", "simulated"),
+            (repairable["demand times"], "point_availability", "numerical"),
+            (repairable["demand times"], "mission_availability", "numerical"),
+            (repairable["demand times"], "mean_availability", "refused"),
+            (repairable["demand times"], "availability", "simulated"),
+            (repairable["demand plan"], "point_availability", "refused"),
+            (repairable["demand plan"], "availability", "simulated"),
         ],
         "Spares with repair crews, standby groups, opportunistic "
         "maintenance, imperfect repair or partial restoration": [
