@@ -3321,14 +3321,14 @@ class Network:
 
         Examples
         --------
-        The bridge network with every link up 90% of the time in the long
-        run (a mean life of 90, a mean repair of 10): ``2p^2 + 2p^3 -
-        5p^4 + 2p^5``.
+        The bridge network, every link with a Weibull life of mean 90.27
+        and a mean repair of 10, so up ``p = 0.90027`` of the time in the
+        long run: ``2p^2 + 2p^3 - 5p^4 + 2p^5``.
 
         >>> import surpyval as surv
         >>> from repyability import Network
         >>> link = {
-        ...     "reliability": surv.Weibull.from_params([101.5617, 1.5]),
+        ...     "reliability": surv.Weibull.from_params([100.0, 1.5]),
         ...     "repairability": surv.Exponential.from_params([0.1]),
         ... }
         >>> bridge = Network(
@@ -3338,7 +3338,7 @@ class Network:
         ...     "s", "t",
         ... )
         >>> round(bridge.mean_availability(), 4)
-        0.9785
+        0.9786
         """
         self._refuse_repaired("mean_availability")
         return float(self._repaired.mean_availability())
