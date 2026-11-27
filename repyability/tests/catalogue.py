@@ -1897,3 +1897,49 @@ def repairable_kinds():
         }
     )
     return out
+
+
+def safety_function_kinds():
+    """The safety functions of every kind their results are checked on: a
+    single channel of undetected failures, voted channels with
+    diagnostics, repair and common cause of each kind, a proof test that
+    can miss, staggered tests, detected failures that trip, a fitted life,
+    and votes in series."""
+    from repyability import SafetyChannel, SafetyFunction
+
+    def channel(du=2e-6, dd=3e-6, safe=5e-6, **options):
+        options.setdefault("repair", 8.0)
+        options.setdefault("proof_test_interval", 8760.0)
+        return SafetyChannel(du, dangerous_detected=dd, safe=safe, **options)
+
+    def vote(k, n, unit, **options):
+        return SafetyFunction({f"c{i}": unit for i in range(n)}, k, **options)
+
+    betas = {"beta": 0.1, "beta_detected": 0.05, "beta_safe": 0.1}
+    return {
+        "1oo1, undetected failures alone": vote(
+            1, 1, channel(dd=0.0, safe=0.0, repair="instant")
+        ),
+        "1oo2": vote(1, 2, channel()),
+        "2oo3, common cause": vote(2, 3, channel(), **betas),
+        "2oo4, no formula": vote(2, 4, channel(), beta=0.1),
+        "a proof test that can miss": vote(
+            1,
+            2,
+            channel(proof_test_coverage=0.9, full_test=5 * 8760.0),
+            beta=0.1,
+        ),
+        "staggered tests": SafetyFunction(
+            {"a": channel(), "b": channel(proof_test_offset=4380.0)}, 1
+        ),
+        "detected failures trip": vote(
+            2, 3, channel(), detected_trips=True, **betas
+        ),
+        "a fitted life": vote(
+            1, 2, channel(du=W([4e5, 1.5]), undetected_repair="instant")
+        ),
+        "votes in series": SafetyFunction.series(
+            vote(2, 3, channel(), beta=0.1),
+            SafetyFunction({"valve": channel(du=5e-6)}, 1),
+        ),
+    }

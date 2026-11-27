@@ -175,6 +175,9 @@ from repyability.rbd.results import (
     ReliabilityRedundancyAllocation,
     ReplacementCycle,
     RestorationCriticalityIndex,
+    SafetyFunctionResult,
+    SILBand,
+    SimplifiedSafetyFormulas,
     SimulatedSparesStock,
     SimulatedSwitchTime,
     SimulationSamples,
@@ -190,6 +193,11 @@ from repyability.rbd.results import (
     UpDownImportance,
 )
 from repyability.rbd.routes import AnalysisRoute, AnalysisRoutes
+from repyability.rbd.safety_function import (
+    SafetyChannel,
+    SafetyFunction,
+    sil_band,
+)
 from repyability.rbd.shards import run_shard
 from repyability.rbd.shocks import shock_nodes
 from repyability.rbd.standby_node import StandbyModel
@@ -368,6 +376,12 @@ __all__ = [
     "PlanRobustness",
     "RateBreakdown",
     "PFDBreakdown",
+    "SafetyChannel",
+    "SafetyFunction",
+    "SafetyFunctionResult",
+    "SILBand",
+    "SimplifiedSafetyFormulas",
+    "sil_band",
     "AvailabilityAllocation",
     "SparesDemand",
     "SimulatedSparesStock",

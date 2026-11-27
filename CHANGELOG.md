@@ -12,6 +12,35 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `SafetyFunction(channels, k, beta=0, beta_detected=0, beta_safe=0,
+  detected_trips=False)`: a safety function of channels voted
+  `k`-out-of-N, each a `SafetyChannel` (its dangerous undetected,
+  dangerous detected and safe failure rates, its repair, its proof
+  test's interval, coverage and offset; `SafetyChannel.from_rate` splits
+  a total rate by a dangerous fraction and a diagnostic coverage).
+  `results(mode)` gives, in one `SafetyFunctionResult`, the PFDavg
+  (`pfd_avg()`), the average frequency of a dangerous failure
+  (`pfh()`; `pfh(undetected_only=True)` for the part an undetected
+  failure completes, which is what IEC 61508-6's formulas count), the
+  spurious-trip rate (`spurious_trip_rate()`), the SIL band of the
+  demand mode (`sil(mode)`, a `SILBand` with the band's edges, the
+  margin to each and the risk reduction factor; `sil_band(value, mode)`
+  for any value), each channel's safe failure fraction, and the
+  PFDavg's shares (`pfd_breakdown()`). The function draws two
+  `RepairableRBD`s, `dangerous` and `safe` (the dual vote: `k` channels
+  failed safe together trip), and takes each value from their
+  `mean_unavailability` and `system_failure_frequency`, so the values
+  are exact or numerical, with no rare-event formula.
+  `SafetyFunction.series` puts votes in series (sensors, logic, final
+  elements) into one function. `simplified_formulas()` evaluates IEC
+  61508-6 Annex B's formulas for 1oo1, 1oo2, 2oo2, 2oo3 and 1oo3 votes,
+  to set beside the exact values: the guide's new
+  [safety functions](docs/guide/safety-functions.md) page tabulates
+  both and says where they part (a few percent at `lambda_DU T1` of
+  0.02, 24% for a 2oo3 vote at 0.18, and a factor of two and more in the PFH
+  where diagnostics detect most failures, as the annex leaves out the
+  failures a detected failure completes). `analysis_routes()` gives the
+  two diagrams' routes. No architectural-constraint verdict is made.
 - `FaultTree.from_open_psa(source, tree=None, mission_time=None, *,
   top=None)` reads a fault tree from an Open-PSA Model Exchange Format
   document (text, a path or a file), the inverse of `to_open_psa`: the

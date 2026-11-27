@@ -3213,6 +3213,123 @@ class PFDBreakdown(_ResultMapping):
 
 
 @dataclass(frozen=True)
+class SILBand(_ResultMapping):
+    """The safety integrity level a PFDavg or a PFH falls in: returned
+    by [`sil_band`][repyability.sil_band] and
+    [`SafetyFunction.sil`][repyability.SafetyFunction.sil].
+
+    The bands are those of IEC 61508-1 Table 2 (PFDavg, low demand) and
+    Table 3 (PFH per hour, high demand or continuous). Each takes its
+    lower edge and not its upper one.
+
+    Attributes
+    ----------
+    sil : int
+        The level, 1 to 4, or 0 where the value is at or above SIL 1's
+        upper edge (no SIL). A value below SIL 4's band is SIL 4: the
+        standard has no level above it.
+    mode : str
+        The demand mode: ``"low_demand"``, ``"high_demand"`` or
+        ``"continuous"``.
+    measure : str
+        What the level was read from: ``"pfd_avg"`` or ``"pfh"``.
+    value : float
+        The value judged: the PFDavg, or the PFH per hour.
+    lower, upper : float
+        The band's edges, ``lower <= value < upper`` (but for a value
+        below SIL 4's band, whose ``lower`` is that band's; ``upper`` is
+        infinite where there is no SIL).
+    margin_to_lower : float
+        ``value / lower``: the factor the value must fall by to reach
+        the next level (below 1 for a value under SIL 4's band).
+    margin_to_upper : float
+        ``upper / value``: the factor the value can grow by before it
+        leaves the band for the level below.
+    risk_reduction_factor : float or None
+        ``1 / value`` for a PFDavg; None for a PFH.
+    """
+
+    sil: int
+    mode: str
+    measure: str
+    value: float
+    lower: float
+    upper: float
+    margin_to_lower: float
+    margin_to_upper: float
+    risk_reduction_factor: Optional[float]
+
+
+@dataclass(frozen=True)
+class SafetyFunctionResult(_ResultMapping):
+    """A safety function's results: returned by
+    [`SafetyFunction.results`][repyability.SafetyFunction.results].
+
+    Attributes
+    ----------
+    mode : str
+        The demand mode the SIL was read in.
+    pfd_avg : float
+        The average probability of failure on demand.
+    pfh : float
+        The average frequency of a dangerous failure of the function,
+        per unit time: every failure of it.
+    pfh_undetected : float
+        The part of ``pfh`` that an undetected failure completes, which
+        is what IEC 61508-6 Annex B's formulas count.
+    spurious_trip_rate : float
+        Spurious trips per unit time.
+    mean_time_to_spurious_trip : float
+        Its reciprocal (infinite where the rate is 0).
+    sil : SILBand
+        The level of ``pfd_avg`` (low demand) or of ``pfh`` (high demand,
+        continuous), with its band and margins.
+    pfd_breakdown : PFDBreakdown
+        Where the PFDavg comes from, by channel and failure kind
+        (``(name, "DU")``, ``(name, "DD")``) and by common cause.
+    safe_failure_fraction : dict
+        Each channel's safe failure fraction.
+    diagnostic_coverage : dict
+        Each channel's diagnostic coverage.
+    """
+
+    mode: str
+    pfd_avg: float
+    pfh: float
+    pfh_undetected: float
+    spurious_trip_rate: float
+    mean_time_to_spurious_trip: float
+    sil: SILBand
+    pfd_breakdown: PFDBreakdown
+    safe_failure_fraction: Dict[Hashable, float]
+    diagnostic_coverage: Dict[Hashable, float]
+
+
+@dataclass(frozen=True)
+class SimplifiedSafetyFormulas(_ResultMapping):
+    """The simplified formulas' values for a vote: returned by
+    [`SafetyFunction.simplified_formulas`][repyability.SafetyFunction.simplified_formulas].
+
+    Attributes
+    ----------
+    pfd_avg : float
+        IEC 61508-6 Annex B's PFDavg (B.3.2.2).
+    pfh : float
+        Its PFH (B.3.3.2), per unit time.
+    spurious_trip_rate : float
+        The rare-event spurious-trip rate, per unit time.
+    down_times : tuple
+        The formulas' mean down times ``t_1 ... t_r``: the channel's
+        (``t_CE``), the group's (``t_GE``), and so on.
+    """
+
+    pfd_avg: float
+    pfh: float
+    spurious_trip_rate: float
+    down_times: Tuple[float, ...]
+
+
+@dataclass(frozen=True)
 class Lever(_ResultMapping):
     """One lever of a diagram: a value that its ``parameter_sensitivity``
     moves.

@@ -25,6 +25,7 @@ from repyability import (
     NonRepairableRBD,
     PhasedMission,
     RepairableRBD,
+    SafetyFunction,
 )
 from repyability.rbd import routes
 
@@ -38,6 +39,11 @@ MODELS = {
     "Network": Network,
     "PhasedMission": PhasedMission,
 }
+
+#: The classes that build a model type's diagrams and take their results
+#: from its methods: a row names such a class's method as ``Class.method``,
+#: and it is shown under the model type the class builds.
+BUILDERS = {"SafetyFunction": (SafetyFunction, "RepairableRBD")}
 
 #: Each capability, by section: for each model type, the methods that give
 #: it (the first a model has is shown), or none.
@@ -225,6 +231,36 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ),
             ("Export to Open-PSA (MEF)", ("to_open_psa",)),
             ("Import from Open-PSA (MEF)", ("from_open_psa",)),
+        ],
+    ),
+    (
+        "Safety functions (voted channels, proof tests, diagnostics)",
+        [
+            (
+                "PFDavg, and where it comes from",
+                ("SafetyFunction.pfd_avg", "SafetyFunction.pfd_breakdown"),
+            ),
+            (
+                "PFH (frequency of a dangerous failure)",
+                ("SafetyFunction.pfh",),
+            ),
+            ("Spurious-trip rate", ("SafetyFunction.spurious_trip_rate",)),
+            (
+                "SIL band, safe failure fraction",
+                ("SafetyFunction.sil", "SafetyFunction.safe_failure_fraction"),
+            ),
+            (
+                "Every result in one call, votes in series",
+                ("SafetyFunction.results", "SafetyFunction.series"),
+            ),
+            (
+                "IEC 61508-6's simplified formulas, to compare",
+                ("SafetyFunction.simplified_formulas",),
+            ),
+            (
+                "How each result is computed",
+                ("SafetyFunction.analysis_routes",),
+            ),
         ],
     ),
     (
@@ -531,11 +567,22 @@ def _model_table() -> str:
         lines.append(f"| **{section}** |" + " |" * len(names))
         for label, methods in rows:
             cells = []
-            for cls in MODELS.values():
-                have = [m for m in methods if callable(getattr(cls, m, None))]
+            for name, cls in MODELS.items():
+                have = [m for m in methods if _has(name, cls, m)]
                 cells.append(f"`{have[0]}`" if have else "—")
             lines.append(f"| {label} | " + " | ".join(cells) + " |")
     return "\n".join(lines)
+
+
+def _has(name: str, cls, method: str) -> bool:
+    """Whether the model type ``name`` has ``method``: its own, or as
+    ``Class.method`` that of a class that builds its diagrams (see
+    ``BUILDERS``)."""
+    builder, _, own = method.rpartition(".")
+    if builder:
+        built, model = BUILDERS[builder]
+        return model == name and callable(getattr(built, own, None))
+    return callable(getattr(cls, method, None))
 
 
 def _gap_kind(call, rbd) -> bool:
