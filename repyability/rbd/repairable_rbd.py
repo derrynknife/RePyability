@@ -433,7 +433,8 @@ class RepairableRBD(RBD):
           the unit's hazard the life's plus the rate times the
           probability (see the guide's "Failing on demand"); in place of
           the rate, its set ``"times"`` or a ``"plan"`` of rates, which
-          stay on the calendar, so only the simulations take it. In its
+          stay on the calendar (numerical over a window, simulated, the
+          long run refused). In its
           place,
           ``"demand_times"`` calls the unit on at set times (its life
           ends only at one; exact over a window, simulated, the long

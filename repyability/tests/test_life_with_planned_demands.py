@@ -5,7 +5,9 @@ but they are the calendar's, so a unit put into service at ``t0`` at age
 ``a`` survives ``s`` more with chance ``exp(-G)``, ``G`` the life's ``H(a +
 s) - H(a)`` plus ``-log(1 - p)`` for each demand in ``(t0, t0 + s]`` (or
 ``p`` times the plan's expected demands then)
-(``_demands.LifeWithPlannedDemands``). Only the simulations take it."""
+(``_demands.LifeWithPlannedDemands``). Its values over a window are a
+renewal equation on the clock (``_demand_renewal``); the simulations
+take it too, and its long run and mean life are refused."""
 
 import json
 import math
@@ -375,18 +377,27 @@ def test_set_times_close_in_on_the_constant_rate():
 
 
 @pytest.mark.parametrize("demand", [{"times": TIMES}, {"plan": PLAN}])
-def test_only_the_simulations_take_it(demand):
+def test_its_window_is_numerical_and_its_long_run_refused(demand):
     rbd = built(demand)
     routes = rbd.analysis_routes()
     assert routes["availability"].route == "simulated"
     assert routes["availability"].engine == "python"
     assert "demands beside the life" in routes["availability"].engine_reason
-    for method in ("mean_availability", "point_availability"):
+    for method in (
+        "point_availability",
+        "mission_availability",
+        "expected_failures",
+        "expected_cost",
+    ):
+        assert routes[method].route == "numerical"
+        assert "renewal equation" in routes[method].reason
+    for method in ("mean_availability", "mean_up_time"):
         assert routes[method].route == "refused"
         assert "wears out and is called on" in routes[method].reason
-        assert "Only the simulations take it" in routes[method].reason
-    with pytest.raises(NotImplementedError, match="Only the simulations"):
+        assert "values over a window are numerical" in routes[method].reason
+    with pytest.raises(NotImplementedError, match="no reliability, mean"):
         rbd.mean_availability()
+    assert 0.0 < rbd.mission_availability(300.0) < 1.0
 
 
 @pytest.mark.parametrize("demand", [{"times": TIMES}, {"plan": PLAN}])
@@ -523,3 +534,228 @@ def test_every_demand_fails_it_with_a_probability_of_1():
     # A unit put in at 55 that the life does not end first fails at 120
     # (u = 0.5: the life alone would last 150 log(2)^0.4, past 65).
     assert life.life_left(55.0, 0.0, 0.5) == 65.0
+
+
+# -- values over a window, without simulating ------------------------------
+#
+# ``_demand_renewal`` solves the renewal equation on a grid whose cells hold
+# no demand, each cell's failures and renewals kept by their mass and mean.
+# Its error is second order in the step: about ``(h / s)^2 / 8`` of the
+# chance moved by each failure and renewal, ``h`` the largest step and
+# ``s`` the life's typical up time (``_curves._up_scale``), with a first
+# order term local to the cells a fixed repair ends in. Over a window of a
+# few up times the bounds below take ``4 (h / s)^2``.
+
+
+def grid_bound(curve) -> float:
+    """``4 (h / s)^2`` for a ``PlannedDemandsCurve`` (see above)."""
+    from repyability.rbd._curves import _up_scale
+
+    h = float(np.max(np.diff(curve.t)))
+    return 4.0 * (h / _up_scale(curve.life.life, None)) ** 2
+
+
+def curve_of(rbd, horizon, node="a"):
+    from repyability.rbd import _demands
+
+    return _demands.planned_demands_curve(rbd, node, horizon)
+
+
+@pytest.mark.parametrize(
+    "repair",
+    [E([0.05]), surv.ExactEventTime.from_params([70.0])],
+    ids=["exponential repair", "fixed repair"],
+)
+def test_a_life_that_never_fails_is_the_set_times_component(repair):
+    # A life of rate 1e-300 (survival 1.0 to the bit): the demands alone,
+    # whose values are exact (DemandCurve), to 1e-12.
+    times = [50.0, 120.0, 120.0, 200.0, 260.0]
+    both = RepairableRBD(
+        ONE,
+        {
+            "a": {
+                "reliability": E([1e-300]),
+                "repairability": repair,
+                "demand": {"probability": 0.3, "times": times},
+                "repair_cost": 5.0,
+            }
+        },
+    )
+    assert isinstance(both.components["a"].reliability, LifeWithPlannedDemands)
+    alone = RepairableRBD(
+        ONE,
+        {
+            "a": {
+                "reliability": FIXED(0.3),
+                "repairability": repair,
+                "demand_times": times,
+                "repair_cost": 5.0,
+            }
+        },
+    )
+    x = np.linspace(0.0, 300.0, 601)
+    np.testing.assert_allclose(
+        both.point_availability(x),
+        alone.point_availability(x),
+        rtol=0.0,
+        atol=1e-12,
+    )
+    for method in ("mission_availability", "expected_failures"):
+        assert getattr(both, method)(300.0) == pytest.approx(
+            getattr(alone, method)(300.0), rel=0.0, abs=1e-12
+        )
+    assert both.expected_cost(300.0).mean == pytest.approx(
+        alone.expected_cost(300.0).mean, rel=1e-12
+    )
+
+
+@pytest.mark.parametrize("repair", [E([0.5]), E([0.02])])
+def test_a_plan_of_one_rate_is_the_rate_s_route(repair):
+    # Built on a plan of two equal rates (which a spec turns into the rate
+    # itself), the curve equals the rate's own (LifeWithDemands, the
+    # renewal equation of a plain unit, about 4e-7 off) within its grid's
+    # bound.
+    from repyability.rbd._demand_renewal import curve
+    from repyability.rbd._demands import USE
+    from repyability.schedule import DutySchedule
+
+    plan = DutySchedule("hours", (0.0, 100.0), (0.05, 0.05), USE)
+    life = LifeWithPlannedDemands(LIFE, P, plan=plan)
+    by_plan = curve(life, repair, 400.0)
+    by_rate = RepairableRBD(
+        ONE,
+        {
+            "a": {
+                "reliability": LIFE,
+                "repairability": repair,
+                "demand": {"probability": P, "rate": 0.05},
+            }
+        },
+    )
+    x = np.linspace(1.0, 399.0, 81)
+    bound = grid_bound(by_plan) + 1e-6
+    np.testing.assert_allclose(
+        by_plan.at(x), by_rate.point_availability(x), rtol=0.0, atol=bound
+    )
+    failures = by_rate.expected_failures(x[-1])
+    assert float(by_plan.events(x[-1:])["failures"][0]) == pytest.approx(
+        failures, rel=0.0, abs=bound * failures + 1e-6
+    )
+
+
+def hand_worked_rbd():
+    return RepairableRBD(
+        ONE,
+        {
+            "a": {
+                "reliability": W([HAND["alpha"], HAND["beta"]]),
+                "repairability": surv.ExactEventTime.from_params([HAND["r"]]),
+                "demand": {"probability": HAND["p"], "times": [HAND["tau"]]},
+            }
+        },
+    )
+
+
+def test_the_hand_worked_case_without_simulating():
+    # The downtime worked by hand (two nested integrals), within the
+    # grid's bound; and the seeded simulation (4000 runs, seed 848, as
+    # above) within 4 standard errors of it.
+    rbd = hand_worked_rbd()
+    horizon = HAND["horizon"]
+    exact = 1.0 - hand_worked_downtime() / horizon
+    bound = grid_bound(curve_of(rbd, horizon))
+    assert rbd.analysis_routes()["mission_availability"].route == "numerical"
+    numerical = rbd.mission_availability(horizon)
+    assert abs(numerical - exact) <= bound
+    n = 4000
+    run = rbd.availability(
+        horizon, mc_samples=n, seed=848, control_variate=False
+    )
+    spread = float(np.std(run.uptimes / horizon)) / math.sqrt(n)
+    assert abs(float(run.mean_availability) - numerical) < 4.0 * spread
+
+
+@pytest.mark.parametrize(
+    "demand, seed",
+    [
+        ({"times": [30.0, 60.0, 90.0, 90.0, 150.0, 210.0, 270.0]}, 851),
+        ({"plan": {"times": [0.0, 100.0], "rates": [0.02, 0.2]}}, 852),
+    ],
+    ids=["set times", "plan"],
+)
+def test_the_values_over_a_window_agree_with_the_simulation(demand, seed):
+    # Several demands (two at one time), or a plan whose rate rises, with
+    # repairs that take time and a wearing life: the mission availability
+    # and the failures against 4000 seeded simulations (design fixed
+    # first), within 4 standard errors; a repair costing 1, the cost is
+    # the count of failures.
+    rbd = RepairableRBD(
+        ONE,
+        {
+            "a": {
+                "reliability": W([80.0, 2.0]),
+                "repairability": E([0.1]),
+                "demand": {"probability": 0.3, **demand},
+                "repair_cost": 1.0,
+            }
+        },
+    )
+    horizon, n = 300.0, 4000
+    run = rbd.availability(
+        horizon, mc_samples=n, seed=seed, control_variate=False
+    )
+    spread = float(np.std(run.uptimes / horizon)) / math.sqrt(n)
+    numerical = rbd.mission_availability(horizon)
+    assert abs(float(run.mean_availability) - numerical) < 4.0 * spread
+    counts = np.asarray(run.cost.samples, dtype=float)
+    spread = float(np.std(counts)) / math.sqrt(n)
+    expected = rbd.expected_failures(horizon)
+    assert abs(float(np.mean(counts)) - expected) < 4.0 * spread
+
+
+def test_from_a_unit_up_at_an_age():
+    # Up at age 60 at 0 (its life conditioned on that), against 4000
+    # seeded simulations from the same state (seed 853), within 4
+    # standard errors; and refused from a unit down, or long in service.
+    from repyability import NodeState
+
+    rbd = RepairableRBD(
+        ONE,
+        {
+            "a": {
+                "reliability": W([80.0, 2.0]),
+                "repairability": E([0.1]),
+                "demand": {"probability": 0.3, "times": [40.0, 80.0]},
+            }
+        },
+    )
+    state = {"a": NodeState(age=60.0)}
+    horizon, n = 120.0, 4000
+    numerical = rbd.mission_availability(horizon, state=state)
+    assert numerical < rbd.mission_availability(horizon)
+    run = rbd.availability(
+        horizon, mc_samples=n, seed=853, control_variate=False, state=state
+    )
+    spread = float(np.std(run.uptimes / horizon)) / math.sqrt(n)
+    assert abs(float(run.mean_availability) - numerical) < 4.0 * spread
+    with pytest.raises(NotImplementedError, match="simulate it"):
+        rbd.point_availability(
+            [10.0], state={"a": NodeState(alive=False, down_for=1.0)}
+        )
+    with pytest.raises(NotImplementedError, match="long-run state"):
+        rbd.point_availability([10.0], state="stationary")
+
+
+def test_an_imperfect_repair_is_refused_over_a_window():
+    rbd = RepairableRBD(
+        ONE,
+        {
+            "a": {
+                **spec({"times": TIMES}),
+                "repair": {"model": "kijima1", "q": 0.5},
+            }
+        },
+    )
+    route = rbd.analysis_routes()["point_availability"]
+    assert route.route == "refused"
+    assert "repaired imperfectly" in route.reason

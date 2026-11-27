@@ -619,6 +619,57 @@ class DemandTimesLife(ClockLife):
         return f"DemandTimesLife(p={self.p:g}, {self.times.size} demands)"
 
 
+def planned_demands_life(rbd, node) -> Optional["LifeWithPlannedDemands"]:
+    """The ``LifeWithPlannedDemands`` of a ``RepairableRBD``'s component
+    that wears out with demands at set times or on a plan beside its
+    life, or None."""
+    life = getattr(rbd.components.get(node), "reliability", None)
+    return life if isinstance(life, LifeWithPlannedDemands) else None
+
+
+def planned_over_time_blocker(rbd, node) -> Optional[str]:
+    """Why the values over time of a component that wears out with
+    demands at set times or on a plan are not ``PlannedDemandsCurve``'s,
+    in words (see ``over_time_blocker``, and it must be repaired as new:
+    an imperfect repair leaves a wearing unit older); None when they
+    are."""
+    if node in rbd._imperfect:
+        return "it is repaired imperfectly"
+    return over_time_blocker(rbd, node)
+
+
+def planned_demands_curve(rbd, node, horizon: float, start=None):
+    """The curve of a component that wears out with demands at set times
+    or on a plan beside its life (see ``_demand_renewal``), new or up at
+    an age at 0, to ``horizon``; refuse one down at 0, in its long-run
+    state or with a life of its own, or one whose values over time are
+    not its (``planned_over_time_blocker``)."""
+    from ._demand_renewal import curve
+
+    life = planned_demands_life(rbd, node)
+    assert life is not None
+    why = planned_over_time_blocker(rbd, node)
+    if why is not None:
+        raise NotImplementedError(blocked(life, why))
+    age = 0.0
+    if start is not None and not start.new:
+        if start.stationary:
+            raise NotImplementedError(
+                f"Component {node!r} {life.lead}, which stay on the "
+                "calendar, so it has no long-run state to start from: "
+                "start it new or up at an age."
+            )
+        if not start.alive or start.own_life:
+            raise NotImplementedError(
+                f"Component {node!r} {life.lead}: its values over time "
+                "are worked out from a unit up at 0, new or at an age, "
+                "with the life of the node. Start it so, or simulate it: "
+                "availability(state=...)."
+            )
+        age = float(start.age)
+    return curve(life, rbd.components[node].time_to_replace, horizon, age)
+
+
 def demand_times_life(rbd, node) -> Optional[DemandTimesLife]:
     """The ``DemandTimesLife`` of a ``RepairableRBD``'s component called
     on at set times, or None."""
@@ -674,18 +725,23 @@ def failure_chances(life: DemandTimesLife, repair) -> np.ndarray:
     f = np.zeros(n)
     for k in range(n):
         if k:
-            gaps = times[k] - times[:k]
-            if distribution_name(repair) == "ExactEventTime":
-                # As the simulation's clock adds it: t_j + r >= t_k.
-                r = float(np.ravel(repair.params)[0])
-                under = (times[:k] + r >= times[k]).astype(float)
-            else:
-                under = _repair_under_way(repair, gaps)
+            under = _under_way(repair, times[:k], times[k])
             busy = math.fsum(f[:k] * under)
         else:
             busy = 0.0
         f[k] = p * (1.0 - busy)
     return f
+
+
+def _under_way(repair, begun: np.ndarray, at: float) -> np.ndarray:
+    """Whether a repair begun at each of ``begun`` (at or before ``at``)
+    is still under way at ``at`` (one that ends at it is: see
+    ``_repair_under_way``); a fixed time as the simulation's clock adds
+    it, ``t_j + r >= t_k``."""
+    if distribution_name(repair) == "ExactEventTime":
+        r = float(np.ravel(repair.params)[0])
+        return (begun + r >= at).astype(float)
+    return _repair_under_way(repair, at - begun)
 
 
 class DemandCurve:
@@ -805,12 +861,18 @@ def demand_curve(rbd, node, start=None) -> DemandCurve:
     return DemandCurve(life, rbd.components[node].time_to_replace)
 
 
-def blocked(life: DemandTimesLife, why: str) -> str:
-    """The refusal of a component called on at set times whose values
-    over time are not ``DemandCurve``'s (see ``over_time_blocker``)."""
+def blocked(life, why: str) -> str:
+    """The refusal of a component called on at set times (or that wears
+    out with such demands beside its life) whose values over time are
+    not its curve's (see ``over_time_blocker``)."""
+    how = (
+        "exactly only when it is repaired"
+        if isinstance(life, DemandTimesLife)
+        else "numerically only when it is repaired as new"
+    )
     return (
         f"{life._no_reliability()} Its values over time are worked out "
-        "exactly only when it is repaired with no task, tests, "
+        f"{how} with no task, tests, "
         f"maintenance group or shutdown, and {why}."
     )
 
@@ -819,6 +881,15 @@ def blocked(life: DemandTimesLife, why: str) -> str:
 HOW = (
     "a sum over its demands: each fails it with its probability unless "
     "an earlier failure is still under repair"
+)
+
+
+#: How the values over time of a life with demands at set times or on a
+#: plan beside it are found (an analysis route's phrase).
+PLANNED_HOW = (
+    "a renewal equation on the diagram's clock, solved forward on a grid "
+    "whose points take in the demands (or the plan's times), each demand "
+    "failing a unit up then with its probability"
 )
 
 
@@ -1119,6 +1190,20 @@ class LifeWithPlannedDemands(ClockLife):
         from ._model_utils import failure_time_scale
 
         return failure_time_scale(self.life)
+
+    def _no_reliability(self, what: str = "reliability") -> Exception:
+        """The refusal of the analyses that need a life of its own (its
+        long run, mean life, reliability), one message whatever ``what``
+        they need."""
+        return NotImplementedError(
+            f"Component {self.node!r} {self.lead} on the diagram's clock, "
+            "so it has no reliability, mean life or long run of its own: "
+            "each unit's life depends on when it is put into service. Its "
+            "values over a window are numerical (point_availability, "
+            "mission_availability, expected_failures, expected_cost: a "
+            "renewal equation on the clock), and the simulations take it "
+            "(availability, cost, simulate_timelines; the Python engine)."
+        )
 
     def mean(self):
         raise self._no_reliability("mean life")

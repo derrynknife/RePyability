@@ -278,6 +278,12 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
         if why is not None:
             return r.REFUSED, _demands.blocked(demands, why)
         return r.EXACT, _demands.HOW
+    planned = _demands.planned_demands_life(rbd, node)
+    if planned is not None:
+        why = _demands.planned_over_time_blocker(rbd, node)
+        if why is not None:
+            return r.REFUSED, _demands.blocked(planned, why)
+        return r.NUMERICAL, _demands.PLANNED_HOW
     message = r.refusal(partial(_requirements._require_time_models, rbd, node))
     if not message:
         message = r.refusal(
@@ -648,6 +654,7 @@ def _plain_unit(rbd, node) -> bool:
         isinstance(rbd.components[node], RepairableRBD)
         or _duty.planned_life(rbd, node) is not None
         or _demands.demand_times_life(rbd, node) is not None
+        or _demands.planned_demands_life(rbd, node) is not None
         or node in rbd._standby
         or node in rbd._inspection
         or node in rbd._preventive
@@ -721,6 +728,8 @@ def _node_curve(
         return TimeChangedCurve(inner, plan)
     if _demands.demand_times_life(rbd, node) is not None:
         return _demands.demand_curve(rbd, node, start)
+    if _demands.planned_demands_life(rbd, node) is not None:
+        return _demands.planned_demands_curve(rbd, node, horizon, start)
     if node in rbd._standby:
         if _long_run._standby_by_cycle(rbd, node):
             return _pair_curve(rbd, node, horizon, start)
