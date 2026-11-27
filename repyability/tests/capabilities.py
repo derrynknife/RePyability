@@ -252,6 +252,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("reliability_rate", "availability_rate"),
             ),
             ("Uncertainty importance", ("uncertainty_importance",)),
+            ("Every measure in one call", ("importances",)),
             ("All measures given a state", ("importances_given_state",)),
             (
                 "Top event given each event",

@@ -55,6 +55,7 @@ from repyability.rbd.results import (
     ExpectedCost,
     ExpectedEvents,
     ExpectedNPV,
+    ImportanceTable,
     Lever,
     MaintenanceEffect,
     MaintenancePlan,
@@ -8190,6 +8191,69 @@ class RepairableRBD(RBD):
         """
         return _long_run.mean_down_time(
             self, working_nodes=working_nodes, broken_nodes=broken_nodes
+        )
+
+    def importances(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        *,
+        x=None,
+        window=None,
+        state=None,
+        simulate: bool = False,
+    ) -> ImportanceTable:
+        """Every importance measure in one table.
+
+        Calls each importance method of this model in turn (Birnbaum,
+        improvement potential, risk achievement and reduction worth,
+        criticality, Fussell-Vesely, differential, joint, Barlow-Proschan
+        and structural, those the model has) with the arguments given, and
+        gathers what they return. Each entry of ``measures`` is exactly
+        the method's own result; nothing is computed a second way. A
+        measure this model cannot work out is named under ``refused`` with
+        the reason its method gives (as
+        [`analysis_routes`][repyability.RepairableRBD.analysis_routes]
+        has it), and a measure only a simulation gives is listed there as
+        simulated unless ``simulate=True``.
+
+        Parameters
+        ----------
+        working_nodes : Collection[Hashable], optional
+            Nodes conditioned on as working, as for each measure.
+        broken_nodes : Collection[Hashable], optional
+            Nodes conditioned on as failed, as for each measure.
+        x : optional
+            The time/s, as for each measure that takes it (the Barlow-
+            Proschan importance does not).
+        window : optional
+            The window, as for each measure.
+        state : optional
+            The starting state, as for each measure.
+        simulate : bool, optional
+            Whether to run the measures that are simulated. By default
+            False: they are listed under ``refused`` with ``"simulated:
+            pass simulate=True"``.
+
+        Returns
+        -------
+        ImportanceTable
+            [`ImportanceTable`][repyability.ImportanceTable]: ``measures``
+            (``{method name: {component: value}}``), ``refused``
+            (``{method name: reason}``) and ``rows()``, one plain dict
+            per component for a table. The joint importance, which is per
+            pair, is in ``measures`` and not in ``rows()``.
+
+        Raises
+        ------
+        NotImplementedError
+            If no measure can be worked out here; the message gives each
+            one's reason.
+        ValueError
+            If ``simulate`` is not a bool.
+        """
+        return _repairable_importance.importances(
+            self, working_nodes, broken_nodes, x, window, state, simulate
         )
 
     @_times_first()
