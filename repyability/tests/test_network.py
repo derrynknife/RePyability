@@ -904,6 +904,7 @@ CALLS = {
             "df",
             "hf",
             "parameter_sensitivity",
+            "tornado",
             "birnbaum_importance",
             "improvement_potential",
             "risk_achievement_worth",
@@ -959,6 +960,7 @@ def test_the_routes_say_how_each_analysis_is_worked_out(monkeypatch):
         "levers",
         "to_dict",
         "to_json",
+        "to_rbd",
         "with_levers",
     }
     assert report["sf"].route == report["fussell_vesely"].route == "exact"

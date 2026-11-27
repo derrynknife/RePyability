@@ -1,17 +1,22 @@
-"""Two-terminal reliability of undirected networks (#104).
+"""Reliability of networks: whether two terminals, several or all the
+nodes stay connected (#104).
 
 Power, pipe and communication networks are undirected, and it is often
 their links that fail. Their question is whether two terminals stay
 connected: some path of working links (through working nodes, where nodes
-can fail too) joins them. A reliability block diagram is directed, with
-failing nodes, so a network has a model of its own.
+can fail too) joins them; or whether several sites, or every node, stay
+connected to each other (K-terminal and all-terminal reliability). A
+reliability block diagram is directed, with failing nodes, so a network
+has a model of its own.
 
 The exact values come from a binary decision diagram built from the
 network itself (#143), after Hardy, Lucet & Limnios (2007): the links are
 decided in an order, and after each, what is left to decide depends only on
 how the *frontier* (the nodes with links decided and links to come) is
-joined up by the working links so far, and on which parts hold the
-terminals. The states before each decision are worked out together, as
+joined up by the working links so far, and on which parts hold a
+terminal: a part that holds one and leaves the frontier parts the
+terminals, unless it holds them all. The states before each decision are
+worked out together, as
 the rows of an array, and equal ones merged (#173), so the diagram grows
 with the frontier's width, not with the number of paths, which multiply in
 a meshed network: a grid of 100 nodes, corner to corner, takes a second and
@@ -26,7 +31,17 @@ set of its links and of the nodes on it that can fail, by the Shannon
 decomposition of ``shannon.py``.
 
 The simulation draws each element's lifetime and finds, in each sample,
-the path that lasts longest: its lifetime is the network's.
+the link that joins the terminals when the links are added longest-lived
+first (for two terminals, the path that lasts longest): its lifetime is
+the network's.
+
+A directed network (``directed=True``: each link works from its first
+node to its second) takes two terminals and is decided from its simple
+paths from the source to the target, as ``METHOD = "paths"`` decides an
+undirected one; ``to_rbd`` gives the reliability block diagram of one
+with no cycle. Whether more than two terminals are joined along one-way
+links depends on the order they are reached in, which the frontier's
+parts do not say, so that is refused.
 
 The importance measures beyond Birnbaum's (#315) are the diagram's
 formulas (``rbd/_measures.py``) over the network's values with an element
@@ -100,6 +115,7 @@ from repyability.rbd.uncertainty import (
     shares_fit,
 )
 from repyability.utils.checks import (
+    is_number,
     no_distribution,
     one_of,
     real_array,
@@ -110,7 +126,7 @@ from repyability.utils.json_io import read_json, write_json
 from repyability.utils.wrappers import numpy_seed
 
 if TYPE_CHECKING:  # pragma: no cover
-    from repyability.rbd.results import Lever
+    from repyability.rbd.results import Lever, TornadoResult
 
 #: How the exact values are worked out: ``"bdd"`` (the default), by the
 #: decision diagram built from the network, or ``"paths"``, by the Shannon
@@ -128,6 +144,10 @@ MAX_PATHS = 100_000
 #: square grid of 100 nodes has 1.9 million; one of 121, 7.7 million.
 MAX_STATES = 5_000_000
 
+#: The most terminals the links' order is tried from (see ``_link_order``):
+#: any order gives the same values, a narrower one a smaller diagram.
+_ORDER_ROOTS = 8
+
 # Value slots 0 and 1 of a plan: the terminals are parted, joined.
 _FAIL, _WORK = 0, 1
 
@@ -141,13 +161,18 @@ _NONE_FAIL, _NONE_WORK = -1, -2
 
 @refuse_removed_names
 class Network:
-    """An undirected network whose links, and optionally nodes, fail, and
-    the reliability of the connection between two of its nodes.
+    """A network whose links, and optionally nodes, fail, and the
+    reliability of the connection between two of its nodes, several, or
+    all of them.
 
     The network works while some path of working links, through working
-    nodes, joins ``source`` to ``target``. A link works both ways. Nodes
-    work for ever unless given a model in ``nodes``; the terminals can be
-    given one too. Every element fails independently of the others.
+    nodes, joins ``source`` to ``target``; given ``terminals``, while
+    working links join every one of them to the others (K-terminal
+    reliability; ``terminals="all"`` for every node, all-terminal
+    reliability). A link works both ways, unless the network is
+    ``directed``. Nodes work for ever unless given a model in ``nodes``;
+    the terminals can be given one too, and a failed terminal parts them.
+    Every element fails independently of the others.
 
     The exact values come from a binary decision diagram built from the
     network, link by link, whose size grows with the network's width
@@ -169,14 +194,25 @@ class Network:
         probability that it has failed (a number, taken as a
         ``FixedEventProbability``). Two links may join the same two
         nodes.
-    source : Hashable
+    source : Hashable, optional
         One terminal: a node of the network.
-    target : Hashable
-        The other terminal, another node.
+    target : Hashable, optional
+        The other terminal, another node. Give both, or ``terminals``.
     nodes : dict, optional
         The nodes that can fail, each mapped to its model (or the
         probability that it has failed), by default none. Their names must
         differ from the links'.
+    terminals : list or "all", optional
+        The nodes that must stay connected to each other, two or more, in
+        place of ``source`` and ``target``; ``"all"`` for every node of
+        the network. Two terminals are the same network as ``source``
+        and ``target``.
+    directed : bool, optional
+        Whether each link works one way only, from its first node to its
+        second, by default False. A directed network works while a path
+        along its links leads from ``source`` to ``target``; it takes two
+        terminals. [`to_rbd`][repyability.Network.to_rbd] gives its
+        reliability block diagram.
 
     Attributes
     ----------
@@ -184,8 +220,12 @@ class Network:
         Each link's two nodes, by name.
     models : dict
         Each element's model, by name: the links', then the nodes'.
-    source, target : Hashable
+    terminals : tuple
         The terminals.
+    source, target : Hashable
+        The two terminals (None for a network of more than two).
+    directed : bool
+        Whether the links work one way only.
     is_fixed : bool
         Whether every model is a fixed probability (time is then
         irrelevant, and ``x`` may be left out).
@@ -195,8 +235,11 @@ class Network:
     ValueError
         If there is no link, a link is not a ``(node, node, model)`` of two
         different nodes, a model has no ``sf`` or ``ff``, a terminal or a
-        node in ``nodes`` is in no link, the terminals are the same node,
-        or a node has the name of a link.
+        node in ``nodes`` is in no link, the terminals are the same node
+        or fewer than two, both ``terminals`` and a source or target are
+        given, or a node has the name of a link.
+    NotImplementedError
+        If a directed network is given more than two terminals.
 
     Examples
     --------
@@ -223,6 +266,17 @@ class Network:
     0.97848
     >>> sorted(sorted(p) for p in bridge.path_sets())
     [['a', 'c', 'e'], ['a', 'd'], ['b', 'c', 'd'], ['b', 'e']]
+
+    All four nodes stay connected to each other with probability
+    ``8p^3 - 11p^4 + 4p^5`` (each of the bridge's eight spanning trees,
+    less what they share):
+
+    >>> every = Network(
+    ...     {name: (u, v, link) for name, (u, v) in bridge.links.items()},
+    ...     terminals="all",
+    ... )
+    >>> round(every.sf(), 5)
+    0.97686
     """
 
     # The kind of diagram, as the messages name it (see ``check_x``).
@@ -231,10 +285,18 @@ class Network:
     def __init__(
         self,
         links: Dict[Hashable, Tuple[Hashable, Hashable, Any]],
-        source: Hashable,
-        target: Hashable,
+        source: Optional[Hashable] = None,
+        target: Optional[Hashable] = None,
         nodes: Optional[Dict[Hashable, Any]] = None,
+        *,
+        terminals: Any = None,
+        directed: bool = False,
     ):
+        if not isinstance(directed, (bool, np.bool_)):
+            raise TypeError(
+                f"directed must be True or False, got {directed!r}."
+            )
+        self.directed = bool(directed)
         if not isinstance(links, dict) or not links:
             raise ValueError(
                 "links must be a non-empty dict of name: (node, node, model)."
@@ -242,6 +304,7 @@ class Network:
         self.links: Dict[Hashable, Tuple[Hashable, Hashable]] = {}
         self.models: Dict[Hashable, Any] = {}
         adjacent: Dict[Hashable, List[Tuple[Hashable, Hashable]]] = {}
+        out: Dict[Hashable, List[Tuple[Hashable, Hashable]]] = {}
         for name, link in links.items():
             if not (isinstance(link, (tuple, list)) and len(link) == 3):
                 raise ValueError(
@@ -256,13 +319,24 @@ class Network:
             self.models[name] = model
             adjacent.setdefault(u, []).append((name, v))
             adjacent.setdefault(v, []).append((name, u))
-        if source == target:
-            raise ValueError("The source and target must be two nodes.")
-        for terminal in (source, target):
-            if terminal not in adjacent:
-                raise ValueError(
-                    f"Terminal {terminal!r} is in no link of the network."
-                )
+            out.setdefault(u, []).append((name, v))
+            out.setdefault(v, [])
+        self.terminals, self._all_terminals = self._terminals(
+            source, target, terminals, adjacent
+        )
+        if self.directed and len(self.terminals) > 2:
+            raise NotImplementedError(
+                "A directed network takes two terminals, a source and a "
+                f"target: {len(self.terminals)} were given. Whether more "
+                "than two are joined along one-way links depends on the "
+                "order they are reached in, which the network's decision "
+                "diagram does not follow. Give source= and target=, or "
+                "leave directed=False if the links work both ways."
+            )
+        if len(self.terminals) == 2:
+            source, target = self.terminals
+        else:
+            source = target = None
         self.nodes: Dict[Hashable, Any] = dict(nodes or {})
         for node, model in self.nodes.items():
             if node not in adjacent:
@@ -275,6 +349,9 @@ class Network:
             self.nodes[node] = self.models[node] = model
         self.source, self.target = source, target
         self._adjacent = adjacent
+        # The links out of each node: every link, or in a directed
+        # network those that start there.
+        self._out = out if self.directed else adjacent
         # The unit the models are in (None if they name none); a warning
         # names the links and nodes when they name different units.
         self.unit: Optional[str] = diagram_unit(self.models, "network")
@@ -289,6 +366,54 @@ class Network:
         # Why the exact values were refused, once found (#229): the search
         # that found it is not repeated.
         self._refused: Optional[str] = None
+
+    @staticmethod
+    def _terminals(source, target, terminals, adjacent) -> Tuple[tuple, bool]:
+        """The terminals, checked, and whether they are every node
+        (``terminals="all"``)."""
+        if terminals is None:
+            if source is None or target is None:
+                raise ValueError(
+                    "Give the network's terminals: source= and target=, or "
+                    "terminals= (a list of nodes, or 'all' for every node)."
+                )
+            if source == target:
+                raise ValueError("The source and target must be two nodes.")
+            found: tuple = (source, target)
+            every = False
+        else:
+            if source is not None or target is not None:
+                raise ValueError(
+                    "Give source= and target=, or terminals=, not both: "
+                    "two terminals are terminals=[source, target]."
+                )
+            every = isinstance(terminals, str) and terminals == "all"
+            if every:
+                found = tuple(adjacent)
+            elif isinstance(terminals, (str, bytes)) or not isinstance(
+                terminals, (list, tuple, set, frozenset)
+            ):
+                raise ValueError(
+                    "terminals must be a list of nodes, or 'all' for every "
+                    f"node, got {terminals!r}."
+                )
+            else:
+                found = tuple(dict.fromkeys(terminals))
+                if len(found) != len(terminals):
+                    raise ValueError(
+                        f"terminals names a node twice: {terminals!r}."
+                    )
+            if len(found) < 2:
+                raise ValueError(
+                    "terminals must name at least two nodes, got "
+                    f"{terminals!r}."
+                )
+        for terminal in found:
+            if terminal not in adjacent:
+                raise ValueError(
+                    f"Terminal {terminal!r} is in no link of the network."
+                )
+        return found, every
 
     @staticmethod
     def _model(what: str, model):
@@ -320,8 +445,9 @@ class Network:
     # ------------------------------------------------------------------
 
     def _simple_paths(self) -> List[frozenset]:
-        """Every simple path between the terminals, as the set of its links
-        and of its nodes that can fail.
+        """Every simple path between the two terminals (in a directed
+        network, from the source to the target along the links), as the
+        set of its links and of its nodes that can fail.
 
         Raises
         ------
@@ -339,7 +465,7 @@ class Network:
         stack: list = [(self.source, start, {self.source}, 0)]
         while stack:
             node, elements, visited, i = stack.pop()
-            around = self._adjacent[node]
+            around = self._out[node]
             if i >= len(around):
                 continue
             stack.append((node, elements, visited, i + 1))
@@ -354,10 +480,17 @@ class Network:
                 if len(paths) > MAX_PATHS:
                     raise NotImplementedError(
                         f"The network has more than {MAX_PATHS:,} paths "
-                        "between its terminals, too many to list. Its exact "
-                        "values come from its decision diagram (network."
-                        "METHOD = 'bdd', the default), or simulate it: "
-                        "method='simulate'."
+                        "between its terminals, too many to list. "
+                        + (
+                            "A directed network's exact values come from "
+                            "its paths: simulate it (method='simulate'), "
+                            "or, if it has no cycle, work it out as a "
+                            "diagram: to_rbd()."
+                            if self.directed
+                            else "Its exact values come from its decision "
+                            "diagram (network.METHOD = 'bdd', the "
+                            "default), or simulate it: method='simulate'."
+                        )
                     )
                 continue
             stack.append((other, step, visited | {other}, 0))
@@ -366,7 +499,10 @@ class Network:
 
     def path_sets(self) -> Set[frozenset]:
         """The minimal path sets, as a set: for each simple path between
-        the terminals, the set of its links and of its nodes that can fail
+        two terminals, the set of its links and of its nodes that can fail;
+        for more than two terminals, each smallest set of links and nodes
+        that joins them all (a tree; a spanning tree for
+        ``terminals="all"``), found from the decision diagram
         ([`minimal_path_sets`][repyability.Network.minimal_path_sets]
         lists them, smallest first).
 
@@ -380,7 +516,24 @@ class Network:
         NotImplementedError
             If there are more than ``MAX_PATHS``.
         """
-        return set(self._simple_paths())
+        if len(self.terminals) == 2:
+            return set(self._simple_paths())
+        # A tree joining the terminals is a minimal cut set of the dual
+        # structure, which the diagram with its branches swapped decides.
+        try:
+            return set(
+                _minimal_cut_sets(
+                    _dual(*self._decomposition().steps()), cap=MAX_PATHS
+                )
+            )
+        except OverflowError:
+            raise NotImplementedError(
+                f"Listing the network's minimal path sets (the trees that "
+                f"join its {len(self.terminals)} terminals) passes "
+                f"{MAX_PATHS:,} sets, too many to list. The reliability, "
+                "the importance measures and the cut sets do not need "
+                "them."
+            ) from None
 
     def cut_sets(self) -> Set[frozenset]:
         """The minimal cut sets, as a set: the smallest sets of links and
@@ -461,8 +614,8 @@ class Network:
     def _decomposition(self) -> "_Plan":
         """The plan of the probability that the terminals are joined (see
         ``shannon.py``), as a ``_Plan``: the decision diagram built from the
-        network, or with ``METHOD = "paths"`` the Shannon decomposition of
-        its simple paths."""
+        network, or with ``METHOD = "paths"``, and for a directed network,
+        the Shannon decomposition of its simple paths."""
         if self._plan is None:
             if METHOD not in ("bdd", "paths"):
                 raise ValueError(
@@ -472,7 +625,14 @@ class Network:
             if self._refused is not None:
                 raise NotImplementedError(self._refused)
             try:
-                if METHOD == "paths":
+                if METHOD == "paths" and len(self.terminals) > 2:
+                    raise NotImplementedError(
+                        "network.METHOD = 'paths' works out two terminals, "
+                        f"from the paths between them: this network has "
+                        f"{len(self.terminals)}. Use network.METHOD = "
+                        "'bdd' (the default)."
+                    )
+                if METHOD == "paths" or self.directed:
                     paths = self._simple_paths()
                     # Nothing joins the terminals: they are always parted.
                     self._plan = (
@@ -482,14 +642,10 @@ class Network:
                     )
                 else:
                     order = _link_order(
-                        self.links, self._adjacent, self.source, self.target
+                        self.links, self._adjacent, self.terminals
                     )
                     self._plan = _frontier_plan(
-                        order,
-                        self.links,
-                        set(self.nodes),
-                        self.source,
-                        self.target,
+                        order, self.links, set(self.nodes), self.terminals
                     )
             except NotImplementedError as refusal:
                 self._refused = str(refusal)
@@ -1403,15 +1559,21 @@ class Network:
     def _init_args(self) -> dict:
         """The constructor's arguments, as ``with_levers`` rebuilds the
         network from them."""
-        return {
+        args: Dict[str, Any] = {
             "links": {
                 name: (u, v, self.models[name])
                 for name, (u, v) in self.links.items()
             },
-            "source": self.source,
-            "target": self.target,
             "nodes": dict(self.nodes),
+            "directed": self.directed,
         }
+        if self._all_terminals:
+            args["terminals"] = "all"
+        elif len(self.terminals) == 2:
+            args["source"], args["target"] = self.terminals
+        else:
+            args["terminals"] = list(self.terminals)
+        return args
 
     @check_x
     def Hf(self, x=None):
@@ -1729,6 +1891,101 @@ class Network:
         from repyability.rbd import _sensitivity
 
         return _sensitivity.with_levers(self, values)
+
+    def tornado(
+        self,
+        x: Optional[float] = None,
+        *,
+        quantity: str = "reliability",
+        ranges: Optional[dict] = None,
+        relative: float = 0.1,
+    ) -> "TornadoResult":
+        """The numbers of a tornado chart: the network's reliability at
+        ``x`` with each parameter at its low and at its high, every other
+        at its value, the parameters sorted by how far they swing it.
+
+        As [`NonRepairableRBD.tornado`][repyability.NonRepairableRBD.tornado]
+        gives a diagram's: where ``parameter_sensitivity`` gives each
+        parameter's slope, this gives what a range of it does, each end
+        the network rebuilt with the parameter there (as ``with_levers``
+        builds it) and its reliability worked out exactly (``sf``). A
+        parameter's range is ``ranges[lever]`` where given, and otherwise
+        a share ``relative`` of its scale either way: of its value, or
+        for a parameter on a log scale (a LogNormal's ``mu``) of 1. A
+        range is cut to the parameter's range of values (``Lever.bounds``:
+        a probability's to ``[0, 1]``), and its row says so; a parameter
+        at 0 has no relative change, so without a range it is listed in
+        ``skipped``, as is one whose network cannot be built or worked
+        out at an end, with the reason.
+
+        Parameters
+        ----------
+        x : float, optional
+            One time. May be left out only if every model is a fixed
+            probability.
+        quantity : str, optional
+            ``"reliability"``, the one quantity.
+        ranges : dict, optional
+            ``{lever: (low, high)}``, each lever by its
+            [`Lever`][repyability.Lever] (from ``levers()``) or its
+            ``(key, name)``.
+        relative : float, optional
+            The share of each parameter's scale it moves either way where
+            no range is given, in ``(0, 1)``; by default 0.1.
+
+        Returns
+        -------
+        TornadoResult
+            The base reliability, a [`TornadoRow`][repyability.TornadoRow]
+            for each parameter, the largest swing first, and those
+            skipped.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is left out for a network that varies with time or is
+            not one time, or a range or share is not valid.
+        NotImplementedError
+            Where ``sf`` refuses the network.
+
+        Examples
+        --------
+        Two links in series, failing at 0.01 and 0.02 an hour: at 10
+        hours the terminals are joined with probability ``exp(-0.3)``,
+        and a tenth more or less on the second's rate swings it the more:
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> E = surv.Exponential.from_params
+        >>> net = Network(
+        ...     {"a": ("s", "x", E([0.01])), "b": ("x", "t", E([0.02]))},
+        ...     "s",
+        ...     "t",
+        ... )
+        >>> result = net.tornado(10)
+        >>> round(result.base_value, 4)
+        0.7408
+        >>> for row in result.rows:
+        ...     print(row.key, round(row.value_low, 4),
+        ...           round(row.value_high, 4))
+        b 0.7558 0.7261
+        a 0.7483 0.7334
+        """
+        from repyability.rbd import _sensitivity
+
+        one_of("quantity", quantity, ("reliability",))
+        if x is not None and (np.ndim(x) != 0 or not is_number(x)):
+            raise ValueError(
+                "tornado takes one time x (its rows are sorted by the swing "
+                f"there), got {x!r}: call it once for each time."
+            )
+
+        def evaluate(net) -> float:
+            return float(np.ravel(net.sf(x))[0])
+
+        return _sensitivity._tornado(
+            self, evaluate, quantity, ranges, relative
+        )
 
     def time_to_reliability(self, target, upper_bound: Optional[float] = None):
         """The time at which the reliability falls to ``target``: the
@@ -2537,7 +2794,9 @@ class Network:
         self, lives: Dict[Hashable, np.ndarray], size: int
     ) -> np.ndarray:
         """The network's ``size`` lifetimes, each element's in ``lives``:
-        the longest-lasting path's."""
+        the life of the link that joins the terminals, the links added
+        longest-lived first (for two terminals, the longest-lasting
+        path's)."""
         # A link lasts no longer than the failing nodes it joins.
         index: Dict[Hashable, int] = {}
         for u_, v_ in self.links.values():
@@ -2555,8 +2814,33 @@ class Network:
                 last[:, touching], lives[node][:, None]
             )
         order = np.argsort(-last, axis=1, kind="stable")
-        s, t = index[self.source], index[self.target]
         out = np.empty(size)
+        if self.directed:
+            s, t = index[self.source], index[self.target]
+            for i in range(size):
+                # The nodes reached from the source along the links so far.
+                after: List[List[int]] = [[] for _ in index]
+                reached = [False] * len(index)
+                reached[s] = True
+                out[i] = -np.inf
+                for j in order[i]:
+                    a, b = int(ends[j, 0]), int(ends[j, 1])
+                    after[a].append(b)
+                    if reached[a] and not reached[b]:
+                        reached[b] = True
+                        stack = [b]
+                        while stack:
+                            for c in after[stack.pop()]:
+                                if not reached[c]:
+                                    reached[c] = True
+                                    stack.append(c)
+                    if reached[t]:
+                        out[i] = last[i, j]
+                        break
+            return np.maximum(out, 0.0)
+        terminal = [False] * len(index)
+        for node in self.terminals:
+            terminal[index[node]] = True
         for i in range(size):
             parent = list(range(len(index)))
 
@@ -2566,12 +2850,18 @@ class Network:
                     a = parent[a]
                 return a
 
+            # Whether each part holds a terminal, by its root, and how
+            # many parts do: one, once the terminals are joined.
+            holds = list(terminal)
+            apart = len(self.terminals)
             out[i] = -np.inf
             for j in order[i]:
                 a, b = find(ends[j, 0]), find(ends[j, 1])
                 if a != b:
                     parent[a] = b
-                if find(s) == find(t):
+                    apart -= holds[a] and holds[b]
+                    holds[b] = holds[a] or holds[b]
+                if apart == 1:
                     out[i] = last[i, j]
                     break
         return np.maximum(out, 0.0)
@@ -2618,6 +2908,10 @@ class Network:
             "type": "Network",
             "source": self.source,
             "target": self.target,
+            "terminals": (
+                "all" if self._all_terminals else list(self.terminals)
+            ),
+            "directed": self.directed,
             "links": [
                 {
                     "link": name,
@@ -2683,11 +2977,22 @@ class Network:
             _node_name(e["node"]): deserialise_model(e["model"])
             for e in d.get("nodes") or ()
         }
+        directed = bool(d.get("directed", False))
+        # A save from before a network took more than two terminals has
+        # only its source and target.
+        terminals = d.get("terminals")
+        if terminals is None:
+            return cls(
+                links,
+                _node_name(d["source"]),
+                _node_name(d["target"]),
+                nodes=nodes or None,
+                directed=directed,
+            )
+        if terminals != "all":
+            terminals = [_node_name(node) for node in terminals]
         return cls(
-            links,
-            _node_name(d["source"]),
-            _node_name(d["target"]),
-            nodes=nodes or None,
+            links, nodes=nodes or None, terminals=terminals, directed=directed
         )
 
     def to_json(self, fp=None, **json_kwargs) -> Optional[str]:
@@ -2753,6 +3058,145 @@ class Network:
         return cls.from_dict(json.loads(read_json(s)))
 
     # ------------------------------------------------------------------
+    # As a diagram
+    # ------------------------------------------------------------------
+
+    def to_rbd(self) -> NonRepairableRBD:
+        """The reliability block diagram of a directed network: the same
+        graph, each link and each node that can fail a node of the diagram
+        with its model, and each other node a junction
+        ([`PerfectReliability`][repyability.PerfectReliability]).
+
+        The diagram has the links that lie on a way from the source to the
+        target; the others cannot join them, and are left out. A diagram
+        has no cycle, so a network with one among those links is not
+        drawn: its own methods work it out.
+
+        Returns
+        -------
+        NonRepairableRBD
+            The diagram, from input node ``"input"`` to output node
+            ``"output"`` (renamed if a link or node has that name). A
+            node that cannot fail keeps its name, unless a link has it.
+
+        Raises
+        ------
+        ValueError
+            If the network is not directed (a link that works both ways
+            is not an edge of a diagram), or no way leads from the source
+            to the target.
+        NotImplementedError
+            If the links between the source and the target have a cycle.
+
+        Examples
+        --------
+        >>> from repyability import Network
+        >>> net = Network(
+        ...     {"a": ("s", "x", 0.1), "b": ("x", "t", 0.1),
+        ...      "c": ("s", "t", 0.2)},
+        ...     "s", "t", directed=True,
+        ... )
+        >>> rbd = net.to_rbd()
+        >>> round(rbd.sf(), 4), round(net.sf(), 4)
+        (0.962, 0.962)
+        """
+        from repyability.rbd.helper_classes import PerfectReliability
+
+        if not self.directed:
+            raise Refused(
+                "to_rbd() draws a directed network (directed=True): a "
+                "link that works both ways is not an edge of a reliability "
+                "block diagram, which is followed one way."
+            )
+        # The links on a way from the source to the target: none into the
+        # source or out of the target, each from a node the source reaches
+        # to one that reaches the target.
+        arcs = {
+            name: (u, v)
+            for name, (u, v) in self.links.items()
+            if v != self.source and u != self.target
+        }
+
+        def reached(start: Hashable, forward: bool) -> Set[Hashable]:
+            beside: Dict[Hashable, List[Hashable]] = {}
+            for u, v in arcs.values():
+                a, b = (u, v) if forward else (v, u)
+                beside.setdefault(a, []).append(b)
+            seen, stack = {start}, [start]
+            while stack:
+                for other in beside.get(stack.pop(), ()):
+                    if other not in seen:
+                        seen.add(other)
+                        stack.append(other)
+            return seen
+
+        after, before = reached(self.source, True), reached(self.target, False)
+        arcs = {
+            name: (u, v)
+            for name, (u, v) in arcs.items()
+            if u in after and v in before
+        }
+        if not arcs:
+            raise Refused(
+                f"No way leads from the source {self.source!r} to the "
+                f"target {self.target!r} along the links: there is no "
+                "diagram to draw (the network never works)."
+            )
+        # A cycle: what is left once the nodes with no link into them
+        # are taken away, one after another.
+        into: Dict[Hashable, int] = {}
+        for u, v in arcs.values():
+            into.setdefault(u, 0)
+            into[v] = into.get(v, 0) + 1
+        free = [node for node, count in into.items() if not count]
+        while free:
+            node = free.pop()
+            del into[node]
+            for u, v in arcs.values():
+                if u == node:
+                    into[v] -= 1
+                    if not into[v]:
+                        free.append(v)
+        if into:
+            raise NotImplementedError(
+                "The links between the source and the target have a cycle "
+                f"(through {', '.join(sorted(map(repr, into)))}), and a "
+                "reliability block diagram has none. The network's own "
+                "methods work it out (sf, the importance measures, "
+                "random)."
+            )
+        taken = set(self.models)
+        drawn: Dict[Hashable, Hashable] = {}
+        models: Dict[Hashable, Any] = {}
+        for pair in arcs.values():
+            for node in pair:
+                if node in drawn:
+                    continue
+                if node in self.nodes:
+                    drawn[node] = node
+                    models[node] = self.nodes[node]
+                    continue
+                name = node
+                while name in taken:
+                    name = ("node", name)
+                taken.add(name)
+                drawn[node] = name
+                models[name] = PerfectReliability
+        ends = []
+        for name in ("input", "output"):
+            while name in taken:
+                name += " (network)"
+            taken.add(name)
+            ends.append(name)
+        edges = [(ends[0], drawn[self.source]), (drawn[self.target], ends[1])]
+        for name, (u, v) in arcs.items():
+            edges += [(drawn[u], name), (name, drawn[v])]
+            models[name] = self.models[name]
+        return NonRepairableRBD(
+            edges, models, input_node=ends[0], output_node=ends[1]
+        )
+
+    # ------------------------------------------------------------------
     # The routes
     # ------------------------------------------------------------------
 
@@ -2764,9 +3208,12 @@ class Network:
 
         The exact values come from the network's decision diagram, so a
         network of more than ``MAX_STATES`` states refuses every analysis
-        but the simulation (and the paths listed), with the message the
-        methods raise; an element whose model has no reliability of its
-        own makes the analyses built on it refuse, as it does.
+        but the simulation (and two terminals' paths, listed), with the
+        message the methods raise, as a directed network of more than
+        ``MAX_PATHS`` paths does; an element whose model has no
+        reliability of its own makes the analyses built on it refuse, as
+        it does. The routes are the same for two terminals, several and
+        all of them.
 
         Returns
         -------
@@ -2848,7 +3295,7 @@ class Network:
             ("cut_sets", "minimal_cut_sets"),
             AnalysisRoute(r.EXACT, "Read off the decision diagram."),
         )
-        paths = r.refusal(self._simple_paths)
+        paths = r.refusal(self.path_sets)
         give(
             ("path_sets", "minimal_path_sets"),
             (
@@ -2856,7 +3303,13 @@ class Network:
                 if paths
                 else AnalysisRoute(
                     r.EXACT,
-                    "Every simple path between the terminals, listed.",
+                    (
+                        "Every simple path between the terminals, listed."
+                        if len(self.terminals) == 2
+                        else "Every smallest set of links and nodes that "
+                        "joins the terminals, read off the decision "
+                        "diagram."
+                    ),
                 )
             ),
         )
@@ -2877,6 +3330,11 @@ class Network:
             r.NUMERICAL,
             "The exact Birnbaum importance times each parameter's "
             "derivative, by differences.",
+        )
+        out["tornado"] = built(
+            r.EXACT,
+            "The exact reliability with each parameter at its low and at "
+            "its high, the network rebuilt.",
         )
         fixed = r.refusal(self._require_time_varying)
         give(
@@ -2917,8 +3375,14 @@ class Network:
         )
         out["random"] = AnalysisRoute(
             r.SIMULATED,
-            "Monte-Carlo lifetimes: each element's drawn, and the "
-            "longest-lasting path's taken.",
+            (
+                "Monte-Carlo lifetimes: each element's drawn, and the "
+                "longest-lasting path's taken."
+                if len(self.terminals) == 2
+                else "Monte-Carlo lifetimes: each element's drawn, and the "
+                "life taken of the link that joins the terminals, the "
+                "links added longest-lived first."
+            ),
         )
         out["sf_uncertainty"] = built(
             r.SIMULATED,
@@ -2979,25 +3443,32 @@ class Network:
 
     def __repr__(self) -> str:
         unit = "" if self.unit is None else f", unit {self.unit!r}"
+        if self._all_terminals:
+            joined = "all terminals"
+        elif len(self.terminals) == 2:
+            joined = f"{self.source!r} to {self.target!r}"
+        else:
+            joined = f"{len(self.terminals)} terminals"
+        links = "directed links" if self.directed else "links"
         return (
-            f"Network({len(self.links)} links, {len(self.nodes)} failing "
-            f"nodes, {self.source!r} to {self.target!r}{unit})"
+            f"Network({len(self.links)} {links}, {len(self.nodes)} failing "
+            f"nodes, {joined}{unit})"
         )
 
 
 def _link_order(
     links: Dict[Hashable, Tuple[Hashable, Hashable]],
     adjacent: Dict[Hashable, List[Tuple[Hashable, Hashable]]],
-    source: Hashable,
-    target: Hashable,
+    terminals: Sequence[Hashable],
 ) -> List[Hashable]:
     """The order the links of the terminals' part of the network are
-    decided in: by the breadth-first order of their later end, from either
-    terminal, whichever keeps the frontiers narrower (the smaller sum over
-    the links of two to the frontier's size). A link out of the
-    terminals' part cannot join them, and is left out."""
+    decided in: by the breadth-first order of their later end, from a
+    terminal (each of the first ``_ORDER_ROOTS`` is tried), whichever
+    keeps the frontiers narrower (the smaller sum over the links of two to
+    the frontier's size). A link out of the first terminal's part cannot
+    join the terminals, and is left out."""
     candidates = []
-    for root in (source, target):
+    for root in terminals[:_ORDER_ROOTS]:
         position = {root: 0}
         queue = deque([root])
         while queue:
@@ -3236,19 +3707,16 @@ def _value_and_gradient(
     }
 
 
-def _canonical(
-    labels: np.ndarray, source: np.ndarray, target: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Frontier states (a row of labels each, -1 for a failed node, and the
-    labels of the terminals' parts, -1 for one yet to enter) with their
-    labels renumbered in order of first appearance, so that equal states
-    are equal rows."""
+def _canonical(labels: np.ndarray) -> np.ndarray:
+    """Frontier states (a row of labels each, -1 for a failed node) with
+    their labels renumbered in order of first appearance, so that equal
+    states are equal rows."""
     count, width = labels.shape
     if not count or not width:
-        return labels, source, target
+        return labels
     size = int(labels.max()) + 1
     if size <= 0:
-        return labels, source, target
+        return labels
     rows = np.arange(count)
     # Each row's new number for each label, given as the labels come.
     rank = np.full((count, size), -1, dtype=labels.dtype)
@@ -3261,18 +3729,9 @@ def _canonical(
         at, label = at[fresh], label[fresh]
         rank[at, label] = seen[at]
         seen[at] += 1
-
-    def renamed(label: np.ndarray) -> np.ndarray:
-        return np.where(
-            label >= 0,
-            rank[
-                rows.reshape((-1,) + (1,) * (label.ndim - 1)),
-                np.maximum(label, 0),
-            ],
-            label,
-        ).astype(labels.dtype)
-
-    return renamed(labels), renamed(source), renamed(target)
+    return np.where(
+        labels >= 0, rank[rows[:, None], np.maximum(labels, 0)], labels
+    ).astype(labels.dtype)
 
 
 def _unique_rows(rows: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -3310,36 +3769,39 @@ def _frontier_plan(
     order: Sequence[Hashable],
     links: Dict[Hashable, Tuple[Hashable, Hashable]],
     failing: Set[Hashable],
-    source: Hashable,
-    target: Hashable,
+    terminals: Collection[Hashable],
 ) -> _Plan:
-    """The decision diagram of whether ``source`` and ``target`` are
-    joined, its links decided in ``order`` (see the module docstring), as
-    a ``_Plan``.
+    """The decision diagram of whether the ``terminals`` (two or more
+    nodes) are all joined, its links decided in ``order`` (see the module
+    docstring), as a ``_Plan``.
 
     The states before each decision are worked out together, as rows of
     an array (#173): each is the frontier's parts (a label for each
     frontier node, in the order they entered: the same label for nodes
-    joined by working links, -1 for a failed node) and the parts that hold
-    the source and the target (-1 for a terminal yet to enter). A node
-    that can fail is decided before its first link. Each state's two
-    outcomes are found at once, equal ones merged, and the diagram is then
-    reduced from the last decision up (a state whose outcomes agree is
-    dropped, and equal ones shared), which gives the same diagram as
-    deciding the states one by one.
+    joined by working links, -1 for a failed node) and whether each part
+    holds a terminal, kept as one number for each frontier node (twice
+    its label, plus one if its part holds a terminal). A part that holds
+    a terminal and leaves the frontier parts the terminals, unless it
+    holds them all; the terminals are joined once every one has entered
+    and one part holds them. A node that can fail is decided before its
+    first link. Each state's two outcomes are found at once, equal ones
+    merged, and the diagram is then reduced from the last decision up (a
+    state whose outcomes agree is dropped, and equal ones shared), which
+    gives the same diagram as deciding the states one by one.
 
     Raises
     ------
     NotImplementedError
         If the diagram would have more than ``MAX_STATES`` states.
     """
+    terminals = set(terminals)
     first: Dict[Hashable, int] = {}
     last: Dict[Hashable, int] = {}
     for i, name in enumerate(order):
         for w in links[name]:
             first.setdefault(w, i)
             last[w] = i
-    if source not in first or target not in first:
+    if not terminals <= first.keys():
         return _constant(_FAIL)  # no link joins the terminals' parts
     # The decisions: (variable, entering nodes, link ends, leaving nodes),
     # the ends None for a node's decision.
@@ -3354,77 +3816,97 @@ def _frontier_plan(
         leaving = tuple(w for w in ends if last[w] == i)
         decisions.append((name, entering, (u, v), leaving))
     # Each link's ends' positions once its entering nodes join the
-    # frontier, and the positions that stay after its leaving ones go.
+    # frontier, the positions that stay after its leaving ones go and
+    # those that go; and whether every terminal has entered by then.
     shapes: List[Optional[tuple]] = []
+    complete: List[bool] = []
     front: List[Hashable] = []
+    outside = len(terminals)
     for name, entering, ends, leaving in decisions:
         if ends is None:
             shapes.append(None)
             front.append(name)
+            outside -= name in terminals
+            complete.append(not outside)
             continue
         widened = front + list(entering)
-        keep = tuple(j for j, w in enumerate(widened) if w not in leaving)
+        outside -= sum(w in terminals for w in entering)
+        complete.append(not outside)
+        keep = [j for j, w in enumerate(widened) if w not in leaving]
+        gone = [j for j, w in enumerate(widened) if w in leaving]
         shapes.append(
-            (entering, widened.index(ends[0]), widened.index(ends[1]), keep)
+            (widened.index(ends[0]), widened.index(ends[1]), keep, gone)
         )
         front = [w for w in widened if w not in leaving]
 
     # The states before the next decision; each decision's outcomes, as
     # the index of the state after (or _NONE_FAIL, _NONE_WORK).
-    labels = np.zeros((1, 0), dtype=np.int16)
-    src = np.full(1, -1, dtype=np.int16)
-    dst = np.full(1, -1, dtype=np.int16)
+    state = np.zeros((1, 0), dtype=np.int16)
     outcomes: List[Tuple[np.ndarray, np.ndarray]] = []
     states = 1
     for k, (name, entering, ends, leaving) in enumerate(decisions):
-        count = len(src)
+        count = len(state)
+        labels = state >> 1  # -1 stays -1
+        held = (state >= 0) & ((state & 1) == 1)
         parts = (labels.max(axis=1, initial=-1) + 1).astype(np.int16)
+
+        def column(value) -> np.ndarray:
+            return np.full((count, 1), value)
+
+        # Each outcome: the frontier's labels and whether each node's part
+        # holds a terminal, the states whose terminals it joins, and the
+        # positions that leave (None: the terminals are parted).
+        sides: List[Optional[tuple]]
         if ends is None:
             # A node that can fail, entering the frontier.
-            works = (
-                np.hstack([labels, parts[:, None]]),
-                parts if name == source else src,
-                parts if name == target else dst,
-                None,
-            )
-            if name == source or name == target:
-                fails = None  # the terminals are parted
-            else:
-                fails = (
-                    np.hstack([labels, np.full((count, 1), -1, np.int16)]),
-                    src,
-                    dst,
+            is_terminal = name in terminals
+            sides = [
+                (
+                    np.hstack([labels, parts[:, None]]),
+                    np.hstack([held, column(is_terminal)]),
                     None,
-                )
-            sides = [works, fails]
+                    [],
+                ),
+                (
+                    None
+                    if is_terminal
+                    else (
+                        np.hstack([labels, column(np.int16(-1))]),
+                        np.hstack([held, column(False)]),
+                        None,
+                        [],
+                    )
+                ),
+            ]
+            keep = list(range(labels.shape[1] + 1))
         else:
-            _, iu, iv, keep = shapes[k]  # type: ignore[misc]
-            grown, s, t = labels, src, dst
+            iu, iv, keep, gone = shapes[k]  # type: ignore[misc]
+            grown, holds = labels, held
             for j, w in enumerate(entering):
                 new = (parts + j).astype(np.int16)
                 grown = np.hstack([grown, new[:, None]])
-                if w == source:
-                    s = new
-                if w == target:
-                    t = new
+                holds = np.hstack([holds, column(w in terminals)])
             a, b = grown[:, iu], grown[:, iv]
             merge = (a >= 0) & (b >= 0) & (a != b)
-            joined = np.where(
-                merge[:, None] & (grown == b[:, None]), a[:, None], grown
+            of_b = merge[:, None] & (grown == b[:, None])
+            of_either = of_b | (merge[:, None] & (grown == a[:, None]))
+            joined = np.where(of_b, a[:, None], grown)
+            together = np.where(
+                of_either, (holds[:, iu] | holds[:, iv])[:, None], holds
             )
-            s_works = np.where(merge & (s == b), a, s)
-            t_works = np.where(merge & (t == b), a, t)
+            work = None
+            if complete[k]:
+                # One part holds every terminal: the labels that hold one
+                # are all the same.
+                top = np.iinfo(np.int16).max
+                low = np.where(together, joined, top).min(axis=1, initial=top)
+                work = low == np.where(together, joined, -1).max(
+                    axis=1, initial=-1
+                )
             sides = [
-                (
-                    joined[:, list(keep)],
-                    s_works,
-                    t_works,
-                    (s_works >= 0) & (s_works == t_works),
-                ),
-                (grown[:, list(keep)], s, t, None),
+                (joined, together, work, gone),
+                (grown, holds, None, gone),
             ]
-        # Each outcome: joined, parted (a terminal's part closed), or a
-        # state after, renumbered.
         codes: List[np.ndarray] = []
         kept: List[Optional[tuple]] = []
         for side in sides:
@@ -3433,28 +3915,39 @@ def _frontier_plan(
                 codes.append(code)
                 kept.append(None)
                 continue
-            rows, s, t, work = side
-            closed = ((s >= 0) & ~(rows == s[:, None]).any(axis=1)) | (
-                (t >= 0) & ~(rows == t[:, None]).any(axis=1)
-            )
+            rows, flags, work, gone = side
+            staying = rows[:, keep]
+            # A part that holds a terminal closes: none of its nodes stay.
+            closed = np.zeros(count, dtype=bool)
+            for j in gone:
+                closed |= flags[:, j] & ~(staying == rows[:, j : j + 1]).any(
+                    axis=1
+                )
             if work is not None:
                 code[work] = _NONE_WORK
-                closed &= ~work
                 alive = ~closed & ~work
             else:
                 alive = ~closed
             codes.append(code)
-            kept.append((alive, *_canonical(rows[alive], s[alive], t[alive])))
-        stacked = [
-            np.hstack([rows, s[:, None], t[:, None]])
-            for _, rows, s, t in filter(None, kept)
-        ]
-        unique, inverse = _unique_rows(np.vstack(stacked))
+            renamed = _canonical(staying[alive])
+            kept.append(
+                (
+                    alive,
+                    np.where(
+                        renamed >= 0,
+                        2 * renamed + flags[:, keep][alive],
+                        -1,
+                    ).astype(np.int16),
+                )
+            )
+        unique, inverse = _unique_rows(
+            np.vstack([rows for _, rows in filter(None, kept)])
+        )
         offset = 0
-        for code, side in zip(codes, kept):
-            if side is None:
+        for code, after in zip(codes, kept):
+            if after is None:
                 continue
-            alive = side[0]
+            alive = after[0]
             number = int(alive.sum())
             code[alive] = inverse[offset : offset + number]
             offset += number
@@ -3467,14 +3960,12 @@ def _frontier_plan(
                 "up), too many to work out exactly. Simulate it: "
                 "method='simulate'."
             )
-        width = unique.shape[1] - 2
-        labels = unique[:, :width]
-        src, dst = unique[:, width], unique[:, width + 1]
+        state = unique
 
     # Reduce from the last decision up: each state's slot, the states after
     # the last decision all parted.
     names = [name for name, _, _, _ in decisions]
-    slot = np.full(len(src), _FAIL, dtype=np.int64)
+    slot = np.full(len(state), _FAIL, dtype=np.int64)
     pivots: List[int] = []
     sizes: List[int] = []
     actives: List[np.ndarray] = []
