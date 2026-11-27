@@ -12,6 +12,18 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `compare` on `FaultTree`, `Network` and `PhasedMission`, as on the
+  diagrams: a `ConfidenceInterval` of the difference, exact where both
+  values are worked out and otherwise from paired simulations with common
+  random numbers (an element of the same name in both drawing the same
+  uniforms). A tree compares the mean times to its top event (simulated
+  for dynamic gates, from the tree's own draws), or given `t` the top
+  event probabilities; a static tree's simulated comparison is its
+  diagram's on the same seed. A network compares its mean lifetimes, a
+  mission its reliabilities (standby switches paired by phase). `random`
+  and `reliability_interval` draw as before. Comparing different kinds
+  is refused, naming the conversion; `NonRepairableRBD.compare` now
+  refuses another kind the same way (its draws are unchanged).
 - `FaultTree.from_open_psa(source, tree=None, mission_time=None, *,
   top=None)` reads a fault tree from an Open-PSA Model Exchange Format
   document (text, a path or a file), the inverse of `to_open_psa`: the

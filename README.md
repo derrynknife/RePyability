@@ -185,7 +185,7 @@ Which analyses each model type has (the method; — where it has none):
 | Simulated histories | — | `simulate_timelines` | — | — | — |
 | Each simulation's values, common random numbers | — | `simulation_samples` | — | — | — |
 | Repair crews' jobs and chain | — | `crew_jobs` | — | — | — |
-| Compare two designs | `compare` | `compare` | — | — | — |
+| Compare two designs | `compare` | `compare` | `compare` | `compare` | `compare` |
 | **Costs and spares** | | | | | |
 | Long-run cost rate | — | `expected_cost_rate` | — | — | — |
 | Expected cost in a window | — | `expected_cost` | — | — | — |

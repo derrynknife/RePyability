@@ -830,7 +830,32 @@ gain.standard_error    # -> 0.21    two separate estimates: about 0.42
 The exact difference is the integral of the difference in reliability. The
 reliabilities themselves need no simulation: compare `sf`.
 
-Both kinds need every component's draws to be replayable, as antithetic
+A `FaultTree`, a `Network` and a `PhasedMission` compare the same way.
+A tree's `compare` takes the difference of the mean times to its top event
+(exact where `mean` works out both, simulated otherwise, as for a tree with
+dynamic gates), or, given a time `t` (or for a tree of probabilities), of
+the top event probabilities, exactly. A static tree's simulated times are
+its diagram's, so it compares as `to_rbd()` does on the same seed; a tree
+with dynamic gates draws its own, each event from the same stream as the
+diagram's node of its name. A network's is the difference of the mean
+lifetimes, its links and nodes paired by name; a mission's, of the
+reliabilities, its components paired by name and its standby switches by
+phase:
+
+```python
+from repyability import Network
+
+E = surv.Exponential.from_params
+one = Network({"a": ("s", "t", E([0.01]))}, "s", "t")
+two = Network({"a": ("s", "t", E([0.01])), "b": ("s", "t", E([0.01]))}, "s", "t")
+two.compare(one).estimate     # -> 50.0   a second link, 100 to 150 hours
+```
+
+A tree compares with a tree, a network with a network and a mission with a
+mission: to compare a tree with a diagram, convert one
+(`FaultTree.from_rbd`, `to_rbd`).
+
+Every kind needs every component's draws to be replayable, as antithetic
 pairs do. A model whose draws do not follow numpy's uniforms (a class of your
 own that draws its own random numbers, say), which the two systems would not
 share, raises `NotImplementedError`.
