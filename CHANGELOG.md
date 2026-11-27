@@ -29,6 +29,13 @@ release between minors that only adds (0.19.1).
   part, as a rule), or values that do not settle to `rtol`, refuse,
   saying how far they agreed and naming `first_failure_bounds` and the
   simulation; a start in the long-run state is refused with phases.
+  Common-cause groups and standby groups (load-sharing groups and blocks
+  of identical units too) of units with exponential lives and repairs
+  are in the chain, exactly, where they were refused: a group's shared
+  causes strike in it as in the repair crews' chain, and a standby
+  group's own chain goes beside the rest. Scheduled maintenance and
+  tests stay refused (a fixed interval is no time a chain's phases
+  follow), and the refusal says so.
   `analysis_routes()` reports the route. Exponential diagrams keep their
   values, to rounding: the survival's steps are now summed off the
   threaded BLAS, and a chain started with units down is listed from that

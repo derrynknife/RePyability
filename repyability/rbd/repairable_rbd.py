@@ -3682,6 +3682,13 @@ class RepairableRBD(RBD):
           (a few more over a short time), since the chain's states are
           the product of its units' phases.
 
+        Common-cause groups and standby groups (load-sharing groups and
+        blocks of identical units too) of units with exponential lives
+        and repairs are in the chain, exactly: a group's shared causes
+        strike its members together, as in the simulation, and a standby
+        group's own chain of its units goes beside the rest, from every
+        unit ready (or from its long-run state).
+
         A sub-system (a nested ``RepairableRBD``) is drawn into the
         diagram in its place, its components each as ``(node,
         component)``, and takes these routes as the flat diagram does,
@@ -3689,8 +3696,10 @@ class RepairableRBD(RBD):
         common-cause, maintenance or shutdown groups in it, or a state
         given for it couple it.
 
-        Everything else (scheduled maintenance, tests of hidden failures,
-        standby groups, common-cause groups, a coupled sub-system, a
+        Everything else (scheduled maintenance and tests of hidden
+        failures, whose fixed intervals no chain's phases follow;
+        common-cause or standby groups of units that are not exponential;
+        a coupled sub-system; a
         chain of phases too large or that does not settle to ``rtol``)
         refuses and points to
         ``method="simulate"``, which reads the first failures off

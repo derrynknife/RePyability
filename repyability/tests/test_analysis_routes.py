@@ -911,15 +911,17 @@ def test_the_readme_says_what_is_simulated():
             (repairable["capacities"], "mission_capacity", "numerical"),
         ],
         "The reliability and mean time to the first failure of a "
-        "repairable system with maintenance, tests, standby or "
-        "common-cause groups, or with too many lives and repairs that are "
-        "not exponential in one redundant part": [
+        "repairable system with maintenance or tests, with common-cause "
+        "or standby groups of units that are not exponential, or with too "
+        "many lives and repairs that are not exponential in one redundant "
+        "part": [
             (repairable[name], analysis, route)
             for name in (
-                "identical units, parallel",
                 "maintained",
                 "inspected",
-                "common cause, revealed",
+                "common cause, Weibull",
+                "standby group, Weibull",
+                "instrument air",
             )
             for analysis, route in (
                 ("first_failure_sf", "refused"),
@@ -927,6 +929,16 @@ def test_the_readme_says_what_is_simulated():
                 ("first_failure_bounds", "numerical"),
                 ("mean_time_to_first_failure_bound", "numerical"),
             )
+        ]
+        + [
+            (repairable[name], analysis, "numerical")
+            for name in (
+                "identical units, parallel",
+                "common cause, revealed",
+                "standby group",
+                "fitted life",
+            )
+            for analysis in ("first_failure_sf", "mean_time_to_first_failure")
         ],
         "Comparing two designs (`compare`)": [
             (plain, "compare", "numerical"),

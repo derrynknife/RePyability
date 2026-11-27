@@ -47,7 +47,7 @@ bound is the integral of ``max(0, 1 - Q(0) - W(t))``.
 
 import math
 import warnings
-from typing import Any, Dict, NoReturn, Optional, Tuple
+from typing import Any, Dict, List, NoReturn, Optional, Tuple
 
 import numpy as np
 
@@ -206,11 +206,6 @@ def _components_are_plain(rbd) -> None:
     diagram's kinds of component or maintenance."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
-    if rbd.ccf_groups:
-        _refuse(
-            "The exact values do not cover common-cause groups, whose "
-            "members fail together"
-        )
     if rbd._maintenance:
         _refuse(
             "The exact values do not cover maintenance groups, which "
@@ -222,18 +217,110 @@ def _components_are_plain(rbd) -> None:
                 "The exact values do not cover a nested diagram "
                 f"(component {node!r}), which has repairs of its own"
             )
-        for table, what in (
-            (rbd._standby, "a standby group"),
-            (rbd._preventive, "scheduled maintenance"),
-            (rbd._inspection, "inspections"),
-            (rbd._imperfect, "imperfect repair"),
+        for table, what, why in (
+            (
+                rbd._preventive,
+                "scheduled maintenance",
+                " (a fixed interval is no time a Markov chain's phases "
+                "follow)",
+            ),
+            (
+                rbd._inspection,
+                "inspections",
+                " (tests at fixed intervals are no times a Markov chain's "
+                "phases follow)",
+            ),
+            (rbd._imperfect, "imperfect repair", ""),
         ):
             if node in table:
                 _refuse(
                     f"The exact values do not cover {what}, which "
-                    f"component {node!r} has"
+                    f"component {node!r} has{why}"
                 )
         _requirements._require_reliabilities(rbd, node)
+    _groups_fit(rbd)
+
+
+def _groups_fit(rbd) -> None:
+    """Raise if the chain does not take the diagram's common-cause or
+    standby groups in: they are chains of exponential units."""
+    for node in rbd._standby:
+        what = rbd._standby[node].what
+        if rbd._crews_couple():
+            _refuse(
+                f"The exact values do not cover {what} (component "
+                f"{node!r}) whose units wait for repair crews with other "
+                "components' jobs"
+            )
+        component = rbd.components[node]
+        if (
+            _constant_rate(component.reliability) is None
+            or _constant_rate(component.time_to_replace) is None
+        ):
+            _refuse(
+                f"The exact values cover {what} only of units with "
+                "exponential lives and repair times, which those of "
+                f"component {node!r} are not"
+            )
+    for group in rbd.ccf_groups:
+        for member in group.members:
+            component = rbd.components[member]
+            if member in rbd._standby:
+                _refuse(
+                    "The exact values do not cover a standby group in a "
+                    f"common-cause group, as component {member!r} is"
+                )
+            if _constant_rate(component.reliability) is None or not (
+                0.0
+                < (_repair_rate(component.time_to_replace) or 0.0)
+                < math.inf
+            ):
+                _refuse(
+                    "The exact values cover a common-cause group only of "
+                    "members with exponential lives and repair times, "
+                    f"which those of member {member!r} of group "
+                    f"{list(group.members)} are not"
+                )
+
+
+def _member_rates(rbd) -> Dict[Any, Tuple[float, float]]:
+    """The failure and repair rates of the common-cause groups' members."""
+    return {
+        member: (
+            _constant_rate(rbd.components[member].reliability),
+            _repair_rate(rbd.components[member].time_to_replace),
+        )
+        for group in rbd.ccf_groups
+        for member in group.members
+    }
+
+
+def _causes(rbd, nodes: list) -> Tuple[Dict[Any, float], List[tuple]]:
+    """The common-cause groups' causes over the chain's ``nodes`` (see
+    ``_crews._crew_causes``): each member's own cause's rate, and the
+    shared causes."""
+    if not rbd.ccf_groups:
+        return {}, []
+    return _crews._crew_causes(rbd, nodes, _member_rates(rbd))
+
+
+def _standby_chain_of(rbd, node):
+    """A standby group's Markov chain (``_standby_chain``), as its curve
+    over time takes it (``_curves._standby_curve``)."""
+    from repyability.rbd import _long_run, _standby_chain
+
+    life, repair = _long_run._standby_rates(rbd, node)
+    arrangement = rbd._standby[node]
+    return _standby_chain.chain(
+        arrangement.units,
+        arrangement.k,
+        life,
+        repair,
+        arrangement.dormancy_factor,
+        arrangement.switching_probability,
+        rbd.repair_crews if _crews._crews_limited(rbd) else None,
+        arrangement.rates,
+    )
 
 
 def _in_series(structure, term: int) -> bool:
@@ -254,6 +341,10 @@ def _is_series(rbd) -> bool:
         return False
     if structure.always_works:
         return True
+    if rbd.ccf_groups or rbd._standby:
+        # A group's members fail together, and a standby group's units
+        # are repaired before it fails.
+        return False
     return structure.root is not None and _in_series(structure, structure.root)
 
 
@@ -277,17 +368,21 @@ def _crew_count(rbd) -> int:
 def _queued(rbd) -> bool:
     """Whether repairs can wait for a crew, which ties every component to
     the others."""
-    return bool(_crews._crews_limited(rbd) or _crews._call_when(rbd))
+    return bool(rbd._crews_couple())
 
 
 def _chain_fits(rbd, rates: dict) -> None:
     """Raise if the chain of exponential components is too large."""
+    plain = [node for node in rates if node not in rbd._standby]
     count = crew_chain.state_count(
-        [rbd._priority.get(node, 0.0) for node in rates],
-        [math.isinf(repair) for _, repair in rates.values()],
+        [rbd._priority.get(node, 0.0) for node in plain],
+        [math.isinf(rates[node][1]) for node in plain],
         _crew_count(rbd),
         _crews._call_when(rbd),
     )
+    for node in rbd._standby:
+        arrangement = rbd._standby[node]
+        count *= (arrangement.k + 1) * (arrangement.units + 1)
     if count > crew_chain.MAX_STATES:
         # (With a call-out crew, the states are counted only that far.)
         _refuse(
@@ -300,13 +395,15 @@ def _modules(rbd) -> Tuple[list, list]:
     """``(alone, modules)``: the components each of which fails the
     system alone, and the other series factors of the structure, each the
     list of its components. With repairs that wait for a crew, one module
-    of every component, as the queue ties them."""
+    of every component, as the queue ties them; a standby group is a
+    module, never alone."""
     structure = rbd._decomposition()
     if _queued(rbd):
         return [], [list(rbd.components)]
     if structure.always_works:
         return [], []
-    if structure.root is None:
+    if structure.root is None or rbd.ccf_groups:
+        # (A common-cause group ties its members' modules together.)
         return [], [[n for n in rbd.components if n in structure.nodes]]
     alone: list = []
     modules: list = []
@@ -319,7 +416,9 @@ def _modules(rbd) -> Tuple[list, list]:
 
     def walk(term: int) -> None:
         entry = structure.terms[term]
-        if entry[0] == NODE:
+        if entry[0] == NODE and entry[1] in rbd._standby:
+            modules.append([entry[1]])
+        elif entry[0] == NODE:
             alone.append(entry[1])
         elif entry[0] == SERIES:
             for child in entry[1]:
@@ -331,14 +430,20 @@ def _modules(rbd) -> Tuple[list, list]:
     return alone, modules
 
 
-def _node_times(rbd, node, states, level: int, horizon: float) -> tuple:
+def _node_times(
+    rbd, node, states, level: int, horizon: float, own: Optional[dict] = None
+) -> tuple:
     """The phases of the life and of the repair of ``node`` (the repair
-    a rate of ``inf`` if instant), from its state."""
+    a rate of ``inf`` if instant), from its state. A common-cause
+    group's member fails on its own at its own cause's rate (``own``)."""
     component = rbd.components[node]
     state = states.get(node)
     up = state is None or state.alive
     age = 0.0 if state is None or not up else float(state.age)
-    life = _phase_type.phases(component.reliability, level, horizon, age)
+    if own and node in own:
+        life = _phase_type.exponential(own[node])
+    else:
+        life = _phase_type.phases(component.reliability, level, horizon, age)
     if _repair_rate(component.time_to_replace) == math.inf:
         return life, math.inf
     gone = 0.0 if up else float(state.down_for)
@@ -356,6 +461,10 @@ def _phases_fit(rbd) -> None:
     for module in _modules(rbd)[1]:
         count = 1
         for node in module:
+            if node in rbd._standby:
+                arrangement = rbd._standby[node]
+                count *= (arrangement.k + 1) * (arrangement.units + 1)
+                continue
             component = rbd.components[node]
             for what, model in (
                 ("life", component.reliability),
@@ -405,6 +514,11 @@ def _require_exact(rbd) -> str:
     return AS_PHASES
 
 
+_GROUPS = (
+    " Common-cause groups' shared causes strike in the chain as in the "
+    "crews' chain, and a standby group's own chain of its units goes "
+    "beside it."
+)
 _ROUTES = {
     AS_SERIES: "A series structure: the product of each component's "
     "survival from its state at 0, as no repair can come before the first "
@@ -427,7 +541,9 @@ _ROUTES = {
 
 def exact_route(rbd) -> str:
     """How the exact values are worked out, for ``analysis_routes``."""
-    return _ROUTES[_require_exact(rbd)]
+    how = _ROUTES[_require_exact(rbd)]
+    flat = _flat(rbd)
+    return how + (_GROUPS if flat.ccf_groups or flat._standby else "")
 
 
 # -- a series structure ------------------------------------------------------
@@ -518,18 +634,22 @@ class _Absorbing:
     ):
         from scipy import sparse
 
-        nodes = list(rbd.components) if nodes is None else list(nodes)
-        named = {node: states[node] for node in nodes if node in states}
+        every = list(rbd.components) if nodes is None else list(nodes)
+        groups = [node for node in every if node in rbd._standby]
+        nodes = [node for node in every if node not in rbd._standby]
+        named = {node: states[node] for node in every if node in states}
         _overrides.refuse_in_chain(named)
+        own, shared = _causes(rbd, nodes)
         times = [
-            _node_times(rbd, node, named, level, horizon) for node in nodes
+            _node_times(rbd, node, named, level, horizon, own)
+            for node in nodes
         ]
         self.exact = all(
             time == math.inf or time.exact for pair in times for time in pair
         )
         stationary = [node for node, s in named.items() if s.stationary]
         if stationary:
-            if len(stationary) < len(nodes):
+            if len(stationary) < len(every):
                 raise NotImplementedError(
                     "The components' long-run states are tied together by "
                     "the repair queue: start every component in its "
@@ -553,7 +673,7 @@ class _Absorbing:
                 for k, node in enumerate(nodes)
                 if node in named and not named[node].alive
             )
-            crews = rbd.repair_crews or len(nodes)
+            crews = rbd.repair_crews or len(every)
             if len(down) > crews:
                 raise ValueError(
                     f"{len(down)} components are down at the start, in "
@@ -568,10 +688,44 @@ class _Absorbing:
             [rbd._priority.get(node, 0.0) for node in nodes],
             _crew_count(rbd),
             _crews._call_when(rbd),
+            shared,
             start=start,
             limit=MAX_PHASE_STATES + 1,
         )
         size = len(chain.states)
+        if start is None:
+            begin = np.array(chain.probabilities, dtype=float)
+        else:
+            begin = np.zeros(size)
+            begin[0] = 1.0
+        generator = sparse.csr_matrix(chain.generator)
+        ups = {
+            node: chain.up[:, k].astype(float)
+            for k, node in enumerate(chain.nodes)
+        }
+        for node in groups:
+            # A standby group's own chain beside the rest: independent of
+            # it, so the states are pairs and the generators add.
+            group = _standby_chain_of(rbd, node)
+            count = len(group.states)
+            if size * count > MAX_PHASE_STATES:
+                size *= count
+                break
+            first = np.zeros(count)
+            first[0] = 1.0
+            begin = np.kron(
+                begin, group.probabilities if start is None else first
+            )
+            generator = sparse.kron(
+                generator, sparse.identity(count), format="csr"
+            ) + sparse.kron(
+                sparse.identity(size),
+                sparse.csr_matrix(group.generator),
+                format="csr",
+            )
+            ups = {name: np.repeat(up, count) for name, up in ups.items()}
+            ups[node] = np.tile(group.up.astype(float), size)
+            size *= count
         if size > MAX_PHASE_STATES:
             raise _phase_type.Unaffordable(
                 "Its Markov chain has more than the "
@@ -579,18 +733,12 @@ class _Absorbing:
             )
         structure = rbd._decomposition()
         node_up = {node: np.ones(size) for node in structure.nodes}
-        for k, node in enumerate(chain.nodes):
-            if node in node_up:
-                node_up[node] = chain.up[:, k].astype(float)
+        node_up.update(
+            {node: up for node, up in ups.items() if node in node_up}
+        )
         works, _ = structure.probabilities(node_up, shape=(size,))
         self.up = np.asarray(works, dtype=float) > 0.5
-        if start is None:
-            begin = np.array(chain.probabilities, dtype=float)
-        else:
-            begin = np.zeros(size)
-            begin[0] = 1.0
         self.start = begin[self.up]
-        generator = sparse.csr_matrix(chain.generator)
         self.generator = generator[self.up][:, self.up].tocsr()
         # The system down at the start has failed already.
         self.at_start = float(self.start.sum())

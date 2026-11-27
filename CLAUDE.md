@@ -334,7 +334,12 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   phases that are not exact are extrapolated over the levels of
   `_phase_type.LEVELS` until they agree to `rtol`
   (`_phase_type.converged`); `test_first_failure_phases.py` checks them
-  against chains by hand, the bracket and the simulation.
+  against chains by hand, the bracket and the simulation. Common-cause
+  groups go into it as into the crews' chain (`_crews._crew_causes`,
+  given the members' rates), and a standby group's own chain
+  (`_standby_chain`) beside it, the generators added over pairs of
+  states; `test_first_failure_groups.py` checks both against the
+  simulation.
 - **A phased mission's Markov chain (`repyability/rbd/_mission_chain.py`)
   copies the simulation's take-overs** (`_mission_runs._take_over`,
   `_after_standby`, `draw_switches`): spares called on in the phase's
