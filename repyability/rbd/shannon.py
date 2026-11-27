@@ -263,10 +263,13 @@ def _shannon_value_and_gradient(
     }
 
 
-def _minimal_cut_sets(plan: tuple[list, int]) -> set[frozenset]:
+def _minimal_cut_sets(
+    plan: tuple[list, int], cap: Optional[int] = None
+) -> set[frozenset]:
     """The minimal cut sets of the structure a :func:`_shannon_plan` was
     built from: the minimal transversals of its sets (see
-    ``minimal_cut_sets_from_path_sets`` in ``rbd.py``)."""
+    ``minimal_cut_sets_from_path_sets`` in ``rbd.py``). With a ``cap``,
+    an ``OverflowError`` is raised once a step's sets pass it."""
     steps, root = plan
     # Cut sets as bitmasks (one bit per component), so each union and subset
     # test is a single integer operation.
@@ -291,6 +294,8 @@ def _minimal_cut_sets(plan: tuple[list, int]) -> set[frozenset]:
                 if rest not in known
             ]
         )
+        if cap is not None and len(cuts[-1]) > cap:
+            raise OverflowError(len(cuts[-1]))
     return {
         frozenset(c for c in components if cut & bit[c]) for cut in cuts[root]
     }

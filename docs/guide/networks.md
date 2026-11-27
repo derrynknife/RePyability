@@ -2,9 +2,10 @@
 
 Power lines, pipes and communication links carry flow both ways, and it is
 often the links that fail. The question is whether two points of the
-network stay connected: some path of working links joins them. A
-reliability block diagram is directed, and its nodes fail, so a network has
-a model of its own, `Network`.
+network stay connected: some path of working links joins them; or whether
+several sites, or every node, stay connected to each other. A reliability
+block diagram is directed, and its nodes fail, so a network has a model of
+its own, `Network`.
 
 ## Two terminals
 
@@ -55,13 +56,76 @@ substation = surv.Exponential.from_params([0.02])
 Network(links, "G", "L", nodes={"B": substation}).sf(1.0)   # -> 0.98100
 ```
 
+## Several terminals, and all of them
+
+`terminals=[...]` names the nodes that must stay connected to each other,
+two or more (K-terminal reliability), and `terminals="all"` every node of
+the network (all-terminal reliability): the network works while working
+links join each terminal to the others. Two terminals are the same network
+as `source` and `target`.
+
+```python
+sites = Network(links, terminals=["G", "L", "A"])
+sites.sf(1.0)       # -> 0.98468   the generator, the load and A connected
+every = Network(links, terminals="all")
+every.sf(1.0)       # -> 0.98425   no node cut off
+every.ff(1.0)       # -> 0.015746
+every.mean()        # -> 7.6104   years until some node is cut off
+len(every.path_sets())          # -> 21   the spanning trees
+every.minimal_cut_sets()[:2]    # -> the lines into L, the lines out of G
+```
+
+Every method works as for two terminals: the importance measures, the
+B-lives, the parameter uncertainty, `compare`, the levers, the simulation
+and saving (`to_dict` keeps the terminals). What changes:
+
+- **Path sets.** A minimal path set is a smallest set of links (and failing
+  nodes) that joins the terminals: a tree, and for `terminals="all"` a
+  spanning tree. They are read off the decision diagram, up to 100,000
+  (`repyability.network.MAX_PATHS`); more are refused, and nothing else
+  needs them.
+- **Failing nodes.** A terminal that fails parts the terminals, so with
+  `terminals="all"` every failing node is in series with the rest.
+- **The simulation.** A sample's lifetime is that of the link which joins
+  the terminals when the links are added longest-lived first.
+- **`METHOD = "paths"`** is two terminals', and refuses more.
+
+The decision diagram is the same one, with a state saying which of the
+frontier's groups hold a terminal rather than which hold the two: a 10-by-10
+grid with every node a terminal has 0.8 million states (corner to corner it
+has 1.9 million), and with three corners as terminals 3.0 million.
+
+## Directed links
+
+`directed=True` makes every link work one way only, from its first node to
+its second: the network works while a path along the links leads from the
+`source` to the `target`. With the ring's links one way, the tie line `AB`
+carries from `A` to `B` only, and five of the seven paths are left:
+
+```python
+one_way = Network(links, source="G", target="L", directed=True)
+one_way.sf(1.0)             # -> 0.98430   (0.98509 with links both ways)
+len(one_way.path_sets())    # -> 5
+one_way.to_rbd().sf(1.0)    # -> 0.98430   the same graph as a block diagram
+```
+
+A directed network is decided from its simple paths (up to 100,000), and
+every method works on it; it may have cycles. `to_rbd()` gives the
+`NonRepairableRBD` of the same graph, each link and failing node a node of
+the diagram and the other nodes junctions, for a network whose links from
+the source to the target have no cycle (a diagram has none): its methods
+then take a mesh with more paths than can be listed. A directed network
+takes two terminals: whether several are joined along one-way links
+depends on the order they are reached in, which the decision diagram's
+states do not say, so more than two are refused.
+
 ## How it is computed
 
 The exact values come from a binary decision diagram built from the network
 itself (after Hardy, Lucet & Limnios, 2007). The links are decided one at a
 time; after each, what is left to decide depends only on how the nodes with
 links still to come are joined up by the working links so far, and which of
-those groups hold the terminals. All the states before a decision are
+those groups hold a terminal. All the states before a decision are
 worked out together, and equal ones merged, so the diagram grows with the
 network's width rather than with its number of paths, which multiply in a
 mesh. A 6-by-6 grid of cables, corner to corner, has over a million simple

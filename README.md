@@ -24,8 +24,9 @@ taking already-fitted lifetime models (from
   the exact MTTF (or simulated, with confidence intervals); B*X* life;
   uncertainty intervals on the reliability, MTTF, B*X* life and time to a
   reliability from uncertain (fitted) component models.
-- **Networks**: undirected networks whose links fail: the exact
-  reliability of the connection between two terminals, by a decision
+- **Networks**: networks whose links fail, undirected or directed: the
+  exact reliability of the connection between two terminals, several, or
+  every node (K-terminal and all-terminal reliability), by a decision
   diagram that keeps meshed networks fast.
 - **Phased missions**: missions through phases (take-off, cruise,
   landing), each with its own diagram over the same components: the exact
@@ -221,7 +222,7 @@ Which analyses each model type has (the method; — where it has none):
 | Structure sizes (counts, depth, core) | `structure_summary` | `structure_summary` | — | — | — | — |
 | The core that does not reduce | `core_structure` | `core_structure` | — | — | — | — |
 | Junctions (drawing nodes) | `junctions` | `junctions` | — | — | — | — |
-| Convert to and from an RBD | — | — | `to_rbd` | — | `from_diagram` | — |
+| Convert to and from an RBD | — | — | `to_rbd` | `to_rbd` | `from_diagram` | — |
 | Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — | — |
 | Capacity over time | — | `point_capacity` | — | — | — | — |
 | How each analysis is computed | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` |

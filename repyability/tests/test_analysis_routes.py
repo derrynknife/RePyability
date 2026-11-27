@@ -518,8 +518,29 @@ BRIDGE_LINKS = {
 
 def networks():
     """Networks of each kind: the bridge with lifetime models and a
-    failing node, and one of fixed probabilities."""
+    failing node, one of fixed probabilities, and the bridge with three
+    terminals, with every node a terminal, and with its links one way."""
+    lifetimes = {
+        name: (u, v, W([100 + 10 * i, 1.5]))
+        for i, (name, (u, v)) in enumerate(BRIDGE_LINKS.items())
+    }
     return {
+        "three terminals": Network(
+            lifetimes, terminals=["s", "t", "x"], nodes={"x": E([0.01])}
+        ),
+        "all terminals": Network(
+            lifetimes, terminals="all", nodes={"x": E([0.01])}
+        ),
+        "fixed all terminals": Network(
+            {
+                name: (u, v, 0.05 + 0.01 * i)
+                for i, (name, (u, v)) in enumerate(BRIDGE_LINKS.items())
+            },
+            terminals="all",
+        ),
+        "directed": Network(
+            lifetimes, "s", "t", nodes={"x": E([0.01])}, directed=True
+        ),
         "bridge": Network(
             {
                 name: (u, v, W([100 + 10 * i, 1.5]))
@@ -562,6 +583,7 @@ def test_the_network_report_covers_every_public_analysis():
         "levers",
         "to_dict",
         "to_json",
+        "to_rbd",
         "with_levers",
     }
 

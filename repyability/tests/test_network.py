@@ -959,6 +959,7 @@ def test_the_routes_say_how_each_analysis_is_worked_out(monkeypatch):
         "levers",
         "to_dict",
         "to_json",
+        "to_rbd",
         "with_levers",
     }
     assert report["sf"].route == report["fussell_vesely"].route == "exact"
