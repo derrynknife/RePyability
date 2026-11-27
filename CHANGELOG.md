@@ -12,6 +12,28 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Fault trees of repaired and tested basic events. An event may be a
+  component spec (`"reliability"`, `"repairability"` and, for a hidden
+  failure found by periodic tests, `"inspection"`), and a tree of them
+  gives the top event's unavailability over time
+  (`FaultTree.point_unavailability`, also `top_event_probability`), its
+  average over a window and in the long run (`mean_unavailability`), its
+  failure frequency (`failure_frequency`, `w(t) = sum I_B^i(t) w_i(t)`),
+  its expected occurrences in a window (`expected_failures`) and its
+  long-run frequency (`system_failure_frequency`). Each event's curve is a
+  `RepairableRBD` component's, and the top event comes from the tree's own
+  decision diagram, so repeated events, VOTE and NOT gates are exact (a
+  NOT gate refuses the frequencies). The importance measures and cut sets
+  at a time read the events' probabilities of being down then; the
+  analyses that need a time to the top event refuse, naming the ones that
+  apply. `FaultTree.to_repairable_rbd()` draws a coherent tree without
+  repeated events as a `RepairableRBD`, for costs, crews, maintenance and
+  simulation. Events mixing specs with probabilities or lifetime models,
+  other spec keys, common-cause groups and dynamic gates over repaired
+  events are refused, saying what to use. Trees of repaired events save
+  and load (`to_dict`, `to_json`); `to_open_psa` refuses them for now.
+  `analysis_routes()` covers the new methods.
+
 - A shelf of spares in a component's spec: `"spares": {"stock": S,
   "lead_time": L}` (and optionally `"repairs"`), also a `UnitPlan`'s
   `spares`. Every simulation takes it (`availability`, `cost`,
@@ -506,6 +528,10 @@ release between minors that only adds (0.19.1).
   in the same order to give the same results as the built-in engines.
 
 ### Fixed
+
+- A `RepairableRBD` with a test or task whose `"duration"` is a number
+  saves and loads (`to_dict`): it was refused as a model it could not
+  save. The number is saved as it is.
 
 - **A tested component with an inspection `"offset"`, started from a
   state with no `since_scheduled`, is on its calendar as from new in

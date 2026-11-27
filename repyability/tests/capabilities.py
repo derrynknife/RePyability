@@ -93,7 +93,11 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Unavailability (precise when small)", ("mean_unavailability",)),
             (
                 "Failure frequency, MTBF",
-                ("system_failure_frequency", "mean_time_between_failures"),
+                (
+                    "system_failure_frequency",
+                    "failure_frequency",
+                    "mean_time_between_failures",
+                ),
             ),
             ("Mean up and down times", ("mean_up_time", "mean_down_time")),
             (
@@ -200,7 +204,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Junctions (drawing nodes)", ("junctions",)),
             (
                 "Convert to and from an RBD",
-                ("to_rbd", "from_rbd", "from_diagram"),
+                ("to_rbd", "from_rbd", "from_diagram", "to_repairable_rbd"),
             ),
             (
                 "Capacity distribution",
