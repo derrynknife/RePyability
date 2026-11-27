@@ -700,17 +700,24 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   so each point has the fewest backorders at its spend or less. A
   base's availability is the diagram's at each part's chance of a hole
   (`_up`: the product where every part is needed, kept as it was to the
-  last bit; the holes taken as independent, which understates a pair's
-  chance of both missing, UC-75), and its repair fraction, repair time
+  last bit, and a component the system needs on its own everywhere; a
+  part's components the system can do without taken together, UC-75:
+  `_together` names them, `_holes` gives the chance of each number of
+  holes among a system's such places from the pipeline, the base's
+  backorders in places drawn evenly, and `_given_holes` the diagram's
+  chance of working given each number, from the diagram at the chances
+  `k / z`, exact to its condition number times the rounding, so up to
+  `MOST_TOGETHER` places), and its repair fraction, repair time
   and ship time may be its own (UC-76). The front by availability
   (`_Fleet.losses`) uses the same hull on a loss that depends on the
   other parts' stocks, so every hull is drawn again from the count
   reached after each step; it is exact for one part and a heuristic for
   several.
   `test_spares_echelons.py` checks it against the model written out term
-  by term, a search of every stock vector, `spares_stock` for one site,
-  and a simulation of the two echelons written in the test (exact where
-  resupply times are independent; VARI-METRIC closer elsewhere).
+  by term, a search of every stock vector, every placing of a base's
+  holes counted, `spares_stock` for one site, and a simulation of the
+  two echelons written in the test (exact where resupply times are
+  independent; VARI-METRIC closer elsewhere).
 
 - **A measure that is a function of the system's values lives once, in
   `repyability/rbd/_measures.py`** (#314, #315): the ratios (improvement

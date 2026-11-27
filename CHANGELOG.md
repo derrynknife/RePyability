@@ -51,8 +51,9 @@ release between minors that only adds (0.19.1).
   spares over bases and a depot) take a diagram that is not a series
   system, which they refused: a base's availability is the diagram's own
   with each of a part's places empty with the chance its backorders
-  give, independently, so a part with a stand-in need not ground a
-  system. A diagram with a sub-system is still refused.
+  give, so a part with a stand-in need not ground a system. A part's
+  places that stand in for each other are taken together (see Changed).
+  A diagram with a sub-system is still refused.
 - Their `objective`: `"backorders"` (the front as it was: the fewest
   expected backorders at each spend), `"availability"` (each step the
   spares that add the most fleet availability per unit of spend from the
@@ -1275,6 +1276,30 @@ release between minors that only adds (0.19.1).
   before.
 
 ### Changed
+
+- Spares over bases and a depot on a diagram with redundancy
+  (`spares_front`, `spares_allocation`): a part's components that the
+  system can do without are taken together, where each place was empty
+  on its own with chance `EBO / P` (`P` the base's places of the part).
+  A base's `B` backorders are holes in places drawn evenly, so a set of
+  `j` such places is empty with chance `E[B (B - 1) ... (B - j + 1)] /
+  (P (P - 1) ... (P - j + 1))`: a pair is missing both with `E[B (B -
+  1)] / (P (P - 1))`, not `(EBO / P)^2`, which understated it by 14 to
+  15% in the case checked (0.0256 for 0.0299 and 0.0328 for 0.0385; a
+  seeded simulation gives 0.0295, standard error 0.0012, and 0.0361,
+  0.0016). On the guide's fleet with two pumps to a system the
+  availability with nothing held is 0.6973, not 0.6996, and the stock
+  for 95% (the same stock, 210,000) gives 0.9511, not 0.9544; a front
+  can take a step more to a target (24 points to 99%, not 23, ending at
+  348,000, not 336,000). Checked against every placing of a base's holes
+  counted, for k-out-of-n stages, two parts on a diagram that is not
+  series-parallel and components of several places (within 1e-12), and
+  the pair against the form above to 1e-12 of it. Up to 16 such places
+  of a part in a system (an availability within 1e-9); a part with more
+  is refused, naming its components as parts of their own. Unchanged,
+  to the last bit: a series system, a component the system needs, a
+  part of one component, and a part given by its `"demand_rate"` that
+  the diagram does not draw.
 
 - A directed `Network`'s exact values come from its decision diagram
   rather than from its listed paths, so they differ in the last digits
