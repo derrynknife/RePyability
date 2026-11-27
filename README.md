@@ -254,7 +254,7 @@ Which analyses each model type has (the method; — where it has none):
 | **Uncertainty** | | | | | |
 | Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | `sf_uncertainty` | `sf_uncertainty` | `reliability_interval` |
 | Of the MTTF | `mean_uncertainty` | — | `mean_uncertainty` | `mean_uncertainty` | — |
-| Of the B-life | `bx_life_uncertainty` | — | — | — | — |
+| Of the B-life | `bx_life_uncertainty` | — | `bx_life_uncertainty` | `bx_life_uncertainty` | — |
 | Of the cost rate | — | `expected_cost_rate_uncertainty` | — | — | — |
 | Of the net present value | — | `expected_npv_uncertainty` | — | — | — |
 | **Design and maintenance** | | | | | |

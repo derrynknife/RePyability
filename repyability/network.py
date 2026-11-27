@@ -56,6 +56,7 @@ from typing import (
 )
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from repyability._version import __version__
 from repyability.rbd import _measures
@@ -1670,6 +1671,180 @@ class Network:
             band=kind,
         )
 
+    def time_to_reliability_uncertainty(
+        self,
+        target: ArrayLike,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+        upper_bound: Optional[float] = None,
+    ) -> UncertaintyResult:
+        """The time at which the reliability falls to ``target``, over
+        plausible models of the links and nodes (parameter uncertainty), as
+        [`NonRepairableRBD.time_to_reliability_uncertainty`][repyability.NonRepairableRBD.time_to_reliability_uncertainty]
+        gives a diagram's.
+
+        The models are drawn as ``sf_uncertainty`` draws them, and each
+        draw's time is found as ``time_to_reliability`` finds it, from the
+        draw's exact reliability.
+
+        Parameters
+        ----------
+        target : float or array_like
+            The reliability level, in (0, 1), or levels: each a row of
+            draws, from the same parameter draws.
+        uncertainty : dict, optional
+            As for ``sf_uncertainty``.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seeds the draws, by default None.
+        sampling : str, optional
+            ``"random"`` (the default) or ``"sobol"``, as for
+            ``sf_uncertainty``.
+        upper_bound : float, optional
+            An upper bound for each draw's search, at which its reliability
+            is below ``target``; found by doubling if None.
+
+        Returns
+        -------
+        UncertaintyResult
+            The time of every draw (``samples``), the time with the
+            elements' own models (``nominal``), and summaries such as
+            ``interval``.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is not in (0, 1), every model is a fixed
+            probability, a draw's reliability starts below ``target`` or
+            cannot be bracketed, or as for ``sf_uncertainty``.
+
+        Examples
+        --------
+        >>> import scipy.stats as st
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> line = surv.Exponential.from_params([0.1])
+        >>> chain = Network({"a": (0, 1, line), "b": (1, 2, line)}, 0, 2)
+        >>> rate = {"failure_rate": st.uniform(0.05, 0.1)}
+        >>> result = chain.time_to_reliability_uncertainty(
+        ...     0.9, {("a", "b"): rate}, n_draws=1000, seed=1
+        ... )
+        >>> round(result.nominal, 4)  # 0.1 * 2 per unit time: -ln(0.9) / 0.2
+        0.5268
+        """
+        self._require_time_varying()
+        targets = np.asarray(target, dtype=float)
+        if not np.all((targets > 0.0) & (targets < 1.0)):
+            raise ValueError(
+                "target reliability must be in (0, 1) (or an array of "
+                f"such), got {target!r}."
+            )
+        drawn, kind = self._uncertain_draws(
+            uncertainty, n_draws, seed, sampling
+        )
+        flat = np.atleast_1d(targets).ravel()
+        out = np.empty((n_draws, len(flat)))
+        for i in range(n_draws):
+            models = {
+                name: drawn[name][i] if name in drawn else model
+                for name, model in self.models.items()
+            }
+
+            def sf(t: float, models=models) -> float:
+                return float(self._value(np.asarray([t]), models=models)[0])
+
+            for j, level in enumerate(flat):
+                out[i, j] = _measures.invert_reliability(
+                    sf, float(level), upper_bound
+                )
+        # A row of draws for each target, in its shape (#226).
+        samples = (
+            out[:, 0]
+            if targets.ndim == 0
+            else out.reshape((n_draws,) + targets.shape)
+        )
+        return UncertaintyResult(
+            samples=samples,
+            nominal=self.time_to_reliability(target, upper_bound),
+            n_draws=n_draws,
+            band=kind,
+        )
+
+    def bx_life_uncertainty(
+        self,
+        x: ArrayLike,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+        upper_bound: Optional[float] = None,
+    ) -> UncertaintyResult:
+        """The Bx life, the time by which ``x`` percent of networks have
+        failed (the B10 life for ``x = 10``), over plausible models of the
+        links and nodes (parameter uncertainty):
+        ``time_to_reliability_uncertainty(1 - x / 100, ...)``, as
+        [`NonRepairableRBD.bx_life_uncertainty`][repyability.NonRepairableRBD.bx_life_uncertainty]
+        gives a diagram's.
+
+        Parameters
+        ----------
+        x : float or array_like
+            The percentage failed, in (0, 100), or percentages: each a row
+            of draws, from the same parameter draws.
+        uncertainty : dict, optional
+            As for ``sf_uncertainty``.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seeds the draws, by default None.
+        sampling : str, optional
+            ``"random"`` (the default) or ``"sobol"``.
+        upper_bound : float, optional
+            As for ``time_to_reliability_uncertainty``.
+
+        Returns
+        -------
+        UncertaintyResult
+            The Bx life of every draw, the nominal one, and their
+            summaries.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is not in (0, 100), or as for
+            ``time_to_reliability_uncertainty``.
+
+        Examples
+        --------
+        >>> import scipy.stats as st
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> line = surv.Exponential.from_params([0.1])
+        >>> chain = Network({"a": (0, 1, line), "b": (1, 2, line)}, 0, 2)
+        >>> rate = {"failure_rate": st.uniform(0.05, 0.1)}
+        >>> b10 = chain.bx_life_uncertainty(
+        ...     10, {("a", "b"): rate}, n_draws=1000, seed=1
+        ... )
+        >>> round(b10.nominal, 4)
+        0.5268
+        """
+        percent = real_array(x, "x")
+        if not np.all((0.0 < percent) & (percent < 100.0)):
+            raise ValueError("x must be a percentage in (0, 100).")
+        return self.time_to_reliability_uncertainty(
+            1.0 - percent / 100.0,
+            uncertainty,
+            n_draws=n_draws,
+            seed=seed,
+            sampling=sampling,
+            upper_bound=upper_bound,
+        )
+
     def _mean_of(self, models: Mapping) -> float:
         """The mean time until the terminals are parted with ``models``
         (by name) for the elements: the exact reliability integrated over
@@ -2393,6 +2568,17 @@ class Network:
                 "reliability).",
             )
         )
+        for name in ("time_to_reliability_uncertainty", "bx_life_uncertainty"):
+            out[name] = (
+                r.refused(fixed)
+                if fixed
+                else built(
+                    r.SIMULATED,
+                    "The elements' parameters drawn from their uncertainty, "
+                    "and the time found for each draw by inverting its "
+                    "exact reliability.",
+                )
+            )
         # Every exact value needs the decision diagram: without it, only
         # the simulation (and the paths, listed on their own) is left.
         too_large = r.refusal(self._decomposition)

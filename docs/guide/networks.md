@@ -164,6 +164,11 @@ mean = grid.mean_uncertainty({lines: rate}, n_draws=400, seed=1)
 round(mean.nominal, 4)               # -> 8.518
 ```
 
+`bx_life_uncertainty` and `time_to_reliability_uncertainty` give a B-life
+with its band the same way, each draw's time found by inverting its exact
+reliability: `grid.bx_life_uncertainty(10, {lines: rate}, n_draws=400,
+seed=1)`.
+
 A network saves and loads as a diagram does (see [Saving and
 loading](saving.md#saving-and-loading)): `to_dict` and `to_json` keep the
 terminals, each link's two nodes and model, and the failing nodes' models,

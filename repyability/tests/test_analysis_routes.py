@@ -493,6 +493,14 @@ NETWORK_CALLS = {
     "mean_uncertainty": lambda net: net.mean_uncertainty(
         uncertain_element(net), n_draws=5, seed=1
     ),
+    "time_to_reliability_uncertainty": (
+        lambda net: net.time_to_reliability_uncertainty(
+            0.5, uncertain_element(net), n_draws=2, seed=1
+        )
+    ),
+    "bx_life_uncertainty": lambda net: net.bx_life_uncertainty(
+        10, uncertain_element(net), n_draws=2, seed=1
+    ),
 }
 
 BRIDGE_LINKS = {
@@ -1410,6 +1418,14 @@ FAULT_TREE_CALLS = {
     ),
     "mean_uncertainty": lambda tree: tree.mean_uncertainty(
         uncertain_event(tree), n_draws=2, seed=1
+    ),
+    "time_to_reliability_uncertainty": (
+        lambda tree: tree.time_to_reliability_uncertainty(
+            0.5, uncertain_event(tree), n_draws=2, seed=1
+        )
+    ),
+    "bx_life_uncertainty": lambda tree: tree.bx_life_uncertainty(
+        10, uncertain_event(tree), n_draws=2, seed=1
     ),
 }
 

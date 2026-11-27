@@ -305,6 +305,8 @@ _NEEDS_A_LIFETIME = frozenset(
         "random",
         "time_to_reliability",
         "bx_life",
+        "time_to_reliability_uncertainty",
+        "bx_life_uncertainty",
         "barlow_proschan_importance",
         "mean_uncertainty",
     }
@@ -3761,6 +3763,172 @@ class FaultTree:
             t, uncertainty, n_draws=n_draws, seed=seed, sampling=sampling
         )
 
+    def time_to_reliability_uncertainty(
+        self,
+        target: ArrayLike,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+        upper_bound: Optional[float] = None,
+    ) -> "UncertaintyResult":
+        """The time at which the probability that the top event has not
+        occurred falls to ``target``, over plausible event models
+        (parameter uncertainty).
+
+        As [`sf_uncertainty`][repyability.FaultTree.sf_uncertainty] draws
+        the events' models (the draws are those of the tree's diagram,
+        ``to_rbd``), and each draw's time is found as
+        [`time_to_reliability`][repyability.FaultTree.time_to_reliability]
+        finds it, from the draw's exact probability, the common-cause
+        groups in it.
+
+        Parameters
+        ----------
+        target : float or array_like
+            The reliability level, in (0, 1), or levels: each a row of
+            draws, from the same parameter draws.
+        uncertainty : dict, optional
+            ``{event or tuple of events: uncertainty}``, and ``{CCFGroup:
+            uncertainty}``, as for ``sf_uncertainty`` (by default, every
+            fitted event).
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seeds the draws, for reproducible results.
+        sampling : str, optional
+            ``"random"`` (the default), or ``"sobol"`` for the points of a
+            scrambled Sobol sequence.
+        upper_bound : float, optional
+            An upper bound for each draw's search, at which its
+            probability is below ``target``; found by doubling if None.
+
+        Returns
+        -------
+        UncertaintyResult
+            The time of every draw (``samples``), the time with the
+            events' own models (``nominal``), and summaries such as
+            ``interval`` (see
+            [`UncertaintyResult`][repyability.UncertaintyResult]).
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is not in (0, 1), every event is a probability
+            (the reliability is constant in time), a draw's reliability
+            starts below ``target`` or cannot be bracketed, or as for
+            ``sf_uncertainty``.
+        NotImplementedError
+            For a tree with dynamic or NOT gates, or repaired events, as
+            for ``time_to_reliability``.
+
+        Examples
+        --------
+        >>> import scipy.stats as st
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> pump = surv.Exponential.from_params([0.002])
+        >>> tree = FaultTree(
+        ...     {"no flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": pump, "pump 2": pump},
+        ... )
+        >>> rate = {"failure_rate": st.uniform(0.001, 0.002)}
+        >>> result = tree.time_to_reliability_uncertainty(
+        ...     0.9, {("pump 1", "pump 2"): rate}, n_draws=500, seed=1
+        ... )
+        >>> round(result.nominal, 1)
+        190.1
+        >>> lower, upper = result.interval(0.9)
+        >>> round(lower, 1), round(upper, 1)
+        (130.7, 344.2)
+        >>> result.band
+        'given'
+        """
+        self._refuse("time_to_reliability_uncertainty")
+        self._require_time_varying()
+        return self._rbd().time_to_reliability_uncertainty(
+            target,
+            uncertainty,
+            n_draws=n_draws,
+            seed=seed,
+            sampling=sampling,
+            upper_bound=upper_bound,
+        )
+
+    def bx_life_uncertainty(
+        self,
+        x: ArrayLike,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+        upper_bound: Optional[float] = None,
+    ) -> "UncertaintyResult":
+        """The Bx life, the time by which the top event has occurred in
+        ``x`` percent of systems (the B10 life for ``x = 10``), over
+        plausible event models (parameter uncertainty):
+        ``time_to_reliability_uncertainty(1 - x / 100, ...)``.
+
+        Parameters
+        ----------
+        x : float or array_like
+            The percentage in which the top event has occurred, in
+            (0, 100), or percentages: each a row of draws, from the same
+            parameter draws.
+        uncertainty : dict, optional
+            As for ``time_to_reliability_uncertainty``.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seeds the draws, for reproducible results.
+        sampling : str, optional
+            ``"random"`` (the default) or ``"sobol"``.
+        upper_bound : float, optional
+            As for ``time_to_reliability_uncertainty``.
+
+        Returns
+        -------
+        UncertaintyResult
+            The Bx life of every draw, the nominal one, and their
+            summaries.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is not in (0, 100), or as for
+            ``time_to_reliability_uncertainty``.
+        NotImplementedError
+            As for ``time_to_reliability_uncertainty``.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["c"])},
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> b10 = tree.bx_life_uncertainty(
+        ...     10, {"c": [surv.Weibull.from_params([100, 2])]}, n_draws=3
+        ... )
+        >>> round(b10.nominal, 2)  # the tree's B10 life
+        32.46
+        """
+        self._refuse("bx_life_uncertainty")
+        x = real_array(x, "x")
+        if not np.all((0.0 < x) & (x < 100.0)):
+            raise ValueError("x must be a percentage in (0, 100).")
+        return self.time_to_reliability_uncertainty(
+            1.0 - x / 100.0,
+            uncertainty,
+            n_draws=n_draws,
+            seed=seed,
+            sampling=sampling,
+            upper_bound=upper_bound,
+        )
+
     def mean_uncertainty(
         self,
         uncertainty: Optional[Dict[Hashable, Any]] = None,
@@ -4069,6 +4237,18 @@ class FaultTree:
             "The events' model parameters drawn from their uncertainty, and "
             "the exact top event probability for each draw." + drawn,
         )
+        for name in ("time_to_reliability_uncertainty", "bx_life_uncertainty"):
+            out[name] = (
+                r.refused(fixed)
+                if fixed
+                else built(
+                    r.SIMULATED,
+                    "The events' model parameters drawn from their "
+                    "uncertainty, and the time found for each draw by "
+                    "inverting its exact probability that the top event has "
+                    "not occurred." + drawn,
+                )
+            )
         out["mean_uncertainty"] = (
             r.refused(lifetimes)
             if lifetimes

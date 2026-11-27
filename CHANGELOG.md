@@ -12,6 +12,20 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `bx_life_uncertainty` and `time_to_reliability_uncertainty` on
+  `FaultTree` and `Network`: a B-life, or the time to a reliability, with
+  its band over the uncertainty of the events' or links' models, as
+  `NonRepairableRBD` has them. The draws are `sf_uncertainty`'s (a
+  tree's are its diagram's), each draw's time found by inverting its exact
+  reliability, so a tree's result is its diagram's and a series network's
+  the series diagram's, bit for bit; several levels at once come from one
+  set of draws. They refuse what `bx_life` refuses (a tree of
+  probabilities, dynamic or NOT gates, repaired events; a network of
+  fixed probabilities). `analysis_routes()` and the capability matrix
+  show them.
+
+
+
 - `compare` on `FaultTree`, `Network` and `PhasedMission`, as on the
   diagrams: a `ConfidenceInterval` of the difference, exact where both
   values are worked out and otherwise from paired simulations with common
