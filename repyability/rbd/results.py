@@ -3208,6 +3208,86 @@ class PlanRobustness(_ResultMapping):
         )
 
 
+@dataclass(frozen=True)
+class SequenceProbabilities(_ResultMapping):
+    """Each sequence's probability given an event tree's initiating event.
+
+    Returned by
+    [`EventTree.sequence_probabilities`][repyability.EventTree.sequence_probabilities].
+
+    Attributes
+    ----------
+    probabilities : dict
+        ``{path: probability}``, each path a tuple of ``"success"``,
+        ``"failure"`` or None per heading: floats for a number ``t``,
+        arrays for an array. Exact, they sum to 1.
+    outcomes : dict
+        ``{path: outcome}``.
+    approximation : str or None
+        None for the exact values, or the approximation asked for
+        (``"rare_event"`` or ``"independent"``).
+    """
+
+    probabilities: Dict[Tuple, Any]
+    outcomes: Dict[Tuple, Hashable]
+    approximation: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class SequenceFrequencies(_ResultMapping):
+    """Each sequence's frequency: an event tree's initiating event's
+    frequency times the sequence's probability.
+
+    Returned by
+    [`EventTree.sequence_frequencies`][repyability.EventTree.sequence_frequencies].
+
+    Attributes
+    ----------
+    frequencies : dict
+        ``{path: frequency}`` (per unit time, as the initiator's): floats
+        for a number ``t``, arrays for an array. Exact, they sum to
+        ``initiator_frequency``.
+    outcomes : dict
+        ``{path: outcome}``.
+    initiator_frequency : float
+        The initiating event's frequency.
+    approximation : str or None
+        None for the exact values, or the approximation asked for.
+    """
+
+    frequencies: Dict[Tuple, Any]
+    outcomes: Dict[Tuple, Hashable]
+    initiator_frequency: float
+    approximation: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class OutcomeFrequencies(_ResultMapping):
+    """Each outcome's frequency: the sum of its sequences'.
+
+    Returned by
+    [`EventTree.outcome_frequencies`][repyability.EventTree.outcome_frequencies].
+
+    Attributes
+    ----------
+    frequencies : dict
+        ``{outcome: frequency}``, in the order the outcomes first appear:
+        floats for a number ``t``, arrays for an array. Exact, they sum to
+        ``initiator_frequency``.
+    sequences : dict
+        ``{outcome: [path, ...]}``: the paths that end in each.
+    initiator_frequency : float
+        The initiating event's frequency.
+    approximation : str or None
+        None for the exact values, or the approximation asked for.
+    """
+
+    frequencies: Dict[Hashable, Any]
+    sequences: Dict[Hashable, List[Tuple]]
+    initiator_frequency: float
+    approximation: Optional[str] = None
+
+
 @dataclass
 class PFDBreakdown(_ResultMapping):
     """Where a safety function's average probability of failure on demand

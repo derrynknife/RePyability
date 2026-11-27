@@ -67,6 +67,7 @@ NOT_NODES = {
     # A calendar of opportunities, priced (#319): a calendar policy's input.
     "Calendar",
     "CCFGroup",
+    "EventTree",
     "ComponentOption",
     "FailureLimitPolicy",
     "FaultTree",
