@@ -1310,12 +1310,6 @@ def _standby_cycle_blocker(
             "can be repaired at once (a warm pair's long-run values need "
             "one repair at a time, repair_crews=1)"
         )
-    elif warm and arrangement.switching_probability != 1.0:
-        reason = (
-            "its spare ages while it waits (a warm spare) and switching "
-            "onto it may fail (a warm pair's long-run values need a sure "
-            "switch)"
-        )
     if reason is None and any(
         isinstance(m, ClockLife)
         or not callable(getattr(m, "df", None))
@@ -1343,9 +1337,8 @@ def _standby_cycle_blocker(
         f"Component {node!r} is {rbd._standby[node].what}, whose exact "
         "long-run values come from a Markov chain of its units, which "
         "needs their lives and repair times exponential, or (a standby "
-        "pair, one needed: cold, or warm with one repair at a time and a "
-        f"sure switch) from its cycle; {reason}: simulate it with "
-        "availability() or cost()."
+        "pair, one needed: cold, or warm with one repair at a time) from "
+        f"its cycle; {reason}: simulate it with availability() or cost()."
     )
 
 
@@ -1404,6 +1397,7 @@ def _standby_long_run(rbd, node) -> "_standby_chain.StandbyLongRun":
                 component.reliability,
                 component.time_to_replace,
                 rbd._standby[node].dormancy_factor,
+                rbd._standby[node].switching_probability,
             )
         pair = _standby_cycle if _standby_crews(rbd) == 1 else _standby_both
         return pair.long_run(
