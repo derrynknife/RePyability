@@ -373,8 +373,16 @@ def test_the_frequency_over_time_is_a_sum_over_the_elements_states():
         {"terminals": ["s", "t", "x"]},
         {"terminals": "all"},
         {"source": "s", "target": "t", "directed": True},
+        {"source": "s", "terminals": ["t", "y"], "directed": True},
+        {"source": "s", "terminals": "all", "directed": True},
     ],
-    ids=["three terminals", "all terminals", "directed"],
+    ids=[
+        "three terminals",
+        "all terminals",
+        "directed",
+        "directed three",
+        "directed all",
+    ],
 )
 def test_other_connections_at_the_elements_availabilities(options):
     # The network of fixed probabilities at the links' availabilities at

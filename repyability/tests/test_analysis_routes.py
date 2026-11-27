@@ -32,7 +32,6 @@ from repyability import (
 )
 from repyability.rbd import _repairable_uncertainty, phased_mission, routes
 from repyability.rbd._model_utils import parametric_spec
-from repyability.rbd._phase_type import NotSettled
 from repyability.tests.catalogue import (
     EDGES,
     E,
@@ -285,8 +284,8 @@ REPAIRABLE_CALLS = {
     "spares_allocation": lambda rbd: rbd.spares_allocation(
         {"north": 3, "south": 2}, echelon_parts(rbd), budget=6.0
     ),
-    "first_failure_sf": lambda rbd: settled(
-        lambda: rbd.first_failure_sf([10.0, 200.0], rtol=1e-2)
+    "first_failure_sf": (
+        lambda rbd: rbd.first_failure_sf([10.0, 200.0], rtol=1e-2)
     ),
     "first_failure_bounds": (
         lambda rbd: rbd.first_failure_bounds([10.0, 200.0])
@@ -294,8 +293,8 @@ REPAIRABLE_CALLS = {
     "mean_time_to_first_failure_bound": (
         lambda rbd: rbd.mean_time_to_first_failure_bound()
     ),
-    "mean_time_to_first_failure": lambda rbd: settled(
-        lambda: rbd.mean_time_to_first_failure(rtol=1e-2)
+    "mean_time_to_first_failure": (
+        lambda rbd: rbd.mean_time_to_first_failure(rtol=1e-2)
     ),
     "point_availability": lambda rbd: rbd.point_availability([10.0, 200.0]),
     "point_unavailability": (
@@ -429,17 +428,6 @@ for calls in (NONREPAIRABLE_CALLS, REPAIRABLE_CALLS):
     )
 
 
-def settled(call):
-    """``call()``, or None where lives and repairs followed as phases do
-    not settle to the accuracy asked for within the chain's size: the
-    route is numerical, and says that this is refused when the values
-    are asked for (it depends on the times and on ``rtol``)."""
-    try:
-        return call()
-    except NotSettled:
-        return None
-
-
 def behaves_as_reported(route: AnalysisRoute, call) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -448,7 +436,13 @@ def behaves_as_reported(route: AnalysisRoute, call) -> None:
                 call()
             assert str(error.value) == route.reason
         else:
-            identical(call(), call())
+            try:
+                first = call()
+            except NotImplementedError as error:
+                # Only a route that says when it may refuse does.
+                assert route.may_refuse, f"{route} refused: {error}"
+                return
+            identical(first, call())
 
 
 @pytest.mark.parametrize("name", sorted(nonrepairable_kinds()))
@@ -582,7 +576,8 @@ def networks():
     terminals, with every node a terminal, and with its links one way;
     and the bridge with repaired links and a repaired node, between two
     terminals and between them all; and the bridge with capacities on
-    its links, of lifetimes, repaired, and one way."""
+    its links, of lifetimes, repaired, and one way; and the bridge one
+    way with three terminals, with all, and with a link back (a cycle)."""
     capacity = {"a": 3, "b": 2, "c": 1, "d": 2}
     lifetimes = {
         name: (u, v, W([100 + 10 * i, 1.5]))
@@ -655,6 +650,26 @@ def networks():
         ),
         "directed": Network(
             lifetimes, "s", "t", nodes={"x": E([0.01])}, directed=True
+        ),
+        "directed three terminals": Network(
+            lifetimes,
+            source="s",
+            terminals=["t", "y"],
+            nodes={"x": E([0.01])},
+            directed=True,
+        ),
+        "directed all terminals": Network(
+            lifetimes, source="s", terminals="all", directed=True
+        ),
+        "directed with a cycle": Network(
+            {**lifetimes, "back": ("y", "x", W([90, 1.5]))},
+            "s",
+            "t",
+            nodes={"x": E([0.01])},
+            directed=True,
+        ),
+        "repaired directed all terminals": Network(
+            repaired, source="s", terminals="all", directed=True
         ),
         "bridge": Network(
             {

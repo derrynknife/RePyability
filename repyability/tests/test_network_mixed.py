@@ -22,6 +22,7 @@ from repyability.rbd.routes import EXACT, NUMERICAL, REFUSED
 E = surv.Exponential.from_params
 W = surv.Weibull.from_params
 LN = surv.LogNormal.from_params
+LL = surv.LogLogistic.from_params
 
 T = np.array([0.0, 0.5, 3.0, 20.0, 150.0])
 
@@ -158,12 +159,12 @@ def test_a_mixed_bridge_is_the_fault_tree_of_its_cut_sets(lives):
         tree.mean_unavailability(T[1:]),
         rtol=1e-9,
     )
-    # (From the first time after 0, where a life whose density starts
-    # infinite has no intensity to give.)
+    # At 0 too, where a life whose density starts infinite is not
+    # critical.
     np.testing.assert_allclose(
-        net.failure_frequency(T[1:]), tree.failure_frequency(T[1:]), rtol=1e-10
+        net.failure_frequency(T), tree.failure_frequency(T), rtol=1e-10
     )
-    assert np.isfinite(net.failure_frequency(T[1:])).all()
+    assert np.isfinite(net.failure_frequency(T)).all()
     np.testing.assert_allclose(
         net.expected_failures(T[1:]), tree.expected_failures(T[1:]), rtol=1e-9
     )
@@ -174,6 +175,39 @@ def test_a_mixed_bridge_is_the_fault_tree_of_its_cut_sets(lives):
         assert net.system_failure_frequency() == pytest.approx(
             tree.system_failure_frequency(), rel=1e-12
         )
+
+
+def test_the_failure_frequency_at_0_is_the_initial_intensity():
+    # New at 0, every element is up: the connection is lost at 0 only
+    # through the repaired link a while the fixed probability beside it
+    # is down, at a's density then, 1/50 (a log-logistic of shape 1). The
+    # repaired d, whose density starts infinite, and the life e are not
+    # critical at 0, each needing the other down.
+    models = {
+        "a": spec(LL([50.0, 1.0]), E([0.5])),
+        "c": 0.3,
+        "d": spec(W([120.0, 0.8]), E([0.4])),
+        "e": E([0.004]),
+    }
+    links = {
+        "a": ("s", "x"),
+        "c": ("s", "x"),
+        "d": ("x", "t"),
+        "e": ("x", "t"),
+    }
+    net = Network(
+        {n: (u, v, models[n]) for n, (u, v) in links.items()}, "s", "t"
+    )
+    assert net.failure_frequency(0.0) == pytest.approx(0.3 / 50.0, rel=1e-12)
+    at = net.failure_frequency([0.0, 1e-7, 0.5])
+    assert np.isfinite(at).all()
+    # It is where the frequency starts from.
+    assert at[1] == pytest.approx(at[0], rel=1e-6)
+    np.testing.assert_allclose(
+        at,
+        as_tree(net, models).failure_frequency([0.0, 1e-7, 0.5]),
+        rtol=1e-10,
+    )
 
 
 def test_a_mixed_bridge_is_every_state_at_the_elements_probabilities():

@@ -37,6 +37,7 @@ import numpy as np
 
 from repyability.rbd import _curves, _rates, _windows
 from repyability.rbd._common import _constant_rate
+from repyability.rbd._measures import density
 from repyability.rbd._model_utils import failure_time_scale
 from repyability.rbd._point_availability import (
     Atoms,
@@ -267,23 +268,36 @@ def _intensities(
     rbd: Structured, curves: dict, down: dict, times: np.ndarray
 ) -> Dict[Hashable, np.ndarray]:
     """The failure intensity at the ``times`` of each event of ``curves``
-    (see ``failing_at``), ``down`` its probability of being down then."""
+    (see ``failing_at``), ``down`` its probability of being down then.
+    At 0, where every event is new and up, it is its life's density
+    there, exactly (infinite for a life whose density starts so), which
+    no difference reaches."""
     horizon = float(times.max()) if times.size else 0.0
     scale = horizon if horizon > 0.0 else _typical_life(rbd)
+    start = times == 0.0
     intensity = {}
     for node, curve in curves.items():
         if isinstance(curve, LifeCurve):
             # Not repaired: its density, exactly.
             intensity[node] = curve.intensity(times)
             continue
-        rate = _constant_rate(rbd.components[node].reliability)
+        life = rbd.components[node].reliability
+        rate = _constant_rate(life)
         if rate is not None:
             intensity[node] = rate * (1.0 - down[node])
-        else:
-            intensity[node] = _rates.differences(
-                _Failures(curve), times, scale
-            )
+            continue
+        intensity[node] = _rates.differences(_Failures(curve), times, scale)
+        if start.any():
+            intensity[node][start] = density(life, np.zeros(start.sum()))
     return intensity
+
+
+def _where_critical(importance: np.ndarray, intensity: np.ndarray):
+    """An event's share of the system's failure frequency, ``I_B w``:
+    none where it is not critical (``I_B = 0``), even where its
+    intensity is infinite (a life whose density starts so, at 0)."""
+    with np.errstate(invalid="ignore"):
+        return np.where(importance == 0.0, 0.0, importance * intensity)
 
 
 def _grouped(rbd: Structured, times: np.ndarray, counts=False, past=1.0):
@@ -339,7 +353,7 @@ def failure_frequency(rbd: Structured, times: np.ndarray) -> np.ndarray:
     importance = rbd._importances(probabilities, failures)[0]
     total = np.zeros(size)
     for node, rate in intensity.items():
-        total += importance[node] * rate
+        total += _where_critical(importance[node], rate)
     return total
 
 
@@ -362,7 +376,7 @@ def grouped_failure_frequency(
     importance, _, _, rate, _ = system.evaluate(values, times)
     total = np.array(np.broadcast_to(rate, times.shape), dtype=float)
     for node, value in intensity.items():
-        total += importance[node] * value
+        total += _where_critical(importance[node], value)
     return total
 
 

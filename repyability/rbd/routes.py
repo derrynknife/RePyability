@@ -53,6 +53,11 @@ class AnalysisRoute:
         exact twin ``control_variate=True`` controls the estimate by (see
         [`ControlVariate`][repyability.ControlVariate]), as what it leaves
         out of the system, or why there is none. "" otherwise.
+    may_refuse : str
+        For a route that is not ``"refused"`` but whose call can still
+        refuse, depending on what is asked (the times, ``rtol``): when it
+        does, and what to use instead. "" where the call always gives its
+        values.
     """
 
     route: str
@@ -61,6 +66,7 @@ class AnalysisRoute:
     engine: Optional[str] = None
     engine_reason: str = ""
     twin: str = ""
+    may_refuse: str = ""
 
     def to_dict(self) -> dict:
         """The route as plain data, ready for ``json.dumps``: its
@@ -70,7 +76,7 @@ class AnalysisRoute:
         -------
         dict
             ``route``, ``reason``, ``nodes``, ``engine``,
-            ``engine_reason`` and ``twin``.
+            ``engine_reason``, ``twin`` and ``may_refuse``.
         """
         from repyability.rbd.results import plain
 
@@ -85,6 +91,8 @@ class AnalysisRoute:
             text += f" Engine: {self.engine} ({self.engine_reason})."
         if self.twin:
             text += f" Exact twin: {self.twin}"
+        if self.may_refuse:
+            text += f" May refuse: {self.may_refuse}"
         return text
 
 
@@ -125,7 +133,9 @@ class AnalysisRoutes(dict):
 
     def __str__(self) -> str:
         return "\n".join(
-            f"{name}: {route.route} -- {_first_sentence(route.reason)}"
+            f"{name}: {route.route}"
+            f"{' (may refuse)' if route.may_refuse else ''} -- "
+            f"{_first_sentence(route.reason)}"
             for name, route in self.items()
         )
 

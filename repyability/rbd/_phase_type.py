@@ -223,29 +223,38 @@ class NotSettled(NotImplementedError):
 
 
 def converged(
-    value: Callable[[int], np.ndarray],
+    value: Callable[[int, np.ndarray], np.ndarray],
     rtol: float,
     size: Callable[[np.ndarray], np.ndarray],
     exact: bool,
     instead: str,
+    count: int = 1,
 ) -> np.ndarray:
-    """``value(level)`` as the levels grow, extrapolated.
+    """``count`` values as the levels grow, extrapolated, each taken
+    finer only until it has settled.
 
-    The value's error at a level is a series in the step's size, so the
-    levels' values are extrapolated as Romberg's are (each column takes
-    out a power of the step). The levels are taken until two successive
-    extrapolations agree to within ``rtol * size(value)`` (element by
-    element; ``size`` is positive), from at least
-    ``FEWEST`` of them. ``value`` raises ``Unaffordable`` at a level that
-    is too large; ``NotSettled`` is then raised, saying how far the
-    values agreed and what to do ``instead``. An ``exact`` value is its
-    first level's.
+    ``value(level, which)`` gives the values ``which`` (indices) at a
+    level. A value's error at a level is a series in the step's size, so
+    the levels' values are extrapolated as Romberg's are (each column
+    takes out a power of the step). The levels are taken until two
+    successive extrapolations of a value agree to within
+    ``rtol * size(values)`` (element by element; ``size`` is positive),
+    from at least ``FEWEST`` of them; a value that has settled is not
+    worked out again, so a finer level is asked only for those that have
+    not (a time far shorter than another settles later, and needs the
+    chain followed only to it). ``value`` raises ``Unaffordable`` at a
+    level that is too large; ``NotSettled`` is then raised, saying how
+    far the values agreed and what to do ``instead``. An ``exact`` value
+    is its first level's.
     """
+    every = np.arange(count)
     if exact:
         try:
-            return np.asarray(value(LEVELS[0]), dtype=float)
+            return np.asarray(value(LEVELS[0], every), dtype=float)
         except Unaffordable as error:
             raise NotImplementedError(f"{error}.{instead}") from None
+    best = np.full(count, np.nan)
+    which = every
     table: List[List[np.ndarray]] = []
     agreed = math.inf
     short: Exception = Unaffordable(
@@ -253,23 +262,30 @@ def converged(
     )
     for j, level in enumerate(LEVELS):
         try:
-            row = [np.asarray(value(level), dtype=float)]
+            got = np.asarray(value(level, which), dtype=float)
         except Unaffordable as error:
             short = error
             break
-        if not np.all(np.isfinite(row[0])):
-            return row[0]
+        if not np.all(np.isfinite(got)):
+            best[which] = got
+            return best
+        row = [np.full(count, np.nan)]
+        row[0][which] = got
         for m in range(1, j + 1):
             row.append(
                 row[m - 1] + (row[m - 1] - table[j - 1][m - 1]) / (2**m - 1)
             )
         table.append(row)
+        best[which] = row[-1][which]
         if j:
-            agreed = float(
-                np.max(np.abs(row[-1] - table[j - 1][-1]) / size(row[-1]))
+            gaps = (
+                np.abs(row[-1] - table[j - 1][-1])[which] / size(best)[which]
             )
-            if j + 1 >= FEWEST and agreed <= rtol:
-                return row[-1]
+            agreed = float(np.max(gaps))
+            if j + 1 >= FEWEST:
+                which = which[gaps > rtol]
+                if not which.size:
+                    return best
     reached = (
         "before two levels of them could be compared"
         if not math.isfinite(agreed)
