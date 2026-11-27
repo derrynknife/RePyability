@@ -285,9 +285,38 @@ rates through the duty plan's operating time. A task counted in
 operating time is refused with set times or a plan (give its times on
 the calendar).
 
-A unit that wears out while it runs and may also fail on a demand is two
-failure modes: draw them as two components in series, one with the life
-and one with the probability and its demands. A spare that may fail to
+A unit that wears out while it runs and may also fail on a demand (a
+pump that wears, and may fail to start) is two failure modes in one
+component. Give its life as `"reliability"` and the demand mode beside it
+as `"demand": {"probability": p, "rate": d}`. The two compete and are
+renewed together at a repair: the unit's hazard is its life's plus `d p`,
+its survival `R(t) exp(-d p t)`, a life that every exact, numerical and
+simulated analysis takes as it takes any life given by its functions
+(with an exponential life of rate `λ`, it is the exponential of rate
+`λ + d p`, to the bit). From new, it is the life and the demand mode as
+two components in series; once repaired it differs, as the two modes are
+renewed at once.
+
+```python
+pump = {
+    "reliability": surv.Weibull.from_params([2000.0, 2.0]),  # days
+    "demand": {"probability": 0.02, "rate": 0.5},
+    "repairability": surv.Exponential.from_params([1 / 2.0]),
+}
+rbd = RepairableRBD([("s", "pump"), ("pump", "t")], {"pump": pump})
+rbd.mean_availability()  # -> 0.98030
+```
+
+The probability and the rate are saved, held by a `UnitPlan`'s `demand`,
+and listed by `levers()` as `demand.probability` (in `[0, 1]`) and
+`demand.rate` (above 0); a probability of 0 leaves the life alone. The
+demands are on the diagram's clock: a `"duty"` moves the life alone,
+unless `"demand_basis": "operating"` counts the demands in its operating
+time, which the duty then moves too (a duty plan that changes over time
+needs that). Demands at set times or on a plan beside a life, and a
+demand mode on a group of units, are not modelled: draw them as two
+components in series, one with the life and one with the probability and
+its demands. A spare that may fail to
 start when a unit of its standby group fails is the group's
 `"switching_probability"` (see [Standby groups](#standby-groups)).
 

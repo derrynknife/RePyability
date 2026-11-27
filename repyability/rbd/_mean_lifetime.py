@@ -283,6 +283,7 @@ def _gathered(model) -> tuple:
 def _collect(
     model, hints: List[np.ndarray], kinks: List[np.ndarray], seen: Set[int]
 ) -> None:
+    from ._demands import LifeWithDemands
     from .load_sharing_node import LoadSharingModel
     from .non_repairable_rbd import NonRepairableRBD
     from .numerical_convolution import ConvolvedSurvival
@@ -306,6 +307,11 @@ def _collect(
         inner = [*model.models, model._sf_model]
     elif isinstance(model, (RepeatedNode, RepeatedStandbyNode)):
         inner = [model.model, getattr(model, "_sf_model", None)]
+    elif isinstance(model, LifeWithDemands):
+        # Its own quantiles, which the demands pull in, and its life's
+        # (and where the life's support starts).
+        hints.append(quantile_knots(model))
+        inner = [model.life]
     elif isinstance(model, RegressionNode):
         try:
             hints.append(model._knots())

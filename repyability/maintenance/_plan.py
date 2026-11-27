@@ -772,6 +772,7 @@ _OWN_KEYS = (
     "demand_times",
     "demand_plan",
     "demand_basis",
+    "demand",
 )
 
 
@@ -900,6 +901,10 @@ class UnitPlan:
         What its demands are counted in, as a spec's ``"demand_basis"``:
         ``"calendar"`` (the default) or the unit's ``"operating"`` time,
         which its duty puts on the calendar.
+    demand : dict, optional
+        A demand mode beside a life that wears out, as a spec's
+        ``"demand"``: the ``"probability"`` that a demand fails the unit
+        and the demands' ``"rate"``.
 
     Examples
     --------
@@ -937,6 +942,7 @@ class UnitPlan:
     demand_times: Any = None
     demand_plan: Any = None
     demand_basis: Optional[str] = None
+    demand: Optional[dict] = None
 
     #: The node a plan valued alone is in its one-node diagram
     #: (``diagram()``): what its results' tables name.

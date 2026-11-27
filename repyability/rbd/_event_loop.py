@@ -355,6 +355,12 @@ def _aged_life(model, age: float, u: float) -> float:
         if grown <= -1.0:
             return math.inf
         return math.log1p(grown) / beta
+    from ._demands import LifeWithDemands
+
+    if isinstance(model, LifeWithDemands):
+        # A life with a demand mode beside it: its own inversion of the
+        # summed hazard.
+        return model.aged(age, u)
     from surpyval.recurrent import conditional_gaps
 
     return float(conditional_gaps(model, np.array([age]), np.array([u]))[0])

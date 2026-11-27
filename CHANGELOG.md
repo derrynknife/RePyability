@@ -12,6 +12,18 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A life that wears out with a demand mode beside it, in one component
+  of a `RepairableRBD` (a pump that wears and may fail to start): a
+  spec's `"demand": {"probability": p, "rate": d}` beside its
+  `"reliability"`. The two compete and are renewed together, so the
+  unit's survival is `R(t) exp(-d p t)`, a life every exact, numerical
+  and simulated analysis takes; with an exponential life of rate `λ` it
+  is the exponential of rate `λ + d p`, to the bit. The spec is kept as
+  given: saved, held by a `UnitPlan`'s `demand` and listed as the levers
+  `demand.probability` and `demand.rate`. A duty moves the life alone,
+  or the demands too with `"demand_basis": "operating"`. A
+  `"demand_rate"` on a life is still refused, now naming `"demand"`.
+
 - `RepairableRBD.spares_front(bases, parts, budget=, target_availability=)`
   and `spares_allocation(...)`: repairable spares over two echelons, the
   bases a fleet's systems run from and a depot behind them (Sherbrooke's
