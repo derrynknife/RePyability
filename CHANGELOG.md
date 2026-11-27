@@ -12,6 +12,24 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- The values over a window of a life that wears out with demands at
+  set times or on a plan beside it (a spec's `"demand"` with `"times"`
+  or `"plan"`), which only the simulations gave: `point_availability`,
+  `mission_availability`, `expected_failures`, `expected_cost` and what
+  is made of them are now numerical, from new or up at an age, by a
+  renewal equation on the diagram's clock solved forward on a grid whose
+  points take in the demands (`_demand_renewal.PlannedDemandsCurve`).
+  The failures at set demands are exact atoms; the rest is second order
+  in the step. With a life that never fails it equals the set-times
+  demand component to 1e-12; a plan of one rate equals the rate's own
+  route; the hand-worked case (Weibull(40, 1.5), one demand at 50 with
+  0.3, repairs of 35, over 68) is 4e-6 off the nested integrals, and
+  seeded simulations at set times, on a plan and from an age agree within
+  4 standard errors. Its long run and mean lives are still refused, as
+  are a unit down at 0, imperfect repair, tasks, tests, groups and
+  shutdowns over a window (simulated); a window of more than about 80
+  typical up times is refused (`MAX_STEPS` grid points).
+
 - A fault tree with common-cause groups over repaired events gives its
   failure frequency at a time, `failure_frequency(t)`, and its
   probability-based measures at a time (Birnbaum, criticality, RAW, RRW,

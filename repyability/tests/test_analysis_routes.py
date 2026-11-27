@@ -1535,8 +1535,18 @@ def test_the_readme_says_what_is_simulated():
                 "simulated",
             ),
             (
+                repairable["life with demands at set times"],
+                "mission_availability",
+                "numerical",
+            ),
+            (
                 repairable["life with a demand plan"],
                 "point_availability",
+                "numerical",
+            ),
+            (
+                repairable["life with a demand plan"],
+                "mean_availability",
                 "refused",
             ),
             (
