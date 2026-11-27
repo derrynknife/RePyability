@@ -224,6 +224,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("to_dict", "to_json", "from_dict", "from_json"),
             ),
             ("Export to Open-PSA (MEF)", ("to_open_psa",)),
+            ("Import from Open-PSA (MEF)", ("from_open_psa",)),
         ],
     ),
     (

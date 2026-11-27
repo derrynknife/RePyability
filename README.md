@@ -217,6 +217,7 @@ Which analyses each model type has (the method; — where it has none):
 | How each analysis is computed | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` |
 | Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | — |
 | Export to Open-PSA (MEF) | — | — | `to_open_psa` | — | — |
+| Import from Open-PSA (MEF) | — | — | `from_open_psa` | — | — |
 | **Importance measures** | | | | | |
 | Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` |
 | Structural | `structural_importance` | `structural_importance` | `structural_importance` | `structural_importance` | — |
