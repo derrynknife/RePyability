@@ -1,7 +1,8 @@
 """The long-run values of a cold standby pair with general lives and
 repairs (#629, step 1): ``units=2``, ``k=1``, a spare that does not age
 (``dormancy_factor`` 0) and switches in surely, and one repair at a time
-(``repair_crews`` 1 among the pair's units).
+(``repair_crews`` 1 among the pair's units; both repaired at once is
+``_standby_both``).
 
 **The cycle.** The pair regenerates each time a unit fails while the
 other is ready: the ready one is switched in, as new (a cold spare does
@@ -28,13 +29,34 @@ The integrals are worked out by adaptive quadrature (``scipy``'s
 ``quad``), on pieces cut at the models' quantiles, to a relative
 ``RTOL``; the down time is integrated as itself, not as one less the
 up time, so a small unavailability keeps its digits.
+
+**Over time, from new** (#629, step 2; ``over_time``, a ``PairCurve``).
+Both units are ready at 0: the first operates, and the pair first
+regenerates when it fails, at ``X`` (``F``). From a regeneration at 0 a
+cycle ends before ``s`` with probability ``F(s) G(s)``, and within it
+the pair is down at ``s`` if ``X <= s < R``, ``K(s) = F(s) (1 - G(s))``;
+it fails (at ``X``, if ``R > X``) by ``s`` with the measure ``(1 - G)
+dF``, and a unit fails at ``X``. So with ``u`` the regenerations'
+renewal measure from new, ``u = F * (delta_0 + FG + FG * FG + ...)``,
+the pair is down at ``t`` with probability ``(u * K)(t)``, has failed
+``(u * (1 - G) dF)(t)`` times by then, and its units ``F(t) + (u *
+F)(t)`` times. These are worked out on a grid as a unit's are
+(``_point_availability``): each distribution a measure on the grid's
+points that keeps every cell's mass and mean, the renewals by inverting
+the power series ``1 - c`` of the cycle's, and the down periods spread
+back over hat functions and integrated against ``K`` exactly, so a
+repair far shorter than a step costs nothing. The error falls as the
+square of the step, so the values on two grids, one of half the other's
+step, are extrapolated at the coarser one's points (to about 1e-9 at
+them; the curve is linear between them).
 """
 
 import math
-from typing import Optional
+from typing import Dict, Optional
 
 import numpy as np
 
+from repyability.rbd import _point_availability as _grid
 from repyability.rbd._standby_chain import StandbyLongRun
 
 #: The relative accuracy of each integral.
@@ -43,26 +65,21 @@ RTOL = 1e-10
 _CUTS = (0.01, 0.1, 0.5, 0.9, 0.99, 0.9999, 1 - 1e-8, 1 - 1e-12)
 
 
-def why_not(arrangement, crews: Optional[int]) -> Optional[str]:
-    """Why a standby group's long-run values are not worked out by its
-    cycle (see the module's notes), or None. ``crews`` is how many of its
-    units can be repaired at once (None: all)."""
+def why_not(arrangement) -> Optional[str]:
+    """Why a standby group's long-run values are worked out neither by
+    its cycle (see the module's notes) nor, with both units repaired at
+    once, by ``_standby_both``; or None."""
     if arrangement.rates is not None:
         return "it is not a standby group (its units operate together)"
     if arrangement.units != 2 or arrangement.k != 1:
         return (
             f"it has {arrangement.units} units, {arrangement.k} needed, and "
-            "the cycle is worked out for a pair, one needed, alone"
+            "they are worked out for a pair, one needed, alone"
         )
     if arrangement.dormancy_factor != 0.0:
         return "its spare ages while it waits (a warm spare)"
     if arrangement.switching_probability != 1.0:
         return "switching onto its spare may fail"
-    if crews != 1:
-        return (
-            "both units can be repaired at once (one repair at a time, "
-            "repair_crews=1, is worked out)"
-        )
     return None
 
 
@@ -132,3 +149,183 @@ def long_run(life, repair) -> StandbyLongRun:
         unit_failure_frequency=1.0 / cycle,
         unavailability=unavailability,
     )
+
+
+class PairCurve:
+    """A cold standby pair with one repair at a time over time, from new
+    (see the module's notes, and ``_point_availability`` for what a curve
+    gives): on the grid ``times``, the probability that it is ``down``,
+    and its expected ``failures`` and its ``units``' failures (the
+    repairs it pays for) before each point; linear between them. Past
+    the grid's end the curve holds its long-run values ``long_run`` if
+    given (it has settled there by then): down as often, and the counts
+    growing at their rates."""
+
+    period = None
+    #: Its unavailability is worked out as itself (``down_at``, #237).
+    has_down = True
+
+    def __init__(
+        self,
+        step: float,
+        down: np.ndarray,
+        failures: np.ndarray,
+        units: np.ndarray,
+        long_run: Optional[StandbyLongRun] = None,
+    ):
+        self.times = step * np.arange(len(down))
+        self.down = down
+        self.failures = failures
+        self.units = units
+        self.long_run = long_run
+
+    @property
+    def settle(self) -> float:
+        """The time after which the curve is constant."""
+        return np.inf if self.long_run is None else float(self.times[-1])
+
+    def down_at(self, x: np.ndarray) -> np.ndarray:
+        """The probability of being down at each time ``x``."""
+        x = np.asarray(x, dtype=float)
+        out = np.interp(x, self.times, self.down)
+        if self.long_run is not None:
+            out = np.where(
+                x > self.times[-1], self.long_run.unavailability, out
+            )
+        return np.clip(out, 0.0, 1.0)
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        return 1.0 - self.down_at(x)
+
+    def _counted(self, x: np.ndarray, counts: np.ndarray, rate: float):
+        out = np.interp(x, self.times, counts)
+        if self.long_run is not None:
+            past = np.maximum(x - self.times[-1], 0.0)
+            out = out + rate * past
+        return np.maximum(out, 0.0)
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The pair's expected failures before each time ``x``, and the
+        repairs it pays for (its corrective actions)."""
+        x = np.asarray(x, dtype=float)
+        rates = (0.0, 0.0)
+        if self.long_run is not None:
+            rates = (
+                self.long_run.failure_frequency,
+                self.long_run.unit_failure_frequency,
+            )
+        return _grid._events(
+            self._counted(x, self.failures, rates[0]),
+            corrective=self._counted(x, self.units, rates[1]),
+        )
+
+    def atoms(self, stop: float) -> "_grid.Atoms":
+        """None: the pair's units fail at random times."""
+        return _grid.Atoms.none()
+
+    def knots(self, start: float, stop: float) -> np.ndarray:
+        return self.times[(self.times >= start) & (self.times <= stop)]
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        """The grid's ends (see ``_point_availability.curve_breaks``)."""
+        ends = self.times[[0, -1]]
+        return ends[(ends >= start) & (ends <= stop)]
+
+    def grids(self) -> list:
+        """Its grid, to its end (see ``curve_grids``)."""
+        if len(self.times) < 2:
+            return []
+        return [(float(self.times[1]), float(self.times[-1]))]
+
+    def settled(self, values: StandbyLongRun) -> bool:
+        """Whether the curve has reached the long-run ``values`` over the
+        last quarter of its grid: its unavailability to 1e-10, and its
+        counts' rates to 1e-7 of them."""
+        n = len(self.times) - 1
+        tail = slice(n - n // 4, None)
+        if len(self.times[tail]) < 3:
+            return False
+        if np.any(np.abs(self.down[tail] - values.unavailability) >= 1e-10):
+            return False
+        step = self.times[1] - self.times[0]
+        for counts, rate in (
+            (self.failures, values.failure_frequency),
+            (self.units, values.unit_failure_frequency),
+        ):
+            slope = np.diff(counts[tail]) / step
+            if np.any(np.abs(slope - rate) > 1e-7 * rate):
+                return False
+        return True
+
+
+def steady(values: StandbyLongRun) -> PairCurve:
+    """A pair long in service: in its long-run state from 0."""
+    return PairCurve(
+        1.0,
+        np.array([values.unavailability]),
+        np.zeros(1),
+        np.zeros(1),
+        values,
+    )
+
+
+def _on_grid(life, repair, splits, step: float, n: int):
+    """The pair's probability of being down at each point of the grid of
+    ``n`` steps of ``step``, and its expected failures and its units'
+    before each (see the module's notes)."""
+    t = step * np.arange(n + 1)
+    convolve = _grid._Spectra(n + 1).convolve
+
+    def F(x):
+        return _values(life, x, "ff")
+
+    def survives(x):
+        return _values(repair, x, "sf")
+
+    def down(x):
+        return F(x) * survives(x)
+
+    def density(x):
+        return F(x) * _values(repair, x, "df")
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cycle = _grid._lattice(
+            *_grid._cells(lambda x: F(x) * _values(repair, x, "ff"), t, splits)
+        )
+        first = _grid._lattice(*_grid._cells(F, t, splits))
+        hat = _grid._survival_weights(down, t, splits)[2]
+        # The system's failures in a cycle, the measure (1 - G) dF: each
+        # cell's mass and mean, by parts (no density of the life).
+        edge = down(t)
+        through = _grid._cell_integrals(density, t, splits)
+        mass = np.diff(edge) + through
+        mean = (
+            np.diff(t * edge)
+            - _grid._cell_integrals(down, t, splits)
+            + _grid._cell_integrals(lambda x: x * density(x), t, splits)
+        )
+    position = np.full(n, 0.5)
+    has = mass > 0.0
+    position[has] = (mean[has] / mass[has] - t[:-1][has]) / step
+    failing = _grid._lattice(0.0, mass, np.clip(position, 0.0, 1.0))
+    one_minus = -cycle
+    one_minus[0] += 1.0
+    starts = convolve(first, _grid._series_inverse(one_minus, n + 1))
+    return (
+        convolve(starts, hat),
+        _grid._running(convolve(starts, failing)),
+        _grid._running(first + convolve(starts, first)),
+    )
+
+
+def over_time(life, repair, step: float, n: int) -> PairCurve:
+    """A cold standby pair with one repair at a time, from new, on a grid
+    of ``n`` steps of ``step`` (see the module's notes): the values on it
+    and on one of half its step, extrapolated."""
+    splits = np.union1d(_grid.knots(life), _grid.knots(repair))
+    coarse = _on_grid(life, repair, splits, step, n)
+    fine = _on_grid(life, repair, splits, 0.5 * step, 2 * n)
+    down, failures, units = (
+        np.maximum((4.0 * b[::2] - a) / 3.0, 0.0) for a, b in zip(coarse, fine)
+    )
+    return PairCurve(step, down, failures, units)

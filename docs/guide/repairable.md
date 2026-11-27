@@ -1114,8 +1114,29 @@ the pair is up 0.9910.)
   cycle by quadrature, to about 1e-10, for Weibull wear-out lives as for
   any: Weibull(1,000 h, 2.5) lives and Weibull(300 h, 1.5) repairs give
   0.98830, and 400 runs of 1,000,000 h 0.98834 (+0.4 standard errors).
-  Warm spares, a switch that can fail, more units, both repaired at once and
-  values over time are simulated, for now.
+  With both units repaired at once (a crew each, the default) the pair is
+  not afresh after a down period: the unit still under repair is some way
+  into it. Each time a unit starts to operate, what follows depends only
+  on how long the other's repair has run, so the pair is a Markov renewal
+  process on that time, and its equation is solved on a grid, halved
+  until two solutions agree to 1e-8. The same lives and repairs give
+  0.991724 (down 0.0083 of the time against 0.0117 with one crew), and
+  400 runs of 1,000,000 h 0.991722 (0.0 standard errors). A pair under
+  repair nearly all the time (lives a small fraction of the repairs) may
+  warn that the grid did not settle, or be refused.
+  Over time, from new (both units ready), the pair with one repair at a
+  time is followed too: it first starts afresh when the first unit fails,
+  and then after each cycle, so its unavailability and its expected
+  failures and repairs solve a renewal equation, on a grid as a single
+  unit's are (to about 1e-9 at the grid's points, the curve linear
+  between them). `point_availability`, `mission_availability`,
+  `expected_failures`, the expected costs and the other values over a
+  window take it, and `availability()` reports its exact mean. The pair
+  above is up 0.99225 of its first 2,500 h and has failed 0.1279 times by
+  then; 400,000 runs give 0.99231 (+1.3 standard errors) and 0.1275
+  (-0.7).
+  Warm spares, a switch that can fail, more units, and the values over
+  time with both units repaired at once are simulated, for now.
 - **Simulation.** `availability`, `cost` and `compare` simulate groups
   whatever their units' models, in Python.
 
