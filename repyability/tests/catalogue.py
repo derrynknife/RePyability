@@ -1172,6 +1172,16 @@ def repairable_kinds():
             "demand": system(
                 unit(reliability=FIXED(0.1), demand_rate=0.05, repair_cost=5.0)
             ),
+            # A life that wears out with a demand mode beside it (a pump
+            # that wears and may fail to start): competing risks, renewed
+            # together, a life of the summed hazard, which every route
+            # takes as it takes any life.
+            "life with a demand mode": system(
+                unit(
+                    demand={"probability": 0.1, "rate": 0.05},
+                    repair_cost=5.0,
+                )
+            ),
             # Demands at set times (UC-73): a life that ends only at them,
             # on the calendar, exact over a window and simulated.
             "demand times": system(

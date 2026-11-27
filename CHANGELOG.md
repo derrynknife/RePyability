@@ -28,6 +28,18 @@ release between minors that only adds (0.19.1).
   0.964939 with a crew each against 0.965220 (standard error 1.6e-4,
   +1.8 SE). Over time such a pair is refused, pointing to the
   simulation.
+- A life that wears out with a demand mode beside it, in one component
+  of a `RepairableRBD` (a pump that wears and may fail to start): a
+  spec's `"demand": {"probability": p, "rate": d}` beside its
+  `"reliability"`. The two compete and are renewed together, so the
+  unit's survival is `R(t) exp(-d p t)`, a life every exact, numerical
+  and simulated analysis takes; with an exponential life of rate `λ` it
+  is the exponential of rate `λ + d p`, to the bit. The spec is kept as
+  given: saved, held by a `UnitPlan`'s `demand` and listed as the levers
+  `demand.probability` and `demand.rate`. A duty moves the life alone,
+  or the demands too with `"demand_basis": "operating"`. A
+  `"demand_rate"` on a life is still refused, now naming `"demand"`.
+
 - A cold standby pair of any lives and repairs with one repair at a time
   (`repair_crews=1`) over time, from new, which only a simulation gave:
   `point_availability`, `point_unavailability`, `mission_availability`,

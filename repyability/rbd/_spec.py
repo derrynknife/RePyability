@@ -78,6 +78,7 @@ COMPONENT_SPEC_KEYS = (
         "demand_times",
         "demand_plan",
         "demand_basis",
+        "demand",
     )
 )
 

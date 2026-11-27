@@ -348,6 +348,30 @@ def _spec_levers(spec: dict) -> List[tuple]:
 
         d = float(rate)
         out.append(("demand_rate", d, moved_rate, False, (0.0, math.inf), d))
+    demand = spec.get("demand")
+    if isinstance(demand, dict):
+        # A demand mode beside the life: the probability that a demand
+        # fails the unit, and the demands' rate.
+        for option, bounds in (
+            ("probability", _UNIT),
+            ("rate", (0.0, math.inf)),
+        ):
+            if is_number(demand.get(option)):
+
+                def moved_demand(v, option=option):
+                    return {**spec, "demand": {**demand, option: v}}
+
+                value = float(demand[option])
+                out.append(
+                    (
+                        f"demand.{option}",
+                        value,
+                        moved_demand,
+                        False,
+                        bounds,
+                        value,
+                    )
+                )
     repair = spec.get("repair")
     if isinstance(repair, dict) and "q" in repair:
 

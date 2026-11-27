@@ -3851,6 +3851,28 @@ saving, units and refusals. Left: a unit that wears out and may also
 fail on a demand (two components in series for now), and demands at
 fixed times.
 
+**A unit that wears out and fails on demand, in one component (added
+after).** "Our pump wears (a Weibull life), and it also fails to start on
+2% of its demands, about one every two days: how available is it?" Who
+asks: the same engineer, with a fitted life and OREDA's fail-to-start
+probability. Before, a demand rate on a life was refused, and the two
+modes had to be drawn as two components in series, which renews each on
+its own at a repair. Solved as a spec key (and a `UnitPlan`'s `demand`):
+`"demand": {"probability": p, "rate": d}` beside the life, the two
+competing and renewed together, so the unit's hazard is the life's plus
+`d p` (`_demands.LifeWithDemands`: its `Hf` the sum, its quantile the
+inverse of `Hf` by Newton's steps kept in a bracket), a life every route
+takes by its functions. Hand-worked: with an exponential life of rate
+0.004 and `d p = 0.005`, it is the exponential of rate 0.009; from new,
+it is the life and an exponential of rate `d p` in series. Checks
+(`test_life_with_demands.py`): the functions against `R(t) exp(-d p t)`,
+the quantile and the draws, a draw at a virtual age, the mean against
+quadrature; every method against the summed exponential, to the bit;
+the series diagram from new; the seeded simulation against the exact
+values; the levers, saving, `UnitPlan`, units, duty and refusals. Left:
+demands at set times or on a plan beside a life (two components in
+series for now).
+
 ### UC-73: "The standby generator is started at three planned outages next year, and it fails to start on 10% of starts. How available is it, how many failed starts do we expect, and what do the repairs cost? And the fire pump, called on more in summer than in winter?"
 
 - **Status:** built: a component spec's `"demand_times"` (a list of
