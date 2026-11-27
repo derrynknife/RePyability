@@ -12,6 +12,20 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A probability of failing per demand in a `RepairableRBD` (a pump's
+  fail to start on demand): a component spec's `"demand_rate"`, with its
+  `"reliability"` a `surpyval.FixedEventProbability`, makes the demands a
+  Poisson process of that rate, each failing a working unit with the
+  probability, so that the unit has an exponential life of rate the
+  demand rate times the probability. Every analysis, exact, numerical and
+  simulated, takes it as the diagram with that life (to the bit, and
+  seeded runs bit for bit), where a bare probability is refused across
+  the exact methods; that refusal now names the key. The probability and
+  the rate are kept as given, saved, listed as levers (`reliability.p` in
+  [0, 1], `demand_rate` above 0) and held by a `UnitPlan`'s
+  `demand_rate`; a probability of 0 is a junction. A rate on a life that
+  wears out is refused, saying to draw the two modes as two components
+  in series, as is a rate with a duty.
 - Fault trees of repaired and tested basic events. An event may be a
   component spec (`"reliability"`, `"repairability"` and, for a hidden
   failure found by periodic tests, `"inspection"`), and a tree of them
