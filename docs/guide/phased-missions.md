@@ -67,8 +67,9 @@ alone = (
   out; it still ages.
 - **Phases.** In order, with distinct names; a phase of no duration needs
   its diagram working at that instant (a check before take-off, say).
-- **Not modelled here.** Repair between or during phases, and
-  common-cause groups, which a phase may not have. A block on standby, a
+- **Common-cause groups** are the mission's, not a phase's: see
+  [below](#common-cause-groups).
+- **Not modelled here.** Repair between or during phases. A block on standby, a
   block that cannot fail in a phase, and a block's life model or
   covariates by phase are set on a mission drawn as
   [one diagram](#one-diagram-each-phase-setting-its-blocks).
@@ -217,6 +218,63 @@ longer = flight.with_levers({(None, "phase.cruise.duration"): 12.0})
 `analysis_routes()` reports each analysis as exact or numerical, or
 refused when the mission's diagram (for `fussell_vesely`, the cut sets'
 too) would pass `MAX_NODES`, and `reliability_interval` as simulated.
+
+## Common-cause groups
+
+Redundant units that share a cause (a common supply, one maintenance
+error) fail together, and in a mission a cause that strikes in one phase
+has failed its members for every later one. `ccf_groups` gives the
+mission its groups, as a diagram takes them, with a model that has a
+life for each cause:
+
+- one that splits the members' failure *rate*
+  (`BetaFactor(beta, basis="rate")`, or an `MGL` or `AlphaFactor` so):
+  each cause takes a share of the members' cumulative hazard, so a member
+  keeps its life, of any shape (the members carry one surpyval
+  parametric model, new together);
+- `Shocks(rate, p, lethal_rate)`: shocks at a rate of their own,
+  whatever the members' ages and models.
+
+A model that splits a failure *probability* (the default basis) is
+refused: a probability has no time in it for the phases to run through.
+
+```python
+from repyability import BetaFactor, CCFGroup
+
+shared = PhasedMission(
+    [
+        ("take-off", 0.2, both_engines),
+        ("cruise", 10.0, either_engine),
+        ("landing", 0.3, both_engines),
+    ],
+    ccf_groups=[CCFGroup(["e1", "e2"], BetaFactor(0.1, basis="rate"))],
+)
+shared.unreliability()                           # -> 0.004044
+shared.phase_failure_probabilities()["cruise"]   # -> 0.002134
+```
+
+A tenth of each engine's failures now take the other with it, which the
+cruise does not survive: its risk rises, while the take-off's and the
+landing's, which need both engines anyway, do not.
+
+Each shared cause is written into the phases' diagrams as a component of
+its own, in series with every member it fails, and named `("cause",
+members)` (`"cause 1"`, `"cause 2"`, ... with several groups): one more
+chain of segments in the decision diagram, repeated across its members,
+so the values stay exact, and one more life per simulated mission. The
+measures name it, and a member's own entry is that of its own failures:
+
+```python
+worth = shared.birnbaum_importance()
+list(worth)        # -> ['e1', 'e2', ('cause', ('e1', 'e2')), 'gear', 'nav']
+```
+
+`levers()` lists a group's levers under the tuple of its members: their
+one model's parameters, then the group's own (`ccf_beta`, ...), as a
+diagram's do. On a mission drawn as
+[one diagram](#one-diagram-each-phase-setting-its-blocks),
+`from_diagram(rbd, phases, ccf_groups=...)` takes the groups too; a
+member is working or not needed in each phase, on its node's model.
 
 ## Saving and loading
 
@@ -526,6 +584,6 @@ played = pumping.summary(method="simulate", mc_samples=50_000, seed=1,
 played.interval.lower <= result.reliability <= played.interval.upper   # -> True
 ```
 
-**Not modelled yet.** A switch that takes time (see above); repair;
-common-cause groups. Exact values with a standby block and a life whose
+**Not modelled yet.** A switch that takes time (see above); repair.
+Exact values with a standby block and a life whose
 rate is not constant are not worked out: such a mission is simulated.

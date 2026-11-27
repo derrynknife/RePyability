@@ -12,6 +12,24 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `PhasedMission` takes common-cause groups (`ccf_groups=`, on the
+  constructor and `from_diagram`): a shared cause that strikes in one
+  phase fails its members from then on. A group's model has a life for
+  each cause: one that splits the failure rate (`BetaFactor`, `MGL` or
+  `AlphaFactor` with `basis="rate"`, the members on one surpyval
+  parametric model, each cause's life taken through surpyval's hazard
+  ratio) or `Shocks` at a rate of their own (members of any models); one
+  that splits a failure probability is refused, naming these. Each
+  shared cause is written into the phases' diagrams as a component
+  `("cause", members)` in series with every member it fails, so every
+  analysis takes it: the exact values (its segments in the decision
+  diagram, repeated across its members), the simulation (one life per
+  cause), the importance measures and cut sets (which name the causes; a
+  member's entry is its own failures'), `levers()` and
+  `parameter_sensitivity()` (a group's under the tuple of its members:
+  their model's, then `ccf_beta`, ...), and saving. A phase's diagram
+  with groups of its own is still refused, now naming the mission's
+  argument.
 - `PhasedMission` saves and loads (`to_dict`, `to_json`, `from_dict`,
   `from_json`), a mission drawn as one diagram with its blocks' settings
   and vote counts by phase; and it has the measures the other models
@@ -758,6 +776,13 @@ release between minors that only adds (0.19.1).
 
 ### Fixed
 
+- A surpyval model with a hazard ratio (`hr=`) draws its lifetimes with
+  it in a `NonRepairableRBD`'s and a `PhasedMission`'s simulations
+  (`random`, `method="simulate"`): the batched draws took the
+  distribution's quantile function, without the ratio, so the simulated
+  lives were those of the model at `hr=1` (a Weibull `[100, 2]` at
+  `hr=0.3` drew a mean life of 88.6, not 161.8). Seeded results change
+  for such models only.
 - A `RepairableRBD` with a test or task whose `"duration"` is a number
   saves and loads (`to_dict`): it was refused as a model it could not
   save. The number is saved as it is.
