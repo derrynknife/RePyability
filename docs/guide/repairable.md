@@ -433,6 +433,29 @@ It is exact in two cases:
 
 A sub-system (a nested `RepairableRBD`) is drawn into the diagram in its place for these two, its components each as `(node, component)`, so it takes the same route as the system drawn flat, unless something couples it (repair crews that jobs wait for, in it or beside it; common-cause, maintenance or shutdown groups in it) or it is given a state. Anything else (Weibull lives in a redundant structure, scheduled maintenance, tests, standby and common-cause groups, a coupled sub-system) refuses and says why. `method="simulate"` then estimates it from simulated histories (the share with no failure by `t`; the mean needs a `t_simulation` and is a lower bound if some runs do not fail by then). Pass `state` to start from the plant as it is now, as `point_availability` does; a unit that is down is in a repair.
 
+### Bounds where the exact values refuse
+
+Two values worked out without simulating bracket the first failure wherever the expected events are (Weibull lives in a redundant structure, maintenance, tests, standby and common-cause groups included). The system has failed by `t` at least as often as it is down at `t`, and no more often than its expected number of failures in `[0, t)`: with `Q` the unavailability and `W(t)` the expected failures, `1 - Q(0) - W(t) <= R(t) <= 1 - Q(t)`. `first_failure_bounds` returns both, with the values they come from:
+
+```python
+part = {
+    "reliability": surv.Weibull.from_params([1000, 2]),
+    "repairability": surv.Exponential.from_params([0.1]),
+}
+wear = RepairableRBD(
+    [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")], {"a": part, "b": part}
+)
+bounds = wear.first_failure_bounds([1000.0, 5000.0, 20000.0])
+bounds.lower                       # array([0.9865, 0.8864, 0.5129])
+bounds.upper                       # array([0.9999, 0.9999, 0.9999])
+wear.first_failure_sf(             # array([0.9868, 0.8939, 0.6079])
+    [1000.0, 5000.0, 20000.0], method="simulate", mc_samples=20_000, seed=1
+)
+wear.mean_time_to_first_failure_bound()   # -> 20519.2 (simulated: about 40,000)
+```
+
+The bracket is tight while `W(t)` is well under 1: at 1000 hours, a few parts in ten thousand; at 20,000 hours, where nearly one failure is expected, the lower bound says little and the upper bound, the unavailability, says less (the pair is rarely down, but often has been). The upper bound is 1 where the system can be down for planned work (maintenance, tests or shuts that take time), as it can then be down without having failed (`bounds.planned_outages`). `mean_time_to_first_failure_bound` integrates the lower bound to where it reaches 0: a lower bound of the mean, close where failures are rare before the first is likely. Where the first failure is exact, it lies within the bracket.
+
 ## Expected events over a window (exact)
 
 From the same curves, the expected number of system failures in a window

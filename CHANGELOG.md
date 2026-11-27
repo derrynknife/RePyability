@@ -12,6 +12,21 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `RepairableRBD.first_failure_bounds(t, state=None)` brackets the
+  reliability of the first system failure wherever `expected_events` is
+  worked out, including where `first_failure_sf` refuses (a redundant
+  structure of non-exponential units, maintenance, tests, standby or
+  common-cause groups): `1 - Q(0) - W(t) <= R(t) <= 1 - Q(t)`, with `W`
+  the expected system failures and `Q` the unavailability (the highest
+  so far among the times given). Where the system can be down for
+  planned work it can be down without having failed, and the upper
+  bound is 1. It returns a `FirstFailureBounds` (`lower`, `upper`,
+  `expected_failures`, `unavailability`, `planned_outages`).
+  `mean_time_to_first_failure_bound(state=None)` integrates the lower
+  bound: a lower bound of the mean time to the first failure. The
+  refusals of `first_failure_sf` and `mean_time_to_first_failure` name
+  them beside `method="simulate"`. No seeded result changes.
+
 - A shelf of spares in a component's spec: `"spares": {"stock": S,
   "lead_time": L}` (and optionally `"repairs"`), also a `UnitPlan`'s
   `spares`. Every simulation takes it (`availability`, `cost`,
