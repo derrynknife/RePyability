@@ -28,6 +28,46 @@ release between minors that only adds (0.19.1).
   undetected failure (exactly `(1 + λDD MTTR)^(N - M + 1)` on the PFDavg
   of 1oo1 and 1oo2).
 
+- The long-run values of a warm standby pair with one repair at a time
+  whose switch can fail (`"dormancy_factor"` above 0 with
+  `"switching_probability"` below 1, `repair_crews=1`), which were
+  refused: `mean_availability`, `mean_unavailability`, the frequencies
+  and the cost rate. After a failed switch the pair is down while the
+  failed unit is repaired and the spare goes on ageing (it may fail in
+  that repair), so beside the operating unit's used life each time a
+  repair starts, the pair is followed on the waiting spare's each time
+  a unit starts to operate with it waiting: two coupled equations on
+  the grid the sure switch's one is solved on. Checked: exponential
+  units against the Markov chain to 1e-9, for three rate pairs, spares
+  ageing at 0.1, 0.5 and 1 and switches of 0.9, 0.5 and 0 (within
+  2e-10); exponential lives against their closed form with Weibull and
+  lognormal repairs and a switch of 0.7 (1e-8; within 2e-10); a switch
+  that fails once in 1e12 against the sure one (1e-8; within 1e-11); a
+  spare that hardly ages against the cold pair's two states (1e-6;
+  within 2e-9); Weibull(1000, 2.5) lives, Weibull(300, 1.5) repairs, a
+  spare ageing at 0.5 and a switch of 0.8, 0.901162 against 0.900888
+  simulated (8 seeded batches of 50 runs of 1e6 h, -1.1 SE) and
+  4.3164e-4 failures an hour against 4.3191e-4 (+0.3 SE);
+  Weibull(1000, 1.5) lives, LogNormal(5, 0.6) repairs, 0.2 and 0.5,
+  0.901068 against 0.901249 (+0.9 SE) and 5.8515e-4 against 5.8417e-4
+  (-0.9 SE). A sure switch's values are unchanged to the bit. A
+  failing switch takes some 3 to 15 s where the sure one takes about
+  one (more for a switch that never works).
+
+- An upgraded component with tests no longer refuses its values over a
+  horizon (`point_availability`, `mission_availability`,
+  `expected_events`, `expected_cost`, `expected_npv`) when its tests or
+  repairs are of varying length, nor when the unit in service is kept
+  (`"replace_in_service": False`) with tests or repairs that take time
+  or tests that miss failures. Replaced at the upgrade, a unit off line
+  for its test or in a repair is replaced once what is left of it is
+  over, as a distribution. Kept, each unit has the life in service when
+  its repair puts it in: the component's own values, less the line of
+  the first units put in from the upgrade with the old life, plus the
+  same with the new; upgraded to its own life, it is the component to
+  1e-12. Only tests on a calendar of their own are still simulated. No
+  seeded result changes.
+
 - A `MarkovComponent` with a capacity in each state is simulated:
   `availability()` (and `cost()`), which refused such a diagram, follow
   the state it is in, at that state's level (the capacity's time at

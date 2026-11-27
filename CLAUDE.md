@@ -356,7 +356,10 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   A warm pair (a spare ageing at `dormancy_factor`, failing in standby,
   switched in with the life it has used) with one repair at a time is a
   Markov renewal process on the operating unit's used life each time a
-  repair starts (`_standby_warm.py`, the long run alone, a sure switch):
+  repair starts (`_standby_warm.py`, the long run alone); with a switch
+  that can fail it has a second family of states, a unit starting to
+  operate with the spare waiting on at the life it has used (after a
+  failed switch the spare goes on ageing through the repair):
   `test_standby_warm.py` checks it the same way.
 - **A `MarkovComponent` (`repyability/rbd/markov_node.py`) rides the
   standby groups' rails in a `RepairableRBD`**: it is in `rbd._standby`
