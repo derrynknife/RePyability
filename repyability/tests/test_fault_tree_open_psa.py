@@ -435,6 +435,11 @@ REPAIRED = {
     for kind, tree in fault_tree_kinds().items()
     if tree.is_repairable
 }
+#: Those the format holds: not a common-cause group over repaired events,
+#: whose rates it splits (refused, see below).
+UNGROUPED = sorted(
+    kind for kind, tree in REPAIRED.items() if not tree.ccf_groups
+)
 #: Times between the tests of the catalogue's tested events (a value at a
 #: test is the one just after it, which a tool may give as the one before).
 TIMES = np.array([3.0, 39.5, 50.5, 77.0, 123.4, 301.0, 1234.5])
@@ -446,6 +451,14 @@ def same_specs(again: dict, tree: dict) -> None:
     assert set(again) == set(tree)
     for name, spec in again.items():
         original = tree[name]
+        if not isinstance(original, dict):
+            # A probability, or a life that is not repaired.
+            if isinstance(original, float):
+                assert spec == original
+            else:
+                assert list(spec.params) == list(original.params)
+                assert spec.dist.name == original.dist.name
+            continue
         assert set(spec) == set(original)
         for key in ("reliability", "repairability"):
             if isinstance(original[key], str):
@@ -467,9 +480,22 @@ def test_the_repaired_catalogue_trees_are_exported_or_refused_by_event():
         "tested",
         "repeated, repaired",
         "repaired, not gate",
+        "repaired, with a probability",
+        "repaired, with a probability and a life",
+        "repaired, common cause",
     }
     for kind, tree in REPAIRED.items():
         if kind == "tested":
+            continue
+        if tree.ccf_groups:
+            with pytest.raises(
+                NotImplementedError, match="split their failure rates"
+            ):
+                tree.to_open_psa()
+            with pytest.raises(
+                NotImplementedError, match="split their failure rates"
+            ):
+                tree.to_open_psa(t=40.0)
             continue
         with pytest.raises(
             NotImplementedError,
@@ -483,6 +509,10 @@ def exponential(tree: FaultTree) -> FaultTree:
     same means, so the format holds it."""
     specs = {}
     for name, spec in tree.events.items():
+        if not isinstance(spec, dict):
+            # A probability, or a life that is not repaired, as it is.
+            specs[name] = spec
+            continue
         spec = dict(spec)
         for key in ("reliability", "repairability"):
             if not isinstance(spec[key], str):
@@ -491,7 +521,7 @@ def exponential(tree: FaultTree) -> FaultTree:
     return FaultTree(tree.gates, specs, top=tree.top)
 
 
-@pytest.mark.parametrize("kind", sorted(REPAIRED))
+@pytest.mark.parametrize("kind", UNGROUPED)
 def test_a_repaired_tree_reads_back_as_it_was_written(kind):
     tree = REPAIRED[kind]
     if kind != "tested":
@@ -513,7 +543,7 @@ def test_a_repaired_tree_reads_back_as_it_was_written(kind):
         assert '<bool value="false"/>' in document
 
 
-@pytest.mark.parametrize("kind", sorted(REPAIRED))
+@pytest.mark.parametrize("kind", UNGROUPED)
 def test_a_repaired_tree_at_a_time_is_its_events_unavailabilities(kind):
     tree = REPAIRED[kind]
     again = FaultTree.from_open_psa(tree.to_open_psa(t=40.0))

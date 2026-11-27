@@ -618,7 +618,9 @@ def fault_tree_kinds():
     distributions, a fit with its covariance) and as both, a repeated
     event, common-cause groups of each model and basis, a NOT gate, a
     functional dependency, dynamic gates integrated or shared, and events
-    repaired or tested (#809), repeated or under a NOT gate."""
+    repaired or tested (#809), repeated or under a NOT gate, beside fixed
+    probabilities and lives that are not repaired, and in common-cause
+    groups (#831)."""
     unit = W([100, 2])
     gates = {"top": ("or", ["pair", "c"]), "pair": ("and", ["a", "b"])}
     rest = {"b": W([80, 1.5]), "c": E([0.002])}
@@ -737,6 +739,20 @@ def fault_tree_kinds():
                 "not a": ("not", ["a"]),
             },
             repaired,
+        ),
+        # Repaired events beside a fixed probability (#831): a long run.
+        "repaired, with a probability": FaultTree(
+            gates, {"a": repaired["a"], "b": repaired["b"], "c": 0.002}
+        ),
+        # Beside a life that is not repaired too: no long run.
+        "repaired, with a probability and a life": FaultTree(
+            gates, {"a": repaired["a"], "b": W([400, 1.5]), "c": 0.002}
+        ),
+        # Common cause over repaired events: their groups' chains.
+        "repaired, common cause": FaultTree(
+            gates,
+            {"a": repaired["c"], "b": repaired["c"], "c": repaired["b"]},
+            ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate"))],
         ),
     }
 
@@ -2093,7 +2109,8 @@ def event_tree_kinds():
     protection layers alone (LOPA), with paths that do not ask a heading;
     independent heading trees; trees sharing a support event; a heading
     tree with a NOT gate; lifetime models; and repaired events with an
-    initiator tree of repaired events."""
+    initiator tree of repaired events, and a repaired heading beside a
+    protection layer."""
     from repyability import EventTree
 
     def tree(top, inputs, events, kind="or"):
@@ -2221,8 +2238,24 @@ def event_tree_kinds():
             ),
         ],
     )
+    # A repaired heading beside a protection layer (#831).
+    layered = EventTree(
+        0.2,
+        [
+            ("alarm", 0.1),
+            (
+                "backup",
+                tree(
+                    "no backup",
+                    ["diesel", "start"],
+                    {"diesel": spec(0.02), "start": 0.01},
+                ),
+            ),
+        ],
+    )
     return {
         "protection layers (LOPA)": lopa,
+        "a repaired heading beside a protection layer": layered,
         "independent headings": independent,
         "a shared support event": shared,
         "a heading with a NOT gate": not_gate,

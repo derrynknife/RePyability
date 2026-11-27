@@ -358,6 +358,37 @@ _REPAIRED_OWN = frozenset(
         "to_repairable_rbd",
     }
 )
+#: Of ``_REPAIRABLE_GIVES``, what a tree of repaired events with
+#: common-cause groups gives: the values its groups' chains give, over
+#: time and in the long run, and what needs no probabilities.
+_GROUPED_REPAIRED_GIVES = frozenset(
+    {
+        "compare",
+        "top_event_probability",
+        "point_unavailability",
+        "mean_unavailability",
+        "expected_failures",
+        "system_failure_frequency",
+        "to_repairable_rbd",
+        "structural_importance",
+        "occurs",
+        "minimal_cut_sets",
+        "get_min_cut_sets",
+        "minimal_path_sets",
+        "get_min_path_sets",
+        "prime_implicants",
+    }
+)
+#: Of those, what follows the groups' chains.
+_GROUPS_FOLLOWED = frozenset(
+    {
+        "top_event_probability",
+        "point_unavailability",
+        "mean_unavailability",
+        "expected_failures",
+        "system_failure_frequency",
+    }
+)
 #: The analyses of a tree of repaired events that need its events'
 #: failure intensities, and so a coherent tree (see ``failure_frequency``).
 _NEEDS_FREQUENCIES = frozenset(
@@ -396,8 +427,13 @@ class FaultTree:
         the event has occurred, a number in [0, 1], or a lifetime model whose
         ``ff(t)`` is the probability that it has occurred by time ``t``
         (a surpyval distribution such as ``Weibull`` or
-        ``FixedEventProbability``, or a RePyability model with ``sf``). Gate
-        and event names must differ.
+        ``FixedEventProbability``, or a RePyability model with ``sf``); or
+        a repaired or tested event's component spec (a dict of
+        ``"reliability"``, ``"repairability"`` and ``"inspection"``, see
+        [`point_unavailability`][repyability.FaultTree.point_unavailability]),
+        beside which a probability is down with it at every time and a
+        lifetime model is a life that is not repaired. Gate and event
+        names must differ.
     top : Hashable, optional
         The top event, a gate. By default the one gate that is no other
         gate's input.
@@ -410,8 +446,10 @@ class FaultTree:
         probability and the importance measures sum over the groups'
         shock outcomes, exactly
         as the diagram's do; the cut sets stay sets of basic events (their
-        probabilities, in ``ranked_cut_sets``, take the groups in). By
-        default none.
+        probabilities, in ``ranked_cut_sets``, take the groups in). Over
+        repaired events, a group splits its members' failure rates, as a
+        ``RepairableRBD``'s does, and the values over time are its
+        chains'. By default none.
 
     Attributes
     ----------
@@ -445,7 +483,9 @@ class FaultTree:
     NotImplementedError
         For NOT gates and dynamic gates in one tree, common-cause groups
         with either, an event shared between SPARE or SEQ gates, or one an
-        FDEP forces as a spare or a member of a sequence.
+        FDEP forces as a spare or a member of a sequence; dynamic gates
+        over repaired events, or a common-cause group over an event that
+        is not repaired, beside repaired ones.
 
     Examples
     --------
@@ -548,18 +588,11 @@ class FaultTree:
             e for e in self.events if len(parents.get(e, ())) > 1
         )
         specs = [e for e, m in self.events.items() if isinstance(m, dict)]
-        #: Whether the events are repaired (or tested) components, whose
-        #: top event comes and goes (see ``point_unavailability``).
+        #: Whether events are repaired (or tested) components, whose top
+        #: event comes and goes (see ``point_unavailability``); the
+        #: others are then fixed probabilities, down with them at every
+        #: time, and lives that are not repaired, down from their end on.
         self.is_repairable = bool(specs)
-        if specs and len(specs) < len(self.events):
-            others = sorted(map(str, set(self.events) - set(specs)))
-            raise NotImplementedError(
-                f"Event(s) {others} are probabilities or lifetime models "
-                f"while {sorted(map(str, specs))} are repaired components: "
-                "a tree mixing them is not supported yet. Give every event "
-                "a component spec ('reliability' and 'repairability', and "
-                "'inspection' for a tested one)."
-            )
         self.is_fixed = not specs and all(
             isinstance(m, float) or _model_is_fixed(m)
             for m in self.events.values()
@@ -605,13 +638,29 @@ class FaultTree:
         if self.is_repairable:
             from repyability.rbd._event_curves import Structured
 
-            # The events as one diagram's components, over the tree's
-            # own structure: their curves, and the values over time.
-            self._repaired = Structured(self.events, self._decomposition)
+            # The repaired events as one diagram's components, over the
+            # tree's own structure, the others its fixed inputs and lives
+            # of their own (#831): their curves, the values over time and
+            # the common-cause groups' chains.
+            fixed, lives = {}, {}
+            for e, m in self.events.items():
+                if isinstance(m, dict):
+                    continue
+                if isinstance(m, float) or _model_is_fixed(m):
+                    fixed[e] = _fixed_probability(m)
+                else:
+                    lives[e] = m
+            self._repaired = Structured(
+                {e: self.events[e] for e in specs},
+                self._decomposition,
+                fixed=fixed,
+                lives=lives,
+                ccf_groups=self.ccf_groups or None,
+            )
 
     def _require_repairable_gates(self, ccf_groups) -> None:
         """Raise if a tree of repaired events has what they do not take
-        yet: dynamic gates or common-cause groups."""
+        yet: dynamic gates."""
         if not self.is_repairable:
             return
         if self.is_dynamic:
@@ -620,13 +669,6 @@ class FaultTree:
                 "not supported: their order of failures is lost once an "
                 "event is repaired. Draw the system as a RepairableRBD "
                 "(with standby units for a SPARE gate) and simulate it."
-            )
-        if ccf_groups:
-            raise NotImplementedError(
-                "Common-cause groups over repaired events are not supported "
-                "in a fault tree yet: convert the tree without them with "
-                "to_repairable_rbd(), and give the diagram the groups, "
-                "RepairableRBD(..., ccf_groups=...)."
             )
 
     def _validated_ccf(self, groups) -> list:
@@ -645,6 +687,17 @@ class FaultTree:
                 raise ValueError(
                     f"CCF group member {member!r} is not a basic event "
                     "of the tree."
+                )
+            if self.is_repairable and not isinstance(
+                self.events[member], dict
+            ):
+                raise NotImplementedError(
+                    f"CCF group member {member!r} is a fixed probability "
+                    "or a life that is not repaired, in a tree of repaired "
+                    "events, whose groups split their members' failure "
+                    "rates: give the group repaired events only, or give "
+                    f"{member!r} a component spec ('reliability' and "
+                    "'repairability')."
                 )
 
         def saved(member):
@@ -837,6 +890,19 @@ class FaultTree:
                 "intensity too. point_unavailability and "
                 "mean_unavailability are exact for it."
             )
+        self._refuse_unrepaired(name)
+        if (
+            self.ccf_groups
+            and name in _REPAIRABLE_GIVES
+            and name not in _GROUPED_REPAIRED_GIVES
+        ):
+            self._refuse_grouped(name)
+        if self.ccf_groups and name in _GROUPS_FOLLOWED:
+            from repyability.rbd import _ccf_groups
+
+            # The groups' chains must cover them (as the diagram's own
+            # values over time and in the long run need).
+            _ccf_groups._require_groups_over_time(self._repaired, {})
         if name in _REPAIRABLE_GIVES:
             return
         if name in _NEEDS_A_LIFETIME | {"ff", "sf"}:
@@ -859,6 +925,59 @@ class FaultTree:
             f"{name}() is not available for a tree of repaired events yet: "
             "convert the tree with to_repairable_rbd() and ask the "
             "diagram, which takes its components' specs."
+        )
+
+    def _unrepaired(self) -> Tuple[list, list]:
+        """A tree of repaired events' fixed probabilities and lives that
+        are not repaired, by name."""
+        repaired = self._repaired
+        return sorted(map(str, repaired._fixed)), sorted(
+            map(str, repaired._lives)
+        )
+
+    def _refuse_unrepaired(self, name: str) -> None:
+        """Raise if the analysis ``name`` of a tree of repaired events
+        does not take its events that are not repaired: the long run, a
+        life's (which has none), and the repairable diagram, all of
+        them (whose components are repaired)."""
+        fixed, lives = self._unrepaired()
+        if lives and name in ("system_failure_frequency", "long run"):
+            raise NotImplementedError(
+                f"Event(s) {lives} are lives that are not repaired, so the "
+                "tree has no long run: once such an event has occurred, "
+                "it stays. Ask for its values over a window, "
+                "mean_unavailability(t) and expected_failures(t), or "
+                "give each a component spec ('reliability' and "
+                "'repairability') to have it repaired."
+            )
+        if name == "to_repairable_rbd" and (fixed or lives):
+            raise NotImplementedError(
+                "A RepairableRBD's components are repaired, and event(s) "
+                f"{fixed + lives} are fixed probabilities or lives that are "
+                "not: the tree's own methods (point_unavailability, "
+                "mean_unavailability, failure_frequency, ...) work it out "
+                "exactly. To convert it, give each a component spec "
+                "('reliability' and 'repairability')."
+            )
+
+    def _refuse_grouped(self, name: str) -> None:
+        """Raise for an analysis that a tree of repaired events does not
+        give with common-cause groups (see ``_GROUPED_REPAIRED_GIVES``)."""
+        if name == "failure_frequency":
+            raise NotImplementedError(
+                "failure_frequency() at a time is not worked out with "
+                "common-cause groups over repaired events yet: "
+                "expected_failures(t) gives the expected occurrences of "
+                "the top event over a window, and system_failure_frequency"
+                "() their long-run frequency."
+            )
+        raise NotImplementedError(
+            f"{name}() is not worked out for a tree with common-cause "
+            "groups over repaired events yet: its values over time and "
+            "in the long run (point_unavailability, mean_unavailability, "
+            "expected_failures, system_failure_frequency) take the "
+            "groups. Convert the tree with to_repairable_rbd(), whose "
+            "diagram takes them, and ask the diagram."
         )
 
     def _require_integrable(self) -> None:
@@ -1181,6 +1300,8 @@ class FaultTree:
             from repyability.rbd._event_curves import down_at
 
             q = down_at(self._repaired, t)
+            for e, value in self._repaired._fixed.items():
+                q[e] = np.full(len(t), value)
             return {e: 1.0 - value for e, value in q.items()}, q
         for name, model in self.events.items():
             if isinstance(model, float):
@@ -1313,6 +1434,10 @@ class FaultTree:
             )
             return self._out(fails, shape)
         t, shape = self._times(t)
+        if self._repaired is not None and self.ccf_groups:
+            # Repaired events' groups: their chains' (as
+            # ``point_unavailability``).
+            return self._out(self._repaired.point_unavailability(t), shape)
         p, q = self._event_probabilities(t)
         return self._out(self._top(p, q, len(t)), shape)
 
@@ -1413,6 +1538,13 @@ class FaultTree:
         """The probabilities that the top event has not occurred and that
         it has by the ``times``, each worked out in its own right (so a
         small one keeps its precision), from one evaluation."""
+        if self._repaired is not None and self.ccf_groups:
+            # Repaired events' groups: their chains' values (see
+            # ``point_unavailability``).
+            return (
+                self._repaired.point_availability(times),
+                self._repaired.point_unavailability(times),
+            )
         p, q = self._event_probabilities(times)
         size = len(times)
         if self.ccf_groups:
@@ -2028,9 +2160,14 @@ class FaultTree:
         exp(-(lambda + mu) t))``, else from its renewal or test cycle's
         curve), independently of the others, and the top event's
         probability follows from the tree's decision diagram, repeated
-        events, VOTE and NOT gates included. It is worked out as itself,
-        not as one less an availability, so a small one keeps its
-        digits. The same as ``top_event_probability`` for such a tree.
+        events, VOTE and NOT gates included. An event given as a
+        probability is down with it at every time, and one given as a
+        lifetime model is not repaired: down from its end on, ``F(t)``.
+        With common-cause groups, each group's members are down together
+        as its chain gives them, conditioned on within the smallest part
+        of the tree holding them. It is worked out as itself, not as one
+        less an availability, so a small one keeps its digits. The same as
+        ``top_event_probability`` for such a tree.
 
         Parameters
         ----------
@@ -2069,6 +2206,9 @@ class FaultTree:
         '3.797938e-04'
         """
         times, shape = self._repaired_times(t, "point_unavailability")
+        if self.ccf_groups:
+            # The groups' chains, conditioned on module by module.
+            return self._out(self._repaired.point_unavailability(times), shape)
         p, q = self._event_probabilities(times)
         return self._out(self._top(p, q, len(times)), shape)
 
@@ -2108,7 +2248,8 @@ class FaultTree:
             time is negative.
         NotImplementedError
             In the long run, for a tested event whose tests take time,
-            as the diagram's long-run values refuse it.
+            as the diagram's long-run values refuse it, or a life that is
+            not repaired (which has no long run).
 
         Examples
         --------
@@ -2132,6 +2273,7 @@ class FaultTree:
         """
         if t is None:
             self._refuse("mean_unavailability")
+            self._refuse_unrepaired("long run")
             return float(self._repaired.mean_unavailability())
         times, shape = self._repaired_times(t, "mean_unavailability")
         values = self._repaired.mission_unavailability(times)
@@ -2179,7 +2321,8 @@ class FaultTree:
             time is negative.
         NotImplementedError
             For a tree with NOT gates, whose top event can also start
-            when an event is repaired.
+            when an event is repaired; and with common-cause groups (ask
+            ``expected_failures`` or ``system_failure_frequency``).
 
         Examples
         --------
@@ -2271,7 +2414,8 @@ class FaultTree:
         ValueError
             If the tree's events are not repaired (a ``Refused``).
         NotImplementedError
-            For a tree with NOT gates (see ``failure_frequency``).
+            For a tree with NOT gates (see ``failure_frequency``), or a
+            life that is not repaired (which has no long run).
 
         Examples
         --------
@@ -4328,6 +4472,8 @@ class FaultTree:
             return
         from repyability.rbd._event_curves import intensity_routes
 
+        if self.ccf_groups:
+            self._grouped_routes(out)
         if "point_unavailability" not in out:
             out["point_unavailability"] = built(
                 r.EXACT,
@@ -4336,12 +4482,19 @@ class FaultTree:
             )
         out["top_event_probability"] = out["point_unavailability"]
         if "mean_unavailability" not in out:
+            _, lives = self._unrepaired()
             out["mean_unavailability"] = built(
                 r.NUMERICAL,
                 "The point unavailability integrated over the window, on "
                 "pieces between the events' curves' bends, to its own "
                 "size; with t left out, the long run, exactly from the "
-                "events' long-run values.",
+                "events' long-run values"
+                + (
+                    f" (refused: event(s) {lives} are lives that are not "
+                    "repaired, so there is none)."
+                    if lives
+                    else "."
+                ),
             )
         for name, reason in (
             (
@@ -4371,6 +4524,41 @@ class FaultTree:
                 "failure intensities",
             )
             out[name] = route
+
+    def _grouped_routes(self, out: dict) -> None:
+        """The routes of a tree of repaired events with common-cause
+        groups, in ``out``: its values over time and in the long run are
+        its diagram's (``_event_curves.Structured``), the groups' chains
+        conditioned on module by module."""
+        from repyability.rbd import _curves
+        from repyability.rbd import routes as r
+
+        over = _curves._over_time(
+            self._repaired,
+            "The tree's decision diagram at its events' values at each "
+            "time, each common-cause group conditioned on within the "
+            "smallest module holding its members; the other events' "
+            "curves solved on grids (to about 1e-7) where they have no "
+            "closed form.",
+        )
+        for name in ("point_unavailability", "expected_failures"):
+            if name not in out:
+                out[name] = over
+        if "mean_unavailability" not in out:
+            out["mean_unavailability"] = dataclasses.replace(
+                over,
+                reason=over.reason
+                + " Integrated over the window; with t left out, the "
+                "long run, exactly over the groups' chains' long-run "
+                "states.",
+            )
+        if "system_failure_frequency" not in out:
+            out["system_failure_frequency"] = r.AnalysisRoute(
+                r.EXACT,
+                "Each event's and each common cause's long-run failure "
+                "frequency times the Birnbaum importance of what it "
+                "fails, the groups conditioned on module by module.",
+            )
 
     def _gate_routes(self, out: dict, built) -> None:
         """The routes of a tree with dynamic or NOT gates, in ``out``:
@@ -4528,6 +4716,7 @@ class FaultTree:
             k=k or None,
             input_node=source,
             output_node=sink,
+            ccf_groups=self.ccf_groups or None,
         )
 
     def _drawn(self, repairable: bool = False) -> tuple:
@@ -5197,6 +5386,14 @@ def _pruned(
     return Decomposition(
         tree, plan=([(position[p], a, b) for p, a, b in steps], root)
     )
+
+
+def _fixed_probability(model) -> float:
+    """An event's probability that does not change with time (a float,
+    or a model whose ``sf`` is constant): of having occurred."""
+    if isinstance(model, float):
+        return model
+    return float(np.ravel(np.asarray(model.ff(1.0), dtype=float))[0])
 
 
 def _model_is_fixed(model) -> bool:

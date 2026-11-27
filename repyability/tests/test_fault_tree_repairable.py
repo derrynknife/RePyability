@@ -364,13 +364,11 @@ def test_what_a_tree_does_not_take_with_repaired_events():
             {"top": ("or", ["a"])},
             {"a": {**unit(0.1, 1.0), "corrective_cost": 5.0}},
         )
-    with pytest.raises(NotImplementedError, match="component spec"):
-        FaultTree({"top": ("or", ["a", "b"])}, {"a": unit(0.1, 1.0), "b": 0.1})
-    with pytest.raises(NotImplementedError, match="ccf_groups"):
+    with pytest.raises(NotImplementedError, match="repaired events only"):
         FaultTree(
-            {"top": ("and", ["a", "b"])},
-            {"a": unit(0.1, 1.0), "b": unit(0.1, 1.0)},
-            ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+            {"top": ("and", ["a", "b", "c"])},
+            {"a": unit(0.1, 1.0), "b": 0.1, "c": 0.1},
+            ccf_groups=[CCFGroup(["b", "c"], BetaFactor(0.1))],
         )
     with pytest.raises(NotImplementedError, match="Dynamic gates"):
         FaultTree(

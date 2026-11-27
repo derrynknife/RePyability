@@ -420,10 +420,13 @@ places, nested diagrams):
   the long-run values, importance and allocations stay exact, and the
   values over time from new numerical;
 - **fault trees of repaired or tested events** (repeated events, VOTE and
-  NOT gates included): the top event's unavailability over time, its
-  average over a window and in the long run, and, for a coherent tree, its
-  failure frequency and expected occurrences, from the tree's own decision
-  diagram over the events' curves.
+  NOT gates included), beside fixed probabilities and lives that are not
+  repaired: the top event's unavailability over time, its average over a
+  window and in the long run (with no life that is not repaired), and,
+  for a coherent tree, its failure frequency and expected occurrences,
+  from the tree's own decision diagram over the events' curves; with
+  common-cause groups of repaired events with exponential lives, the
+  groups' chains conditioned on module by module.
 
 **Simulated**, or refused with the simulation to run instead:
 
