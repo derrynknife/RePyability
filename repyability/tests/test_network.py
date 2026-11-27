@@ -956,6 +956,15 @@ CALLS = {
     "mean_availability": lambda net: net.mean_availability(),
     "mean_unavailability": lambda net: net.mean_unavailability(),
     "system_failure_frequency": lambda net: net.system_failure_frequency(),
+    # With link capacities (see test_network_capacity.py).
+    **{
+        name: (lambda name: lambda net: getattr(net, name)(10.0))(name)
+        for name in (
+            "capacity_distribution",
+            "point_capacity",
+            "mission_capacity",
+        )
+    },
 }
 
 
@@ -1009,6 +1018,10 @@ def test_the_routes_say_how_each_analysis_is_worked_out(monkeypatch):
         if name in network_module._REPAIRED_OWN:
             # Refused whatever the size: the links are not repaired.
             assert "repaired elements" in route.reason
+            continue
+        if name.endswith("capacity") or name == "capacity_distribution":
+            # Refused whatever the size: no link has a capacity.
+            assert "capacity={link: amount}" in route.reason
             continue
         assert "method='simulate'" in route.reason
         with pytest.raises(NotImplementedError) as error:

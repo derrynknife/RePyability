@@ -36,6 +36,71 @@ release between minors that only adds (0.19.1).
   that can fail, and any warm pair over time, are refused as before,
   pointing to the simulation. `analysis_routes()` reports the pair as
   numerical.
+- A `Network` of repaired elements may now mix them with fixed
+  probabilities and lives that are not repaired, which it refused before
+  (as a `FaultTree` does): a probability is down with it at every time
+  and never starts a loss of the connection over time; a life that is not
+  repaired is down from its failure on. The values over time, the
+  importance measures and the capacity over time take both; the long run
+  (`mean_availability`, `mean_unavailability`,
+  `system_failure_frequency`, `capacity_distribution()`) takes
+  probabilities and refuses a life that is not repaired, naming the
+  values over a window. A repaired element also takes an `"inspection"`
+  (a hidden failure found by periodic tests), as a diagram's component.
+  Checked against closed forms, the fault tree of the network's cut
+  sets, every state enumerated in exact fractions and the `RepairableRBD`
+  of the same tested components.
+
+- `RepairableRBD.first_failure_sf` and `mean_time_to_first_failure` work
+  out a redundant structure whose lives or repairs are not exponential
+  (Weibull, gamma, lognormal, any model with a distribution function)
+  without simulating, where they refused: in the Markov chain whose
+  system-down states absorb, each such time is followed as phases (a
+  mixture of Erlangs on a grid of ages, which converges to the time as the
+  grid is refined), the grid halved and the values extrapolated until
+  they agree to the new `rtol` (1e-3 by default: of each probability
+  of failing, or of the mean). A gamma time of
+  whole shape (an Erlang) has its own phases and is exact. Repair crews
+  that jobs wait for are taken as before, with phases; each series
+  factor of the structure is chained alone, and a state gives a unit's
+  age or how long its repair has gone on. A chain of more than 400,000
+  states (more than two units that are not exponential in one redundant
+  part, as a rule), or values that do not settle to `rtol`, refuse,
+  saying how far they agreed and naming `first_failure_bounds` and the
+  simulation; a start in the long-run state is refused with phases.
+  Common-cause groups and standby groups (load-sharing groups and blocks
+  of identical units too) of units with exponential lives and repairs
+  are in the chain, exactly, where they were refused: a group's shared
+  causes strike in it as in the repair crews' chain, and a standby
+  group's own chain goes beside the rest. Scheduled maintenance and
+  tests stay refused (a fixed interval is no time a chain's phases
+  follow), and the refusal says so.
+  `analysis_routes()` reports the route. Exponential diagrams keep their
+  values, to rounding: the survival's steps are now summed off the
+  threaded BLAS, and a chain started with units down is listed from that
+  state, which moves a value by up to about 1e-15 (1e-13 of a mean). A
+  chain that can never fail now gives exactly 1. No seeded result
+  changes.
+- Link capacities in a `Network` (`capacity={link: amount}`): the network
+  delivers the maximum flow between its two terminals, each working link
+  carrying up to its capacity (either way, unless the network is
+  directed) and a link given none limiting nothing.
+  `capacity_distribution(x)` gives the exact distribution of what is
+  delivered at `x`, a `CapacityDistribution` (`meets`, `mean`,
+  `delivered_fraction`); with repaired links, `capacity_distribution()`
+  is the long-run distribution, `point_capacity(x)` the distribution at a
+  time and `mission_capacity(t)` its average over a window. The exact
+  values enumerate the states of the links and nodes that change the
+  flow, each with the product of its elements' probabilities; a network
+  of more than `repyability.network.MAX_CAPACITY_STATES` (100,000) such
+  states refuses, pointing to `method="simulate"`, which draws the
+  elements' states (`mc_samples`, `seed`). Capacities take two terminals,
+  are saved with the network, and `to_rbd()` passes a directed network's
+  on to its diagram. Checked against the least cut of every state and
+  the distribution of every state enumerated in exact fractions, a
+  `RepairableRBD`'s capacity analysis of the same series-parallel system
+  (to 1e-9), closed forms, and the seeded simulation (within 4 standard
+  errors).
 - A `FaultTree` of repaired or tested events may now mix them with fixed
   probabilities (a per-demand failure, a human error) and lives that are
   not repaired over the mission, which it refused before. A fixed
@@ -1149,6 +1214,28 @@ release between minors that only adds (0.19.1).
   by up to about 1e-6 relative (`SafetyFunction.pfh` and `pfd_avg` among
   them: the guide's worn 2oo3 `pfh()` reads 7.9104e-06, where it read
   7.9105e-06); a unit with any other life is worked out as before.
+  Seeded and simulated results do not change.
+- A component new at 0 (or up at any age) with an exponential life and an
+  exponential (or instant) repair, and nothing else (no maintenance or
+  tests, not down at 0 nor in its long-run state),
+  has its values over time in closed form in a `RepairableRBD`, a
+  `FaultTree` of repairable events and a repaired `Network`: its
+  availability `1 - lambda / s (1 - exp(-s t))`, `s` the sum of its two
+  rates, and its expected failures `lambda mu t / s + (lambda / s)^2 (1 -
+  exp(-s t))`. `point_unavailability` already took the closed form;
+  `point_availability`, `mission_availability`, `expected_failures`,
+  `expected_events` and the rest came from the unit's renewal grid,
+  whose step is sized by the typical life and the last time asked for,
+  and which does not resolve a repair hundreds of times shorter within
+  its first steps. For a failure rate of 0.002 and a repair rate of 0.5,
+  asked at `[0.5, 3, 40, 1000]`: `point_availability(0.5)` was 1.1e-5
+  off (0.99912634 for 0.99911485, and 6e-14 off asked alone),
+  `mission_availability` 8.6e-6 and `expected_failures` up to 9.3e-8
+  (3.6e-6 of a small count); all are now exact to rounding, the same
+  whichever times are asked together, and `point_availability` is one
+  less `point_unavailability`. Values over time of diagrams with such
+  components move by up to those sizes (typically in the 7th digit);
+  any other life, repair or state goes through the grid as before.
   Seeded and simulated results do not change.
 
 ## [0.20] - 2026-11-22

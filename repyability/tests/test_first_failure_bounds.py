@@ -22,7 +22,8 @@ from repyability import (
     NodeState,
     RepairableRBD,
 )
-from repyability.rbd import routes
+from repyability.rbd import _first_failure, routes
+from repyability.rbd._phase_type import NotSettled
 from repyability.tests.catalogue import repairable_kinds
 
 E = surv.Exponential.from_params
@@ -52,8 +53,10 @@ def exact_kinds():
         return sorted(
             name
             for name, rbd in kinds.items()
-            if rbd.analysis_routes()["first_failure_sf"].route
-            != routes.REFUSED
+            if all(
+                rbd.analysis_routes()[method].route != routes.REFUSED
+                for method in ("first_failure_sf", "first_failure_bounds")
+            )
         )
 
 
@@ -63,13 +66,24 @@ def test_the_exact_first_failure_lies_in_the_bracket(name):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         bounds = rbd.first_failure_bounds(TIMES)
-        exact = rbd.first_failure_sf(TIMES)
-        mean = rbd.mean_time_to_first_failure()
+        try:
+            exact = rbd.first_failure_sf(TIMES)
+            mean = rbd.mean_time_to_first_failure()
+        except NotSettled:
+            # Lives followed as phases that do not settle over these
+            # times: test_first_failure_phases.py has those that do.
+            pytest.skip("its phases do not settle to rtol over these times")
         mean_bound = rbd.mean_time_to_first_failure_bound()
+    # Where lives are followed as phases, the value is within rtol.
+    phased = _first_failure._require_exact(rbd) == _first_failure.AS_PHASES
+    failing = 1.0 - exact
+    accuracy = (
+        1e-3 * np.maximum(failing, 1e-3 * failing.max()) if phased else 0.0
+    )
     slack = W_RTOL * np.maximum(bounds.expected_failures, 1.0)
-    assert np.all(bounds.lower <= exact + slack)
-    assert np.all(exact <= bounds.upper + Q_ATOL)
-    assert mean_bound <= mean * (1.0 + 1e-6)
+    assert np.all(bounds.lower <= exact + slack + accuracy)
+    assert np.all(exact <= bounds.upper + Q_ATOL + accuracy)
+    assert mean_bound <= mean * (1.0 + (1e-3 if phased else 1e-6))
 
 
 def test_one_component_is_bounded_by_its_renewal_function():
@@ -82,11 +96,13 @@ def test_one_component_is_bounded_by_its_renewal_function():
     bounds = rbd.first_failure_bounds(TIMES)
     renewals = lam * mu * TIMES / s + lam**2 / s**2 * -np.expm1(-s * TIMES)
     down = lam / s * -np.expm1(-s * TIMES)
+    # (An exponential unit's curve is its closed form: exact, where the
+    # renewal grid's count was up to 6.3e-8 off, 9.4e-7 of it at t = 1.)
     np.testing.assert_allclose(
-        bounds.expected_failures, renewals, rtol=W_RTOL, atol=W_RTOL
+        bounds.expected_failures, renewals, rtol=1e-12, atol=0.0
     )
     np.testing.assert_allclose(
-        bounds.lower, np.clip(1.0 - renewals, 0.0, 1.0), atol=W_RTOL
+        bounds.lower, np.clip(1.0 - renewals, 0.0, 1.0), atol=1e-12
     )
     np.testing.assert_allclose(bounds.upper, 1.0 - down, atol=1e-12)
     exact = np.exp(-lam * TIMES)
@@ -126,10 +142,11 @@ def within(bounds, simulated, samples):
 
 def test_a_weibull_pair_brackets_its_simulated_first_failure():
     rbd = RepairableRBD(PAIR, {n: unit(W([1000.0, 2.0])) for n in "ab"})
-    with pytest.raises(NotImplementedError, match="first_failure_bounds"):
-        rbd.first_failure_sf(100.0)
     x = np.array([200.0, 1000.0, 3000.0])
     bounds = rbd.first_failure_bounds(x)
+    numerical = rbd.first_failure_sf(x)
+    assert np.all(bounds.lower <= numerical + 1e-3 * (1.0 - numerical))
+    assert np.all(numerical <= bounds.upper)
     simulated = rbd.first_failure_sf(
         x, method="simulate", mc_samples=20_000, seed=11
     )
@@ -189,10 +206,11 @@ def test_a_common_cause_group_brackets_its_simulated_first_failure():
         {n: unit(E([0.002]), E([0.5])) for n in "ab"},
         ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
     )
-    with pytest.raises(NotImplementedError, match="first_failure_bounds"):
-        rbd.first_failure_sf(100.0)
     x = np.array([100.0, 1000.0, 3000.0])
     bounds = rbd.first_failure_bounds(x)
+    exact = rbd.first_failure_sf(x)
+    assert np.all(bounds.lower <= exact + W_RTOL)
+    assert np.all(exact <= bounds.upper + Q_ATOL)
     simulated = rbd.first_failure_sf(
         x, method="simulate", mc_samples=10_000, seed=13
     )

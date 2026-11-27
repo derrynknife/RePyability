@@ -32,6 +32,7 @@ from repyability import (
 )
 from repyability.rbd import _repairable_uncertainty, phased_mission, routes
 from repyability.rbd._model_utils import parametric_spec
+from repyability.rbd._phase_type import NotSettled
 from repyability.tests.catalogue import (
     EDGES,
     E,
@@ -284,15 +285,17 @@ REPAIRABLE_CALLS = {
     "spares_allocation": lambda rbd: rbd.spares_allocation(
         {"north": 3, "south": 2}, echelon_parts(rbd), budget=6.0
     ),
-    "first_failure_sf": lambda rbd: rbd.first_failure_sf([10.0, 200.0]),
+    "first_failure_sf": lambda rbd: settled(
+        lambda: rbd.first_failure_sf([10.0, 200.0], rtol=1e-2)
+    ),
     "first_failure_bounds": (
         lambda rbd: rbd.first_failure_bounds([10.0, 200.0])
     ),
     "mean_time_to_first_failure_bound": (
         lambda rbd: rbd.mean_time_to_first_failure_bound()
     ),
-    "mean_time_to_first_failure": (
-        lambda rbd: rbd.mean_time_to_first_failure()
+    "mean_time_to_first_failure": lambda rbd: settled(
+        lambda: rbd.mean_time_to_first_failure(rtol=1e-2)
     ),
     "point_availability": lambda rbd: rbd.point_availability([10.0, 200.0]),
     "point_unavailability": (
@@ -426,6 +429,17 @@ for calls in (NONREPAIRABLE_CALLS, REPAIRABLE_CALLS):
     )
 
 
+def settled(call):
+    """``call()``, or None where lives and repairs followed as phases do
+    not settle to the accuracy asked for within the chain's size: the
+    route is numerical, and says that this is refused when the values
+    are asked for (it depends on the times and on ``rtol``)."""
+    try:
+        return call()
+    except NotSettled:
+        return None
+
+
 def behaves_as_reported(route: AnalysisRoute, call) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -544,6 +558,13 @@ NETWORK_CALLS = {
     "mean_availability": lambda net: net.mean_availability(),
     "mean_unavailability": lambda net: net.mean_unavailability(),
     "system_failure_frequency": lambda net: net.system_failure_frequency(),
+    # With link capacities: at a time (in the long run, repaired), and
+    # over time.
+    "capacity_distribution": lambda net: net.capacity_distribution(
+        None if net.is_repairable and net.capacity else X
+    ),
+    "point_capacity": lambda net: net.point_capacity(X),
+    "mission_capacity": lambda net: net.mission_capacity(X),
 }
 
 BRIDGE_LINKS = {
@@ -560,7 +581,9 @@ def networks():
     failing node, one of fixed probabilities, and the bridge with three
     terminals, with every node a terminal, and with its links one way;
     and the bridge with repaired links and a repaired node, between two
-    terminals and between them all."""
+    terminals and between them all; and the bridge with capacities on
+    its links, of lifetimes, repaired, and one way."""
+    capacity = {"a": 3, "b": 2, "c": 1, "d": 2}
     lifetimes = {
         name: (u, v, W([100 + 10 * i, 1.5]))
         for i, (name, (u, v)) in enumerate(BRIDGE_LINKS.items())
@@ -578,7 +601,44 @@ def networks():
     }
     hub = {"reliability": E([0.001]), "repairability": W([5.0, 2.0])}
     return {
+        "capacity bridge": Network(
+            lifetimes, "s", "t", nodes={"x": E([0.01])}, capacity=capacity
+        ),
+        "repaired capacity bridge": Network(
+            repaired, "s", "t", nodes={"x": hub}, capacity=capacity
+        ),
+        "directed capacity bridge": Network(
+            lifetimes, "s", "t", directed=True, capacity=capacity
+        ),
         "repaired bridge": Network(repaired, "s", "t", nodes={"x": hub}),
+        # Repaired links beside a probability and a life that is not
+        # repaired (no long run), and beside a probability alone; a link
+        # whose hidden failures are found by tests.
+        "mixed bridge": Network(
+            {**repaired, "c": ("x", "y", 0.05), "e": lifetimes["e"]},
+            "s",
+            "t",
+            capacity=capacity,
+        ),
+        "repaired bridge with a probability": Network(
+            {**repaired, "c": ("x", "y", 0.05)}, "s", "t", capacity=capacity
+        ),
+        "tested bridge": Network(
+            {
+                **repaired,
+                "c": (
+                    "x",
+                    "y",
+                    {
+                        "reliability": E([0.002]),
+                        "repairability": E([0.5]),
+                        "inspection": {"interval": 40.0},
+                    },
+                ),
+            },
+            "s",
+            "t",
+        ),
         "repaired all terminals": Network(repaired, terminals="all"),
         "three terminals": Network(
             lifetimes, terminals=["s", "t", "x"], nodes={"x": E([0.01])}
@@ -1012,15 +1072,16 @@ def test_the_readme_says_what_is_simulated():
             (repairable["capacities"], "mission_capacity", "numerical"),
         ],
         "The reliability and mean time to the first failure of a "
-        "repairable system whose components are not all exponential in a "
-        "redundant structure, or that has maintenance, tests, standby or "
-        "common-cause groups": [
+        "repairable system with maintenance or tests, with common-cause "
+        "or standby groups of units that are not exponential, or with too "
+        "many lives and repairs that are not exponential in one redundant "
+        "part": [
             (repairable[name], analysis, route)
             for name in (
-                "identical units, parallel",
                 "maintained",
                 "inspected",
-                "common cause, revealed",
+                "instrument air",
+                "koon",
             )
             for analysis, route in (
                 ("first_failure_sf", "refused"),
@@ -1028,6 +1089,16 @@ def test_the_readme_says_what_is_simulated():
                 ("first_failure_bounds", "numerical"),
                 ("mean_time_to_first_failure_bound", "numerical"),
             )
+        ]
+        + [
+            (repairable[name], analysis, "numerical")
+            for name in (
+                "identical units, parallel",
+                "common cause, revealed",
+                "standby group",
+                "fitted life",
+            )
+            for analysis in ("first_failure_sf", "mean_time_to_first_failure")
         ],
         "Comparing two designs (`compare`)": [
             (plain, "compare", "numerical"),
@@ -1232,7 +1303,7 @@ def test_the_readme_says_what_is_simulated():
                 ("expected_events", "numerical"),
                 ("expected_cost", "numerical"),
                 ("availability", "simulated"),
-                ("first_failure_sf", "refused"),
+                ("first_failure_sf", "numerical"),
                 ("first_failure_bounds", "numerical"),
                 ("spares_demand", "refused"),
                 ("spares_stock", "refused"),

@@ -197,12 +197,11 @@ def test_the_simulated_mean_covers_the_exact_one():
     assert estimate.lower < restricted < estimate.upper
 
 
-def test_a_redundant_structure_with_weibull_lives_is_simulated_on_request():
+def test_a_redundant_structure_with_weibull_lives_agrees_with_simulation():
+    # Followed as phases (see test_first_failure_phases.py); the
+    # simulation is still there on request.
     rbd = RepairableRBD(PAIR, {n: unit(W([100.0, 2.0])) for n in "ab"})
-    with pytest.raises(NotImplementedError, match="method='simulate'"):
-        rbd.first_failure_sf(10.0)
-    with pytest.raises(NotImplementedError, match="exponential lives"):
-        rbd.mean_time_to_first_failure()
+    exact = rbd.first_failure_sf([50.0, 150.0])
     value = rbd.first_failure_sf(
         [50.0, 150.0],
         method="simulate",
@@ -212,6 +211,8 @@ def test_a_redundant_structure_with_weibull_lives_is_simulated_on_request():
     )
     never = NonRepairableRBD(PAIR, {n: W([100.0, 2.0]) for n in "ab"})
     assert np.all(value >= never.sf([50.0, 150.0]) - 0.03)
+    assert np.all(exact >= never.sf([50.0, 150.0]))
+    assert np.all(np.abs(value - exact) <= 0.04)
 
 
 def test_what_the_exact_values_do_not_cover_is_refused_with_a_reason():
