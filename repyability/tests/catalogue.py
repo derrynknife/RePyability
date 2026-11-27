@@ -1113,6 +1113,27 @@ def repairable_kinds():
             "demand": system(
                 unit(reliability=FIXED(0.1), demand_rate=0.05, repair_cost=5.0)
             ),
+            # Demands at set times (UC-73): a life that ends only at them,
+            # on the calendar, exact over a window and simulated.
+            "demand times": system(
+                unit(
+                    reliability=FIXED(0.1),
+                    demand_times=[50.0, 120.0, 200.0, 260.0],
+                    repair_cost=5.0,
+                )
+            ),
+            # Demands at a rate that changes, counted in the unit's
+            # operating time on a duty: an exponential life in demands
+            # on the composed plan, simulated (its repairs take time).
+            "demand plan": system(
+                unit(
+                    reliability=FIXED(0.1),
+                    demand_plan={"times": [0.0, 150.0], "rates": [0.1, 0.02]},
+                    duty=0.5,
+                    demand_basis="operating",
+                    repair_cost=5.0,
+                )
+            ),
             "mixture life": system(
                 unit(reliability=mixture_life(), replace_cost=10.0)
             ),

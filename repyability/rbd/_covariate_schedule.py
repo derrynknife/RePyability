@@ -829,6 +829,8 @@ def check_state(rbd, node, state, inspected: bool) -> None:
             "drawn from its last test, before the diagram's time starts. "
             "Leave it out (new)."
         )
+    if getattr(life, "model", None) is None:
+        return  # demands at set times: it does not age
     if not isinstance(life, (ScheduledLife, PathLife)):
         # A duty plan's: the age is in operating time.
         model: Any = getattr(life, "model")

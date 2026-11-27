@@ -143,6 +143,11 @@ class PlannedLife(ClockLife):
         self.model = model
         self.plan = plan
         self.node = node
+        if getattr(plan, "use", None) == "demands":
+            # A demand plan's (see _demands.on_demand): its life is in
+            # demands.
+            self.lead = "is called on by a demand plan that changes over time"
+            self.aged = "whose demands come at a pace that changes"
         self._times = np.asarray(plan.times, dtype=float)
         self._shares = np.asarray(plan.shares, dtype=float)
         hours = np.concatenate(
@@ -447,6 +452,11 @@ def time_changed_unit(rbd, node):
         as_spec = getattr(spec, "spec", None)
         if callable(as_spec) and not isinstance(spec, dict):
             spec = as_spec()
+        # A demand plan's life in demands and the plan as its duty (see
+        # _demands.on_demand).
+        from repyability.rbd._spec import on_demand
+
+        spec = on_demand({node: spec})[node]
         spec = {key: value for key, value in spec.items() if key != "duty"}
         kept[node] = RepairableRBD(
             [(("in", node), node), (node, ("out", node))], {node: spec}

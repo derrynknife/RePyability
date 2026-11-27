@@ -34,6 +34,9 @@ _BY_PARAMETERS = {
     "expected_cost_rate_uncertainty",
     "expected_npv_uncertainty",
     "uncertainty_importance",
+    # Its rows name the levers: the probability and the rate there, the
+    # rate here.
+    "tornado",
     # A chunk and a shard carry the diagram as saved, its spec as given:
     # their runs are compared through availability_from_chunks.
     "simulate_chunk",
