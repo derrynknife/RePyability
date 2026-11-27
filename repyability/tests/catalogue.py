@@ -474,7 +474,9 @@ def mission_kinds():
     blocks on standby, warm and switching imperfectly, every life of a
     constant rate (exact, by the Markov chain), and with a common-cause
     group that splits its members' failure rate, and one of shocks at a
-    rate of their own (exact, each cause a component)."""
+    rate of their own (exact, each cause a component), and with blocks
+    repaired during the phases (exact by the chain where every life and
+    repair is exponential, else simulated)."""
     from repyability import BlockSetting, MissionPhase, PhasedMission
 
     unit = W([100, 2])
@@ -551,7 +553,14 @@ def mission_kinds():
         MissionPhase("up", 20.0, k={"v": 3}),
         MissionPhase("on", 30.0, blocks={"c": "not_needed"}),
     ]
+    repairs = {"a": E([0.5]), "c": E([0.2])}
     return {
+        "repair_exact": PhasedMission.from_diagram(
+            constant, plain, repairability=repairs
+        ),
+        "repair": PhasedMission.from_diagram(
+            vote, plain, repairability={"a": W([3.0, 1.5])}
+        ),
         "common_cause": PhasedMission.from_diagram(
             vote,
             plain,

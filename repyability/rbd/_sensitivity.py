@@ -554,8 +554,9 @@ def _mission_levers(mission) -> List[_Lever]:
     (the model replaced in every phase's diagram that uses it, or in the
     one diagram of a mission drawn so), a common-cause group's under the
     tuple of its members where its first member comes (its members' one
-    model's, then its own, ``ccf_beta``, ..., as a diagram's), then each
-    phase's duration, under
+    model's, then its own, ``ccf_beta``, ..., as a diagram's), a repaired
+    block's repair model's after its life's, as ``repairability.<name>``,
+    then each phase's duration, under
     ``None`` as ``phase.<name>.duration``. ``build`` gives the arguments
     ``PhasedMission._from_args`` takes."""
     import dataclasses
@@ -666,6 +667,27 @@ def _mission_levers(mission) -> List[_Lever]:
             out.append(
                 _Lever(node, name, value, False, build, node, bounds, scale)
             )
+        if node in mission.repairability:
+            for name, value, moved, bounds, scale in _model_levers(
+                "repairability", mission.repairability[node], lambda m: m
+            ):
+
+                def build_repair(v, moved=moved, node=node) -> dict:
+                    repairs = {**args["repairability"], node: moved(v)}
+                    return {**args, "repairability": repairs}
+
+                out.append(
+                    _Lever(
+                        node,
+                        name,
+                        value,
+                        False,
+                        build_repair,
+                        None,
+                        bounds,
+                        scale,
+                    )
+                )
     for j, phase in enumerate(mission.phases):
 
         def build_phase(v, j=j) -> dict:
