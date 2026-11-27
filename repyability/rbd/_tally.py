@@ -1610,13 +1610,23 @@ class _CapacityState(NamedTuple):
     delivered: float
 
 
+class _InState(NamedTuple):
+    """In a state's key (see ``_CapacityRecorder``): a Markov component
+    with a capacity in each state, in state ``state`` (its index)."""
+
+    node: Hashable
+    state: int
+
+
 class _CapacityRecorder:
     """The system's capacity in each state of an availability simulation.
 
     Given which components are down, the capacity has an exact
     distribution: one level, unless some nodes work at several (a node's
     capacity levels, given as a dict), which the simulation, drawing only
-    whether each component is up, then weighs by their probabilities. It is
+    whether each component is up, then weighs by their probabilities. A
+    Markov component with a capacity in each state is followed by its
+    state (an ``_InState`` in the key), at that state's level. It is
     worked out once per state and kept."""
 
     def __init__(self, rbd: "RepairableRBD", demand: Optional[float]):
@@ -1624,15 +1634,22 @@ class _CapacityRecorder:
         self._rbd = rbd
         self._nodes = list(rbd.nodes)
         self._states: Dict[frozenset, _CapacityState] = {}
+        #: Each Markov component's level in each of its states.
+        self.markov = _requirements._markov_levels(rbd)
         # Whether each node works at one level: a state's capacity is then
-        # one level for sure (see evaluate).
-        self._single = all(
+        # one level for sure (see evaluate). (A Markov component's state
+        # is not a column of ``evaluate``: each state on its own.)
+        self._single = not self.markov and all(
             not isinstance(levels, dict) or len(levels) == 1
             for levels in rbd.capacity.values()
         )
         if demand is None:
             # Everything up at its highest level: the design capacity.
-            top = float(self._distribution(frozenset())[0][-1])
+            best = frozenset(
+                _InState(node, int(np.argmax(levels)))
+                for node, levels in self.markov.items()
+            )
+            top = float(self._distribution(best)[0][-1])
             self.demand: Optional[float] = top if np.isfinite(top) else None
         else:
             demand = float(demand)
@@ -1648,7 +1665,15 @@ class _CapacityRecorder:
             node: np.zeros(1) if node in down else np.ones(1)
             for node in self._nodes
         }
-        levels, rows = self._rbd._capacity_arrays(arrays, 1)
+        own = {
+            key.node: (
+                np.array([self.markov[key.node][key.state]]),
+                np.ones((1, 1)),
+            )
+            for key in down
+            if key.__class__ is _InState
+        }
+        levels, rows = self._rbd._capacity_arrays(arrays, 1, own)
         return levels, rows[:, 0]
 
     def __call__(self, down: frozenset) -> _CapacityState:
@@ -1735,9 +1760,12 @@ class _CapacityRecorder:
                 known[down] = state
         return [self(down) for down in downs]
 
-    def trace(self, status: dict) -> "_CapacityTrace":
-        """The capacity of one simulation, which starts with ``status``."""
-        return _CapacityTrace(self, status)
+    def trace(
+        self, status: dict, states: Optional[dict] = None
+    ) -> "_CapacityTrace":
+        """The capacity of one simulation, which starts with ``status``
+        (and each Markov component in its state of ``states``)."""
+        return _CapacityTrace(self, status, states or {})
 
 
 class _CapacityTrace:
@@ -1748,19 +1776,38 @@ class _CapacityTrace:
     are in worked out at the end, those met first together (see
     ``_CapacityRecorder.states``)."""
 
-    def __init__(self, recorder: _CapacityRecorder, status):
+    def __init__(self, recorder: _CapacityRecorder, status, states: dict):
         self.recorder = recorder
-        self.down = {node for node, up in status.items() if not up}
+        markov = recorder.markov
+        self.down = {
+            node
+            for node, up in status.items()
+            if not up and node not in markov
+        }
+        # Each Markov component's state, as part of the key.
+        self.down.update(_InState(node, k) for node, k in states.items())
         # The time of each change and the components down after it, from
         # the start.
         self.records: list = [(0.0, frozenset(self.down))]
 
     def change(self, time: float, node, up: bool) -> None:
-        """Component ``node`` went up (or down) at ``time``."""
+        """Component ``node`` went up (or down) at ``time``. (A Markov
+        component's changes are its moves, ``moved``.)"""
+        if node in self.recorder.markov:
+            return
         if up:
             self.down.discard(node)
         else:
             self.down.add(node)
+        self.records.append((time, frozenset(self.down)))
+
+    def moved(self, time: float, node, was: int, state: int) -> None:
+        """Markov component ``node`` moved from state ``was`` to ``state``
+        at ``time``."""
+        if node not in self.recorder.markov:
+            return
+        self.down.discard(_InState(node, was))
+        self.down.add(_InState(node, state))
         self.records.append((time, frozenset(self.down)))
 
     def finish(self, t_simulation: float, rec: _Replication) -> None:

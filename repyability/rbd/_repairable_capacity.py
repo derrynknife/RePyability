@@ -224,11 +224,12 @@ def _crew_capacity_over(
     nested = _curves._require_crew_over_time(rbd, frozenset(forced))
     chain = _crews._crew_chain(rbd, frozenset(forced))
     curves = {
-        node: _curves._nested_curve(
-            rbd.components[node],
+        node: _curves._beside_crews(
+            rbd,
+            node,
             horizon,
-            stages=node in rbd._capacity_models(),
             start=states.get(node),
+            stages=node in rbd._capacity_models(),
         )
         for node in nested
     }

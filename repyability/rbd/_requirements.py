@@ -124,16 +124,30 @@ def _require_one_inspected(rbd) -> None:
         )
 
 
+def _markov_levels(rbd) -> dict:
+    """``{node: levels}`` for the Markov components that take their
+    capacity from their states (no capacity of their own in the
+    diagram): each state's level, in the order of its states, which
+    the availability simulation follows (``_tally._CapacityRecorder``)."""
+    from repyability.rbd.markov_node import MarkovComponent
+
+    return {
+        node: tuple(float(model.capacity[s]) for s in model.states)
+        for node, model in rbd._capacity_models().items()
+        if isinstance(model, MarkovComponent) and model.capacity is not None
+    }
+
+
 def _require_capacities_given(rbd) -> None:
     """Raise if a node takes its capacity from its model (a
     ``DegradingNode``'s stages, or a nested RBD's capacities), which
-    the availability simulation does not follow."""
-    own = rbd._capacity_models()
+    the availability simulation does not follow. A Markov component's
+    states it follows (``_markov_levels``)."""
+    own = set(rbd._capacity_models()) - set(_markov_levels(rbd))
     if own:
         raise NotImplementedError(
             f"Node(s) {sorted(own, key=str)} take their capacity from "
-            "their models (a DegradingNode's stages, a Markov "
-            "component's states, or a nested RBD's "
+            "their models (a DegradingNode's stages, or a nested RBD's "
             "capacities), which the simulation does not follow. Give "
             "them a capacity, or use capacity_distribution() for the "
             "long run."

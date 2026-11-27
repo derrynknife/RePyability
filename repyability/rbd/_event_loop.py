@@ -3451,7 +3451,18 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         by_node[node] += charge
         return charge
 
-    trace = None if ctx.capacity is None else ctx.capacity.trace(view)
+    trace = (
+        None
+        if ctx.capacity is None
+        else ctx.capacity.trace(
+            view,
+            {
+                n: g.state
+                for n, g in (groups or {}).items()
+                if g.__class__ is _MarkovUnit
+            },
+        )
+    )
     # With ctx.history (see simulate_timelines): each component's state
     # at 0, the times of its changes, and which of them (their places
     # among its changes) were planned changes down, maintenance or a
@@ -3661,7 +3672,12 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             group = groups[node]
             if not group.holds(event):
                 continue  # superseded by an earlier one
+            moving = trace is not None and group.__class__ is _MarkovUnit
+            before = group.state if moving else 0
             now, broken = group.advance(event.time)
+            if moving and trace is not None:
+                # Its capacity is its state's (see _CapacityRecorder).
+                trace.moved(event.time, node, before, group.state)
             if broken:
                 replaced[index[node]] += 1
                 for category, charges in failure_charges.get(node, ()):
