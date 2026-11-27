@@ -9329,8 +9329,10 @@ class RepairableRBD(RBD):
 
         Parameters
         ----------
-        working_nodes, broken_nodes : Collection[Hashable], optional
-            Nodes held working or failed, as for ``mean_availability``.
+        working_nodes : Collection[Hashable], optional
+            Nodes held working, as for ``mean_availability``.
+        broken_nodes : Collection[Hashable], optional
+            Nodes held failed, as for ``mean_availability``.
         x : float, optional
             One time, for the point availability then.
         window : float, optional

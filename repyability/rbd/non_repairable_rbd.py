@@ -8773,8 +8773,10 @@ class NonRepairableRBD(RBD):
         ----------
         x : float, optional
             One time. May be left out only for a fixed-probability RBD.
-        working_nodes, broken_nodes : Collection[Hashable], optional
-            Nodes held working or failed, as for ``sf``.
+        working_nodes : Collection[Hashable], optional
+            Nodes held working, as for ``sf``.
+        broken_nodes : Collection[Hashable], optional
+            Nodes held failed, as for ``sf``.
         quantity : str, optional
             ``"reliability"``, the one quantity.
         ranges : dict, optional
