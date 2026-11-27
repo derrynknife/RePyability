@@ -4933,9 +4933,12 @@ class SparesAllocation(_ResultMapping):
     base_stock : dict
         Each base's stock of each part, ``{base: {part: spares}}``.
     base_availability : dict
-        Each base's availability: the product over parts of ``(1 - EBO /
-        (N Z))^Z``, with ``EBO`` the base's expected backorders of the
-        part, ``N`` its systems and ``Z`` the part's number in a system.
+        Each base's availability: the diagram's chance of working with
+        each of a part's places empty with chance ``EBO / (N Z)``,
+        independently, with ``EBO`` the base's expected backorders of
+        the part, ``N`` its systems and ``Z`` the part's number in a
+        system. Where every part is needed (a series system), the
+        product over parts of ``(1 - EBO / (N Z))^Z``.
     base_backorders : dict
         Each base's expected backorders of each part, ``{base: {part:
         backorders}}``.
@@ -4948,6 +4951,10 @@ class SparesAllocation(_ResultMapping):
     method : str
         ``"vari-metric"`` (a base's pipeline with its variance, a
         negative binomial) or ``"metric"`` (a Poisson pipeline).
+    objective : str
+        What the front it is a point of removes per unit of spend:
+        ``"backorders"`` or ``"availability"`` (the fleet availability
+        lost to holes).
     """
 
     spend: float
@@ -4960,6 +4967,7 @@ class SparesAllocation(_ResultMapping):
     depot_backorders: Dict[Hashable, float]
     depot_delay: Dict[Hashable, float]
     method: str
+    objective: str = "backorders"
 
 
 @dataclass
