@@ -1126,6 +1126,28 @@ release between minors that only adds (0.19.1).
   them: the guide's worn 2oo3 `pfh()` reads 7.9104e-06, where it read
   7.9105e-06); a unit with any other life is worked out as before.
   Seeded and simulated results do not change.
+- A component new at 0 (or up at any age) with an exponential life and an
+  exponential (or instant) repair, and nothing else (no maintenance or
+  tests, not down at 0 nor in its long-run state),
+  has its values over time in closed form in a `RepairableRBD`, a
+  `FaultTree` of repairable events and a repaired `Network`: its
+  availability `1 - lambda / s (1 - exp(-s t))`, `s` the sum of its two
+  rates, and its expected failures `lambda mu t / s + (lambda / s)^2 (1 -
+  exp(-s t))`. `point_unavailability` already took the closed form;
+  `point_availability`, `mission_availability`, `expected_failures`,
+  `expected_events` and the rest came from the unit's renewal grid,
+  whose step is sized by the typical life and the last time asked for,
+  and which does not resolve a repair hundreds of times shorter within
+  its first steps. For a failure rate of 0.002 and a repair rate of 0.5,
+  asked at `[0.5, 3, 40, 1000]`: `point_availability(0.5)` was 1.1e-5
+  off (0.99912634 for 0.99911485, and 6e-14 off asked alone),
+  `mission_availability` 8.6e-6 and `expected_failures` up to 9.3e-8
+  (3.6e-6 of a small count); all are now exact to rounding, the same
+  whichever times are asked together, and `point_availability` is one
+  less `point_unavailability`. Values over time of diagrams with such
+  components move by up to those sizes (typically in the 7th digit);
+  any other life, repair or state goes through the grid as before.
+  Seeded and simulated results do not change.
 
 ## [0.20] - 2026-11-22
 
