@@ -384,8 +384,14 @@ def lifetime_network(**options):
         {"terminals": [(0, 0), (2, 2), (0, 2)]},
         {"terminals": "all"},
         {"source": (0, 0), "target": (2, 2), "directed": True},
+        {
+            "source": (0, 0),
+            "terminals": [(2, 2), (0, 2)],
+            "directed": True,
+        },
+        {"source": (0, 0), "terminals": "all", "directed": True},
     ],
-    ids=["three", "all", "directed"],
+    ids=["three", "all", "directed", "directed three", "directed all"],
 )
 def test_the_simulation_agrees_with_the_exact_values(options):
     net = lifetime_network(**options)
@@ -462,14 +468,21 @@ def test_the_measures_follow_the_terminals(terminals):
         {"terminals": "all"},
         {"source": (0, 0), "target": (2, 2)},
         {"source": (0, 0), "target": (2, 2), "directed": True},
+        {
+            "source": (1, 1),
+            "terminals": [(2, 2), (1, 2)],
+            "directed": True,
+        },
+        {"source": (0, 0), "terminals": "all", "directed": True},
     ],
-    ids=["three", "all", "two", "directed"],
+    ids=["three", "all", "two", "directed", "directed three", "directed all"],
 )
 def test_a_network_is_saved_with_its_terminals(options):
     net = lifetime_network(**options)
     saved = json.loads(net.to_json())
     back = Network.from_dict(saved)
     assert back.terminals == net.terminals
+    assert (back.source, back.target) == (net.source, net.target)
     assert back.directed == net.directed
     assert back._all_terminals == net._all_terminals
     assert repr(back) == repr(net)
@@ -536,9 +549,8 @@ def test_what_more_than_two_terminals_refuse(monkeypatch):
     fresh = Network(links, terminals=[0, 1, 2])
     with pytest.raises(NotImplementedError, match="METHOD = 'bdd'"):
         fresh.sf()
-    monkeypatch.setattr(network_module, "METHOD", "bdd")
-    with pytest.raises(NotImplementedError, match="directed network takes"):
-        Network(links, terminals=[0, 1, 2], directed=True)
+    with pytest.raises(NotImplementedError, match="METHOD = 'bdd'"):
+        Network(links, terminals=[0, 1, 2], directed=True).sf()
 
 
 # ----------------------------------------------------------------------
@@ -670,24 +682,28 @@ def test_what_to_rbd_draws_and_refuses():
         apart.to_rbd()
 
 
-def test_a_directed_network_of_too_many_paths_says_what_to_do(monkeypatch):
+def test_a_directed_network_of_too_many_paths_is_worked_out(monkeypatch):
+    # Its values come from the decision diagram, which lists no path.
     monkeypatch.setattr(network_module, "MAX_PATHS", 3)
     links = {name: (u, v, 0.1) for name, (u, v) in grid(3, 3).items()}
     net = Network(links, (0, 0), (2, 2), directed=True)
-    with pytest.raises(NotImplementedError, match=r"to_rbd\(\)") as error:
-        net.sf()
-    report = net.analysis_routes()
-    assert report["sf"].route == "refused"
-    assert report["sf"].reason == str(error.value)
-    assert report["random"].route == "simulated"
-    assert net.to_rbd().sf() == pytest.approx(
-        float(
-            enumerated(
-                grid(3, 3),
-                [(0, 0), (2, 2)],
-                {name: Fraction(1, 10) for name in links},
-                directed=True,
-            )
-        ),
-        rel=1e-12,
+    exact = float(
+        enumerated(
+            grid(3, 3),
+            [(0, 0), (2, 2)],
+            {name: Fraction(1, 10) for name in links},
+            directed=True,
+        )
     )
+    assert net.sf() == pytest.approx(exact, rel=1e-14)
+    assert net.to_rbd().sf() == pytest.approx(exact, rel=1e-12)
+    with pytest.raises(NotImplementedError, match="too many to list") as error:
+        net.path_sets()
+    report = net.analysis_routes()
+    assert report["sf"].route == "exact"
+    assert report["path_sets"].route == "refused"
+    assert report["path_sets"].reason == str(error.value)
+    # The paths' method needs them.
+    monkeypatch.setattr(network_module, "METHOD", "paths")
+    with pytest.raises(NotImplementedError, match="METHOD = 'bdd'"):
+        Network(links, (0, 0), (2, 2), directed=True).sf()
