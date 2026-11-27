@@ -12,6 +12,23 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `FaultTree.from_open_psa(source, tree=None, mission_time=None, *,
+  top=None)` reads a fault tree from an Open-PSA Model Exchange Format
+  document (text, a path or a file), the inverse of `to_open_psa`: the
+  gates `or`, `and`, `atleast` and `not`, and `nand`, `nor` and `xor` (of
+  two inputs) through NOT gates, a nested formula as a gate of its own
+  (`"gate/1"`, ...); basic events as probabilities, `exponential` and
+  `Weibull` expressions of the mission time as surpyval lives, any other
+  expression (`parameter`, arithmetic) as its value at `mission_time`;
+  house events as probabilities 0 and 1; a `beta-factor` group as a
+  `BetaFactor` `CCFGroup`; a name the writer made an identifier from its
+  label. A document that declares a document type or an entity is
+  refused before it is parsed, and what is not read (`GLM` and
+  `periodic-test`, the MGL, alpha-factor and phi-factor models, `iff`,
+  `imply`, `cardinality`, uncertainty deviates and event trees) is
+  refused by name, saying what to do. Every tree the writer exports reads
+  back as itself.
+
 - Fault trees of repaired and tested basic events. An event may be a
   component spec (`"reliability"`, `"repairability"` and, for a hidden
   failure found by periodic tests, `"inspection"`), and a tree of them
@@ -402,6 +419,11 @@ release between minors that only adds (0.19.1).
   before.
 
 ### Changed
+
+- `FaultTree.to_open_psa` keeps the name of a common-cause group's member
+  that it makes an identifier, as an attribute of the group
+  (`label-<identifier>`), as the format gives a member no label of its
+  own; `from_open_psa` reads it back.
 
 - The refusals of a shelf of spares (`spares_stock(method="simulate")`,
   the `spares` lever, and now a component's `"spares"`) say what to do as

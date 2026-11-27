@@ -4415,6 +4415,86 @@ class FaultTree:
         return to_open_psa(self, t, name)
 
     @classmethod
+    def from_open_psa(
+        cls,
+        source,
+        tree: Optional[str] = None,
+        mission_time: Optional[float] = None,
+        *,
+        top: Optional[str] = None,
+    ) -> "FaultTree":
+        """Read a fault tree from an Open-PSA Model Exchange Format (MEF)
+        document: the inverse of ``to_open_psa``, and a way in for trees
+        that other PRA tools write.
+
+        Read are the gates ``or``, ``and``, ``atleast``, ``not``, and
+        ``nand``, ``nor`` and ``xor`` (of two inputs) through NOT gates; a
+        formula nested in a gate becomes a gate of its own, named after
+        it (``"gate/1"``, ...). Basic events read as probabilities, as
+        surpyval ``Exponential`` and ``Weibull`` lives where their
+        expression is an ``exponential`` or ``Weibull`` of the mission time
+        (so the tree keeps its time dependence), or as the value of any
+        other expression (``float``, ``parameter``, arithmetic) at
+        ``mission_time``. House events read as probabilities 0 and 1, and
+        a ``beta-factor`` common-cause group as a ``BetaFactor``
+        ``CCFGroup``. A name the writer made an identifier comes back from
+        its ``label``; names read as text.
+
+        Parameters
+        ----------
+        source : str, os.PathLike or file
+            The document: its text, a path to a file holding it, or a file
+            opened for reading.
+        tree : str, optional
+            The name of the ``define-fault-tree`` to read; by default the
+            document's only one.
+        mission_time : float, optional
+            The time at which to read an event's probability that is an
+            expression of the mission time other than an exponential or
+            Weibull life; by default None: such an event is refused.
+        top : str, optional
+            The top event, a gate (keyword only); by default the one gate
+            that is no gate's input. Only what is below it is read.
+
+        Returns
+        -------
+        FaultTree
+            The tree.
+
+        Raises
+        ------
+        ValueError
+            For a document that declares a document type or an entity
+            (refused before it is parsed, as the input is untrusted), that
+            is not well-formed MEF, that defines several fault trees and no
+            ``tree``, or whose gates form a loop or name an input it does
+            not define.
+        NotImplementedError
+            For what is not read, named with the reason: the ``GLM`` and
+            ``periodic-test`` expressions (repaired and tested events), the
+            MGL, alpha-factor and phi-factor common-cause models, the
+            ``iff``, ``imply`` and ``cardinality`` formulas, uncertainty
+            deviates, and event trees.
+
+        Examples
+        --------
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"no cooling": ("or", ["valve", "no flow"]),
+        ...      "no flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+        ... )
+        >>> again = FaultTree.from_open_psa(tree.to_open_psa())
+        >>> again.gates == tree.gates
+        True
+        >>> round(again.top_event_probability(), 4)
+        0.0595
+        """
+        from repyability._ft_open_psa import from_open_psa
+
+        return from_open_psa(cls, source, tree, mission_time, top)
+
+    @classmethod
     def from_json(cls, s) -> "FaultTree":
         """Rebuild a tree from ``to_json``'s output.
 

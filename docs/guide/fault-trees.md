@@ -13,7 +13,7 @@ this way. [`FaultTree`][repyability.FaultTree] evaluates static fault trees
 exactly, with the same engine as the diagrams, and converts them to and from
 `NonRepairableRBD`s. It also takes [NOT gates](#not-gates-non-coherent-trees)
 and the [dynamic gates](#dynamic-gates) (priority AND, spares, sequences and
-functional dependencies), and writes the
+functional dependencies), and writes and reads the
 [Open-PSA](#exporting-to-open-psa) exchange format.
 
 ## Building a tree
@@ -596,6 +596,37 @@ has no dynamic gates, so a tree with PAND, SPARE or SEQ gates is refused:
 print(cooling.to_open_psa().splitlines()[3])
 # <define-gate name="no_cooling"><label>no cooling</label><or><gate name="no_flow"/><basic-event name="valve"/></or></define-gate>
 ```
+
+## Reading Open-PSA
+
+`FaultTree.from_open_psa(source)` reads a tree back from an MEF document,
+its text, a path or a file: what `to_open_psa` writes, and the trees other
+PRA tools export. It reads the gates `or`, `and`, `atleast` and `not`, and
+`nand`, `nor` and `xor` (of two inputs) through NOT gates; a formula nested
+in a gate becomes a gate of its own, named after it (`"G1/1"`, ...). A
+basic event's `exponential` or `Weibull` of the mission time becomes the
+surpyval life, so the tree keeps its time dependence; any other expression
+(a `float`, a `parameter`, arithmetic) is its value, at `mission_time=` if
+it reads the mission time. House events are probabilities 0 and 1, and a
+`beta-factor` group is a `BetaFactor` `CCFGroup`. A name the writer had to
+make an identifier comes back from its label, so a tree written and read
+again is the tree it was:
+
+```python
+again = FaultTree.from_open_psa(cooling.to_open_psa())
+again.gates == cooling.gates                       # True
+FaultTree.from_open_psa("model.xml", tree="FT-1", mission_time=8760.0)
+```
+
+A document with several fault trees needs `tree=`, and one with several
+gates that are no gate's input `top=`. A document that declares a document
+type or an entity is refused before it is parsed (an entity can expand
+without bound or read a file). What the reader does not take is refused by
+its element name, saying what to do: `GLM` and `periodic-test` (repaired
+and tested events; give the events component specs instead), the MGL,
+alpha-factor and phi-factor common-cause models (build the group with
+`MGL` or `AlphaFactor`), the `iff`, `imply` and `cardinality` formulas,
+uncertainty deviates, and event trees.
 
 ## The model and its limits
 

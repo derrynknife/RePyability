@@ -1402,6 +1402,7 @@ def test_the_fault_tree_report_covers_every_public_analysis():
         "minimal_path_sets",
         "prime_implicants",
         "to_open_psa",
+        "from_open_psa",
         "levers",
         "with_levers",
     }
