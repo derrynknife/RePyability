@@ -87,17 +87,23 @@ def by_hand(rates, bases, part, depot_stock, method):
     """Each base's pipeline (mean, variance, probabilities) of a part
     with ``depot_stock`` at the depot, the depot's expected backorders
     and the delay of an order; ``rates`` the demand per system."""
-    r = part.get("base_repair_fraction", 1.0)
+
+    def of(key, j, default=0.0):
+        value = part.get(key, default)
+        return value[j] if isinstance(value, dict) else value
+
     demand = {j: n * rates for j, n in bases.items()}
-    depot = sum(demand.values()) * (1 - r)
+    depot = sum(
+        m * (1 - of("base_repair_fraction", j, 1.0)) for j, m in demand.items()
+    )
     owed, spread = moments(
         poisson(depot * part.get("depot_repair_time", 0.0)), depot_stock
     )
     out = {}
     for j, m in demand.items():
+        r = of("base_repair_fraction", j, 1.0)
         own = m * (
-            r * part.get("base_repair_time", 0.0)
-            + (1 - r) * part.get("ship_time", 0.0)
+            r * of("base_repair_time", j) + (1 - r) * of("ship_time", j)
         )
         share = m * (1 - r) / depot if depot else 0.0
         mean = own + share * owed
@@ -456,7 +462,7 @@ def test_a_count_off_the_hull_is_skipped(method):
         _echelons._parts(rbd, np.array([5.0, 1.0, 1.0]), {"p": part})[0],
         method,
     )
-    owed = [held.backorders for held in curve.counts]
+    owed = [held.loss for held in curve.counts]
     assert owed[3] - (owed[2] + owed[4]) / 2 > 0.01
     assert curve.hull[:4] == [0, 1, 2, 4]
     front = rbd.spares_front(bases, {"p": part}, budget=6.0, method=method)
@@ -583,7 +589,14 @@ def simulate(demand, part, depot_stock, base_stock, rng, fixed_depot):
     backorders of the depot and each base over the window, the mean wait
     of an order at the depot, and each base's backorders at the end."""
     end = WARM_UP + WINDOW
-    r = part["base_repair_fraction"]
+
+    def each(key):
+        value = part[key]
+        return np.array(
+            [value[j] if isinstance(value, dict) else value for j in BASES]
+        )
+
+    r = each("base_repair_fraction")
     times, where, local = [], [], []
     for j, rate in enumerate(demand):
         t = np.cumsum(rng.exponential(1 / rate, int(rate * end * 1.5) + 50))
@@ -591,7 +604,7 @@ def simulate(demand, part, depot_stock, base_stock, rng, fixed_depot):
         t = t[t < end]
         times.append(t)
         where.append(np.full(len(t), j))
-        local.append(rng.random(len(t)) < r)
+        local.append(rng.random(len(t)) < r[j])
     t = np.concatenate(times)
     order = np.argsort(t, kind="stable")
     t, base, at_base = (
@@ -626,9 +639,9 @@ def simulate(demand, part, depot_stock, base_stock, rng, fixed_depot):
     counted = (sent >= WARM_UP) & (shipped < np.inf)
     delay = float(np.mean((shipped - sent)[counted]))
     back = np.empty(len(t))
-    back[~at_base] = shipped + part["ship_time"]
+    back[~at_base] = shipped + each("ship_time")[base[~at_base]]
     back[at_base] = t[at_base] + rng.exponential(
-        part["base_repair_time"], int(at_base.sum())
+        each("base_repair_time")[base[at_base]]
     )
     bases, last = [], []
     for j, stock in enumerate(base_stock):
@@ -662,7 +675,7 @@ def errors(values):
 def modelled(part, depot_stock, base_stock, method):
     rbd = series({"n": E([1e-3])})
     one = _echelons._parts(
-        rbd, np.array(list(BASES.values()), float), {"p": part}
+        rbd, np.array(list(BASES.values()), float), {"p": part}, list(BASES)
     )[0]
     depot = _echelons._depot(one)
     each = _echelons._base_backorders(one, depot, depot_stock, method)
@@ -767,19 +780,6 @@ def test_several_of_a_part_in_a_system():
 
 
 # -- what is refused ---------------------------------------------------------
-
-
-def test_a_redundant_diagram_is_refused_naming_what_to_use():
-    life = {"reliability": E([1e-3]), "repairability": "instant"}
-    rbd = RepairableRBD(
-        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
-        {"a": life, "b": life},
-    )
-    part = {"price": 1.0, "base_repair_time": 5.0}
-    with pytest.raises(NotImplementedError, match="spares_stock") as error:
-        rbd.spares_front({"x": 2}, {"a": part}, budget=3.0)
-    assert rbd.analysis_routes()["spares_front"].reason == str(error.value)
-    assert rbd.analysis_routes()["spares_allocation"].route == "refused"
 
 
 def test_a_series_diagram_is_numerical():
@@ -898,16 +898,40 @@ def test_a_part_whose_replacements_are_not_counted_takes_a_demand_rate():
         ),
         (
             BASES,
+            {"pump": {"price": 1.0, "base_repair_time": {"north": 1.0}}},
+            {"budget": 1.0},
+            "by base must name every base once",
+        ),
+        (
+            BASES,
             {
                 "pump": {
                     "price": 1.0,
-                    "base_repair_time": 1.0,
-                    "nodes": ["pump"],
-                    "demand_rate": 0.1,
+                    "base_repair_time": {"north": 1.0, "south": -2.0},
                 }
             },
             {"budget": 1.0},
-            "both a demand_rate and nodes",
+            "base_repair_time at base 'south' must be a number",
+        ),
+        (
+            BASES,
+            {
+                "pump": {
+                    "price": 1.0,
+                    "base_repair_fraction": 0.5,
+                    "base_repair_time": 1.0,
+                    "ship_time": 1.0,
+                    "depot_repair_time": {"north": 1.0, "south": 2.0},
+                }
+            },
+            {"budget": 1.0},
+            "depot_repair_time is the depot's, one number",
+        ),
+        (
+            BASES,
+            PARTS,
+            {"budget": 1.0, "objective": "downtime"},
+            "objective must be",
         ),
         (
             BASES,
@@ -945,3 +969,621 @@ def test_a_part_never_needed_takes_no_stock():
     assert all(p.depot_stock["spare wheel"] == 0 for p in front)
     assert all(p.base_stock["north"]["spare wheel"] == 0 for p in front)
     assert front[-1].spend == 48000.0
+
+
+# -- a redundant diagram (UC-75) ---------------------------------------------
+
+
+def swapped(mttf):
+    return {"reliability": E([1 / mttf]), "repairability": "instant"}
+
+
+def paired():
+    """UC-75's systems: two pumps, either enough, then a valve and two
+    controllers, each needed."""
+    return RepairableRBD(
+        [
+            ("s", "p1"),
+            ("s", "p2"),
+            ("p1", "valve"),
+            ("p2", "valve"),
+            ("valve", "c1"),
+            ("c1", "c2"),
+            ("c2", "t"),
+        ],
+        {
+            "p1": swapped(2000.0),
+            "p2": swapped(2000.0),
+            "valve": swapped(5000.0),
+            "c1": swapped(8000.0),
+            "c2": swapped(8000.0),
+        },
+    )
+
+
+PAIRED = {**PARTS, "pump": {**PARTS["pump"], "nodes": ["p1", "p2"]}}
+PAIRED_RATES = {**RATES, "pump": 2 / 2000.0}
+
+
+def paired_by_hand(point, method="vari-metric"):
+    """The backorders and each base's availability of a point's stock:
+    the pair down with both pumps' places empty."""
+    up, total = {}, 0.0
+    for j, n in BASES.items():
+        hole = {}
+        for name, part in PAIRED.items():
+            out, _, _ = by_hand(
+                PAIRED_RATES[name],
+                BASES,
+                part,
+                point.depot_stock[name],
+                method,
+            )
+            short = moments(out[j][2], point.base_stock[j][name])[0]
+            total += short
+            hole[name] = short / (n * (1 if name == "valve" else 2))
+        up[j] = (
+            (1 - hole["pump"] ** 2)
+            * (1 - hole["valve"])
+            * (1 - hole["controller"]) ** 2
+        )
+    return total, up
+
+
+def test_a_redundant_diagram_by_hand():
+    rbd = paired()
+    nothing = rbd.spares_front(BASES, PAIRED, budget=1.0)[0]
+    # A pump's place is empty with chance 5.8176 / 24 at both bases.
+    assert nothing.base_backorders["north"]["pump"] == pytest.approx(5.8176)
+    assert nothing.availability == pytest.approx(
+        (1 - 0.2424**2) * (1 - 0.0496) * (1 - 0.1156500) ** 2, rel=1e-12
+    )
+    assert nothing.availability == pytest.approx(0.69961, abs=5e-6)
+    held = rbd.spares_allocation(BASES, PAIRED, target_availability=0.95)
+    assert held.objective == "availability"
+    assert held.spend == 210000.0
+    assert held.depot_stock == {"pump": 4, "valve": 2, "controller": 4}
+    assert held.base_stock == {
+        "north": {"pump": 0, "valve": 1, "controller": 1},
+        "south": {"pump": 0, "valve": 1, "controller": 1},
+    }
+    assert held.availability == pytest.approx(0.95444, abs=5e-6)
+    assert held.backorders == pytest.approx(6.25410, abs=5e-6)
+    # By backorders the pumps are bought as if each were needed.
+    owed = rbd.spares_allocation(
+        BASES, PAIRED, target_availability=0.95, objective="backorders"
+    )
+    assert owed.objective == "backorders"
+    assert owed.spend == 278000.0
+    assert (
+        owed.depot_stock["pump"]
+        + sum(owed.base_stock[j]["pump"] for j in BASES)
+        == 12
+    )
+    assert owed.availability == pytest.approx(0.95577, abs=5e-6)
+
+
+@pytest.mark.parametrize("objective", ["availability", "backorders"])
+@pytest.mark.parametrize("method", _echelons.METHODS)
+def test_every_point_of_a_redundant_front_is_its_stock_by_hand(
+    objective, method
+):
+    front = paired().spares_front(
+        BASES,
+        PAIRED,
+        target_availability=0.99,
+        objective=objective,
+        method=method,
+    )
+    assert len(front) > 15
+    for point in front:
+        total, up = paired_by_hand(point, method)
+        assert point.backorders == pytest.approx(total, rel=1e-9)
+        for j in BASES:
+            assert point.base_availability[j] == pytest.approx(up[j], rel=1e-9)
+    spend = [p.spend for p in front]
+    assert all(b > a for a, b in zip(spend, spend[1:]))
+    available = [p.availability for p in front]
+    assert all(b > a for a, b in zip(available, available[1:]))
+
+
+def test_the_objective_follows_the_diagram():
+    # Every part needed: by backorders, as it was; else by availability.
+    series_front = fleet().spares_front(BASES, PARTS, budget=100000.0)
+    assert {p.objective for p in series_front} == {"backorders"}
+    named = fleet().spares_front(
+        BASES, PARTS, budget=100000.0, objective="backorders"
+    )
+    assert [p.to_dict() for p in named] == [p.to_dict() for p in series_front]
+    redundant = paired().spares_front(BASES, PAIRED, budget=100000.0)
+    assert {p.objective for p in redundant} == {"availability"}
+
+
+def test_a_diagram_that_is_not_series_parallel_against_every_state():
+    # Paths a-c, a-d and b-d: each state of the five places weighed by
+    # its chance.
+    rbd = RepairableRBD(
+        [
+            ("s", "a"),
+            ("s", "b"),
+            ("a", "c"),
+            ("a", "d"),
+            ("b", "d"),
+            ("c", "t"),
+            ("d", "t"),
+        ],
+        {n: swapped(500.0 * (i + 1)) for i, n in enumerate("abcd")},
+    )
+    parts = {
+        n: {
+            "price": 1.0 + i,
+            "base_repair_fraction": 0.5,
+            "base_repair_time": 30.0,
+            "depot_repair_time": 200.0,
+            "ship_time": 20.0,
+        }
+        for i, n in enumerate("abcd")
+    }
+    bases = {"x": 4, "y": 3}
+    front = rbd.spares_front(bases, parts, budget=12.0)
+    assert len(front) > 4
+    for point in front:
+        for j, n in bases.items():
+            up = {
+                name: 1 - point.base_backorders[j][name] / n for name in "abcd"
+            }
+            total = 0.0
+            for state in itertools.product([True, False], repeat=4):
+                a, b, c, d = state
+                if (a and c) or (a and d) or (b and d):
+                    total += math.prod(
+                        up[name] if works else 1 - up[name]
+                        for name, works in zip("abcd", state)
+                    )
+            assert point.base_availability[j] == pytest.approx(
+                total, rel=1e-12
+            )
+
+
+def test_a_series_diagram_s_structure_is_the_product():
+    # The diagram worked out as one that is not series gives the product.
+    rbd = fleet()
+    parts = _echelons._parts(rbd, np.array([12.0, 8.0]), PARTS, list(BASES))
+    working = [0.9, np.array([0.5, 0.8, 1.0]), 0.7]
+    assert _echelons._up(rbd, parts, working) == pytest.approx(
+        _echelons._up(None, parts, working), rel=1e-14
+    )
+
+
+def test_a_demand_rate_with_nodes_places_the_part():
+    # The pumps' demand given, on the pair: as counted from the diagram.
+    rbd = paired()
+    given = {
+        **PAIRED,
+        "pump": {**PAIRED["pump"], "demand_rate": 2 / 2000.0},
+    }
+    a = rbd.spares_front(BASES, PAIRED, budget=60000.0)
+    b = rbd.spares_front(BASES, given, budget=60000.0)
+    assert len(a) == len(b) > 5
+    for x, y in zip(a, b):
+        assert x.depot_stock == y.depot_stock
+        assert x.base_stock == y.base_stock
+        assert y.availability == pytest.approx(x.availability, rel=1e-12)
+    # A part the diagram does not draw is needed by every system.
+    front = rbd.spares_front(
+        BASES,
+        {
+            **PAIRED,
+            "seal": {
+                "price": 500.0,
+                "demand_rate": 1 / 4000.0,
+                "base_repair_time": 100.0,
+            },
+        },
+        budget=1.0,
+    )
+    seal = front[0].base_backorders["north"]["seal"]
+    assert seal == pytest.approx(12 / 4000.0 * 100.0)
+    assert front[0].base_availability["north"] == pytest.approx(
+        a[0].base_availability["north"] * (1 - seal / 12), rel=1e-12
+    )
+
+
+PAIR = {
+    "a": {**SMALL["a"], "nodes": ["a1", "a2"]},
+    "b": dict(SMALL["b"]),
+}
+
+
+def pair():
+    life = {"reliability": E([1e-3]), "repairability": "instant"}
+    return RepairableRBD(
+        [("s", "a1"), ("s", "a2"), ("a1", "b"), ("a2", "b"), ("b", "t")],
+        {"a1": life, "a2": life, "b": life},
+    )
+
+
+def every_availability(parts, bases, budget, method, up):
+    """(spend, fleet availability, stocks) of every stock vector within
+    the budget, from the model written out term by term; ``up`` a
+    system's chance of working from each part's chance of a place
+    holding one."""
+    per_part = []
+    for name, part in parts.items():
+        most = int(budget // part["price"])
+        places = len(part.get("nodes", [name]))
+        rows = []
+        for depot in range(most + 1):
+            out, _, _ = by_hand(
+                part["demand_rate"], bases, part, depot, method
+            )
+            owed = {
+                j: [moments(out[j][2], s)[0] for s in range(most + 1)]
+                for j in bases
+            }
+            for held in itertools.product(
+                range(most + 1 - depot), repeat=len(bases)
+            ):
+                if depot + sum(held) <= most:
+                    rows.append(
+                        (
+                            (depot + sum(held)) * part["price"],
+                            [
+                                max(1 - owed[j][s] / (bases[j] * places), 0.0)
+                                for j, s in zip(bases, held)
+                            ],
+                            (depot,) + held,
+                        )
+                    )
+        per_part.append(rows)
+    out = []
+    systems = sum(bases.values())
+    for rows in itertools.product(*per_part):
+        spend = sum(row[0] for row in rows)
+        if spend <= budget:
+            available = sum(
+                n * up(*[row[1][i] for row in rows])
+                for i, n in enumerate(bases.values())
+            )
+            out.append((spend, available / systems, [row[2] for row in rows]))
+    return out
+
+
+@pytest.mark.parametrize(
+    "rbd, parts, bases, budget, up",
+    [
+        # One part: its hull of availability, the split by its losses.
+        (pair, {"a": PAIR["a"]}, TWO, 12.0, lambda a: 1 - (1 - a) ** 2),
+        (lambda: series({"a": E([1e-3])}), {"a": SMALL["a"]}, TWO, 15.0, None),
+        (
+            lambda: series({"a": E([1e-3])}),
+            {"a": SMALL["a"]},
+            {"x": 5, "y": 1, "z": 1},
+            12.0,
+            None,
+        ),
+    ],
+)
+def test_one_part_s_availability_front_against_every_stock(
+    rbd, parts, bases, budget, up
+):
+    parts = {
+        name: {
+            **part,
+            "demand_rate": part["demand_rate"] * len(part.get("nodes", [0])),
+        }
+        for name, part in parts.items()
+    }
+    front = rbd().spares_front(
+        bases, parts, budget=budget, objective="availability"
+    )
+    everything = every_availability(
+        parts, bases, budget, "vari-metric", up or (lambda a: a)
+    )
+    assert len(front) >= 2
+    for point in front:
+        best = max(
+            row[1] for row in everything if row[0] <= point.spend + 1e-9
+        )
+        assert point.availability == pytest.approx(best, abs=1e-12)
+
+
+@pytest.mark.parametrize("method", _echelons.METHODS)
+def test_two_parts_availability_front_against_every_stock(method):
+    # Every point's values are its stock's. With several parts the
+    # steps are the best per unit of spend from the stock reached, which
+    # is not a proof that nothing at a point's spend does better; here
+    # nothing does.
+    parts = PAIR
+    front = pair().spares_front(
+        TWO, parts, budget=17.0, method=method, objective="availability"
+    )
+    everything = every_availability(
+        parts, TWO, 17.0, method, lambda a, b: (1 - (1 - a) ** 2) * b
+    )
+    assert len(everything) > 1000
+    assert len(front) >= 6
+    for point in front:
+        mine = [
+            (point.depot_stock[n],)
+            + tuple(point.base_stock[j][n] for j in TWO)
+            for n in parts
+        ]
+        same = [row for row in everything if row[2] == mine]
+        assert len(same) == 1
+        assert point.availability == pytest.approx(same[0][1], abs=1e-12)
+        best = max(
+            row[1] for row in everything if row[0] <= point.spend + 1e-9
+        )
+        assert point.availability == pytest.approx(best, abs=1e-12)
+
+
+def test_a_base_never_up_is_refused_by_availability():
+    # Each part owed in every place of the base with nothing held: no
+    # one part's spares raise an availability of 0.
+    slow = {"price": 1.0, "demand_rate": 0.01, "base_repair_time": 150.0}
+    rbd = series({"a": E([1e-3]), "b": E([1e-3])})
+    with pytest.raises(ValueError, match="objective='backorders'"):
+        rbd.spares_front(
+            {"x": 2},
+            {"a": slow, "b": slow},
+            budget=9.0,
+            objective="availability",
+        )
+    front = rbd.spares_front({"x": 2}, {"a": slow, "b": slow}, budget=9.0)
+    assert front[0].availability == 0.0
+    assert front[-1].availability > 0.5
+
+
+def both_missing(mean, stock, places):
+    """The chance that both places of a pair are empty, the backorders
+    ``(X - stock)+`` of a Poisson pipeline being holes in places drawn
+    evenly from all of them; and the same with each place empty on its
+    own with the backorders' mean chance (the model's)."""
+    pmf = poisson(mean)
+    exact = sum(
+        p * min(k - stock, places) * (min(k - stock, places) - 1)
+        for k, p in enumerate(pmf)
+        if k > stock
+    ) / (places * (places - 1))
+    owed = moments(pmf, stock)[0]
+    return exact, (owed / places) ** 2
+
+
+def test_a_pair_s_holes_are_taken_as_independent():
+    # In the setting where the pipelines are exact (nothing at the
+    # depot, whose repairs take a fixed time). At the end of each run a
+    # base's backorders are holes in places drawn evenly: a system of
+    # two pumps is down with both of its places empty. The model takes
+    # each place as empty on its own, which differs from that by
+    # E[B (B - 1)] / (P (P - 1)) - (E[B] / P)^2, P the base's places.
+    part = {**SIM_PUMP, "demand_rate": 2 * RATES["pump"]}
+    stock = (2, 1)
+    last = runs(part, 0, stock, True)[3]
+    rng = np.random.default_rng(SEED + 2)
+    down = np.empty(last.shape)
+    for j, systems in enumerate(BASES.values()):
+        for i, owed in enumerate(last[:, j]):
+            holes = rng.choice(
+                2 * systems, size=min(int(owed), 2 * systems), replace=False
+            )
+            down[i, j] = np.sum(np.bincount(holes // 2, minlength=1) == 2)
+        down[:, j] /= systems
+    mean, error = errors(down)
+    life = swapped(2000.0)
+    rbd = RepairableRBD(
+        [("s", "p1"), ("s", "p2"), ("p1", "t"), ("p2", "t")],
+        {"p1": life, "p2": life},
+    )
+    point = _echelons._allocation(
+        list(BASES),
+        np.array(list(BASES.values()), float),
+        [_held(rbd, "pump", {**part, "nodes": ["p1", "p2"]}, 0, stock)],
+        "vari-metric",
+        rbd,
+    )
+    gaps = []
+    for j, (base, systems) in enumerate(BASES.items()):
+        pipeline = (
+            systems * part["demand_rate"] * (0.3 * 48.0 + 0.7 * (72.0 + 600.0))
+        )
+        exact, model = both_missing(pipeline, stock[j], 2 * systems)
+        assert abs(mean[j] - exact) < 4 * error[j], (mean[j], exact, error[j])
+        assert 1 - point.base_availability[base] == pytest.approx(
+            model, rel=1e-9
+        )
+        gaps.append((model - exact, error[j], exact))
+    # The model understates the pairs down, by under a quarter of them.
+    for gap, _, exact in gaps:
+        assert -0.25 * exact < gap < 0.0
+
+
+def test_a_redundant_diagram_s_routes():
+    routes = paired().analysis_routes()
+    assert routes["spares_front"].route == "numerical"
+    assert routes["spares_allocation"].route == "numerical"
+    unit = swapped(1000.0)
+    inner = RepairableRBD([("s", "x"), ("x", "t")], {"x": unit})
+    nested = RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {"a": unit, "b": inner},
+    )
+    part = {"price": 1.0, "base_repair_time": 5.0}
+    with pytest.raises(NotImplementedError, match="sub-system") as error:
+        nested.spares_front({"x": 2}, {"a": part}, budget=3.0)
+    assert nested.analysis_routes()["spares_front"].reason == str(error.value)
+
+
+# -- times of a base's own (UC-76) -------------------------------------------
+
+OWN = {
+    **PARTS,
+    "pump": {
+        **PARTS["pump"],
+        "base_repair_fraction": {"north": 0.3, "south": 0.1},
+        "base_repair_time": {"north": 48.0, "south": 96.0},
+        "ship_time": {"north": 72.0, "south": 240.0},
+    },
+    "valve": {**PARTS["valve"], "ship_time": {"north": 72.0, "south": 240.0}},
+    "controller": {
+        **PARTS["controller"],
+        "ship_time": {"north": 120.0, "south": 360.0},
+    },
+}
+
+
+def test_a_base_s_own_times_by_hand():
+    rbd = fleet()
+    pump = _echelons._parts(
+        rbd, np.array([12.0, 8.0]), {"pump": OWN["pump"]}, list(BASES)
+    )[0]
+    depot = _echelons._depot(pump)
+    # The depot takes 70% of the north's failures and 90% of the south's.
+    assert depot.demand == pytest.approx(12 / 2000 * 0.7 + 8 / 2000 * 0.9)
+    assert depot.demand * 600.0 == pytest.approx(4.68)
+    assert depot.mean[1] == pytest.approx(3.689279, abs=5e-7)
+    assert depot.variance[1] == pytest.approx(4.602341, abs=5e-7)
+    for base, nothing, mean, variance in (
+        (0, 2.9088, 2.375335, 2.640069),
+        (1, 3.0624, 2.605144, 2.799643),
+    ):
+        assert _echelons._base_pipeline(pump, depot, base, 0, "vari-metric")[
+            0
+        ] == pytest.approx(nothing)
+        found = _echelons._base_pipeline(pump, depot, base, 1, "vari-metric")
+        assert found == pytest.approx((mean, variance), abs=5e-7)
+    held = rbd.spares_allocation(BASES, OWN, target_availability=0.95)
+    assert held.spend == 295000.0
+    assert held.depot_stock == {"pump": 4, "valve": 2, "controller": 3}
+    assert held.base_stock == {
+        "north": {"pump": 2, "valve": 1, "controller": 2},
+        "south": {"pump": 3, "valve": 1, "controller": 2},
+    }
+    assert held.availability == pytest.approx(0.96183, abs=5e-6)
+    nothing = rbd.spares_front(BASES, OWN, budget=1.0)[0]
+    assert nothing.base_availability["south"] == pytest.approx(
+        0.42355, abs=5e-6
+    )
+
+
+@pytest.mark.parametrize("method", _echelons.METHODS)
+def test_one_number_or_the_same_for_every_base(method):
+    by_base = {
+        name: {
+            key: (
+                {base: value for base in BASES}
+                if key in _echelons._BY_BASE
+                else value
+            )
+            for key, value in spec.items()
+        }
+        for name, spec in PARTS.items()
+    }
+    a = fleet().spares_front(BASES, PARTS, budget=300000.0, method=method)
+    b = fleet().spares_front(BASES, by_base, budget=300000.0, method=method)
+    assert [p.to_dict() for p in a] == [p.to_dict() for p in b]
+
+
+def own_small():
+    return {
+        "a": {
+            **SMALL["a"],
+            "base_repair_fraction": {"x": 0.2, "y": 0.7},
+            "base_repair_time": {"x": 4.0, "y": 9.0},
+            "ship_time": {"x": 6.0, "y": 25.0},
+        },
+        "b": {**SMALL["b"], "ship_time": {"x": 1.0, "y": 12.0}},
+    }
+
+
+@pytest.mark.parametrize("method", _echelons.METHODS)
+def test_the_front_with_a_base_s_own_times_against_every_stock(method):
+    rbd = series({"n": E([1e-3])})
+    parts = own_small()
+    front = rbd.spares_front(TWO, parts, budget=17.0, method=method)
+    everything = every_stock(parts, TWO, 17.0, method)
+    assert len(front) >= 6
+    for point in front:
+        mine = [
+            (point.depot_stock[n],)
+            + tuple(point.base_stock[j][n] for j in TWO)
+            for n in parts
+        ]
+        same = [row for row in everything if row[2] == mine]
+        assert len(same) == 1
+        assert point.backorders == pytest.approx(same[0][1], rel=1e-9)
+        least = min(
+            row[1] for row in everything if row[0] <= point.spend + 1e-9
+        )
+        assert point.backorders <= least * (1 + 1e-9)
+
+
+SIM_OWN = {**OWN["pump"], "demand_rate": RATES["pump"]}
+
+
+def test_a_base_s_own_times_are_exact_where_resupply_is_independent():
+    stock = (2, 2)
+    depot, delay, bases, _ = runs(SIM_OWN, 0, stock, True)
+    for method in _echelons.METHODS:
+        owed, wait, each = modelled(SIM_OWN, 0, stock, method)
+        mean, error = errors(depot)
+        assert abs(mean - owed) < 4 * error
+        assert delay == pytest.approx(wait, rel=1e-12)  # fixed
+        mean, error = errors(bases)
+        assert np.all(np.abs(mean - each) < 4 * error), (mean, each, error)
+
+
+def test_a_base_s_own_times_with_stock_at_the_depot():
+    depot_stock, stock = 3, (2, 2)
+    depot, delay, bases, _ = runs(SIM_OWN, depot_stock, stock, False)
+    owed, wait, vari = modelled(SIM_OWN, depot_stock, stock, "vari-metric")
+    _, _, metric = modelled(SIM_OWN, depot_stock, stock, "metric")
+    mean, error = errors(depot)
+    assert abs(mean - owed) < 4 * error
+    mean, error = errors(delay)
+    assert abs(mean - wait) < 4 * error
+    mean, error = errors(bases)
+    for j in range(2):
+        assert abs(mean[j] - vari[j]) < abs(mean[j] - metric[j])
+        assert mean[j] - metric[j] > 4 * error[j]
+
+
+@pytest.mark.parametrize("unit", [1e-6, 24.0, 1e6])
+def test_a_redundant_front_with_own_times_scales_with_the_unit(unit):
+    def diagram(scale):
+        return RepairableRBD(
+            [("s", "p1"), ("s", "p2"), ("p1", "valve"), ("p2", "valve")]
+            + [("valve", "t")],
+            {
+                "p1": swapped(2000.0 * scale),
+                "p2": swapped(2000.0 * scale),
+                "valve": swapped(5000.0 * scale),
+            },
+        )
+
+    def scaled(value, scale):
+        if isinstance(value, dict):
+            return {base: time * scale for base, time in value.items()}
+        return value * scale
+
+    def parts(scale):
+        return {
+            name: {
+                key: scaled(value, scale) if key.endswith("_time") else value
+                for key, value in OWN[name].items()
+            }
+            | ({"nodes": ["p1", "p2"]} if name == "pump" else {})
+            for name in ("pump", "valve")
+        }
+
+    base = diagram(1.0).spares_front(BASES, parts(1.0), budget=80000.0)
+    other = diagram(unit).spares_front(BASES, parts(unit), budget=80000.0)
+    assert len(base) == len(other) > 5
+    for a, b in zip(base, other):
+        assert a.objective == b.objective == "availability"
+        assert a.depot_stock == b.depot_stock
+        assert a.base_stock == b.base_stock
+        assert b.availability == pytest.approx(a.availability, rel=1e-9)
+        assert b.depot_delay["pump"] == pytest.approx(
+            a.depot_delay["pump"] * unit, rel=1e-9
+        )

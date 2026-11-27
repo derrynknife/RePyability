@@ -339,9 +339,8 @@ front[-1].availability               # -> 0.7217
 - **Availability.** A base's is the product over parts of `(1 − EBO /
   (N Z))^Z`: `EBO` its expected backorders of the part, `N` its systems
   and `Z` the part's number in each. The fleet's is the bases' weighed by
-  their systems. Every part is needed: a diagram that is not a series
-  system is refused (`spares_stock` and `least_spend_for_downtime` weigh
-  one site's shelves).
+  their systems. That is every part needed, a series system; on any
+  other diagram, see [redundant parts](#redundant-parts) below.
 - **The front.** For each part, the best split of each count between the
   depot and the bases is found, and the counts on the lower convex hull
   of backorders against count are kept; the parts' steps are then taken
@@ -355,9 +354,87 @@ front[-1].availability               # -> 0.7217
   agree where backorders are few, which is where a target puts the stock.
   With one base that repairs everything itself, the base's pipeline is
   `spares_stock`'s `on_order` for a constant failure rate.
-- **Not yet:** parts within parts (MOD-METRIC), redundancy,
-  cannibalisation, lateral supply between bases, and repair or ship times
-  that differ by base.
+- **Not yet:** parts within parts (MOD-METRIC), cannibalisation, and
+  lateral supply between bases.
+
+### A base's own times
+
+Bases differ: a remote one repairs fewer parts itself and waits longer
+for the depot. A part's `"base_repair_fraction"`, `"base_repair_time"`
+and `"ship_time"` each take one number, or `{base: value}` naming every
+base (the depot's repair time is the depot's, one number). The fleet
+above, with the south base repairing 10% of its pumps in 96 hours and
+waiting 240 hours for an order (360 for a controller):
+
+```python
+own = {
+    "pump": {**parts["pump"],
+             "base_repair_fraction": {"north": 0.3, "south": 0.1},
+             "base_repair_time": {"north": 48.0, "south": 96.0},
+             "ship_time": {"north": 72.0, "south": 240.0}},
+    "valve": {**parts["valve"],
+              "ship_time": {"north": 72.0, "south": 240.0}},
+    "controller": {**parts["controller"],
+                   "ship_time": {"north": 120.0, "south": 360.0}},
+}
+remote = system.spares_allocation(bases, own, target_availability=0.95)
+remote.spend                         # -> 295000.0
+remote.availability                  # -> 0.9618
+remote.depot_stock                   # {'pump': 4, 'valve': 2, 'controller': 3}
+remote.base_stock["south"]           # {'pump': 3, 'valve': 1, 'controller': 2}
+```
+
+The stock moves from the depot to the bases, and to the south: the
+stock found for bases alike would give this fleet 0.9196.
+
+### Redundant parts
+
+On a diagram that is not a series system a missing part need not ground
+a system. A base's availability is then the diagram's own, with each of
+a part's places empty with chance `EBO / (N Z)`, independently: for two
+pumps, either enough, `1 − q²`. And the stock is chosen by what it buys:
+`objective="availability"` takes, at each step, the spares that add the
+most fleet availability per dollar from the stock reached, where
+`"backorders"` counts a backorder of a pump a system does without as one
+that grounds it. The default, `"auto"`, is `"availability"` for a diagram
+that is not a series system and `"backorders"` for one that is.
+
+The same fleet with two pumps in each system:
+
+```python
+paired = RepairableRBD(
+    [("s", "p1"), ("s", "p2"), ("p1", "valve"), ("p2", "valve"),
+     ("valve", "c1"), ("c1", "c2"), ("c2", "t")],
+    {"p1": swap(2000.0), "p2": swap(2000.0), "valve": swap(5000.0),
+     "c1": swap(8000.0), "c2": swap(8000.0)})
+pairs = {**parts, "pump": {**parts["pump"], "nodes": ["p1", "p2"]}}
+held = paired.spares_allocation(bases, pairs, target_availability=0.95)
+held.objective                       # 'availability'
+held.spend                           # -> 210000.0
+held.availability                    # -> 0.9544
+held.depot_stock                     # {'pump': 4, 'valve': 2, 'controller': 4}
+held.base_stock["north"]             # {'pump': 0, 'valve': 1, 'controller': 1}
+owed = paired.spares_allocation(
+    bases, pairs, target_availability=0.95, objective="backorders")
+owed.spend                           # -> 278000.0
+```
+
+- **What is approximate.** The holes are taken as independent. For a
+  pair that understates the chance of both being missing, by about a
+  seventh of it in the cases checked (backorders vary more than their
+  mean says), so the availability of a redundant part's stage is a
+  little optimistic.
+- **The front by availability** has the front by backorders' guarantee
+  for one part (no stock at a point's spend or less is more available).
+  With several parts each step is the best per dollar from the stock
+  reached, which is not a proof for the whole stock; and the split of
+  every part between the depot and the bases is chosen again at each
+  point.
+- A part given by its `"demand_rate"` that is no component of the
+  diagram is needed by every system. A part's `"nodes"` say where it
+  sits; with a `"demand_rate"` too, that replaces the nodes' own rates.
+- A diagram with a sub-system is refused: draw its components in the
+  diagram itself.
 
 ## Block replacement and proof tests
 

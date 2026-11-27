@@ -623,8 +623,8 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                 ),
             )
         )
-    # The stock over echelons: every part needed, its demand each
-    # component's long-run replacements.
+    # The stock over echelons: each part's demand its components'
+    # long-run replacements, a base's availability the diagram's.
     refusal = r.refusal(partial(_echelons.require, rbd))
     give(
         ("spares_front", "spares_allocation"),
@@ -638,7 +638,15 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                 "base's a negative binomial of its mean and variance "
                 '(VARI-METRIC; method="metric" a Poisson), and the stocks '
                 "by marginal analysis on each part's convex hull of "
-                "backorders against the count held.",
+                "backorders against the count held"
+                + (
+                    "."
+                    if _echelons._every_part_needed(rbd)
+                    else " or, by default here, of the availability its "
+                    "holes cost, a base's availability the diagram's at "
+                    "each part's chance of a hole, the holes taken as "
+                    "independent."
+                ),
             )
         ),
     )
