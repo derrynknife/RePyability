@@ -55,7 +55,12 @@ from typing import (
 import numpy as np
 
 from repyability._version import __version__
-from repyability.rbd import _measures, _mission_chain, _mission_runs
+from repyability.rbd import (
+    _measures,
+    _mission_ccf,
+    _mission_chain,
+    _mission_runs,
+)
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import bdd, modular, routes
 from repyability.rbd._differential import check as check_differential
@@ -68,6 +73,7 @@ from repyability.rbd._mission_results import (
     wilson_band,
 )
 from repyability.rbd._mission_settings import (
+    BlockSetting,
     Life,
     MissionPhase,
     behaviour,
@@ -77,6 +83,7 @@ from repyability.rbd._mission_settings import (
 )
 from repyability.rbd._ordered_bdd import FALSE, TRUE, OrderedBDD
 from repyability.rbd._units import diagram_unit
+from repyability.rbd.ccf import as_groups
 from repyability.rbd.rbd import Pairs
 from repyability.rbd.results import ConfidenceInterval, ImportanceTable
 from repyability.rbd.shannon import (
@@ -114,6 +121,9 @@ MAX_STATES = 200_000
 
 if TYPE_CHECKING:
     from repyability.rbd.results import Lever
+
+# The settings a member of a common-cause group may have in a phase.
+_PLAIN = (BlockSetting(), BlockSetting(state="not_needed"))
 
 # Value slots 0 and 1 of a plan hold the mission failing and succeeding.
 _FAIL, _SUCCEED = 0, 1
@@ -324,7 +334,9 @@ class PhasedMission:
     share of the state vectors in which it is critical" has no single
     meaning for a mission. Nor is there a ``mean``, as a mission that
     succeeds has no time to failure: ``expected_mission_time`` is the
-    mean time it runs, to its failure or its end. ``levers()`` lists the
+    mean time it runs, to its failure or its end. ``ccf_groups`` gives the
+    mission common-cause groups, each shared cause a component of its own
+    that fails its members from the phase it strikes in. ``levers()`` lists the
     components' parameters and the phases' durations, which
     ``parameter_sensitivity`` differences and ``with_levers`` moves, and
     ``to_dict`` and ``to_json`` save the mission (``from_dict`` and
@@ -337,6 +349,18 @@ class PhasedMission:
         name, a duration (finite, and not negative: a phase of no duration
         needs its diagram working at that instant), and the phase's
         diagram, whose node names are the mission's components.
+    ccf_groups : CCFGroup or list of CCFGroup, optional
+        Common-cause groups over the mission's components: a shared cause
+        that strikes in one phase fails its members from then on. A
+        group's model has a life for each cause: one that splits the
+        failure rate (``BetaFactor(beta, basis="rate")``, an ``MGL`` or
+        ``AlphaFactor`` so), whose members carry one surpyval parametric
+        model, or ``Shocks`` at a rate of their own, for members of any
+        models. Each shared cause is then a component of the mission,
+        named ``("cause", members it fails)`` (``"cause 1"``, ``"cause
+        2"``, ... with several groups), and a member's own entry is that
+        of its own failures. See the [phased missions
+        guide](../guide/phased-missions.md).
 
     Attributes
     ----------
@@ -344,7 +368,11 @@ class PhasedMission:
         The phases, each with its ``name``, ``duration``, ``rbd``, ``end``
         (from the mission's start) and the ``components`` it uses.
     components : dict
-        Each component's model, by node name, in order of first use.
+        Each component's model, by node name, in order of first use: with
+        common-cause groups, a member's model of its own failures, and
+        each shared cause's.
+    ccf_groups : list
+        The common-cause groups.
     duration : float
         The mission's length: the sum of the phases' durations.
 
@@ -353,8 +381,12 @@ class PhasedMission:
     ValueError
         If ``phases`` is empty, a phase is not a ``(name, duration, rbd)``
         with a distinct name, a duration that is finite and not negative
-        and a ``NonRepairableRBD``, a phase has common-cause groups, or a
-        node name has different models in different phases.
+        and a ``NonRepairableRBD``, a phase's diagram has common-cause
+        groups of its own, a node name has different models in different
+        phases, or a common-cause group is not one of the mission's (a
+        member that is not a component or is in two groups, members of
+        different models, a model that splits a failure probability, or
+        members' models that take no hazard ratio).
 
     Examples
     --------
@@ -379,16 +411,68 @@ class PhasedMission:
     0.995628
     """
 
-    def __init__(self, phases: Sequence[Tuple[Hashable, float, Any]]):
-        from repyability.rbd.non_repairable_rbd import NonRepairableRBD
-
+    def __init__(
+        self,
+        phases: Sequence[Tuple[Hashable, float, Any]],
+        ccf_groups: Any = None,
+    ):
         phases = list(phases)
         if not phases:
             raise ValueError("A mission needs at least one phase.")
+        groups = as_groups(ccf_groups)
         # As given, for ``with_levers`` (see ``_from_args``).
-        self._init_args: Dict[str, Any] = {"phases": phases}
-        self.components: Dict[Hashable, Any] = {}
-        self.phases: List[_Phase] = []
+        self._init_args: Dict[str, Any] = {
+            "phases": phases,
+            "ccf_groups": groups,
+        }
+        self.components, self.phases, end = self._read(phases)
+        # The components as given: with common-cause groups, the members
+        # with their whole lives, and no cause.
+        self._given: Dict[Hashable, Any] = self.components
+        self.ccf_groups: list = _mission_ccf.checked(
+            groups, self._given, phases
+        )
+        if self.ccf_groups:
+            # Each shared cause a component of its own, after each member
+            # it fails in every phase's diagram (see ``_mission_ccf``).
+            self.components, self.phases, end = self._read(
+                _mission_ccf.written(phases, self.ccf_groups, self._given)
+            )
+        self.duration = end
+        # The unit the components' models (and so the phases' durations)
+        # are in, None if they name none; a warning names the components
+        # when they name different units.
+        self.unit: Optional[str] = diagram_unit(self.components, "mission")
+        # Each phase's settings of its blocks (none here: every block
+        # working; see ``from_diagram``), and each component's life on its
+        # running clock.
+        self._settings: List[MissionPhase] = [
+            MissionPhase(phase.name, phase.duration) for phase in self.phases
+        ]
+        self._lives: Dict[Hashable, Life] = {
+            node: Life(model) for node, model in self.components.items()
+        }
+        # The decomposition of the first so many phases, once worked out.
+        self._plans: Dict[int, tuple] = {}
+        # The minimal cut sets, and the plan of their occurrence by
+        # component (see ``_cut_set_plan``), once worked out.
+        self._cut_sets: Optional[List[frozenset]] = None
+        self._cut_plan: Optional[Tuple[tuple, Dict[Hashable, int]]] = None
+        # The values from the Markov chain of a mission with blocks on
+        # standby, once worked out.
+        self._chain_kept: Optional[_mission_chain.ChainValues] = None
+
+    @staticmethod
+    def _read(
+        phases: Sequence[Any],
+    ) -> Tuple[Dict[Hashable, Any], List[_Phase], float]:
+        """The mission's components (each one's model, by name, in order
+        of first use), its phases and its duration, from the ``phases``
+        given, each checked."""
+        from repyability.rbd.non_repairable_rbd import NonRepairableRBD
+
+        components: Dict[Hashable, Any] = {}
+        read: List[_Phase] = []
         names: set = set()
         end = 0.0
         for phase in phases:
@@ -417,8 +501,10 @@ class PhasedMission:
                 )
             if rbd.ccf_groups:
                 raise ValueError(
-                    f"Phase {name!r} has common-cause groups, which a phased "
-                    "mission does not model."
+                    f"Phase {name!r} has common-cause groups, which a phase "
+                    "cannot hold on its own, as a cause that strikes in one "
+                    "phase fails its members in the later ones too: give "
+                    "the groups to the mission (ccf_groups=...)."
                 )
             # A junction (a PerfectReliability node, such as a vote point)
             # is no component: the diagram folds it out of its structure.
@@ -426,7 +512,7 @@ class PhasedMission:
             used = tuple(n for n in rbd._components() if n not in left_out)
             for node in used:
                 model = rbd.reliabilities[node]
-                known = self.components.setdefault(node, model)
+                known = components.setdefault(node, model)
                 if not NonRepairableRBD._same_model(known, model):
                     raise ValueError(
                         f"Node {node!r} has a different model in phase "
@@ -434,34 +520,15 @@ class PhasedMission:
                         "lifetime model through the mission."
                     )
             end += float(duration)
-            self.phases.append(_Phase(name, float(duration), rbd, end, used))
-        self.duration = end
-        # The unit the components' models (and so the phases' durations)
-        # are in, None if they name none; a warning names the components
-        # when they name different units.
-        self.unit: Optional[str] = diagram_unit(self.components, "mission")
-        # Each phase's settings of its blocks (none here: every block
-        # working; see ``from_diagram``), and each component's life on its
-        # running clock.
-        self._settings: List[MissionPhase] = [
-            MissionPhase(phase.name, phase.duration) for phase in self.phases
-        ]
-        self._lives: Dict[Hashable, Life] = {
-            node: Life(model) for node, model in self.components.items()
-        }
-        # The decomposition of the first so many phases, once worked out.
-        self._plans: Dict[int, tuple] = {}
-        # The minimal cut sets, and the plan of their occurrence by
-        # component (see ``_cut_set_plan``), once worked out.
-        self._cut_sets: Optional[List[frozenset]] = None
-        self._cut_plan: Optional[Tuple[tuple, Dict[Hashable, int]]] = None
-        # The values from the Markov chain of a mission with blocks on
-        # standby, once worked out.
-        self._chain_kept: Optional[_mission_chain.ChainValues] = None
+            read.append(_Phase(name, float(duration), rbd, end, used))
+        return components, read, end
 
     @classmethod
     def from_diagram(
-        cls, rbd: Any, phases: Sequence[MissionPhase]
+        cls,
+        rbd: Any,
+        phases: Sequence[MissionPhase],
+        ccf_groups: Any = None,
     ) -> "PhasedMission":
         """A mission drawn as one diagram, run through phases that each
         set how its blocks behave: one block on standby, another unable to
@@ -500,6 +567,10 @@ class PhasedMission:
             The diagram, the same in every phase but for the settings.
         phases : Sequence[MissionPhase]
             The phases in order, with distinct names.
+        ccf_groups : CCFGroup or list of CCFGroup, optional
+            Common-cause groups over the diagram's blocks, as the
+            constructor takes them. A member is working or not needed in
+            every phase, on its node's model.
 
         Returns
         -------
@@ -512,7 +583,9 @@ class PhasedMission:
         ------
         ValueError
             If ``rbd`` is not a ``NonRepairableRBD`` or has common-cause
-            groups, there is no phase, a phase is not a ``MissionPhase``,
+            groups of its own, a group is not one the mission takes (see
+            the class) or a phase sets a member, there is no phase, a
+            phase is not a ``MissionPhase``,
             two have one name, a phase names a block the diagram does not
             have (or a repeated node, the input or output node, or a
             junction), a vote count for a node not in the diagram or that
@@ -560,8 +633,9 @@ class PhasedMission:
             )
         if rbd.ccf_groups:
             raise ValueError(
-                "The diagram has common-cause groups, which a phased "
-                "mission does not model."
+                "The diagram has common-cause groups: give them to the "
+                "mission (ccf_groups=...), as a cause that strikes in one "
+                "phase fails its members in the later ones too."
             )
         phases = list(phases)
         if not phases:
@@ -595,14 +669,31 @@ class PhasedMission:
                         f"Phase {phase.name!r} sets the vote count of "
                         f"{node!r}, which is not a node of the diagram."
                     )
+        groups = as_groups(ccf_groups)
+        for group in groups:
+            for phase in phases:
+                for node in getattr(group, "members", ()):
+                    setting = phase.blocks.get(node)
+                    if setting is not None and setting not in _PLAIN:
+                        raise ValueError(
+                            f"Phase {phase.name!r} sets block {node!r}, a "
+                            "member of a common-cause group, whose life is "
+                            "split between its causes: a member is working "
+                            "or not needed in a phase, on its node's model."
+                        )
         mission = cls(
             [
                 (phase.name, phase.duration, cls._as_seen(rbd, phase))
                 for phase in phases
-            ]
+            ],
+            ccf_groups=groups,
         )
         mission._settings = phases
-        mission._init_args = {"rbd": rbd, "phases": phases}
+        mission._init_args = {
+            "rbd": rbd,
+            "phases": phases,
+            "ccf_groups": groups,
+        }
         starts = [ph.end - ph.duration for ph in mission.phases]
         mission._lives = {
             node: life_of(node, model, phases, starts)
@@ -2889,9 +2980,10 @@ class PhasedMission:
         """The mission built from its constructor's arguments (see
         ``_init_args``): ``from_diagram``'s, with the diagram under
         ``"rbd"``, or the constructor's own."""
+        groups = args.get("ccf_groups")
         if "rbd" in args:
-            return cls.from_diagram(args["rbd"], args["phases"])
-        return cls(args["phases"])
+            return cls.from_diagram(args["rbd"], args["phases"], groups)
+        return cls(args["phases"], groups)
 
     def parameter_sensitivity(
         self, rel_step: float = 1e-5
@@ -3073,8 +3165,9 @@ class PhasedMission:
         -------
         dict
             The ``repyability_version`` that wrote it, the ``type``
-            (``"PhasedMission"``), the ``phases`` and, for a mission drawn
-            as one diagram, the ``rbd``.
+            (``"PhasedMission"``), the ``phases``, for a mission drawn
+            as one diagram the ``rbd``, and the ``ccf_groups`` if it has
+            any.
 
         Raises
         ------
@@ -3097,14 +3190,20 @@ class PhasedMission:
             "repyability_version": __version__,
             "type": "PhasedMission",
         }
+        from repyability.rbd.serialisation import _ccf_to_list
+
+        if self.ccf_groups:
+            out["ccf_groups"] = _ccf_to_list(self.ccf_groups)
         if "rbd" not in self._init_args:
+            # The diagrams as given: a group's causes are written into
+            # them again when the mission is rebuilt.
             out["phases"] = [
                 {
-                    "name": phase.name,
-                    "duration": phase.duration,
-                    "rbd": phase.rbd.to_dict(),
+                    "name": name,
+                    "duration": float(duration),
+                    "rbd": rbd.to_dict(),
                 }
-                for phase in self.phases
+                for name, duration, rbd in self._init_args["phases"]
             ]
             return out
         out["rbd"] = self._init_args["rbd"].to_dict()
@@ -3162,7 +3261,7 @@ class PhasedMission:
         True
         """
         from repyability.rbd.non_repairable_rbd import NonRepairableRBD
-        from repyability.rbd.serialisation import _node_name
+        from repyability.rbd.serialisation import _ccf_from_list, _node_name
 
         kind = d.get("type") if isinstance(d, Mapping) else None
         if kind != "PhasedMission":
@@ -3179,7 +3278,8 @@ class PhasedMission:
                         NonRepairableRBD.from_dict(phase["rbd"]),
                     )
                     for phase in d["phases"]
-                ]
+                ],
+                ccf_groups=_ccf_from_list(d.get("ccf_groups")),
             )
         return cls.from_diagram(
             NonRepairableRBD.from_dict(d["rbd"]),
@@ -3200,6 +3300,7 @@ class PhasedMission:
                 )
                 for phase in d["phases"]
             ],
+            ccf_groups=_ccf_from_list(d.get("ccf_groups")),
         )
 
     def to_json(self, fp=None, **json_kwargs) -> Optional[str]:
@@ -3321,6 +3422,12 @@ class PhasedMission:
             if standby
             else "The phases' decision diagram over the components' "
             "segments (Esary and Ziehms), replayed."
+        ) + (
+            " Each common-cause group's shared causes are components of "
+            "their own, a cause's segments repeated across the members it "
+            "fails."
+            if self.ccf_groups
+            else ""
         )
         diagram = (
             r.refused(refused)

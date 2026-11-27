@@ -472,7 +472,9 @@ def mission_kinds():
     phase's vote count (exact), on a phase's own model (exact, and with a
     block on standby), with a block on standby (simulated), and with
     blocks on standby, warm and switching imperfectly, every life of a
-    constant rate (exact, by the Markov chain)."""
+    constant rate (exact, by the Markov chain), and with a common-cause
+    group that splits its members' failure rate, and one of shocks at a
+    rate of their own (exact, each cause a component)."""
     from repyability import BlockSetting, MissionPhase, PhasedMission
 
     unit = W([100, 2])
@@ -545,7 +547,19 @@ def mission_kinds():
             k={"v": 1},
         ),
     ]
+    plain = [
+        MissionPhase("up", 20.0, k={"v": 3}),
+        MissionPhase("on", 30.0, blocks={"c": "not_needed"}),
+    ]
     return {
+        "common_cause": PhasedMission.from_diagram(
+            vote,
+            plain,
+            ccf_groups=CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate")),
+        ),
+        "shocks": PhasedMission.from_diagram(
+            vote, plain, ccf_groups=CCFGroup(["a", "c"], Shocks(0.002, 0.5))
+        ),
         "standby_exact": PhasedMission.from_diagram(constant, chain),
         "settings": PhasedMission.from_diagram(vote, settings),
         "standby": PhasedMission.from_diagram(vote, standby),
