@@ -172,6 +172,14 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
         if message:
             return r.REFUSED, message
         if rbd._standby[node].dormancy_factor != 0.0:
+            if _standby_crews(rbd) != 1:
+                return (
+                    r.NUMERICAL,
+                    "the Markov renewal process of a warm standby pair "
+                    "with both units repaired at once, on grids of its "
+                    "operating unit's used life and of a repair's time "
+                    "left",
+                )
             return (
                 r.NUMERICAL,
                 "the Markov renewal process of a warm standby pair with "
@@ -1304,11 +1312,16 @@ def _standby_cycle_blocker(
     warm = reason is None and arrangement.dormancy_factor != 0.0
     if warm and over_time:
         reason = "its spare ages while it waits (a warm spare)"
-    elif warm and _standby_crews(rbd) != 1:
+    elif (
+        warm
+        and _standby_crews(rbd) != 1
+        and arrangement.switching_probability != 1.0
+    ):
         reason = (
-            "its spare ages while it waits (a warm spare) and both units "
-            "can be repaired at once (a warm pair's long-run values need "
-            "one repair at a time, repair_crews=1)"
+            "its spare ages while it waits (a warm spare), both units "
+            "can be repaired at once and switching onto it may fail (a "
+            "warm pair with a switch that can fail needs one repair at a "
+            "time, repair_crews=1)"
         )
     if reason is None and any(
         isinstance(m, ClockLife)
@@ -1337,8 +1350,9 @@ def _standby_cycle_blocker(
         f"Component {node!r} is {rbd._standby[node].what}, whose exact "
         "long-run values come from a Markov chain of its units, which "
         "needs their lives and repair times exponential, or (a standby "
-        "pair, one needed: cold, or warm with one repair at a time) from "
-        f"its cycle; {reason}: simulate it with availability() or cost()."
+        "pair, one needed: cold, or warm with a sure switch or one "
+        f"repair at a time) from its cycle; {reason}: simulate it with "
+        "availability() or cost()."
     )
 
 
@@ -1385,7 +1399,12 @@ def _standby_long_run(rbd, node) -> "_standby_chain.StandbyLongRun":
     nodes here (see ``_crews_couple``): its units' repairs wait only for
     each other, with ``repair_crews`` crews when they are the crews' only
     jobs."""
-    from repyability.rbd import _standby_both, _standby_cycle, _standby_warm
+    from repyability.rbd import (
+        _standby_both,
+        _standby_cycle,
+        _standby_warm,
+        _standby_warm_both,
+    )
 
     try:
         life, repair = _standby_rates(rbd, node)
@@ -1393,6 +1412,12 @@ def _standby_long_run(rbd, node) -> "_standby_chain.StandbyLongRun":
         _require_standby_long_run(rbd, node)
         component = rbd.components[node]
         if rbd._standby[node].dormancy_factor != 0.0:
+            if _standby_crews(rbd) != 1:
+                return _standby_warm_both.long_run(
+                    component.reliability,
+                    component.time_to_replace,
+                    rbd._standby[node].dormancy_factor,
+                )
             return _standby_warm.long_run(
                 component.reliability,
                 component.time_to_replace,

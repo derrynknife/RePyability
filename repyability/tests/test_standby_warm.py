@@ -225,7 +225,13 @@ def test_a_grid_that_does_not_settle_warns(monkeypatch):
     [
         (
             "both units can be repaired at once",
-            pair(W([1000.0, 2.5]), E([0.01]), None, dormancy_factor=0.5),
+            pair(
+                W([1000.0, 2.5]),
+                E([0.01]),
+                None,
+                dormancy_factor=0.5,
+                switching_probability=0.9,
+            ),
         ),
         (
             "3 units",

@@ -12,6 +12,30 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- The long-run values of a warm standby pair whose units are both
+  repaired at once (`"dormancy_factor"` above 0, a sure switch, a crew
+  for each unit), which were refused: `mean_availability`,
+  `mean_unavailability`, the frequencies and the cost rate. The pair is
+  followed on the operating unit's used life each time a repair starts
+  beside it, and on how long the other unit's repair has left each time
+  a unit starts to operate after the pair was down, the second on a
+  finer grid of the repair's range (`_standby_warm_both.py`). Checked:
+  exponential units against the Markov chain to 1e-9, for three rate
+  pairs and spares ageing at 0.1, 0.5 and 1 (within 3e-10); a spare
+  that hardly ages against the cold pair with a crew each (1e-6;
+  within 5e-9); a hot pair against two units each a life and a repair
+  in turn, its unavailability the square of one's (1e-8; within
+  2e-11); Weibull(1000, 2.5) lives, Weibull(300, 1.5) repairs and a
+  spare ageing at 0.5, 0.967283 against 0.967274 simulated (8 seeded
+  batches of 50 runs of 1e6 h, -0.1 SE) and 2.4919e-4 failures an hour
+  against 2.4938e-4 (+0.3 SE); Weibull(1000, 1.5) lives, LogNormal(5,
+  0.6) repairs and 0.2, 0.987048 against 0.986974 (-1.1 SE) and
+  1.4788e-4 against 1.4837e-4 (+0.8 SE). That last pair's values agree
+  to 1.7e-9 on the largest grid, not 1e-9, and say so in a warning
+  (its life's density is not smooth at 0); it takes some 25 s, the
+  others 2 to 10. A warm pair with both repaired at once and a switch
+  that can fail is still refused, naming `repair_crews=1`.
+
 - A network of repaired elements has levers: `levers()` and
   `with_levers` take its elements' specs' parameters (named as a
   diagram's component's, `"reliability.failure_rate"`, ...),

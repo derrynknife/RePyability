@@ -1218,6 +1218,12 @@ the pair is up 0.9910.)
   a switch that works nine times in ten the same pair is up 0.92583 of
   the time, and 0.90116 with one that works eight times in ten (400 runs
   of 1,000,000 h: 0.90089, -1.1 standard errors).
+  With a crew each (no `repair_crews`) and a sure switch the warm pair
+  is in the long-run values too: it is followed as well on how long the
+  other unit's repair has left each time a unit starts to operate after
+  the pair was down. The same pair with a spare ageing at half the rate
+  is then up 0.96728 of the time (400 runs of 1,000,000 h: 0.96727,
+  -0.1 standard errors), against 0.95318 with one crew.
   Over time, with one repair at a time, a switch that can fail is
   followed too: the pair then starts afresh in two states (the other unit
   starting its repair, or ready), whose renewal equations are solved
