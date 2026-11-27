@@ -74,6 +74,7 @@ from repyability.rbd._model_utils import (
 )
 from repyability.rbd._point_availability import (
     BlockCurve,
+    ExponentialCurve,
     First,
     InspectionCurve,
     MinimalRepairCurve,
@@ -599,6 +600,11 @@ def _availability_curves(
                 plain.append((node, start, node in degrading))
         if memo is not None and key is not None:
             memo[(key, counts)] = curves[node]
+    # A fault tree's events that are not repaired, and so no components,
+    # follow curves of their own (see _event_curves.Structured).
+    unrepaired = getattr(rbd, "_unrepaired_curves", None)
+    if unrepaired is not None:
+        curves.update(unrepaired())
     # The nodes a shutdown holds off line, held down inside its windows
     # (see _shutdowns.MaskedCurve).
     return _shutdowns.masked_curves(rbd, curves)
@@ -700,6 +706,9 @@ def _node_curve(
         # An imperfectly repaired component's goes through
         # _minimal_repair_curve, which refuses one whose failures are
         # found only by its tests (as _node_over_time does).
+        closed = _closed_form_curve(rbd, node, degrading, start)
+        if closed is not None:
+            return closed
         return _unit_curve(rbd, node, horizon, counts, degrading, start)
     unit = _requirements._tested_unit(rbd, node)
     if unit is not None:
@@ -739,6 +748,33 @@ def _node_curve(
         else min(start.age, start.since_scheduled or 0.0)
     )
     return InspectionCurve(rate, interval, phase, since)
+
+
+def _closed_form_curve(rbd, node, degrading: bool, start):
+    """A component's curve in closed form where it has one (see
+    ``_closed_form_rates``: an exponential life and an exponential or
+    instant repair, and nothing else; new at 0, or up at any age with
+    the node's life, which is the same, a constant rate having no
+    memory), with what ``_unit_curve`` refuses refused; else None. Its
+    availability is then one less the unavailability's closed form
+    (``_closed_form_down``), and its expected failures exact, at any
+    time: the grid, sized by the typical life and the time asked for,
+    does not resolve a repair many times shorter within its first steps
+    (1e-5 off at half a step)."""
+    if degrading:
+        return None
+    if start is not None and (
+        not start.alive or start.own_life or start.stationary
+    ):
+        return None
+    total = _closed_form_rates(rbd, None, (node,)).get(node)
+    if total is None:
+        return None
+    _requirements._require_time_models(rbd, node)
+    _requirements._require_no_opportunities(rbd, node)
+    _requirements._require_full_restoration(rbd, node)
+    life, _ = _closed_form_pair(rbd, node)
+    return ExponentialCurve(life, total)
 
 
 def _test_phase(inspection, start) -> float:

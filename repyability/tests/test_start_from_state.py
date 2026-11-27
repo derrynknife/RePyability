@@ -93,7 +93,7 @@ def test_an_exponential_unit_is_memoryless():
     x = np.array([0.0, 0.5, 2.0, 10.0, 50.0])
     new = rbd.point_availability(x)
     aged = rbd.point_availability(x, state={"a": NodeState(age=250.0)})
-    np.testing.assert_allclose(aged, new, atol=1e-9)
+    np.testing.assert_array_equal(aged, new)
     down = {"a": NodeState(alive=False, down_for=3.0)}
     np.testing.assert_allclose(
         rbd.point_availability(x, state=down),

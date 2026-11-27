@@ -96,11 +96,13 @@ def test_one_component_is_bounded_by_its_renewal_function():
     bounds = rbd.first_failure_bounds(TIMES)
     renewals = lam * mu * TIMES / s + lam**2 / s**2 * -np.expm1(-s * TIMES)
     down = lam / s * -np.expm1(-s * TIMES)
+    # (An exponential unit's curve is its closed form: exact, where the
+    # renewal grid's count was up to 6.3e-8 off, 9.4e-7 of it at t = 1.)
     np.testing.assert_allclose(
-        bounds.expected_failures, renewals, rtol=W_RTOL, atol=W_RTOL
+        bounds.expected_failures, renewals, rtol=1e-12, atol=0.0
     )
     np.testing.assert_allclose(
-        bounds.lower, np.clip(1.0 - renewals, 0.0, 1.0), atol=W_RTOL
+        bounds.lower, np.clip(1.0 - renewals, 0.0, 1.0), atol=1e-12
     )
     np.testing.assert_allclose(bounds.upper, 1.0 - down, atol=1e-12)
     exact = np.exp(-lam * TIMES)

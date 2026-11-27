@@ -134,9 +134,8 @@ class EventTree:
         heading is named as an event, or the paths are malformed or do not
         partition the initiator (naming a combination on none or on two).
     NotImplementedError
-        For a heading tree with dynamic gates or common-cause groups, an
-        FDEP gate forcing an event another heading has, or repaired events
-        beside probabilities or lifetimes.
+        For a heading tree with dynamic gates or common-cause groups, or
+        an FDEP gate forcing an event another heading has.
 
     Examples
     --------
@@ -219,18 +218,6 @@ class EventTree:
             events[heading] = model
             holders[heading] = {heading}
             tops[heading] = heading
-        repaired = sorted(
-            str(e) for e, m in events.items() if isinstance(m, dict)
-        )
-        if repaired and len(repaired) < len(events):
-            raise NotImplementedError(
-                f"Event(s) {repaired} are repaired components while the "
-                "other headings' events are probabilities or lifetime "
-                "models: a sequence's tree cannot mix them. Give every "
-                "heading's events component specs ('reliability' and "
-                "'repairability'), a protection layer as a one-event tree "
-                "of its own."
-            )
         self._forced_apart(holders)
         self.events = events
         self.shared_events = frozenset(

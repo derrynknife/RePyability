@@ -42,6 +42,31 @@ release between minors that only adds (0.19.1).
   state, which moves a value by up to about 1e-15 (1e-13 of a mean). A
   chain that can never fail now gives exactly 1. No seeded result
   changes.
+- A `FaultTree` of repaired or tested events may now mix them with fixed
+  probabilities (a per-demand failure, a human error) and lives that are
+  not repaired over the mission, which it refused before. A fixed
+  probability is down with it at every time and never starts the top
+  event over time; a life that is not repaired is down from its end on,
+  `F(t)`, and fails at its density. `point_unavailability`,
+  `mean_unavailability(t)`, `failure_frequency`, `expected_failures` and
+  the importance measures take both; the long run
+  (`mean_unavailability()`, `system_failure_frequency`) takes fixed
+  probabilities and refuses a life that is not repaired, which has none.
+  `to_repairable_rbd()` refuses a mixed tree, as a diagram's components
+  are repaired. An `EventTree` may likewise mix repaired headings with
+  protection layers and probabilities. Checked against closed forms,
+  numerical integrals, a unit started in its steady state in the
+  diagram (to 1e-12) and a seeded simulation (within 4 standard errors);
+  trees that mix nothing give the same values to the bit.
+- Common-cause groups over a `FaultTree`'s repaired events (`ccf_groups`,
+  which it refused before): its values over time and in the long run are
+  its groups' chains', conditioned on module by module over the tree's
+  structure, as a `RepairableRBD` with the same groups gives them (to
+  1e-12), and `to_repairable_rbd()` passes the groups on. Such a tree
+  refuses `failure_frequency(t)`, the importance measures and the Open-PSA
+  export for now, naming what to use; a group's members must be repaired
+  events.
+
 - A switch that can fail (`"switching_probability"` below 1) in the
   long-run values of a cold standby pair of any lives and repairs, with
   one repair at a time and with both units repaired at once, which only
@@ -69,6 +94,24 @@ release between minors that only adds (0.19.1).
   `demand.probability` and `demand.rate`. A duty moves the life alone,
   or the demands too with `"demand_basis": "operating"`. A
   `"demand_rate"` on a life is still refused, now naming `"demand"`.
+- Demands at set times, or on a plan of rates that changes, beside a
+  life that wears out, in one component: a spec's `"demand"` takes
+  `"times"` or `"plan"` in place of `"rate"`. The demands compete with
+  the life and are renewed with it, but stay on the calendar, so a unit
+  put into service at `t0` at age `a` survives while the life's hazard
+  from `a`, plus `-log(1 - p)` for each demand met (or `p` times the
+  plan's expected demands), stays below its draw
+  (`LifeWithPlannedDemands`). Only the simulations take it (the Python
+  engine); the exact and numerical analyses refuse it, naming them. From
+  new it equals the life and the set-times demand component in series
+  (to 1e-12); a hand-worked case with a fixed repair (Weibull(40, 1.5),
+  one demand failing it with 0.3, repairs of 35, over 68) agrees with
+  4000 seeded simulations within 4 standard errors; set times every `h`
+  with `p = c h` close in on the rate `c` as `h` shrinks; and a plan of
+  one rate is that rate, to the bit. It is saved, held by a `UnitPlan`'s
+  `demand` and has the lever `demand.probability`; a duty or a
+  `"demand_basis"` is refused with it. A `"demand"` given both a rate
+  and times now says to give one.
 
 - A cold standby pair of any lives and repairs with one repair at a time
   (`repair_crews=1`) over time, from new, which only a simulation gave:
@@ -1112,6 +1155,28 @@ release between minors that only adds (0.19.1).
   by up to about 1e-6 relative (`SafetyFunction.pfh` and `pfd_avg` among
   them: the guide's worn 2oo3 `pfh()` reads 7.9104e-06, where it read
   7.9105e-06); a unit with any other life is worked out as before.
+  Seeded and simulated results do not change.
+- A component new at 0 (or up at any age) with an exponential life and an
+  exponential (or instant) repair, and nothing else (no maintenance or
+  tests, not down at 0 nor in its long-run state),
+  has its values over time in closed form in a `RepairableRBD`, a
+  `FaultTree` of repairable events and a repaired `Network`: its
+  availability `1 - lambda / s (1 - exp(-s t))`, `s` the sum of its two
+  rates, and its expected failures `lambda mu t / s + (lambda / s)^2 (1 -
+  exp(-s t))`. `point_unavailability` already took the closed form;
+  `point_availability`, `mission_availability`, `expected_failures`,
+  `expected_events` and the rest came from the unit's renewal grid,
+  whose step is sized by the typical life and the last time asked for,
+  and which does not resolve a repair hundreds of times shorter within
+  its first steps. For a failure rate of 0.002 and a repair rate of 0.5,
+  asked at `[0.5, 3, 40, 1000]`: `point_availability(0.5)` was 1.1e-5
+  off (0.99912634 for 0.99911485, and 6e-14 off asked alone),
+  `mission_availability` 8.6e-6 and `expected_failures` up to 9.3e-8
+  (3.6e-6 of a small count); all are now exact to rounding, the same
+  whichever times are asked together, and `point_availability` is one
+  less `point_unavailability`. Values over time of diagrams with such
+  components move by up to those sizes (typically in the 7th digit);
+  any other life, repair or state goes through the grid as before.
   Seeded and simulated results do not change.
 
 ## [0.20] - 2026-11-22

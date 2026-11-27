@@ -287,11 +287,6 @@ def test_what_cannot_be_merged_is_refused_saying_what_to_do():
     )
     with pytest.raises(NotImplementedError, match="shared event"):
         EventTree(1.0, [("a", grouped)])
-    repaired = heading(
-        "A", ["x"], {"x": {"reliability": E([0.1]), "repairability": E([1])}}
-    )
-    with pytest.raises(NotImplementedError, match="one-event tree"):
-        EventTree(1.0, [("a", repaired), ("b", 0.1)])
     forcing = FaultTree(
         {"A": ("or", ["x", "s"]), "f": ("fdep", "x", ["s"])},
         {"x": 0.1, "s": 0.2},

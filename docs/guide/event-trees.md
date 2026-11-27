@@ -196,8 +196,6 @@ tree.fussell_vesely("core damage")
   basic event of its own under the members it fails.
 - An event with different models in two headings, named: an event of one
   name is one event.
-- Repaired events beside probabilities or lifetime models: give a
-  protection layer as a one-event tree of a repaired component.
 - An FDEP gate that forces an event another heading has.
 
 Drawing the tree (or a bow-tie) is left to the application that shows it.

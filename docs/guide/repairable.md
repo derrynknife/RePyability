@@ -313,10 +313,25 @@ and listed by `levers()` as `demand.probability` (in `[0, 1]`) and
 demands are on the diagram's clock: a `"duty"` moves the life alone,
 unless `"demand_basis": "operating"` counts the demands in its operating
 time, which the duty then moves too (a duty plan that changes over time
-needs that). Demands at set times or on a plan beside a life, and a
-demand mode on a group of units, are not modelled: draw them as two
-components in series, one with the life and one with the probability and
-its demands. A spare that may fail to
+needs that).
+
+In place of the `"rate"`, the demands beside a life may come at set
+`"times"` (`"demand": {"probability": p, "times": [...]}`) or on a
+`"plan"` of rates that changes (`{"times": [...], "rates": [...]}`, as a
+`"demand_plan"`). They still compete with the life and are renewed with
+it, but they stay on the calendar: a unit put into service at `t0` at
+age `a` survives `s` more with chance `exp(-G)`, `G` its life's
+`H(a + s) - H(a)` plus `-log(1 - p)` for each demand in `(t0, t0 + s]`
+(or `p` times the plan's expected demands then). From new its survival
+is `R(t) (1 - p)^N(t)` (or `R(t) exp(-p Λ(t))`), the life and the
+demands as two components in series; but each unit's life depends on
+when it is put into service, so only the simulations take it
+(`availability`, `cost`, `simulate_timelines`, on the Python engine),
+and the exact and numerical analyses refuse it. Its lever is
+`demand.probability`; a duty and a `"demand_basis"` are refused with it
+(give the life and the demands on the calendar). A plan of one rate is
+that rate. A demand mode on a group of units is not modelled: draw it as
+a component of its own in series. A spare that may fail to
 start when a unit of its standby group fails is the group's
 `"switching_probability"` (see [Standby groups](#standby-groups)).
 
@@ -470,7 +485,9 @@ plant.mission_availability([10.0, 100.0, 1000.0]) # array([0.962 , 0.9544, 0.953
 ```
 
 Each component's `A(t)` follows from the distributions of its up and down
-times by the renewal equation, solved numerically to about `1e-7`; the
+times by the renewal equation, solved numerically to about `1e-7` (a
+component with an exponential life and an exponential repair, new at 0,
+has it in closed form); the
 components fail and are repaired independently, so the system's is the
 exact system computation at theirs, at each time (see
 [Concepts](../concepts.md#availability)). The curve starts at 1 (less any
@@ -639,7 +656,8 @@ E[system failures in [0, t)] = ∫₀ᵗ Σᵢ I_B,i(s) dMᵢ(s)
 ```
 
 with `Mᵢ(s)` component *i*'s expected failures by `s`, which its renewal
-equation gives on the grid of its point availability (to about `1e-7`). In
+equation gives on the grid of its point availability (to about `1e-7`;
+in closed form for an exponential life and repair). In
 the long run they come at `system_failure_frequency()`: `3.497` per 100
 here. [`ExpectedEvents`][repyability.ExpectedEvents] holds the system's
 expected failures, planned outages and downtime, and each component's

@@ -50,13 +50,16 @@ def _mean_lives(rbd) -> List[float]:
     which an endless horizon's discount rate is judged (#231): on a duty
     plan that changes over time, when its plan has run its life in
     operating time from 0."""
-    from repyability.rbd._demands import DemandTimesLife
+    from repyability.rbd._demands import (
+        DemandTimesLife,
+        LifeWithPlannedDemands,
+    )
     from repyability.rbd._duty import PlannedLife
 
     def scale(life) -> float:
         if isinstance(life, PlannedLife):
             return life.inverse(failure_time_scale(life.model))
-        if isinstance(life, DemandTimesLife):
+        if isinstance(life, (DemandTimesLife, LifeWithPlannedDemands)):
             return life.time_scale()
         return failure_time_scale(life)
 
