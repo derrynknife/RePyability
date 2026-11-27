@@ -228,15 +228,6 @@ def test_a_grid_that_does_not_settle_warns(monkeypatch):
             pair(W([1000.0, 2.5]), E([0.01]), None, dormancy_factor=0.5),
         ),
         (
-            "switching onto it may fail",
-            pair(
-                W([1000.0, 2.5]),
-                E([0.01]),
-                dormancy_factor=0.5,
-                switching_probability=0.9,
-            ),
-        ),
-        (
             "3 units",
             pair(W([1000.0, 2.5]), E([0.01]), units=3, dormancy_factor=0.5),
         ),
@@ -256,3 +247,202 @@ def test_over_time_a_warm_pair_is_refused():
         rbd.point_availability([10.0])
     route = rbd.analysis_routes()["point_availability"]
     assert route.route == "refused" and route.reason == str(error.value)
+
+
+# A switch that can fail: after a failed switch the spare goes on
+# ageing, so the pair has a second family of states (a unit starting to
+# operate with the other waiting, having used some of its life).
+
+
+@pytest.mark.parametrize(
+    "dormancy, switching", [(0.1, 0.9), (0.5, 0.5), (1.0, 0.0)]
+)
+@pytest.mark.parametrize(
+    "lam, mu", [(1e-3, 0.05), (1e-3, 1 / 300), (0.1, 0.1)]
+)
+def test_exponential_units_with_a_failing_switch_are_the_chain(
+    lam, mu, dormancy, switching
+):
+    # To RTOL: the halving ends when two extrapolated limits agree to
+    # it, and exponential units are smooth, so the last limit is at
+    # least that near.
+    chain = _standby_chain.long_run(
+        2, 1, lam, mu, dormancy=dormancy, switching=switching, crews=1
+    )
+    found = _standby_warm.long_run(E([lam]), E([mu]), dormancy, switching)
+    for field in chain._fields:
+        assert getattr(found, field) == pytest.approx(
+            getattr(chain, field), rel=_standby_warm.RTOL
+        ), field
+
+
+def by_hand_switched(lam, repair, dormancy, switching):
+    """``by_hand`` with a switch that works with probability ``p``.
+    With both units up, the next failure comes after ``1 / (lam (1 +
+    d))``, and is the operating unit's with a switch that fails with
+    probability ``(1 - p) / (1 + d)``: the pair is then down for a
+    repair ``R'``, in which the spare fails with probability ``1 -
+    E[exp(-d lam R')]`` (the repaired unit then operates as the spare's
+    repair starts), and both are up again otherwise."""
+    from scipy import integrate
+
+    def survives(s):
+        return float(repair.sf(np.array([s]))[0])
+
+    edges = np.ravel(
+        repair.qf(np.array([1e-6, 0.01, 0.5, 0.99, 1 - 1e-6, 1 - 1e-12]))
+    )
+
+    def integral(f):
+        return sum(
+            integrate.quad(f, lo, hi, epsabs=0.0, epsrel=1e-12, limit=200)[0]
+            for lo, hi in zip([0.0, *edges], [*edges, math.inf])
+        )
+
+    mean = integral(survives)
+    down = integral(lambda s: survives(s) * -math.expm1(-lam * s))
+    fails = integral(lambda s: lam * math.exp(-lam * s) * survives(s))
+    rate = dormancy * lam
+    spare_fails = integral(lambda s: rate * math.exp(-rate * s) * survives(s))
+    unswitched = (1.0 - switching) / (1.0 + dormancy)
+    both_up = (1.0 - fails) / (1.0 - (1.0 - spare_fails) * unswitched)
+    failed_switches = both_up * unswitched
+    time = mean + both_up / (lam * (1.0 + dormancy)) + failed_switches * mean
+    return (
+        (down + failed_switches * mean) / time,
+        (fails + failed_switches) / time,
+        (1.0 + failed_switches) / time,
+    )
+
+
+def test_by_hand_with_a_sure_switch_is_by_hand():
+    assert by_hand_switched(1e-3, W([300.0, 1.5]), 0.2, 1.0) == pytest.approx(
+        by_hand(1e-3, W([300.0, 1.5]), 0.2), rel=1e-12
+    )
+
+
+@pytest.mark.parametrize("dormancy", [0.2, 1.0])
+@pytest.mark.parametrize("repair", [W([300.0, 1.5]), LN([5.0, 0.6])])
+def test_exponential_lives_by_hand_with_a_failing_switch(repair, dormancy):
+    # To ten times RTOL, as with a sure switch: these repairs' densities
+    # are not smooth at 0, so the order the limits are extrapolated at
+    # is less sure than for exponential units.
+    lam, switching = 1e-3, 0.7
+    unavailability, fails, units = by_hand_switched(
+        lam, repair, dormancy, switching
+    )
+    found = _standby_warm.long_run(E([lam]), repair, dormancy, switching)
+    assert found.unavailability == pytest.approx(unavailability, rel=1e-8)
+    assert found.failure_frequency == pytest.approx(fails, rel=1e-8)
+    assert found.unit_failure_frequency == pytest.approx(units, rel=1e-8)
+
+
+def test_a_switch_that_all_but_surely_works_is_the_sure_one():
+    # The two families' equations against the one family's: each to
+    # RTOL of the pair's values, which a chance of 1e-12 of a failed
+    # switch does not move, so to ten times RTOL of each other.
+    life, repair = W([1000.0, 2.5]), W([300.0, 1.5])
+    sure = _standby_warm.long_run(life, repair, 0.5)
+    found = _standby_warm.long_run(life, repair, 0.5, 1.0 - 1e-12)
+    assert found != sure
+    for field in sure._fields:
+        assert getattr(found, field) == pytest.approx(
+            getattr(sure, field), rel=1e-8
+        ), field
+
+
+def test_a_sure_switch_is_as_it_was():
+    life, repair = W([1000.0, 2.5]), W([300.0, 1.5])
+    assert _standby_warm._worked_out(
+        life, repair, 0.5, 1.0
+    ) == _standby_warm._worked_out(life, repair, 0.5)
+
+
+def test_a_spare_that_hardly_ages_is_the_cold_pair_with_a_failing_switch():
+    # A spare ageing at 1e-9 of the rate fails in standby about that
+    # often in a life: far inside 1e-6, as for a sure switch.
+    life, repair = W([1000.0, 2.5]), W([300.0, 1.5])
+    cold = _standby_cycle.long_run(life, repair, 0.8)
+    found = _standby_warm.long_run(life, repair, 1e-9, 0.8)
+    for field in cold._fields:
+        assert getattr(found, field) == pytest.approx(
+            getattr(cold, field), rel=1e-6
+        ), field
+
+
+def test_a_switch_that_fails_more_is_down_more():
+    life, repair = W([1000.0, 2.5]), W([300.0, 1.5])
+    down = [
+        _standby_warm.long_run(life, repair, 0.5, p).unavailability
+        for p in (1.0, 0.9, 0.5, 0.0)
+    ]
+    assert down == sorted(down) and len(set(down)) == 4
+
+
+def test_the_unit_of_time_does_not_matter_with_a_failing_switch():
+    hours = _standby_warm.long_run(W([1000.0, 2.5]), W([300.0, 1.5]), 0.5, 0.8)
+    scale = 1e-6
+    other = _standby_warm.long_run(
+        W([1000.0 * scale, 2.5]), W([300.0 * scale, 1.5]), 0.5, 0.8
+    )
+    assert other.unavailability == pytest.approx(
+        hours.unavailability, rel=1e-9
+    )
+    assert other.failure_frequency * scale == pytest.approx(
+        hours.failure_frequency, rel=1e-9
+    )
+    assert other.unit_failure_frequency * scale == pytest.approx(
+        hours.unit_failure_frequency, rel=1e-9
+    )
+
+
+def simulated(rbd, seed, batches=8, runs=50, horizon=1e6):
+    """Seeded batches of runs: each run's fraction of the time up, and
+    each batch's system failures per unit time."""
+    up, rates = [], []
+    for batch in range(batches):
+        run = rbd.availability(
+            horizon,
+            mc_samples=runs,
+            seed=seed + batch,
+            control_variate=False,
+            conditional=False,
+        )
+        up.extend(np.asarray(run.uptimes) / horizon)
+        rates.append(run.system_failures / (runs * horizon))
+    return np.array(up), np.array(rates)
+
+
+def within(estimates, exact, errors=4.0):
+    """Whether the mean of independent ``estimates`` is within
+    ``errors`` of its standard errors of ``exact``."""
+    error = estimates.std(ddof=1) / math.sqrt(len(estimates))
+    return abs(estimates.mean() - exact) < errors * error
+
+
+@pytest.mark.parametrize(
+    "life, repair, dormancy, switching, seed",
+    [
+        (W([1000.0, 2.5]), W([300.0, 1.5]), 0.5, 0.8, 101),
+        (W([1000.0, 1.5]), LN([5.0, 0.6]), 0.2, 0.5, 211),
+    ],
+)
+def test_a_failing_switch_against_the_simulation(
+    life, repair, dormancy, switching, seed
+):
+    # 8 batches of 50 runs of 1,000,000 h (seeds from ``seed``): the
+    # availability within four standard errors of the 400 runs', and
+    # the system's failures within four of the 8 batches'.
+    rbd = pair(
+        life,
+        repair,
+        dormancy_factor=dormancy,
+        switching_probability=switching,
+    )
+    values = _standby_warm.long_run(life, repair, dormancy, switching)
+    assert rbd.mean_availability() == values.availability
+    up, rates = simulated(rbd, seed)
+    assert within(up, values.availability)
+    assert within(rates, values.failure_frequency)
+    route = rbd.analysis_routes()["mean_availability"]
+    assert route.route == "numerical" and "warm standby pair" in route.reason
