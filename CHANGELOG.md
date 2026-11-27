@@ -44,6 +44,74 @@ release between minors that only adds (0.19.1).
   `NonRepairableRBD` (its capacities taken by `capacity_distribution`)
   or the `"reliability"` of a repairable component's spec. See the
   guide's "Markov components".
+- A `Network`'s links and nodes can be repaired. Give each a component
+  spec (`{"reliability": ..., "repairability": ...}`, as a
+  `RepairableRBD`'s component's) and the network gives the connection's
+  `point_availability(x)` and `point_unavailability(x)` (the latter
+  worked out as itself, so a small one keeps its digits),
+  `mission_availability(t)` and `mission_unavailability(t)`,
+  `mean_availability()` and `mean_unavailability()` in the long run, and
+  how often the connection is lost: `failure_frequency(t)`,
+  `expected_failures(t)` and `system_failure_frequency()`. Each element's
+  curve is a diagram's component's, and the connection follows from the
+  network's own decision diagram, so two terminals, several, all of them
+  and directed links all work; the importance measures made of the
+  elements' probabilities are taken at their availabilities at `x`. What
+  needs a time at which the terminals part for good (`sf`, `mean`, the
+  B-lives, `random`) refuses a repaired network, as do the levers,
+  `parameter_sensitivity`, `tornado` and `to_rbd` for now; an element
+  takes a life and a repair only, every element is repaired or none is,
+  and a repaired network is not simulated. `to_dict` saves the specs;
+  `analysis_routes()` and the capability matrix show the new methods.
+
+- `PhasedMission` saves and loads (`to_dict`, `to_json`, `from_dict`,
+  `from_json`), a mission drawn as one diagram with its blocks' settings
+  and vote counts by phase; and it has the measures the other models
+  have: `differential_importance` and `joint_importance` (components held
+  across every phase, the decision diagram replayed),
+  `barlow_proschan_importance` (each component's part of the rate at
+  which the mission fails within its phases, integrated over the
+  mission's time; a failure at a phase's start takes no part),
+  `expected_mission_time` (the mean time it runs, to its failure or its
+  end: a mission that succeeds has no mean life), and `levers`,
+  `with_levers` and `parameter_sensitivity` (each component's parameters
+  and each phase's duration, by differences of the exact reliability).
+  The importance measures of a mission with blocks on standby, which
+  refused, are worked out from its Markov chain where the chain is (every
+  life at a constant rate), a block held working or failed in it;
+  Fussell-Vesely, the cut sets and Barlow-Proschan still refuse such a
+  mission. There is no structural importance for a mission (a
+  component's state is one per phase). `analysis_routes()`, the
+  capability matrix and the phased missions guide show them.
+
+- `Network.tornado(x)`: the numbers of a tornado chart for a network, as
+  the diagrams and `FaultTree` give them: the exact reliability at `x`
+  with each link's and failing node's parameter at its low and at its
+  high (a given range, or a share of its scale either way), sorted by the
+  swing. It works for two terminals, several, all of them and directed
+  networks; `analysis_routes()` and the capability matrix show it.
+
+- `Network` takes more than two terminals, and directed links.
+  `Network(links, terminals=[...])` is the reliability of several nodes
+  staying connected to each other (K-terminal), and `terminals="all"` of
+  every node (all-terminal): exact, from the same decision diagram, whose
+  states now say which of the frontier's parts hold a terminal (a 10-by-10
+  grid with every node a terminal has 0.8 million states, where corner to
+  corner it has 1.9 million). Every method works for them: the importance
+  measures, the cut sets, the B-lives, the parameter uncertainty, the
+  levers, `compare`, the simulation (a sample lasts until the terminals
+  part) and saving (`to_dict` gains `terminals` and `directed`; an older
+  save still loads). `path_sets()` then lists the trees that join the
+  terminals, up to `MAX_PATHS`, and `network.METHOD = "paths"` refuses
+  more than two terminals. `source` and `target` stay, and two terminals
+  have the plans, values and seeded lifetimes they had.
+  `Network(..., directed=True)` makes each link work from its first node
+  to its second, for two terminals, decided from its simple paths (cycles
+  allowed), and `Network.to_rbd()` gives the `NonRepairableRBD` of a
+  directed network with no cycle. A directed network of more than two
+  terminals is refused, with the reason.
+
+
 - Demand plans for a probability of failing per demand in a
   `RepairableRBD` (a `"reliability"` that is a
   `surpyval.FixedEventProbability`), beside `"demand_rate"`:

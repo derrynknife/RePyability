@@ -165,9 +165,74 @@ fv["e1"]                        # -> 0.2426
 flight.fussell_vesely(method="rare_event")["e1"]   # -> 0.2426
 ```
 
-`analysis_routes()` reports each analysis as exact, or refused when the
-mission's diagram (for `fussell_vesely`, the cut sets' too) would pass
-`MAX_NODES`, and `reliability_interval` as simulated.
+The other measures the diagrams have hold a component the same way.
+`differential_importance()` shares out the Birnbaum importance (or, with
+`change="proportional"`, the criticality importance) so that the shares
+add up to 1, and a group's share is its members' sum.
+`joint_importance()` holds two components at once: `R(1_i, 1_j) -
+R(1_i, 0_j) - R(0_i, 1_j) + R(0_i, 0_j)`, positive for complements and
+negative for substitutes. Every pair here is close to 1, as any
+component failed from the start ends the flight.
+`barlow_proschan_importance()` is the share of the failures each
+component's own failure causes as it happens: in each phase, the rate at
+which the mission's reliability falls with the component's segment
+(one reverse pass of the decision diagram) times its density, integrated
+over the mission's time. A failure at a phase's start, of a phase that
+needs a component lost earlier, is caused by no failure then and takes no
+part, so the shares are of the failures within the phases: here the
+navigation unit's in the cruise, nearly all of them, while the engines
+lost in the cruise fail the flight only as the landing starts.
+
+```python
+flight.joint_importance()["e1", "nav"]        # -> 0.9990
+bp = flight.barlow_proschan_importance()
+bp["nav"], bp["e1"]                           # -> (0.9592, 0.0203)
+```
+
+There is no structural importance: a component's state is one per
+phase's segment, so "the share of the state vectors in which it is
+critical" has no single meaning for a mission. Nor is there a mean life,
+as a mission that succeeds has no time to failure;
+`expected_mission_time()` is the mean time it runs, to its failure or its
+end, `E[min(T, duration)]`, the reliability over time integrated
+(numerical, to about 1e-9).
+
+```python
+flight.expected_mission_time()   # -> 10.4884 of the 10.5 hours
+```
+
+`levers()` lists the components' parameters and each phase's duration
+(under `None`, as `"phase.<name>.duration"`), `with_levers` builds the
+mission with some moved (a component's model in every phase that uses
+it), and `parameter_sensitivity()` differences the mission's exact
+reliability over each:
+
+```python
+sens = flight.parameter_sensitivity()
+sens["nav"]["failure_rate"]                   # -> -10.16
+sens[None]["phase.cruise.duration"]           # -> -0.000456
+longer = flight.with_levers({(None, "phase.cruise.duration"): 12.0})
+```
+
+`analysis_routes()` reports each analysis as exact or numerical, or
+refused when the mission's diagram (for `fussell_vesely`, the cut sets'
+too) would pass `MAX_NODES`, and `reliability_interval` as simulated.
+
+## Saving and loading
+
+A mission saves as the diagrams do: `to_dict()` and `to_json()` (to a
+string, or a file given a path), loaded by `PhasedMission.from_dict` and
+`from_json`. A mission built from a diagram per phase keeps each phase's
+name, duration and diagram; one drawn as
+[one diagram](#one-diagram-each-phase-setting-its-blocks) keeps the
+diagram once and each phase's name, duration, blocks' settings (their
+states, covariates, models, start probabilities and dormancy) and vote
+counts. Loading builds the mission again, so it is checked again.
+
+```python
+text = flight.to_json()
+PhasedMission.from_json(text).unreliability() == flight.unreliability()   # -> True
+```
 
 ## One diagram, each phase setting its blocks
 
@@ -282,9 +347,17 @@ no longer independent, and the mission is not a product over phases:
   other). `reliability()` then refuses (pointing to `method="simulate"`
   and `reliability_interval`).
 
-The importance measures and cut sets refuse a mission with a block on
-standby either way (pointing to `failure_drivers`), and
-`analysis_routes()` says which analysis is which, and why.
+With the chain, the importance measures (Birnbaum, improvement
+potential, the risk worths, criticality, differential and joint) hold a
+block in it: working, it never fails and its switch never fails (on
+standby it still idles until called on), and failed, it is failed from
+the start; the parameter sensitivities difference the chain's
+reliability. Simulated, they refuse (pointing to `failure_drivers`,
+which plays the missions again with each block never failing). The cut
+sets, Fussell-Vesely and Barlow-Proschan importance refuse a mission with
+a block on standby either way, a spare's failure mattering only once it
+is called on, and `analysis_routes()` says which analysis is which, and
+why.
 
 ### A different life in one phase
 

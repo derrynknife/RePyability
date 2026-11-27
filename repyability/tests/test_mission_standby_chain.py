@@ -195,7 +195,7 @@ def test_the_chain_agrees_with_the_decision_diagram(edges, phases, k):
         mission.reliability_over_time(times), rel=1e-10
     )
     for node in mission.components:
-        assert _mission_chain.run(mission, held=node).failing == (
+        assert _mission_chain.run(mission, held={node: True}).failing == (
             pytest.approx(mission._phase_failures(node), rel=1e-9, abs=1e-15)
         )
 
@@ -450,8 +450,13 @@ def test_a_chain_too_large_is_simulated(monkeypatch):
     assert mission.summary(mc_samples=200, seed=1).method == "simulated"
 
 
-def test_importance_measures_still_refuse_with_standby():
+def test_importance_measures_come_from_the_chain_with_standby():
+    # The measures hold a block in the chain; the cut sets, and so
+    # Fussell-Vesely, still refuse, naming failure_drivers.
     mission = pair_mission(0.01, 0.01, 10.0)
+    assert mission.birnbaum_importance()["a"] == pytest.approx(
+        1 - math.exp(-0.1), rel=1e-9
+    )
     with pytest.raises(NotImplementedError, match="failure_drivers"):
-        mission.birnbaum_importance()
+        mission.fussell_vesely()
     assert mission.failure_drivers().method == "exact"

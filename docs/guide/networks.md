@@ -2,9 +2,10 @@
 
 Power lines, pipes and communication links carry flow both ways, and it is
 often the links that fail. The question is whether two points of the
-network stay connected: some path of working links joins them. A
-reliability block diagram is directed, and its nodes fail, so a network has
-a model of its own, `Network`.
+network stay connected: some path of working links joins them; or whether
+several sites, or every node, stay connected to each other. A reliability
+block diagram is directed, and its nodes fail, so a network has a model of
+its own, `Network`.
 
 ## Two terminals
 
@@ -55,13 +56,76 @@ substation = surv.Exponential.from_params([0.02])
 Network(links, "G", "L", nodes={"B": substation}).sf(1.0)   # -> 0.98100
 ```
 
+## Several terminals, and all of them
+
+`terminals=[...]` names the nodes that must stay connected to each other,
+two or more (K-terminal reliability), and `terminals="all"` every node of
+the network (all-terminal reliability): the network works while working
+links join each terminal to the others. Two terminals are the same network
+as `source` and `target`.
+
+```python
+sites = Network(links, terminals=["G", "L", "A"])
+sites.sf(1.0)       # -> 0.98468   the generator, the load and A connected
+every = Network(links, terminals="all")
+every.sf(1.0)       # -> 0.98425   no node cut off
+every.ff(1.0)       # -> 0.015746
+every.mean()        # -> 7.6104   years until some node is cut off
+len(every.path_sets())          # -> 21   the spanning trees
+every.minimal_cut_sets()[:2]    # -> the lines into L, the lines out of G
+```
+
+Every method works as for two terminals: the importance measures, the
+B-lives, the parameter uncertainty, `compare`, the levers, the simulation
+and saving (`to_dict` keeps the terminals). What changes:
+
+- **Path sets.** A minimal path set is a smallest set of links (and failing
+  nodes) that joins the terminals: a tree, and for `terminals="all"` a
+  spanning tree. They are read off the decision diagram, up to 100,000
+  (`repyability.network.MAX_PATHS`); more are refused, and nothing else
+  needs them.
+- **Failing nodes.** A terminal that fails parts the terminals, so with
+  `terminals="all"` every failing node is in series with the rest.
+- **The simulation.** A sample's lifetime is that of the link which joins
+  the terminals when the links are added longest-lived first.
+- **`METHOD = "paths"`** is two terminals', and refuses more.
+
+The decision diagram is the same one, with a state saying which of the
+frontier's groups hold a terminal rather than which hold the two: a 10-by-10
+grid with every node a terminal has 0.8 million states (corner to corner it
+has 1.9 million), and with three corners as terminals 3.0 million.
+
+## Directed links
+
+`directed=True` makes every link work one way only, from its first node to
+its second: the network works while a path along the links leads from the
+`source` to the `target`. With the ring's links one way, the tie line `AB`
+carries from `A` to `B` only, and five of the seven paths are left:
+
+```python
+one_way = Network(links, source="G", target="L", directed=True)
+one_way.sf(1.0)             # -> 0.98430   (0.98509 with links both ways)
+len(one_way.path_sets())    # -> 5
+one_way.to_rbd().sf(1.0)    # -> 0.98430   the same graph as a block diagram
+```
+
+A directed network is decided from its simple paths (up to 100,000), and
+every method works on it; it may have cycles. `to_rbd()` gives the
+`NonRepairableRBD` of the same graph, each link and failing node a node of
+the diagram and the other nodes junctions, for a network whose links from
+the source to the target have no cycle (a diagram has none): its methods
+then take a mesh with more paths than can be listed. A directed network
+takes two terminals: whether several are joined along one-way links
+depends on the order they are reached in, which the decision diagram's
+states do not say, so more than two are refused.
+
 ## How it is computed
 
 The exact values come from a binary decision diagram built from the network
 itself (after Hardy, Lucet & Limnios, 2007). The links are decided one at a
 time; after each, what is left to decide depends only on how the nodes with
 links still to come are joined up by the working links so far, and which of
-those groups hold the terminals. All the states before a decision are
+those groups hold a terminal. All the states before a decision are
 worked out together, and equal ones merged, so the diagram grows with the
 network's width rather than with its number of paths, which multiply in a
 mesh. A 6-by-6 grid of cables, corner to corner, has over a million simple
@@ -107,8 +171,62 @@ in order of their lives, longest first, until the terminals are joined.
 grid.sf(1.0, method="simulate", mc_samples=200_000, seed=1)   # -> 0.98477   simulated
 ```
 
-Links fail independently, as a diagram's nodes do. The network is not
-repairable: a link that fails stays failed.
+Links fail independently, as a diagram's nodes do. Given lifetime models,
+a link that fails stays failed; given a life and a repair, it comes back
+(next).
+
+## Repaired links
+
+A line that fails is repaired, and the question becomes how much of the
+time the load is connected and how often it is cut off. Give each link,
+and each node that can fail, a component spec as a
+[`RepairableRBD`](repairable.md) takes one, its `"reliability"` and its
+`"repairability"`, every element new at 0:
+
+```python
+repair = surv.LogNormal.from_params([-5.0, 0.8])        # 81 hours on average, in years
+long_repair = surv.LogNormal.from_params([-4.0, 0.8])   # 221 hours
+line = {"reliability": surv.Exponential.from_params([0.1]), "repairability": repair}
+cable = {"reliability": surv.Exponential.from_params([0.05]), "repairability": long_repair}
+supply = Network(
+    {name: (u, v, cable if name in ("AB", "CL") else line)
+     for name, (u, v, _) in links.items()},
+    source="G", target="L",
+)
+supply.point_availability(1.0)       # -> 0.99999797   connected at a year
+supply.point_unavailability(1.0)     # -> 2.0289e-06
+supply.mission_unavailability(1.0)   # -> 1.9862e-06   the share of the first year cut off
+supply.mean_unavailability()         # -> 2.0289e-06   in the long run: 1.07 minutes a year
+supply.failure_frequency(1.0)        # -> 0.00035790   losses of the connection per year, then
+supply.expected_failures(10.0)       # -> 0.0035738    in the first ten years
+supply.system_failure_frequency()    # -> 0.00035790   in the long run: one every 2,794 years
+```
+
+- **How.** Each element's probability of being down at a time is a
+  diagram's component's (in closed form for an exponential life and
+  repair, else from its renewal curve, to about `1e-7`), and the elements
+  fail and are repaired independently, so the connection's follows from
+  the same decision diagram at those probabilities, exactly. The
+  unavailability is worked out as itself, a sum of products, so a small
+  one keeps its digits, and the availability is one less.
+- **How often.** A link's failure cuts the load off when the link is
+  critical then, so the frequency is each link's failure intensity times
+  its Birnbaum importance, summed; `expected_failures(t)` is its integral
+  and `system_failure_frequency()` its long-run value.
+- **Any connection.** Several terminals, all of them and directed links
+  work the same way.
+- **Importance.** The measures made of the elements' probabilities
+  (`birnbaum_importance(x)`, `criticality_importance(x)`,
+  `fussell_vesely(x)`, the risk worths, `joint_importance`,
+  `differential_importance`, `importances(x)`) are taken at the elements'
+  availabilities at `x`.
+- **Not yet.** A repaired network has no time at which its terminals part
+  for good, so `sf`, `mean`, the B-lives and `random` refuse it; so do the
+  levers, `parameter_sensitivity`, `tornado` and `to_rbd`. An element
+  takes a life and a repair only (no tests, maintenance, crews or costs),
+  every element is repaired or none is, and a repaired network is not
+  simulated. A network that can be drawn as a block diagram has all of
+  those as a `RepairableRBD`.
 
 ## Importance, lives, uncertainty and saving
 
@@ -156,6 +274,18 @@ moved, so that the slope can be checked, or a design tried.
 ```python
 grid.parameter_sensitivity(1.0)["GA"]["failure_rate"]   # -> -0.085537
 grid.with_levers({("GA", "failure_rate"): 0.04}).sf(1.0)   # -> 0.99038
+```
+
+`tornado(x)` puts the parameters on one footing, as a tornado chart does:
+the reliability at `x` with each parameter a tenth lower and a tenth
+higher (or over a range given in `ranges`), the others at their values,
+sorted by the swing.
+
+```python
+spread = grid.tornado(1.0)
+spread.base_value                       # -> 0.98509
+row = spread.rows[0]                    # the largest swing
+row.key, row.value_low, row.value_high  # -> "GB", 0.98599, 0.98420
 ```
 
 `bx_life(x)` and `time_to_reliability(target)` invert `sf`: the time by

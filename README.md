@@ -24,9 +24,12 @@ taking already-fitted lifetime models (from
   the exact MTTF (or simulated, with confidence intervals); B*X* life;
   uncertainty intervals on the reliability, MTTF, B*X* life and time to a
   reliability from uncertain (fitted) component models.
-- **Networks**: undirected networks whose links fail: the exact
-  reliability of the connection between two terminals, by a decision
-  diagram that keeps meshed networks fast.
+- **Networks**: networks whose links fail, undirected or directed: the
+  exact reliability of the connection between two terminals, several, or
+  every node (K-terminal and all-terminal reliability), by a decision
+  diagram that keeps meshed networks fast; with repaired links, the
+  connection's availability over time and in the long run, and how often
+  it is lost.
 - **Phased missions**: missions through phases (take-off, cruise,
   landing), each with its own diagram over the same components: the exact
   mission reliability and the chance of failing in each phase.
@@ -180,17 +183,18 @@ Which analyses each model type has (the method; — where it has none):
 | Top event probability | — | — | `top_event_probability` | — | — | — |
 | Each phase's failure probability | — | — | — | — | `phase_failure_probabilities` | — |
 | Reliability over a mission's time | — | — | — | — | `reliability_over_time` | — |
+| Expected time a mission runs (to failure or its end) | — | — | — | — | `expected_mission_time` | — |
 | A mission's results from one run | — | — | — | — | `summary` | — |
 | **Availability and outages** | | | | | | |
 | Reliability and mean time to the first failure | — | `first_failure_sf` | — | — | — | — |
-| Long-run availability | — | `mean_availability` | — | — | — | — |
+| Long-run availability | — | `mean_availability` | — | `mean_availability` | — | — |
 | Each node's availability | — | `node_availability` | — | — | — | — |
-| Availability over time | — | `point_availability` | `point_unavailability` | — | — | — |
-| Over a mission | — | `mission_availability` | — | — | — | — |
-| Unavailability (precise when small) | — | `mean_unavailability` | `mean_unavailability` | — | — | — |
-| Failure frequency, MTBF | — | `system_failure_frequency` | `system_failure_frequency` | — | — | — |
+| Availability over time | — | `point_availability` | `point_unavailability` | `point_availability` | — | — |
+| Over a mission | — | `mission_availability` | — | `mission_availability` | — | — |
+| Unavailability (precise when small) | — | `mean_unavailability` | `mean_unavailability` | `mean_unavailability` | — | — |
+| Failure frequency, MTBF | — | `system_failure_frequency` | `system_failure_frequency` | `system_failure_frequency` | — | — |
 | Mean up and down times | — | `mean_up_time` | — | — | — | — |
-| Expected failures and events in a window | — | `expected_events` | `expected_failures` | — | — | — |
+| Expected failures and events in a window | — | `expected_events` | `expected_failures` | `expected_failures` | — | — |
 | Simulated availability (distribution) | — | `availability` | — | — | — | — |
 | Simulated histories | — | `simulate_timelines` | — | — | — | — |
 | Each simulation's values, common random numbers | — | `simulation_samples` | — | — | — | — |
@@ -221,11 +225,11 @@ Which analyses each model type has (the method; — where it has none):
 | Structure sizes (counts, depth, core) | `structure_summary` | `structure_summary` | — | — | — | — |
 | The core that does not reduce | `core_structure` | `core_structure` | — | — | — | — |
 | Junctions (drawing nodes) | `junctions` | `junctions` | — | — | — | — |
-| Convert to and from an RBD | — | — | `to_rbd` | — | `from_diagram` | — |
+| Convert to and from an RBD | — | — | `to_rbd` | `to_rbd` | `from_diagram` | — |
 | Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — | — |
 | Capacity over time | — | `point_capacity` | — | — | — | — |
 | How each analysis is computed | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` |
-| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | — | `to_dict` |
+| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | `to_dict` | `to_dict` |
 | Export to Open-PSA (MEF) | — | — | `to_open_psa` | — | — | — |
 | Import from Open-PSA (MEF) | — | — | `from_open_psa` | — | — | — |
 | **Event trees (an initiating event through its barriers)** | | | | | | |
@@ -248,9 +252,9 @@ Which analyses each model type has (the method; — where it has none):
 | Risk reduction worth | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | — |
 | Criticality | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` | — |
 | Fussell-Vesely | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` |
-| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | — | — |
-| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | — | — |
-| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | — | — |
+| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | — |
+| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | — |
+| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | — |
 | Shares of a safety function's PFDavg, common cause apart | — | `pfd_breakdown` | — | — | — | — |
 | Each block's part in each phase's failures | — | — | — | — | `failure_drivers` | — |
 | Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — | — |
@@ -258,8 +262,8 @@ Which analyses each model type has (the method; — where it has none):
 | Every measure in one call | `importances` | `importances` | `importances` | `importances` | `importances` | — |
 | All measures given a state | `importances_given_state` | — | — | — | — | — |
 | Top event given each event | — | — | `conditional_probabilities` | — | — | — |
-| Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — | — |
-| Tornado data (each lever at its low and high) | `tornado` | `tornado` | `tornado` | — | — | — |
+| Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — |
+| Tornado data (each lever at its low and high) | `tornado` | `tornado` | `tornado` | `tornado` | — | — |
 | **Uncertainty** | | | | | | |
 | Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | `sf_uncertainty` | `sf_uncertainty` | `reliability_interval` | — |
 | Of the MTTF | `mean_uncertainty` | — | `mean_uncertainty` | `mean_uncertainty` | — | — |
