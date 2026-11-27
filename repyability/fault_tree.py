@@ -44,6 +44,7 @@ anything else (``_without_fdep``), so a tree whose only dynamic gates are
 FDEPs is a static one. ``_ft_open_psa.py`` writes a tree as Open-PSA.
 """
 
+import dataclasses
 import functools
 import json
 import warnings
@@ -77,6 +78,7 @@ from repyability.rbd.modular import (
 )
 from repyability.rbd.routes import AnalysisRoute, Refused
 from repyability.utils.checks import (
+    is_number,
     no_distribution,
     one_of,
     real_array,
@@ -94,6 +96,7 @@ if TYPE_CHECKING:  # pragma: no cover
         ImportanceTable,
         Lever,
         PrimeImplicant,
+        TornadoResult,
         UncertaintyResult,
     )
 
@@ -261,6 +264,7 @@ _DYNAMIC_GIVES = frozenset(
         "random",
         "levers",
         "with_levers",
+        "tornado",
     }
 )
 #: What a tree with NOT gates gives.
@@ -276,6 +280,7 @@ _NON_COHERENT_GIVES = frozenset(
         "to_open_psa",
         "levers",
         "with_levers",
+        "tornado",
     }
 )
 _NEEDS_CUT_SETS = frozenset(
@@ -3379,6 +3384,100 @@ class FaultTree:
 
         return _sensitivity.with_levers(self, values)
 
+    def tornado(
+        self,
+        t: Optional[float] = None,
+        *,
+        quantity: str = "top_event_probability",
+        ranges: Optional[dict] = None,
+        relative: float = 0.1,
+    ) -> "TornadoResult":
+        """The numbers of a tornado chart: the top event probability at
+        ``t`` with each parameter at its low and at its high, every other
+        at its value, the parameters sorted by how far they swing it.
+
+        Where ``parameter_sensitivity`` gives each parameter's slope, this
+        gives what a range of it does: each end is the tree rebuilt with
+        the parameter there (as ``with_levers`` builds it), its top event
+        probability worked out as ``top_event_probability`` works it out
+        by default. A parameter's range is ``ranges[lever]`` where given,
+        and otherwise a share ``relative`` of its scale either way: of its
+        value, or for a parameter on a log scale (a LogNormal's ``mu``) of
+        1. A range is cut to the parameter's range of values
+        (``Lever.bounds``: a probability's to ``[0, 1]``), and its row
+        says so. A parameter at 0 has no relative change, so without a
+        range it is listed in ``skipped``, as is one whose tree cannot be
+        built or worked out at an end, with the reason.
+
+        Parameters
+        ----------
+        t : float, optional
+            One time. May be left out when no event's probability depends
+            on time.
+        quantity : str, optional
+            ``"top_event_probability"``, the one quantity.
+        ranges : dict, optional
+            ``{lever: (low, high)}``, each lever by its
+            [`Lever`][repyability.Lever] (from ``levers()``) or its
+            ``(key, name)``.
+        relative : float, optional
+            The share of each parameter's scale it moves either way where
+            no range is given, in ``(0, 1)``; by default 0.1.
+
+        Returns
+        -------
+        TornadoResult
+            The base probability, a
+            [`TornadoRow`][repyability.TornadoRow] for each parameter, the
+            largest swing first, and those skipped.
+
+        Raises
+        ------
+        ValueError
+            If ``t`` is not one time (or is left out for a tree whose
+            probabilities depend on time), or a range or share is not
+            valid.
+        NotImplementedError
+            Where ``top_event_probability`` or ``levers`` refuses the
+            tree (a tree of repaired events: ask its
+            ``to_repairable_rbd()``).
+
+        Examples
+        --------
+        Either of two events, with probabilities 0.1 and 0.2: the top
+        event's is ``1 - 0.9 x 0.8 = 0.28``, and a tenth more or less on
+        the second's swings it the more:
+
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["a", "b"])}, {"a": 0.1, "b": 0.2}
+        ... )
+        >>> result = tree.tornado()
+        >>> round(result.base_value, 4)
+        0.28
+        >>> for row in result.rows:
+        ...     print(row.key, round(row.value_low, 4),
+        ...           round(row.value_high, 4))
+        b 0.262 0.298
+        a 0.272 0.288
+        """
+        self._refuse("tornado")
+        from repyability.rbd import _sensitivity
+
+        one_of("quantity", quantity, ("top_event_probability",))
+        if t is not None and (np.ndim(t) != 0 or not is_number(t)):
+            raise ValueError(
+                "tornado takes one time t (its rows are sorted by the swing "
+                f"there), got {t!r}: call it once for each time."
+            )
+
+        def evaluate(tree) -> float:
+            return float(np.ravel(tree.top_event_probability(t))[0])
+
+        return _sensitivity._tornado(
+            self, evaluate, quantity, ranges, relative
+        )
+
     # -- uncertainty -------------------------------------------------------
 
     def sf_uncertainty(
@@ -3970,6 +4069,16 @@ class FaultTree:
         )
         if self.is_dynamic or not self.is_coherent:
             self._gate_routes(out, built)
+        top = out["top_event_probability"]
+        out["tornado"] = (
+            top
+            if top.route == r.REFUSED
+            else dataclasses.replace(
+                top,
+                reason="The top event probability with each parameter at "
+                "its low and at its high, the tree rebuilt: " + top.reason,
+            )
+        )
         self._repaired_routes(out, built)
         return with_importances(out)
 
@@ -4665,6 +4774,86 @@ class FaultTree:
                 raise ValueError("t must be a single number.")
             t = float(real_array(t, "t"))
         return to_open_psa(self, t, name)
+
+    @classmethod
+    def from_open_psa(
+        cls,
+        source,
+        tree: Optional[str] = None,
+        mission_time: Optional[float] = None,
+        *,
+        top: Optional[str] = None,
+    ) -> "FaultTree":
+        """Read a fault tree from an Open-PSA Model Exchange Format (MEF)
+        document: the inverse of ``to_open_psa``, and a way in for trees
+        that other PRA tools write.
+
+        Read are the gates ``or``, ``and``, ``atleast``, ``not``, and
+        ``nand``, ``nor`` and ``xor`` (of two inputs) through NOT gates; a
+        formula nested in a gate becomes a gate of its own, named after
+        it (``"gate/1"``, ...). Basic events read as probabilities, as
+        surpyval ``Exponential`` and ``Weibull`` lives where their
+        expression is an ``exponential`` or ``Weibull`` of the mission time
+        (so the tree keeps its time dependence), or as the value of any
+        other expression (``float``, ``parameter``, arithmetic) at
+        ``mission_time``. House events read as probabilities 0 and 1, and
+        a ``beta-factor`` common-cause group as a ``BetaFactor``
+        ``CCFGroup``. A name the writer made an identifier comes back from
+        its ``label``; names read as text.
+
+        Parameters
+        ----------
+        source : str, os.PathLike or file
+            The document: its text, a path to a file holding it, or a file
+            opened for reading.
+        tree : str, optional
+            The name of the ``define-fault-tree`` to read; by default the
+            document's only one.
+        mission_time : float, optional
+            The time at which to read an event's probability that is an
+            expression of the mission time other than an exponential or
+            Weibull life; by default None: such an event is refused.
+        top : str, optional
+            The top event, a gate (keyword only); by default the one gate
+            that is no gate's input. Only what is below it is read.
+
+        Returns
+        -------
+        FaultTree
+            The tree.
+
+        Raises
+        ------
+        ValueError
+            For a document that declares a document type or an entity
+            (refused before it is parsed, as the input is untrusted), that
+            is not well-formed MEF, that defines several fault trees and no
+            ``tree``, or whose gates form a loop or name an input it does
+            not define.
+        NotImplementedError
+            For what is not read, named with the reason: the ``GLM`` and
+            ``periodic-test`` expressions (repaired and tested events), the
+            MGL, alpha-factor and phi-factor common-cause models, the
+            ``iff``, ``imply`` and ``cardinality`` formulas, uncertainty
+            deviates, and event trees.
+
+        Examples
+        --------
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"no cooling": ("or", ["valve", "no flow"]),
+        ...      "no flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+        ... )
+        >>> again = FaultTree.from_open_psa(tree.to_open_psa())
+        >>> again.gates == tree.gates
+        True
+        >>> round(again.top_event_probability(), 4)
+        0.0595
+        """
+        from repyability._ft_open_psa import from_open_psa
+
+        return from_open_psa(cls, source, tree, mission_time, top)
 
     @classmethod
     def from_json(cls, s) -> "FaultTree":

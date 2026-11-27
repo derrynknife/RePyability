@@ -24,6 +24,51 @@ release between minors that only adds (0.19.1).
   fixed probabilities). `analysis_routes()` and the capability matrix
   show them.
 
+- Tornado data: `tornado()` on `RepairableRBD`, `NonRepairableRBD` and
+  `FaultTree` gives the system's availability or cost rate (the
+  reliability at `x`, the top event probability at `t`) with each lever
+  of `levers()` at its low and at its high, every other at its value,
+  each end the diagram rebuilt as `with_levers` builds it and worked out
+  exactly or numerically. A `TornadoResult` holds the base value, a
+  `TornadoRow` per lever (its low and high, the values there and the
+  swing), sorted by the swing, and the levers skipped with the reason. By
+  default a lever moves a tenth of its scale either way (`relative=`; a
+  log-scale parameter's of 1, a counting lever one fewer and one more),
+  cut to its range of values; `ranges=` gives a lever its own range,
+  which a regression node's covariate needs. A quantity only simulation
+  gives is refused.
+- `RepairableRBD.first_failure_bounds(t, state=None)` brackets the
+  reliability of the first system failure wherever `expected_events` is
+  worked out, including where `first_failure_sf` refuses (a redundant
+  structure of non-exponential units, maintenance, tests, standby or
+  common-cause groups): `1 - Q(0) - W(t) <= R(t) <= 1 - Q(t)`, with `W`
+  the expected system failures and `Q` the unavailability (the highest
+  so far among the times given). Where the system can be down for
+  planned work it can be down without having failed, and the upper
+  bound is 1. It returns a `FirstFailureBounds` (`lower`, `upper`,
+  `expected_failures`, `unavailability`, `planned_outages`).
+  `mean_time_to_first_failure_bound(state=None)` integrates the lower
+  bound: a lower bound of the mean time to the first failure. The
+  refusals of `first_failure_sf` and `mean_time_to_first_failure` name
+  them beside `method="simulate"`. No seeded result changes.
+
+- `FaultTree.from_open_psa(source, tree=None, mission_time=None, *,
+  top=None)` reads a fault tree from an Open-PSA Model Exchange Format
+  document (text, a path or a file), the inverse of `to_open_psa`: the
+  gates `or`, `and`, `atleast` and `not`, and `nand`, `nor` and `xor` (of
+  two inputs) through NOT gates, a nested formula as a gate of its own
+  (`"gate/1"`, ...); basic events as probabilities, `exponential` and
+  `Weibull` expressions of the mission time as surpyval lives, any other
+  expression (`parameter`, arithmetic) as its value at `mission_time`;
+  house events as probabilities 0 and 1; a `beta-factor` group as a
+  `BetaFactor` `CCFGroup`; a name the writer made an identifier from its
+  label. A document that declares a document type or an entity is
+  refused before it is parsed, and what is not read (`GLM` and
+  `periodic-test`, the MGL, alpha-factor and phi-factor models, `iff`,
+  `imply`, `cardinality`, uncertainty deviates and event trees) is
+  refused by name, saying what to do. Every tree the writer exports reads
+  back as itself.
+
 - `importances`, on `NonRepairableRBD`, `RepairableRBD`, `FaultTree`,
   `Network` and `PhasedMission`: every importance measure the model has,
   in one call, as an `ImportanceTable`. Its `measures` are what each
@@ -441,6 +486,11 @@ release between minors that only adds (0.19.1).
   before.
 
 ### Changed
+
+- `FaultTree.to_open_psa` keeps the name of a common-cause group's member
+  that it makes an identifier, as an attribute of the group
+  (`label-<identifier>`), as the format gives a member no label of its
+  own; `from_open_psa` reads it back.
 
 - The refusals of a shelf of spares (`spares_stock(method="simulate")`,
   the `spares` lever, and now a component's `"spares"`) say what to do as
