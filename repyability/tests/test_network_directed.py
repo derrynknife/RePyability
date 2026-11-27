@@ -308,16 +308,19 @@ def test_the_diagram_does_not_depend_on_which_states_merge(monkeypatch):
         assert same_plan(one, other)
 
 
-def test_states_in_several_words_merge(monkeypatch):
-    # A frontier of 14 nodes takes more than one 64-bit word a state:
-    # equal states merge all the same, so the diagram stays small.
-    links = {}
-    for i in range(14):
-        links[("in", i)] = ("s", i, 0.1)
-        links[("out", i)] = (i, "t", 0.1)
-    net = Network(links, "s", "t")
-    monkeypatch.setattr(network_module, "MAX_STATES", 200_000)
-    assert net.sf() == pytest.approx(1 - (1 - 0.81) ** 14, rel=1e-13)
+def test_states_in_several_words_merge():
+    # States of more labels than one 64-bit word holds: equal rows are
+    # one state all the same.
+    rng = np.random.default_rng(839)
+    distinct = rng.integers(-1, 30, size=(40, 20)).astype(np.int16)
+    rows = distinct[rng.integers(0, 40, size=500)]
+    unique, inverse = network_module._unique_rows(rows)
+    assert len(unique) == len(np.unique(rows, axis=0)) <= 40
+    assert np.array_equal(unique[inverse], rows)
+    # One word's too.
+    unique, inverse = network_module._unique_rows(rows[:, :5])
+    assert len(unique) == len(np.unique(rows[:, :5], axis=0))
+    assert np.array_equal(unique[inverse], rows[:, :5])
 
 
 def test_the_simulated_lifetime_reaches_every_terminal():

@@ -433,9 +433,11 @@ places, nested diagrams):
   repaired: the top event's unavailability over time, its average over a
   window and in the long run (with no life that is not repaired), and,
   for a coherent tree, its failure frequency and expected occurrences,
-  from the tree's own decision diagram over the events' curves; with
-  common-cause groups of repaired events with exponential lives, the
-  groups' chains conditioned on module by module.
+  from the tree's own decision diagram over the events' curves, and the
+  importance measures at a time; with common-cause groups of repaired
+  events with exponential lives, the groups' chains conditioned on
+  module by module, for the measures and the failure frequency at a
+  time too.
 
 **Simulated**, or refused with the simulation to run instead:
 

@@ -34,7 +34,28 @@ release between minors that only adds (0.19.1).
   in 0.2 s, and a 6-by-6 grid with a link each way (1.3 million paths,
   with cycles) in 0.3 s. It follows at most 64 nodes at once, and refuses
   past that or past `MAX_STATES`, saying to simulate.
-
+- A fault tree with common-cause groups over repaired events gives its
+  failure frequency at a time, `failure_frequency(t)`, and its
+  probability-based measures at a time (Birnbaum, criticality, RAW, RRW,
+  Fussell-Vesely, improvement potential, joint and differential
+  importance, `ranked_cut_sets` and `conditional_probabilities`), which
+  were refused. The frequency counts each event outside the groups where
+  it is critical over the groups' joint states at `t`, from their
+  chains, and each cause at its rate times the rise its strike makes in
+  the top event's probability; the measures hold an event outside the
+  groups occurred and not and condition a member on its state through
+  its group's joint states then, each group within the smallest part of
+  the tree holding its members, as a `RepairableRBD`'s measures at a
+  time do. Checked: each measure against `to_repairable_rbd()`'s at the
+  same times to 1e-12 (within 3e-14), repaired and tested members; the
+  frequency against the pair's four-state Markov chain to 1e-12, and at
+  a late time against `system_failure_frequency()`; its integral against
+  `expected_failures` (1e-6); and against 20,000 seeded simulations of
+  the diagram over 300 h, 0.2284 top events against 0.2229 (-1.7 SE),
+  and the top event given a member down at 250 h, 0.0696 against 0.0671
+  (-0.2 SE). Trees without such groups give the same values to the bit.
+  `to_open_psa()` still refuses such a tree, the format's groups
+  splitting probabilities, not rates.
 - `SafetyFunction.vote(k, *functions, beta=..., beta_detected=...,
   beta_safe=...)`: a vote of votes (a 2oo4 arrangement wired as 1oo2 of
   2oo2, say), each function voted on a vote, a vote of votes or votes in
