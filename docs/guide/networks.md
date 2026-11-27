@@ -109,15 +109,41 @@ len(one_way.path_sets())    # -> 5
 one_way.to_rbd().sf(1.0)    # -> 0.98430   the same graph as a block diagram
 ```
 
-A directed network is decided from its simple paths (up to 100,000), and
-every method works on it; it may have cycles. `to_rbd()` gives the
-`NonRepairableRBD` of the same graph, each link and failing node a node of
-the diagram and the other nodes junctions, for a network whose links from
-the source to the target have no cycle (a diagram has none): its methods
-then take a mesh with more paths than can be listed. A directed network
-takes two terminals: whether several are joined along one-way links
-depends on the order they are reached in, which the decision diagram's
-states do not say, so more than two are refused.
+Every method works on a directed network, and it may have cycles.
+`to_rbd()` gives the `NonRepairableRBD` of the same graph, each link and
+failing node a node of the diagram and the other nodes junctions, for a
+network of two terminals whose links from the source to the target have no
+cycle (a diagram has none).
+
+Given `terminals`, a directed network works while the `source` reaches
+every one of them along working links (the paths may share links, and
+nothing asks for a way back): a feeder that must supply several loads, or
+a broadcast that must reach every site. `terminals="all"` is every node,
+and needs the `source`; a list with no `source` is reached from its first
+node.
+
+```python
+fed = Network(links, source="G", terminals=["L", "C"], directed=True)
+fed.sf(1.0)                 # -> 0.96951   G feeds both L and C
+len(fed.path_sets())        # -> 7   the smallest sets of lines that do
+every = Network(links, source="G", terminals="all", directed=True)
+every.sf(1.0)               # -> 0.88834   G feeds every node
+```
+
+A directed network's decision diagram is built as an undirected one's is,
+but a state says more: which of the nodes with links still to come the
+source has reached, and which of the others each of the others leads to
+(one-way links do not group the nodes, so who leads to whom is kept), which
+is what lets cycles in. It has more states than the same network with
+links both ways: a 6-by-6 grid with a cable each way between
+neighbours (120 links, over a million simple paths) has 0.4 million and
+takes a third of a second, and gives 0.994761 as the grid with links both
+ways does, as it must. It follows at most 64 nodes at once (the nodes with
+links decided and links to come, and the terminals not yet reached), so
+`terminals="all"` is for networks of up to about 64 nodes; beyond that,
+and past `MAX_STATES`, the exact values refuse and say to simulate. The
+question it does not answer is whether the terminals can all reach each
+other, there and back.
 
 ## How it is computed
 

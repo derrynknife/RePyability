@@ -325,9 +325,17 @@ age `a` survives `s` more with chance `exp(-G)`, `G` its life's
 (or `p` times the plan's expected demands then). From new its survival
 is `R(t) (1 - p)^N(t)` (or `R(t) exp(-p Λ(t))`), the life and the
 demands as two components in series; but each unit's life depends on
-when it is put into service, so only the simulations take it
-(`availability`, `cost`, `simulate_timelines`, on the Python engine),
-and the exact and numerical analyses refuse it. Its lever is
+when it is put into service, so it has no reliability, mean life or
+long run of its own. Its values over a window (`point_availability`,
+`mission_availability`, `expected_failures`, `expected_cost`) are
+numerical: a renewal equation on the diagram's clock, solved forward on
+a grid whose points take in the demands (or the plan's times), from new
+or up at an age, when it is repaired as new with no task, tests,
+maintenance group or shutdown; the failures at set demands are exact
+atoms, the rest second order in the grid's step (about `(h / s)^2`, `s`
+its life's typical up time). The simulations take it too
+(`availability`, `cost`, `simulate_timelines`, on the Python engine).
+Its lever is
 `demand.probability`; a duty and a `"demand_basis"` are refused with it
 (give the life and the demands on the calendar). A plan of one rate is
 that rate. A demand mode on a group of units is not modelled: draw it as

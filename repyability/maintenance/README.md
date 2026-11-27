@@ -3941,6 +3941,33 @@ times converging to the constant rate; a plan of one rate as the rate;
 routes, saving, `UnitPlan`, the lever, units and refusals. Left: its
 values over a window exactly (a renewal equation on the clock).
 
+**Its values over a window without simulating (added after).** The same
+engineer wants the pump's availability over the year, its expected
+failures and repair costs, as the other components' are worked out,
+without a simulation's noise. Solved as a renewal equation on the
+diagram's clock (`_demand_renewal.PlannedDemandsCurve`): a unit put in
+at `u` survives `s` more with chance `R(s) E(u, u + s)`, the demands'
+`E` from `u`, so the kernel depends on `u` and the equation is solved
+forward, cell by cell, on a grid whose points take in the demands (or
+the plan's times) and the ends of fixed repairs from them; each cell's
+failures and renewals kept by their mass and mean, and those within a
+cell found by substitution. At set times each demand fails it with `p`
+less `p` times its chance of being in a repair (one ending then is not
+called on): the failures at the demands are atoms, their repairs exact
+at any time. From new or up at an age; down, long in service, a task,
+tests, a group, a shutdown or an imperfect repair refused (simulated).
+Hand-worked: the case above, its downtime two nested integrals. Error
+second order in the step, about `(h / s)^2` of the chances moved, `h`
+the step and `s` the life's typical up time. Checks
+(`test_life_with_planned_demands.py`): a life that never fails against
+the set-times component (1e-12, every value); a plan of one rate against
+the rate's own renewal equation; the hand-worked case within `4 (h /
+s)^2`; seeded simulations at set times, on a plan and from an age within
+4 standard errors; routes and refusals. Left: the long run and mean
+lives (none: the demands end, or the plan is no renewal process), and a
+horizon of many up times (the grid is `O(n^2)`, at most `MAX_STEPS`
+points).
+
 ### UC-73: "The standby generator is started at three planned outages next year, and it fails to start on 10% of starts. How available is it, how many failed starts do we expect, and what do the repairs cost? And the fire pump, called on more in summer than in winter?"
 
 - **Status:** built: a component spec's `"demand_times"` (a list of
