@@ -12,6 +12,30 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- The long-run values of a warm standby pair (two units, one needed, a
+  spare that ages at `"dormancy_factor"` while it waits and can fail in
+  standby, a sure switch) of any lives and repairs with one repair at a
+  time (`repair_crews=1`), which only a simulation gave:
+  `mean_availability`, `mean_unavailability`, the frequencies and the
+  cost rate, inside larger diagrams too. Each time a unit starts its
+  repair, what follows depends only on how much of its life the
+  operating unit has used, so the pair is a Markov renewal process on
+  that; it is solved on a grid (the step's sums by quadrature at each
+  point, so a repair far shorter than a step costs nothing), halved
+  until two extrapolated solutions agree to 1e-9. Checked: exponential
+  units equal the Markov chain to 1e-9 for three rate pairs and spares
+  ageing at 0.1, 0.5 and 1 (within 3e-10); exponential lives against
+  their closed form with Weibull and lognormal repairs (1e-8), and an
+  unavailability of 1e-9 against it (1e-6); a spare that hardly ages
+  against the cold pair's cycle; Weibull(1000, 2.5) lives and
+  Weibull(300, 1.5) repairs with a spare ageing at 0.5, 0.953177 against
+  0.952999 simulated (400 runs of 1e6 h, standard error 1.7e-4, -1.0
+  SE), and hot, 0.922191 against 0.922522 (+1.6 SE); Weibull(1000, 1.5)
+  lives and LogNormal(5, 0.6) repairs at 0.2, 0.981165 against 0.981051
+  (-1.0 SE). A warm pair with both units repaired at once or a switch
+  that can fail, and any warm pair over time, are refused as before,
+  pointing to the simulation. `analysis_routes()` reports the pair as
+  numerical.
 - A `Network` of repaired elements may now mix them with fixed
   probabilities and lives that are not repaired, which it refused before
   (as a `FaultTree` does): a probability is down with it at every time

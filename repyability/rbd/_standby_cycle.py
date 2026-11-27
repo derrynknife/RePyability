@@ -81,9 +81,10 @@ _CUTS = (0.01, 0.1, 0.5, 0.9, 0.99, 0.9999, 1 - 1e-8, 1 - 1e-12)
 
 
 def why_not(arrangement) -> Optional[str]:
-    """Why a standby group's long-run values are worked out neither by
-    its cycle (see the module's notes) nor, with both units repaired at
-    once, by ``_standby_both``; or None."""
+    """Why a standby group is no pair, one needed, whose long-run values
+    are worked out by its cycle (see the module's notes), by
+    ``_standby_both`` with both units repaired at once, or by
+    ``_standby_warm`` with a spare that ages; or None."""
     if arrangement.rates is not None:
         return "it is not a standby group (its units operate together)"
     if arrangement.units != 2 or arrangement.k != 1:
@@ -91,8 +92,6 @@ def why_not(arrangement) -> Optional[str]:
             f"it has {arrangement.units} units, {arrangement.k} needed, and "
             "they are worked out for a pair, one needed, alone"
         )
-    if arrangement.dormancy_factor != 0.0:
-        return "its spare ages while it waits (a warm spare)"
     return None
 
 
