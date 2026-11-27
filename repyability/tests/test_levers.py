@@ -145,6 +145,33 @@ def test_a_lever_s_range_is_where_its_diagram_builds(kind):
                 rbd.with_levers({lever: outside})
 
 
+@pytest.mark.parametrize("kind", sorted(KINDS))
+def test_every_diagram_s_tornado_takes_each_lever(kind):
+    # Each lever has a row or is skipped with its reason, where the
+    # tornado is not refused (as its route says).
+    rbd = KINDS[kind]
+    if rbd.analysis_routes()["tornado"].route == "refused":
+        with pytest.raises((NotImplementedError, ValueError)):
+            tornado(rbd)
+        return
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = tornado(rbd)
+    listed = [(row.key, row.name) for row in result.rows] + [
+        (s["key"], s["name"]) for s in result.skipped
+    ]
+    assert sorted(listed, key=repr) == sorted(named(rbd.levers()), key=repr)
+    for row in result.rows:
+        assert row.swing == abs(row.value_high - row.value_low)
+        assert row.low <= row.base <= row.high
+
+
+def tornado(rbd):
+    if isinstance(rbd, NonRepairableRBD):
+        return rbd.tornado(30.0)
+    return rbd.tornado()
+
+
 def test_the_calendar_flag_marks_a_shared_calendar():
     block = {"policy": "block", "interval": 50.0, "cost": 1.0}
     shared = RepairableRBD(

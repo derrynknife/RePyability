@@ -78,7 +78,12 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
         [
             (
                 "Reliability and mean time to the first failure",
-                ("first_failure_sf", "mean_time_to_first_failure"),
+                (
+                    "first_failure_sf",
+                    "mean_time_to_first_failure",
+                    "first_failure_bounds",
+                    "mean_time_to_first_failure_bound",
+                ),
             ),
             ("Long-run availability", ("mean_availability",)),
             ("Each node's availability", ("node_availability",)),
@@ -263,6 +268,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 "Parameter sensitivity, levers",
                 ("parameter_sensitivity", "levers", "with_levers"),
             ),
+            (
+                "Tornado data (each lever at its low and high)",
+                ("tornado",),
+            ),
         ],
     ),
     (
@@ -365,7 +374,7 @@ FAMILIES: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {
                 "barlow_proschan_importance",
             ),
         ),
-        ("Sensitivity", ("parameter_sensitivity",)),
+        ("Sensitivity", ("parameter_sensitivity", "tornado")),
         ("Uncertainty", ("sf_uncertainty", "mean_uncertainty")),
         ("Allocation", ("allocate_redundancy", "simple_allocation")),
         ("Capacity", ("capacity_distribution",)),
@@ -402,7 +411,7 @@ FAMILIES: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {
                 "pfd_breakdown",
             ),
         ),
-        ("Sensitivity", ("parameter_sensitivity",)),
+        ("Sensitivity", ("parameter_sensitivity", "tornado")),
         (
             "Uncertainty",
             (

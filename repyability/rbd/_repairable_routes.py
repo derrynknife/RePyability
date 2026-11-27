@@ -231,6 +231,15 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             "moved; at times or over a window, of the values over time.",
         ),
     )
+    give(
+        ("tornado",),
+        from_long_run(
+            r.EXACT,
+            "The long-run availability (or cost rate) with each lever at "
+            "its low and at its high, the diagram rebuilt; at a time or over "
+            "a window, its values over time.",
+        ),
+    )
     # The cost analyses refuse a diagram with nothing priced (not even
     # an acquisition cost) first; with an acquisition cost alone there
     # is no running cost, exactly.
@@ -362,6 +371,26 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         kind="window",
     )
     give(("expected_failures", "expected_events"), window)
+    # The first failure's bracket: the expected failures and the
+    # unavailability, refused as either is.
+    over_time = out["point_unavailability"]
+    give(
+        ("first_failure_bounds", "mean_time_to_first_failure_bound"),
+        (
+            window
+            if window.route == r.REFUSED
+            else (
+                over_time
+                if over_time.route == r.REFUSED
+                else dataclasses.replace(
+                    window,
+                    reason="Bounds on the first failure from the "
+                    "unavailability and the expected system failures: "
+                    + window.reason,
+                )
+            )
+        ),
+    )
     out["expected_cost"] = (
         r.refused(unpriced)
         if unpriced

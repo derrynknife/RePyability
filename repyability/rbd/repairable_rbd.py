@@ -55,6 +55,7 @@ from repyability.rbd.results import (
     ExpectedCost,
     ExpectedEvents,
     ExpectedNPV,
+    FirstFailureBounds,
     ImportanceTable,
     Lever,
     MaintenanceEffect,
@@ -73,6 +74,7 @@ from repyability.rbd.results import (
     SparesDemand,
     SparesStock,
     TimelineSimulation,
+    TornadoResult,
     TotalCostAllocation,
     UncertaintyImportance,
     UncertaintyResult,
@@ -3681,7 +3683,9 @@ class RepairableRBD(RBD):
         common-cause groups, a coupled sub-system) refuses and points to
         ``method="simulate"``, which reads the first failures off
         [`simulate_timelines`][repyability.RepairableRBD.simulate_timelines]:
-        the share of simulations with no failure by each time.
+        the share of simulations with no failure by each time; and to
+        [`first_failure_bounds`][repyability.RepairableRBD.first_failure_bounds],
+        which brackets it without simulating.
 
         Parameters
         ----------
@@ -3770,7 +3774,9 @@ class RepairableRBD(RBD):
         [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf],
         which has the routes: exact for a series structure and for
         exponential lives and repairs (one linear solve over the Markov
-        chain's up states), and ``method="simulate"`` for the rest.
+        chain's up states), and ``method="simulate"`` for the rest, with
+        [`mean_time_to_first_failure_bound`][repyability.RepairableRBD.mean_time_to_first_failure_bound]
+        a lower bound without simulating.
 
         For a pair of exponential units in parallel with one repair crew,
         the mean time to the first failure is ``(3 lam + mu) / (2 lam^2)``,
@@ -3825,6 +3831,113 @@ class RepairableRBD(RBD):
             engine,
             confidence,
         )
+
+    def first_failure_bounds(self, t, state=None) -> FirstFailureBounds:
+        """Bounds on the probability that the system runs to each time
+        ``t`` without a failure, from values worked out without
+        simulating: wherever
+        [`expected_events`][repyability.RepairableRBD.expected_events]
+        is, including where
+        [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf]
+        refuses (a redundant structure of other lives than exponential,
+        maintenance, tests, standby or common-cause groups).
+
+        The first failure has happened by ``t`` at least as often as the
+        system is down at ``t`` (or at any time before), and no more
+        often than the expected number of system failures in ``[0, t)``
+        (plus the chance that it is down at the start). So, with ``Q``
+        the unavailability
+        ([`point_unavailability`][repyability.RepairableRBD.point_unavailability])
+        and ``W(t)`` the expected failures,
+        ``1 - Q(0) - W(t) <= R(t) <= 1 - Q(t)``. The bracket is tight
+        where ``W(t)`` is well under 1 (a reliable system, a short
+        mission) and says less as ``W(t)`` nears 1. Where the diagram can
+        be down for planned work (maintenance, tests or shuts that take
+        time), it can be down without having failed, so the upper bound
+        is 1 (``planned_outages`` says so).
+
+        Each bound is as accurate as the values it comes from (the
+        expected failures to about 1e-7, the unavailability to about
+        4e-7). Where the first failure is exact, it lies within them.
+
+        Parameters
+        ----------
+        t : float or array-like
+            Times from 0 (or from ``state``).
+        state : dict or str, optional
+            Start from the components' current states, as for
+            [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf].
+            A system down at the start has failed.
+
+        Returns
+        -------
+        FirstFailureBounds
+            ``lower`` and ``upper`` of the reliability, with the expected
+            failures and the unavailability they come from.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``expected_events`` and ``point_unavailability``, with
+            their messages.
+
+        Examples
+        --------
+        A pair of Weibull units in parallel, each repaired in about 10
+        hours, where ``first_failure_sf`` refuses:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> unit = {
+        ...     "reliability": surv.Weibull.from_params([1000, 2]),
+        ...     "repairability": surv.Exponential.from_params([0.1]),
+        ... }
+        >>> pair = RepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {"a": unit, "b": unit},
+        ... )
+        >>> bounds = pair.first_failure_bounds(1000.0)
+        >>> round(bounds.lower, 4), round(bounds.upper, 4)
+        (0.9865, 0.9999)
+        """
+        return _first_failure.first_failure_bounds(self, t, state)
+
+    def mean_time_to_first_failure_bound(self, state=None) -> float:
+        """A lower bound on the mean time to the first system failure,
+        wherever
+        [`expected_events`][repyability.RepairableRBD.expected_events]
+        is worked out: the area under the lower bound of
+        [`first_failure_bounds`][repyability.RepairableRBD.first_failure_bounds],
+        ``max(0, 1 - Q(0) - W(t))``, integrated to where it reaches 0.
+
+        It is close to the mean where the system's failures are rare
+        before its first one is likely, and says less otherwise. (The
+        upper bound's area, the mean time up before the system is first
+        down for good, says little, and is not given.)
+
+        Parameters
+        ----------
+        state : dict or str, optional
+            As for
+            [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf].
+
+        Returns
+        -------
+        float
+            The lower bound, in the models' unit; ``inf`` if the system's
+            expected failures never reach 1.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``expected_events``.
+
+        Examples
+        --------
+        See
+        [`first_failure_bounds`][repyability.RepairableRBD.first_failure_bounds].
+        """
+        return _first_failure.mean_time_to_first_failure_bound(self, state)
 
     def point_availability(
         self,
@@ -9175,6 +9288,118 @@ class RepairableRBD(RBD):
         8.0
         """
         return _sensitivity.with_levers(self, values)
+
+    def tornado(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        *,
+        x=None,
+        window=None,
+        state=None,
+        quantity: str = "availability",
+        ranges: Optional[dict] = None,
+        relative: float = _sensitivity.TORNADO_RELATIVE,
+    ) -> TornadoResult:
+        """The numbers of a tornado chart: the system's availability (or
+        cost rate) with each lever at its low and at its high, every other
+        lever at its value, the levers sorted by how far they swing it.
+
+        Where ``parameter_sensitivity`` gives each lever's slope at its
+        value, this gives what a range of it does. Each end is the
+        diagram rebuilt with the lever there (as ``with_levers`` builds
+        it), its value worked out as by default: in the long run (exact,
+        or numerical as its components' are), or at the time ``x`` or over
+        ``[0, window)`` (from new, or from ``state``). A quantity that
+        could only be simulated is refused: a difference of two
+        simulations is mostly their noise (``compare`` the diagram with
+        ``with_levers``' takes common draws).
+
+        A lever's range is ``ranges[lever]`` where given, and otherwise a
+        share ``relative`` of its scale either way: of its value (a
+        scale, a rate, a shape, an interval), or for a parameter on a log
+        scale (a LogNormal's ``mu``) of 1, which moves the time it is the
+        log of by that share; a lever that counts (standby units, repair
+        crews) one fewer and one more. A range is cut to the lever's
+        range of values (``Lever.bounds``), and its row says so. A
+        regression node's covariate has no relative change (its zero is
+        its unit's), nor has a lever at 0, so without a range they are
+        listed in ``skipped``, as is a lever whose diagram cannot be
+        built or worked out at an end, with the reason.
+
+        Parameters
+        ----------
+        working_nodes, broken_nodes : Collection[Hashable], optional
+            Nodes held working or failed, as for ``mean_availability``.
+        x : float, optional
+            One time, for the point availability then.
+        window : float, optional
+            A window's length, for the mission availability (or the mean
+            cost per unit time) over ``[0, window)``.
+        state : optional
+            Where the components start from, with ``x`` or ``window``.
+        quantity : str, optional
+            ``"availability"`` (the default) or ``"cost_rate"`` (in the
+            long run or over a window).
+        ranges : dict, optional
+            ``{lever: (low, high)}``, each lever by its
+            [`Lever`][repyability.Lever] (from ``levers()``) or its
+            ``(key, name)``.
+        relative : float, optional
+            The share of each lever's scale it moves either way where no
+            range is given, in ``(0, 1)``; by default 0.1.
+
+        Returns
+        -------
+        TornadoResult
+            The base value, a [`TornadoRow`][repyability.TornadoRow] for
+            each lever (its low and high, the values there and the swing),
+            the largest swing first, and the levers skipped.
+
+        Raises
+        ------
+        ValueError
+            For a quantity, time, window, range or share that is not
+            valid, or a lever the diagram does not have.
+        NotImplementedError
+            Where the quantity is not worked out exactly or numerically
+            for this diagram (as ``mean_availability`` and the rest
+            refuse it).
+
+        Examples
+        --------
+        A unit failing at 0.01 an hour, repaired at 0.1 an hour,
+        available ``100 / 110`` of the time. A tenth more or less on its
+        repair rate swings that from 0.9 to 0.9167, a little more than
+        the same on its failure rate does:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> rbd = RepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": {"reliability": E([0.01]), "repairability": E([0.1])}},
+        ... )
+        >>> result = rbd.tornado()
+        >>> round(result.base_value, 4)
+        0.9091
+        >>> for row in result.rows:
+        ...     print(row.name, round(row.value_low, 4),
+        ...           round(row.value_high, 4))
+        repairability.failure_rate 0.9 0.9167
+        reliability.failure_rate 0.9174 0.9009
+        """
+        return _sensitivity.tornado(
+            self,
+            working_nodes,
+            broken_nodes,
+            x=x,
+            window=window,
+            state=state,
+            quantity=quantity,
+            ranges=ranges,
+            relative=relative,
+        )
 
     @_long_run.follows_upgrades
     def mean_availability_uncertainty(

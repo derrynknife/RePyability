@@ -1586,10 +1586,10 @@ def mean_down_time(
 #: The long-run methods a diagram with upgrades answers as the diagram
 #: after them (see ``after_upgrades``): those that are long-run values,
 #: or are by default (no ``x``, ``window`` or ``state`` given).
-#: ``parameter_sensitivity`` is not one: its levers are the diagram's
-#: own (the upgrade's time, the old life), which the diagram after the
-#: upgrades has not; the long-run values it asks for are those once
-#: upgraded all the same (``ROUTED_AFTER_UPGRADES``).
+#: ``parameter_sensitivity`` and ``tornado`` are not: their levers are
+#: the diagram's own (the upgrade's time, the old life), which the diagram
+#: after the upgrades has not; the long-run values they ask for are those
+#: once upgraded all the same (``ROUTED_AFTER_UPGRADES``).
 AFTER_UPGRADES = (
     "availability_allocation",
     "barlow_proschan_importance",
@@ -1620,7 +1620,7 @@ AFTER_UPGRADES = (
 )
 
 #: The methods whose routes are those of the diagram after the upgrades.
-ROUTED_AFTER_UPGRADES = AFTER_UPGRADES + ("parameter_sensitivity",)
+ROUTED_AFTER_UPGRADES = AFTER_UPGRADES + ("parameter_sensitivity", "tornado")
 
 #: The arguments that ask one of those methods for values over time.
 _OVER_TIME = ("x", "window", "state")

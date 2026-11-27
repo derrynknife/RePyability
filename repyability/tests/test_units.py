@@ -72,6 +72,30 @@ def test_results_scale_with_the_unit(c):
             )
 
 
+@pytest.mark.parametrize("c", [1e-6, 1e3, 1e6])
+def test_the_first_failure_bracket_scales_with_the_unit(c):
+    # A Weibull pair with repair, where the exact values refuse.
+    def pair(c):
+        part = {"reliability": W([1000 * c, 2]), "repairability": E([0.1 / c])}
+        return RepairableRBD(
+            [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+            {"a": part, "b": part},
+        )
+
+    base, scaled = pair(1.0), pair(c)
+    t = np.array([0.0, 100.0, 1000.0, 5000.0])
+    left, right = base.first_failure_bounds(t), scaled.first_failure_bounds(
+        t * c
+    )
+    for what in ("lower", "upper", "expected_failures", "unavailability"):
+        np.testing.assert_allclose(
+            right[what], left[what], rtol=1e-7, atol=1e-12, err_msg=what
+        )
+    assert scaled.mean_time_to_first_failure_bound() / c == pytest.approx(
+        base.mean_time_to_first_failure_bound(), rel=1e-7
+    )
+
+
 def test_differential_importance_does_not_depend_on_the_unit():
     # A LogNormal's mu is the log of a time: in years it is ln(8760) less
     # than in hours, so moving it by a share of itself would weigh it by
