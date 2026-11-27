@@ -98,17 +98,17 @@ def test_an_exponential_unit_is_memoryless():
     np.testing.assert_allclose(
         rbd.point_availability(x, state=down),
         available_from_down(lam, mu, x),
-        atol=1.2e-6,
+        atol=2e-8,
     )
     # Its failures from down: lam times its expected up time.
     t = np.array([1.0, 10.0, 100.0])
     total = lam + mu
     uptime = mu / total * (t + np.expm1(-total * t) / total)
     np.testing.assert_allclose(
-        rbd.expected_failures(t, state=down), lam * uptime, atol=8e-7
+        rbd.expected_failures(t, state=down), lam * uptime, atol=1e-7
     )
     np.testing.assert_allclose(
-        rbd.mission_availability(t, state=down), uptime / t, atol=8e-7
+        rbd.mission_availability(t, state=down), uptime / t, atol=2e-8
     )
 
 
@@ -450,7 +450,7 @@ def test_capacity_from_a_state():
     exact = np.zeros((4, len(x)))
     exact[:3] += others * (1.0 - back)
     exact[1:] += others * back
-    np.testing.assert_allclose(capacity.probabilities, exact, atol=3e-7)
+    np.testing.assert_allclose(capacity.probabilities, exact, atol=1e-8)
 
 
 def test_a_component_down_holds_a_repair_crew():

@@ -734,13 +734,13 @@ def unit_curve(
             reach = int(np.ceil(repair.reach(fine) / finer))
             steps = min(max(steps, reach), _EARLY_MOST)
         n = min(_EARLY_RATIO * n, steps)
-        if switch is not None:
-            # Before the switch the unit is the first life's alone (and
-            # its replacements one after another are counted as that
-            # unit's are); a grid that would reach it is left out.
-            if n * finer >= switch[0]:
-                break
+        if switch is not None and n * finer < switch[0]:
+            # Before the switch the unit is the first life's alone.
             arguments["switch"] = None
+        elif switch is not None and age is not None:
+            # A grid that reaches the switch counts the replacements one
+            # after another by where it ends: left out, with any finer.
+            break
         fixed = repair.fixed
         if fixed is not None and (age is None or age > n * finer):
             finer = on_grid(finer, fixed)

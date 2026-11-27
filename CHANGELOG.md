@@ -1393,7 +1393,9 @@ release between minors that only adds (0.19.1).
   networks with such components move by up to the sizes above:
   typically in the 5th to 7th digit within the first repair times of
   the start (a `mission_availability` to 100 by 8.5e-6 for a diagram of
-  90 such components), and in the 9th after. Left as they were: the
+  90 such components; the networks guide's `expected_failures(10.0)`
+  reads 0.0035740, where it read 0.0035738), and in the 9th after. Left
+  as they were: the
   first steps after each replacement at a fixed age (about 1e-6, as
   the start was), and `expected_failures` far from the start (about
   1e-7: sums of times on the grid are spread a little wider than the
