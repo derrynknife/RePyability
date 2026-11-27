@@ -1450,6 +1450,23 @@ def repairable_kinds():
                 },
                 downtime_cost_rate=5.0,
             ),
+            "cold standby pair, Weibull, failing switch": RepairableRBD(
+                [("s", "a"), ("a", "t")],
+                {
+                    "a": {
+                        "reliability": W([1000.0, 2.5]),
+                        "repairability": W([300.0, 1.5]),
+                        "standby": {
+                            "units": 2,
+                            "k": 1,
+                            "switching_probability": 0.9,
+                        },
+                        "repair_cost": 3.0,
+                    }
+                },
+                repair_crews=1,
+                downtime_cost_rate=5.0,
+            ),
             "common cause, tested": RepairableRBD(
                 EDGES,
                 {

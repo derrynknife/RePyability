@@ -98,10 +98,6 @@ def test_a_wear_out_pair_against_the_simulation():
             "warm spare",
             pair(W([1000.0, 2.5]), E([0.01]), dormancy_factor=0.5),
         ),
-        (
-            "switching",
-            pair(W([1000.0, 2.5]), E([0.01]), switching_probability=0.9),
-        ),
     ],
 )
 def test_what_the_cycle_does_not_take_is_refused(words, rbd):
