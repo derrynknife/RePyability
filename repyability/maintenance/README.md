@@ -3768,7 +3768,17 @@ a shelf across levels, and the compiled engine's shelf.
   "upgraded at a time, tested", "upgraded at a time, the unit in
   service kept", "upgraded at a time, block-replaced, the unit in
   service kept", "upgraded at a time, tested, the unit in service kept"
-  and "upgraded at a time, tests that take time".
+  and "upgraded at a time, tests that take time", "upgraded at a time,
+  tests of varying length" and "upgraded at a time, tests that take
+  time, the unit kept". Kept with tests or repairs that take time, or
+  tests that miss, to the same life it is the component to 1e-12; a
+  memoryless unit kept with repairs of 7 against its chain test by test
+  (1e-8, from the walk's split restarts, `(lambda h)^2 / 8` each); the
+  simulation, 20,000 runs within four standard errors, replaced with a
+  test (and a repair) of varying length and kept with both varying, with
+  fixed lengths and with tests that miss, from new, an age and a repair
+  (largest |z| 2.9, the same seed's draw as the component's own without
+  the upgrade, -3.0).
 - **Learned / open questions:**
   - The default is Derryn's: the unit in service at the upgrade is
     replaced then; the option keeps it.
