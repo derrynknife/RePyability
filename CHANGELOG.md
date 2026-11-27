@@ -12,6 +12,22 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `FaultTree.to_open_psa` and `FaultTree.from_open_psa` exchange the
+  MGL and alpha-factor common-cause models, and read the phi-factor
+  model. The format takes each specific set's probability `Q_k` as an
+  independent basic event, which is `shocks="independent"`: an `MGL` or
+  `AlphaFactor` of three or more members is written with it (and refused
+  with the default, exclusive shocks, which differ at second order), and
+  read with it. The format's alpha-factor formula is the non-staggered
+  scheme's, so an `alpha-factor` group reads as
+  `AlphaFactor(..., testing="non-staggered")`, and staggered alpha
+  factors are written as the non-staggered ones of the same `Q_k`. A
+  `phi-factor` group reads as the staggered `AlphaFactor` of the same
+  shares where a member's sets add up to its probability, and is refused,
+  naming the sum, where they do not (as when the factors themselves sum
+  to 1). A group splitting the failure rate is still refused, now saying
+  the format has no form for it.
+
 - `FaultTree.to_open_psa` and `FaultTree.from_open_psa` exchange trees of
   repaired and tested events. An event with an exponential life and
   repair is written as the format's `GLM` (no failure on demand), and a
@@ -681,6 +697,10 @@ release between minors that only adds (0.19.1).
   before.
 
 ### Changed
+
+- `FaultTree.to_open_psa` writes a beta-factor group's factor at the
+  level of the whole group (the number of members), not at 2, as SCRAM
+  requires for a group of three or more; the reader takes either.
 
 - `FaultTree.to_open_psa` keeps the name of a common-cause group's member
   that it makes an identifier, as an attribute of the group
