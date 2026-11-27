@@ -760,6 +760,24 @@ def repairable_kinds():
                     repair_cost=5.0,
                 ),
             ),
+            # A shelf of spares (the spec's "spares"): a repair that
+            # finds it empty waits for a spare, which only the
+            # simulations take, the exact methods refusing the node.
+            "a shelf of spares": system(
+                unit(
+                    spares={"stock": 1, "lead_time": 200.0, "repairs": False},
+                    repair_cost=5.0,
+                )
+            ),
+            # A sub-system's component on a shelf of its own, in the
+            # sub-system's loop: the system's exact methods refuse it
+            # through the sub-system's.
+            "a sub-system's shelf of spares": system(
+                RepairableRBD(
+                    [("s", "x"), ("x", "t")],
+                    {"x": unit(spares={"stock": 0, "lead_time": 100.0})},
+                )
+            ),
             # Upgraded, and block-replaced before and after (the
             # upgrade as one more replacement): over a horizon.
             "upgraded at a time, block-replaced": system(

@@ -64,6 +64,7 @@ from repyability.rbd import (
     _curves,
     _long_run,
     _requirements,
+    _shelves,
     _shutdowns,
     _spec,
     _windows,
@@ -1653,6 +1654,10 @@ def _conditional_applies(
 
     if diagram._too_meshed() is not None or diagram._shutdowns:
         # (Shutdowns hold the modules and the rest off line together.)
+        return []
+    if _shelves.of(diagram) is not _shelves.own(diagram):
+        # A route's shelves (see _shelves.shelved), which the modules'
+        # diagram, built from the specs, would not draw on.
         return []
     if diagram.ccf_groups and r.refusal(
         partial(

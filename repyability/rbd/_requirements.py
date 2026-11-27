@@ -137,7 +137,9 @@ def _require_reliabilities(rbd, node) -> None:
     """Raise, as the model itself does, if a component's life or repair
     model has no exact or numerical reliability: a ``StandbyModel`` or
     ``LoadSharingModel`` that only simulations take (#149), or a life
-    under a covariate schedule."""
+    under a covariate schedule; or one that draws on a shelf of spares
+    (see ``_require_no_shelf``)."""
+    _require_no_shelf(rbd, node)
     component = rbd.components[node]
     for model in (
         getattr(component, "reliability", None),
@@ -148,6 +150,38 @@ def _require_reliabilities(rbd, node) -> None:
             and model.is_simulated
         ):
             raise model._no_reliability()
+
+
+def _require_no_shelf(rbd, node) -> None:
+    """Raise if a component draws on a shelf of spares (its spec's
+    ``"spares"``, see ``_shelves``): a repair that finds it empty waits
+    for a spare, which only the simulations take. The one check every
+    exact method refuses a shelf by: through the checks of a component's
+    models (``_require_reliabilities``, ``_require_times``,
+    ``_require_perfect_repair``), each unit's curve over time
+    (``_curves._node_curve``), and, for the values worked out for every
+    component together, ``_require_no_shelves`` (the long-run grid, the
+    repair crews' and the common-cause groups' chains)."""
+    from repyability.rbd import _shelves
+
+    if _shelves.held(rbd, node):
+        raise NotImplementedError(
+            f"Component {node!r} draws on a shelf of spares (its "
+            "'spares'), whose waits for a spare the exact methods do not "
+            "take: simulate it (availability(), cost(), "
+            "simulate_timelines() or spares_demand(method='simulate'), "
+            "in Python), or leave 'spares' out of its spec for the exact "
+            "values with a spare always at hand."
+        )
+
+
+def _require_no_shelves(rbd) -> None:
+    """Raise if any component draws on a shelf of spares (see
+    ``_require_no_shelf``), for the exact methods that work out every
+    component's values together (the long-run grid, the repair crews'
+    and the common-cause groups' chains)."""
+    for node in rbd.components:
+        _require_no_shelf(rbd, node)
 
 
 def _require_time_models(rbd, node) -> None:
@@ -162,7 +196,9 @@ def _require_time_models(rbd, node) -> None:
 def _require_times(rbd, node) -> None:
     """Raise if a component's life or repair model is a probability,
     not a distribution of times: it has no mean time, nor a value over
-    time (see ``_require_time_models``)."""
+    time (see ``_require_time_models``); or if it draws on a shelf of
+    spares (see ``_require_no_shelf``)."""
+    _require_no_shelf(rbd, node)
     component = rbd.components[node]
     for what, model in [
         ("reliability", getattr(component, "reliability", None)),
@@ -314,7 +350,9 @@ def _require_perfect_repair(rbd, node) -> None:
     are known only by simulation (its values over time, only by
     simulation too, but for minimal repair: see
     ``_require_minimal_repair``); or if its maintenance restores it only
-    partly (``_require_full_restoration``)."""
+    partly (``_require_full_restoration``). First, if it draws on a
+    shelf of spares (see ``_require_no_shelf``)."""
+    _require_no_shelf(rbd, node)
     _require_full_restoration(rbd, node)
     if node in rbd._imperfect and _minimal_cycle_blocker(rbd, node) is None:
         # Minimally repaired and replaced: a renewal cycle (#402).

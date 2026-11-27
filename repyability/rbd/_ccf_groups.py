@@ -381,7 +381,10 @@ def _own_chains(rbd) -> bool:
 
 
 def _require_ccf_long_run(rbd) -> None:
-    """Raise if a common-cause group's chain does not cover it."""
+    """Raise if a common-cause group's chain does not cover it, or a
+    component draws on a shelf of spares (see ``_require_no_shelves``)."""
+    if rbd.ccf_groups:
+        _requirements._require_no_shelves(rbd)
     for group in rbd.ccf_groups:
         _ccf_rates(rbd, group)
 

@@ -267,6 +267,7 @@ def repairable_kinds(rbd, components, options) -> set:
             "load_sharing",
             "identical",
             "repair",
+            "spares",
         ):
             found |= {f"{key} key {sub!r}" for sub in component.get(key) or {}}
         preventive = component.get("preventive")
@@ -321,6 +322,7 @@ def required_repairable() -> set:
         | {f"standby key {key!r}" for key in cls.STANDBY_KEYS}
         | {f"load_sharing key {key!r}" for key in cls.LOAD_SHARING_KEYS}
         | {f"identical key {key!r}" for key in cls.IDENTICAL_KEYS}
+        | {f"spares key {key!r}" for key in cls.SPARES_KEYS}
         | {"repair key 'model'", "repair key 'q'"}
         | {f"repair model {model!r}" for model in cls.REPAIR_MODELS}
         | {f"restoration model {model!r}" for model in cls.REPAIR_MODELS}

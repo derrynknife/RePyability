@@ -18,7 +18,7 @@ from typing import (
 
 import numpy as np
 
-from repyability.rbd import _requirements
+from repyability.rbd import _requirements, _shelves
 from repyability.rbd._covariate_schedule import is_scheduled
 from repyability.rbd._degradation import (
     is_degradation,
@@ -75,12 +75,17 @@ COMPONENT_SPEC_KEYS = (
         "salvage",
         "escalation",
         "retire_at",
+        "spares",
     )
 )
 
 #: The keys of a component's own money, taken by a valuation
 #: (``expected_npv``) as its arguments of the same names for the node.
 VALUATION_KEYS = ("salvage", "escalation", "retire_at")
+
+#: The keys of a component's ``"spares"`` spec: its shelf of spares
+#: (see ``_shelves``).
+SPARES_KEYS = _shelves.SPEC_KEYS
 
 #: The keys of a component's ``"upgrade"`` spec.
 UPGRADE_KEYS = ("at", "reliability", "cost", "replace_in_service")

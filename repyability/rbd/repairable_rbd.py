@@ -100,6 +100,7 @@ from repyability.rbd import (
     _repairable_routes,
     _repairable_uncertainty,
     _runs,
+    _shelves,
     _shutdowns,
     _spec,
     _switch_runs,
@@ -394,6 +395,23 @@ class RepairableRBD(RBD):
           diagram with the new life); it takes block or age replacement
           on its own interval, or tests, and no other task yet (see the
           guide's "Upgrades, retirement and salvage").
+          ``"spares"`` gives the component a shelf of spares of its own:
+          a dict of ``"stock"`` (the spares on it at the start),
+          ``"lead_time"`` (each spare used is reordered at once and
+          arrives this long after) and ``"repairs"`` (whether a failure
+          repaired imperfectly takes a spare too; by default False). A
+          replacement takes a spare, and with the shelf empty its repair
+          waits for the next order to arrive; a task that replaces the
+          unit is put off until one is in (see the guide's "Spares").
+          Only the simulations take it (in Python: the compiled engine
+          refuses it); the exact and numerical analyses refuse the node,
+          saying to simulate. ``spares_stock(method="simulate")`` and
+          ``least_spend_for_downtime``'s ``spares`` try shelves of their
+          own on the nodes they are given, the others keeping theirs. A
+          sub-system's component keeps its shelf in the sub-system's own
+          loop. A unit replaced on condition, renewed early (a
+          maintenance group, a shutdown's renewals) or tested with repair
+          crews is refused, saying what to do.
           ``"covariates"``, a surpyval ``StepSchedule``, runs a block
           whose ``"reliability"`` is a fitted surpyval regression model
           (proportional or additive hazards, accelerated failure time or
@@ -876,6 +894,7 @@ class RepairableRBD(RBD):
     STANDBY_KEYS = _spec.STANDBY_KEYS
     LOAD_SHARING_KEYS = _spec.LOAD_SHARING_KEYS
     IDENTICAL_KEYS = _spec.IDENTICAL_KEYS
+    SPARES_KEYS = _spec.SPARES_KEYS
     SHUTDOWN_KEYS = _shutdowns.SHUTDOWN_KEYS
     _PER_ACTION_COST_KEYS = _spec._PER_ACTION_COST_KEYS
 
@@ -1048,6 +1067,10 @@ class RepairableRBD(RBD):
         self._restoring: dict[Any, _Restoration] = {}
         # Components upgraded at a time, by node (see _spec._Upgrade).
         self._upgrades: dict[Any, Any] = {}
+        # Each component's own shelf of spares (its spec's "spares"), by
+        # node: held as the diagram's shelves once it is built (see
+        # _shelves.check_own).
+        spares: dict[Any, _shelves.Shelf] = {}
         # The base class checks the names given components against the
         # edges; a component for a name in no edge is not part of the
         # diagram (the structure check reports it).
@@ -1181,6 +1204,10 @@ class RepairableRBD(RBD):
                         )
                     if upgrade.cost:
                         node_costs["capital_cost"] = upgrade.cost
+                if component.get("spares") is not None:
+                    spares[name] = _shelves.from_spec(
+                        name, component["spares"]
+                    )
                 own_money = _spec._validate_valuation(name, component)
                 if own_money:
                     self._valuation[name] = own_money
@@ -1287,6 +1314,9 @@ class RepairableRBD(RBD):
         self.ccf_groups = _spec._validate_ccf_groups(self, ccf_groups)
         _shutdowns.check(self)
         _covariate_schedule.check(self)
+        # The shelves of spares the simulations draw on, its components'
+        # own and its sub-systems', each one a simulation takes.
+        self._own_shelves = _shelves.check_own(self, spares)
 
     #: The junctions are folded out of the structure (see ``RBD``).
     _FOLDS_JUNCTIONS = True
@@ -1916,7 +1946,10 @@ class RepairableRBD(RBD):
         that finds a hidden failure takes one, its repair starting once
         the test is over and the spare is in; and with repair crews, a
         repair that waits for its spare queues for a crew only once it is
-        in. Each component or part has its own
+        in. The components it sizes run on its shelves, the others on
+        their own (their spec's ``"spares"``), and the exact stock refuses
+        a component with a shelf of its own. Each component or part has
+        its own
         ``SimulatedSparesStock``, with every stock tried (``by_stock``).
         For a bad year's *downtime* (rather than a stock-out) to stay
         under a limit, use ``least_spend_for_downtime(spares=...)``. With
@@ -5415,6 +5448,9 @@ class RepairableRBD(RBD):
             ``{node: {"price": p, "lead_time": L, "max": m, "stock": s,
             "repairs": r}}``: a shelf of spares for the node, from ``s``
             held (by default 0) up to ``m`` more (by default no bound),
+            in place of the node's own shelf (its spec's ``"spares"``),
+            whose stock, lead time and ``"repairs"`` are the defaults of
+            ``s``, ``L`` and ``r`` (``L`` is needed without one),
             each more at ``p`` (its holding cost over the horizon). Each
             spare used is reordered at once and arrives ``L`` later, and a
             repair that finds the shelf empty waits for it. A replacement

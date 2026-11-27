@@ -440,6 +440,15 @@ def _serialise_component(value) -> dict:
                 out["upgrade"]["replace_in_service"] = bool(
                     upgrade["replace_in_service"]
                 )
+        if value.get("spares") is not None:
+            # Its shelf of spares: numbers, and whether repairs take one.
+            spares = value["spares"]
+            out["spares"] = {
+                "stock": int(spares["stock"]),
+                "lead_time": float(spares["lead_time"]),
+            }
+            if spares.get("repairs") is not None:
+                out["spares"]["repairs"] = bool(spares["repairs"])
         for key in ("salvage", "escalation", "retire_at"):
             # The unit's own money: numbers (a salvage by age is a
             # function, which is not saved).
@@ -619,7 +628,7 @@ def _deserialise_component(d: dict) -> Any:
                 **d["upgrade"],
                 "reliability": deserialise_model(d["upgrade"]["reliability"]),
             }
-        for key in ("standby", "load_sharing", "identical"):
+        for key in ("standby", "load_sharing", "identical", "spares"):
             if key in d:
                 out[key] = dict(d[key])
         for key in ("salvage", "escalation", "retire_at"):
