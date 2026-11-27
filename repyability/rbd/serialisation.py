@@ -413,6 +413,8 @@ def _serialise_component(value) -> dict:
             }
         if value.get("replace_after") is not None:
             out["replace_after"] = int(value["replace_after"])
+        if value.get("demand_rate") is not None:
+            out["demand_rate"] = float(value["demand_rate"])
         if value.get("duty") is not None:
             duty = value["duty"]
             # A share, or a duty plan that changes over time (its dict).
@@ -478,8 +480,8 @@ def _serialise_component(value) -> dict:
 def _serialise_schedule(spec: dict) -> dict:
     # A component's preventive-maintenance or inspection schedule: the
     # interval (and policy, and a condition policy's threshold or level) as
-    # they are, the duration ("instant" or a model) and the costs (each a
-    # number or a distribution).
+    # they are, the duration ("instant", a number or a model) and the costs
+    # (each a number or a distribution).
     if spec.get("policy") == "calendar":
         raise NotImplementedError(
             "Cannot save a 'calendar' preventive policy: a CalendarPolicy "
@@ -527,7 +529,12 @@ def _serialise_schedule(spec: dict) -> dict:
         out["duration"] = (
             "instant"
             if isinstance(duration, str)
-            else serialise_model(duration)
+            else (
+                # A fixed time, given as a number.
+                float(duration)
+                if is_number(duration)
+                else serialise_model(duration)
+            )
         )
     for key in ("cost", "inspection_cost"):
         cost = spec.get(key)
@@ -602,6 +609,8 @@ def _deserialise_component(d: dict) -> Any:
             out["repair"] = dict(d["repair"])
         if "replace_after" in d:
             out["replace_after"] = d["replace_after"]
+        if "demand_rate" in d:
+            out["demand_rate"] = d["demand_rate"]
         if "duty" in d:
             duty = d["duty"]
             if isinstance(duty, dict):

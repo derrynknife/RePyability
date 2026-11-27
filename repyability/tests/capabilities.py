@@ -98,7 +98,11 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Unavailability (precise when small)", ("mean_unavailability",)),
             (
                 "Failure frequency, MTBF",
-                ("system_failure_frequency", "mean_time_between_failures"),
+                (
+                    "system_failure_frequency",
+                    "failure_frequency",
+                    "mean_time_between_failures",
+                ),
             ),
             ("Mean up and down times", ("mean_up_time", "mean_down_time")),
             (
@@ -205,7 +209,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             ("Junctions (drawing nodes)", ("junctions",)),
             (
                 "Convert to and from an RBD",
-                ("to_rbd", "from_rbd", "from_diagram"),
+                ("to_rbd", "from_rbd", "from_diagram", "to_repairable_rbd"),
             ),
             (
                 "Capacity distribution",
@@ -225,6 +229,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("to_dict", "to_json", "from_dict", "from_json"),
             ),
             ("Export to Open-PSA (MEF)", ("to_open_psa",)),
+            ("Import from Open-PSA (MEF)", ("from_open_psa",)),
         ],
     ),
     (
@@ -253,6 +258,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("reliability_rate", "availability_rate"),
             ),
             ("Uncertainty importance", ("uncertainty_importance",)),
+            ("Every measure in one call", ("importances",)),
             ("All measures given a state", ("importances_given_state",)),
             (
                 "Top event given each event",
@@ -456,6 +462,7 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("A fitted Crow-AMSAA process", "fitted Crow-AMSAA process"),
         ("A fitted G1, ARA or ARI process", "fitted ARA process"),
         ("A probability per demand", "fixed probability"),
+        ("A probability per demand, with a demand rate", "demand"),
         ("A mixture life", "mixture life"),
         ("A fitted degradation process life", "degradation process life"),
         ("Operated part of the time (duty)", "operated part of the time"),

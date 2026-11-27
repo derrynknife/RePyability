@@ -70,7 +70,8 @@ into a list, and loading turns it back). Loading with the wrong class
 Condition-based state (`NodeState`) is not part of the RBD and is not saved.
 
 A `FaultTree` saves the same way (`to_dict`, `to_json`, `from_dict`,
-`from_json`: its gates, events and common-cause groups), and so does a
+`from_json`: its gates, events (a repaired event's spec as a diagram's
+component's) and common-cause groups), and so does a
 `Network` (#315): its terminals, each link's two nodes and model, and the
 failing nodes' models, the models as a diagram's nodes' are saved, under
 `"type": "Network"`. A model given as a probability is saved as the

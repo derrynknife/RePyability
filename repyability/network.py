@@ -61,6 +61,7 @@ from repyability.rbd import _measures
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd._differential import check as check_differential
 from repyability.rbd._differential import shares
+from repyability.rbd._importances import with_importances
 from repyability.rbd._mean_lifetime import (
     mean_lifetime,
     model_kinks,
@@ -77,7 +78,7 @@ from repyability.rbd.non_repairable_rbd import (
     check_x,
 )
 from repyability.rbd.rbd import Pairs, _set_order
-from repyability.rbd.results import UncertaintyResult
+from repyability.rbd.results import ImportanceTable, UncertaintyResult
 from repyability.rbd.routes import AnalysisRoute, Refused
 from repyability.rbd.shannon import _minimal_cut_sets, _shannon_plan
 from repyability.rbd.uncertainty import (
@@ -685,6 +686,76 @@ class Network:
                 ~(lives[:, None] > x.ravel()[None, :]), axis=0
             ).reshape(x.shape)
         return self._value(x, _PARTED)
+
+    def importances(
+        self, x=None, *, simulate: bool = False
+    ) -> ImportanceTable:
+        """Every importance measure in one table.
+
+        Calls each importance method of this model in turn (Birnbaum,
+        improvement potential, risk achievement and reduction worth,
+        criticality, Fussell-Vesely, differential, joint, Barlow-Proschan
+        and structural, those the model has) with the arguments given, and
+        gathers what they return. Each entry of ``measures`` is exactly
+        the method's own result; nothing is computed a second way. A
+        measure this model cannot work out is named under ``refused`` with
+        the reason its method gives (as
+        [`analysis_routes`][repyability.Network.analysis_routes] has it), and
+        a measure only a simulation gives is listed there as simulated
+        unless ``simulate=True``.
+
+        Parameters
+        ----------
+        x : array_like, optional
+            The time/s, as for each measure. May be left out only for a
+            network of fixed probabilities.
+        simulate : bool, optional
+            Whether to run the measures that are simulated. By default
+            False: they are listed under ``refused`` with ``"simulated:
+            pass simulate=True"``.
+
+        Returns
+        -------
+        ImportanceTable
+            [`ImportanceTable`][repyability.ImportanceTable]: ``measures``
+            (``{method name: {component: value}}``), ``refused``
+            (``{method name: reason}``) and ``rows()``, one plain dict
+            per component for a table. The joint importance, which is per
+            pair, is in ``measures`` and not in ``rows()``.
+
+        Raises
+        ------
+        NotImplementedError
+            If no measure can be worked out here; the message gives each
+            one's reason.
+        ValueError
+            If ``simulate`` is not a bool.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> unit = surv.Exponential.from_params([0.01])
+        >>> net = Network(
+        ...     {
+        ...         "a": ("s", "t", unit),
+        ...         "b": ("s", "t", unit),
+        ...     },
+        ...     source="s",
+        ...     target="t",
+        ... )
+        >>> [row["component"] for row in net.importances(50).rows()]
+        ['a', 'b']
+        """
+        from repyability.rbd import _importances
+
+        calls = {
+            name: (lambda name: lambda: getattr(self, name)(x))(name)
+            for name in _importances.MEASURES
+            if name != "structural_importance"
+        }
+        calls["structural_importance"] = self.structural_importance
+        return _importances.table(self, calls, simulate)
 
     @check_x
     def birnbaum_importance(self, x=None) -> Dict[Hashable, Any]:
@@ -2189,7 +2260,7 @@ class Network:
             for name in out:
                 if name not in ("random", "path_sets", "minimal_path_sets"):
                     out[name] = r.refused(too_large)
-        return r.AnalysisRoutes(sorted(out.items()))
+        return with_importances(out)
 
     def __repr__(self) -> str:
         unit = "" if self.unit is None else f", unit {self.unit!r}"

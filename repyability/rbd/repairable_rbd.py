@@ -56,6 +56,7 @@ from repyability.rbd.results import (
     ExpectedEvents,
     ExpectedNPV,
     FirstFailureBounds,
+    ImportanceTable,
     Lever,
     MaintenanceEffect,
     MaintenancePlan,
@@ -413,6 +414,17 @@ class RepairableRBD(RBD):
           loop. A unit replaced on condition, renewed early (a
           maintenance group, a shutdown's renewals) or tested with repair
           crews is refused, saying what to do.
+          ``"demand_rate"``, on a component whose ``"reliability"`` is a
+          probability of failing per demand
+          (``surpyval.FixedEventProbability``, a pump that may fail to
+          start), is the rate at which demands come: a Poisson process,
+          each demand failing a working unit with that probability, so
+          that its failures are an exponential life of rate the demand
+          rate times the probability, which every analysis takes. Its
+          levers are the probability and the rate; a probability of 0
+          makes it a junction. A life that wears out cannot take one:
+          draw the demand mode as a component of its own, in series
+          (see the guide's "Failing on demand").
           ``"covariates"``, a surpyval ``StepSchedule``, runs a block
           whose ``"reliability"`` is a fitted surpyval regression model
           (proportional or additive hazards, accelerated failure time or
@@ -1016,6 +1028,10 @@ class RepairableRBD(RBD):
         # Load-sharing groups and blocks of identical units, checked
         # before a duty or covariates change the specs: each node's group
         # and the life its units draw (see _spec._validate_units_group).
+        # A probability of failing per demand with a demand rate is the
+        # exponential life its demands make (see _spec.on_demand), the
+        # spec as given keeping the probability and the rate.
+        components = _spec.on_demand(components)
         units_groups: dict[Any, Tuple[_Standby, Any]] = {}
         for name, component in components.items():
             if isinstance(component, dict) and any(
@@ -8287,6 +8303,69 @@ class RepairableRBD(RBD):
         """
         return _long_run.mean_down_time(
             self, working_nodes=working_nodes, broken_nodes=broken_nodes
+        )
+
+    def importances(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        *,
+        x=None,
+        window=None,
+        state=None,
+        simulate: bool = False,
+    ) -> ImportanceTable:
+        """Every importance measure in one table.
+
+        Calls each importance method of this model in turn (Birnbaum,
+        improvement potential, risk achievement and reduction worth,
+        criticality, Fussell-Vesely, differential, joint, Barlow-Proschan
+        and structural, those the model has) with the arguments given, and
+        gathers what they return. Each entry of ``measures`` is exactly
+        the method's own result; nothing is computed a second way. A
+        measure this model cannot work out is named under ``refused`` with
+        the reason its method gives (as
+        [`analysis_routes`][repyability.RepairableRBD.analysis_routes]
+        has it), and a measure only a simulation gives is listed there as
+        simulated unless ``simulate=True``.
+
+        Parameters
+        ----------
+        working_nodes : Collection[Hashable], optional
+            Nodes conditioned on as working, as for each measure.
+        broken_nodes : Collection[Hashable], optional
+            Nodes conditioned on as failed, as for each measure.
+        x : optional
+            The time/s, as for each measure that takes it (the Barlow-
+            Proschan importance does not).
+        window : optional
+            The window, as for each measure.
+        state : optional
+            The starting state, as for each measure.
+        simulate : bool, optional
+            Whether to run the measures that are simulated. By default
+            False: they are listed under ``refused`` with ``"simulated:
+            pass simulate=True"``.
+
+        Returns
+        -------
+        ImportanceTable
+            [`ImportanceTable`][repyability.ImportanceTable]: ``measures``
+            (``{method name: {component: value}}``), ``refused``
+            (``{method name: reason}``) and ``rows()``, one plain dict
+            per component for a table. The joint importance, which is per
+            pair, is in ``measures`` and not in ``rows()``.
+
+        Raises
+        ------
+        NotImplementedError
+            If no measure can be worked out here; the message gives each
+            one's reason.
+        ValueError
+            If ``simulate`` is not a bool.
+        """
+        return _repairable_importance.importances(
+            self, working_nodes, broken_nodes, x, window, state, simulate
         )
 
     @_times_first()

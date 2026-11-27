@@ -175,12 +175,12 @@ Which analyses each model type has (the method; — where it has none):
 | Reliability and mean time to the first failure | — | `first_failure_sf` | — | — | — |
 | Long-run availability | — | `mean_availability` | — | — | — |
 | Each node's availability | — | `node_availability` | — | — | — |
-| Availability over time | — | `point_availability` | — | — | — |
+| Availability over time | — | `point_availability` | `point_unavailability` | — | — |
 | Over a mission | — | `mission_availability` | — | — | — |
-| Unavailability (precise when small) | — | `mean_unavailability` | — | — | — |
-| Failure frequency, MTBF | — | `system_failure_frequency` | — | — | — |
+| Unavailability (precise when small) | — | `mean_unavailability` | `mean_unavailability` | — | — |
+| Failure frequency, MTBF | — | `system_failure_frequency` | `system_failure_frequency` | — | — |
 | Mean up and down times | — | `mean_up_time` | — | — | — |
-| Expected failures and events in a window | — | `expected_events` | — | — | — |
+| Expected failures and events in a window | — | `expected_events` | `expected_failures` | — | — |
 | Simulated availability (distribution) | — | `availability` | — | — | — |
 | Simulated histories | — | `simulate_timelines` | — | — | — |
 | Each simulation's values, common random numbers | — | `simulation_samples` | — | — | — |
@@ -217,6 +217,7 @@ Which analyses each model type has (the method; — where it has none):
 | How each analysis is computed | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` |
 | Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | — |
 | Export to Open-PSA (MEF) | — | — | `to_open_psa` | — | — |
+| Import from Open-PSA (MEF) | — | — | `from_open_psa` | — | — |
 | **Importance measures** | | | | | |
 | Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` |
 | Structural | `structural_importance` | `structural_importance` | `structural_importance` | `structural_importance` | — |
@@ -232,6 +233,7 @@ Which analyses each model type has (the method; — where it has none):
 | Each block's part in each phase's failures | — | — | — | — | `failure_drivers` |
 | Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — |
 | Uncertainty importance | `uncertainty_importance` | `uncertainty_importance` | — | — | — |
+| Every measure in one call | `importances` | `importances` | `importances` | `importances` | `importances` |
 | All measures given a state | `importances_given_state` | — | — | — | — |
 | Top event given each event | — | — | `conditional_probabilities` | — | — |
 | Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — | — |
@@ -289,6 +291,7 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | A fitted Crow-AMSAA process | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | S; ✗ `mean_availability_uncertainty`, `expected_cost_rate_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A fitted G1, ARA or ARI process | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A probability per demand | ✗ | ✗ | ✗ | ✗ `expected_npv` | ✗ | ✗ | ✗ `mean_availability_uncertainty`, `expected_npv_uncertainty` | ✗ | – | N | ✗ `capacity_distribution` | S |
+| A probability per demand, with a demand rate | E | E | N | E N | E N | N | S | E | – | N | – | S |
 | A mixture life | E | E | N | E N | E N | N | S | E | – | N | – | S |
 | A fitted degradation process life | E | E | N | N | E N | N | S | E | – | N | – | S |
 | Operated part of the time (duty) | N | N | N | N | N | N | S | N | – | N | – | S |
@@ -376,7 +379,12 @@ places, nested diagrams):
   with repairs and block replacements in no time). Common-cause groups of
   members with exponential lives, tested or repaired, take nothing away:
   the long-run values, importance and allocations stay exact, and the
-  values over time from new numerical.
+  values over time from new numerical;
+- **fault trees of repaired or tested events** (repeated events, VOTE and
+  NOT gates included): the top event's unavailability over time, its
+  average over a window and in the long run, and, for a coherent tree, its
+  failure frequency and expected occurrences, from the tree's own decision
+  diagram over the events' curves.
 
 **Simulated**, or refused with the simulation to run instead:
 
@@ -389,6 +397,7 @@ places, nested diagrams):
 | The uncertainty from fitted component parameters (`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, `time_to_reliability_uncertainty`; for a repairable system `mean_availability_uncertainty`, `point_availability_uncertainty`, `mission_availability_uncertainty`, `expected_cost_rate_uncertainty`) | Sampled over the parameters, randomly or quasi-randomly (`sampling="sobol"`), each draw exact or numerical as the diagram's own value is | Sampling is the method. |
 | Small failure probabilities, with a node only simulations take | Rare-event simulation (`unreliability_interval`); `ff` refused | Only while the node has no reliability of its own: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |
 | **Components** | | |
+| A probability of failing per demand (fail to start) in a repairable diagram | With a `"demand_rate"` (demands arriving as a Poisson process, each failing the unit with the probability): an exponential life of rate the demand rate times the probability, so exact or numerical on every route, as that life is. Without one: simulated (a unit fails at once with the probability, or never), the exact and numerical analyses refused, naming the key | No: with demands at a rate, its failures are a Poisson process. Demands at fixed times, and a life with a demand mode beside it in one component (draw them as two in series), are not modelled. |
 | Warm standby with two or more units operating, of non-exponential units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare is switched in where, and how much each has aged, branch with the order of the failures. With one unit operating it is numerical, hot standby (k-out-of-*n*) exact, and Exponential units exact (a Markov chain), spares that may fail to switch in or start included. |
 | Cold standby with three or more different units operating, and load sharing of different units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare goes where, and how old the others are, branch with the order of the failures. Identical units are numerical in both, and so are two different units operating; Exponential units in standby are exact. |
 | Anything such a node is part of | Simulated in the system's simulations; the analyses that need the node's reliability refused | Only while the node has no reliability of its own. |

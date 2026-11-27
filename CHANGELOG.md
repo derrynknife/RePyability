@@ -27,6 +27,72 @@ release between minors that only adds (0.19.1).
   refusals of `first_failure_sf` and `mean_time_to_first_failure` name
   them beside `method="simulate"`. No seeded result changes.
 
+- `FaultTree.from_open_psa(source, tree=None, mission_time=None, *,
+  top=None)` reads a fault tree from an Open-PSA Model Exchange Format
+  document (text, a path or a file), the inverse of `to_open_psa`: the
+  gates `or`, `and`, `atleast` and `not`, and `nand`, `nor` and `xor` (of
+  two inputs) through NOT gates, a nested formula as a gate of its own
+  (`"gate/1"`, ...); basic events as probabilities, `exponential` and
+  `Weibull` expressions of the mission time as surpyval lives, any other
+  expression (`parameter`, arithmetic) as its value at `mission_time`;
+  house events as probabilities 0 and 1; a `beta-factor` group as a
+  `BetaFactor` `CCFGroup`; a name the writer made an identifier from its
+  label. A document that declares a document type or an entity is
+  refused before it is parsed, and what is not read (`GLM` and
+  `periodic-test`, the MGL, alpha-factor and phi-factor models, `iff`,
+  `imply`, `cardinality`, uncertainty deviates and event trees) is
+  refused by name, saying what to do. Every tree the writer exports reads
+  back as itself.
+
+- `importances`, on `NonRepairableRBD`, `RepairableRBD`, `FaultTree`,
+  `Network` and `PhasedMission`: every importance measure the model has,
+  in one call, as an `ImportanceTable`. Its `measures` are what each
+  method returns (the Birnbaum importance is `birnbaum_importance`'s
+  result, and so on), `refused` names each measure the model cannot work
+  out with its reason (a simulated one is listed as such unless
+  `simulate=True`), and `rows()` gives one plain dict per component for a
+  table (the joint importance, which is per pair, is left out of it). It
+  raises, naming each reason, when no measure can be worked out. Its
+  route in `analysis_routes()` is the worst of the measures it runs.
+  No existing result changes.
+
+
+- A probability of failing per demand in a `RepairableRBD` (a pump's
+  fail to start on demand): a component spec's `"demand_rate"`, with its
+  `"reliability"` a `surpyval.FixedEventProbability`, makes the demands a
+  Poisson process of that rate, each failing a working unit with the
+  probability, so that the unit has an exponential life of rate the
+  demand rate times the probability. Every analysis, exact, numerical and
+  simulated, takes it as the diagram with that life (to the bit, and
+  seeded runs bit for bit), where a bare probability is refused across
+  the exact methods; that refusal now names the key. The probability and
+  the rate are kept as given, saved, listed as levers (`reliability.p` in
+  [0, 1], `demand_rate` above 0) and held by a `UnitPlan`'s
+  `demand_rate`; a probability of 0 is a junction. A rate on a life that
+  wears out is refused, saying to draw the two modes as two components
+  in series, as is a rate with a duty.
+- Fault trees of repaired and tested basic events. An event may be a
+  component spec (`"reliability"`, `"repairability"` and, for a hidden
+  failure found by periodic tests, `"inspection"`), and a tree of them
+  gives the top event's unavailability over time
+  (`FaultTree.point_unavailability`, also `top_event_probability`), its
+  average over a window and in the long run (`mean_unavailability`), its
+  failure frequency (`failure_frequency`, `w(t) = sum I_B^i(t) w_i(t)`),
+  its expected occurrences in a window (`expected_failures`) and its
+  long-run frequency (`system_failure_frequency`). Each event's curve is a
+  `RepairableRBD` component's, and the top event comes from the tree's own
+  decision diagram, so repeated events, VOTE and NOT gates are exact (a
+  NOT gate refuses the frequencies). The importance measures and cut sets
+  at a time read the events' probabilities of being down then; the
+  analyses that need a time to the top event refuse, naming the ones that
+  apply. `FaultTree.to_repairable_rbd()` draws a coherent tree without
+  repeated events as a `RepairableRBD`, for costs, crews, maintenance and
+  simulation. Events mixing specs with probabilities or lifetime models,
+  other spec keys, common-cause groups and dynamic gates over repaired
+  events are refused, saying what to use. Trees of repaired events save
+  and load (`to_dict`, `to_json`); `to_open_psa` refuses them for now.
+  `analysis_routes()` covers the new methods.
+
 - A shelf of spares in a component's spec: `"spares": {"stock": S,
   "lead_time": L}` (and optionally `"repairs"`), also a `UnitPlan`'s
   `spares`. Every simulation takes it (`availability`, `cost`,
@@ -396,6 +462,11 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- `FaultTree.to_open_psa` keeps the name of a common-cause group's member
+  that it makes an identifier, as an attribute of the group
+  (`label-<identifier>`), as the format gives a member no label of its
+  own; `from_open_psa` reads it back.
+
 - The refusals of a shelf of spares (`spares_stock(method="simulate")`,
   the `spares` lever, and now a component's `"spares"`) say what to do as
   well as why: replace the unit at an age or on a block rather than on
@@ -521,6 +592,10 @@ release between minors that only adds (0.19.1).
   in the same order to give the same results as the built-in engines.
 
 ### Fixed
+
+- A `RepairableRBD` with a test or task whose `"duration"` is a number
+  saves and loads (`to_dict`): it was refused as a model it could not
+  save. The number is saved as it is.
 
 - **A tested component with an inspection `"offset"`, started from a
   state with no `since_scheduled`, is on its calendar as from new in

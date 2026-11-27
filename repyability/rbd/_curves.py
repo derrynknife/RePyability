@@ -1010,7 +1010,13 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
             raise NotImplementedError(
                 f"Component {node!r}: its {what} model is a probability, "
                 "not a distribution of times, so it cannot start part "
-                "way through a life or repair: leave it out (new)."
+                "way through a life or repair: leave it out (new)"
+                + (
+                    ", or give its spec a demand_rate, which makes its "
+                    "failures a life."
+                    if what == "reliability"
+                    else "."
+                )
             )
     if state.alive:
         # A unit with hidden failures was known to be up only at its
@@ -1197,16 +1203,7 @@ def _curves_down_at(
     its precision (#237): each node down with one less its
     availability, or in closed form where it has one (see
     ``_closed_form_down``)."""
-    failures = {}
-    for node, curve in curves.items():
-        if isinstance(curve, _shutdowns.MaskedCurve):
-            # Held down inside a shut's windows; its own otherwise.
-            failures[node] = curve.down_at(
-                x, partial(_closed_form_at, rbd, node, states)
-            )
-            continue
-        down = _closed_form_down(rbd, node, x, states)
-        failures[node] = 1.0 - curve.at(x) if down is None else down
+    failures = _nodes_down_at(rbd, curves, x, states)
     probabilities = {node: 1.0 - q for node, q in failures.items()}
     for node in list(rbd.in_or_out) + list(working_nodes | broken_nodes):
         probabilities[node] = np.ones(len(x))
@@ -1225,6 +1222,23 @@ def _curves_down_at(
         0.0,
         1.0,
     )
+
+
+def _nodes_down_at(rbd, curves: dict, x: np.ndarray, states) -> dict:
+    """Each node's probability of being down at the times ``x``, from its
+    curve, worked out in its own right (see ``_curves_down_at``): in
+    closed form where it has one, else one less its availability."""
+    failures = {}
+    for node, curve in curves.items():
+        if isinstance(curve, _shutdowns.MaskedCurve):
+            # Held down inside a shut's windows; its own otherwise.
+            failures[node] = curve.down_at(
+                x, partial(_closed_form_at, rbd, node, states)
+            )
+            continue
+        down = _closed_form_down(rbd, node, x, states)
+        failures[node] = 1.0 - curve.at(x) if down is None else down
+    return failures
 
 
 def _closed_form_down(rbd, node, x, states) -> Optional[np.ndarray]:

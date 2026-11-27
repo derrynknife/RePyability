@@ -65,6 +65,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from repyability.rbd import _measures
+from repyability.rbd._importances import with_importances
 from repyability.rbd._ordered_bdd import OrderedBDD
 from repyability.rbd._units import diagram_unit
 from repyability.rbd.modular import (
@@ -87,8 +88,10 @@ from repyability.utils.wrappers import outside_level
 
 if TYPE_CHECKING:  # pragma: no cover
     from repyability.rbd.non_repairable_rbd import NonRepairableRBD
+    from repyability.rbd.repairable_rbd import RepairableRBD
     from repyability.rbd.results import (
         ConditionalProbabilities,
+        ImportanceTable,
         Lever,
         PrimeImplicant,
         UncertaintyResult,
@@ -221,8 +224,13 @@ def _parse_gate(name, spec) -> _Gate:
 
 
 def _parse_event(name, model):
-    """A basic event's model: a probability (a float) or an object with
-    ``sf``."""
+    """A basic event's model: a probability (a float), an object with
+    ``sf``, or a repaired or tested component's spec (a dict, see
+    ``rbd._event_curves``)."""
+    if isinstance(model, Mapping):
+        from repyability.rbd._event_curves import checked_spec
+
+        return checked_spec(name, model, "FaultTree.to_repairable_rbd()")
     if isinstance(model, (int, float, np.integer, np.floating)) and not (
         isinstance(model, bool)
     ):
@@ -237,7 +245,9 @@ def _parse_event(name, model):
     if not hasattr(model, "sf"):
         raise ValueError(
             f"Event {name!r} must be a probability or a lifetime model with "
-            f"sf and ff (e.g. a surpyval distribution), got {model!r}."
+            "sf and ff (e.g. a surpyval distribution), or a repaired "
+            "component's spec (a dict with 'reliability' and "
+            f"'repairability'), got {model!r}."
         )
     return model
 
@@ -292,6 +302,56 @@ _NEEDS_A_LIFETIME = frozenset(
     }
 )
 _NEEDS_A_DIAGRAM = frozenset({"to_rbd", "sf_uncertainty"})
+#: What a tree of repaired (or tested) events gives: its values over time
+#: and in the long run, and what is made of the events' probabilities of
+#: being down at a time (the top event's, the importance measures, the
+#: cut sets). The rest needs a time to the top event, which comes and
+#: goes, or is not worked out for repaired events yet.
+_REPAIRABLE_GIVES = frozenset(
+    {
+        "top_event_probability",
+        "point_unavailability",
+        "mean_unavailability",
+        "failure_frequency",
+        "expected_failures",
+        "system_failure_frequency",
+        "to_repairable_rbd",
+        "birnbaum_importance",
+        "improvement_potential",
+        "risk_achievement_worth",
+        "risk_reduction_worth",
+        "criticality_importance",
+        "conditional_probabilities",
+        "ranked_cut_sets",
+        "fussell_vesely",
+        "joint_importance",
+        "differential_importance",
+        "structural_importance",
+        "occurs",
+        "minimal_cut_sets",
+        "get_min_cut_sets",
+        "minimal_path_sets",
+        "get_min_path_sets",
+        "prime_implicants",
+    }
+)
+#: Of ``_REPAIRABLE_GIVES``, what a tree of probabilities or lifetimes
+#: gives too (the rest are repaired events' own).
+_REPAIRED_OWN = frozenset(
+    {
+        "point_unavailability",
+        "mean_unavailability",
+        "failure_frequency",
+        "expected_failures",
+        "system_failure_frequency",
+        "to_repairable_rbd",
+    }
+)
+#: The analyses of a tree of repaired events that need its events'
+#: failure intensities, and so a coherent tree (see ``failure_frequency``).
+_NEEDS_FREQUENCIES = frozenset(
+    {"failure_frequency", "expected_failures", "system_failure_frequency"}
+)
 
 
 def _sort_key(s: frozenset) -> tuple:
@@ -414,7 +474,13 @@ class FaultTree:
         }
         # The unit the events' models are in (None if they name none); a
         # warning names the events when they name different units.
-        self.unit: Optional[str] = diagram_unit(self.events, "fault tree")
+        self.unit: Optional[str] = diagram_unit(
+            {
+                name: m["reliability"] if isinstance(m, dict) else m
+                for name, m in self.events.items()
+            },
+            "fault tree",
+        )
         both = set(self._given) & set(self.events)
         if both:
             raise ValueError(
@@ -470,7 +536,20 @@ class FaultTree:
         self.repeated_events = frozenset(
             e for e in self.events if len(parents.get(e, ())) > 1
         )
-        self.is_fixed = all(
+        specs = [e for e, m in self.events.items() if isinstance(m, dict)]
+        #: Whether the events are repaired (or tested) components, whose
+        #: top event comes and goes (see ``point_unavailability``).
+        self.is_repairable = bool(specs)
+        if specs and len(specs) < len(self.events):
+            others = sorted(map(str, set(self.events) - set(specs)))
+            raise NotImplementedError(
+                f"Event(s) {others} are probabilities or lifetime models "
+                f"while {sorted(map(str, specs))} are repaired components: "
+                "a tree mixing them is not supported yet. Give every event "
+                "a component spec ('reliability' and 'repairability', and "
+                "'inspection' for a tested one)."
+            )
+        self.is_fixed = not specs and all(
             isinstance(m, float) or _model_is_fixed(m)
             for m in self.events.values()
         )
@@ -483,6 +562,7 @@ class FaultTree:
                 "are not supported: a NOT gate over an order of failures has "
                 "no agreed meaning over time."
             )
+        self._require_repairable_gates(ccf_groups)
         self._dynamic: Optional[Any] = None
         if self.is_dynamic:
             from repyability._ft_dynamic import Dynamic
@@ -510,6 +590,33 @@ class FaultTree:
                 + ("dynamic gates." if self.is_dynamic else "NOT gates.")
             )
         self._ccf_warned: set = set()
+        self._repaired: Any = None
+        if self.is_repairable:
+            from repyability.rbd._event_curves import Structured
+
+            # The events as one diagram's components, over the tree's
+            # own structure: their curves, and the values over time.
+            self._repaired = Structured(self.events, self._decomposition)
+
+    def _require_repairable_gates(self, ccf_groups) -> None:
+        """Raise if a tree of repaired events has what they do not take
+        yet: dynamic gates or common-cause groups."""
+        if not self.is_repairable:
+            return
+        if self.is_dynamic:
+            raise NotImplementedError(
+                "Dynamic gates (PAND, SPARE, SEQ) over repaired events are "
+                "not supported: their order of failures is lost once an "
+                "event is repaired. Draw the system as a RepairableRBD "
+                "(with standby units for a SPARE gate) and simulate it."
+            )
+        if ccf_groups:
+            raise NotImplementedError(
+                "Common-cause groups over repaired events are not supported "
+                "in a fault tree yet: convert the tree without them with "
+                "to_repairable_rbd(), and give the diagram the groups, "
+                "RepairableRBD(..., ccf_groups=...)."
+            )
 
     def _validated_ccf(self, groups) -> list:
         """The common-cause groups, checked: each a ``CCFGroup`` of basic
@@ -649,7 +756,12 @@ class FaultTree:
         apply to this tree's gates: a tree with dynamic gates gives the
         top event probability over time and simulated times to it; a tree
         with NOT gates (non-coherent) gives the probability, the logic and
-        the measures made of the top event conditioned on each event."""
+        the measures made of the top event conditioned on each event; a
+        tree of repaired events, its values over time and those made of
+        its events' probabilities of being down then."""
+        self._refuse_repaired(name)
+        if name in _REPAIRED_OWN:
+            return
         if self.is_dynamic and name not in _DYNAMIC_GIVES:
             raise NotImplementedError(
                 f"{name}() is not available for a tree with dynamic gates "
@@ -689,6 +801,53 @@ class FaultTree:
             "gates. birnbaum_importance and conditional_probabilities "
             "apply (the Birnbaum importance of an event can be negative "
             "here)."
+        )
+
+    def _refuse_repaired(self, name: str) -> None:
+        """Raise if the analysis ``name`` does not apply to this tree's
+        events: those of repaired events (see ``point_unavailability``)
+        refuse a tree of probabilities or lifetimes, and a tree of
+        repaired events refuses what needs a time to its top event."""
+        if not self.is_repairable:
+            if name not in _REPAIRED_OWN:
+                return
+            raise Refused(
+                f"{name}() works on repaired or tested events, and this "
+                "tree has none: its top event, once it has occurred, stays "
+                "(top_event_probability gives the probability that it has "
+                "occurred by t). Give the events component specs "
+                "('reliability' and 'repairability') to have them repaired."
+            )
+        if name in _NEEDS_FREQUENCIES and not self.is_coherent:
+            raise NotImplementedError(
+                f"{name}() is not available for a tree with NOT gates: the "
+                "top event of a non-coherent tree can also occur when an "
+                "event is repaired, which needs each event's repair "
+                "intensity too. point_unavailability and "
+                "mean_unavailability are exact for it."
+            )
+        if name in _REPAIRABLE_GIVES:
+            return
+        if name in _NEEDS_A_LIFETIME | {"ff", "sf"}:
+            raise NotImplementedError(
+                f"{name}() needs a time to the top event, which a tree of "
+                "repaired events does not have: its top event comes and "
+                "goes as they fail and are repaired. Ask for "
+                "point_unavailability (the probability that it is in "
+                "effect at t), mean_unavailability, failure_frequency or "
+                "expected_failures; for the time to the first top event, "
+                "simulate the diagram of the tree, "
+                "to_repairable_rbd().simulate_timelines()."
+            )
+        if name == "to_rbd":
+            raise NotImplementedError(
+                "to_rbd() draws the tree as a NonRepairableRBD, which "
+                "cannot hold repaired events: use to_repairable_rbd()."
+            )
+        raise NotImplementedError(
+            f"{name}() is not available for a tree of repaired events yet: "
+            "convert the tree with to_repairable_rbd() and ask the "
+            "diagram, which takes its components' specs."
         )
 
     def _require_integrable(self) -> None:
@@ -995,12 +1154,23 @@ class FaultTree:
                 )
             t = 1.0
         times = real_array(t, "t")
+        if self.is_repairable and (times < 0.0).any():
+            raise ValueError(
+                "t must be 0 or more: the repaired events are new at 0."
+            )
         return times.reshape(-1), times.shape
 
     def _event_probabilities(self, t: np.ndarray) -> Tuple[dict, dict]:
         """Each event's probability of not having occurred (``p``) and of
-        having occurred (``q``) by each of the times ``t``."""
+        having occurred (``q``) by each of the times ``t``; for repaired
+        events, of not being down and of being down at them, each worked
+        out in its own right (see ``rbd._event_curves.down_at``)."""
         p, q = {}, {}
+        if self._repaired is not None:
+            from repyability.rbd._event_curves import down_at
+
+            q = down_at(self._repaired, t)
+            return {e: 1.0 - value for e, value in q.items()}, q
         for name, model in self.events.items():
             if isinstance(model, float):
                 q[name] = np.full(len(t), model)
@@ -1066,7 +1236,9 @@ class FaultTree:
         is exact too, from the tree's decision diagram; with dynamic gates
         (PAND, SPARE, SEQ) each is integrated over its inputs'
         distributions, to about ``1e-9`` (see the guide's
-        [dynamic gates](../guide/fault-trees.md#dynamic-gates)).
+        [dynamic gates](../guide/fault-trees.md#dynamic-gates)). With
+        repaired (or tested) events it is the probability that the top
+        event is in effect at ``t``, ``point_unavailability``.
 
         Parameters
         ----------
@@ -1161,6 +1333,7 @@ class FaultTree:
         float or numpy.ndarray
             The probability.
         """
+        self._refuse("ff")
         return self.top_event_probability(
             t, method, mc_samples=mc_samples, seed=seed
         )
@@ -1203,6 +1376,7 @@ class FaultTree:
         >>> round(tree.sf(), 4), round(tree.ff(), 4)
         (0.98, 0.02)
         """
+        self._refuse("sf")
         if self._dynamic is not None or (method, mc_samples, seed) != (
             "exact",
             None,
@@ -1636,6 +1810,288 @@ class FaultTree:
             raise ValueError("x must be a percentage in (0, 100).")
         return self.time_to_reliability(1.0 - x / 100.0, upper_bound)
 
+    # -- repaired and tested events --------------------------------------
+
+    def _repaired_times(self, t, name: str) -> Tuple[np.ndarray, tuple]:
+        """The times ``t`` of the analysis ``name`` of repaired events,
+        checked (see ``_times``), once the analysis applies."""
+        self._refuse(name)
+        return self._times(t)
+
+    def point_unavailability(self, t: ArrayLike):
+        """The probability that the top event is in effect at ``t``,
+        ``Q(t)``, its events repaired (or tested) and new at 0.
+
+        Each event is down at ``t`` with its probability as a
+        ``RepairableRBD``'s component is (in closed form for an
+        exponential life and repair, ``lambda / (lambda + mu) (1 -
+        exp(-(lambda + mu) t))``, else from its renewal or test cycle's
+        curve), independently of the others, and the top event's
+        probability follows from the tree's decision diagram, repeated
+        events, VOTE and NOT gates included. It is worked out as itself,
+        not as one less an availability, so a small one keeps its
+        digits. The same as ``top_event_probability`` for such a tree.
+
+        Parameters
+        ----------
+        t : array_like
+            Time/s, 0 or more: a number or an array.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            ``Q(t)``, a float for a number ``t`` and an array for an
+            array.
+
+        Raises
+        ------
+        ValueError
+            If the tree's events are not repaired (a ``Refused``), or a
+            time is negative.
+
+        Examples
+        --------
+        Two pumps, each failing at rate 0.01 and repaired at rate 0.5,
+        both needed to fail: ``Q(t) = q(t) ** 2``, ``q(t) = (1 / 51) (1 -
+        exp(-0.51 t))``.
+
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> pump = {
+        ...     "reliability": surv.Exponential.from_params([0.01]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ... }
+        >>> tree = FaultTree(
+        ...     {"no flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": pump, "pump 2": pump},
+        ... )
+        >>> f"{tree.point_unavailability(10.0):.6e}"
+        '3.797938e-04'
+        """
+        times, shape = self._repaired_times(t, "point_unavailability")
+        p, q = self._event_probabilities(times)
+        return self._out(self._top(p, q, len(times)), shape)
+
+    def mean_unavailability(self, t: Optional[ArrayLike] = None):
+        """The average of the top event's probability of being in effect
+        over ``[0, t]``, its events repaired (or tested) and new at 0; with
+        ``t`` left out, its long-run value.
+
+        Over a window, ``Q(t)`` (see ``point_unavailability``) is
+        integrated on the pieces between its events' curves' bends,
+        halved until the quadrature agrees with its halves', to its own
+        size (so a small average keeps its digits), as
+        [`mission_unavailability`][repyability.RepairableRBD.mission_unavailability]
+        integrates a diagram's. In the long run it is the steady state
+        (each event's ``MTTR / (MTTF + MTTR)``), or with tested events
+        the average over the tests' common period (each event's ``1 -
+        exp(-lambda u)`` at a time ``u`` since its test), as
+        [`mean_unavailability`][repyability.RepairableRBD.mean_unavailability]
+        gives a diagram's: the PFDavg of a safety function.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            The window/s' ends, 0 or more: a number or an array. By
+            default None: the long-run value.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The average, a float for a number ``t`` (or none) and an array
+            for an array.
+
+        Raises
+        ------
+        ValueError
+            If the tree's events are not repaired (a ``Refused``), or a
+            time is negative.
+        NotImplementedError
+            In the long run, for a tested event whose tests take time,
+            as the diagram's long-run values refuse it.
+
+        Examples
+        --------
+        A unit failing at rate 0.001, its failures hidden until a test
+        every 100 hours (taking no time): its average unavailability over
+        the interval is ``1 - (1 - exp(-0.1)) / 0.1``, about 0.04837.
+
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> sensor = {
+        ...     "reliability": surv.Exponential.from_params([0.001]),
+        ...     "repairability": "instant",
+        ...     "inspection": {"interval": 100.0},
+        ... }
+        >>> tree = FaultTree({"no trip": ("or", ["sensor"])},
+        ...                  {"sensor": sensor})
+        >>> round(tree.mean_unavailability(100.0), 5)
+        0.04837
+        >>> round(tree.mean_unavailability(), 5)
+        0.04837
+        """
+        if t is None:
+            self._refuse("mean_unavailability")
+            return float(self._repaired.mean_unavailability())
+        times, shape = self._repaired_times(t, "mean_unavailability")
+        values = self._repaired.mission_unavailability(times)
+        return self._out(values, shape)
+
+    def failure_frequency(self, t: ArrayLike):
+        """The top event's failure frequency at ``t``, ``w(t)``: its
+        expected occurrences per unit time then, its events repaired (or
+        tested) and new at 0.
+
+        An event's failure starts the top event when the event is
+        critical then: when the top event is not in effect with it up and
+        is with it down. The events failing and being repaired
+        independently, that is so with probability ``I_B^i(t)``, its
+        Birnbaum importance at the events' probabilities of being down
+        then, so
+
+        ```text
+        w(t) = sum_i I_B^i(t) w_i(t)
+        ```
+
+        ``w_i(t)`` the event's failure intensity: ``lambda (1 - q_i(t))``
+        for one of constant failure rate (it fails only while it works),
+        else the rate of change of its expected failures, by differences
+        on its renewal curve's grid. Its integral is
+        ``expected_failures``, and its long-run value
+        ``system_failure_frequency``. A failure at an exact time (a unit
+        dead on arrival) is counted by ``expected_failures``, not here.
+
+        Parameters
+        ----------
+        t : array_like
+            Time/s, 0 or more: a number or an array.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            ``w(t)``, a float for a number ``t`` and an array for an
+            array.
+
+        Raises
+        ------
+        ValueError
+            If the tree's events are not repaired (a ``Refused``), or a
+            time is negative.
+        NotImplementedError
+            For a tree with NOT gates, whose top event can also start
+            when an event is repaired.
+
+        Examples
+        --------
+        Either of two events, failing at rates 0.01 and 0.02 and repaired
+        at rate 0.5, in the long run: ``w = (1 - q2) w1 + (1 - q1) w2``,
+        ``w_i = lambda_i (1 - q_i)``.
+
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> E = surv.Exponential.from_params
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["a", "b"])},
+        ...     {"a": {"reliability": E([0.01]), "repairability": E([0.5])},
+        ...      "b": {"reliability": E([0.02]), "repairability": E([0.5])}},
+        ... )
+        >>> round(tree.failure_frequency(1000.0), 6)
+        0.028281
+        >>> round(tree.system_failure_frequency(), 6)
+        0.028281
+        """
+        from repyability.rbd._event_curves import failure_frequency
+
+        times, shape = self._repaired_times(t, "failure_frequency")
+        return self._out(failure_frequency(self._repaired, times), shape)
+
+    def expected_failures(self, t: ArrayLike):
+        """The expected number of times the top event starts in ``[0,
+        t)``, its events repaired (or tested) and new at 0: the integral
+        of ``failure_frequency``, as
+        [`expected_failures`][repyability.RepairableRBD.expected_failures]
+        counts a diagram's system failures (each event's expected
+        failures from its renewal equation, weighed by its Birnbaum
+        importance over time, and extended exactly once the events'
+        curves have settled).
+
+        Parameters
+        ----------
+        t : array_like
+            The window/s' ends, 0 or more: a number or an array.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The expected count, a float for a number ``t`` and an array for
+            an array.
+
+        Raises
+        ------
+        ValueError
+            If the tree's events are not repaired (a ``Refused``), or a
+            time is negative.
+        NotImplementedError
+            For a tree with NOT gates (see ``failure_frequency``).
+
+        Examples
+        --------
+        One event failing at rate 0.01, repaired at rate 0.5: ``(lambda mu
+        / (lambda + mu)) t + (lambda / (lambda + mu)) ** 2 (1 - exp(-(lambda
+        + mu) t))``.
+
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> E = surv.Exponential.from_params
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["a"])},
+        ...     {"a": {"reliability": E([0.01]), "repairability": E([0.5])}},
+        ... )
+        >>> round(tree.expected_failures(100.0), 5)
+        0.98078
+        """
+        times, shape = self._repaired_times(t, "expected_failures")
+        return self._out(self._repaired.expected_failures(times), shape)
+
+    def system_failure_frequency(self) -> float:
+        """The top event's long-run failure frequency: its expected
+        occurrences per unit time once its repaired (or tested) events
+        have settled, ``sum_i I_B^i w_i`` at their long-run values (see
+        ``failure_frequency``), as
+        [`system_failure_frequency`][repyability.RepairableRBD.system_failure_frequency]
+        gives a diagram's.
+
+        Returns
+        -------
+        float
+            Expected occurrences per unit time, in the long run.
+
+        Raises
+        ------
+        ValueError
+            If the tree's events are not repaired (a ``Refused``).
+        NotImplementedError
+            For a tree with NOT gates (see ``failure_frequency``).
+
+        Examples
+        --------
+        Both of two events, failing at rates 0.01 and 0.02 and repaired
+        at rate 0.5: ``q1 w2 + q2 w1``.
+
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> E = surv.Exponential.from_params
+        >>> tree = FaultTree(
+        ...     {"top": ("and", ["a", "b"])},
+        ...     {"a": {"reliability": E([0.01]), "repairability": E([0.5])},
+        ...      "b": {"reliability": E([0.02]), "repairability": E([0.5])}},
+        ... )
+        >>> f"{tree.system_failure_frequency():.6e}"
+        '7.541478e-04'
+        """
+        self._refuse("system_failure_frequency")
+        return float(self._repaired.system_failure_frequency())
+
     def occurs(self, events: Collection[Hashable]) -> bool:
         """Whether the top event occurs when exactly ``events`` have.
 
@@ -1996,6 +2452,76 @@ class FaultTree:
             given_occurred=self._out(occurred, shape),
             given_not_occurred=self._out(not_occurred, shape),
         )
+
+    def importances(
+        self, t: Optional[ArrayLike] = None, *, simulate: bool = False
+    ) -> "ImportanceTable":
+        """Every importance measure in one table.
+
+        Calls each importance method of this model in turn (Birnbaum,
+        improvement potential, risk achievement and reduction worth,
+        criticality, Fussell-Vesely, differential, joint, Barlow-Proschan
+        and structural, those the model has) with the arguments given, and
+        gathers what they return. Each entry of ``measures`` is exactly
+        the method's own result; nothing is computed a second way. A
+        measure this model cannot work out is named under ``refused`` with
+        the reason its method gives (as
+        [`analysis_routes`][repyability.FaultTree.analysis_routes] has it), and
+        a measure only a simulation gives is listed there as simulated
+        unless ``simulate=True``.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            The time/s, as for each measure. May be left out when no
+            event's probability depends on time.
+        simulate : bool, optional
+            Whether to run the measures that are simulated. By default
+            False: they are listed under ``refused`` with ``"simulated:
+            pass simulate=True"``.
+
+        Returns
+        -------
+        ImportanceTable
+            [`ImportanceTable`][repyability.ImportanceTable]: ``measures``
+            (``{method name: {component: value}}``), ``refused``
+            (``{method name: reason}``) and ``rows()``, one plain dict
+            per component for a table. The joint importance, which is per
+            pair, is in ``measures`` and not in ``rows()``.
+
+        Raises
+        ------
+        NotImplementedError
+            If no measure can be worked out here; the message gives each
+            one's reason.
+        ValueError
+            If ``simulate`` is not a bool.
+
+        Examples
+        --------
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["valve", "flow"]),
+        ...      "flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+        ... )
+        >>> table = tree.importances()
+        >>> sorted(table.measures)[:2]
+        ['birnbaum_importance', 'criticality_importance']
+        >>> sorted(table.refused)
+        ['barlow_proschan_importance']
+        >>> table.rows()[2]["component"]
+        'valve'
+        """
+        from repyability.rbd import _importances
+
+        calls = {
+            name: (lambda name: lambda: getattr(self, name)(t))(name)
+            for name in _importances.MEASURES
+            if name != "structural_importance"
+        }
+        calls["structural_importance"] = self.structural_importance
+        return _importances.table(self, calls, simulate)
 
     def birnbaum_importance(self, t: Optional[ArrayLike] = None) -> dict:
         """Birnbaum importance of each basic event.
@@ -2794,6 +3320,7 @@ class FaultTree:
         c beta 2.0 (0.0, inf)
         d p 0.05 (0.0, 1.0)
         """
+        self._refuse("levers")
         from repyability.rbd import _sensitivity
 
         return _sensitivity.public_levers(self)
@@ -2845,6 +3372,7 @@ class FaultTree:
         >>> round(longer.sf(100), 4)
         0.7788
         """
+        self._refuse("with_levers")
         from repyability.rbd import _sensitivity
 
         return _sensitivity.with_levers(self, values)
@@ -3062,14 +3590,19 @@ class FaultTree:
         from repyability.rbd import routes as r
         from repyability.rbd._model_utils import parametric_spec
 
-        events = {
-            e: (
-                (r.EXACT, "a probability")
-                if isinstance(m, float)
-                else (r.model_route(m))
-            )
-            for e, m in self.events.items()
-        }
+        if self._repaired is not None:
+            from repyability.rbd._event_curves import down_routes
+
+            events = down_routes(self._repaired)
+        else:
+            events = {
+                e: (
+                    (r.EXACT, "a probability")
+                    if isinstance(m, float)
+                    else (r.model_route(m))
+                )
+                for e, m in self.events.items()
+            }
         out: Dict[str, AnalysisRoute] = {}
 
         def give(names, route) -> None:
@@ -3176,7 +3709,7 @@ class FaultTree:
         differenced = sorted(
             str(e)
             for e, m in self.events.items()
-            if not isinstance(m, float) and parametric_spec(m) is None
+            if not isinstance(m, (float, dict)) and parametric_spec(m) is None
         )
         densities = r.refusal(
             lambda: self._require_varying_lifetimes(
@@ -3257,7 +3790,66 @@ class FaultTree:
         )
         if self.is_dynamic or not self.is_coherent:
             self._gate_routes(out, built)
-        return r.AnalysisRoutes(sorted(out.items()))
+        self._repaired_routes(out, built)
+        return with_importances(out)
+
+    def _repaired_routes(self, out: dict, built) -> None:
+        """The routes of the analyses of repaired events, in ``out``:
+        refused for a tree without them; for a tree of them, how each is
+        worked out, and what the tree refuses."""
+        from repyability.rbd import routes as r
+
+        for name in (_REPAIRED_OWN - {"to_repairable_rbd"}) | set(out):
+            reason = r.refusal(functools.partial(self._refuse, name))
+            if reason:
+                out[name] = r.refused(reason)
+        if self._repaired is None:
+            return
+        from repyability.rbd._event_curves import intensity_routes
+
+        if "point_unavailability" not in out:
+            out["point_unavailability"] = built(
+                r.EXACT,
+                "The tree's decision diagram over the events' probabilities "
+                "of being down at t, each worked out in its own right.",
+            )
+        out["top_event_probability"] = out["point_unavailability"]
+        if "mean_unavailability" not in out:
+            out["mean_unavailability"] = built(
+                r.NUMERICAL,
+                "The point unavailability integrated over the window, on "
+                "pieces between the events' curves' bends, to its own "
+                "size; with t left out, the long run, exactly from the "
+                "events' long-run values.",
+            )
+        for name, reason in (
+            (
+                "failure_frequency",
+                "Each event's failure intensity times its Birnbaum "
+                "importance from the tree's decision diagram, summed.",
+            ),
+            (
+                "expected_failures",
+                "Each event's expected failures weighed by its Birnbaum "
+                "importance over time, integrated on pieces between the "
+                "events' curves' bends (to about 1e-7), and extended "
+                "exactly once they have settled.",
+            ),
+            (
+                "system_failure_frequency",
+                "Each event's long-run failure frequency times its "
+                "Birnbaum importance at the long-run values, summed.",
+            ),
+        ):
+            if name in out:
+                continue
+            route = r.with_nodes(
+                r.NUMERICAL if name == "expected_failures" else r.EXACT,
+                reason,
+                intensity_routes(self._repaired, name),
+                "failure intensities",
+            )
+            out[name] = route
 
     def _gate_routes(self, out: dict, built) -> None:
         """The routes of a tree with dynamic or NOT gates, in ``out``:
@@ -3343,10 +3935,88 @@ class FaultTree:
         (0.9405, 0.9405)
         """
         self._refuse("to_rbd")
+        from repyability.rbd.non_repairable_rbd import NonRepairableRBD
+
+        edges, models, k, source, sink = self._drawn()
+        return NonRepairableRBD(
+            edges,
+            models,
+            k=k or None,
+            input_node=source,
+            output_node=sink,
+            ccf_groups=self.ccf_groups or None,
+        )
+
+    def to_repairable_rbd(self) -> "RepairableRBD":
+        """The repairable block diagram of the same system, for a tree of
+        repaired (or tested) events: drawn as ``to_rbd`` draws a tree,
+        each event a component with its spec. Its values over time are
+        the tree's, and it takes what the tree does not: costs, spares,
+        crews, maintenance (give its components the fuller specs) and
+        simulation (``simulate_timelines``, ``availability``).
+
+        A ``RepairableRBD`` holds each component in one place, so a tree
+        whose event (or gate) feeds several gates is refused: its own
+        methods (``point_unavailability``, ``failure_frequency``, ...)
+        work it out exactly.
+
+        Returns
+        -------
+        RepairableRBD
+            The diagram, from input node ``"input"`` to output node
+            ``"output"`` (renamed if an event has that name).
+
+        Raises
+        ------
+        ValueError
+            If the tree's events are not repaired (a ``Refused``: use
+            ``to_rbd``).
+        NotImplementedError
+            For a tree with NOT gates, or with a repeated event or gate.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import FaultTree
+        >>> E = surv.Exponential.from_params
+        >>> pump = {"reliability": E([0.01]), "repairability": E([0.5])}
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["valve", "flow"]),
+        ...      "flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": pump, "pump 2": pump,
+        ...      "valve": {"reliability": E([0.001]),
+        ...                "repairability": E([0.1])}},
+        ... )
+        >>> rbd = tree.to_repairable_rbd()
+        >>> abs(rbd.mean_unavailability() - tree.mean_unavailability()) < 1e-15
+        True
+        """
+        self._refuse("to_repairable_rbd")
+        if not self.is_coherent:
+            raise NotImplementedError(
+                "A block diagram cannot hold a NOT gate: the tree's own "
+                "point_unavailability and mean_unavailability work it out "
+                "exactly."
+            )
+        from repyability.rbd.repairable_rbd import RepairableRBD
+
+        edges, models, k, source, sink = self._drawn(repairable=True)
+        return RepairableRBD(
+            edges,
+            models,
+            k=k or None,
+            input_node=source,
+            output_node=sink,
+        )
+
+    def _drawn(self, repairable: bool = False) -> tuple:
+        """The tree drawn as a block diagram (see ``to_rbd``): its edges,
+        its nodes' models, the votes' ``k``, and its input and output
+        nodes. With ``repairable``, each event's spec, drawn once (an
+        event drawn again refuses)."""
         from surpyval import FixedEventProbability
 
         from repyability.rbd.helper_classes import PerfectReliability
-        from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 
         taken = set(self._gates) | set(self.events)
 
@@ -3371,6 +4041,15 @@ class FaultTree:
             if count == 0:
                 models[event] = model
                 return event
+            if repairable:
+                raise NotImplementedError(
+                    f"Event {event!r} feeds more than one gate, and a "
+                    "RepairableRBD holds each component in one place, so "
+                    "the tree cannot be drawn as one. The tree's own "
+                    "point_unavailability, mean_unavailability, "
+                    "failure_frequency and expected_failures work it out "
+                    "exactly, repeated events included."
+                )
             node = fresh(f"{event} ({count + 1})")
             models[node] = event  # a repeat of the event's node
             return node
@@ -3415,14 +4094,7 @@ class FaultTree:
         source, sink = fresh("input"), fresh("output")
         edges.extend((source, v) for v in entries)
         edges.extend((u, sink) for u in exits)
-        return NonRepairableRBD(
-            edges,
-            models,
-            k=k or None,
-            input_node=source,
-            output_node=sink,
-            ccf_groups=self.ccf_groups or None,
-        )
+        return edges, models, k, source, sink
 
     @classmethod
     def from_rbd(cls, rbd) -> "FaultTree":
@@ -3635,12 +4307,20 @@ class FaultTree:
             common-cause groups (as a diagram saves them).
         """
         from repyability._version import __version__
-        from repyability.rbd.serialisation import _ccf_to_list, serialise_model
+        from repyability.rbd.serialisation import (
+            _ccf_to_list,
+            _serialise_component,
+            serialise_model,
+        )
 
         events: List[Dict[str, Any]] = []
         for name, model in self.events.items():
             if isinstance(model, float):
                 events.append({"event": name, "probability": model})
+            elif isinstance(model, dict):
+                events.append(
+                    {"event": name, "component": _serialise_component(model)}
+                )
             else:
                 events.append({"event": name, "model": serialise_model(model)})
         out = {
@@ -3684,6 +4364,7 @@ class FaultTree:
         """
         from repyability.rbd.serialisation import (
             _ccf_from_list,
+            _deserialise_component,
             _node_name,
             deserialise_model,
         )
@@ -3709,7 +4390,11 @@ class FaultTree:
             _node_name(e["event"]): (
                 e["probability"]
                 if "probability" in e
-                else deserialise_model(e["model"])
+                else (
+                    _deserialise_component(e["component"])
+                    if "component" in e
+                    else deserialise_model(e["model"])
+                )
             )
             for e in d["events"]
         }
@@ -3792,6 +4477,7 @@ class FaultTree:
         >>> line.startswith('    <define-gate name="no_cooling"><label>')
         True
         """
+        self._refuse_repaired("to_open_psa")
         from repyability._ft_open_psa import to_open_psa
 
         if t is not None:
@@ -3799,6 +4485,86 @@ class FaultTree:
                 raise ValueError("t must be a single number.")
             t = float(real_array(t, "t"))
         return to_open_psa(self, t, name)
+
+    @classmethod
+    def from_open_psa(
+        cls,
+        source,
+        tree: Optional[str] = None,
+        mission_time: Optional[float] = None,
+        *,
+        top: Optional[str] = None,
+    ) -> "FaultTree":
+        """Read a fault tree from an Open-PSA Model Exchange Format (MEF)
+        document: the inverse of ``to_open_psa``, and a way in for trees
+        that other PRA tools write.
+
+        Read are the gates ``or``, ``and``, ``atleast``, ``not``, and
+        ``nand``, ``nor`` and ``xor`` (of two inputs) through NOT gates; a
+        formula nested in a gate becomes a gate of its own, named after
+        it (``"gate/1"``, ...). Basic events read as probabilities, as
+        surpyval ``Exponential`` and ``Weibull`` lives where their
+        expression is an ``exponential`` or ``Weibull`` of the mission time
+        (so the tree keeps its time dependence), or as the value of any
+        other expression (``float``, ``parameter``, arithmetic) at
+        ``mission_time``. House events read as probabilities 0 and 1, and
+        a ``beta-factor`` common-cause group as a ``BetaFactor``
+        ``CCFGroup``. A name the writer made an identifier comes back from
+        its ``label``; names read as text.
+
+        Parameters
+        ----------
+        source : str, os.PathLike or file
+            The document: its text, a path to a file holding it, or a file
+            opened for reading.
+        tree : str, optional
+            The name of the ``define-fault-tree`` to read; by default the
+            document's only one.
+        mission_time : float, optional
+            The time at which to read an event's probability that is an
+            expression of the mission time other than an exponential or
+            Weibull life; by default None: such an event is refused.
+        top : str, optional
+            The top event, a gate (keyword only); by default the one gate
+            that is no gate's input. Only what is below it is read.
+
+        Returns
+        -------
+        FaultTree
+            The tree.
+
+        Raises
+        ------
+        ValueError
+            For a document that declares a document type or an entity
+            (refused before it is parsed, as the input is untrusted), that
+            is not well-formed MEF, that defines several fault trees and no
+            ``tree``, or whose gates form a loop or name an input it does
+            not define.
+        NotImplementedError
+            For what is not read, named with the reason: the ``GLM`` and
+            ``periodic-test`` expressions (repaired and tested events), the
+            MGL, alpha-factor and phi-factor common-cause models, the
+            ``iff``, ``imply`` and ``cardinality`` formulas, uncertainty
+            deviates, and event trees.
+
+        Examples
+        --------
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"no cooling": ("or", ["valve", "no flow"]),
+        ...      "no flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+        ... )
+        >>> again = FaultTree.from_open_psa(tree.to_open_psa())
+        >>> again.gates == tree.gates
+        True
+        >>> round(again.top_event_probability(), 4)
+        0.0595
+        """
+        from repyability._ft_open_psa import from_open_psa
+
+        return from_open_psa(cls, source, tree, mission_time, top)
 
     @classmethod
     def from_json(cls, s) -> "FaultTree":

@@ -119,6 +119,7 @@ NONREPAIRABLE_CALLS = {
         X, state={}
     ),
     "structural_importance": lambda rbd: rbd.structural_importance(),
+    "importances": lambda rbd: rbd.importances(X),
     "random": lambda rbd: rbd.random(200, seed=1),
     "random_block": lambda rbd: rbd.random_block(1, seed=1),
     "unreliability_interval": lambda rbd: rbd.unreliability_interval(
@@ -255,6 +256,7 @@ REPAIRABLE_CALLS = {
             "optimal_replacement_intervals",
             "optimal_inspection_intervals",
             "structural_importance",
+            "importances",
         )
     },
     "total_cost": lambda rbd: rbd.total_cost(1000.0),
@@ -473,6 +475,7 @@ NETWORK_CALLS = {
         )
     },
     "structural_importance": lambda net: net.structural_importance(),
+    "importances": lambda net: net.importances(X),
     "cut_sets": lambda net: net.cut_sets(),
     "path_sets": lambda net: net.path_sets(),
     "minimal_cut_sets": lambda net: net.minimal_cut_sets(),
@@ -608,6 +611,7 @@ PHASED_CALLS = {
             "risk_reduction_worth",
             "criticality_importance",
             "fussell_vesely",
+            "importances",
         )
     },
     "reliability_interval": (
@@ -1276,6 +1280,14 @@ def test_the_readme_says_what_is_simulated():
             (repairable["a shelf of spares"], "cost", "simulated"),
             (repairable["a shelf of spares"], "expected_cost", "refused"),
         ],
+        "A probability of failing per demand (fail to start) in a "
+        "repairable diagram": [
+            (repairable["demand"], "mean_availability", "exact"),
+            (repairable["demand"], "point_availability", "numerical"),
+            (repairable["demand"], "availability", "simulated"),
+            (repairable["fixed probability"], "mean_availability", "refused"),
+            (repairable["fixed probability"], "availability", "simulated"),
+        ],
         "Spares with repair crews, standby groups, opportunistic "
         "maintenance, imperfect repair or partial restoration": [
             (crew, "spares_stock", "refused"),
@@ -1337,10 +1349,13 @@ def test_the_readme_says_what_is_simulated():
 def uncertain_event(tree):
     """An event's model parameter known to within 5%: the first event,
     outside the common-cause groups, whose model has parameters (a
-    probability's is ``p``)."""
+    probability's is ``p``; a repaired event's, its life's)."""
     members = {m for g in tree.ccf_groups for m in g.members}
     for event in tree.events:
-        spec = parametric_spec(tree._event_model(event))
+        model = tree._event_model(event)
+        if isinstance(model, dict):
+            model = model["reliability"]
+        spec = parametric_spec(model)
         if spec is not None and event not in members:
             name, value = spec[2][0], spec[1][0]
             return {event: {name: st.uniform(0.95 * value, 0.1 * value)}}
@@ -1369,13 +1384,19 @@ FAULT_TREE_CALLS = {
             "barlow_proschan_importance",
             "parameter_sensitivity",
             "conditional_probabilities",
+            "point_unavailability",
+            "mean_unavailability",
+            "failure_frequency",
+            "expected_failures",
         )
     },
+    "system_failure_frequency": lambda tree: tree.system_failure_frequency(),
     "time_to_reliability": lambda tree: tree.time_to_reliability(0.5),
     "bx_life": lambda tree: tree.bx_life(10),
     "mean": lambda tree: tree.mean(),
     "random": lambda tree: tree.random(200, seed=1),
     "structural_importance": lambda tree: tree.structural_importance(),
+    "importances": lambda tree: tree.importances(X),
     "sf_uncertainty": lambda tree: tree.sf_uncertainty(
         X, uncertain_event(tree), n_draws=2, seed=1
     ),
@@ -1410,6 +1431,7 @@ def test_the_fault_tree_report_covers_every_public_analysis():
         "to_dict",
         "to_json",
         "to_rbd",
+        "to_repairable_rbd",
         "occurs",
         "get_min_cut_sets",
         "get_min_path_sets",
@@ -1417,6 +1439,7 @@ def test_the_fault_tree_report_covers_every_public_analysis():
         "minimal_path_sets",
         "prime_implicants",
         "to_open_psa",
+        "from_open_psa",
         "levers",
         "with_levers",
     }

@@ -30,6 +30,8 @@
 
 ::: repyability.ExpectedEvents
 
+::: repyability.FirstFailureBounds
+
 ::: repyability.EventsByWindow
 
 ::: repyability.CostByWindow
@@ -75,6 +77,8 @@
 ::: repyability.ReplacementCycle
 
 ::: repyability.ConditionalProbabilities
+
+::: repyability.ImportanceTable
 
 ::: repyability.PrimeImplicant
 

@@ -559,11 +559,17 @@ def fault_tree_kinds():
     (#314): events given as probabilities, as lifetime models (surpyval
     distributions, a fit with its covariance) and as both, a repeated
     event, common-cause groups of each model and basis, a NOT gate, a
-    functional dependency, and dynamic gates integrated or shared."""
+    functional dependency, dynamic gates integrated or shared, and events
+    repaired or tested (#809), repeated or under a NOT gate."""
     unit = W([100, 2])
     gates = {"top": ("or", ["pair", "c"]), "pair": ("and", ["a", "b"])}
     rest = {"b": W([80, 1.5]), "c": E([0.002])}
     alike = {"a": unit, "b": unit, "c": E([0.002])}
+    repaired = {
+        "a": {"reliability": unit, "repairability": E([0.5])},
+        "b": {"reliability": E([0.01]), "repairability": L([1.0, 0.5])},
+        "c": {"reliability": E([0.002]), "repairability": E([0.1])},
+    }
     return {
         "fixed": FaultTree(gates, {"a": 0.1, "b": 0.2, "c": 0.05}),
         "lifetimes": FaultTree(gates, {"a": unit, **rest}),
@@ -634,6 +640,45 @@ def fault_tree_kinds():
                 "pair": ("and", ["b", "c"]),
             },
             {"a": unit, **rest},
+        ),
+        # Repaired events (#809's kind): the values over time.
+        "repaired": FaultTree(gates, repaired),
+        # Hidden failures found by periodic tests, one test taking time.
+        "tested": FaultTree(
+            gates,
+            {
+                **repaired,
+                "a": {
+                    "reliability": E([0.004]),
+                    "repairability": E([0.5]),
+                    "inspection": {"interval": 50.0, "duration": 1.0},
+                },
+                "b": {
+                    "reliability": E([0.002]),
+                    "repairability": "instant",
+                    "inspection": {"interval": 80.0},
+                },
+            },
+        ),
+        # A repaired event feeding two gates: exact from the tree, and no
+        # RepairableRBD (to_repairable_rbd refuses).
+        "repeated, repaired": FaultTree(
+            {
+                "top": ("and", ["A", "B"]),
+                "A": ("or", ["s", "a"]),
+                "B": ("or", ["s", "b"]),
+            },
+            {"s": repaired["c"], "a": repaired["a"], "b": repaired["b"]},
+        ),
+        # A NOT gate over repaired events: Q(t) exact, w(t) refused.
+        "repaired, not gate": FaultTree(
+            {
+                "top": ("or", ["pair", "c and not a"]),
+                "pair": ("and", ["a", "b"]),
+                "c and not a": ("and", ["c", "not a"]),
+                "not a": ("not", ["a"]),
+            },
+            repaired,
         ),
     }
 
@@ -1061,6 +1106,12 @@ def repairable_kinds():
             ),
             "fixed probability": system(
                 {"reliability": FIXED(0.1), "repairability": repair}
+            ),
+            # A probability of failing per demand with the demands' rate
+            # (a pump that may fail to start): an exponential life of
+            # rate d p, which every route takes.
+            "demand": system(
+                unit(reliability=FIXED(0.1), demand_rate=0.05, repair_cost=5.0)
             ),
             "mixture life": system(
                 unit(reliability=mixture_life(), replace_cost=10.0)

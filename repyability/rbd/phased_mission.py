@@ -52,6 +52,7 @@ import numpy as np
 from repyability.rbd import _mission_chain, _mission_runs
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import bdd, modular, routes
+from repyability.rbd._importances import with_importances
 from repyability.rbd._mission_results import (
     MissionDrivers,
     MissionPhaseSummary,
@@ -67,7 +68,7 @@ from repyability.rbd._mission_settings import (
 )
 from repyability.rbd._ordered_bdd import FALSE, TRUE, OrderedBDD
 from repyability.rbd._units import diagram_unit
-from repyability.rbd.results import ConfidenceInterval
+from repyability.rbd.results import ConfidenceInterval, ImportanceTable
 from repyability.rbd.shannon import _plan_rows, replay, room
 from repyability.utils.checks import one_of, real_array, simulation_options
 from repyability.utils.deprecation import refuse_removed_names
@@ -1334,6 +1335,54 @@ class PhasedMission:
             method="simulated",
         )
 
+    def importances(self, *, simulate: bool = False) -> ImportanceTable:
+        """Every importance measure in one table.
+
+        Calls each importance method of this model in turn (Birnbaum,
+        improvement potential, risk achievement and reduction worth,
+        criticality, Fussell-Vesely, differential, joint, Barlow-Proschan
+        and structural, those the model has) with the arguments given, and
+        gathers what they return. Each entry of ``measures`` is exactly
+        the method's own result; nothing is computed a second way. A
+        measure this model cannot work out is named under ``refused`` with
+        the reason its method gives (as
+        [`analysis_routes`][repyability.PhasedMission.analysis_routes]
+        has it), and a measure only a simulation gives is listed there as
+        simulated unless ``simulate=True``.
+
+        Parameters
+        ----------
+        simulate : bool, optional
+            Whether to run the measures that are simulated. By default
+            False: they are listed under ``refused`` with ``"simulated:
+            pass simulate=True"``.
+
+        Returns
+        -------
+        ImportanceTable
+            [`ImportanceTable`][repyability.ImportanceTable]: ``measures``
+            (``{method name: {component: value}}``), ``refused``
+            (``{method name: reason}``) and ``rows()``, one plain dict
+            per component for a table. The joint importance, which is per
+            pair, is in ``measures`` and not in ``rows()``.
+
+        Raises
+        ------
+        NotImplementedError
+            If no measure can be worked out here; the message gives each
+            one's reason.
+        ValueError
+            If ``simulate`` is not a bool.
+        """
+        from repyability.rbd import _importances
+
+        calls = {
+            name: getattr(self, name)
+            for name in _importances.MEASURES
+            if hasattr(self, name)
+        }
+        return _importances.table(self, calls, simulate)
+
     def birnbaum_importance(self) -> Dict[Hashable, float]:
         """Birnbaum importance of each component over the mission.
 
@@ -2351,7 +2400,7 @@ class PhasedMission:
         )
         for name in ("reliability_over_time", "failure_drivers", "summary"):
             out[name] = whole
-        return r.AnalysisRoutes(out)
+        return with_importances(out)
 
     def _method(self, method: str, mc_samples, seed, name: str) -> str:
         one_of("method", method, ("exact", "simulate"))
