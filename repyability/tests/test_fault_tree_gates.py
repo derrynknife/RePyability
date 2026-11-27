@@ -624,5 +624,5 @@ def test_the_open_psa_export_refuses_what_the_format_has_not():
         {"a": E([0.01]), "b": E([0.01])},
         ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate"))],
     )
-    with pytest.raises(NotImplementedError, match="BetaFactor"):
+    with pytest.raises(NotImplementedError, match="basis='rate'"):
         rate.to_open_psa()

@@ -679,7 +679,7 @@ def delta(
     their covariance (see ``uncertainty.varied_parameters``); or, given,
     ``derivatives`` of another quantity, as ``parameter_sensitivity``
     gives them (by key, a mapping of lever names to derivatives)."""
-    from ._model_utils import parametric_spec
+    from ._model_utils import markov_spec, parametric_spec
 
     if derivatives is None:
         derivatives = _sensitivities(rbd, of, x, state, rel_step)
@@ -720,7 +720,9 @@ def delta(
             drawn = _drawn_model(rbd, item.members[0], role, spec)
             require_levers(drawn, spec, what)
             positions, _, covariance, _ = varied_parameters(drawn, spec, what)
-            spec_of = parametric_spec(models[role])
+            spec_of = parametric_spec(models[role]) or markov_spec(
+                models[role]
+            )
             assert spec_of is not None  # a varied model is parametric
             names = spec_of.names
             g = gradient(keys, [f"{role}.{names[p]}" for p in positions])

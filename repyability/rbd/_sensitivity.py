@@ -55,6 +55,7 @@ from repyability.utils.checks import is_number, is_whole, number_or_nan
 
 from . import _importance_time
 from ._model_utils import CovariateSpec, UsageSpec, lever_spec
+from .markov_node import MarkovComponent
 
 #: What the sensitivities can be of.
 QUANTITIES = ("availability", "cost_rate")
@@ -365,6 +366,9 @@ def _as_spec(component) -> Optional[dict]:
         return component
     reliability = getattr(component, "reliability", None)
     repair = getattr(component, "time_to_replace", None)
+    if isinstance(component, MarkovComponent):
+        # Its rates are its levers, and it has no repair but its own.
+        return {"reliability": component}
     if reliability is None or repair is None:
         return None
     return {"reliability": reliability, "repairability": repair}

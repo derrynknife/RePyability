@@ -4,7 +4,8 @@ The MEF (version 2.0d) holds static fault trees: gates ``or``, ``and``,
 ``atleast`` (k-out-of-n) and ``not``, basic events with a probability or
 a time-dependent expression of the mission time (``exponential``,
 ``Weibull``) or of a repaired or tested component (``GLM``,
-``periodic-test``), and common-cause groups (here the beta-factor model).
+``periodic-test``), and common-cause groups (the beta-factor, MGL,
+alpha-factor and phi-factor models).
 It has
 no dynamic gates, so a tree with PAND, SPARE or SEQ gates is refused; an
 FDEP gate is exported as its static equivalent (each event it forces an OR
@@ -17,6 +18,7 @@ as given is kept as the element's ``label``.
 
 import os
 import re
+from math import comb
 from typing import (
     Any,
     Callable,
@@ -211,10 +213,61 @@ def _repaired_expression(event: Hashable, spec: dict) -> str:
     )
 
 
+def _ccf_model(group) -> Tuple[str, List[Tuple[int, float]]]:
+    """The MEF model of a common-cause group, and its factors by level.
+
+    The format's models split each member's probability of failing ``Q``
+    into an independent basic event for each specific set of ``k`` members
+    (``Q_k``): the ``BetaFactor``'s (its one shared cause at the level of
+    the whole group), the ``MGL``'s (its letters at levels ``2, ..., n``)
+    and the ``AlphaFactor``'s (its alpha factors at ``1, ..., n``, in the
+    format's non-staggered scheme: staggered ones are written as the
+    non-staggered factors that give the same ``Q_k``, ``alpha_k / k``
+    scaled). Refused: a split of the failure rate, an ``MGL`` or
+    ``AlphaFactor`` with shared causes that exclude each other (the
+    default), and any other model."""
+    from repyability.rbd.ccf import MGL, AlphaFactor, BetaFactor
+
+    model, n = group.model, len(group.members)
+    where = f"Common-cause group {list(group.members)}"
+    if getattr(model, "basis", None) == "rate":
+        raise NotImplementedError(
+            f"{where} splits the members' failure rate (basis='rate'), "
+            "and the format's common-cause models split a probability: "
+            "the format has no form for it. Pass the model with its "
+            "default basis, 'probability', to export the group."
+        )
+    if isinstance(model, BetaFactor):
+        return "beta-factor", [(n, model.beta)]
+    if isinstance(model, (MGL, AlphaFactor)):
+        if n > 2 and model.shocks != "independent":
+            raise NotImplementedError(
+                f"{where}: its {type(model).__name__} takes its shared "
+                "causes as exclusive (one strikes at most, the default), "
+                "where the format takes each set's Q_k as a basic event "
+                "of its own, independent of the others; they differ at "
+                "second order in Q. Give the model shocks='independent' "
+                "to export it."
+            )
+        if isinstance(model, MGL):
+            return "MGL", [(k, v) for k, v in enumerate(model.letters, 2)]
+        alphas = list(model.alphas)
+        if model.testing == "staggered":
+            # Q_k = alpha_k / C(n-1, k-1) Q, which the non-staggered
+            # factors alpha_k / k give, as Q_k = k a_k / sum(i a_i) ...
+            scaled = [a / k for k, a in enumerate(alphas, 1)]
+            alphas = [a / sum(scaled) for a in scaled]
+        return "alpha-factor", [(k, v) for k, v in enumerate(alphas, 1)]
+    raise NotImplementedError(
+        f"{where}: its model {model!r} has no common-cause model in the "
+        "format, which has the beta-factor, MGL and alpha-factor models "
+        "splitting a probability (BetaFactor, MGL and AlphaFactor here)."
+    )
+
+
 def to_open_psa(tree, t: Optional[float], name: str) -> str:
     """The MEF document of ``tree`` (see ``FaultTree.to_open_psa``)."""
     from repyability.fault_tree import Forced
-    from repyability.rbd.ccf import BetaFactor
 
     if tree.is_dynamic:
         kinds = sorted(
@@ -227,15 +280,8 @@ def to_open_psa(tree, t: Optional[float], name: str) -> str:
             "exported. (An FDEP gate alone is, as its static equivalent.)"
         )
     members = {}
+    models = [_ccf_model(group) for group in tree.ccf_groups]
     for i, group in enumerate(tree.ccf_groups):
-        model = group.model
-        if not isinstance(model, BetaFactor) or model.basis != "probability":
-            raise NotImplementedError(
-                f"Common-cause group {list(group.members)}: only a "
-                "BetaFactor that splits a probability (the default basis) "
-                f"is exported, as the format's beta-factor model; got "
-                f"{model!r}."
-            )
         for m in group.members:
             members[m] = i
     events = dict(tree.events)
@@ -298,15 +344,25 @@ def to_open_psa(tree, t: Optional[float], name: str) -> str:
             for m in group.members
             if ids[m] != str(m)
         )
+        model, factors = models[i]
+        written = "".join(
+            f'<factor level="{level}"><float value={_number(value)}/>'
+            "</factor>"
+            for level, value in factors
+        )
         lines.append(
             f"    <define-CCF-group name={quoteattr(ids[groups[i]])} "
-            'model="beta-factor">'
+            f'model="{model}">'
             + (f"<attributes>{kept}</attributes>" if kept else "")
             + f"<members>{refs}</members>"
             f"<distribution>{_expression(first, tree.events[first], t)}"
             "</distribution>"
-            f'<factor level="2"><float value={_number(group.model.beta)}/>'
-            "</factor></define-CCF-group>"
+            + (
+                written
+                if len(factors) == 1
+                else f"<factors>{written}</factors>"
+            )
+            + "</define-CCF-group>"
         )
     lines.append("  </define-fault-tree>")
     lines.append("  <model-data>")
@@ -336,11 +392,6 @@ _REFUSED = {
         "time (a repaired or tested event, its last argument "
         "<system-mission-time/> and the others constants), not inside "
         "another expression",
-    ),
-    **dict.fromkeys(
-        ("MGL", "alpha-factor", "phi-factor"),
-        "only the beta-factor model of common causes is read: build the "
-        "group with repyability's CCFGroup and its MGL or AlphaFactor",
     ),
     **dict.fromkeys(
         ("iff", "imply", "cardinality"),
@@ -385,6 +436,8 @@ _REFUSED = {
     "constant": "a constant in a formula is not read: use a house-event",
 }
 
+#: The MEF's common-cause models, all read.
+_CCF_MODELS = ("beta-factor", "MGL", "alpha-factor", "phi-factor")
 _GATES = ("or", "and", "atleast", "not", "nand", "nor", "xor")
 _REFERENCES = ("gate", "basic-event", "house-event", "event")
 _ARITHMETIC: Dict[str, Tuple[Optional[int], Callable[..., float]]] = {
@@ -586,12 +639,10 @@ class _Reader:
         name = element.get("name")
         model = element.get("model")
         where = f"Common-cause group {name!r}"
-        if model in _REFUSED:
-            _refuse(model, where)
-        if model != "beta-factor":
+        if model not in _CCF_MODELS:
             raise ValueError(
                 f"{where} has model {model!r}, which is not an MEF "
-                "common-cause model."
+                f"common-cause model ({', '.join(_CCF_MODELS)})."
             )
         kept = {}
         for attribute in element.iterfind("attributes/attribute"):
@@ -601,10 +652,10 @@ class _Reader:
         members = [m.get("name") for m in element.iterfind("members/*")]
         distribution = element.find("distribution")
         factors = element.findall("factor") + element.findall("factors/factor")
-        if len(members) < 2 or distribution is None or len(factors) != 1:
+        if len(members) < 2 or distribution is None or not factors:
             raise ValueError(
                 f"{where} needs <members> (two or more), a <distribution> "
-                "and one <factor> (beta), as the beta-factor model has."
+                "and its model's <factor>s."
             )
         for m in members:
             if m in self.events:
@@ -614,7 +665,7 @@ class _Reader:
                 )
             self.events[m] = distribution
             self.labels[m] = kept.get(m)
-        self.groups.append((members, factors[0], where))
+        self.groups.append((members, model, factors, where))
 
     # -- expressions ------------------------------------------------------
 
@@ -1025,14 +1076,114 @@ class _Reader:
             if names[e] in below and e in used
         }
         groups = []
-        for members, factor, where in self.groups:
+        for members, model, factors, where in self.groups:
             kept = [names[m] for m in members if names[m] in events]
-            if len(kept) > 1:
-                beta = self._constant(
-                    next(e for e in factor if e.tag != "label"), where
+            if model == "beta-factor":
+                if len(factors) != 1:
+                    raise ValueError(
+                        f"{where} needs one <factor> (beta), as the "
+                        f"beta-factor model has, has {len(factors)}."
+                    )
+                if len(kept) > 1:
+                    beta = self._factor(factors[0], where)
+                    groups.append(CCFGroup(kept, BetaFactor(beta)))
+                continue
+            if not kept:
+                continue
+            if len(kept) < len(members):
+                lost = [m for m in members if names[m] not in events]
+                raise NotImplementedError(
+                    f"{where}: its members {lost} are not below the top "
+                    f"event, and an {model} group's members fail together "
+                    "in sets of every size, which a group of the others "
+                    "alone does not hold: read the tree from a top event "
+                    "above every member (top=)."
                 )
-                groups.append(CCFGroup(kept, BetaFactor(beta)))
+            groups.append(
+                CCFGroup(
+                    kept, self._ccf_model(model, factors, len(kept), where)
+                )
+            )
         return gates, events, top_name, groups
+
+    def _factor(self, element, where: str) -> float:
+        """The value of a ``<factor>``: its one expression, a constant."""
+        body = [e for e in element if e.tag not in ("label", "attributes")]
+        if len(body) != 1:
+            raise ValueError(
+                f"{where}: a <factor> needs one expression, has {len(body)}."
+            )
+        return self._constant(body[0], where)
+
+    def _ccf_model(self, model: str, factors: list, n: int, where: str):
+        """The MGL, alpha-factor or phi-factor group's model in
+        ``repyability.rbd.ccf``: each specific set of ``k`` of the ``n``
+        members fails, as an independent basic event, with the format's
+        ``Q_k``, which ``MGL`` and ``AlphaFactor`` with
+        ``shocks="independent"`` give (the default for two members, whose
+        one shared cause makes them the same)."""
+        from repyability.rbd.ccf import ALPHA_TOLERANCE, MGL, AlphaFactor
+
+        first = 2 if model == "MGL" else 1
+        levels: Dict[int, float] = {}
+        level = first - 1
+        for element in factors:
+            given = element.get("level")
+            if given is None:
+                level += 1
+            elif given.isdigit():
+                level = int(given)
+            else:
+                raise ValueError(
+                    f'{where}: a <factor level="{given}"> needs a whole '
+                    "number."
+                )
+            if level in levels:
+                raise ValueError(
+                    f"{where} gives the factor of level {level} twice: "
+                    "keep one."
+                )
+            levels[level] = self._factor(element, where)
+        wanted = list(range(first, n + 1))
+        if sorted(levels) != wanted:
+            raise ValueError(
+                f"{where}: the {model} model of {n} members needs a factor "
+                f"at each level {wanted}, got levels {sorted(levels)}."
+            )
+        values = [levels[k] for k in wanted]
+        shocks = "independent" if n > 2 else None
+        if model == "MGL":
+            return MGL(*values, shocks=shocks)
+        total = float(np.sum(values))
+        if model == "alpha-factor":
+            if not total > 0.0:
+                raise ValueError(
+                    f"{where}: its alpha factors {values} sum to "
+                    f"{total!r}; they must sum to more than 0."
+                )
+            # Q_k is k alpha_k / sum(i alpha_i) / C(n-1, k-1) Q, the same
+            # for the factors scaled to sum to 1: the non-staggered model.
+            return AlphaFactor(
+                [v / total for v in values],
+                testing="non-staggered",
+                shocks=shocks,
+            )
+        # phi-factor: Q_k = phi_k Q for each specific set of k members, so
+        # a member fails through sets of every size with sum_k C(n-1, k-1)
+        # phi_k of Q, which the staggered alpha factors C(n-1, k-1) phi_k
+        # hold where it is 1.
+        alphas = [comb(n - 1, k - 1) * v for k, v in enumerate(values, 1)]
+        share = float(np.sum(alphas))
+        if abs(share - 1.0) > ALPHA_TOLERANCE:
+            raise NotImplementedError(
+                f"{where}: its phi factors {values} fail each specific set "
+                "of k members with phi_k Q, so a member fails through the "
+                f"sets holding it with {share:.6g} Q (the sum of "
+                "C(n-1, k-1) phi_k), not Q, which the common-cause models "
+                "here (MGL, AlphaFactor) keep: give the group as an MGL or "
+                "alpha-factor model."
+            )
+        return AlphaFactor(alphas, shocks=shocks)
 
     def _top(self, gates: dict, top) -> Hashable:
         """The top gate: ``top``, or the one gate no gate takes as an

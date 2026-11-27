@@ -60,6 +60,11 @@ def _log_state_refusal(rbd, node) -> Optional[str]:
             "components' states, which its log (the nested system's) does "
             "not give." + ask
         )
+    if node in rbd._standby and rbd._standby[node].key == "markov":
+        return (
+            f"Component {node!r} is a Markov component: its log does not "
+            "say which of its states it is in." + ask
+        )
     if node in rbd._standby:
         return (
             f"Component {node!r} is {rbd._standby[node].what}: its log "

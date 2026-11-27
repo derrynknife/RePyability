@@ -87,7 +87,7 @@ Not yet single:
 | UC-65 | One pump's plan valued alone: its NPV over eight years at 7%, its cash flows by year, its spread, its plan against what happened, its long-run cost and best interval; with its salvage, its prices' growth and its retirement on the plan | **Built**: `UnitPlan.expected_npv`, `cash_flows`, `npv_distribution`, `plan_vs_actual`, `expected_cost`, `expected_cost_rate`, `events_by_period`, `failures_by_period`, `optimal_replacement_interval`, `optimal_inspection_interval` and `analysis_routes`, each its one-node diagram's (`UnitPlan.diagram`), on a `CalendarContext` if given; `UnitPlan(salvage=, escalation=, retire_at=)` and the spec keys of the same names |
 | UC-59 | A part renewed at a short stop every month and again at the long yearly overhaul, each renewal as long as its shut | **Built**: a `"preventive"` spec's `"shutdown"` as a list of shutdowns, exact over a horizon |
 | UC-60 | A part upgraded in year 3 and block-replaced before and after, the new model on the same interval | **Built**: an `"upgrade"` with a `"preventive"` block policy, numerical over a horizon and simulated |
-| UC-72 | A part upgraded in year 3 that is age-replaced or tested, swapped at the upgrade or kept in service until it next comes out | **Built**: an `"upgrade"` with a `"preventive"` age policy or an `"inspection"`, numerical over a horizon (tests and repairs in no time) and simulated; `"replace_in_service": False` simulated |
+| UC-72 | A part upgraded in year 3 that is age-replaced or tested, swapped at the upgrade or kept in service until it next comes out | **Built**: an `"upgrade"` with a `"preventive"` age policy or an `"inspection"`, numerical over a horizon (tests and repairs in no time) and simulated; `"replace_in_service": False` numerical over a horizon with no task or age replacement, simulated with block replacement or tests |
 | UC-66 | A pump whose seal is a redundant pair, replaced whole when both have failed: its life is a diagram | **Built**: a `NonRepairableRBD` as a life wherever a life is taken (`UnitPlan`, a spec's `"reliability"`, `NonRepairable`), by its functions; `NonRepairableRBD.qf` inverts its `ff` to near machine precision |
 | UC-64 | What a part costs per year once upgraded: the long run of the diagram with the new life, the time before the upgrade ignored | **Built**: the long-run methods of a diagram with an `"upgrade"` give the values of the diagram after it |
 | UC-68 | "95% sure": the least spend that keeps a bad year's downtime (hours or cost) under a limit, with the frontier and both planned and unplanned downtime | **Built** (simulated): `RepairableRBD.least_spend_for_downtime` and `UnitPlan.least_spend_for_downtime`, with redundancy, interval, test-interval, upgrade, crew and call-out levers, and parameter uncertainty (`uncertainty=`); risk measures in `repyability.value._risk` |
@@ -3667,7 +3667,19 @@ a shelf across levels, and the compiled engine's shelf.
   take time, or miss, are simulated). With `"replace_in_service": False`
   the unit stays until its next failure or due replacement (its age,
   its block time, or a test that finds it failed), and the unit put in
-  then has the new life: simulated, the values over a horizon refused
+  then has the new life. Over a horizon, with no task or under age
+  replacement, that is one renewal equation whose kernel depends on
+  when each unit is put in (`_point_availability.unit_curve`'s
+  `switch`): the renewals before the upgrade are the old life's alone,
+  and those from it solve the new life's equation, driven by what the
+  units put in before it bring (their failures and replacements after
+  it, the repairs and replacements under way at it). A grid point's
+  renewals are spread over its hat, the share before the upgrade taken
+  as the old life's; the units that each reach their age one after
+  another are followed apart (`ChainDips`, or exact times in no time),
+  each with the life it surely has, the grid taking the rest from the
+  first whose start may fall either side. With block replacement or
+  tests a unit kept is simulated, the values over a horizon refused
   with the simulation to run. The simulation draws each life from the
   life in service when it starts (UC-52); with tests, the unit put in
   before the upgrade is replaced at the upgrade or, off line for a test
@@ -3684,13 +3696,22 @@ a shelf across levels, and the compiled engine's shelf.
   Fitting the new pump when the old one comes out instead,
   `compare_npv(kept, mc_samples=2000, seed=1)` gives swapping -1,258
   ± 114 (at 8%): fitting it when the old one comes out is worth some
-  1,260 more.
+  1,260 more. Over a horizon (as built for a unit kept, below), the
+  kept pump is 0.99616 available for 203,504.0, and swapping is worth
+  -1,228.8 against keeping (`expected_npv` of each at 8%); the
+  simulation of the kept pump (4,000 runs) costs 203,474 ± 428.
 - **Checks:** `test_upgrade_age_tests.py`: a memoryless unit upgraded
   to its own life and replaced in no time is age replacement (to 1e-6),
   its replacements those before the upgrade, the one at it and from
   there a unit's new or in a repair (to 1e-6 relative); a unit kept in
   service upgraded to its own life is the component without its upgrade,
-  run for run (age replacement, tests, no task); a memoryless unit
+  run for run (age replacement, tests, no task), and over a horizon
+  (no task, age replacement in no time or a fixed time: to rounding,
+  1e-12, from new, an age, a repair and a replacement; a replacement
+  of an exponential time to 1e-6 of the cost, its later replacements
+  on the grid); a memoryless unit kept in service against its
+  three-state chain (1e-6); the unit kept, simulated from new and from
+  states, 20,000 runs within four standard errors; a memoryless unit
   against its two-state chain, its rate changing at the upgrade (1e-6),
   and tested against its closed form (1e-9); the simulation from new and
   from states (up at an age, in a repair, in a replacement, on its tests'
@@ -3705,9 +3726,14 @@ a shelf across levels, and the compiled engine's shelf.
 - **Learned / open questions:**
   - The default is Derryn's: the unit in service at the upgrade is
     replaced then; the option keeps it.
-  - A unit kept in service is not worked out over a horizon yet: after
-    the upgrade it is the old unit from its age then, which a renewal
-    equation started from the distribution of its age would follow.
+  - A unit kept in service is worked out over a horizon with no task or
+    under age replacement as one renewal equation whose kernel changes
+    with the start, not by restarting from the distribution of its age
+    at the upgrade: nothing about the state at the upgrade is needed,
+    and to the same life it is the component's own curve. Under block
+    replacement it is the stretch containing the upgrade split alike,
+    and with tests each test interval's model with the life of the unit
+    in it: not built yet.
   - Tests that take time, or miss failures, on an upgraded part are
     simulated: `_hidden_tests` could be followed on each side of the
     upgrade, as tests in no time are.

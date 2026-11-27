@@ -12,6 +12,65 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- An upgraded component that keeps the unit in service until its next
+  failure or due replacement (the upgrade's `"replace_in_service":
+  False`) is worked out over a horizon on its own or under age
+  replacement: `point_availability`, `mission_availability`,
+  `expected_events`, `expected_cost` and `expected_npv` no longer
+  refuse it, from new or from a state. Each unit has the life in
+  service when it is put in, on one renewal equation; upgraded to its
+  own life it is the component without its upgrade, to rounding. With
+  block replacement or tests a unit kept is still simulated. No seeded
+  result changes.
+
+- `MarkovComponent(states, rates, up=None, capacity=None, start=None)`:
+  a component given as a continuous-time Markov chain, for one that is
+  not a life and a repair (a degraded state it is restored from, a
+  failure detected or not, standby and running modes). `rates` is
+  `{(from, to): rate}`, `up` the states it works in (or `capacity` a
+  level per state, working where it is above 0) and `start` its state at
+  0 or the probability of each (by default the first state). It gives
+  `state_probabilities`, `steady_state`, `point_availability`,
+  `point_unavailability`, `mean_availability`, `mean_unavailability`,
+  `failure_frequency` and `capacity_distribution`, from the chain
+  followed by uniformization (as the crews' and standby groups' chains
+  are) and its long-run distribution. With a way back from its failed
+  states it is a component of a `RepairableRBD`, given as it is or in a
+  spec with its prices (`"repair_cost"` and `"replace_cost"` per failure,
+  `"downtime_cost"`, `"acquisition_cost"`): its long-run values,
+  importance and long-run capacity exact, its values over time, expected
+  events, costs and capacity over time numerical, from its `start`, the
+  unavailability summed over its failed states; the Python engine
+  simulates it, drawing its times in each state and its next states from
+  streams of new names (so no seeded result of another diagram changes),
+  and the compiled engines hand such a diagram over. Each rate is a
+  lever (`reliability.rate:<from>-><to>`) and an uncertain parameter by
+  name, and it saves with its diagram. Refused, each with what to do:
+  `repair_crews` in its diagram, membership of a common-cause group, a
+  `"repairability"`, maintenance, tests, spares or a maintenance group in
+  its spec, a `NodeState` for it, the first failure's exact values, the
+  spares analyses, and a simulation of a diagram whose capacity comes
+  from its states. With no way back it has a lifetime (`sf`, `ff`, `df`,
+  `hf`, `Hf`, `qf`, `mean`, `random`) and is a node of a
+  `NonRepairableRBD` (its capacities taken by `capacity_distribution`)
+  or the `"reliability"` of a repairable component's spec. See the
+  guide's "Markov components".
+- `FaultTree.to_open_psa` and `FaultTree.from_open_psa` exchange the
+  MGL and alpha-factor common-cause models, and read the phi-factor
+  model. The format takes each specific set's probability `Q_k` as an
+  independent basic event, which is `shocks="independent"`: an `MGL` or
+  `AlphaFactor` of three or more members is written with it (and refused
+  with the default, exclusive shocks, which differ at second order), and
+  read with it. The format's alpha-factor formula is the non-staggered
+  scheme's, so an `alpha-factor` group reads as
+  `AlphaFactor(..., testing="non-staggered")`, and staggered alpha
+  factors are written as the non-staggered ones of the same `Q_k`. A
+  `phi-factor` group reads as the staggered `AlphaFactor` of the same
+  shares where a member's sets add up to its probability, and is refused,
+  naming the sum, where they do not (as when the factors themselves sum
+  to 1). A group splitting the failure rate is still refused, now saying
+  the format has no form for it.
+
 - `PhasedMission` takes repair during its phases (`repairability=`, on
   the constructor and `from_diagram`: each repaired block's model of its
   repair times). A repaired block is under repair from the moment it
@@ -708,6 +767,10 @@ release between minors that only adds (0.19.1).
   before.
 
 ### Changed
+
+- `FaultTree.to_open_psa` writes a beta-factor group's factor at the
+  level of the whole group (the number of members), not at 2, as SCRAM
+  requires for a group of three or more; the reader takes either.
 
 - `FaultTree.to_open_psa` keeps the name of a common-cause group's member
   that it makes an identifier, as an attribute of the group

@@ -60,6 +60,10 @@ CAUSE_START = 14
 #: level (#271) draws its level at each inspection from, and its failure
 #: from that level: two an inspection.
 LEVEL = 13
+#: A Markov component's draws (``MarkovComponent``): the uniforms its
+#: times in each state come from, those that choose its next state, and
+#: the one that draws its state at 0 (one per simulation).
+SOJOURN, MOVE, MARKOV_START = 15, 16, 17
 #: The kind of each cost that can be a distribution, by its cost key.
 COST_KINDS = {
     "repair_cost": 3,

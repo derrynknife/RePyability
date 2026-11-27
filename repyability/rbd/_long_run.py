@@ -163,6 +163,8 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
         if not r.refusal(
             partial(functools.partial(_standby_rates, rbd), node)
         ):
+            if rbd._standby[node].key == "markov":
+                return r.EXACT, "the long-run distribution of its Markov chain"
             return r.EXACT, f"the Markov chain of {rbd._standby[node].what}"
         message = r.refusal(
             partial(functools.partial(_require_standby_long_run, rbd), node)
@@ -1219,6 +1221,9 @@ def _standby_rates(rbd, node) -> Tuple[float, float]:
     long-run values; raise if their lives and repair times are not
     exponential."""
     component = rbd.components[node]
+    if rbd._standby[node].key == "markov":
+        # Its chain is its own, at the rates given (see _group_chain).
+        return math.nan, math.nan
     life = _constant_rate(component.reliability)
     repair = _constant_rate(component.time_to_replace)
     if life is None or repair is None:
@@ -1229,6 +1234,37 @@ def _standby_rates(rbd, node) -> Tuple[float, float]:
             "simulate it with availability() or cost()."
         )
     return life, repair
+
+
+def _group_chain(rbd, node) -> "_standby_chain.StandbyChain":
+    """The Markov chain of a group of exponential units (see
+    ``_standby_chain.chain``), or a Markov component's own: its states,
+    generator and long-run distribution, and in each state whether it
+    is up and the rates of its failures and of the repairs it pays for
+    (a Markov component's failures, each one)."""
+    life, repair = _standby_rates(rbd, node)
+    arrangement = rbd._standby[node]
+    if arrangement.key == "markov":
+        component = rbd.components[node]
+        failures = component._failures
+        return _standby_chain.StandbyChain(
+            list(component.states),
+            component._generator,
+            component._steady,
+            component._up,
+            failures,
+            failures,
+        )
+    return _standby_chain.chain(
+        arrangement.units,
+        arrangement.k,
+        life,
+        repair,
+        arrangement.dormancy_factor,
+        arrangement.switching_probability,
+        rbd.repair_crews if _crews._crews_limited(rbd) else None,
+        arrangement.rates,
+    )
 
 
 def _standby_crews(rbd) -> Optional[int]:
@@ -1293,6 +1329,17 @@ def _standby_long_run(rbd, node) -> "_standby_chain.StandbyLongRun":
             component.reliability, component.time_to_replace
         )
     arrangement = rbd._standby[node]
+    if arrangement.key == "markov":
+        # Its own chain's: the unavailability summed over its failed
+        # states, as itself.
+        group = _group_chain(rbd, node)
+        steady = group.probabilities
+        return _standby_chain.StandbyLongRun(
+            float(steady @ group.up),
+            float(steady @ group.failures),
+            float(steady @ group.unit_failures),
+            float(steady @ (1.0 - group.up)),
+        )
     return _standby_chain.long_run(
         arrangement.units,
         arrangement.k,

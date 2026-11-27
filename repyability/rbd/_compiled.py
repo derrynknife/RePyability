@@ -146,6 +146,9 @@ def _unsupported_level(
     if _crews._call_when(rbd):
         # The Python loop's queue has the call-out crew's rule alone.
         return "a call-out crew"
+    if any(a.key == "markov" for a in rbd._standby.values()):
+        # The Python loop's alone: its sojourns and moves.
+        return "Markov components"
     if rbd._standby and not numba:
         return "standby groups"
     for arrangement in rbd._standby.values():

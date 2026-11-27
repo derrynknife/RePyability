@@ -1202,6 +1202,31 @@ def test_the_readme_says_what_is_simulated():
                 "refused",
             ),
         ],
+        "Markov components (states and the rates between them)": [
+            (repairable["Markov component"], name, route)
+            for name, route in (
+                ("mean_availability", "exact"),
+                ("birnbaum_importance", "exact"),
+                ("system_failure_frequency", "exact"),
+                ("point_availability", "numerical"),
+                ("expected_events", "numerical"),
+                ("expected_cost", "numerical"),
+                ("availability", "simulated"),
+                ("first_failure_sf", "refused"),
+                ("first_failure_bounds", "numerical"),
+                ("spares_demand", "refused"),
+                ("spares_stock", "refused"),
+            )
+        ]
+        + [
+            (repairable["Markov component, capacities"], name, route)
+            for name, route in (
+                ("capacity_distribution", "exact"),
+                ("point_capacity", "numerical"),
+                ("mission_capacity", "numerical"),
+                ("availability", "refused"),
+            )
+        ],
         "Opportunistic maintenance (renewals at a group's stops)": [
             (
                 repairable["opportunistic maintenance"],
@@ -1350,24 +1375,13 @@ def test_the_readme_says_what_is_simulated():
                 "upgraded at a time, block-replaced",
                 "upgraded at a time, age-replaced",
                 "upgraded at a time, tested",
+                "upgraded at a time, the unit in service kept",
             )
             for analysis, route in (
                 ("expected_npv", "numerical"),
                 ("point_availability", "numerical"),
                 ("availability", "simulated"),
             )
-        ]
-        + [
-            (
-                repairable["upgraded at a time, the unit in service kept"],
-                "expected_npv",
-                "refused",
-            ),
-            (
-                repairable["upgraded at a time, the unit in service kept"],
-                "availability",
-                "simulated",
-            ),
         ],
         'A shelf of spares (a component\'s `"spares"`: a stock reordered '
         "one for one, each order arriving a lead time later)": [
