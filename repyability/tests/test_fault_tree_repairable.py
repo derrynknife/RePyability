@@ -339,7 +339,7 @@ def test_what_a_tree_of_repaired_events_refuses():
         tree.to_rbd()
     with pytest.raises(NotImplementedError, match="to_repairable_rbd"):
         tree.levers()
-    with pytest.raises(NotImplementedError, match="to_repairable_rbd"):
+    with pytest.raises(NotImplementedError, match="exponential lives"):
         tree.to_open_psa()
     with pytest.raises(ValueError, match="0 or more"):
         tree.point_unavailability(-1.0)
