@@ -76,6 +76,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("phase_failure_probabilities",),
             ),
             ("Reliability over a mission's time", ("reliability_over_time",)),
+            (
+                "Expected time a mission runs (to failure or its end)",
+                ("expected_mission_time",),
+            ),
             ("A mission's results from one run", ("summary",)),
         ],
     ),

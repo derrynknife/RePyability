@@ -622,11 +622,18 @@ PHASED_CALLS = {
             "risk_reduction_worth",
             "criticality_importance",
             "fussell_vesely",
+            "differential_importance",
+            "joint_importance",
+            "barlow_proschan_importance",
+            "parameter_sensitivity",
             "importances",
         )
     },
     "reliability_interval": (
         lambda mission: mission.reliability_interval(200, seed=1)
+    ),
+    "expected_mission_time": (
+        lambda mission: mission.expected_mission_time(mc_samples=200, seed=1)
     ),
     "reliability_over_time": (
         lambda mission: mission.reliability_over_time(
@@ -692,6 +699,12 @@ def test_the_mission_report_covers_every_public_analysis():
         "analysis_routes",
         "from_diagram",
         "minimal_cut_sets",
+        "from_dict",
+        "from_json",
+        "to_dict",
+        "to_json",
+        "levers",
+        "with_levers",
     }
 
 

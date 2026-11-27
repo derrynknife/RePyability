@@ -245,11 +245,14 @@ def _check_phase_model(model, covariates) -> None:
         )
 
 
-def setting_to_dict(setting: BlockSetting) -> Dict[str, Any]:
+def setting_to_dict(
+    setting: BlockSetting, saving: bool = False
+) -> Dict[str, Any]:
     """A ``BlockSetting`` as plain data, for a mission's summary: its
     state and covariates, and its model, when given, in its saved form
     (``serialisation.serialise_model``), or as its ``repr`` where it has
-    none."""
+    none; ``saving`` (for a mission's ``to_dict``, which
+    ``setting_from_dict`` reads back) raises instead."""
     from repyability.rbd._model_utils import SAVE_ERRORS
     from repyability.rbd.serialisation import serialise_model
 
@@ -266,8 +269,25 @@ def setting_to_dict(setting: BlockSetting) -> Dict[str, Any]:
         try:
             out["model"] = serialise_model(setting.model)
         except SAVE_ERRORS:
+            if saving:
+                raise
             out["model"] = repr(setting.model)
     return out
+
+
+def setting_from_dict(d: Mapping[str, Any]) -> BlockSetting:
+    """The ``BlockSetting`` that ``setting_to_dict(..., saving=True)``
+    saved."""
+    from repyability.rbd.serialisation import deserialise_model
+
+    model = d.get("model")
+    return BlockSetting(
+        state=d["state"],
+        covariates=d.get("covariates"),
+        model=None if model is None else deserialise_model(model),
+        start_probability=d.get("start_probability", 1.0),
+        dormancy_factor=d.get("dormancy_factor", 0.0),
+    )
 
 
 @dataclasses.dataclass(frozen=True)

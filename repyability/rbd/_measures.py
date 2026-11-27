@@ -339,6 +339,7 @@ def barlow_proschan(
     models: Iterable[Any],
     x,
     end: Callable[[np.ndarray], float],
+    knots: Iterable[float] = (),
 ) -> Dict[Any, Union[float, np.ndarray]]:
     """Each element's (and common-cause group's) Barlow-Proschan
     importance (see ``NonRepairableRBD.barlow_proschan_importance``): its
@@ -346,24 +347,28 @@ def barlow_proschan(
     ``rate_parts``), negated and integrated up to each time of ``x``, or
     over the whole life (``x`` None), which ends at ``end(knots)``, over
     the sum of the parts (``integrated_shares``); the integrals split at
-    the ``models``' knots (``model_knots``)."""
+    the ``models``' knots (``model_knots``) and at ``knots`` (a phased
+    mission's phase boundaries, where the parts jump)."""
     keys = list(parts(np.ones(1)))
 
     def columns(t: np.ndarray) -> np.ndarray:
         found = parts(t)
         return -np.column_stack([found[key] for key in keys])
 
-    knots = np.concatenate([np.empty(0)] + [model_knots(m) for m in models])
-    knots = np.unique(knots[np.isfinite(knots) & (knots > 0.0)])
+    split = np.concatenate(
+        [np.asarray(list(knots), dtype=float)]
+        + [model_knots(m) for m in models]
+    )
+    split = np.unique(split[np.isfinite(split) & (split > 0.0)])
     if x is None:
-        ends = np.array([end(knots)])
+        ends = np.array([end(split)])
     else:
         ends = np.atleast_1d(np.asarray(x, dtype=float)).ravel()
         if np.any(~np.isfinite(ends)) or np.any(ends < 0.0):
             raise ValueError(
                 f"Times must be finite and non-negative, got {x!r}."
             )
-    shares = integrated_shares(columns, knots, ends)
+    shares = integrated_shares(columns, split, ends)
     if x is None or np.ndim(x) == 0:
         return {key: float(shares[0, j]) for j, key in enumerate(keys)}
     shape = np.shape(x)

@@ -548,6 +548,83 @@ def _fault_tree_levers(tree) -> List[_Lever]:
     )
 
 
+def _mission_levers(mission) -> List[_Lever]:
+    """Every lever of a phased ``mission``, as its ``parameter_sensitivity``
+    reports them: each component's model's parameters, by their own names
+    (the model replaced in every phase's diagram that uses it, or in the
+    one diagram of a mission drawn so), then each phase's duration, under
+    ``None`` as ``phase.<name>.duration``. ``build`` gives the arguments
+    ``PhasedMission._from_args`` takes."""
+    import dataclasses
+
+    from .non_repairable_rbd import NonRepairableRBD
+
+    args = mission._init_args
+    drawn = "rbd" in args
+
+    def with_model(rbd, node, model):
+        given = rbd._init_args
+        if node not in given["reliabilities"]:
+            return rbd
+        return NonRepairableRBD(
+            **{
+                **given,
+                "reliabilities": {**given["reliabilities"], node: model},
+            }
+        )
+
+    def build_model(model, node) -> dict:
+        if drawn:
+            return {**args, "rbd": with_model(args["rbd"], node, model)}
+        made: Dict[int, Any] = {}
+        phases = []
+        for name, duration, rbd in args["phases"]:
+            if id(rbd) not in made:
+                made[id(rbd)] = with_model(rbd, node, model)
+            phases.append((name, duration, made[id(rbd)]))
+        return {**args, "phases": phases}
+
+    def build_duration(value, j) -> dict:
+        phases = list(args["phases"])
+        if drawn:
+            phases[j] = dataclasses.replace(phases[j], duration=value)
+        else:
+            name, _, rbd = phases[j]
+            phases[j] = (name, value, rbd)
+        return {**args, "phases": phases}
+
+    out: List[_Lever] = []
+    for node, model in mission.components.items():
+        for name, value, moved, bounds, scale in _model_levers(
+            "", model, lambda m: m
+        ):
+
+            def build(v, moved=moved, node=node) -> dict:
+                return build_model(moved(v), node)
+
+            out.append(
+                _Lever(node, name, value, False, build, node, bounds, scale)
+            )
+    for j, phase in enumerate(mission.phases):
+
+        def build_phase(v, j=j) -> dict:
+            return build_duration(v, j)
+
+        out.append(
+            _Lever(
+                None,
+                f"phase.{phase.name}.duration",
+                phase.duration,
+                False,
+                build_phase,
+                None,
+                (0.0, math.inf),
+                phase.duration,
+            )
+        )
+    return out
+
+
 def _model_levers_of(
     args: dict, field: str, models: Mapping, groups, entry=lambda key, m: m
 ) -> List[_Lever]:
@@ -677,13 +754,17 @@ def _shutdown_levers(args: dict) -> List[_Lever]:
 
 
 def _levers_of(rbd) -> List[_Lever]:
-    """``rbd``'s levers, repairable or not, or a fault tree's."""
+    """``rbd``'s levers, repairable or not, or a fault tree's or a phased
+    mission's."""
     from repyability.fault_tree import FaultTree
 
     from .non_repairable_rbd import NonRepairableRBD
+    from .phased_mission import PhasedMission
 
     if isinstance(rbd, FaultTree):
         return _fault_tree_levers(rbd)
+    if isinstance(rbd, PhasedMission):
+        return _mission_levers(rbd)
     if isinstance(rbd, NonRepairableRBD):
         return _nonrepairable_levers(rbd)
     return _levers(rbd)
@@ -1139,8 +1220,12 @@ def _no_lever(rbd, key, name: str, found: dict) -> ValueError:
     keys = list(dict.fromkeys(k for k, _ in found))
     close = _close_name(key, keys)
     hint = "" if close is None else f" Did you mean {close!r}?"
+    from .phased_mission import PhasedMission
+
     if isinstance(rbd, FaultTree):
         holders = "event with a model or common-cause group"
+    elif isinstance(rbd, PhasedMission):
+        holders = "component with a model, or the phases' durations (None)"
     elif isinstance(rbd, RepairableRBD):
         holders = (
             "node with a model, common-cause group or the repair crews (None)"
@@ -1153,9 +1238,20 @@ def _no_lever(rbd, key, name: str, found: dict) -> ValueError:
     )
 
 
+def _construct(rbd, args: dict) -> Any:
+    """A model of ``rbd``'s class built from its constructor's arguments
+    ``args`` (a phased mission's through ``_from_args``, as it may be
+    drawn as one diagram)."""
+    from .phased_mission import PhasedMission
+
+    if isinstance(rbd, PhasedMission):
+        return PhasedMission._from_args(args)
+    return type(rbd)(**args)
+
+
 def with_levers(rbd, values) -> Any:
-    """``RepairableRBD.with_levers`` and ``NonRepairableRBD.with_levers``:
-    see there."""
+    """``RepairableRBD.with_levers``, ``NonRepairableRBD.with_levers`` and
+    the others': see there."""
     if not isinstance(values, Mapping):
         raise TypeError(
             "with_levers takes a dict of new values, by Lever (from "
@@ -1182,7 +1278,7 @@ def with_levers(rbd, values) -> Any:
                 f"whole number, got {value!r}."
             )
         try:
-            changed = type(rbd)(**lever.build(float(value)))
+            changed = _construct(rbd, lever.build(float(value)))
         except (ValueError, TypeError) as error:
             low, high = lever.bounds
             raise ValueError(
@@ -1191,7 +1287,7 @@ def with_levers(rbd, values) -> Any:
             ) from error
     if changed is rbd:
         # A copy, as with no levers changed.
-        changed = type(rbd)(**rbd._init_args)
+        changed = _construct(rbd, rbd._init_args)
     return changed
 
 
