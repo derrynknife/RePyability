@@ -30,6 +30,21 @@ The integrals are worked out by adaptive quadrature (``scipy``'s
 ``RTOL``; the down time is integrated as itself, not as one less the
 up time, so a small unavailability keeps its digits.
 
+**A switch that can fail** (``switching_probability`` ``p`` below 1).
+When the operating unit fails with the other ready, the switch onto it
+works with probability ``p``; if it does not, the pair is down while the
+failed unit is repaired, which then operates again, as new, with the
+spare still waiting. So the pair has a second state it starts afresh
+in, a unit starting to operate with the other *ready*: from it, after
+``X``, the switch works (the cycle above begins) or the pair is down
+``R`` and is in that state again. A cycle that ends with the other unit
+ready (``R < X``) ends likewise with a switch. The long-run values are
+the two states' sums weighted by how often each is entered (``p`` to
+``(1 - p) P(R < X)``); with ``p = 0`` the spare is never used, and the
+pair is one unit. ``switched`` gives what a failed switch adds until
+the pair is back at the cycle's start, which ``_standby_both`` adds to
+its own equation.
+
 **Over time, from new** (#629, step 2; ``over_time``, a ``PairCurve``).
 Both units are ready at 0: the first operates, and the pair first
 regenerates when it fails, at ``X`` (``F``). From a regeneration at 0 a
@@ -78,8 +93,6 @@ def why_not(arrangement) -> Optional[str]:
         )
     if arrangement.dormancy_factor != 0.0:
         return "its spare ages while it waits (a warm spare)"
-    if arrangement.switching_probability != 1.0:
-        return "switching onto its spare may fail"
     return None
 
 
@@ -117,19 +130,51 @@ def _cuts(*models) -> list:
     return out
 
 
-def long_run(life, repair) -> StandbyLongRun:
+def mean_time(model) -> float:
+    """A model's mean time, the integral of its survival function."""
+
+    def S(t: float) -> float:
+        return float(_values(model, [t], "sf")[0])
+
+    return _integral(S, _cuts(model))
+
+
+def unswitched(life, repair) -> StandbyLongRun:
+    """The long-run values of a pair whose switch never works: one unit,
+    up for a life and down for a repair in turn (its spare is never
+    used)."""
+    up, down = mean_time(life), mean_time(repair)
+    return StandbyLongRun(
+        availability=up / (up + down),
+        failure_frequency=1.0 / (up + down),
+        unit_failure_frequency=1.0 / (up + down),
+        unavailability=down / (up + down),
+    )
+
+
+def switched(repair, switching: float) -> np.ndarray:
+    """What a failed switch adds, on average, until a switch next works
+    (``switching`` above 0): the units' failures, the down time and the
+    system's failures. The pair is down for a repair, and then each life
+    of the unit ends with a switch that works, or with another repair:
+    ``1 / switching`` lives, each a unit's failure, and as many failures
+    of the system and repairs down, this one included."""
+    return np.array([1.0, mean_time(repair), 1.0]) / switching
+
+
+def long_run(life, repair, switching: float = 1.0) -> StandbyLongRun:
     """The long-run values of a cold standby pair with one repair at a
     time, lives ``life`` and repairs ``repair`` (any models with ``ff``,
-    ``sf`` and a density ``df``)."""
+    ``sf`` and a density ``df``), whose switch works with probability
+    ``switching``."""
+    if switching <= 0.0:
+        return unswitched(life, repair)
 
     def F(t: float) -> float:
         return float(_values(life, [t], "ff")[0])
 
     def S(t: float) -> float:
         return float(_values(life, [t], "sf")[0])
-
-    def G(t: float) -> float:
-        return float(_values(repair, [t], "ff")[0])
 
     def Gbar(t: float) -> float:
         return float(_values(repair, [t], "sf")[0])
@@ -142,11 +187,24 @@ def long_run(life, repair) -> StandbyLongRun:
     cycle = _integral(lambda t: S(t) + F(t) * Gbar(t), cuts)
     down = _integral(lambda t: F(t) * Gbar(t), cuts)
     fails = _integral(lambda t: f(t) * Gbar(t), cuts)
+    units = 1.0
+    if switching < 1.0:
+        # A cycle that ends with the other unit ready, and a switch that
+        # fails: what follows until a switch works. The lives in it add
+        # their own length to the cycle.
+        ready = _integral(lambda t: f(t) * _values(repair, [t], "ff")[0], cuts)
+        more_units, more_down, more_fails = (
+            (1.0 - switching) * ready * switched(repair, switching)
+        )
+        cycle += mean_time(life) * more_units + more_down
+        down += more_down
+        fails += more_fails
+        units += more_units
     unavailability = down / cycle
     return StandbyLongRun(
         availability=1.0 - unavailability,
         failure_frequency=fails / cycle,
-        unit_failure_frequency=1.0 / cycle,
+        unit_failure_frequency=units / cycle,
         unavailability=unavailability,
     )
 

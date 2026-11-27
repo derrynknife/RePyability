@@ -12,6 +12,22 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A switch that can fail (`"switching_probability"` below 1) in the
+  long-run values of a cold standby pair of any lives and repairs, with
+  one repair at a time and with both units repaired at once, which only
+  a simulation gave. After a failed switch the pair is down while the
+  failed unit is repaired, which then operates again with the spare
+  still waiting, so the pair starts afresh in a second state (a unit
+  starting to operate with the other ready); a switch that never works
+  leaves one unit. Checked: exponential units equal the Markov chain to
+  1e-9 for three rate pairs, switches of 0.9, 0.5 and 0 and both crew
+  settings (within 4e-11); exponential repairs against the two-state
+  closed form (1e-7); Weibull(1000, 2.5) lives, Weibull(300, 1.5)
+  repairs and a switch of 0.9, 0.962044 with one crew against 0.962088
+  simulated (400 runs of 1e6 h, standard error 1.8e-4, +0.3 SE) and
+  0.964939 with a crew each against 0.965220 (standard error 1.6e-4,
+  +1.8 SE). Over time such a pair is refused, pointing to the
+  simulation.
 - A cold standby pair of any lives and repairs with one repair at a time
   (`repair_crews=1`) over time, from new, which only a simulation gave:
   `point_availability`, `point_unavailability`, `mission_availability`,

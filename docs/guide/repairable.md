@@ -1106,8 +1106,15 @@ the pair is up 0.9910.)
   above is up 0.99225 of its first 2,500 h and has failed 0.1279 times by
   then; 400,000 runs give 0.99231 (+1.3 standard errors) and 0.1275
   (-0.7).
-  Warm spares, a switch that can fail, more units, and the values over
-  time with both units repaired at once are simulated, for now.
+  A switch that can fail (`"switching_probability"` below 1) is in the
+  long-run values of both: after a failed switch the pair is down while
+  the failed unit is repaired, which then operates again with the spare
+  still waiting, so the pair has a second state it starts afresh in. The
+  same pair with a switch that works nine times in ten is up 0.96204 of
+  the time with one crew (400 runs of 1,000,000 h: 0.96209, +0.3 standard
+  errors) and 0.96494 with a crew each (0.96522, +1.8).
+  Warm spares, more units, and over time a switch that can fail or both
+  units repaired at once are simulated, for now.
 - **Simulation.** `availability`, `cost` and `compare` simulate groups
   whatever their units' models, in Python.
 
