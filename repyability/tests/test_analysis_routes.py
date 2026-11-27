@@ -1257,7 +1257,7 @@ def test_the_readme_says_what_is_simulated():
                 ("expected_events", "numerical"),
                 ("expected_cost", "numerical"),
                 ("availability", "simulated"),
-                ("first_failure_sf", "refused"),
+                ("first_failure_sf", "numerical"),
                 ("first_failure_bounds", "numerical"),
                 ("spares_demand", "refused"),
                 ("spares_stock", "refused"),

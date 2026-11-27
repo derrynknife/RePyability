@@ -17,6 +17,7 @@ from repyability import (
     AlphaFactor,
     BetaFactor,
     CCFGroup,
+    MarkovComponent,
     NodeState,
     RepairableRBD,
 )
@@ -145,14 +146,13 @@ def test_a_group_of_members_that_are_not_exponential_is_refused():
     assert rbd.analysis_routes()["first_failure_sf"].route == "refused"
 
 
-# -- standby groups ------------------------------------------------------------
+# -- standby groups ----------------------------------------------------------
 
 
 def group(lam=0.02, mu=0.25, crews=None, **standby):
     spec = unit(lam, mu) | {"standby": standby}
-    return RepairableRBD(
-        [("s", "g"), ("g", "t")], {"g": spec}, repair_crews=crews
-    )
+    edges = [("s", "g"), ("g", "t")]
+    return RepairableRBD(edges, {"g": spec}, repair_crews=crews)
 
 
 def test_a_cold_standby_pair_is_its_chain_written_out_by_hand():
@@ -222,6 +222,31 @@ def test_a_standby_group_from_its_long_run_state():
     )
     with pytest.raises(NotImplementedError, match="standby group"):
         rbd.first_failure_sf(10.0, state={"g": NodeState(alive=False)})
+
+
+def test_a_markov_component_fails_first_when_its_chain_does():
+    # Working, degraded (still up) and failed: the first failure is the
+    # first visit to the failed state, from the working one.
+    rates = {
+        ("working", "degraded"): 0.01,
+        ("degraded", "working"): 0.2,
+        ("degraded", "failed"): 0.05,
+        ("failed", "working"): 0.5,
+    }
+    states = ["working", "degraded", "failed"]
+    component = MarkovComponent(states, rates, up=states[:2])
+    rbd = RepairableRBD([("s", "m"), ("m", "t")], {"m": component})
+    t = np.array([[-0.01, 0.01], [0.2, -0.25]])
+    start = np.array([1.0, 0.0])
+    np.testing.assert_allclose(
+        rbd.first_failure_sf(TIMES), survival(t, start, TIMES), rtol=1e-10
+    )
+    assert rbd.mean_time_to_first_failure() == pytest.approx(
+        start @ np.linalg.solve(-t, np.ones(2)), rel=1e-10
+    )
+    # Beside a unit either of which keeps the system up.
+    pair = RepairableRBD(PAIR, {"a": component, "b": unit(0.02, 0.25)})
+    agrees_with_simulation(pair, 38)
 
 
 def test_a_standby_group_of_units_that_wear_is_refused():
