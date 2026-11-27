@@ -12,6 +12,133 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A cold standby pair with one repair at a time and a switch that can
+  fail (`"switching_probability"` below 1) is followed over time, from
+  new or from its long-run state, which was refused: `point_availability`,
+  `point_unavailability`, `mission_availability`, `expected_failures`,
+  the expected costs and the other values over a window, and the exact
+  means `availability()` and `cost()` report. The pair starts afresh in
+  two states (a unit starting to operate as the other starts its repair,
+  or with the other ready, as at 0), whose renewal equations are solved
+  together on the grid a sure switch's one is. Checked: exponential
+  units against the Markov chain followed by uniformization at the
+  grid's points to 1e-9, for three rate pairs and switches of 0.9, 0.5
+  and 0 (within 2e-10); a switch that never works against one
+  exponential unit's closed form (1e-9); the Laplace transforms of the
+  unavailability and of the failures against the two states' own, by
+  quadrature of the models (1e-6), for Weibull and Weibull/lognormal
+  pairs; Weibull(1000, 2.5) lives, Weibull(300, 1.5) repairs and a
+  switch of 0.9 over 2,500 h, 0.971158 against 0.970917 simulated
+  (20,000 runs, -0.6 SE) and 0.3365 failures against 0.3388 (+0.6 SE);
+  Weibull(1000, 1.5) lives, LogNormal(5, 0.6) repairs and a switch of
+  0.7 over 1,200 h, 0.958258 against 0.958306 (+0.1 SE) and 0.3385
+  against 0.3382 (-0.1 SE). A sure switch's values are unchanged to the
+  bit.
+- An upgraded component's values over a horizon (`point_availability`,
+  `mission_availability`, `expected_events`, `expected_cost`,
+  `expected_npv`) no longer refuse, from new or from a state, when the
+  unit in service is kept (`"replace_in_service": False`) under block
+  replacement or with tests and repairs in no time that find every
+  failure, nor when it is replaced at the upgrade with tests or repairs
+  of fixed lengths or tests that miss failures. A unit kept is the
+  component's own values with the units put in from the upgrade given
+  the new life (only the block stretch holding the upgrade is split);
+  upgraded to its own life, it is the component, to 1e-12. A unit
+  replaced is replaced as the simulation does: up or failed unseen at
+  the upgrade, off line for its test once the test is over, in a test
+  that found it failed or its repair once that is over. Tests or
+  repairs of varying length, and a unit kept with tests that take time
+  or miss, are still simulated. No seeded result changes.
+
+- The long-run values of a warm standby pair (two units, one needed, a
+  spare that ages at `"dormancy_factor"` while it waits and can fail in
+  standby, a sure switch) of any lives and repairs with one repair at a
+  time (`repair_crews=1`), which only a simulation gave:
+  `mean_availability`, `mean_unavailability`, the frequencies and the
+  cost rate, inside larger diagrams too. Each time a unit starts its
+  repair, what follows depends only on how much of its life the
+  operating unit has used, so the pair is a Markov renewal process on
+  that; it is solved on a grid (the step's sums by quadrature at each
+  point, so a repair far shorter than a step costs nothing), halved
+  until two extrapolated solutions agree to 1e-9. Checked: exponential
+  units equal the Markov chain to 1e-9 for three rate pairs and spares
+  ageing at 0.1, 0.5 and 1 (within 3e-10); exponential lives against
+  their closed form with Weibull and lognormal repairs (1e-8), and an
+  unavailability of 1e-9 against it (1e-6); a spare that hardly ages
+  against the cold pair's cycle; Weibull(1000, 2.5) lives and
+  Weibull(300, 1.5) repairs with a spare ageing at 0.5, 0.953177 against
+  0.952999 simulated (400 runs of 1e6 h, standard error 1.7e-4, -1.0
+  SE), and hot, 0.922191 against 0.922522 (+1.6 SE); Weibull(1000, 1.5)
+  lives and LogNormal(5, 0.6) repairs at 0.2, 0.981165 against 0.981051
+  (-1.0 SE). A warm pair with both units repaired at once or a switch
+  that can fail, and any warm pair over time, are refused as before,
+  pointing to the simulation. `analysis_routes()` reports the pair as
+  numerical.
+- A `Network` of repaired elements may now mix them with fixed
+  probabilities and lives that are not repaired, which it refused before
+  (as a `FaultTree` does): a probability is down with it at every time
+  and never starts a loss of the connection over time; a life that is not
+  repaired is down from its failure on. The values over time, the
+  importance measures and the capacity over time take both; the long run
+  (`mean_availability`, `mean_unavailability`,
+  `system_failure_frequency`, `capacity_distribution()`) takes
+  probabilities and refuses a life that is not repaired, naming the
+  values over a window. A repaired element also takes an `"inspection"`
+  (a hidden failure found by periodic tests), as a diagram's component.
+  Checked against closed forms, the fault tree of the network's cut
+  sets, every state enumerated in exact fractions and the `RepairableRBD`
+  of the same tested components.
+
+- `RepairableRBD.first_failure_sf` and `mean_time_to_first_failure` work
+  out a redundant structure whose lives or repairs are not exponential
+  (Weibull, gamma, lognormal, any model with a distribution function)
+  without simulating, where they refused: in the Markov chain whose
+  system-down states absorb, each such time is followed as phases (a
+  mixture of Erlangs on a grid of ages, which converges to the time as the
+  grid is refined), the grid halved and the values extrapolated until
+  they agree to the new `rtol` (1e-3 by default: of each probability
+  of failing, or of the mean). A gamma time of
+  whole shape (an Erlang) has its own phases and is exact. Repair crews
+  that jobs wait for are taken as before, with phases; each series
+  factor of the structure is chained alone, and a state gives a unit's
+  age or how long its repair has gone on. A chain of more than 400,000
+  states (more than two units that are not exponential in one redundant
+  part, as a rule), or values that do not settle to `rtol`, refuse,
+  saying how far they agreed and naming `first_failure_bounds` and the
+  simulation; a start in the long-run state is refused with phases.
+  Common-cause groups and standby groups (load-sharing groups and blocks
+  of identical units too) of units with exponential lives and repairs
+  are in the chain, exactly, where they were refused: a group's shared
+  causes strike in it as in the repair crews' chain, and a standby
+  group's own chain goes beside the rest. Scheduled maintenance and
+  tests stay refused (a fixed interval is no time a chain's phases
+  follow), and the refusal says so.
+  `analysis_routes()` reports the route. Exponential diagrams keep their
+  values, to rounding: the survival's steps are now summed off the
+  threaded BLAS, and a chain started with units down is listed from that
+  state, which moves a value by up to about 1e-15 (1e-13 of a mean). A
+  chain that can never fail now gives exactly 1. No seeded result
+  changes.
+- Link capacities in a `Network` (`capacity={link: amount}`): the network
+  delivers the maximum flow between its two terminals, each working link
+  carrying up to its capacity (either way, unless the network is
+  directed) and a link given none limiting nothing.
+  `capacity_distribution(x)` gives the exact distribution of what is
+  delivered at `x`, a `CapacityDistribution` (`meets`, `mean`,
+  `delivered_fraction`); with repaired links, `capacity_distribution()`
+  is the long-run distribution, `point_capacity(x)` the distribution at a
+  time and `mission_capacity(t)` its average over a window. The exact
+  values enumerate the states of the links and nodes that change the
+  flow, each with the product of its elements' probabilities; a network
+  of more than `repyability.network.MAX_CAPACITY_STATES` (100,000) such
+  states refuses, pointing to `method="simulate"`, which draws the
+  elements' states (`mc_samples`, `seed`). Capacities take two terminals,
+  are saved with the network, and `to_rbd()` passes a directed network's
+  on to its diagram. Checked against the least cut of every state and
+  the distribution of every state enumerated in exact fractions, a
+  `RepairableRBD`'s capacity analysis of the same series-parallel system
+  (to 1e-9), closed forms, and the seeded simulation (within 4 standard
+  errors).
 - A `FaultTree` of repaired or tested events may now mix them with fixed
   probabilities (a per-demand failure, a human error) and lives that are
   not repaired over the mission, which it refused before. A fixed
@@ -1036,6 +1163,15 @@ release between minors that only adds (0.19.1).
   in the same order to give the same results as the built-in engines.
 
 ### Fixed
+
+- The values over a horizon of an upgraded component with tests in no
+  time took its curve from the upgrade on to settle to a constant once
+  it had settled, where a tested unit's repeats every test interval: a
+  memoryless unit's integrals past that point were wrong (0.954 for
+  0.936 mission availability over 1,000 hours of a unit failing at
+  1/200 an hour, then 1/800, tested every 50). They now follow the
+  repeating curve; a life whose curve had not settled by the horizon is
+  unchanged.
 
 - A surpyval model with a hazard ratio (`hr=`) draws its lifetimes with
   it in a `NonRepairableRBD`'s and a `PhasedMission`'s simulations

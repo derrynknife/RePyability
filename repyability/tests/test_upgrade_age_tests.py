@@ -31,6 +31,7 @@ LIFE = W([300, 2.0])
 NEW = W([900, 2.0])
 AGE = {"policy": "age", "interval": 150.0, "cost": 10.0}
 TESTS = {"interval": 50.0, "cost": 1.0}
+BLOCK = {"policy": "block", "interval": 150.0, "cost": 10.0}
 Z = 4.0
 
 
@@ -425,26 +426,34 @@ def test_kept_in_service_the_simulation_agrees(more, states):
 
 
 @pytest.mark.parametrize(
-    "more, task",
+    "more",
     [
-        ({"preventive": {**AGE, "policy": "block"}}, "block replacement"),
-        ({"inspection": TESTS, "repairability": "instant"}, "tests"),
+        {},
+        {"preventive": {**AGE, "duration": FIXED([3.0])}},
+        {"preventive": BLOCK},
+        {"inspection": TESTS, "repairability": "instant"},
     ],
-    ids=["block replacement", "tests"],
+    ids=["no task", "age replacement", "block replacement", "tests"],
 )
-def test_a_unit_kept_in_service_with_other_tasks_is_simulated(more, task):
+def test_a_unit_kept_in_service_is_worked_out_over_a_horizon(more):
     more = dict(more)
     repair = more.pop("repairability", None)
+    rbd = one(repair=repair, upgrade=upgrade(replace_in_service=False), **more)
+    report = rbd.analysis_routes()
+    for name in ("point_availability", "expected_cost", "expected_npv"):
+        assert report[name].route == routes.NUMERICAL
+
+
+def test_a_unit_kept_in_service_with_tests_that_take_time_is_simulated():
     rbd = one(
-        repair=repair,
+        repair="instant",
+        inspection={**TESTS, "duration": FIXED([1.0])},
         upgrade=upgrade(replace_in_service=False),
-        **more,
     )
     report = rbd.analysis_routes()
     for name in ("point_availability", "expected_cost", "expected_npv"):
         assert report[name].route == routes.REFUSED
         assert "replace_in_service False" in report[name].reason
-        assert f"not yet with {task}" in report[name].reason
     for name in ("availability", "cost"):
         assert report[name].route == routes.SIMULATED
     with pytest.raises(NotImplementedError) as error:
@@ -455,28 +464,251 @@ def test_a_unit_kept_in_service_with_other_tasks_is_simulated(more, task):
     rbd.availability(600.0, mc_samples=20, seed=1)
 
 
+# -- kept in service under block replacement or tests ----------------------
+
+
 @pytest.mark.parametrize(
-    "more",
-    [{}, {"preventive": {**AGE, "duration": FIXED([3.0])}}],
-    ids=["no task", "age replacement"],
+    "more, at, states",
+    [
+        ({"preventive": BLOCK}, 400.0, KEPT_STATES),
+        ({"preventive": BLOCK}, 100.0, KEPT_STATES),
+        (
+            {"preventive": {**BLOCK, "duration": FIXED([3.0])}},
+            400.0,
+            KEPT_STATES
+            + ({"a": NodeState(alive=False, down_for=1.0, maintenance=True)},),
+        ),
+        (
+            {"inspection": TESTS, "repairability": "instant"},
+            400.0,
+            (None, {"a": NodeState(age=100.0, since_scheduled=30.0)}),
+        ),
+        (
+            {"inspection": TESTS, "repairability": "instant"},
+            420.0,
+            (None, {"a": NodeState(age=100.0, since_scheduled=30.0)}),
+        ),
+    ],
+    ids=[
+        "block",
+        "block, upgraded before its first block time",
+        "block, a fixed replacement",
+        "tests, upgraded at a test",
+        "tests, between tests",
+    ],
 )
-def test_a_unit_kept_in_service_is_worked_out_over_a_horizon(more):
-    rbd = one(upgrade=upgrade(replace_in_service=False), **more)
-    report = rbd.analysis_routes()
-    for name in ("point_availability", "expected_cost", "expected_npv"):
-        assert report[name].route == routes.NUMERICAL
+def test_kept_in_service_its_own_life_is_the_component_with_its_task(
+    more, at, states
+):
+    # The stretch (or tests) holding the upgrade is the component's own,
+    # less what the units started from the upgrade bring with the old
+    # life, plus what they bring with the new: to the same life, the
+    # component to rounding (a plan of equal stretches is block
+    # replacement on that period to rounding; the tested unit's renewals
+    # are followed to 1e-13 of their long run).
+    more = dict(more)
+    repair = more.pop("repairability", None)
+    kept = one(
+        repair=repair,
+        upgrade=upgrade(at, life=LIFE, replace_in_service=False),
+        **more,
+    )
+    alone = one(repair=repair, **more)
+    t = np.concatenate([np.linspace(0.0, 1000.0, 2001), [151.0, 421.0]])
+    for state in states:
+        np.testing.assert_allclose(
+            kept.point_availability(t, state=state),
+            alone.point_availability(t, state=state),
+            rtol=0.0,
+            atol=1e-12,
+        )
+        mine = kept.expected_events(1000.0, state=state)
+        theirs = alone.expected_events(1000.0, state=state)
+        for name in ("node_failures", "node_preventive", "node_corrective"):
+            assert getattr(mine, name)["a"] == pytest.approx(
+                getattr(theirs, name)["a"], rel=1e-12, abs=1e-12
+            )
+        assert kept.expected_npv(
+            1000.0, discount_rate=1e-3, state=state
+        ).npv == pytest.approx(
+            alone.expected_npv(1000.0, discount_rate=1e-3, state=state).npv,
+            rel=1e-12,
+        )
 
 
-# -- refusals and the spec ----------------------------------------------------
-
-
-def test_tests_that_take_time_are_simulated():
+def test_a_memoryless_unit_kept_with_its_tests_against_its_closed_form():
+    # Tests every 50 in no time: up with probability exp(-lambda s), s
+    # since the last test, lambda the life of the unit in service, which
+    # is the new one once a test after the upgrade has renewed it. Kept
+    # at 420, the unit up at its test at 400 is old until it fails and is
+    # found (at 450 at the soonest).
+    lam, new, at = 1 / 200.0, 1 / 800.0, 420.0
     rbd = one(
-        inspection={**TESTS, "duration": FIXED([1.0])},
+        E([lam]),
+        "instant",
+        inspection=TESTS,
+        upgrade=upgrade(at, E([new]), replace_in_service=False),
+    )
+
+    def closed(x):
+        # From the last test u: the unit then is old if no test in
+        # (at, u] renewed it: with no test since the upgrade, or found
+        # working at every one, the old unit carrying on.
+        x = np.asarray(x, dtype=float)
+        last = np.floor(x / 50.0) * 50.0
+        tests = np.maximum((last - 400.0) / 50.0, 0.0)  # since the upgrade
+        # P(the old unit still in service at u) = exp(-lam (u - 400)).
+        old = np.where(last > 400.0, np.exp(-lam * (last - 400.0)), 1.0)
+        s = x - last
+        return np.where(
+            x < at,
+            np.exp(-lam * s),
+            np.where(
+                tests > 0,
+                old * np.exp(-lam * s) + (1.0 - old) * np.exp(-new * s),
+                np.exp(-lam * s),
+            ),
+        )
+
+    t = np.array([10.0, 399.0, 419.0, 421.0, 449.9, 450.1, 499.0, 777.0])
+    np.testing.assert_allclose(
+        rbd.point_availability(t), closed(t), atol=1e-12
+    )
+
+
+@pytest.mark.parametrize(
+    "more, at, states",
+    [
+        ({"preventive": BLOCK}, 400.0, KEPT_STATES),
+        ({"preventive": BLOCK}, 100.0, KEPT_STATES),
+        (
+            {"preventive": {**BLOCK, "duration": FIXED([3.0])}},
+            400.0,
+            KEPT_STATES
+            + ({"a": NodeState(alive=False, down_for=1.0, maintenance=True)},),
+        ),
+        (
+            {"inspection": TESTS, "repairability": "instant"},
+            400.0,
+            (None, {"a": NodeState(age=100.0, since_scheduled=30.0)}),
+        ),
+    ],
+    ids=[
+        "block",
+        "block, before its first block time",
+        "block, a fixed replacement",
+        "tests",
+    ],
+)
+def test_kept_in_service_with_its_task_the_simulation_agrees(more, at, states):
+    more = dict(more)
+    repair = more.pop("repairability", None)
+    rbd = one(
+        repair=repair,
+        upgrade=upgrade(at, cost=50.0, replace_in_service=False),
+        **more,
+    )
+    T = 1000.0
+    for seed, state in enumerate(states, start=1):
+        run = plain_run(rbd, T, seed, state)
+        interval = run.mean_availability_interval()
+        exact = rbd.mission_availability(T, state=state)
+        assert abs(interval.estimate - exact) <= Z * interval.standard_error
+        cost = rbd.expected_cost(T, state=state)
+        assert abs(run.cost.sample_mean - cost.mean) <= (
+            Z * run.cost.sample_se
+        )
+
+
+# -- replaced at the upgrade, tests that take time or miss -----------------
+
+TIMED = {**TESTS, "duration": FIXED([5.0])}
+MISSING = {**TESTS, "coverage": 0.5, "full_test": 200.0}
+
+
+@pytest.mark.parametrize(
+    "life, new, repair, tests, at, states",
+    [
+        (
+            LIFE,
+            NEW,
+            FIXED([7.0]),
+            TIMED,
+            402.0,
+            (
+                None,
+                {"a": NodeState(age=100.0, since_scheduled=30.0)},
+                {"a": NodeState(alive=False, down_for=2.0)},
+            ),
+        ),
+        (LIFE, NEW, "instant", MISSING, 400.0, (None,)),
+        (E([1 / 200.0]), E([1 / 800.0]), "instant", MISSING, 400.0, (None,)),
+    ],
+    ids=[
+        "tests and repairs of fixed lengths",
+        "tests that miss",
+        "memoryless",
+    ],
+)
+def test_tested_and_replaced_the_simulation_agrees(
+    life, new, repair, tests, at, states
+):
+    # Replaced at the upgrade if up or failed unseen; off line for its
+    # test (402 falls in the test at 400), once the test is over; found
+    # failed, once its test and repair are.
+    rbd = one(
+        life,
+        repair,
+        inspection=tests,
+        upgrade=upgrade(at, new, cost=50.0),
+    )
+    T = 1000.0
+    for seed, state in enumerate(states, start=1):
+        run = plain_run(rbd, T, seed, state)
+        interval = run.mean_availability_interval()
+        exact = rbd.mission_availability(T, state=state)
+        assert abs(interval.estimate - exact) <= Z * interval.standard_error
+        cost = rbd.expected_cost(T, state=state)
+        assert abs(run.cost.sample_mean - cost.mean) <= (
+            Z * run.cost.sample_se
+        )
+
+
+def test_a_memoryless_unit_replaced_with_tests_that_miss_is_a_new_one():
+    # Memoryless, every unit is replaced at 400, a full test's time (not
+    # done then): from there it is a unit of the new life new at 0, whose
+    # full tests fall alike.
+    rbd = one(
+        E([1 / 200.0]),
+        "instant",
+        inspection=MISSING,
+        upgrade=upgrade(400.0, E([1 / 800.0])),
+    )
+    fresh = one(E([1 / 800.0]), "instant", inspection=MISSING)
+    t = np.array([401.0, 449.0, 451.0, 600.0, 777.0, 999.0])
+    np.testing.assert_allclose(
+        rbd.point_availability(t),
+        fresh.point_availability(t - 400.0),
+        atol=1e-12,
+    )
+    assert rbd.mission_availability(1000.0) * 1000.0 == pytest.approx(
+        one(
+            E([1 / 200.0]), "instant", inspection=MISSING
+        ).mission_availability(400.0)
+        * 400.0
+        + fresh.mission_availability(600.0) * 600.0,
+        rel=1e-8,  # the integrals' tolerance (_quadrature.TOLERANCE)
+    )
+
+
+def test_tests_of_varying_length_are_simulated():
+    rbd = one(
+        inspection={**TESTS, "duration": E([1.0])},
         upgrade=upgrade(),
     )
     route = rbd.analysis_routes()["point_availability"]
     assert route.route == routes.REFUSED
+    assert "fixed lengths" in route.reason
     with pytest.raises(NotImplementedError) as error:
         rbd.mission_availability(1000.0)
     assert str(error.value).endswith(
@@ -484,6 +716,9 @@ def test_tests_that_take_time_are_simulated():
         "npv_distribution())."
     )
     rbd.availability(1000.0, mc_samples=20, seed=1)
+
+
+# -- refusals and the spec ----------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -507,24 +742,6 @@ def test_a_unit_off_line_for_its_test_is_replaced_once_it_is_back(
     )
     counted = rbd.cost(520.0, mc_samples=5, seed=1)
     np.testing.assert_array_equal(counted.samples, tests * 1.0 + 6.0 * found)
-
-
-def test_tests_that_miss_a_failure_are_simulated():
-    rbd = one(
-        E([1 / 200.0]),
-        "instant",
-        inspection={**TESTS, "coverage": 0.5, "full_test": 200.0},
-        upgrade=upgrade(life=E([1 / 800.0])),
-    )
-    assert rbd.analysis_routes()["expected_cost"].route == routes.REFUSED
-    run = rbd.availability(1000.0, mc_samples=2000, seed=1)
-    # Better than the old unit alone, worse than the new one from new.
-    alone = one(
-        E([1 / 200.0]),
-        "instant",
-        inspection={**TESTS, "coverage": 0.5, "full_test": 200.0},
-    ).mission_availability(1000.0)
-    assert run.mean_availability_interval().estimate > alone
 
 
 def test_its_tests_calendar_is_its_own_but_it_has_no_long_run_state():

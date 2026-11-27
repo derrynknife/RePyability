@@ -3000,14 +3000,20 @@ class MixedCurve:
     planned, drop)``, a preventive action at the start (the replacement
     at an upgrade, see ``_curves._upgraded_curve``) with that
     probability, a planned outage with probability ``planned``, which
-    takes ``drop`` off its point availability there."""
+    takes ``drop`` off its point availability there; and ``swaps``,
+    ``(time, probability)``, replacements later on that take nothing
+    down (a unit off line for its test at an upgrade, replaced once the
+    test is over)."""
 
-    period = None
+    def __init__(self, parts: list, action=(0.0, 0.0, 0.0), swaps=()):
+        from repyability.rbd._curves import _settling
 
-    def __init__(self, parts: list, action=(0.0, 0.0, 0.0)):
         self.parts = [(float(w), curve) for w, curve in parts if w > 0.0]
         self.action = tuple(float(v) for v in action)
-        self.settle = max(curve.settle for _, curve in self.parts)
+        self.swaps = [(float(t), float(p)) for t, p in swaps if p > 0.0]
+        # Settled once every part has, repeating as they do (a tested
+        # unit's parts every test interval).
+        self.settle, self.period = _settling(c for _, c in self.parts)
 
     def _sum(self, value: Callable) -> np.ndarray:
         out = np.zeros(1)
@@ -3039,6 +3045,8 @@ class MixedCurve:
         after = (x > 0.0).astype(float)
         out["preventive"] = out["preventive"] + probability * after
         out["planned"] = out["planned"] + planned * after
+        for time, chance in self.swaps:
+            out["preventive"] = out["preventive"] + chance * (x > time)
         return out
 
     def atoms(self, stop: float) -> Atoms:
@@ -3059,6 +3067,14 @@ class MixedCurve:
                     np.array([drop]),
                 ),
             )
+        for time, chance in self.swaps:
+            if time < stop:
+                none = np.zeros(1)
+                parts.append(
+                    Atoms(
+                        np.array([time]), none, none, np.array([chance]), none
+                    )
+                )
         merged = Atoms(*(np.concatenate(c) for c in zip(*parts)))
         order = np.argsort(merged.times, kind="stable")
         return Atoms(*(column[order] for column in merged))
@@ -3079,6 +3095,89 @@ class MixedCurve:
 
     def grids(self) -> list:
         return [grid for _, curve in self.parts for grid in curve_grids(curve)]
+
+
+class OffLine:
+    """``curve``, a unit's from a start at which it is off line for a
+    test until ``until``: its downtime before then is planned, not
+    unplanned (see ``failed_at``); all else is ``curve``'s."""
+
+    def __init__(self, curve, until: float):
+        self.curve = curve
+        self.until = float(until)
+
+    def __getattr__(self, name):
+        return getattr(self.curve, name)
+
+    def failed_at(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        return np.where(x < self.until, 0.0, failed_at(self.curve, x))
+
+
+class SwitchedCurve:
+    """A unit's curve as ``plain``'s, less ``old``'s plus ``new``'s: the
+    units put into service from a time on with another life (an upgrade
+    that keeps the unit in service, see ``_curves._kept_tested_curve``),
+    ``old`` and ``new`` the same starts' curves with the old life and
+    the new. The curves are linear in their starts, so the sum is
+    exact; to the same life, ``old`` and ``new`` are the same and
+    ``plain`` is left."""
+
+    def __init__(self, plain, old, new):
+        from repyability.rbd._curves import _settling
+
+        self.curves = ((1.0, plain), (-1.0, old), (1.0, new))
+        self.settle, self.period = _settling(c for _, c in self.curves)
+
+    def _sum(self, value: Callable) -> np.ndarray:
+        out = np.zeros(1)
+        for sign, curve in self.curves:
+            out = out + sign * np.asarray(value(curve), dtype=float)
+        return out
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        return np.clip(self._sum(lambda curve: curve.at(x)), 0.0, 1.0)
+
+    def failed_at(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        return np.clip(self._sum(lambda curve: failed_at(curve, x)), 0.0, 1.0)
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        x = np.asarray(x, dtype=float)
+        each = [(sign, curve.events(x)) for sign, curve in self.curves]
+        return {
+            key: sum(sign * own[key] for sign, own in each)
+            for key in each[0][1]
+        }
+
+    def atoms(self, stop: float) -> Atoms:
+        parts = []
+        for sign, curve in self.curves:
+            own = curve.atoms(stop)
+            parts.append(
+                Atoms(own.times, *(sign * column for column in own[1:]))
+            )
+        merged = Atoms(*(np.concatenate(c) for c in zip(*parts)))
+        order = np.argsort(merged.times, kind="stable")
+        return Atoms(*(column[order] for column in merged))
+
+    def knots(self, start: float, stop: float) -> np.ndarray:
+        return np.unique(
+            np.concatenate(
+                [curve.knots(start, stop) for _, curve in self.curves]
+            )
+        )
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        return np.unique(
+            np.concatenate(
+                [curve_breaks(curve, start, stop) for _, curve in self.curves]
+            )
+        )
+
+    def grids(self) -> list:
+        return [grid for _, c in self.curves for grid in curve_grids(c)]
 
 
 class StartedBlockCurve:

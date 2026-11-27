@@ -502,8 +502,9 @@ def test_what_a_repairable_chain_does_not_take_is_refused_with_the_reason():
         rbd.point_availability([1.0], state={"a": NodeState(age=3.0)})
     routes = rbd.analysis_routes()
     for method in ("first_failure_sf", "mean_time_to_first_failure"):
-        assert routes[method].route == "refused"
-        assert "Markov component" in routes[method].reason
+        # Its chain goes into the first failure's, its failed states
+        # absorbing (see test_first_failure_groups.py).
+        assert routes[method].route == "numerical"
     for method in ("spares_demand", "spares_stock", "plan_vs_actual"):
         assert routes[method].route == "refused"
         assert "Markov component" in routes[method].reason

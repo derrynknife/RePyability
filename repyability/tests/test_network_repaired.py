@@ -604,28 +604,18 @@ def test_a_negative_time_is_refused():
         net.birnbaum_importance(-1.0)
 
 
-def test_repaired_and_unrepaired_elements_do_not_mix():
-    link = spec(E([0.01]), E([0.5]))
-    with pytest.raises(NotImplementedError, match="mixing them"):
-        Network({"a": ("s", "x", link), "b": ("x", "t", 0.1)}, "s", "t")
-    with pytest.raises(NotImplementedError, match="mixing them"):
-        Network({"a": ("s", "t", link)}, "s", "t", nodes={"s": E([0.01])})
-
-
-def test_an_element_takes_a_life_and_a_repair_only():
-    tested = {
-        "reliability": E([0.01]),
-        "repairability": "instant",
-        "inspection": {"interval": 10.0},
-    }
-    with pytest.raises(ValueError, match="'reliability' and 'repairability'"):
-        Network({"a": ("s", "t", tested)}, "s", "t")
+def test_an_element_takes_no_costs_or_maintenance():
+    # A life, a repair and tests only (mixed and tested elements are in
+    # test_network_mixed.py).
+    priced = {**spec(E([0.01]), E([0.5])), "cost": 10.0}
+    with pytest.raises(ValueError, match="'inspection' only"):
+        Network({"a": ("s", "t", priced)}, "s", "t")
     with pytest.raises(ValueError, match="RepairableRBD"):
         Network(
             {"a": ("s", "t", spec(E([0.01]), E([0.5])))},
             "s",
             "t",
-            nodes={"s": tested},
+            nodes={"s": priced},
         )
 
 

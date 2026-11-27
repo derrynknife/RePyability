@@ -323,18 +323,41 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   with its copies drawn out. Likewise a standby group's chain (`_standby_chain.py`) copies
   `_events._StandbyGroup`'s rules (switching, spares, repairs), checked by
   `test_repairable_standby.py`.
+- **The first failure's chain is the crews' chain with phases**
+  (`_first_failure._Absorbing`, on `_crew_chain._enumerate`): a rate
+  given to the chain is an exponential time's, or a time's
+  `_phase_type.Phases` (a mixture of Erlangs on a grid of ages; an
+  Erlang's own), and a state then carries each component's phase. There
+  is one builder: an exponential diagram is the case of one phase each,
+  and what the queue does (`failed`, `taken`) is the same for both, so a
+  change to the simulation's queue still goes into it once. Values with
+  phases that are not exact are extrapolated over the levels of
+  `_phase_type.LEVELS` until they agree to `rtol`
+  (`_phase_type.converged`); `test_first_failure_phases.py` checks them
+  against chains by hand, the bracket and the simulation. Common-cause
+  groups go into it as into the crews' chain (`_crews._crew_causes`,
+  given the members' rates), and a standby group's own chain
+  (`_standby_chain`) beside it, the generators added over pairs of
+  states; `test_first_failure_groups.py` checks both against the
+  simulation.
 - **A cold standby pair of lives or repairs that are not exponential
   copies the same rules** (`_events._StandbyGroup`: a cold spare does not
   age and is switched in as new, a repaired unit fills the empty position
   or waits, and after a failed switch the spare waits on while the failed
   unit is repaired and operates again): with one repair at a time it regenerates whenever a unit
   fails with the other ready (`_standby_cycle.py`: the long run from one
-  cycle, and from new a renewal equation on a grid, a `PairCurve`); with
+  cycle, and from new a renewal equation on a grid, a `PairCurve`, two
+  equations solved together with a switch that can fail); with
   both repaired at once it is a Markov renewal process on the other
   unit's elapsed repair (`_standby_both.py`, the long run alone). A
   change to the group's rules goes into both: `test_standby_cycle.py`,
   `test_standby_window.py` and `test_standby_both.py` check them against
   the chain of exponential units, closed forms and the simulation.
+  A warm pair (a spare ageing at `dormancy_factor`, failing in standby,
+  switched in with the life it has used) with one repair at a time is a
+  Markov renewal process on the operating unit's used life each time a
+  repair starts (`_standby_warm.py`, the long run alone, a sure switch):
+  `test_standby_warm.py` checks it the same way.
 - **A `MarkovComponent` (`repyability/rbd/markov_node.py`) rides the
   standby groups' rails in a `RepairableRBD`**: it is in `rbd._standby`
   as `_events.MARKOV` (key `"markov"`, one unit), so whatever handles or

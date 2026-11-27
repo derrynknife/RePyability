@@ -207,7 +207,9 @@ def _crew_chain_rates(rbd) -> Dict[Any, Tuple[float, float]]:
     return rates
 
 
-def _crew_causes(rbd, nodes) -> Tuple[Dict[Any, float], List[tuple]]:
+def _crew_causes(
+    rbd, nodes, rates: Optional[dict] = None
+) -> Tuple[Dict[Any, float], List[tuple]]:
     """The causes of failure of the crews' chain's ``nodes`` with
     common-cause groups (#251), as the simulation strikes them (see
     ``_ccf_groups._shared_causes``): each node's own cause's rate (its
@@ -218,9 +220,12 @@ def _crew_causes(rbd, nodes) -> Tuple[Dict[Any, float], List[tuple]]:
     place)``. A member not among ``nodes`` (held working, it never fails,
     and held broken it is never repaired) is struck no more, and the
     causes it shares still strike the others. Raise if the chain does not
-    take a group in: a member repaired instantly."""
-    rates = _crew_chain_rates(rbd)
-    own = {node: rates[node][0] for node in nodes}
+    take a group in: a member repaired instantly. ``rates`` are the
+    members' failure and repair rates, by default from the crews' chain
+    (``_crew_chain_rates``); the first failure's chain gives its own."""
+    if rates is None:
+        rates = _crew_chain_rates(rbd)
+    own = {node: rates[node][0] for node in nodes if node in rates}
     place = {node: k for k, node in enumerate(nodes)}
     order = {node: k for k, node in enumerate(rbd.components)}
     shared: List[tuple] = []

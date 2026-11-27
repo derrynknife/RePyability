@@ -245,6 +245,9 @@ class _Grid(NamedTuple):
     #: long grid.
     renewals: Optional[np.ndarray] = None
     done: Optional[np.ndarray] = None
+    #: With ``starts``: ``H``, the CDF of a life plus a repair, on the
+    #: grid (from one unit put into service to the next, after a repair).
+    H: Optional[np.ndarray] = None
 
 
 def _grid(
@@ -324,6 +327,7 @@ def _grid(
         replace,
         solved[3] if starts else None,
         done if starts else None,
+        H if starts else None,
     )
 
 
@@ -543,20 +547,79 @@ def _onto(P: np.ndarray, C: np.ndarray, g: _Grid, onto: _Grid):
     )
 
 
-def _followed(grids, head: Optional[BlockHead]):
+def _hat_after(x: np.ndarray, at: float, h: float) -> np.ndarray:
+    """The share of each grid point's hat (the triangle of width ``2 h``
+    over it, which a mass put on the point stands for) at or after
+    ``at``."""
+    u = (at - np.asarray(x, dtype=float)) / h
+    return np.where(
+        u <= -1.0,
+        1.0,
+        np.where(
+            u <= 0.0,
+            1.0 - 0.5 * (1.0 + u) ** 2,
+            np.where(u < 1.0, 0.5 * (1.0 - u) ** 2, 0.0),
+        ),
+    )
+
+
+def _switched_starts(w: np.ndarray, g: _Grid, at: float) -> np.ndarray:
+    """The units put into service from ``at`` on, in an interval whose
+    units have another life from ``at`` (a unit kept in service at an
+    upgrade, see ``plan_availability``'s ``switch``), that are not the
+    renewals of a unit put in from ``at``: as masses on ``g``'s points.
+
+    The units put into service are those of ``w`` (the interval's own
+    starts, masses on its points) and their renewals after a repair, by
+    the old life (``g.renewals``; each cell's half to each of its ends).
+    Of each point's mass, the share of its hat before ``at`` is the old
+    life's; the next put-in of each of those, by ``u`` after ``at``, is
+    ``sum_i old_i (H(u - x_i) - H(at - x_i))``. These and the share of
+    ``w`` from ``at`` start the units of the new life, whose own renewals
+    follow from them."""
+    from scipy.signal import fftconvolve
+
+    steps, x = g.steps, g.grid
+    assert g.renewals is not None and g.H is not None
+    after = _hat_after(x, at, g.h)
+    renewed = np.diff(fftconvolve(w, g.renewals)[: steps + 1])
+    starts = w.copy()
+    starts[:-1] += 0.5 * renewed
+    starts[1:] += 0.5 * renewed
+    old = starts * (1.0 - after)
+    reached = fftconvolve(old, g.H)[: steps + 1]
+    by_then = float(old @ np.interp(at - x, x, g.H, left=0.0))
+    carried = np.where(x >= at, np.maximum(reached - by_then, 0.0), 0.0)
+    cells = np.diff(carried)
+    out = w * after
+    out[:-1] += 0.5 * cells
+    out[1:] += 0.5 * cells
+    return out
+
+
+def _followed(grids, head: Optional[BlockHead], switch=None):
     """A unit followed from one block time to the next (see
     ``block_availability``), each interval on its own grid of ``grids``
     (one grid again and again, on a period; one for each stretch between
     the times of a plan, ``plan_availability``): for each interval, its
     grid, the smooth part of the unit's availability on it, the
     probability that it is replaced at the interval's start, and its
-    expected failures by each grid point."""
+    expected failures by each grid point.
+
+    ``switch``, ``(k, at, new)``: in the ``k``-th interval (whose grid
+    has its renewals, ``starts``) the units put into service from ``at``
+    after its start have the life of grid ``new`` (on the same points).
+    The interval's values are its own life's, less what the units of the
+    new life started from ``at`` (``_switched_starts``) would bring with
+    the old life, plus what they bring with the new: exact, the renewal
+    equations being linear in their starts, and nothing at all to the
+    same life."""
     from scipy.signal import fftconvolve
 
     starts: dict = {}
     previous = None
     P = C = density = np.empty(0)
-    for g in grids:
+    for index, g in enumerate(grids):
         steps, h = g.steps, g.h
         if id(g) not in starts:
             # A replacement that starts at the interval's start: the CDF
@@ -589,7 +652,13 @@ def _followed(grids, head: Optional[BlockHead]):
         row = other[: steps + 1] - fftconvolve(w, 1.0 - g.A)[: steps + 1]
         # Failures in each cell of this interval, from the units put into
         # service in it, and their running count over the interval.
-        density = np.diff(fftconvolve(w, g.N)[: steps + 1]) / h
+        counts = fftconvolve(w, g.N)[: steps + 1]
+        if switch is not None and index == switch[0]:
+            _, at, new = switch
+            b = _switched_starts(w, g, at)
+            row = row + fftconvolve(b, new.A - g.A)[: steps + 1]
+            counts = counts + fftconvolve(b, new.N - g.N)[: steps + 1]
+        density = np.diff(counts) / h
         failures = np.concatenate([[0.0], np.cumsum(density * h)])
         yield g, row, replaced, failures
         previous = g
@@ -605,6 +674,7 @@ def plan_availability(
     last_like: Optional[float] = None,
     lives: Optional[list] = None,
     durations: Optional[list] = None,
+    switch: Optional[tuple] = None,
 ) -> list:
     """The point availability of a component replaced at the times of a
     plan (if it is up at them), stretch by stretch: a ``BlockAvailability``
@@ -638,6 +708,11 @@ def plan_availability(
         The time the replacement that starts each stretch takes, where
         they differ (a unit renewed at several shutdowns, each of its own
         length); by default ``duration`` for every stretch.
+    switch : tuple, optional
+        ``(k, at, life)``: in the ``k``-th stretch, the units put into
+        service from ``at`` after its start have ``life`` (an upgrade
+        that keeps the unit in service; the later stretches' ``lives``
+        are then that life). By default none.
 
     Returns
     -------
@@ -653,7 +728,7 @@ def plan_availability(
     if durations is None:
         durations = [duration] * len(lengths)
     made: dict = {}
-    keys = [
+    keys: list = [
         (length, id(own), id(taken))
         for length, own, taken in zip(lengths, lives, durations)
     ]
@@ -667,9 +742,29 @@ def plan_availability(
         made[keys[k]] = _grid(
             own, repair, durations[k], length, node, steps=steps
         )
+    switched = None
+    if switch is not None:
+        k, at, new_life = switch
+        # Its own grid, with the renewals the switch splits.
+        old = made[keys[k]]
+        grid = _grid(
+            lives[k],
+            repair,
+            durations[k],
+            lengths[k],
+            node,
+            True,
+            steps=old.steps,
+        )
+        new = _grid(
+            new_life, repair, durations[k], lengths[k], node, steps=old.steps
+        )
+        keys[k] = (keys[k], "switch")
+        made[keys[k]] = grid
+        switched = (k, float(at), new)
     fresh = head is None
     out = []
-    following = _followed((made[key] for key in keys), head)
+    following = _followed((made[key] for key in keys), head, switched)
     for g, row, replaced, failures in following:
         out.append(
             BlockAvailability(
