@@ -428,7 +428,7 @@ def test_a_diagram_that_follows_too_many_nodes_says_so():
         directed=True,
     )
     assert chain.sf() == pytest.approx(0.99**200, rel=1e-13)
-    # Repaired elements are not simulated: the refusal does not say to.
+    # Repaired elements are simulated: the refusal says how.
     spec = {"reliability": E([0.01]), "repairability": E([1.0])}
     repaired = Network(
         {name: (u, v, spec) for name, (u, v, _) in links.items()},
@@ -436,8 +436,8 @@ def test_a_diagram_that_follows_too_many_nodes_says_so():
         terminals="all",
         directed=True,
     )
-    with pytest.raises(NotImplementedError, match="not simulated yet") as e:
+    with pytest.raises(NotImplementedError, match="availability\\(t\\)"):
         repaired.point_availability(1.0)
-    assert "simulate it" not in str(e.value).lower().replace(
-        "not simulated yet", ""
+    assert (
+        repaired.availability(1.0, mc_samples=20, seed=1).n_simulations == 20
     )
