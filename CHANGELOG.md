@@ -12,6 +12,23 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A `MarkovComponent` with a capacity in each state is simulated:
+  `availability()` (and `cost()`), which refused such a diagram, follow
+  the state it is in, at that state's level (the capacity's time at
+  each level, its mean and the demand delivered). Checked against
+  `mission_capacity`, within four standard errors, and, alone in
+  series, against the system's up and down time simulation by
+  simulation. Seeded results without such a component are unchanged.
+- A diagram with `repair_crews` takes a `MarkovComponent`, which it
+  refused at construction: the component takes no crew (it is restored
+  by its own transitions), and the crews serve the other components,
+  their chain beside the component's own, as beside a nested
+  `RepairableRBD` with crews of its own. The long run, the values over
+  time and over a window, the importance measures and the first failure
+  are those of the same diagram with the crewed components nested (to
+  1e-12); the redundancy allocation with crews refuses it, naming
+  `compare()`.
+
 - `AnalysisRoute.may_refuse`: for a route that is not refused but whose
   call can still refuse depending on what is asked, when it does and
   what to use instead (`analysis_routes()` prints it as "numerical (may

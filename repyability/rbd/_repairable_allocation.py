@@ -517,6 +517,11 @@ def _require_crewed_redundancy(rbd, trains: bool = False) -> None:
         ),
         (rbd._maintenance, "the diagram's maintenance groups"),
         (rbd._shutdowns, "the diagram's shutdowns"),
+        (
+            [node for node in rbd._standby if _crews._markov(rbd, node)],
+            "a Markov component, which takes no crew and has a chain of "
+            "its own",
+        ),
     ):
         if found:
             raise NotImplementedError(

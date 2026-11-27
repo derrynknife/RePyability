@@ -420,9 +420,7 @@ def _chain_measure(rbd, spec, working, broken, states, times=None, end=None):
     )
     horizon = end if times is None else float(times.max(initial=0.0))
     curves = [
-        _curves._nested_curve(
-            rbd.components[node], horizon, start=states.get(node)
-        )
+        _curves._beside_crews(rbd, node, horizon, start=states.get(node))
         for node in nested
     ]
 
