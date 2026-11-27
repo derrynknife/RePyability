@@ -260,6 +260,105 @@ with a pump always on hand, to 0.9854.
   or repair crews (simulate the sub-system as a diagram of its own). The
   diagram saves and loads with its shelves.
 
+## Bases and a depot
+
+A fleet's repairable spares are held where its systems run and at a depot
+behind them. A failed part is swapped for one from the base's shelf and
+repaired: at the base if it can be, or else at the depot, the base
+ordering a replacement from the depot at once. Every shelf is replenished
+one for one. A system with no part to fit waits for one, a *backorder*,
+and the question is the system's: how many of each part at each site for
+the most availability per dollar. `spares_front` gives the spend against
+the fleet's availability, and `spares_allocation` the stock for a target
+or a budget (Sherbrooke's METRIC and VARI-METRIC).
+
+Twenty systems at two bases, each with a pump, a valve and two
+controllers, every one needed:
+
+```python
+E = surv.Exponential.from_params
+swap = lambda mttf: {"reliability": E([1 / mttf]), "repairability": "instant"}
+names = ["pump", "valve", "c1", "c2"]
+system = RepairableRBD(
+    list(zip(["s"] + names, names + ["t"])),
+    {"pump": swap(2000.0), "valve": swap(5000.0),
+     "c1": swap(8000.0), "c2": swap(8000.0)})
+bases = {"north": 12, "south": 8}
+parts = {
+    "pump": {"price": 12000.0, "base_repair_fraction": 0.3,
+             "base_repair_time": 48.0, "depot_repair_time": 600.0,
+             "ship_time": 72.0},
+    "valve": {"price": 3000.0, "base_repair_fraction": 0.5,
+              "base_repair_time": 24.0, "depot_repair_time": 400.0,
+              "ship_time": 72.0},
+    "controller": {"price": 25000.0, "nodes": ["c1", "c2"],
+                   "base_repair_fraction": 0.1, "base_repair_time": 72.0,
+                   "depot_repair_time": 900.0, "ship_time": 120.0},
+}
+held = system.spares_allocation(bases, parts, target_availability=0.95)
+held.spend                           # -> 246000.0
+held.availability                    # -> 0.9578
+held.backorders                      # -> 0.8563
+held.depot_stock                     # {'pump': 4, 'valve': 2, 'controller': 4}
+held.base_stock["north"]             # {'pump': 2, 'valve': 1, 'controller': 1}
+held.base_stock["south"]             # {'pump': 1, 'valve': 1, 'controller': 1}
+held.base_availability["south"]      # -> 0.9547
+held.depot_delay["pump"]             # -> 128.37   hours an order waits at the depot
+```
+
+A part's spec gives its `"price"`, the chance a failure is repaired at
+the base (`"base_repair_fraction"`, by default 1: no depot), the mean
+repair times at the base and the depot, and the `"ship_time"` from a
+base's order to its arrival once the depot has one to send. Its demand
+is, by default, the long-run replacement rate of its components in the
+diagram (its `"nodes"`, or the component of its name), as `spares_stock`
+counts them, and its `"quantity"` in a system the number of those nodes;
+`"demand_rate"` (failures per system per unit time) gives it directly.
+
+`spares_front` returns every point on the way, from nothing held, until
+a `budget` or a `target_availability` is reached:
+
+```python
+front = system.spares_front(bases, parts, budget=60000.0)
+len(front)                           # -> 8
+front[0].availability                # -> 0.5631
+front[-1].spend                      # -> 57000.0
+front[-1].availability               # -> 0.7217
+```
+
+- **The pipelines.** With Poisson demand, the parts in a repair shop are
+  Poisson with mean the demand times the mean repair time, whatever the
+  repair times' distribution (Palm's theorem). The depot's pipeline is
+  exactly that, and a base's order waits the depot's expected backorders
+  over its demand. A base's pipeline (its own repairs and its orders) has
+  a known mean; `method="metric"` takes it as Poisson, which understates
+  the backorders, as the depot's delays come in runs. The default,
+  `"vari-metric"`, gives the pipeline its variance too and a negative
+  binomial of that mean and variance. Here METRIC would stop at 218,000
+  and call it 0.9500, a stock VARI-METRIC puts at 0.9396.
+- **Availability.** A base's is the product over parts of `(1 − EBO /
+  (N Z))^Z`: `EBO` its expected backorders of the part, `N` its systems
+  and `Z` the part's number in each. The fleet's is the bases' weighed by
+  their systems. Every part is needed: a diagram that is not a series
+  system is refused (`spares_stock` and `least_spend_for_downtime` weigh
+  one site's shelves).
+- **The front.** For each part, the best split of each count between the
+  depot and the bases is found, and the counts on the lower convex hull
+  of backorders against count are kept; the parts' steps are then taken
+  in the order of backorders removed per dollar (marginal analysis). Each
+  point has the fewest expected backorders of any stock at its spend or
+  less. A count off the hull is not on the front, and the split of a
+  part's count may change from one point to the next (a valve moves from
+  the depot to the bases at 30,000 above).
+- **The demand goes on** while a system waits, as METRIC takes it, where
+  `spares_stock` slows it (a system waiting makes no demand): the two
+  agree where backorders are few, which is where a target puts the stock.
+  With one base that repairs everything itself, the base's pipeline is
+  `spares_stock`'s `on_order` for a constant failure rate.
+- **Not yet:** parts within parts (MOD-METRIC), redundancy,
+  cannibalisation, lateral supply between bases, and repair or ship times
+  that differ by base.
+
 ## Block replacement and proof tests
 
 Two kinds of component replace on a calendar, and are counted their own way

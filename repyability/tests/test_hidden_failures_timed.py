@@ -451,3 +451,57 @@ def test_the_routes():
     for name in ("point_availability", "expected_events", "expected_cost"):
         assert report[name].route == routes.NUMERICAL
     assert report["spares_demand"].route == routes.NUMERICAL
+
+
+# -- an exponential life's failures within a cell of the grid ---------------
+
+
+@pytest.mark.parametrize("test_time", [None, 6.0])
+def test_an_exponential_unit_fails_at_its_rate_while_it_is_up(test_time):
+    # A repair of a few cells of the grid: the unit's availability bends
+    # within them, and so do its failures. In the long run, with W working
+    # at each test and K back from a repair by s after it (were the repair
+    # to start at once), it is up with W e^(-rate u) + K mu (e^(-rate u) -
+    # e^(-mu u)) / (mu - rate), u the time since the test was over.
+    rate, mu, interval = 2e-5, 1.0 / 24.0, 8760.0
+    test = None if test_time is None else X([test_time])
+    unit = ht.TestedUnit(E([rate]), E([mu]), test, interval, rate=rate)
+    long_run = unit.long_run
+    rows, h = long_run.rows, unit.setup.h
+    assert 2.0 * h < 1.0 / mu < 10.0 * h
+    lags = np.arange(rows.coef.shape[1])
+    back = float(rows.coef[0] @ np.exp(-mu * lags * interval))
+    s = np.concatenate(
+        [
+            np.linspace(0.0, 40.0 * h, 1601),
+            np.linspace(40.0 * h, interval, 3001),
+        ]
+    )
+    u = np.maximum(s - (test_time or 0.0), 0.0)
+    over = s >= (test_time or 0.0)
+    exact = over * (
+        rows.tested[0] * np.exp(-rate * u)
+        + back * mu * (np.exp(-rate * u) - np.exp(-mu * u)) / (mu - rate)
+    )
+    # (Failures linear across each cell were 2.9e-7 off, and 1.7e-5 in
+    # the cell the test ends in.)
+    np.testing.assert_allclose(long_run.profile(s)[0], exact, atol=5e-9)
+    np.testing.assert_allclose(
+        long_run.intensity(s), rate * long_run.profile(s)[0], rtol=1e-13
+    )
+
+
+def test_units_down_in_the_same_repairs_fail_the_system_as_over_time():
+    # Two units tested together, each in its repair just after a test
+    # with the same chance: the system fails where one fails in the
+    # other's repair, which bends within the grid's cells.
+    spec = hidden(E([2e-5]), E([1.0 / 24.0]), interval=8760.0)
+    rbd = RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {"a": spec, "b": dict(spec)},
+    )
+    frequency = rbd.system_failure_frequency()
+    ends = 8760.0 * np.array([40.0, 44.0])
+    counted = np.diff(np.ravel(rbd.expected_failures(ends)))[0]
+    # (5.7e-8 apart with the entries in a cell taken midway; 6.4e-10.)
+    assert counted / (4.0 * 8760.0) == pytest.approx(frequency, rel=1e-8)

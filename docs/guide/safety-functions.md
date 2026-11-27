@@ -238,7 +238,7 @@ worn = SafetyChannel(2e-5, repair=8.0, proof_test_interval=8760.0)
 voted = SafetyFunction({"a": worn, "b": worn, "c": worn}, k=2)
 voted.pfd_avg()                       # -> 2.4808e-02
 voted.simplified_formulas().pfd_avg   # -> 3.0835e-02   24% high
-voted.pfh()                           # -> 7.9105e-06
+voted.pfh()                           # -> 7.9104e-06
 voted.simplified_formulas().pfh       # -> 1.0531e-05   33% high
 ```
 

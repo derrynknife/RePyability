@@ -34,6 +34,33 @@ release between minors that only adds (0.19.1).
   fraction of its repairs warns where the grid does not settle, and is
   refused where it cannot. Warm spares, failing switches, more units and
   values over time stay simulated.
+- `RepairableRBD.spares_front(bases, parts, budget=, target_availability=)`
+  and `spares_allocation(...)`: repairable spares over two echelons, the
+  bases a fleet's systems run from and a depot behind them (Sherbrooke's
+  METRIC and VARI-METRIC). Each part has a price, the chance a failure
+  is repaired at the base, the base's and the depot's repair times and
+  the order-and-ship time; its demand is the diagram's long-run
+  replacement rate, or a `"demand_rate"` given. The front is the spend
+  against the fleet's availability by marginal analysis, each point (a
+  `SparesAllocation`) with every site's stock of every part, the
+  expected backorders and each base's availability; the allocation is
+  its cheapest point for a target, or its best within a budget. A base's
+  pipeline has its variance by default (a negative binomial);
+  `method="metric"` gives the textbook's Poisson numbers. Every part is
+  taken as needed: a diagram that is not a series system is refused.
+  See the spares guide, "Bases and a depot".
+
+- An upgraded component that keeps the unit in service until its next
+  failure or due replacement (the upgrade's `"replace_in_service":
+  False`) is worked out over a horizon on its own or under age
+  replacement: `point_availability`, `mission_availability`,
+  `expected_events`, `expected_cost` and `expected_npv` no longer
+  refuse it, from new or from a state. Each unit has the life in
+  service when it is put in, on one renewal equation; upgraded to its
+  own life it is the component without its upgrade, to rounding. With
+  block replacement or tests a unit kept is still simulated. No seeded
+  result changes.
+
 - `MarkovComponent(states, rates, up=None, capacity=None, start=None)`:
   a component given as a continuous-time Markov chain, for one that is
   not a life and a repair (a degraded state it is restored from, a
@@ -981,6 +1008,28 @@ release between minors that only adds (0.19.1).
   model's parameters (its baseline's and its coefficients) as its
   distribution's: `model_parameters` gives None for one, as for any model
   it cannot rebuild, rather than a rebuild that fails.
+- A tested unit with an exponential life, whose tests or repairs take
+  time, fails at its rate while it is up, in a `RepairableRBD`'s long-run
+  values and over time: between two points of its grid, its expected
+  failures follow its exposure (the test's and the repair's CDFs exact at
+  any time), where they were linear across the cell, and the long-run
+  values are averaged at three Gauss points a cell, not two. A system's
+  failures with another unit in the same repairs were off by the cell's
+  width squared. Against the Markov chain of two or three voted channels
+  (undetected failures at 2e-5 an hour, tested every 8,760 h, a repair of
+  24 h on average after the test), the relative differences were:
+  `system_failure_frequency` 5.2e-7 (1oo2), 4.6e-8 (2oo2) and 4.6e-7
+  (2oo3), now 1.1e-9, 2.1e-10 and 1.0e-9; the undetected failures' part
+  1.3e-6, 1.2e-7 and 1.2e-6, now the same 1.1e-9 at most;
+  `mean_unavailability` 1.8e-8, 1.6e-9 and 1.3e-8, now 1.7e-9 at most.
+  Over time, `expected_failures` past the first test was 5.2e-7 off and
+  is now within 1e-9 of the long run, and the unit's own availability in
+  a repair, 2.9e-7 off (1.7e-5 in the cell a test of a fixed time ends
+  in), is within 1e-9. So these values of diagrams with such units move
+  by up to about 1e-6 relative (`SafetyFunction.pfh` and `pfd_avg` among
+  them: the guide's worn 2oo3 `pfh()` reads 7.9104e-06, where it read
+  7.9105e-06); a unit with any other life is worked out as before.
+  Seeded and simulated results do not change.
 
 ## [0.20] - 2026-11-22
 

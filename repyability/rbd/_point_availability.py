@@ -368,6 +368,144 @@ def _capped(cdf: Callable, limit: float, at_limit: float) -> Callable:
     return capped
 
 
+def _hat_before(t: np.ndarray, at: float) -> np.ndarray:
+    """The share of each grid point's mass that falls before ``at``,
+    the point's mass spread over its hat (the point at 0 over the first
+    cell alone, see ``_running``)."""
+    h = t[1] - t[0]
+    d = (at - t) / h
+    share = np.where(
+        d <= -1.0,
+        0.0,
+        np.where(
+            d <= 0.0,
+            0.5 * (1.0 + d) ** 2,
+            np.where(d < 1.0, 1.0 - 0.5 * (1.0 - d) ** 2, 1.0),
+        ),
+    )
+    share[0] = 1.0 - (1.0 - min(at / h, 1.0)) ** 2
+    return share
+
+
+def _time_range(sf: Optional[Callable], splits) -> Tuple[float, float]:
+    """The least and the greatest a maintenance time with survival
+    function ``sf`` (and quantiles ``splits``) can be: ``(0, 0)`` for
+    none (no time), its own for a fixed time."""
+    splits = np.asarray(splits, dtype=float)
+    splits = splits[np.isfinite(splits) & (splits >= 0.0)]
+    if sf is None or not splits.size:
+        return 0.0, 0.0
+    top = float(splits.max())
+    below = np.asarray(sf(splits * (1.0 - 1e-12)), dtype=float)
+    sure = splits[below >= 1.0]
+    return (float(sure.max()) if sure.size else 0.0), top
+
+
+def _switched_chain(
+    at: float,
+    first_due: float,
+    limit: float,
+    first_survive: float,
+    survives: Tuple[float, float],
+    reach: Tuple[float, float],
+    started: np.ndarray,
+    cycles: Tuple[np.ndarray, np.ndarray],
+    convolve: Callable,
+    end: float,
+):
+    """The units that each reach their age one after another (see
+    ``ChainDips``) of a unit whose life switches at ``at``: the ``n``-th
+    after the first starts at ``chain_due(first_due, limit, n - 1)`` plus
+    ``n`` maintenance times (each within ``reach``), with the first life
+    if surely before ``at``, the second if surely not, and reaches its
+    age with that life's ``survives``. The chain is followed while each
+    unit's life is sure, its maintenance is due on the grid (to ``end``)
+    and it is not all but never.
+
+    Returns the probability of each maintenance (``n = 0`` the first
+    unit's), and the renewals of the chain's units on the grid, of the
+    first life's and of the second's (``started``: the first unit's
+    maintenance; ``cycles``: each life's age to its next renewal)."""
+    weights = [first_survive]
+    old = np.zeros(len(started))
+    new = np.zeros(len(started))
+    term = started
+    lo, top = reach
+    n = 1
+    while float(chain_due(first_due, limit, n)) <= end:
+        due = float(chain_due(first_due, limit, n - 1))
+        if due + n * top < at:
+            first = True
+        elif due + n * lo >= at:
+            first = False
+        else:
+            break  # its start may fall either side of the switch
+        weight = weights[-1] * survives[0 if first else 1]
+        if weight < 1e-15:
+            break
+        weights.append(weight)
+        if first:
+            old = old + term
+        else:
+            new = new + term
+        term = convolve(term, cycles[0 if first else 1])
+        n += 1
+    return np.array(weights), old, new
+
+
+class _Switched(NamedTuple):
+    """The renewals after a unit's first, split by its life (see
+    ``unit_curve``'s ``switch``): ``old``, of the units started before
+    the switch, and ``new``, from it; of each, ``old_chain`` and
+    ``new_chain``, those of the units that each reach their age one
+    after another (see ``_switched_chain``), whose maintenance is kept
+    apart (``ChainDips``, or at exact times in no time), with
+    ``weights``, the probability of each of those maintenances (the
+    first unit's alone if none follows it)."""
+
+    old: np.ndarray
+    new: np.ndarray
+    old_chain: np.ndarray
+    new_chain: np.ndarray
+    weights: np.ndarray
+    convolve: Callable
+
+    def maintained(self, maintains, maintains2) -> np.ndarray:
+        """The later units' age replacements on the grid, but for the
+        chain's."""
+        return self.convolve(
+            self.old - self.old_chain, maintains
+        ) + self.convolve(self.new - self.new_chain, maintains2)
+
+
+def _switched(
+    t, at, later, cycle1, cycle, new_cycle, convolve, chain=None
+) -> _Switched:
+    """Split the renewals ``later`` (after the first unit, whose cycle
+    is ``cycle1``) of a unit whose cycle is ``cycle`` into those started
+    before ``at`` and the rest, whose cycle is ``new_cycle``: those
+    before ``at`` are the first life's (the share of each grid point's
+    before it, see ``_hat_before``, and the chain's, see
+    ``_switched_chain``, by its own), and the rest solve
+    ``N = R + N * new_cycle``, ``R`` the renewals the units started
+    before ``at`` bring from it. With the same cycle, ``old + new`` is
+    ``later``, but for rounding."""
+    size = len(t)
+    if chain is None:
+        chain = (np.ones(1), np.zeros(size), np.zeros(size))
+    weights, old_chain, new_chain = chain
+    share = _hat_before(t, at)
+    old = share * (later - old_chain - new_chain) + old_chain
+    brought = cycle1 + convolve(old, cycle) - old
+    brought[t <= at - (t[1] - t[0])] = 0.0
+    one_minus = -new_cycle
+    one_minus[0] += 1.0
+    inverse = _series_inverse(one_minus, size)
+    inverse[0] -= 1.0
+    new = brought + convolve(brought, inverse)
+    return _Switched(old, new, old_chain, new_chain, weights, convolve)
+
+
 def unit_curve(
     up_cdf: Callable,
     up_splits,
@@ -381,6 +519,7 @@ def unit_curve(
     counts: bool = False,
     stages: Optional[Callable] = None,
     first: Optional[First] = None,
+    switch: Optional[Tuple[float, Callable, Any]] = None,
 ) -> "GridCurve":
     """The point availability of a unit new at 0 over ``[0, n step]``, on
     the grid ``k step`` (see the module's docstring).
@@ -402,7 +541,26 @@ def unit_curve(
     only its first unit (or what is left of its down time) differs, and
     the renewals after it are those of a new unit, convolved with when they
     start.
+
+    ``switch``, ``(at, cdf, splits)``, gives the units put into service
+    from the time ``at`` on another life (its CDF ``cdf`` and quantiles
+    ``splits``), those put in before it keeping theirs: an upgrade that
+    keeps the unit in service (see ``_curves._upgraded_curve``). The
+    renewal equation's kernel then depends on when each unit starts: the
+    renewals up to ``at`` are the first life's alone, and those from it
+    are the second life's equation's, driven by what the units started
+    before ``at`` bring (see ``_switched``). A grid point's renewals are
+    spread over its hat, the share of which before ``at`` is taken to
+    have started before it. To the same life, it is the curve without the
+    switch (but for rounding). The units that each reach their age are
+    followed one after another (``ChainDips``) only when the maintenance
+    takes no time, and only those started before ``at``; else the grid
+    takes them.
     """
+    if switch is not None and stages is not None:
+        raise NotImplementedError(
+            "the stages of a unit whose life changes are not followed"
+        )
     t = step * np.arange(n + 1)
     size = n + 1
     convolve = _Spectra(size).convolve
@@ -416,6 +574,15 @@ def unit_curve(
         preventive = 1.0 - F_limit
     else:
         fail_cdf, fail_splits, preventive = up_cdf, up_splits, 0.0
+    preventive2 = 0.0
+    if switch is not None:
+        if limit <= t[-1]:
+            F2_limit = float(switch[1](np.array([limit]))[0])
+            fail_cdf2 = _capped(switch[1], limit, F2_limit)
+            fail_splits2 = np.append(np.asarray(switch[2], dtype=float), limit)
+            preventive2 = 1.0 - F2_limit
+        else:
+            fail_cdf2, fail_splits2 = switch[1], switch[2]
 
     # The unit at 0: new; up, with what is left of its life, and its
     # maintenance due sooner; or down (``first_cdf`` None). ``first_due``
@@ -481,7 +648,9 @@ def unit_curve(
             cycle = cycle + convolve(maintains, done)
         else:
             cycle = cycle + maintains
-    elif first_survive > 0.0 and maintenance_sf is not None:
+    elif (
+        first_survive > 0.0 or preventive2 > 0.0
+    ) and maintenance_sf is not None:
         done = _lattice(
             *_cells(lambda s: 1.0 - maintenance_sf(s), t, maintenance_splits)
         )
@@ -519,6 +688,43 @@ def unit_curve(
                 )
             )
         later = cycle1 + convolve(cycle1, later)
+    switched = None
+    if switch is not None:
+        if first is None:
+            cycle1 = cycle
+        new_cycle = convolve(
+            _lattice(*_cells(fail_cdf2, t, fail_splits2)), repairs
+        )
+        if preventive2 > 0.0:
+            new_cycle = new_cycle + maintained(
+                _atom_lattice(preventive2, limit, t)
+            )
+        maintains2 = _atom_lattice(preventive2, limit, t)
+        chain_plan = None
+        if first_survive > 0.0 and (preventive > 0.0 or preventive2 > 0.0):
+            assert first_due is not None
+            chain_plan = _switched_chain(
+                float(switch[0]),
+                first_due,
+                limit,
+                first_survive,
+                (preventive, preventive2),
+                _time_range(maintenance_sf, maintenance_splits),
+                maintained(maintains1),
+                (maintained(maintains), maintained(maintains2)),
+                convolve,
+                float(t[-1]),
+            )
+        switched = _switched(
+            t,
+            float(switch[0]),
+            later,
+            cycle1,
+            cycle,
+            new_cycle,
+            convolve,
+            chain_plan,
+        )
 
     # The first unit: its failures from its continuous distribution, against
     # the repair time's survival function; its preventive maintenance, if
@@ -529,7 +735,13 @@ def unit_curve(
             mass1 * 6.0 * (2.0 * position1 - 1.0), slope, n
         )
     # Later units, through the grid.
-    later_failures = convolve(later, fails)
+    if switched is None:
+        later_failures = convolve(later, fails)
+    else:
+        fails2 = _lattice(*_cells(fail_cdf2, t, fail_splits2))
+        later_failures = convolve(switched.old, fails) + convolve(
+            switched.new, fails2
+        )
     down += convolve(later_failures, hat)
     # Down in a repair, after a failure (the rest is maintenance).
     failed = down.copy()
@@ -540,7 +752,10 @@ def unit_curve(
     # maintenance times, for n up to ``count`` (past it, beyond the grid or
     # all but never).
     count = 0
-    if first_survive > 0.0 and preventive > 0.0:
+    if switched is not None:
+        # Those followed across the switch (see ``_switched_chain``).
+        count = len(switched.weights) - 1
+    elif first_survive > 0.0 and preventive > 0.0:
         assert first_due is not None
         if first is None:
             count = int(np.floor(t[-1] / limit)) - 1
@@ -553,7 +768,26 @@ def unit_curve(
                     count,
                     int(np.log(1e-15 / first_survive) / np.log(preventive)),
                 )
-    if maintenance_sf is not None and (first_survive > 0.0 or preventive):
+    if switched is not None and maintenance_sf is not None:
+        _, _, maintenance_hat = _survival_weights(
+            maintenance_sf, t, maintenance_splits
+        )
+        down += convolve(
+            switched.maintained(maintains, maintains2), maintenance_hat
+        )
+        if count > 0:
+            chain = ChainDips(
+                limit,
+                preventive,
+                maintenance_sf,
+                maintenance_splits,
+                count,
+                cdfs=counts,
+                first_due=first_due,
+                first_survive=first_survive,
+                weights=switched.weights,
+            )
+    elif maintenance_sf is not None and (first_survive > 0.0 or preventive):
         _, _, maintenance_hat = _survival_weights(
             maintenance_sf, t, maintenance_splits
         )
@@ -636,7 +870,14 @@ def unit_curve(
         return curve
     others = None
     fixed: Optional[float] = None
-    if first_survive > 0.0 or preventive > 0.0:
+    chain_weights = None
+    if switched is not None and (
+        first_survive > 0.0 or preventive > 0.0 or preventive2 > 0.0
+    ):
+        others = _running(switched.maintained(maintains, maintains2))
+        fixed = 0.0 if chain is None else chain.fixed
+        chain_weights = switched.weights
+    elif first_survive > 0.0 or preventive > 0.0:
         if chained is None:
             # In no time: the units that each reach their age are renewed
             # at its multiples (after the first's, from a state).
@@ -664,6 +905,14 @@ def unit_curve(
     # time).
     lived = np.array(fail_cdf(t), dtype=float)
     lived[0] = 0.5 * atom
+    if switched is None:
+        later_lived = convolve(later, lived)
+    else:
+        lived2 = np.array(fail_cdf2(t), dtype=float)
+        lived2[0] = 0.5 * float(fail_cdf2(np.zeros(1))[0])
+        later_lived = convolve(switched.old, lived) + convolve(
+            switched.new, lived2
+        )
     first_atoms = list(exact)
     if first_cdf is not None and atom1 > 0.0:
         first_atoms.insert(0, (0.0, atom1))
@@ -672,7 +921,7 @@ def unit_curve(
         first_cdf if first_cdf is not None else (lambda x: np.zeros(len(x))),
         first_atoms,
         float(repair_sf(np.zeros(1))[0]),
-        np.maximum(convolve(later, lived), 0.0),
+        np.maximum(later_lived, 0.0),
         age=limit if others is not None else None,
         survive=preventive,
         fixed=fixed,
@@ -687,6 +936,7 @@ def unit_curve(
         ),
         first_due=first_due,
         first_survive=first_survive,
+        weights=chain_weights,
     )
     return curve
 
@@ -821,9 +1071,13 @@ class ChainDips:
         cdfs: bool = False,
         first_due: Optional[float] = None,
         first_survive: Optional[float] = None,
+        weights: Optional[np.ndarray] = None,
     ):
         self.age = float(age)
         self.survive = float(survive)
+        # The probability of each maintenance, where the units' lives
+        # differ (see ``_switched_chain``); else powers of ``survive``.
+        self.weights = weights
         # The first unit's maintenance (a unit not new at 0: sooner, and
         # with its own probability); the later ones follow at ``age``.
         self.first_due = self.age if first_due is None else float(first_due)
@@ -909,6 +1163,8 @@ class ChainDips:
         """When the ``n``-th maintenance after the first is due, before the
         ``n`` maintenance times, and the probability that it happens."""
         due = float(chain_due(self.first_due, self.age, n))
+        if self.weights is not None:
+            return due, float(self.weights[n])
         return due, self.first_survive * self.survive**n
 
     def _kernels(self, step: float):
@@ -1082,8 +1338,10 @@ class UnitEvents:
         maintenance_drop: float = 0.0,
         first_due: Optional[float] = None,
         first_survive: Optional[float] = None,
+        weights: Optional[np.ndarray] = None,
     ):
         self.times = times
+        self.weights = weights
         self.fail_cdf = fail_cdf
         self.first_atoms = list(first_atoms)
         self.repair_drop = repair_drop
@@ -1115,7 +1373,10 @@ class UnitEvents:
         assert self.age is not None and self.fixed is not None
         n = np.arange(self.count + 1, dtype=float)
         dues = chain_due(self.first_due, self.age, n) + n * self.fixed
-        weights = self.first_survive * self.survive**n
+        if self.weights is None:
+            weights = self.first_survive * self.survive**n
+        else:
+            weights = np.asarray(self.weights, dtype=float)[: len(n)]
         keep = dues <= self.times[-1]
         return dues[keep], weights[keep]
 

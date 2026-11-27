@@ -230,6 +230,20 @@ def replaced(rbd):
     return next(iter(rbd.components))
 
 
+def echelon_parts(rbd):
+    """Every component a part repaired at its base or at a depot."""
+    return {
+        node: {
+            "price": 1.0 + i,
+            "base_repair_fraction": 0.4,
+            "base_repair_time": 5.0,
+            "depot_repair_time": 40.0,
+            "ship_time": 8.0,
+        }
+        for i, node in enumerate(rbd.components)
+    }
+
+
 REPAIRABLE_CALLS = {
     **{
         name: (lambda name: lambda rbd: getattr(rbd, name)())(name)
@@ -264,6 +278,12 @@ REPAIRABLE_CALLS = {
     "total_cost": lambda rbd: rbd.total_cost(1000.0),
     "spares_demand": lambda rbd: rbd.spares_demand(200.0),
     "spares_stock": lambda rbd: rbd.spares_stock(50.0, fill_rate=0.9),
+    "spares_front": lambda rbd: rbd.spares_front(
+        {"north": 3, "south": 2}, echelon_parts(rbd), budget=6.0
+    ),
+    "spares_allocation": lambda rbd: rbd.spares_allocation(
+        {"north": 3, "south": 2}, echelon_parts(rbd), budget=6.0
+    ),
     "first_failure_sf": lambda rbd: rbd.first_failure_sf([10.0, 200.0]),
     "first_failure_bounds": (
         lambda rbd: rbd.first_failure_bounds([10.0, 200.0])
@@ -1375,24 +1395,13 @@ def test_the_readme_says_what_is_simulated():
                 "upgraded at a time, block-replaced",
                 "upgraded at a time, age-replaced",
                 "upgraded at a time, tested",
+                "upgraded at a time, the unit in service kept",
             )
             for analysis, route in (
                 ("expected_npv", "numerical"),
                 ("point_availability", "numerical"),
                 ("availability", "simulated"),
             )
-        ]
-        + [
-            (
-                repairable["upgraded at a time, the unit in service kept"],
-                "expected_npv",
-                "refused",
-            ),
-            (
-                repairable["upgraded at a time, the unit in service kept"],
-                "availability",
-                "simulated",
-            ),
         ],
         'A shelf of spares (a component\'s `"spares"`: a stock reordered '
         "one for one, each order arriving a lead time later)": [
