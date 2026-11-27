@@ -348,23 +348,194 @@ def test_what_a_mixed_or_grouped_tree_refuses():
     with pytest.raises(NotImplementedError, match="components are repaired"):
         mixed.to_repairable_rbd()
     grouped = common_cause()
-    with pytest.raises(NotImplementedError, match="expected_failures"):
-        grouped.failure_frequency(10.0)
-    with pytest.raises(NotImplementedError, match="to_repairable_rbd"):
-        grouped.birnbaum_importance(10.0)
     with pytest.raises(NotImplementedError, match="split their failure"):
         grouped.to_open_psa()
+    with pytest.raises(NotImplementedError, match="split their failure"):
+        grouped.to_open_psa(t=10.0)
     weibull = {"reliability": W([100.0, 2.0]), "repairability": E([0.5])}
     worn = FaultTree(
         {"top": ("and", ["a", "b"])},
         {"a": weibull, "b": weibull},
         ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate"))],
     )
+    for name in ("point_unavailability", "failure_frequency"):
+        with pytest.raises(NotImplementedError, match="exponential lives"):
+            getattr(worn, name)(10.0)
     with pytest.raises(NotImplementedError, match="exponential lives"):
-        worn.point_unavailability(10.0)
+        worn.birnbaum_importance(10.0)
     routes = grouped.analysis_routes()
-    assert routes["failure_frequency"].route == "refused"
-    assert routes["point_unavailability"].route != "refused"
+    for name in (
+        "failure_frequency",
+        "birnbaum_importance",
+        "fussell_vesely",
+        "ranked_cut_sets",
+    ):
+        assert routes[name].route != "refused"
+        assert worn.analysis_routes()[name].route == "refused"
+
+
+# -- common cause: failure frequency and the measures at a time ---------------
+
+MEASURES = (
+    "birnbaum_importance",
+    "improvement_potential",
+    "risk_achievement_worth",
+    "risk_reduction_worth",
+    "criticality_importance",
+    "fussell_vesely",
+)
+
+
+@pytest.mark.parametrize("tested", [False, True])
+def test_common_cause_measures_against_the_diagram(tested):
+    """Each measure at times, against the repairable diagram's at the same
+    times, which conditions on the groups' chains the same way."""
+    tree = common_cause(tested)
+    rbd = tree.to_repairable_rbd()
+    x = np.array([7.0, 49.0, 120.0, 600.0])
+    for name in MEASURES:
+        mine, theirs = getattr(tree, name)(x), getattr(rbd, name)(x=x)
+        assert set(mine) == set(theirs)
+        for event in mine:
+            np.testing.assert_allclose(
+                mine[event], theirs[event], rtol=1e-12, err_msg=name
+            )
+    mine, theirs = tree.criticality_importance(x, kind="success"), (
+        rbd.criticality_importance(x=x, kind="success")
+    )
+    for event in mine:
+        np.testing.assert_allclose(mine[event], theirs[event], rtol=1e-12)
+    mine, theirs = tree.fussell_vesely(x, fv_type="p"), rbd.fussell_vesely(
+        x=x, fv_type="p"
+    )
+    for event in mine:
+        np.testing.assert_allclose(mine[event], theirs[event], rtol=1e-12)
+    joint, drawn = tree.joint_importance(x), rbd.joint_importance(x=x)
+    for pair in [("a", "b"), ("a", "c"), ("b", "c")]:
+        np.testing.assert_allclose(joint[pair], drawn[pair], rtol=1e-12)
+    # A number gives floats, as without groups.
+    assert isinstance(tree.birnbaum_importance(49.0)["a"], float)
+
+
+def pair_chain(rate, repair, beta, t):
+    """The joint states of two alike units in a beta-factor group (of the
+    rate), each repaired on its own, new at 0: ``(both up, one given one
+    down, both down)`` at each time, from the chain's matrix exponential
+    (states: up-up, down-up, up-down, down-down)."""
+    from scipy.linalg import expm
+
+    own, shared = (1.0 - beta) * rate, beta * rate
+    G = np.array(
+        [
+            [0.0, own, own, shared],
+            [repair, 0.0, 0.0, rate],
+            [repair, 0.0, 0.0, rate],
+            [0.0, repair, repair, 0.0],
+        ]
+    )
+    G -= np.diag(G.sum(axis=1))
+    start = np.array([1.0, 0.0, 0.0, 0.0])
+    states = np.array([start @ expm(G * x) for x in np.atleast_1d(t)])
+    return states[:, 0], states[:, 1], states[:, 3]
+
+
+def test_common_cause_failure_frequency_against_its_chain():
+    """``or(and(a, b), c)``, ``a`` and ``b`` in a beta-factor group: the
+    pair goes down together at ``rate`` from one down, and at the shared
+    rate from both up, and ``c`` fails at its rate while up, so ``w =
+    (1 - q_c) w_ab + (1 - q_ab) w_c``."""
+    tree = common_cause()
+    x = np.array([0.5, 7.0, 49.0, 120.0, 600.0, 5000.0])
+    up, one, both = pair_chain(0.002, 0.1, 0.1, x)
+    w_ab = 2.0 * one * 0.002 + up * 0.1 * 0.002
+    q_c = q_closed(0.0005, 0.25, x)
+    w_c = 0.0005 * (1.0 - q_c)
+    np.testing.assert_allclose(
+        tree.failure_frequency(x),
+        (1.0 - q_c) * w_ab + (1.0 - both) * w_c,
+        rtol=1e-12,
+    )
+    assert tree.failure_frequency(5000.0) == pytest.approx(
+        tree.system_failure_frequency(), rel=1e-12
+    )
+    # The measures read the same chain: c's Birnbaum importance is the
+    # pair's being up, the pair's members' conditioned on their states.
+    np.testing.assert_allclose(
+        tree.birnbaum_importance(x)["c"], 1.0 - both, rtol=1e-12
+    )
+    np.testing.assert_allclose(
+        tree.conditional_probabilities(x).given_occurred["a"],
+        q_c + (1.0 - q_c) * both / (one + both),
+        rtol=1e-12,
+    )
+    ranked = dict(tree.ranked_cut_sets(49.0))
+    assert ranked[frozenset({"a", "b"})] == pytest.approx(both[2], rel=1e-12)
+
+
+@pytest.mark.parametrize("tested", [False, True])
+def test_common_cause_failure_frequency_integrates_to_expected_failures(
+    tested,
+):
+    tree = common_cause(tested)
+    end = 300.0 if not tested else 160.0
+    total, _ = integrate.quad(
+        lambda u: tree.failure_frequency(u),
+        0.0,
+        end,
+        points=[80.0] if tested else None,
+        epsabs=0.0,
+        epsrel=1e-10,
+        limit=200,
+    )
+    assert total == pytest.approx(tree.expected_failures(end), rel=1e-6)
+
+
+def test_common_cause_frequency_and_measures_against_a_seeded_simulation():
+    """The diagram of the tree simulated: the top event's starts over a
+    window against the integral of ``failure_frequency``, and the top
+    event at a time given ``a`` down against
+    ``conditional_probabilities``."""
+    tree = common_cause()
+    end = 300.0
+    runs = tree.to_repairable_rbd().simulate_timelines(
+        end, mc_samples=20_000, seed=850
+    )
+    total, _ = integrate.quad(
+        lambda u: tree.failure_frequency(u), 0.0, end, epsrel=1e-10
+    )
+    _within(runs.system.failures, total)
+    t = 250.0
+    a_down = ~runs.components["a"].state(t)
+    top = ~runs.system.state(t)
+    _within(a_down, q_closed(0.002, 0.1, t))
+    _within(
+        top[a_down],
+        tree.conditional_probabilities(t).given_occurred["a"],
+    )
+    _within(
+        top[~a_down],
+        tree.conditional_probabilities(t).given_not_occurred["a"],
+    )
+
+
+def test_trees_without_groups_keep_their_values():
+    """The routes through the groups' chains leave a tree without groups
+    as it was: its measures are those of its independent events."""
+    tree = common_cause()
+    alone = FaultTree(dict(tree.gates), dict(tree.events))
+    x = np.array([7.0, 49.0])
+    q = {
+        "a": q_closed(0.002, 0.1, x),
+        "b": q_closed(0.002, 0.1, x),
+        "c": q_closed(0.0005, 0.25, x),
+    }
+    birnbaum = alone.birnbaum_importance(x)
+    np.testing.assert_allclose(birnbaum["c"], 1.0 - q["a"] * q["b"])
+    np.testing.assert_allclose(birnbaum["a"], (1.0 - q["c"]) * q["b"])
+    w = (1.0 - q["c"]) * 2.0 * 0.002 * (1.0 - q["a"]) * q["b"] + (
+        1.0 - q["a"] * q["b"]
+    ) * 0.0005 * (1.0 - q["c"])
+    np.testing.assert_allclose(alone.failure_frequency(x), w, rtol=1e-12)
 
 
 def test_the_importance_measures_of_a_mixed_tree():
