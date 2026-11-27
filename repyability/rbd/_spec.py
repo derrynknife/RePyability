@@ -1361,24 +1361,6 @@ def _validate_markov(node, component) -> None:
 MARKOV_SPEC_KEYS = ("reliability",) + COST_KEYS + ("acquisition_cost",)
 
 
-def _refuse_markov_crews(rbd) -> None:
-    """Raise if the diagram has repair crews and a Markov component,
-    whose restorations are transitions of its chain, not jobs a crew
-    takes."""
-    if rbd.repair_crews is None:
-        return
-    for node, arrangement in rbd._standby.items():
-        if arrangement.key == "markov":
-            raise ValueError(
-                f"Component {node!r} is a Markov component, restored at "
-                "its own transitions' rates: it cannot wait for the "
-                f"diagram's repair crews (repair_crews={rbd.repair_crews}"
-                "). Write its waiting into its chain's states and rates, "
-                "or put the components that share crews in a nested "
-                "RepairableRBD with the crews."
-            )
-
-
 def _refuse_life_capacities(node, spec: dict, capacity) -> None:
     """Raise if a spec's life is a Markov component with a capacity in
     each state and the node has no capacity of its own: its states are

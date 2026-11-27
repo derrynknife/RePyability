@@ -1383,7 +1383,6 @@ class RepairableRBD(RBD):
                 )
         self.components = components
         self.repairability = copy(repairability)
-        _spec._refuse_markov_crews(self)
         self._maintenance = _spec._validate_groups(self, maintenance_groups)
         self.ccf_groups = _spec._validate_ccf_groups(self, ccf_groups)
         _shutdowns.check(self)

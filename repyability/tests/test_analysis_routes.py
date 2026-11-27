@@ -1330,7 +1330,20 @@ def test_the_readme_says_what_is_simulated():
                 ("capacity_distribution", "exact"),
                 ("point_capacity", "numerical"),
                 ("mission_capacity", "numerical"),
-                ("availability", "refused"),
+                ("availability", "simulated"),
+            )
+        ]
+        + [
+            (
+                repairable["Markov component beside one repair crew"],
+                name,
+                route,
+            )
+            for name, route in (
+                ("mean_availability", "exact"),
+                ("point_availability", "numerical"),
+                ("first_failure_sf", "numerical"),
+                ("availability", "simulated"),
             )
         ],
         "Opportunistic maintenance (renewals at a group's stops)": [

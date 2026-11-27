@@ -1386,19 +1386,21 @@ shares.levels.tolist()                   # -> [0.0, 60.0, 100.0]
 shares.probabilities[1]                  # -> 0.03816   the time at 60
 ```
 
-`point_capacity` and `mission_capacity` follow the states over time. The
-simulations do not follow a capacity that comes from a model (as for a
-`DegradingNode`), so `availability()` refuses such a diagram: give the
-node a capacity in the diagram's `capacity=` to simulate it at one
-level.
+`point_capacity` and `mission_capacity` follow the states over time, and
+the simulations (`availability()`) follow the state it is in, at that
+state's level: the capacity's time at each level, its mean and the
+demand delivered.
 
 A Markov component is restored by its own transitions, so it takes no
 `"repairability"`, maintenance, tests, spares or maintenance group (write
-them as states and rates), is no member of a common-cause group, and a
-diagram with one takes no `repair_crews` (put the components that share
-crews in a nested `RepairableRBD`). The first failure's exact values and
-the spares analyses refuse a diagram with one, and `analysis_routes()`
-says how everything else is worked out.
+them as states and rates), and is no member of a common-cause group. It
+takes no repair crew either: a diagram's `repair_crews` serve its other
+components, whose chain goes beside the component's own (as a nested
+`RepairableRBD` with crews of its own does), exactly, in the long run,
+over time and to the first failure. The first failure takes its chain
+in, its failed states absorbing; the spares analyses refuse a diagram
+with one, and `analysis_routes()` says how everything else is worked
+out.
 
 A chain with no way back from its failed states has a lifetime instead:
 `sf`, `ff`, `df`, `mean`, `qf` and `random`, as any life has. It is then

@@ -172,9 +172,10 @@ def _node_cost_rate(
 def _node_actions(rbd, node, availability: float) -> Tuple[float, float]:
     """A component's corrective and preventive actions per unit time,
     in the long run (``availability`` its long-run availability)."""
-    if rbd._crews_couple():
+    if rbd._crews_couple() and not _crews._markov(rbd, node):
         # Waiting for a crew, as while repaired, it cannot fail: it
-        # fails at its constant rate while it is up.
+        # fails at its constant rate while it is up. (A Markov component
+        # takes no crew: its own chain's, below.)
         # (A Shocks group's member fails at its shocks too.)
         life = _crews._crew_chain_rates(rbd)[node][0]
         life += _requirements._shock_rate(rbd, node)
