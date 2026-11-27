@@ -116,9 +116,10 @@ def test_one_component_with_exponential_times():
     lam, mu = 0.1, 1.0
     rbd = alone(unit(E([lam]), E([mu])))
     t = np.array([0.0, 0.3, 1.0, 2.5, 10.0, 100.0])
+    # In closed form (the grid was 8e-7 off).
     assert np.abs(
         rbd.point_availability(t) - exponential(lam, mu, t)
-    ).max() < (8e-7)
+    ).max() < (1e-14)
     windows = np.array([0.5, 1.0, 10.0, 1000.0])
     exact = (
         mu / (lam + mu)
@@ -127,13 +128,13 @@ def test_one_component_with_exponential_times():
         * (1.0 - np.exp(-(lam + mu) * windows))
         / windows
     )
-    assert np.abs(rbd.mission_availability(windows) - exact).max() < 4e-7
+    assert np.abs(rbd.mission_availability(windows) - exact).max() < 1e-13
 
 
 @pytest.mark.parametrize("parallel", [True, False], ids=["parallel", "series"])
 def test_time_scales_far_apart(parallel):
     # Failure rates from 1e-2 to 1e-5 and repairs of an hour to twenty:
-    # each unit on its own grid, the system exact at every time.
+    # each unit in closed form, the system exact at every time.
     rates = [(0.01, 0.5), (0.001, 0.05), (1e-5, 1.0)]
     specs = [unit(E([lam]), E([mu])) for lam, mu in rates]
     names = ["a", "b", "c"]
@@ -148,15 +149,80 @@ def test_time_scales_far_apart(parallel):
         system = times(system, plus({0.0: 1.0}, up, -1.0) if parallel else up)
     if parallel:
         system = plus({0.0: 1.0}, system, -1.0)
-    # From 200 h: the slowest unit's grid step is 20 h and more, far longer
-    # than its 1 h repairs, which are smoothed over its first step (see the
-    # docstring).
-    t = np.array([200.0, 1000.0, 5000.0, 60000.0, 250000.0])
-    assert np.abs(rbd.point_availability(t) - value(system, t)).max() < 3e-7
+    # From half an hour: on a grid, the slowest unit's step was 20 h and
+    # more, far longer than its 1 h repairs, so the values held to 3e-7
+    # only from 200 h on.
+    t = np.array([0.5, 3.0, 40.0, 200.0, 1000.0, 5000.0, 60000.0, 250000.0])
+    assert np.abs(rbd.point_availability(t) - value(system, t)).max() < 1e-14
     for window in [1000.0, 20000.0, 300000.0]:
         assert rbd.mission_availability(window) == pytest.approx(
-            mean(system, window), abs=1.2e-7
+            mean(system, window), abs=1e-13
         )
+
+
+def test_an_exponential_unit_is_its_closed_form_whatever_else_is_asked():
+    # A repair 250 times shorter than the life: a grid sized by the life
+    # and the last time asked for was 1.1e-5 off at t = 0.5 asked with
+    # t = 1000 (and 6e-14 asked alone), in its mission availability
+    # 8.6e-6 and in its expected failures 9.3e-8.
+    lam, mu = 0.002, 0.5
+    s = lam + mu
+    rbd = alone(unit(E([lam]), E([mu])))
+    t = np.array([0.5, 3.0, 40.0, 1000.0, 1e5])
+    down = lam / s * -np.expm1(-s * t)
+    np.testing.assert_allclose(
+        rbd.point_availability(t), 1.0 - down, rtol=1e-15
+    )
+    np.testing.assert_allclose(
+        rbd.point_availability(t),
+        1.0 - rbd.point_unavailability(t),
+        rtol=1e-15,
+    )
+    assert rbd.point_availability(0.5) == rbd.point_availability(t)[0]
+    failures = lam * mu / s * t + (lam / s) ** 2 * -np.expm1(-s * t)
+    np.testing.assert_allclose(rbd.expected_failures(t), failures, rtol=1e-12)
+    mission = mu / s + lam / s * -np.expm1(-s * t) / (s * t)
+    events = rbd.expected_events(t)
+    np.testing.assert_allclose(
+        np.ravel(events.system_failures), failures, rtol=1e-12
+    )
+    np.testing.assert_allclose(
+        np.ravel(events.system_downtime), t - mission * t, rtol=1e-9
+    )
+    np.testing.assert_allclose(
+        rbd.mission_availability(t), mission, rtol=1e-13
+    )
+    curve = _curves._node_curve(
+        rbd, "c", rbd.components["c"], 1000.0, True, False, False, None
+    )
+    assert isinstance(curve, point_availability.ExponentialCurve)
+    # Repaired at once: never down, failing at its rate.
+    instant = alone(unit(E([lam]), FIXED([0.0])))
+    np.testing.assert_array_equal(instant.point_availability(t), 1.0)
+    np.testing.assert_allclose(
+        instant.expected_failures(t), lam * t, rtol=1e-12
+    )
+
+
+def test_only_a_new_exponential_unit_has_the_closed_form():
+    # Down at 0, or with another life or repair: the renewal grid, as
+    # before. Up at an age, it is as new (a constant rate has no memory).
+    def curve(spec, start=None):
+        rbd = alone(spec)
+        return _curves._node_curve(
+            rbd, "c", rbd.components["c"], 100.0, True, False, False, start
+        )
+
+    closed = point_availability.ExponentialCurve
+    grid = point_availability.GridCurve
+    assert isinstance(curve(unit(E([0.01]), E([1.0]))), closed)
+    assert isinstance(curve(unit(W([100.0, 1.0]), E([1.0]))), closed)
+    assert isinstance(curve(unit(W([100.0, 1.5]), E([1.0]))), grid)
+    assert isinstance(curve(unit(E([0.01]), LN([0.0, 0.5]))), grid)
+    exponential_unit = unit(E([0.01]), E([1.0]))
+    assert isinstance(curve(exponential_unit, NodeState(age=5.0)), closed)
+    down = NodeState(alive=False, down_for=0.5)
+    assert isinstance(curve(exponential_unit, down), grid)
 
 
 def test_the_start_up_term():

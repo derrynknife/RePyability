@@ -441,7 +441,9 @@ plant.mission_availability([10.0, 100.0, 1000.0]) # array([0.962 , 0.9544, 0.953
 ```
 
 Each component's `A(t)` follows from the distributions of its up and down
-times by the renewal equation, solved numerically to about `1e-7`; the
+times by the renewal equation, solved numerically to about `1e-7` (a
+component with an exponential life and an exponential repair, new at 0,
+has it in closed form); the
 components fail and are repaired independently, so the system's is the
 exact system computation at theirs, at each time (see
 [Concepts](../concepts.md#availability)). The curve starts at 1 (less any
@@ -577,7 +579,8 @@ E[system failures in [0, t)] = ∫₀ᵗ Σᵢ I_B,i(s) dMᵢ(s)
 ```
 
 with `Mᵢ(s)` component *i*'s expected failures by `s`, which its renewal
-equation gives on the grid of its point availability (to about `1e-7`). In
+equation gives on the grid of its point availability (to about `1e-7`;
+in closed form for an exponential life and repair). In
 the long run they come at `system_failure_frequency()`: `3.497` per 100
 here. [`ExpectedEvents`][repyability.ExpectedEvents] holds the system's
 expected failures, planned outages and downtime, and each component's

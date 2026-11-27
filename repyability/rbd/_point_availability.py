@@ -81,6 +81,7 @@ stage at each age, as for the failures; past the grid's end, the long-run
 shares of the up time.
 """
 
+import math
 from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
 import numpy as np
@@ -2155,6 +2156,72 @@ class SteadyCurve:
     def stages_at(self, x: np.ndarray) -> np.ndarray:
         assert self.fractions is not None, "the unit has no stages"
         return self.fractions[:, None] * self.at(np.atleast_1d(x))[None, :]
+
+
+class ExponentialCurve:
+    """A unit new at 0 with an exponential life and an exponential (or
+    instant) repair, and nothing else, in closed form: down with
+    probability ``lambda / s (1 - exp(-s t))``, ``s`` the sum of its
+    failure and repair rates (``total``; inf for an instant repair), and
+    failing at ``lambda`` while it is up, so with ``lambda mu / s t +
+    (lambda / s)^2 (1 - exp(-s t))`` expected failures before ``t``. A
+    grid sized by its life does not resolve a repair hundreds of times
+    shorter, within its first steps."""
+
+    period = None
+
+    def __init__(self, life: float, total: float):
+        self.life, self.total = float(life), float(total)
+        #: Constant to rounding from here on.
+        self.settle = 0.0 if math.isinf(self.total) else 40.0 / self.total
+
+    def failed_at(self, x: np.ndarray) -> np.ndarray:
+        """Its probability of being down (in a repair) at each time
+        ``x``, worked out in its own right."""
+        x = np.asarray(x, dtype=float)
+        if math.isinf(self.total):
+            return np.zeros(x.shape)
+        return -(self.life / self.total) * np.expm1(-self.total * x)
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        return 1.0 - self.failed_at(x)
+
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """Its rate of change at each time ``x`` (see
+        ``_rates.derivative``)."""
+        x = np.asarray(x, dtype=float)
+        if math.isinf(self.total):
+            return np.zeros(x.shape)
+        return -self.life * np.exp(-self.total * x)
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The unit's expected events before each time ``x``: its
+        failures, each repaired (see ``GridCurve.events``)."""
+        x = np.asarray(x, dtype=float)
+        if math.isinf(self.total):
+            return _events(self.life * x)
+        share = self.life / self.total
+        return _events(
+            (self.life - self.life * share) * x
+            - share * share * np.expm1(-self.total * x)
+        )
+
+    def atoms(self, stop: float) -> Atoms:
+        return Atoms.none()
+
+    def knots(self, start: float, stop: float) -> np.ndarray:
+        """Times from 0 to ``settle`` between which the curve is smooth
+        enough for quadrature: from a twentieth of ``1 / total``, each a
+        fifth (in the log) further on."""
+        if self.settle == 0.0:
+            return np.empty(0)
+        first = 0.05 / self.total
+        count = int(math.ceil(math.log(self.settle / first) / 0.2))
+        times = np.concatenate(
+            [[0.0], first * np.exp(0.2 * np.arange(count)), [self.settle]]
+        )
+        times = times[times <= self.settle]
+        return times[(times >= start) & (times <= stop)]
 
 
 def cumulative_hazard(life, x: np.ndarray) -> np.ndarray:
