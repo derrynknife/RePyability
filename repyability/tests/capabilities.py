@@ -505,6 +505,7 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("A fitted degradation process", "degradation process"),
         ("Cold standby (convolved)", "convolved standby"),
         ("Standby with no reliability of its own", "simulated standby"),
+        ("A Markov component with a lifetime", "Markov life"),
         ("Load sharing", "load sharing"),
         ("A repeated node", "repeated"),
         ("A repeated standby node", "repeated standby"),
@@ -567,6 +568,11 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ),
         ("Limited repair crews", "one repair crew"),
         ("A standby group", "standby group"),
+        ("A Markov component (states and rates)", "Markov component"),
+        (
+            "A Markov component with a capacity in each state",
+            "Markov component, capacities",
+        ),
         ("A beta-factor group, revealed failures", "common cause, revealed"),
         ("A beta-factor group, tested", "common cause, tested"),
         (

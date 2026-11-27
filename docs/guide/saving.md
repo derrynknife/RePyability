@@ -91,7 +91,7 @@ Every Monte-Carlo method takes a `seed`:
 |---|---|
 | `NonRepairableRBD` | `random`, `mean`, `mean_time_to_failure` and `compare` with `method="simulate"`, `mean_time_to_failure_interval` |
 | `RepairableRBD` | `availability`, `cost`, `compare` with `control_variate=False` (or where the exact methods do not reach), `spares_demand` and `maintenance_effect` with `method="simulate"` (or, over a window, where the exact methods do not reach) |
-| Node models | `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random`, `DegradingNode.random`, and the `mean` of a `StandbyModel`, `LoadSharingModel` or `DegradingNode` with `method="simulate"` (or with `mc_samples` or `seed`, where it has no exact mean) |
+| Node models | `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random`, `DegradingNode.random`, `MarkovComponent.random`, and the `mean` of a `StandbyModel`, `LoadSharingModel` or `DegradingNode` with `method="simulate"` (or with `mc_samples` or `seed`, where it has no exact mean) |
 | `PhasedMission` | `reliability`, `unreliability`, `phase_failure_probabilities` and `expected_mission_time` with `method="simulate"`, `reliability_interval` |
 | `Network` | `sf`, `ff` and `mean` with `method="simulate"`, `random`, `sf_uncertainty`, `mean_uncertainty` |
 | `Repairable` | every simulation-backed method |

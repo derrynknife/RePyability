@@ -1202,6 +1202,31 @@ def test_the_readme_says_what_is_simulated():
                 "refused",
             ),
         ],
+        "Markov components (states and the rates between them)": [
+            (repairable["Markov component"], name, route)
+            for name, route in (
+                ("mean_availability", "exact"),
+                ("birnbaum_importance", "exact"),
+                ("system_failure_frequency", "exact"),
+                ("point_availability", "numerical"),
+                ("expected_events", "numerical"),
+                ("expected_cost", "numerical"),
+                ("availability", "simulated"),
+                ("first_failure_sf", "refused"),
+                ("first_failure_bounds", "numerical"),
+                ("spares_demand", "refused"),
+                ("spares_stock", "refused"),
+            )
+        ]
+        + [
+            (repairable["Markov component, capacities"], name, route)
+            for name, route in (
+                ("capacity_distribution", "exact"),
+                ("point_capacity", "numerical"),
+                ("mission_capacity", "numerical"),
+                ("availability", "refused"),
+            )
+        ],
         "Opportunistic maintenance (renewals at a group's stops)": [
             (
                 repairable["opportunistic maintenance"],

@@ -12,6 +12,38 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `MarkovComponent(states, rates, up=None, capacity=None, start=None)`:
+  a component given as a continuous-time Markov chain, for one that is
+  not a life and a repair (a degraded state it is restored from, a
+  failure detected or not, standby and running modes). `rates` is
+  `{(from, to): rate}`, `up` the states it works in (or `capacity` a
+  level per state, working where it is above 0) and `start` its state at
+  0 or the probability of each (by default the first state). It gives
+  `state_probabilities`, `steady_state`, `point_availability`,
+  `point_unavailability`, `mean_availability`, `mean_unavailability`,
+  `failure_frequency` and `capacity_distribution`, from the chain
+  followed by uniformization (as the crews' and standby groups' chains
+  are) and its long-run distribution. With a way back from its failed
+  states it is a component of a `RepairableRBD`, given as it is or in a
+  spec with its prices (`"repair_cost"` and `"replace_cost"` per failure,
+  `"downtime_cost"`, `"acquisition_cost"`): its long-run values,
+  importance and long-run capacity exact, its values over time, expected
+  events, costs and capacity over time numerical, from its `start`, the
+  unavailability summed over its failed states; the Python engine
+  simulates it, drawing its times in each state and its next states from
+  streams of new names (so no seeded result of another diagram changes),
+  and the compiled engines hand such a diagram over. Each rate is a
+  lever (`reliability.rate:<from>-><to>`) and an uncertain parameter by
+  name, and it saves with its diagram. Refused, each with what to do:
+  `repair_crews` in its diagram, membership of a common-cause group, a
+  `"repairability"`, maintenance, tests, spares or a maintenance group in
+  its spec, a `NodeState` for it, the first failure's exact values, the
+  spares analyses, and a simulation of a diagram whose capacity comes
+  from its states. With no way back it has a lifetime (`sf`, `ff`, `df`,
+  `hf`, `Hf`, `qf`, `mean`, `random`) and is a node of a
+  `NonRepairableRBD` (its capacities taken by `capacity_distribution`)
+  or the `"reliability"` of a repairable component's spec. See the
+  guide's "Markov components".
 - `FaultTree.to_open_psa` and `FaultTree.from_open_psa` exchange the
   MGL and alpha-factor common-cause models, and read the phi-factor
   model. The format takes each specific set's probability `Q_k` as an

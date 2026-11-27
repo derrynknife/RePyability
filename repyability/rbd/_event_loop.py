@@ -68,6 +68,8 @@ from repyability.rbd._events import (
     _Fixed,
     _Imperfect,
     _Inspection,
+    _MarkovDraws,
+    _MarkovUnit,
     _Preventive,
     _Restoration,
     _Run,
@@ -833,7 +835,14 @@ def _uniforms(u: np.ndarray) -> np.ndarray:
 
 def _standby_draws(component, run, path: tuple, arrangement: "_Standby"):
     """A standby group's draws in a run (see ``_StandbyDraws``): from
-    streams if every unit's lives and repairs have one."""
+    streams if every unit's lives and repairs have one. A Markov
+    component's (``_MarkovDraws``) are from streams of its own."""
+    if arrangement.key == "markov":
+        return _MarkovDraws(
+            run.stream(path, _streams.SOJOURN),
+            run.stream(path, _streams.MOVE),
+            run.stream(path, _streams.MARKOV_START),
+        )
     units = range(arrangement.units)
     lives = [run.stream(path + (u,), _streams.FAILURE) for u in units]
     repairs = [run.stream(path + (u,), _streams.REPAIR) for u in units]
@@ -1357,6 +1366,15 @@ def _stream_specs(
             )
             complete = complete and nested[1]
             continue
+        if name in rbd._standby and rbd._standby[name].key == "markov":
+            # Its times in each state and its next states (see
+            # _MarkovUnit), and its state at 0 if that is drawn.
+            moves = _markov_draw_count(component, t_simulation)
+            add(path, _streams.SOJOURN, _uniforms, moves)
+            add(path, _streams.MOVE, _uniforms, moves)
+            if len(component.start) > 1:
+                add(path, _streams.MARKOV_START, _uniforms, 1.0)
+            continue
         failure = repair = None
         if type(component) is NonRepairable:
             # A common-cause group's member draws its own cause's life.
@@ -1471,6 +1489,13 @@ def _duration_model(rbd, node):
     return None if schedule is None else schedule.duration
 
 
+def _markov_draw_count(component, t_simulation: float) -> float:
+    """Roughly how many moves a simulation draws for a Markov
+    component: its long-run moves per unit time, over the window."""
+    out = -np.diag(component._generator)
+    return float(t_simulation * (component._steady @ out)) + 1.0
+
+
 def _standby_draw_counts(
     rbd, node, t_simulation: float
 ) -> Tuple[float, float]:
@@ -1502,6 +1527,9 @@ def _expected_draws(rbd, node, t_simulation: float) -> Dict[str, float]:
     Only how the draws are computed depends on these (see
     ``_streams``), never what they are."""
     component = rbd.components[node]
+    if node in rbd._standby and rbd._standby[node].key == "markov":
+        failures = t_simulation * component.failure_frequency() + 1.0
+        return {"failure": failures, "repair": failures, "action": 0.0}
     if node in rbd._standby:
         # Its units' failures, each a repair charged for.
         _, failures = _standby_draw_counts(rbd, node, t_simulation)
@@ -2031,12 +2059,23 @@ def _start_queue(
                 rbd._run_state._crews.holding.add(node)
     # Each standby group's units, which queue the group's first event.
     rbd._run_state._groups = {
-        node: _StandbyGroup(
-            rbd, node, arrangement, sources[node], t_simulation
+        node: (
+            _MarkovUnit(
+                rbd, node, rbd.components[node], sources[node], t_simulation
+            )
+            if arrangement.key == "markov"
+            else _StandbyGroup(
+                rbd, node, arrangement, sources[node], t_simulation
+            )
         )
         for node, arrangement in rbd._standby.items()
         if node not in working_nodes and node not in broken_nodes
     }
+    for node, group in rbd._run_state._groups.items():
+        if not group.up:
+            # A Markov component that starts in a failed state.
+            component_status[node] = False
+            failed_at_start[node] = True
     rbd._run_state.last_change_planned = False
     # The initial system state must reflect any forced-broken components
     # (e.g. a broken component in series starts the system down), and

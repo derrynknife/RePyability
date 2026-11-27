@@ -68,7 +68,9 @@ def unrecorded(rbd) -> List[Tuple[str, Optional[Hashable], str]]:
     out: List[Tuple[str, Optional[Hashable], str]] = []
     for node, costs in rbd.costs.items():
         failure = [k for k in ("repair_cost", "replace_cost") if k in costs]
-        if node in rbd._standby:
+        if node in rbd._standby and rbd._standby[node].key == "markov":
+            pass  # each of its failures is a change down of its own
+        elif node in rbd._standby:
             out += [(k[:-5], node, _UNITS) for k in failure]
         elif node in rbd._inspection:
             out += [(k[:-5], node, _HIDDEN) for k in failure]
