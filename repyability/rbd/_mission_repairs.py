@@ -185,18 +185,26 @@ class Source:
     def _drawn(self, what: str, node: Hashable, k: int, model) -> np.ndarray:
         found = self._kept.get((what, node, k))
         if found is None:
-            uniforms = None
-            if self.key is not None:
-                from repyability.rbd import _paired
-
-                key, label = self.key, f"{what} {k} {node!r}"
-
-                def uniforms(j: int) -> np.ndarray:
-                    return _paired.uniforms(key, label, j, self.size)
-
-            found = _draws(model, self.size, self.antithetic, uniforms)
+            found = _draws(
+                model,
+                self.size,
+                self.antithetic,
+                self._uniforms(what, node, k),
+            )
             self._kept[(what, node, k)] = found
         return found
+
+    def _uniforms(
+        self, what: str, node: Hashable, k: int
+    ) -> Optional[Callable[[int], np.ndarray]]:
+        """With a key: the columns of uniforms of block ``node``'s
+        ``k``-th life or repair (``what``), from its own stream."""
+        if self.key is None:
+            return None
+        from repyability.rbd import _paired
+
+        key, label, size = self.key, f"{what} {k} {node!r}", self.size
+        return lambda j: _paired.uniforms(key, label, j, size)
 
     def life(self, node: Hashable, k: int) -> np.ndarray:
         """Block ``node``'s ``k``-th life after its first, in every

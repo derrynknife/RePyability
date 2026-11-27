@@ -69,7 +69,10 @@ alone = (
   its diagram working at that instant (a check before take-off, say).
 - **Common-cause groups** are the mission's, not a phase's: see
   [below](#common-cause-groups).
-- **Not modelled here.** Repair between or during phases. A block on standby, a
+- **Repair during the phases** is the mission's too: see
+  [below](#repair-during-the-phases).
+- **Not modelled here.** Repair between phases or between missions (a
+  turnaround). A block on standby, a
   block that cannot fail in a phase, and a block's life model or
   covariates by phase are set on a mission drawn as
   [one diagram](#one-diagram-each-phase-setting-its-blocks).
@@ -279,6 +282,73 @@ diagram's do. On a mission drawn as
 [one diagram](#one-diagram-each-phase-setting-its-blocks),
 `from_diagram(rbd, phases, ccf_groups=...)` takes the groups too; a
 member is working or not needed in each phase, on its node's model.
+
+## Repair during the phases
+
+A crew that restores a failed unit while the mission runs changes what a
+phase asks: its diagram can go down and come back, so the mission fails
+at the *first instant* the diagram of the phase under way is down, not at
+the phase's end. `repairability` names the blocks that are repaired, each
+with a model of its repair times:
+
+```python
+generator = surv.Exponential.from_params([0.002])
+sets = {"g1": generator, "g2": generator}
+either = NonRepairableRBD(
+    [("s", "g1"), ("s", "g2"), ("g1", "t"), ("g2", "t")], sets
+)
+both = NonRepairableRBD([("s", "g1"), ("g1", "g2"), ("g2", "t")], sets)
+phases = [("transit", 72.0, either), ("lift", 6.0, both), ("return", 72.0, either)]
+
+PhasedMission(phases).unreliability()             # -> 0.2812
+fix = surv.Exponential.from_params([0.125])       # eight hours, on average
+crewed = PhasedMission(phases, repairability={"g1": fix, "g2": fix})
+crewed.unreliability()                            # -> 0.06095
+crewed.phase_failure_probabilities()["lift"]      # -> 0.05333
+```
+
+Without repair a generator lost in the transit fails the lift, which
+needs both: a quarter of the missions. With a crew most of those
+generators are back in time.
+
+- **A repaired block** is under repair from the moment it fails, for a
+  time drawn from its model, and then runs again as good as new, on a new
+  life from its own model, whatever phase the mission is in by then (a
+  repair goes on through the phases' boundaries). Each is repaired on
+  its own: there is no crew to wait for. The other blocks fail once.
+- **A phase that starts with its diagram down fails the mission** there:
+  the mission does not wait for a repair. Most of the `lift`'s risk above
+  is a generator still under repair when the lift begins.
+- **At one instant**, failures come first, then a phase's start (its
+  diagram read as the blocks then stand), then restorations: a block
+  back exactly as a phase that needs it begins is back too late.
+- **Exact** where every life has a constant failure rate in every phase
+  and every repair time is exponential: a Markov chain over the blocks'
+  states (running or failed), carried through the phases, the states a
+  phase's diagram is down in absorbing, up to
+  `repyability.rbd._mission_chain.MAX_STATES` states in a phase. The
+  importance measures hold a block in that chain (working throughout, or
+  failed from the start and never repaired), and `failure_drivers`,
+  `reliability_over_time`, `expected_mission_time`, `summary`, the
+  levers (a repair model's as `repairability.<name>`) and saving take
+  the repairs. Fussell-Vesely, Barlow-Proschan and the cut sets refuse,
+  as for a mission with a block on standby.
+- **Simulated** otherwise (wear-out lives, repairs of any other shape):
+  each repaired block's lives and repairs drawn as it fails and comes
+  back. `analysis_routes()` says which.
+
+```python
+mended = surv.LogNormal.from_params([1.8, 0.6])
+shop = PhasedMission(phases, repairability={"g1": mended, "g2": mended})
+shop.analysis_routes()["reliability"].route       # -> 'refused'
+played = shop.reliability_interval(200_000, seed=1)
+1 - played.estimate                               # -> 0.05844
+```
+
+One phase of a mission with repairs is a repairable diagram's first
+failure: `RepairableRBD.first_failure_sf`. A repaired block is working
+or not needed in each phase, on its node's model, is in no common-cause
+group, and a mission with repairs takes no block on standby.
 
 ## Saving and loading
 
@@ -588,6 +658,6 @@ played = pumping.summary(method="simulate", mc_samples=50_000, seed=1,
 played.interval.lower <= result.reliability <= played.interval.upper   # -> True
 ```
 
-**Not modelled yet.** A switch that takes time (see above); repair.
-Exact values with a standby block and a life whose
+**Not modelled yet.** A switch that takes time (see above); repair of a
+mission with a block on standby. Exact values with a standby block and a life whose
 rate is not constant are not worked out: such a mission is simulated.

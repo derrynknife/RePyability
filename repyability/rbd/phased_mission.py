@@ -3347,17 +3347,16 @@ class PhasedMission:
             deserialise_model,
         )
 
-        repairs = {
-            _node_name(entry["node"]): deserialise_model(entry["model"])
-            for entry in d.get("repairability") or ()
-        }
-
         kind = d.get("type") if isinstance(d, Mapping) else None
         if kind != "PhasedMission":
             raise ValueError(
                 "PhasedMission.from_dict takes a mission's to_dict() "
                 f'document, whose "type" is "PhasedMission", got {kind!r}.'
             )
+        repairs = {
+            _node_name(entry["node"]): deserialise_model(entry["model"])
+            for entry in d.get("repairability") or ()
+        }
         if "rbd" not in d:
             return cls(
                 [
