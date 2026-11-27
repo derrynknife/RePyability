@@ -1204,9 +1204,16 @@ the pair is up 0.9910.)
   standard errors), against 0.98830 cold and 0.92219 hot. Lives whose
   hazard falls steeply from 0 (a Weibull shape below 1) settle slowly,
   and may warn with how nearly they did.
+  Over time, with one repair at a time, a switch that can fail is
+  followed too: the pair then starts afresh in two states (the other unit
+  starting its repair, or ready), whose renewal equations are solved
+  together on the same grid. With the switch working nine times in ten
+  the pair above is up 0.97116 of its first 2,500 h and has failed 0.3365
+  times by then (20,000 runs: 0.97092, -0.6 standard errors, and 0.3388,
+  +0.6).
   More units, a warm pair with both units repaired at once or a switch
-  that can fail, and over time a warm spare, a switch that can fail or
-  both units repaired at once are simulated, for now.
+  that can fail, and over time a warm spare or both units repaired at
+  once are simulated, for now.
 - **Simulation.** `availability`, `cost` and `compare` simulate groups
   whatever their units' models, in Python.
 

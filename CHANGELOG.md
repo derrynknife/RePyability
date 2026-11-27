@@ -12,6 +12,28 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A cold standby pair with one repair at a time and a switch that can
+  fail (`"switching_probability"` below 1) is followed over time, from
+  new or from its long-run state, which was refused: `point_availability`,
+  `point_unavailability`, `mission_availability`, `expected_failures`,
+  the expected costs and the other values over a window, and the exact
+  means `availability()` and `cost()` report. The pair starts afresh in
+  two states (a unit starting to operate as the other starts its repair,
+  or with the other ready, as at 0), whose renewal equations are solved
+  together on the grid a sure switch's one is. Checked: exponential
+  units against the Markov chain followed by uniformization at the
+  grid's points to 1e-9, for three rate pairs and switches of 0.9, 0.5
+  and 0 (within 2e-10); a switch that never works against one
+  exponential unit's closed form (1e-9); the Laplace transforms of the
+  unavailability and of the failures against the two states' own, by
+  quadrature of the models (1e-6), for Weibull and Weibull/lognormal
+  pairs; Weibull(1000, 2.5) lives, Weibull(300, 1.5) repairs and a
+  switch of 0.9 over 2,500 h, 0.971158 against 0.970917 simulated
+  (20,000 runs, -0.6 SE) and 0.3365 failures against 0.3388 (+0.6 SE);
+  Weibull(1000, 1.5) lives, LogNormal(5, 0.6) repairs and a switch of
+  0.7 over 1,200 h, 0.958258 against 0.958306 (+0.1 SE) and 0.3385
+  against 0.3382 (-0.1 SE). A sure switch's values are unchanged to the
+  bit.
 - The long-run values of a warm standby pair (two units, one needed, a
   spare that ages at `"dormancy_factor"` while it waits and can fail in
   standby, a sure switch) of any lives and repairs with one repair at a

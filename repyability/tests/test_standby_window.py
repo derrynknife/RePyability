@@ -234,10 +234,6 @@ def test_the_unit_of_time_does_not_matter():
             "warm spare",
             pair(W([1000.0, 2.5]), E([0.01]), dormancy_factor=0.5),
         ),
-        (
-            "switching",
-            pair(W([1000.0, 2.5]), E([0.01]), switching_probability=0.9),
-        ),
     ],
 )
 def test_what_is_not_followed_over_time_is_refused(words, rbd):
