@@ -76,6 +76,7 @@ the flow.
 import dataclasses
 import functools
 import json
+import math
 import types
 from collections import deque
 from typing import (
@@ -204,6 +205,9 @@ _LONG_RUN = frozenset(
 #: refuses them.
 _REPAIRED_OWN = frozenset(
     {
+        "availability",
+        "first_failure_sf",
+        "mean_time_to_first_failure",
         "point_availability",
         "point_unavailability",
         "mission_availability",
@@ -214,6 +218,11 @@ _REPAIRED_OWN = frozenset(
         "expected_failures",
         "system_failure_frequency",
     }
+)
+#: The analyses of a network of repaired elements that simulate it, or
+#: work out its first loss, as a diagram (see ``Network._simulated``).
+_SIMULATED = frozenset(
+    {"availability", "first_failure_sf", "mean_time_to_first_failure"}
 )
 #: What a network of repaired elements gives besides: what is made of
 #: its elements' probabilities of being down at a time, the structure,
@@ -239,6 +248,10 @@ _REPAIRED_GIVES = _REPAIRED_OWN | frozenset(
         "to_dict",
         "to_json",
         "to_rbd",
+        "levers",
+        "with_levers",
+        "parameter_sensitivity",
+        "tornado",
         "capacity_distribution",
         "point_capacity",
         "mission_capacity",
@@ -517,6 +530,8 @@ class Network:
         self._paths: Optional[List[frozenset]] = None
         self._plan: Optional[_Plan] = None
         self._repaired: Any = None
+        # What a repaired network is simulated as (see ``_simulated``).
+        self._simulation: Any = None
         if self.is_repairable:
             from repyability.rbd._event_curves import Structured
 
@@ -996,15 +1011,16 @@ class Network:
                     )
             except NotImplementedError as refusal:
                 if self.is_repairable and isinstance(refusal, _TooLarge):
-                    # The advice is to simulate, which is not there yet.
+                    # A repaired network is simulated by its own methods.
                     refusal = NotImplementedError(
-                        f"{refusal.what} A network of repaired elements is "
-                        "not simulated yet"
+                        f"{refusal.what} Simulate it: availability(t) for "
+                        "the availability over time, and first_failure_sf"
+                        "(x, method='simulate') for the first loss"
                         + (
                             "."
                             if refusal.limit is None
-                            else ": the limit, repyability.network."
-                            f"{refusal.limit}, can be raised."
+                            else "; or raise the limit, repyability.network."
+                            f"{refusal.limit}."
                         )
                     )
                 self._refused = str(refusal)
@@ -2172,7 +2188,7 @@ class Network:
         )
 
     def parameter_sensitivity(
-        self, x=None, rel_step: float = 1e-5
+        self, x=None, rel_step: Optional[float] = None
     ) -> Dict[Hashable, Dict[str, Any]]:
         """The sensitivity of the probability that the terminals are joined
         (``sf``) to each parameter of the links' and nodes' models.
@@ -2196,13 +2212,27 @@ class Network:
         [`with_levers`][repyability.Network.with_levers] builds the network
         with them moved.
 
+        A network of repaired elements gives the sensitivity of its
+        availability at ``x`` (``point_availability``), or in the long run
+        with ``x`` left out (``mean_availability``), to each lever of its
+        elements' specs (their lives', repairs' and tests' parameters,
+        named as a diagram's component's, ``"reliability.failure_rate"``,
+        ...): a central difference of the network's unavailability, the
+        network rebuilt with the lever moved (as ``with_levers`` builds
+        it), negated. As the element's curve alone moves, it is its
+        Birnbaum importance times its own availability's change, as
+        [`RepairableRBD.parameter_sensitivity`][repyability.RepairableRBD.parameter_sensitivity]
+        gives a diagram's.
+
         Parameters
         ----------
         x : float or array_like, optional
             The time/s; may be left out if every model is a fixed
-            probability.
+            probability, or for a repaired network's long run.
         rel_step : float, optional
-            The relative step of the differences, by default 1e-5.
+            The relative step of the differences, by default 1e-5; for a
+            repaired network's values over time, whose curves are
+            numerical (to about 1e-7), 1e-2.
 
         Returns
         -------
@@ -2237,6 +2267,10 @@ class Network:
         from repyability.rbd._model_utils import lever_spec
         from repyability.rbd.non_repairable_rbd import _dsf_dparam
 
+        if self.is_repairable:
+            return self._repaired_sensitivity(x, rel_step)
+        if rel_step is None:
+            rel_step = 1e-5
         times, scalar = _times(self, x)
         birnbaum = self._birnbaum(times)
         out: Dict[Hashable, Dict[str, Any]] = {}
@@ -2253,6 +2287,56 @@ class Network:
                 parameter: float(value[0]) if scalar else value
                 for parameter, value in values.items()
             }
+        return out
+
+    def _repaired_value(self, x) -> np.ndarray:
+        """The availability of a repaired network at times ``x`` (a row),
+        or in the long run for ``x`` None, as a row."""
+        if x is None:
+            return np.atleast_1d(self.mean_availability())
+        return np.atleast_1d(self.point_availability(x))
+
+    def _repaired_sensitivity(self, x, rel_step: Optional[float]) -> dict:
+        """``parameter_sensitivity`` of a network of repaired elements:
+        see there."""
+        from repyability.rbd import _sensitivity
+
+        if x is None:
+            self._refuse_unrepaired("mean_availability")
+            times, shape = None, ()
+        else:
+            times, shape = self._repaired_times(x, "parameter_sensitivity")
+        if rel_step is None:
+            rel_step = 1e-5 if x is None else 1e-2
+        if not (
+            is_number(rel_step)
+            and math.isfinite(rel_step)
+            and 0.0 < rel_step < 0.5
+        ):
+            raise ValueError(
+                f"rel_step must be a number in (0, 0.5), got {rel_step!r}."
+            )
+
+        def down(net) -> np.ndarray:
+            if times is None:
+                return np.atleast_1d(net.mean_unavailability())
+            return np.atleast_1d(net.point_unavailability(times))
+
+        base = down(self)
+        out: Dict[Hashable, Dict[str, Any]] = {}
+        for lever in _sensitivity._network_levers(self):
+
+            def at(value, lever=lever):
+                try:
+                    changed = _sensitivity._built(self, lever, value)
+                except ValueError:
+                    return None
+                return down(changed)
+
+            change = -_sensitivity._difference(at, lever, rel_step, base)
+            out.setdefault(lever.key, {})[lever.name] = (
+                float(change[0]) if shape == () else change.reshape(shape)
+            )
         return out
 
     def levers(self) -> List["Lever"]:
@@ -2344,7 +2428,7 @@ class Network:
         self,
         x: Optional[float] = None,
         *,
-        quantity: str = "reliability",
+        quantity: Optional[str] = None,
         ranges: Optional[dict] = None,
         relative: float = 0.1,
     ) -> "TornadoResult":
@@ -2372,7 +2456,11 @@ class Network:
             One time. May be left out only if every model is a fixed
             probability.
         quantity : str, optional
-            ``"reliability"``, the one quantity.
+            ``"reliability"`` (``sf``), the default; for a network of
+            repaired elements ``"availability"``, its default: the point
+            availability at ``x``, or with ``x`` left out the long-run
+            availability (``mean_availability``), each end's network
+            rebuilt with its elements' specs' levers moved.
         ranges : dict, optional
             ``{lever: (low, high)}``, each lever by its
             [`Lever`][repyability.Lever] (from ``levers()``) or its
@@ -2421,14 +2509,24 @@ class Network:
         """
         from repyability.rbd import _sensitivity
 
-        one_of("quantity", quantity, ("reliability",))
+        if quantity is None:
+            quantity = "availability" if self.is_repairable else "reliability"
+        one_of("quantity", quantity, ("reliability", "availability"))
         if x is not None and (np.ndim(x) != 0 or not is_number(x)):
             raise ValueError(
                 "tornado takes one time x (its rows are sorted by the swing "
                 f"there), got {x!r}: call it once for each time."
             )
+        if quantity == "availability":
+            self._refuse_repaired("point_availability")
+            if x is None:
+                self._refuse_unrepaired("mean_availability")
+        elif self.is_repairable:
+            self._refuse_repaired("sf")
 
         def evaluate(net) -> float:
+            if quantity == "availability":
+                return float(net._repaired_value(x)[0])
             return float(np.ravel(net.sf(x))[0])
 
         return _sensitivity._tornado(
@@ -3796,6 +3894,290 @@ class Network:
         return float(self._repaired.system_failure_frequency())
 
     # ------------------------------------------------------------------
+    # Simulation, and the first loss
+    # ------------------------------------------------------------------
+
+    def _simulated(self) -> Any:
+        """The ``RepairableRBD`` a network of repaired elements is
+        simulated as, its first loss worked out as: the network's diagram
+        (``to_rbd``, without capacities) where it can be drawn, whose
+        engines (the compiled one too) then run it; otherwise the
+        elements' own diagram (``_repaired``), whose structure is the
+        network's connection, searched along the working links
+        (``_Joined.structure_function``), which only the Python event
+        loop runs. The two draw the same: each element's random numbers
+        come from its name.
+
+        Raises
+        ------
+        NotImplementedError
+            If some elements are probabilities or lives that are not
+            repaired, which a simulation of repaired components has no
+            draws for.
+        """
+        if self._simulation is None:
+            plain = sorted(
+                str(name)
+                for name, model in self.models.items()
+                if not isinstance(model, dict)
+            )
+            if plain:
+                raise NotImplementedError(
+                    f"Element(s) {plain} are probabilities or lives that "
+                    "are not repaired, and the simulation and the first "
+                    "loss follow repaired elements: give each a component "
+                    "spec ('reliability' and 'repairability'), or ask for "
+                    "the values over time (point_availability, "
+                    "mission_unavailability, expected_failures, ...)."
+                )
+            try:
+                self._simulation = self._drawn(capacity=False)
+            except (NotImplementedError, Refused):
+                self._simulation = self._repaired
+        return self._simulation
+
+    def availability(
+        self,
+        t_simulation: float,
+        mc_samples: Optional[int] = None,
+        seed=None,
+        *,
+        tolerance: Optional[float] = None,
+        confidence: float = 0.95,
+        max_samples: Optional[int] = None,
+        antithetic: bool = False,
+    ):
+        """Simulate the connection over ``[0, t_simulation]``, the
+        elements repaired and new at 0, as
+        [`availability`][repyability.RepairableRBD.availability]
+        simulates a diagram: each element fails and is repaired
+        (and tested, given an ``"inspection"``) independently of the
+        others, and the connection is found again at each of their
+        events. The result holds the availability over time, the times
+        up and down, the losses of the connection and how each element
+        takes part in them.
+
+        A network that can be drawn as a block diagram (see
+        [`to_rbd`][repyability.Network.to_rbd]) runs as its diagram,
+        on either engine; any other, a bridge or a meshed or too large
+        network, runs on the Python event loop with the connection found
+        by a search along the working links. Both draw the same numbers
+        for a seed.
+
+        Parameters
+        ----------
+        t_simulation : float
+            The length of the window each simulation covers.
+        mc_samples : int, optional
+            The number of simulations, by default 10,000.
+        seed : int, optional
+            Seeds a reproducible run.
+        tolerance : float, optional
+            Simulate in batches until the mean availability's confidence
+            interval is within this half-width (up to ``max_samples``).
+        confidence : float, optional
+            The confidence level of the intervals, by default 0.95.
+        max_samples : int, optional
+            The cap on the simulations of a run to a ``tolerance``.
+        antithetic : bool, optional
+            Pair each simulation with one drawn from the complements of
+            its random numbers.
+
+        Returns
+        -------
+        AvailabilityResult
+            As a diagram's (see
+            [`AvailabilityResult`][repyability.AvailabilityResult]), its
+            nodes the network's links and nodes that can fail. Its mean
+            availability over the window takes the exact mission
+            availability as its control variate (so equals it), as a
+            diagram's does.
+
+        Raises
+        ------
+        ValueError
+            If the network's elements are not repaired (a ``Refused``).
+        NotImplementedError
+            If some elements are probabilities or lives that are not
+            repaired.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> E = surv.Exponential.from_params
+        >>> line = {"reliability": E([0.01]), "repairability": E([0.5])}
+        >>> bridge = Network(
+        ...     {"a": ("s", "x", line), "b": ("s", "y", line),
+        ...      "c": ("x", "y", line), "d": ("x", "t", line),
+        ...      "e": ("y", "t", line)},
+        ...     "s", "t",
+        ... )
+        >>> result = bridge.availability(100.0, mc_samples=2000, seed=1)
+        >>> int(result.n_simulations)
+        2000
+        """
+        self._refuse_repaired("availability")
+        return self._simulated().availability(
+            t_simulation,
+            mc_samples=mc_samples,
+            seed=seed,
+            tolerance=tolerance,
+            confidence=confidence,
+            max_samples=max_samples,
+            antithetic=antithetic,
+        )
+
+    def first_failure_sf(
+        self,
+        x,
+        method: str = "exact",
+        t_simulation: Optional[float] = None,
+        mc_samples: Optional[int] = None,
+        seed=None,
+        rtol: float = 1e-3,
+    ):
+        """The probability that the connection is not lost by ``x``, the
+        elements repaired and new at 0: the reliability of the first
+        loss, as
+        [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf]
+        gives a diagram's. It is not ``sf`` of the network of the same
+        lives: an element can fail and be repaired while others keep the
+        terminals joined.
+
+        Exact where a diagram's is: elements in series (no repair comes
+        before the first loss), and otherwise the Markov chain of the
+        elements' states, the states with the terminals parted made
+        absorbing (exponential lives and repairs; others followed as
+        phases, to ``rtol``). Anything else (tests, a chain too large)
+        refuses, pointing to ``method="simulate"``, which reads each
+        simulated history's first loss (see
+        [`availability`][repyability.Network.availability] for the
+        simulation).
+
+        Parameters
+        ----------
+        x : float or array_like
+            The time/s.
+        method : str, optional
+            ``"exact"`` (the default) or ``"simulate"``.
+        t_simulation : float, optional
+            With ``method="simulate"``, the window simulated, by default
+            ten times the largest ``x``.
+        mc_samples : int, optional
+            With ``method="simulate"``, the number of simulations, by
+            default 10,000.
+        seed : int, optional
+            Seeds the simulation.
+        rtol : float, optional
+            The relative accuracy of a chain of phases, by default 1e-3.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The probability of no loss by each ``x``.
+
+        Raises
+        ------
+        ValueError
+            If the network's elements are not repaired (a ``Refused``).
+        NotImplementedError
+            If some elements are probabilities or lives that are not
+            repaired, or (exactly) where the exact values do not cover
+            the network.
+
+        Examples
+        --------
+        Two lines side by side, failing at rate 0.01 and repaired at
+        rate 0.5: the connection is lost once both are down.
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> E = surv.Exponential.from_params
+        >>> line = {"reliability": E([0.01]), "repairability": E([0.5])}
+        >>> net = Network({"a": ("s", "t", line), "b": ("s", "t", line)},
+        ...               "s", "t")
+        >>> round(float(net.first_failure_sf(100.0)), 6)
+        0.963628
+        """
+        self._refuse_repaired("first_failure_sf")
+        return self._simulated().first_failure_sf(
+            x,
+            method=method,
+            t_simulation=t_simulation,
+            mc_samples=mc_samples,
+            seed=seed,
+            rtol=rtol,
+        )
+
+    def mean_time_to_first_failure(
+        self,
+        method: str = "exact",
+        t_simulation: Optional[float] = None,
+        mc_samples: Optional[int] = None,
+        seed=None,
+        confidence: float = 0.95,
+        rtol: float = 1e-3,
+    ):
+        """The mean time to the first loss of the connection, the elements
+        repaired and new at 0, as
+        [`mean_time_to_first_failure`][repyability.RepairableRBD.mean_time_to_first_failure]
+        gives a diagram's: exact where
+        [`first_failure_sf`][repyability.Network.first_failure_sf] is,
+        and otherwise refused, pointing to ``method="simulate"``.
+
+        Parameters
+        ----------
+        method : str, optional
+            ``"exact"`` (the default) or ``"simulate"``.
+        t_simulation : float, optional
+            With ``method="simulate"``, the window simulated (a history
+            with no loss in it refuses: give a longer one).
+        mc_samples : int, optional
+            With ``method="simulate"``, the number of simulations.
+        seed : int, optional
+            Seeds the simulation.
+        confidence : float, optional
+            The confidence level of a simulated mean's interval.
+        rtol : float, optional
+            The relative accuracy of a chain of phases, by default 1e-3.
+
+        Returns
+        -------
+        float or ConfidenceInterval
+            The mean time; simulated, with its confidence interval.
+
+        Raises
+        ------
+        ValueError
+            If the network's elements are not repaired (a ``Refused``).
+        NotImplementedError
+            As ``first_failure_sf``.
+
+        Examples
+        --------
+        Two lines side by side: ``(3 lambda + mu) / (2 lambda^2)``.
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> E = surv.Exponential.from_params
+        >>> line = {"reliability": E([0.01]), "repairability": E([0.5])}
+        >>> net = Network({"a": ("s", "t", line), "b": ("s", "t", line)},
+        ...               "s", "t")
+        >>> round(float(net.mean_time_to_first_failure()), 6)
+        2650.0
+        """
+        self._refuse_repaired("mean_time_to_first_failure")
+        return self._simulated().mean_time_to_first_failure(
+            method=method,
+            t_simulation=t_simulation,
+            mc_samples=mc_samples,
+            seed=seed,
+            confidence=confidence,
+            rtol=rtol,
+        )
+
+    # ------------------------------------------------------------------
     # Capacity
     # ------------------------------------------------------------------
 
@@ -4325,6 +4707,11 @@ class Network:
         >>> round(rbd.sf(), 4), round(net.sf(), 4)
         (0.962, 0.962)
         """
+        return self._drawn()
+
+    def _drawn(self, capacity: bool = True) -> Any:
+        """``to_rbd``'s diagram, with the links' capacities unless
+        ``capacity`` is False."""
         from repyability.rbd.helper_classes import PerfectReliability
         from repyability.rbd.repairable_rbd import RepairableRBD
 
@@ -4447,7 +4834,7 @@ class Network:
             capacity={
                 link: value
                 for link, value in self.capacity.items()
-                if link in arcs
+                if link in arcs and capacity
             }
             or None,
         )
@@ -4748,8 +5135,9 @@ class Network:
                 out[name] = r.refused(reason)
         if self._repaired is None:
             return
+        self._simulated_routes(out)
         if too_large:
-            for name in _REPAIRED_OWN:
+            for name in _REPAIRED_OWN - _SIMULATED:
                 out[name] = r.refused(too_large)
             return
         from repyability.rbd._event_curves import intensity_routes
@@ -4775,6 +5163,18 @@ class Network:
             r.NUMERICAL,
             "The point unavailability integrated over the window, on "
             "pieces between the elements' curves' bends, to its own size.",
+        )
+        out["parameter_sensitivity"] = built(
+            r.NUMERICAL,
+            "Central differences of the network's unavailability at x (or "
+            "in the long run), the network rebuilt with each lever of its "
+            "elements' specs moved.",
+        )
+        out["tornado"] = built(
+            r.EXACT,
+            "The network's availability at x (or in the long run) with "
+            "each lever of its elements' specs at its low and at its high, "
+            "the network rebuilt.",
         )
         no_long_run = r.refusal(
             functools.partial(self._refuse_unrepaired, "mean_availability")
@@ -4823,6 +5223,40 @@ class Network:
                     reason,
                     intensity_routes(self._repaired, name),
                     "failure intensities",
+                )
+            )
+
+    def _simulated_routes(self, out: dict) -> None:
+        """The routes of a repaired network's simulation and first loss,
+        in ``out``: those of the diagram it is simulated as (see
+        ``_simulated``)."""
+        from repyability.rbd import _first_failure
+        from repyability.rbd import routes as r
+
+        unsimulated = r.refusal(self._simulated)
+        if unsimulated:
+            for name in _SIMULATED:
+                out[name] = r.refused(unsimulated)
+            return
+        diagram = self._simulated()
+        out["availability"] = AnalysisRoute(
+            r.SIMULATED,
+            "Monte-Carlo histories of the elements' failures and repairs, "
+            "the connection found again at each event: as the network's "
+            "block diagram where it can be drawn (to_rbd), otherwise by a "
+            "search along the working links, on the Python event loop.",
+        )
+        exact = r.refusal(
+            functools.partial(_first_failure._require_exact, diagram)
+        )
+        for name in ("first_failure_sf", "mean_time_to_first_failure"):
+            out[name] = (
+                r.refused(exact)
+                if exact
+                else AnalysisRoute(
+                    r.NUMERICAL,
+                    _first_failure.exact_route(diagram),
+                    may_refuse=_first_failure.may_refuse(diagram),
                 )
             )
 
@@ -5016,10 +5450,17 @@ class _Joined:
     elements (what ``rbd._event_curves.Structured`` evaluates in place of
     a diagram's ``modular.Decomposition``): the probabilities that the
     terminals are joined and parted, and their gradient, from the
-    network's plan, which is built when first asked for."""
+    network's plan, which is built when first asked for; and, for the
+    simulation, whether they are joined in a state of the elements, by a
+    search along the working links (``structure_function``), which needs
+    no plan."""
 
-    #: No reduced diagram (the capacity analysis's).
+    #: No reduced diagram (the capacity analysis's), and no terms of a
+    #: decomposition: the structure is the network's (a ``RepairableRBD``
+    #: that reads ``root`` takes the elements as one module).
     flow = None
+    root = None
+    terms: tuple = ()
 
     def __init__(self, network: "Network"):
         self._network = network
@@ -5030,8 +5471,41 @@ class _Joined:
 
     @property
     def nodes(self) -> frozenset:
-        """The elements the connection depends on."""
-        return frozenset(self.plan.names)
+        """The elements the connection depends on: the plan's, or every
+        element of a network too large for a plan (which only the
+        simulation works out)."""
+        try:
+            return frozenset(self.plan.names)
+        except NotImplementedError:
+            return frozenset(self._network.models)
+
+    def structure_function(self, method: str = "p"):
+        """``function(status)``, whether the terminals are joined given
+        whether each element works (``method`` changes nothing here): the
+        nodes reached from the first terminal (a directed network's
+        source) along working links, through working nodes, hold every
+        terminal."""
+        network = self._network
+        start = network.terminals[0]
+        terminals = frozenset(network.terminals)
+        out = network._out
+        failing = frozenset(network.nodes)
+
+        def works(status) -> bool:
+            if start in failing and not status[start]:
+                return False
+            seen, stack = {start}, [start]
+            while stack:
+                for name, other in out[stack.pop()]:
+                    if other in seen or not status[name]:
+                        continue
+                    if other in failing and not status[other]:
+                        continue
+                    seen.add(other)
+                    stack.append(other)
+            return terminals <= seen
+
+        return works
 
     @property
     def always_works(self) -> bool:
@@ -5092,10 +5566,7 @@ class _Joined:
     def works(self, status: Mapping, method: str = "p") -> bool:
         """Whether the terminals are joined, given whether each element
         works (truthy) or has failed (falsy)."""
-        plan = self.plan
-        p = {name: 1.0 if status[name] else 0.0 for name in plan.names}
-        q = {name: 1.0 - value for name, value in p.items()}
-        return bool(_evaluate(plan, p, q, (), _JOINED) > 0.5)
+        return self.structure_function(method)(status)
 
 
 def _dual(steps: list, root: int) -> Tuple[list, int]:

@@ -673,7 +673,16 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   from a mean and variance (`_pipeline`). The front is marginal analysis
   on each part's lower convex hull of backorders against the count held
   (`_Curve`, a step given only once no count further on can change it),
-  so each point has the fewest backorders at its spend or less.
+  so each point has the fewest backorders at its spend or less. A
+  base's availability is the diagram's at each part's chance of a hole
+  (`_up`: the product where every part is needed, kept as it was to the
+  last bit; the holes taken as independent, which understates a pair's
+  chance of both missing, UC-75), and its repair fraction, repair time
+  and ship time may be its own (UC-76). The front by availability
+  (`_Fleet.losses`) uses the same hull on a loss that depends on the
+  other parts' stocks, so every hull is drawn again from the count
+  reached after each step; it is exact for one part and a heuristic for
+  several.
   `test_spares_echelons.py` checks it against the model written out term
   by term, a search of every stock vector, `spares_stock` for one site,
   and a simulation of the two echelons written in the test (exact where

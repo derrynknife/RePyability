@@ -189,7 +189,7 @@ Which analyses each model type has (the method; — where it has none):
 | Expected time a mission runs (to failure or its end) | — | — | — | — | `expected_mission_time` | — |
 | A mission's results from one run | — | — | — | — | `summary` | — |
 | **Availability and outages** | | | | | | |
-| Reliability and mean time to the first failure | — | `first_failure_sf` | — | — | — | — |
+| Reliability and mean time to the first failure | — | `first_failure_sf` | — | `first_failure_sf` | — | — |
 | Long-run availability | — | `mean_availability` | — | `mean_availability` | — | — |
 | Each node's availability | — | `node_availability` | — | — | — | — |
 | Availability over time | — | `point_availability` | `point_unavailability` | `point_availability` | — | — |
@@ -198,7 +198,7 @@ Which analyses each model type has (the method; — where it has none):
 | Failure frequency, MTBF | — | `system_failure_frequency` | `system_failure_frequency` | `system_failure_frequency` | — | — |
 | Mean up and down times | — | `mean_up_time` | — | — | — | — |
 | Expected failures and events in a window | — | `expected_events` | `expected_failures` | `expected_failures` | — | — |
-| Simulated availability (distribution) | — | `availability` | — | — | — | — |
+| Simulated availability (distribution) | — | `availability` | — | `availability` | — | — |
 | Simulated histories | — | `simulate_timelines` | — | — | — | — |
 | Each simulation's values, common random numbers | — | `simulation_samples` | — | — | — | — |
 | Repair crews' jobs and chain | — | `crew_jobs` | — | — | — | — |

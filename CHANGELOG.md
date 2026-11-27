@@ -36,6 +36,47 @@ release between minors that only adds (0.19.1).
   others 2 to 10. A warm pair with both repaired at once and a switch
   that can fail is still refused, naming `repair_crews=1`.
 
+- A network of repaired elements has levers: `levers()` and
+  `with_levers` take its elements' specs' parameters (named as a
+  diagram's component's, `"reliability.failure_rate"`, ...),
+  `parameter_sensitivity(x)` gives its availability's derivative in each
+  at `x`, or in the long run with `x` left out, and `tornado(x)` (its
+  `quantity` now `"availability"` by default for such a network) the
+  availability with each at its low and high. They are the drawn
+  diagram's (`to_rbd`) where it can be drawn. `parameter_sensitivity`'s
+  `rel_step` is now None by default, 1e-5 as before for a network that is
+  not repaired.
+
+- `RepairableRBD.spares_front` and `spares_allocation` (repairable
+  spares over bases and a depot) take a diagram that is not a series
+  system, which they refused: a base's availability is the diagram's own
+  with each of a part's places empty with the chance its backorders
+  give, independently, so a part with a stand-in need not ground a
+  system. A diagram with a sub-system is still refused.
+- Their `objective`: `"backorders"` (the front as it was: the fewest
+  expected backorders at each spend), `"availability"` (each step the
+  spares that add the most fleet availability per unit of spend from the
+  stock reached) or `"auto"`, the default: `"backorders"` for a series
+  system, whose results are unchanged to the last bit, and
+  `"availability"` otherwise. `SparesAllocation.objective` says which.
+- A part's `"base_repair_fraction"`, `"base_repair_time"` and
+  `"ship_time"` may each be a base's own, as `{base: value}`.
+- A part's `"demand_rate"` may come with its `"nodes"` (it was refused):
+  the nodes say where the part sits in the diagram, and the rate replaces
+  their own. A part with a `"demand_rate"` that is no component of the
+  diagram is needed by every system, as before.
+- A network of repaired elements is simulated: `Network.availability(t)`
+  runs its histories as a `RepairableRBD`'s `availability` does, as the
+  network's drawn diagram where it can be drawn (`to_rbd`) and otherwise
+  on the Python event loop with the connection found by a search along
+  the working links (both draw the same for a seed); so is a network too
+  large for its decision diagram. `first_failure_sf(x)` and
+  `mean_time_to_first_failure()` give the time to the first loss of the
+  connection, exactly for links in series and from the Markov chain of
+  the elements' states, and by `method="simulate"` otherwise. A network
+  with probabilities or lives that are not repaired refuses them, naming
+  the elements.
+
 - `Network.to_rbd()` draws a network of repaired elements as a
   `RepairableRBD`, each element a component with its spec, whose values
   over time and in the long run are the network's (to 1e-12; its mission
@@ -45,7 +86,6 @@ release between minors that only adds (0.19.1).
   terminals crosses each link the same way (a series-parallel network),
   which it refused before; a bridge, whose middle link is crossed both
   ways, still refuses, now with a `NotImplementedError` naming the link.
-
 - `SafetyFunction.levers()` and `with_levers()`: each channel's rates,
   repairs and proof test (once for channels sharing a cause, which move
   together), a model's parameters in place of a rate, and each vote's

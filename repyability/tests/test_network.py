@@ -956,6 +956,9 @@ CALLS = {
     "mean_availability": lambda net: net.mean_availability(),
     "mean_unavailability": lambda net: net.mean_unavailability(),
     "system_failure_frequency": lambda net: net.system_failure_frequency(),
+    "availability": lambda net: net.availability(10.0, mc_samples=100, seed=1),
+    "first_failure_sf": lambda net: net.first_failure_sf(10.0),
+    "mean_time_to_first_failure": lambda net: net.mean_time_to_first_failure(),
     # With link capacities (see test_network_capacity.py).
     **{
         name: (lambda name: lambda net: getattr(net, name)(10.0))(name)

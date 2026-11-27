@@ -2269,6 +2269,7 @@ class RepairableRBD(RBD):
         budget: Optional[float] = None,
         target_availability: Optional[float] = None,
         method: str = "vari-metric",
+        objective: str = "auto",
     ) -> List[SparesAllocation]:
         """The spend on repairable spares against a fleet's availability,
         over two echelons: the bases the systems run from, and a depot
@@ -2281,10 +2282,10 @@ class RepairableRBD(RBD):
         part to fit waits for one: a backorder. The stocks are those of
         Sherbrooke's METRIC and VARI-METRIC (see the
         [spares guide](../guide/spares.md#bases-and-a-depot)), chosen by
-        marginal analysis: each point of the front has the fewest
-        expected backorders of any stock at its spend or less. Every part
-        is taken as needed (a series system), and the demand as going on
-        while a system waits.
+        marginal analysis. A base's availability is the diagram's, each
+        place of a part empty with the chance its backorders give,
+        independently: a part with a stand-in need not ground a system.
+        The demand is taken as going on while a system waits.
 
         Parameters
         ----------
@@ -2300,12 +2301,19 @@ class RepairableRBD(RBD):
               time a repair takes at each, in the models' unit.
             - ``"ship_time"``: the mean time from a base's order to the
               part's arrival, once the depot has one to send.
+            - ``"nodes"``: the diagram's components the part is (by
+              default the component of its name).
             - ``"demand_rate"``: failures per system per unit time. By
               default the long-run replacement rates of the part's
-              components in the diagram (as ``spares_stock`` counts
-              them): its ``"nodes"``, or the component of its name.
+              nodes (as ``spares_stock`` counts them). A part with a
+              ``"demand_rate"`` that is no component of the diagram is
+              needed by every system.
             - ``"quantity"``: how many a system has (by default the
               number of its nodes).
+
+            ``"base_repair_fraction"``, ``"base_repair_time"`` and
+            ``"ship_time"`` each take one number, or a base's own as
+            ``{base: value}`` naming every base.
         budget : float, optional
             The most to spend: the front stops before the first point
             past it.
@@ -2317,22 +2325,37 @@ class RepairableRBD(RBD):
             variance, a negative binomial) or ``"metric"`` (a Poisson
             pipeline, the textbook's first model, which understates the
             backorders).
+        objective : str, optional
+            What a step of the front removes per unit of spend.
+            ``"backorders"``: the bases' expected backorders, so that
+            each point has the fewest of any stock at its spend or
+            less. ``"availability"``: the fleet availability lost to
+            holes, each step the best from the stock reached (with one
+            part, the most available stock at its spend or less; with
+            several it is not guaranteed to be). ``"auto"`` (the
+            default) is ``"backorders"`` where every part is needed (a
+            series system) and ``"availability"`` otherwise, where a
+            backorder of a part with a stand-in costs less than one
+            that grounds a system.
 
         Returns
         -------
         list of SparesAllocation
             The front's points by increasing spend, from nothing held:
             each with every site's stock of every part, the expected
-            backorders (falling along the list) and the availability.
+            backorders and the availability.
 
         Raises
         ------
         ValueError
-            On invalid input.
+            On invalid input; or, by availability, if a base is never
+            up (two parts each owed in every place it has):
+            ``objective="backorders"`` gives the front.
         NotImplementedError
-            If the diagram is not a series system or has a sub-system,
-            or a part's demand cannot be taken from its components (as
-            ``spares_stock`` refuses them): give its ``"demand_rate"``.
+            If the diagram has a sub-system, or is too meshed to work
+            out and not a series system, or a part's demand cannot be
+            taken from its components (as ``spares_stock`` refuses
+            them): give its ``"demand_rate"``.
 
         References
         ----------
@@ -2381,6 +2404,7 @@ class RepairableRBD(RBD):
             budget=budget,
             target_availability=target_availability,
             method=method,
+            objective=objective,
         )
 
     def spares_allocation(
@@ -2391,6 +2415,7 @@ class RepairableRBD(RBD):
         target_availability: Optional[float] = None,
         budget: Optional[float] = None,
         method: str = "vari-metric",
+        objective: str = "auto",
     ) -> SparesAllocation:
         """The stock of repairable spares at each base and the depot for
         a fleet availability target at the least spend, or the best
@@ -2413,6 +2438,10 @@ class RepairableRBD(RBD):
         method : str, optional
             ``"vari-metric"`` (the default) or ``"metric"``, as for
             ``spares_front``.
+        objective : str, optional
+            ``"auto"`` (the default), ``"backorders"`` or
+            ``"availability"``: what the front removes per unit of
+            spend, as for ``spares_front``.
 
         Returns
         -------
@@ -2463,6 +2492,7 @@ class RepairableRBD(RBD):
             budget=budget,
             target_availability=target_availability,
             method=method,
+            objective=objective,
         )
 
     def allocate_redundancy(
