@@ -904,6 +904,7 @@ CALLS = {
             "df",
             "hf",
             "parameter_sensitivity",
+            "tornado",
             "birnbaum_importance",
             "improvement_potential",
             "risk_achievement_worth",

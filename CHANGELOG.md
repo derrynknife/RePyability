@@ -12,6 +12,13 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `Network.tornado(x)`: the numbers of a tornado chart for a network, as
+  the diagrams and `FaultTree` give them: the exact reliability at `x`
+  with each link's and failing node's parameter at its low and at its
+  high (a given range, or a share of its scale either way), sorted by the
+  swing. It works for two terminals, several, all of them and directed
+  networks; `analysis_routes()` and the capability matrix show it.
+
 - `Network` takes more than two terminals, and directed links.
   `Network(links, terminals=[...])` is the reliability of several nodes
   staying connected to each other (K-terminal), and `terminals="all"` of

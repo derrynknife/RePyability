@@ -222,6 +222,18 @@ grid.parameter_sensitivity(1.0)["GA"]["failure_rate"]   # -> -0.085537
 grid.with_levers({("GA", "failure_rate"): 0.04}).sf(1.0)   # -> 0.99038
 ```
 
+`tornado(x)` puts the parameters on one footing, as a tornado chart does:
+the reliability at `x` with each parameter a tenth lower and a tenth
+higher (or over a range given in `ranges`), the others at their values,
+sorted by the swing.
+
+```python
+spread = grid.tornado(1.0)
+spread.base_value                       # -> 0.98509
+row = spread.rows[0]                    # the largest swing
+row.key, row.value_low, row.value_high  # -> "GB", 0.98599, 0.98420
+```
+
 `bx_life(x)` and `time_to_reliability(target)` invert `sf`: the time by
 which `x` percent of connections are cut, and at which the reliability
 falls to `target`.
