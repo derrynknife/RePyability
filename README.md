@@ -46,6 +46,11 @@ taking already-fitted lifetime models (from
   load sharing; junctions (a vote point that never fails); beta-factor and
   MGL common-cause groups, splitting a probability or a failure rate, in
   block diagrams, repairable systems and fault trees.
+- **Event trees**: an initiating event's frequency through the success
+  or failure of each barrier to each outcome's frequency (`EventTree`),
+  barriers given as fault trees that share events or as protection layers
+  (LOPA), exact, with each event's importance to an outcome
+  ([the guide](docs/guide/event-trees.md)).
 - **Safety functions**: voted channels with proof tests, diagnostics,
   repair and common cause (`SafetyFunction`): the PFDavg, the PFH, the
   spurious-trip rate and the SIL band from one call, exact, with IEC
@@ -159,112 +164,116 @@ current).
 
 Which analyses each model type has (the method; — where it has none):
 
-| | `NonRepairableRBD` | `RepairableRBD` | `FaultTree` | `Network` | `PhasedMission` |
-|---|---|---|---|---|---|
-| **Reliability and lifetime** | | | | | |
-| Reliability R(t) | `sf` | — | `sf` | `sf` | `sf` |
-| Unreliability F(t) | `ff` | — | `ff` | `ff` | `ff` |
-| Density, hazard, cumulative hazard | `df` | — | `df` | — | — |
-| Mean time to (first) failure | `mean` | — | `mean` | `mean` | — |
-| Each node's own R(t), F(t) and MTTF | `node_sf` | — | — | — | — |
-| B-life, time to a reliability | `bx_life` | — | `bx_life` | `bx_life` | — |
-| Given the system's age | `cs` | — | — | — | — |
-| Given the components' ages or states | `sf_given_state` | — | — | — | — |
-| Mean residual and remaining life | `mean_residual_life` | — | — | — | — |
-| Random lifetimes | `random` | — | `random` | `random` | — |
-| Top event probability | — | — | `top_event_probability` | — | — |
-| Each phase's failure probability | — | — | — | — | `phase_failure_probabilities` |
-| Reliability over a mission's time | — | — | — | — | `reliability_over_time` |
-| A mission's results from one run | — | — | — | — | `summary` |
-| **Availability and outages** | | | | | |
-| Reliability and mean time to the first failure | — | `first_failure_sf` | — | — | — |
-| Long-run availability | — | `mean_availability` | — | — | — |
-| Each node's availability | — | `node_availability` | — | — | — |
-| Availability over time | — | `point_availability` | `point_unavailability` | — | — |
-| Over a mission | — | `mission_availability` | — | — | — |
-| Unavailability (precise when small) | — | `mean_unavailability` | `mean_unavailability` | — | — |
-| Failure frequency, MTBF | — | `system_failure_frequency` | `system_failure_frequency` | — | — |
-| Mean up and down times | — | `mean_up_time` | — | — | — |
-| Expected failures and events in a window | — | `expected_events` | `expected_failures` | — | — |
-| Simulated availability (distribution) | — | `availability` | — | — | — |
-| Simulated histories | — | `simulate_timelines` | — | — | — |
-| Each simulation's values, common random numbers | — | `simulation_samples` | — | — | — |
-| Repair crews' jobs and chain | — | `crew_jobs` | — | — | — |
-| Compare two designs | `compare` | `compare` | `compare` | `compare` | `compare` |
-| **Costs and spares** | | | | | |
-| Long-run cost rate | — | `expected_cost_rate` | — | — | — |
-| Expected cost in a window | — | `expected_cost` | — | — | — |
-| Expected net present value | — | `expected_npv` | — | — | — |
-| A plan against what happened | — | `plan_vs_actual` | — | — | — |
-| Simulated net present value (distribution) | — | `npv_distribution` | — | — | — |
-| Best time to switch blocks' running (simulated NPV) | — | `best_switch_time` | — | — | — |
-| Two plans' net present values compared | — | `compare_npv` | — | — | — |
-| Least spend for a bad run's downtime (simulated) | — | `least_spend_for_downtime` | — | — | — |
-| Cost in each of a run of windows | — | `cost_by_window` | — | — | — |
-| Simulated cost (distribution) | — | `cost` | — | — | — |
-| Total cost of ownership | — | `total_cost` | — | — | — |
-| Each component's actions per unit time | — | `node_action_rates` | — | — | — |
-| A replaced component's renewal cycle | — | `replacement_cycle` | — | — | — |
-| Planned and unplanned downtime, failures the plan avoids | — | `maintenance_effect` | — | — | — |
-| Spares demand and stock | — | `spares_demand` | — | — | — |
-| **Structure** | | | | | |
-| Minimal path and cut sets | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` |
-| Prime implicants (NOT gates) | — | — | `prime_implicants` | — | — |
-| Each path set's probability | `path_set_probabilities` | `path_set_probabilities` | — | — | — |
-| Cut sets ranked by probability | — | — | `ranked_cut_sets` | — | — |
-| Irrelevant components | `find_irrelevant_components` | `find_irrelevant_components` | — | — | — |
-| Structure sizes (counts, depth, core) | `structure_summary` | `structure_summary` | — | — | — |
-| The core that does not reduce | `core_structure` | `core_structure` | — | — | — |
-| Junctions (drawing nodes) | `junctions` | `junctions` | — | — | — |
-| Convert to and from an RBD | — | — | `to_rbd` | — | `from_diagram` |
-| Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — |
-| Capacity over time | — | `point_capacity` | — | — | — |
-| How each analysis is computed | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` |
-| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | — |
-| Export to Open-PSA (MEF) | — | — | `to_open_psa` | — | — |
-| Import from Open-PSA (MEF) | — | — | `from_open_psa` | — | — |
-| **Safety functions (voted channels, proof tests, diagnostics)** | | | | | |
-| PFDavg, and where it comes from | — | `SafetyFunction.pfd_avg` | — | — | — |
-| PFH (frequency of a dangerous failure) | — | `SafetyFunction.pfh` | — | — | — |
-| Spurious-trip rate | — | `SafetyFunction.spurious_trip_rate` | — | — | — |
-| SIL band, safe failure fraction | — | `SafetyFunction.sil` | — | — | — |
-| Every result in one call, votes in series | — | `SafetyFunction.results` | — | — | — |
-| IEC 61508-6's simplified formulas, to compare | — | `SafetyFunction.simplified_formulas` | — | — | — |
-| How each result is computed | — | `SafetyFunction.analysis_routes` | — | — | — |
-| **Importance measures** | | | | | |
-| Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` |
-| Structural | `structural_importance` | `structural_importance` | `structural_importance` | `structural_importance` | — |
-| Improvement potential | `improvement_potential` | `improvement_potential` | `improvement_potential` | `improvement_potential` | `improvement_potential` |
-| Risk achievement worth | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` |
-| Risk reduction worth | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` |
-| Criticality | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` |
-| Fussell-Vesely | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` |
-| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | — |
-| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | — |
-| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | — |
-| Shares of a safety function's PFDavg, common cause apart | — | `pfd_breakdown` | — | — | — |
-| Each block's part in each phase's failures | — | — | — | — | `failure_drivers` |
-| Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — |
-| Uncertainty importance | `uncertainty_importance` | `uncertainty_importance` | — | — | — |
-| Every measure in one call | `importances` | `importances` | `importances` | `importances` | `importances` |
-| All measures given a state | `importances_given_state` | — | — | — | — |
-| Top event given each event | — | — | `conditional_probabilities` | — | — |
-| Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — | — |
-| Tornado data (each lever at its low and high) | `tornado` | `tornado` | `tornado` | — | — |
-| **Uncertainty** | | | | | |
-| Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | `sf_uncertainty` | `sf_uncertainty` | `reliability_interval` |
-| Of the MTTF | `mean_uncertainty` | — | `mean_uncertainty` | `mean_uncertainty` | — |
-| Of the B-life | `bx_life_uncertainty` | — | `bx_life_uncertainty` | `bx_life_uncertainty` | — |
-| Of the cost rate | — | `expected_cost_rate_uncertainty` | — | — | — |
-| Of the net present value | — | `expected_npv_uncertainty` | — | — | — |
-| **Design and maintenance** | | | | | |
-| Reliability allocation | `simple_allocation` | `simple_allocation` | — | — | — |
-| Availability, MTTF and MTTR allocation | — | `availability_allocation` | — | — | — |
-| Redundancy allocation | `allocate_redundancy` | `allocate_redundancy` | — | — | — |
-| Reliability-redundancy allocation | `allocate_reliability_redundancy` | — | — | — | — |
-| Cost-reliability front | `redundancy_front` | — | — | — | — |
-| Optimal replacement intervals | — | `optimal_replacement_intervals` | — | — | — |
-| Optimal proof-test intervals | — | `optimal_inspection_intervals` | — | — | — |
+| | `NonRepairableRBD` | `RepairableRBD` | `FaultTree` | `Network` | `PhasedMission` | `EventTree` |
+|---|---|---|---|---|---|---|
+| **Reliability and lifetime** | | | | | | |
+| Reliability R(t) | `sf` | — | `sf` | `sf` | `sf` | — |
+| Unreliability F(t) | `ff` | — | `ff` | `ff` | `ff` | — |
+| Density, hazard, cumulative hazard | `df` | — | `df` | — | — | — |
+| Mean time to (first) failure | `mean` | — | `mean` | `mean` | — | — |
+| Each node's own R(t), F(t) and MTTF | `node_sf` | — | — | — | — | — |
+| B-life, time to a reliability | `bx_life` | — | `bx_life` | `bx_life` | — | — |
+| Given the system's age | `cs` | — | — | — | — | — |
+| Given the components' ages or states | `sf_given_state` | — | — | — | — | — |
+| Mean residual and remaining life | `mean_residual_life` | — | — | — | — | — |
+| Random lifetimes | `random` | — | `random` | `random` | — | — |
+| Top event probability | — | — | `top_event_probability` | — | — | — |
+| Each phase's failure probability | — | — | — | — | `phase_failure_probabilities` | — |
+| Reliability over a mission's time | — | — | — | — | `reliability_over_time` | — |
+| A mission's results from one run | — | — | — | — | `summary` | — |
+| **Availability and outages** | | | | | | |
+| Reliability and mean time to the first failure | — | `first_failure_sf` | — | — | — | — |
+| Long-run availability | — | `mean_availability` | — | — | — | — |
+| Each node's availability | — | `node_availability` | — | — | — | — |
+| Availability over time | — | `point_availability` | `point_unavailability` | — | — | — |
+| Over a mission | — | `mission_availability` | — | — | — | — |
+| Unavailability (precise when small) | — | `mean_unavailability` | `mean_unavailability` | — | — | — |
+| Failure frequency, MTBF | — | `system_failure_frequency` | `system_failure_frequency` | — | — | — |
+| Mean up and down times | — | `mean_up_time` | — | — | — | — |
+| Expected failures and events in a window | — | `expected_events` | `expected_failures` | — | — | — |
+| Simulated availability (distribution) | — | `availability` | — | — | — | — |
+| Simulated histories | — | `simulate_timelines` | — | — | — | — |
+| Each simulation's values, common random numbers | — | `simulation_samples` | — | — | — | — |
+| Repair crews' jobs and chain | — | `crew_jobs` | — | — | — | — |
+| Compare two designs | `compare` | `compare` | `compare` | `compare` | `compare` | — |
+| **Costs and spares** | | | | | | |
+| Long-run cost rate | — | `expected_cost_rate` | — | — | — | — |
+| Expected cost in a window | — | `expected_cost` | — | — | — | — |
+| Expected net present value | — | `expected_npv` | — | — | — | — |
+| A plan against what happened | — | `plan_vs_actual` | — | — | — | — |
+| Simulated net present value (distribution) | — | `npv_distribution` | — | — | — | — |
+| Best time to switch blocks' running (simulated NPV) | — | `best_switch_time` | — | — | — | — |
+| Two plans' net present values compared | — | `compare_npv` | — | — | — | — |
+| Least spend for a bad run's downtime (simulated) | — | `least_spend_for_downtime` | — | — | — | — |
+| Cost in each of a run of windows | — | `cost_by_window` | — | — | — | — |
+| Simulated cost (distribution) | — | `cost` | — | — | — | — |
+| Total cost of ownership | — | `total_cost` | — | — | — | — |
+| Each component's actions per unit time | — | `node_action_rates` | — | — | — | — |
+| A replaced component's renewal cycle | — | `replacement_cycle` | — | — | — | — |
+| Planned and unplanned downtime, failures the plan avoids | — | `maintenance_effect` | — | — | — | — |
+| Spares demand and stock | — | `spares_demand` | — | — | — | — |
+| **Structure** | | | | | | |
+| Minimal path and cut sets | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | — |
+| Prime implicants (NOT gates) | — | — | `prime_implicants` | — | — | — |
+| Each path set's probability | `path_set_probabilities` | `path_set_probabilities` | — | — | — | — |
+| Cut sets ranked by probability | — | — | `ranked_cut_sets` | — | — | — |
+| Irrelevant components | `find_irrelevant_components` | `find_irrelevant_components` | — | — | — | — |
+| Structure sizes (counts, depth, core) | `structure_summary` | `structure_summary` | — | — | — | — |
+| The core that does not reduce | `core_structure` | `core_structure` | — | — | — | — |
+| Junctions (drawing nodes) | `junctions` | `junctions` | — | — | — | — |
+| Convert to and from an RBD | — | — | `to_rbd` | — | `from_diagram` | — |
+| Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — | — |
+| Capacity over time | — | `point_capacity` | — | — | — | — |
+| How each analysis is computed | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` |
+| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | — | `to_dict` |
+| Export to Open-PSA (MEF) | — | — | `to_open_psa` | — | — | — |
+| Import from Open-PSA (MEF) | — | — | `from_open_psa` | — | — | — |
+| **Event trees (an initiating event through its barriers)** | | | | | | |
+| Each sequence's probability and frequency | — | — | — | — | — | `sequence_probabilities` |
+| Each outcome's frequency | — | — | — | — | — | `outcome_frequencies` |
+| Each sequence as one fault tree (its prime implicants) | — | — | — | — | — | `sequence_tree` |
+| **Safety functions (voted channels, proof tests, diagnostics)** | | | | | | |
+| PFDavg, and where it comes from | — | `SafetyFunction.pfd_avg` | — | — | — | — |
+| PFH (frequency of a dangerous failure) | — | `SafetyFunction.pfh` | — | — | — | — |
+| Spurious-trip rate | — | `SafetyFunction.spurious_trip_rate` | — | — | — | — |
+| SIL band, safe failure fraction | — | `SafetyFunction.sil` | — | — | — | — |
+| Every result in one call, votes in series | — | `SafetyFunction.results` | — | — | — | — |
+| IEC 61508-6's simplified formulas, to compare | — | `SafetyFunction.simplified_formulas` | — | — | — | — |
+| How each result is computed | — | `SafetyFunction.analysis_routes` | — | — | — | — |
+| **Importance measures** | | | | | | |
+| Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` |
+| Structural | `structural_importance` | `structural_importance` | `structural_importance` | `structural_importance` | — | — |
+| Improvement potential | `improvement_potential` | `improvement_potential` | `improvement_potential` | `improvement_potential` | `improvement_potential` | — |
+| Risk achievement worth | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | `risk_achievement_worth` | — |
+| Risk reduction worth | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | — |
+| Criticality | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` | — |
+| Fussell-Vesely | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` |
+| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | — | — |
+| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | — | — |
+| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | — | — |
+| Shares of a safety function's PFDavg, common cause apart | — | `pfd_breakdown` | — | — | — | — |
+| Each block's part in each phase's failures | — | — | — | — | `failure_drivers` | — |
+| Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — | — |
+| Uncertainty importance | `uncertainty_importance` | `uncertainty_importance` | — | — | — | — |
+| Every measure in one call | `importances` | `importances` | `importances` | `importances` | `importances` | — |
+| All measures given a state | `importances_given_state` | — | — | — | — | — |
+| Top event given each event | — | — | `conditional_probabilities` | — | — | — |
+| Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — | — | — |
+| Tornado data (each lever at its low and high) | `tornado` | `tornado` | `tornado` | — | — | — |
+| **Uncertainty** | | | | | | |
+| Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | `sf_uncertainty` | `sf_uncertainty` | `reliability_interval` | — |
+| Of the MTTF | `mean_uncertainty` | — | `mean_uncertainty` | `mean_uncertainty` | — | — |
+| Of the B-life | `bx_life_uncertainty` | — | `bx_life_uncertainty` | `bx_life_uncertainty` | — | — |
+| Of the cost rate | — | `expected_cost_rate_uncertainty` | — | — | — | — |
+| Of the net present value | — | `expected_npv_uncertainty` | — | — | — | — |
+| **Design and maintenance** | | | | | | |
+| Reliability allocation | `simple_allocation` | `simple_allocation` | — | — | — | — |
+| Availability, MTTF and MTTR allocation | — | `availability_allocation` | — | — | — | — |
+| Redundancy allocation | `allocate_redundancy` | `allocate_redundancy` | — | — | — | — |
+| Reliability-redundancy allocation | `allocate_reliability_redundancy` | — | — | — | — | — |
+| Cost-reliability front | `redundancy_front` | — | — | — | — | — |
+| Optimal replacement intervals | — | `optimal_replacement_intervals` | — | — | — | — |
+| Optimal proof-test intervals | — | `optimal_inspection_intervals` | — | — | — | — |
 
 How each family of analyses is worked out on a diagram with each kind of node or component: **E** exact, **N** numerical (to a stated accuracy), **S** simulated, **✗** refused as not worked out (naming the methods, or counting them, where only some are), – where the diagram has nothing the analysis works on. Made from `analysis_routes()` on the test catalogue's diagrams.
 

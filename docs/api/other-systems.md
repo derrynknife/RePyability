@@ -10,6 +10,8 @@
 
 ::: repyability.Network
 
+::: repyability.EventTree
+
 ::: repyability.SafetyFunction
 
 ::: repyability.SafetyChannel

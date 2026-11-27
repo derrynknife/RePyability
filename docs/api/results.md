@@ -40,6 +40,12 @@
 
 ::: repyability.PFDBreakdown
 
+::: repyability.SequenceProbabilities
+
+::: repyability.SequenceFrequencies
+
+::: repyability.OutcomeFrequencies
+
 ::: repyability.SafetyFunctionResult
 
 ::: repyability.SILBand

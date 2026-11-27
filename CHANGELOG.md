@@ -12,6 +12,26 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `EventTree(initiator, headings, sequences=None)`: an event tree. The
+  initiator is a frequency, or a `FaultTree` of repaired events whose
+  `system_failure_frequency()` it is; each heading a `FaultTree` (its top
+  event, the barrier failing) or a probability (a protection layer, for
+  LOPA); the paths `{path: outcome}` give each heading's success, failure
+  or None (not asked), and must partition the initiator (by default every
+  combination is its own outcome). `sequence_probabilities(t)`,
+  `sequence_frequencies(t)` and `outcome_frequencies(t)` are exact where
+  headings share basic events: each sequence is one fault tree, the AND
+  of each failed heading's top and the NOT of each succeeded one's, over
+  the headings' gates and their events (one event to a name; two models
+  for one name are refused), evaluated by the NOT-gate decision diagram
+  (`sequence_tree(path)` returns it). `approximation="rare_event"` leaves
+  out the successes, as other tools quantify a sequence, and
+  `"independent"` takes the product of the branches.
+  `birnbaum_importance(outcome, t)` and `fussell_vesely(outcome, t)` give
+  each event's importance to an outcome's frequency; `analysis_routes()`,
+  `to_dict`/`from_dict` and JSON. New results `SequenceProbabilities`,
+  `SequenceFrequencies` and `OutcomeFrequencies`; a guide page, "Event
+  trees".
 - `bx_life_uncertainty` and `time_to_reliability_uncertainty` on
   `FaultTree` and `Network`: a B-life, or the time to a reliability, with
   its band over the uncertainty of the events' or links' models, as

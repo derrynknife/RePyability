@@ -104,6 +104,7 @@ nav:
       - Condition-based evaluation: guide/condition-based.md
       - Redundancy models: guide/redundancy-models.md
       - Safety functions (PFDavg, PFH, SIL): guide/safety-functions.md
+      - Event trees (sequences, outcomes, LOPA): guide/event-trees.md
       - Common-cause failures: guide/common-cause.md
       - Common causes with wear-out lives and ages: guide/common-cause-ages.md
       - Repairable systems: guide/repairable.md
