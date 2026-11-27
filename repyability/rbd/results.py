@@ -1771,6 +1771,49 @@ class ExpectedEvents(_ResultMapping):
 
 
 @dataclass
+class FirstFailureBounds(_ResultMapping):
+    """Bounds on the probability that a repairable system runs to each
+    time without a failure: returned by
+    [`RepairableRBD.first_failure_bounds`][repyability.RepairableRBD.first_failure_bounds].
+
+    With ``F(t)`` the probability of a system failure by ``t`` (or of the
+    system down at the start), ``W(t)`` the expected number of system
+    failures in ``[0, t)`` and ``Q(t)`` the probability that the system is
+    down at ``t``: ``max(Q(0), Q(s)) <= F(t) <= Q(0) + W(t)`` for each
+    ``s <= t`` given, so the reliability of the first failure,
+    ``1 - F(t)``, lies in ``[lower, upper]``. Each value is a float for
+    one time, or an array in the shape of the times given.
+
+    Attributes
+    ----------
+    time : float or numpy.ndarray
+        The times, from 0 (or from the state given).
+    lower : float or numpy.ndarray
+        The lower bound of the reliability: ``max(0, 1 - Q(0) - W(t))``.
+        Close to the reliability while ``W(t)`` is well under 1.
+    upper : float or numpy.ndarray
+        The upper bound: ``1 - Q(s)`` at the largest unavailability at a
+        time given up to ``t`` (and at 0). 1 where the system can be
+        down for planned work (``planned_outages``), as it can then be
+        down without having failed.
+    expected_failures : float or numpy.ndarray
+        ``W(t)``, as ``expected_events(t).system_failures``.
+    unavailability : float or numpy.ndarray
+        ``Q(t)``, as ``point_unavailability(t)``.
+    planned_outages : bool
+        Whether the diagram can be down for planned work (maintenance,
+        tests or shuts that take time), so that ``upper`` is 1.
+    """
+
+    time: Any
+    lower: Any
+    upper: Any
+    expected_failures: Any
+    unavailability: Any
+    planned_outages: bool
+
+
+@dataclass
 class RateBreakdown(_ResultMapping):
     """How fast a system's availability (or reliability) is changing at
     each time, and each node's part in it: returned by
@@ -5402,6 +5445,92 @@ class ConditionalProbabilities(_ResultMapping):
     top: Any
     given_occurred: Dict[Hashable, Any]
     given_not_occurred: Dict[Hashable, Any]
+
+
+@dataclass(frozen=True)
+class ImportanceTable(_ResultMapping):
+    """Every importance measure of a model, side by side: returned by
+    ``importances`` on
+    [`NonRepairableRBD`][repyability.NonRepairableRBD],
+    [`RepairableRBD`][repyability.RepairableRBD],
+    [`FaultTree`][repyability.FaultTree],
+    [`Network`][repyability.Network] and
+    [`PhasedMission`][repyability.PhasedMission].
+
+    Each entry of ``measures`` is exactly what the measure's own method
+    returns (the Birnbaum importance is ``birnbaum_importance``'s result),
+    so the table adds no second statement of any measure. A measure the
+    model cannot work out is listed under ``refused`` with the reason its
+    method (and ``analysis_routes()``) gives, not left out.
+
+    Attributes
+    ----------
+    measures : dict
+        ``{method name: {component: value}}`` for each measure that was
+        worked out, in the order of the methods' names
+        (``"birnbaum_importance"``, ``"improvement_potential"``, ...). The
+        joint importance, which is per pair of components, is keyed by
+        pairs. A value is a float, or an array when the call's time or
+        horizon is an array.
+    refused : dict
+        ``{method name: reason}`` for each measure not worked out: the
+        message its method raises, or ``"simulated: pass simulate=True"``
+        for one only a simulation gives.
+
+    Examples
+    --------
+    >>> from repyability import FaultTree
+    >>> tree = FaultTree(
+    ...     {"top": ("or", ["valve", "flow"]),
+    ...      "flow": ("and", ["pump 1", "pump 2"])},
+    ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+    ... )
+    >>> table = tree.importances()
+    >>> [round(table.measures["birnbaum_importance"][e], 3)
+    ...  for e in ("pump 1", "valve")]
+    [0.095, 0.99]
+    >>> [row["component"] for row in table.rows()]
+    ['pump 1', 'pump 2', 'valve']
+    """
+
+    measures: Dict[str, Dict[Any, Any]]
+    refused: Dict[str, str]
+
+    #: The measures that are per pair of components, left out of ``rows``.
+    _PAIRS = ("joint_importance",)
+
+    def rows(self) -> List[Dict[str, Any]]:
+        """The table as a list of plain dicts, one per component, ready for
+        a table or ``json.dumps``.
+
+        Returns
+        -------
+        list[dict]
+            Each row has ``"component"`` and one key per worked-out measure
+            (arrays as lists). A measure with no value for a component has
+            ``None``. The joint importance, which is per pair, is not in
+            the rows.
+        """
+        names = [n for n in self.measures if n not in self._PAIRS]
+        components: List[Any] = []
+        for name in names:
+            for component in self.measures[name]:
+                if component not in components:
+                    components.append(component)
+        return [
+            {
+                "component": component,
+                **{
+                    name: (
+                        plain(self.measures[name][component])
+                        if component in self.measures[name]
+                        else None
+                    )
+                    for name in names
+                },
+            }
+            for component in components
+        ]
 
 
 @dataclass(frozen=True)

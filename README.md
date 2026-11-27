@@ -217,6 +217,7 @@ Which analyses each model type has (the method; — where it has none):
 | How each analysis is computed | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` |
 | Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | — |
 | Export to Open-PSA (MEF) | — | — | `to_open_psa` | — | — |
+| Import from Open-PSA (MEF) | — | — | `from_open_psa` | — | — |
 | **Importance measures** | | | | | |
 | Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` |
 | Structural | `structural_importance` | `structural_importance` | `structural_importance` | `structural_importance` | — |
@@ -232,6 +233,7 @@ Which analyses each model type has (the method; — where it has none):
 | Each block's part in each phase's failures | — | — | — | — | `failure_drivers` |
 | Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — |
 | Uncertainty importance | `uncertainty_importance` | `uncertainty_importance` | — | — | — |
+| Every measure in one call | `importances` | `importances` | `importances` | `importances` | `importances` |
 | All measures given a state | `importances_given_state` | — | — | — | — |
 | Top event given each event | — | — | `conditional_probabilities` | — | — |
 | Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — | — |
@@ -391,6 +393,7 @@ places, nested diagrams):
 |---|---|---|
 | **What you ask** | | |
 | Sampled lifetimes or histories, and distributions or percentiles of an outcome over a window | Simulated (from new, or from the components' current states); each simulation's histories, the system's and its components', kept whole as timelines by `simulate_timelines` (from new) | Yes: the answer is a sample. Its mean over a window (failures, outages, downtime, cost, the capacity delivered) is exact, from new or from a state: `expected_events`, `expected_cost`, `mission_capacity`. |
+| The reliability and mean time to the first failure of a repairable system whose components are not all exponential in a redundant structure, or that has maintenance, tests, standby or common-cause groups | Simulated on request (`first_failure_sf(method="simulate")`); bracketed without simulating, wherever the expected events are worked out, by `first_failure_bounds` (between one less the expected system failures and one less the unavailability; the upper bound is 1 where the system takes planned outages), and the mean bounded below by `mean_time_to_first_failure_bound` | Not in general: lives and repairs written as mixtures of Erlang phases, and the common-cause and standby groups' chains made absorbing, could give it numerically; tests and maintenance at fixed intervals have no such chain. The bracket is tight while the expected failures are well under 1. |
 | Comparing two designs (`compare`) | Exact where both designs' expected values are (their MTTFs; a repairable system's mission availability and expected cost), with no simulation (#236); otherwise, or on request (`method="simulate"`, `control_variate=False`), simulated with common random numbers | Only where a design's own values are simulated. |
 | The uncertainty from fitted component parameters (`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, `time_to_reliability_uncertainty`; for a repairable system `mean_availability_uncertainty`, `point_availability_uncertainty`, `mission_availability_uncertainty`, `expected_cost_rate_uncertainty`) | Sampled over the parameters, randomly or quasi-randomly (`sampling="sobol"`), each draw exact or numerical as the diagram's own value is | Sampling is the method. |
 | Small failure probabilities, with a node only simulations take | Rare-event simulation (`unreliability_interval`); `ff` refused | Only while the node has no reliability of its own: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |

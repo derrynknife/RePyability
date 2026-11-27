@@ -51,6 +51,7 @@ from . import capacity as _capacity
 from . import redundancy_allocation
 from ._bayesian_life import PosteriorPredictive, as_life
 from ._degradation import check_life, is_degradation
+from ._importances import with_importances
 from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 from ._measures import (
     barlow_proschan,
@@ -110,6 +111,7 @@ from .repeated_standby_node import RepeatedStandbyNode
 from .results import (
     CapacityDistribution,
     ConfidenceInterval,
+    ImportanceTable,
     Lever,
     RateBreakdown,
     RedundancyAllocation,
@@ -5786,15 +5788,17 @@ class NonRepairableRBD(RBD):
         )
         # Each node's own values need no structure; the uncertainty's draws
         # are each worked out exactly.
-        return self._meshed_routes(
-            out,
-            ("node_sf", "node_ff", "node_mttf"),
-            drawn=(
-                "sf_uncertainty",
-                "mean_uncertainty",
-                "time_to_reliability_uncertainty",
-                "bx_life_uncertainty",
-            ),
+        return with_importances(
+            self._meshed_routes(
+                out,
+                ("node_sf", "node_ff", "node_mttf"),
+                drawn=(
+                    "sf_uncertainty",
+                    "mean_uncertainty",
+                    "time_to_reliability_uncertainty",
+                    "bx_life_uncertainty",
+                ),
+            )
         )
 
     def random(
@@ -7759,6 +7763,88 @@ class NonRepairableRBD(RBD):
             "birnbaum": _squeeze(birnbaum),
             "criticality": _squeeze(criticality),
         }
+
+    def importances(
+        self,
+        x: Optional[ArrayLike] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        *,
+        simulate: bool = False,
+    ) -> ImportanceTable:
+        """Every importance measure in one table.
+
+        Calls each importance method of this model in turn (Birnbaum,
+        improvement potential, risk achievement and reduction worth,
+        criticality, Fussell-Vesely, differential, joint, Barlow-Proschan
+        and structural, those the model has) with the arguments given, and
+        gathers what they return. Each entry of ``measures`` is exactly
+        the method's own result; nothing is computed a second way. A
+        measure this model cannot work out is named under ``refused`` with
+        the reason its method gives (as
+        [`analysis_routes`][repyability.NonRepairableRBD.analysis_routes]
+        has it), and a measure only a simulation gives is listed there as
+        simulated unless ``simulate=True``.
+
+        Parameters
+        ----------
+        x : array_like, optional
+            The time/s, as for each measure. May be left out only for a
+            diagram of fixed probabilities.
+        working_nodes : Collection[Hashable], optional
+            Nodes conditioned on as working, as for each measure.
+        broken_nodes : Collection[Hashable], optional
+            Nodes conditioned on as failed, as for each measure.
+        simulate : bool, optional
+            Whether to run the measures that are simulated. By default
+            False: they are listed under ``refused`` with ``"simulated:
+            pass simulate=True"``.
+
+        Returns
+        -------
+        ImportanceTable
+            [`ImportanceTable`][repyability.ImportanceTable]: ``measures``
+            (``{method name: {component: value}}``), ``refused``
+            (``{method name: reason}``) and ``rows()``, one plain dict
+            per component for a table. The joint importance, which is per
+            pair, is in ``measures`` and not in ``rows()``.
+
+        Raises
+        ------
+        NotImplementedError
+            If no measure can be worked out here; the message gives each
+            one's reason.
+        ValueError
+            If ``simulate`` is not a bool.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> unit = surv.Exponential.from_params([0.01])
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {"a": unit, "b": unit},
+        ... )
+        >>> table = rbd.importances(50)
+        >>> [round(table.measures["birnbaum_importance"][n], 4)
+        ...  for n in ("a", "b")]
+        [0.3935, 0.3935]
+        >>> [row["component"] for row in table.rows()]
+        ['a', 'b']
+        """
+        from repyability.rbd import _importances
+
+        given = {"working_nodes": working_nodes, "broken_nodes": broken_nodes}
+        calls = {
+            name: (lambda name: lambda: getattr(self, name)(x, **given))(name)
+            for name in _importances.MEASURES
+            if name not in ("structural_importance",)
+        }
+        calls["structural_importance"] = lambda: self.structural_importance(
+            **given
+        )
+        return _importances.table(self, calls, simulate)
 
     def node_mttf(self) -> dict[Any, float]:
         """Mean time to failure (MTTF) of each component node.

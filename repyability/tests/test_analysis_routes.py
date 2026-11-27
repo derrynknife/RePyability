@@ -120,6 +120,7 @@ NONREPAIRABLE_CALLS = {
         X, state={}
     ),
     "structural_importance": lambda rbd: rbd.structural_importance(),
+    "importances": lambda rbd: rbd.importances(X),
     "random": lambda rbd: rbd.random(200, seed=1),
     "random_block": lambda rbd: rbd.random_block(1, seed=1),
     "unreliability_interval": lambda rbd: rbd.unreliability_interval(
@@ -257,12 +258,19 @@ REPAIRABLE_CALLS = {
             "optimal_replacement_intervals",
             "optimal_inspection_intervals",
             "structural_importance",
+            "importances",
         )
     },
     "total_cost": lambda rbd: rbd.total_cost(1000.0),
     "spares_demand": lambda rbd: rbd.spares_demand(200.0),
     "spares_stock": lambda rbd: rbd.spares_stock(50.0, fill_rate=0.9),
     "first_failure_sf": lambda rbd: rbd.first_failure_sf([10.0, 200.0]),
+    "first_failure_bounds": (
+        lambda rbd: rbd.first_failure_bounds([10.0, 200.0])
+    ),
+    "mean_time_to_first_failure_bound": (
+        lambda rbd: rbd.mean_time_to_first_failure_bound()
+    ),
     "mean_time_to_first_failure": (
         lambda rbd: rbd.mean_time_to_first_failure()
     ),
@@ -469,6 +477,7 @@ NETWORK_CALLS = {
         )
     },
     "structural_importance": lambda net: net.structural_importance(),
+    "importances": lambda net: net.importances(X),
     "cut_sets": lambda net: net.cut_sets(),
     "path_sets": lambda net: net.path_sets(),
     "minimal_cut_sets": lambda net: net.minimal_cut_sets(),
@@ -604,6 +613,7 @@ PHASED_CALLS = {
             "risk_reduction_worth",
             "criticality_importance",
             "fussell_vesely",
+            "importances",
         )
     },
     "reliability_interval": (
@@ -887,6 +897,24 @@ def test_the_readme_says_what_is_simulated():
             (repairable["costed_pairs"], "expected_events", "numerical"),
             (repairable["costed_pairs"], "expected_cost", "numerical"),
             (repairable["capacities"], "mission_capacity", "numerical"),
+        ],
+        "The reliability and mean time to the first failure of a "
+        "repairable system whose components are not all exponential in a "
+        "redundant structure, or that has maintenance, tests, standby or "
+        "common-cause groups": [
+            (repairable[name], analysis, route)
+            for name in (
+                "identical units, parallel",
+                "maintained",
+                "inspected",
+                "common cause, revealed",
+            )
+            for analysis, route in (
+                ("first_failure_sf", "refused"),
+                ("mean_time_to_first_failure", "refused"),
+                ("first_failure_bounds", "numerical"),
+                ("mean_time_to_first_failure_bound", "numerical"),
+            )
         ],
         "Comparing two designs (`compare`)": [
             (plain, "compare", "numerical"),
@@ -1371,6 +1399,7 @@ FAULT_TREE_CALLS = {
     "mean": lambda tree: tree.mean(),
     "random": lambda tree: tree.random(200, seed=1),
     "structural_importance": lambda tree: tree.structural_importance(),
+    "importances": lambda tree: tree.importances(X),
     "sf_uncertainty": lambda tree: tree.sf_uncertainty(
         X, uncertain_event(tree), n_draws=2, seed=1
     ),
@@ -1413,6 +1442,7 @@ def test_the_fault_tree_report_covers_every_public_analysis():
         "minimal_path_sets",
         "prime_implicants",
         "to_open_psa",
+        "from_open_psa",
         "levers",
         "with_levers",
     }

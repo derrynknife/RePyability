@@ -78,7 +78,12 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
         [
             (
                 "Reliability and mean time to the first failure",
-                ("first_failure_sf", "mean_time_to_first_failure"),
+                (
+                    "first_failure_sf",
+                    "mean_time_to_first_failure",
+                    "first_failure_bounds",
+                    "mean_time_to_first_failure_bound",
+                ),
             ),
             ("Long-run availability", ("mean_availability",)),
             ("Each node's availability", ("node_availability",)),
@@ -224,6 +229,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("to_dict", "to_json", "from_dict", "from_json"),
             ),
             ("Export to Open-PSA (MEF)", ("to_open_psa",)),
+            ("Import from Open-PSA (MEF)", ("from_open_psa",)),
         ],
     ),
     (
@@ -252,6 +258,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("reliability_rate", "availability_rate"),
             ),
             ("Uncertainty importance", ("uncertainty_importance",)),
+            ("Every measure in one call", ("importances",)),
             ("All measures given a state", ("importances_given_state",)),
             (
                 "Top event given each event",
