@@ -346,7 +346,8 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   or waits, and after a failed switch the spare waits on while the failed
   unit is repaired and operates again): with one repair at a time it regenerates whenever a unit
   fails with the other ready (`_standby_cycle.py`: the long run from one
-  cycle, and from new a renewal equation on a grid, a `PairCurve`); with
+  cycle, and from new a renewal equation on a grid, a `PairCurve`, two
+  equations solved together with a switch that can fail); with
   both repaired at once it is a Markov renewal process on the other
   unit's elapsed repair (`_standby_both.py`, the long run alone). A
   change to the group's rules goes into both: `test_standby_cycle.py`,
