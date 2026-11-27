@@ -83,6 +83,23 @@ def poisson(mean):
     return [stats.poisson.pmf(k, mean) for k in range(TERMS)]
 
 
+def holes_by_hand(pmf, stock, places, among):
+    """The chance of each number of holes among ``among`` places of a
+    base's ``places``, term by term: the backorders ``(X - stock)+``,
+    no more than the places, are holes in places drawn evenly."""
+    out = [0.0] * (among + 1)
+    for k, p in enumerate(pmf):
+        empty = min(max(k - stock, 0), places)
+        for h in range(among + 1):
+            out[h] += (
+                p
+                * math.comb(empty, h)
+                * math.comb(places - empty, among - h)
+                / math.comb(places, among)
+            )
+    return out
+
+
 def by_hand(rates, bases, part, depot_stock, method):
     """Each base's pipeline (mean, variance, probabilities) of a part
     with ``depot_stock`` at the depot, the depot's expected backorders
@@ -1007,7 +1024,9 @@ PAIRED_RATES = {**RATES, "pump": 2 / 2000.0}
 
 def paired_by_hand(point, method="vari-metric"):
     """The backorders and each base's availability of a point's stock:
-    the pair down with both pumps' places empty."""
+    the pair down with both pumps' places empty, the base's holes in
+    places drawn evenly; the valve and the controllers, each needed,
+    each place on its own."""
     up, total = {}, 0.0
     for j, n in BASES.items():
         hole = {}
@@ -1022,10 +1041,12 @@ def paired_by_hand(point, method="vari-metric"):
             short = moments(out[j][2], point.base_stock[j][name])[0]
             total += short
             hole[name] = short / (n * (1 if name == "valve" else 2))
+            if name == "pump":
+                both = holes_by_hand(
+                    out[j][2], point.base_stock[j][name], 2 * n, 2
+                )[2]
         up[j] = (
-            (1 - hole["pump"] ** 2)
-            * (1 - hole["valve"])
-            * (1 - hole["controller"]) ** 2
+            (1 - both) * (1 - hole["valve"]) * (1 - hole["controller"]) ** 2
         )
     return total, up
 
@@ -1033,12 +1054,26 @@ def paired_by_hand(point, method="vari-metric"):
 def test_a_redundant_diagram_by_hand():
     rbd = paired()
     nothing = rbd.spares_front(BASES, PAIRED, budget=1.0)[0]
-    # A pump's place is empty with chance 5.8176 / 24 at both bases.
+    # The north's pumps owed are Poisson of mean 5.8176 in 24 places: a
+    # pair has both empty with chance E[B (B - 1)] / (24 * 23), a
+    # Poisson's being its mean squared (more than 24 owed: 1e-9).
     assert nothing.base_backorders["north"]["pump"] == pytest.approx(5.8176)
-    assert nothing.availability == pytest.approx(
-        (1 - 0.2424**2) * (1 - 0.0496) * (1 - 0.1156500) ** 2, rel=1e-12
+    rest = (1 - 0.0496) * (1 - 0.1156500) ** 2
+    assert nothing.base_availability["north"] == pytest.approx(
+        (1 - 5.8176**2 / (24 * 23)) * rest, abs=1e-8
     )
-    assert nothing.availability == pytest.approx(0.69961, abs=5e-6)
+    assert nothing.base_availability["south"] == pytest.approx(
+        (1 - 3.8784**2 / (16 * 15)) * rest, abs=1e-6
+    )
+    assert nothing.base_availability["north"] == pytest.approx(
+        0.69771, abs=5e-6
+    )
+    assert nothing.base_availability["south"] == pytest.approx(
+        0.69670, abs=5e-6
+    )
+    assert nothing.availability == pytest.approx(0.69731, abs=5e-6)
+    # The holes taken as independent gave 0.69961.
+    assert (1 - 0.2424**2) * rest == pytest.approx(0.69961, abs=5e-6)
     held = rbd.spares_allocation(BASES, PAIRED, target_availability=0.95)
     assert held.objective == "availability"
     assert held.spend == 210000.0
@@ -1047,7 +1082,9 @@ def test_a_redundant_diagram_by_hand():
         "north": {"pump": 0, "valve": 1, "controller": 1},
         "south": {"pump": 0, "valve": 1, "controller": 1},
     }
-    assert held.availability == pytest.approx(0.95444, abs=5e-6)
+    assert held.availability == pytest.approx(0.95114, abs=5e-6)
+    assert held.base_availability["north"] == pytest.approx(0.94866, abs=5e-6)
+    assert held.base_availability["south"] == pytest.approx(0.95485, abs=5e-6)
     assert held.backorders == pytest.approx(6.25410, abs=5e-6)
     # By backorders the pumps are bought as if each were needed.
     owed = rbd.spares_allocation(
@@ -1060,7 +1097,7 @@ def test_a_redundant_diagram_by_hand():
         + sum(owed.base_stock[j]["pump"] for j in BASES)
         == 12
     )
-    assert owed.availability == pytest.approx(0.95577, abs=5e-6)
+    assert owed.availability == pytest.approx(0.95475, abs=5e-6)
 
 
 @pytest.mark.parametrize("objective", ["availability", "backorders"])
@@ -1207,7 +1244,9 @@ def every_availability(parts, bases, budget, method, up):
     """(spend, fleet availability, stocks) of every stock vector within
     the budget, from the model written out term by term; ``up`` a
     system's chance of working from each part's chance of a place
-    holding one."""
+    holding one, or, for a part whose nodes stand in for each other, of
+    their places not all being empty (the base's holes in places drawn
+    evenly)."""
     per_part = []
     for name, part in parts.items():
         most = int(budget // part["price"])
@@ -1218,7 +1257,17 @@ def every_availability(parts, bases, budget, method, up):
                 part["demand_rate"], bases, part, depot, method
             )
             owed = {
-                j: [moments(out[j][2], s)[0] for s in range(most + 1)]
+                j: [
+                    (
+                        max(1 - moments(out[j][2], s)[0] / bases[j], 0.0)
+                        if places == 1
+                        else 1
+                        - holes_by_hand(
+                            out[j][2], s, bases[j] * places, places
+                        )[places]
+                    )
+                    for s in range(most + 1)
+                ]
                 for j in bases
             }
             for held in itertools.product(
@@ -1228,10 +1277,7 @@ def every_availability(parts, bases, budget, method, up):
                     rows.append(
                         (
                             (depot + sum(held)) * part["price"],
-                            [
-                                max(1 - owed[j][s] / (bases[j] * places), 0.0)
-                                for j, s in zip(bases, held)
-                            ],
+                            [owed[j][s] for j, s in zip(bases, held)],
                             (depot,) + held,
                         )
                     )
@@ -1253,7 +1299,9 @@ def every_availability(parts, bases, budget, method, up):
     "rbd, parts, bases, budget, up",
     [
         # One part: its hull of availability, the split by its losses.
-        (pair, {"a": PAIR["a"]}, TWO, 12.0, lambda a: 1 - (1 - a) ** 2),
+        # (With the bases owed more than they have places, the first
+        # parts buy less than the next: the hull's first step is five.)
+        (pair, {"a": PAIR["a"]}, TWO, 21.0, None),
         (lambda: series({"a": E([1e-3])}), {"a": SMALL["a"]}, TWO, 15.0, None),
         (
             lambda: series({"a": E([1e-3])}),
@@ -1299,7 +1347,7 @@ def test_two_parts_availability_front_against_every_stock(method):
         TWO, parts, budget=17.0, method=method, objective="availability"
     )
     everything = every_availability(
-        parts, TWO, 17.0, method, lambda a, b: (1 - (1 - a) ** 2) * b
+        parts, TWO, 17.0, method, lambda a, b: a * b
     )
     assert len(everything) > 1000
     assert len(front) >= 6
@@ -1339,7 +1387,7 @@ def both_missing(mean, stock, places):
     """The chance that both places of a pair are empty, the backorders
     ``(X - stock)+`` of a Poisson pipeline being holes in places drawn
     evenly from all of them; and the same with each place empty on its
-    own with the backorders' mean chance (the model's)."""
+    own with the backorders' mean chance."""
     pmf = poisson(mean)
     exact = sum(
         p * min(k - stock, places) * (min(k - stock, places) - 1)
@@ -1350,13 +1398,15 @@ def both_missing(mean, stock, places):
     return exact, (owed / places) ** 2
 
 
-def test_a_pair_s_holes_are_taken_as_independent():
+def test_a_pair_s_holes_are_taken_together():
     # In the setting where the pipelines are exact (nothing at the
     # depot, whose repairs take a fixed time). At the end of each run a
     # base's backorders are holes in places drawn evenly: a system of
-    # two pumps is down with both of its places empty. The model takes
-    # each place as empty on its own, which differs from that by
-    # E[B (B - 1)] / (P (P - 1)) - (E[B] / P)^2, P the base's places.
+    # two pumps is down with both of its places empty, with chance
+    # E[B (B - 1)] / (P (P - 1)), P the base's places. The model gives
+    # that (a pair's matrix is exact in binary, so to rounding: 1e-12
+    # of it, fixed from the method before running), where each place
+    # empty on its own gave (E[B] / P)^2, a seventh less.
     part = {**SIM_PUMP, "demand_rate": 2 * RATES["pump"]}
     stock = (2, 1)
     last = runs(part, 0, stock, True)[3]
@@ -1382,20 +1432,235 @@ def test_a_pair_s_holes_are_taken_as_independent():
         "vari-metric",
         rbd,
     )
-    gaps = []
     for j, (base, systems) in enumerate(BASES.items()):
         pipeline = (
             systems * part["demand_rate"] * (0.3 * 48.0 + 0.7 * (72.0 + 600.0))
         )
-        exact, model = both_missing(pipeline, stock[j], 2 * systems)
-        assert abs(mean[j] - exact) < 4 * error[j], (mean[j], exact, error[j])
-        assert 1 - point.base_availability[base] == pytest.approx(
-            model, rel=1e-9
+        exact, alone = both_missing(pipeline, stock[j], 2 * systems)
+        pairs_down = 1 - point.base_availability[base]
+        assert pairs_down == pytest.approx(exact, rel=1e-12)
+        assert abs(mean[j] - pairs_down) < 4 * error[j], (
+            mean[j],
+            pairs_down,
+            error[j],
         )
-        gaps.append((model - exact, error[j], exact))
-    # The model understates the pairs down, by under a quarter of them.
-    for gap, _, exact in gaps:
-        assert -0.25 * exact < gap < 0.0
+        # Places empty on their own understate it, by under a quarter.
+        assert -0.25 * exact < alone - exact < -0.1 * exact
+    assert 1 - point.base_availability["north"] == pytest.approx(
+        0.02993, abs=5e-6
+    )
+    assert 1 - point.base_availability["south"] == pytest.approx(
+        0.03852, abs=5e-6
+    )
+
+
+def every_placing(pmf, stock, places, among, works):
+    """The chance that a system works, ``works(empty)`` saying whether
+    it does with the set ``empty`` of its ``among`` places of a part
+    empty: every number of backorders, and every set of that many of
+    the base's ``places`` (a system's are the first ``among``), each as
+    likely as another, by counting them."""
+    total = 0.0
+    for k, p in enumerate(pmf):
+        holes = min(max(k - stock, 0), places)
+        if p == 0.0:
+            continue
+        good = sum(
+            math.comb(places - among, holes - len(empty))
+            for size in range(min(among, holes) + 1)
+            for empty in itertools.combinations(range(among), size)
+            if works(set(empty))
+        )
+        total += p * good / math.comb(places, holes)
+    return total
+
+
+def stage(k, n, life=2000.0):
+    """``n`` units of which ``k`` are enough, and their names."""
+    names = [f"u{i}" for i in range(n)]
+    return (
+        RepairableRBD(
+            [("s", name) for name in names] + [(name, "t") for name in names],
+            {name: swapped(life) for name in names},
+            k={"t": k},
+        ),
+        names,
+    )
+
+
+SLOW = {
+    "price": 1.0,
+    "base_repair_fraction": 0.4,
+    "base_repair_time": 40.0,
+    "depot_repair_time": 300.0,
+    "ship_time": 30.0,
+}
+
+
+@pytest.mark.parametrize("k, n", [(1, 2), (2, 3), (2, 4), (1, 5), (5, 6)])
+@pytest.mark.parametrize("method", _echelons.METHODS)
+def test_a_k_out_of_n_stage_against_every_placing(k, n, method):
+    # Down with more than n - k of a system's places empty. The accuracy
+    # is the matrix's condition number times the rounding (71 at six
+    # places): 1e-12 covers it, fixed before running.
+    rbd, names = stage(k, n)
+    parts = {"u": {**SLOW, "nodes": names}}
+    bases = {"x": 3, "y": 2}
+    front = rbd.spares_front(bases, parts, budget=6.0, method=method)
+    assert len(front) >= 3
+    for point in front:
+        out, _, _ = by_hand(
+            n / 2000.0, bases, SLOW, point.depot_stock["u"], method
+        )
+        for j, systems in bases.items():
+            exact = every_placing(
+                out[j][2],
+                point.base_stock[j]["u"],
+                systems * n,
+                n,
+                lambda empty: len(empty) <= n - k,
+            )
+            assert point.base_availability[j] == pytest.approx(
+                exact, abs=1e-12
+            )
+    available = [p.availability for p in front]
+    assert all(b > a for a, b in zip(available, available[1:]))
+
+
+def test_places_of_two_parts_and_a_needed_one_against_every_placing():
+    # Paths a1-b1, a1-b2 and a2-b2, then c, which the system needs: the
+    # a's and the b's each taken together, the parts independent, and c
+    # (a third component of part a) on its own with chance 1 - EBO / P.
+    life = swapped(700.0)
+    rbd = RepairableRBD(
+        [
+            ("s", "a1"),
+            ("s", "a2"),
+            ("a1", "b1"),
+            ("a1", "b2"),
+            ("a2", "b2"),
+            ("b1", "c"),
+            ("b2", "c"),
+            ("c", "t"),
+        ],
+        {n: life for n in ("a1", "a2", "b1", "b2", "c")},
+    )
+    parts = {
+        "a": {**SLOW, "nodes": ["a1", "a2", "c"]},
+        "b": {**SLOW, "price": 1.5, "nodes": ["b1", "b2"]},
+    }
+    bases = {"x": 3, "y": 2}
+    front = rbd.spares_front(bases, parts, budget=9.0)
+    assert len(front) >= 4
+    for point in front:
+        for j, systems in bases.items():
+            pmf = {
+                name: by_hand(
+                    len(part["nodes"]) / 700.0,
+                    bases,
+                    part,
+                    point.depot_stock[name],
+                    "vari-metric",
+                )[0][j][2]
+                for name, part in parts.items()
+            }
+            total = 0.0
+            for a in itertools.product([True, False], repeat=2):
+                for b in itertools.product([True, False], repeat=2):
+                    if not (
+                        (a[0] and b[0]) or (a[0] and b[1]) or (a[1] and b[1])
+                    ):
+                        continue
+                    chance = 1.0
+                    for name, state, among in (("a", a, 3), ("b", b, 2)):
+                        empty = {i for i, up in enumerate(state) if not up}
+                        # The chance of exactly these of the two empty,
+                        # whatever a third place of the part holds.
+                        chance *= every_placing(
+                            pmf[name],
+                            point.base_stock[j][name],
+                            systems * among,
+                            among,
+                            lambda e, empty=empty: e - {2} == empty,
+                        )
+                    total += chance
+            needed = 1 - point.base_backorders[j]["a"] / (3 * systems)
+            assert point.base_availability[j] == pytest.approx(
+                total * needed, abs=1e-12
+            )
+
+
+def test_several_places_to_a_component_against_every_placing():
+    # Two components that stand in for each other, each two places of
+    # the part, both needed for the component: four places together.
+    rbd, names = stage(1, 2)
+    parts = {"u": {**SLOW, "nodes": names, "quantity": 4}}
+    bases = {"x": 3, "y": 2}
+    front = rbd.spares_front(bases, parts, budget=5.0)
+    assert len(front) >= 3
+    for point in front:
+        out, _, _ = by_hand(
+            2 / 2000.0, bases, SLOW, point.depot_stock["u"], "vari-metric"
+        )
+        for j, systems in bases.items():
+            exact = every_placing(
+                out[j][2],
+                point.base_stock[j]["u"],
+                systems * 4,
+                4,
+                lambda empty: not ({0, 1} & empty and {2, 3} & empty),
+            )
+            assert point.base_availability[j] == pytest.approx(
+                exact, abs=1e-12
+            )
+
+
+def test_the_matrix_s_condition_is_as_the_accuracy_says():
+    # 2.3 for a pair, and within 1e-9 / eps at the most places taken
+    # together.
+    assert np.linalg.cond(_echelons._given_holes(2)) < 2.5
+    most = np.linalg.cond(_echelons._given_holes(_echelons.MOST_TOGETHER))
+    assert most * np.finfo(float).eps < 1e-9
+    # At the most: 1 out of 16, down with every place empty.
+    # (A pipeline of mean 22.8, in 32 places.)
+    rbd, names = stage(1, _echelons.MOST_TOGETHER, life=300.0)
+    parts = {"u": {**SLOW, "nodes": names}}
+    point = rbd.spares_front({"x": 2}, parts, budget=0.5)[0]
+    out, _, _ = by_hand(16 / 300.0, {"x": 2}, SLOW, 0, "vari-metric")
+    exact = 1 - holes_by_hand(out["x"][2], 0, 32, 16)[16]
+    assert 1e-3 < 1 - exact < 0.5
+    assert point.base_availability["x"] == pytest.approx(exact, abs=1e-9)
+
+
+def test_more_places_together_than_are_worked_out_is_refused():
+    rbd, names = stage(1, _echelons.MOST_TOGETHER + 1)
+    with pytest.raises(NotImplementedError, match="parts of their own"):
+        rbd.spares_front({"x": 2}, {"u": {**SLOW, "nodes": names}}, budget=3.0)
+    # As parts of their own: the holes independent.
+    front = rbd.spares_front(
+        {"x": 2},
+        {name: {**SLOW, "nodes": [name]} for name in names},
+        budget=3.0,
+    )
+    assert len(front) >= 1
+
+
+def test_a_series_diagram_takes_no_places_together():
+    # Every component needed: none stands in for another, whatever
+    # parts they are, so the textbook's product stays as it was.
+    rbd = fleet()
+    for part in _echelons._parts(
+        rbd, np.array([12.0, 8.0]), PARTS, list(BASES)
+    ):
+        assert _echelons._together(rbd, part) == ()
+    parts = _echelons._parts(
+        paired(), np.array([12.0, 8.0]), PAIRED, list(BASES)
+    )
+    assert [_echelons._together(paired(), part) for part in parts] == [
+        ("p1", "p2"),
+        (),
+        (),
+    ]
 
 
 def test_a_redundant_diagram_s_routes():
