@@ -346,12 +346,18 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   or waits, and after a failed switch the spare waits on while the failed
   unit is repaired and operates again): with one repair at a time it regenerates whenever a unit
   fails with the other ready (`_standby_cycle.py`: the long run from one
-  cycle, and from new a renewal equation on a grid, a `PairCurve`); with
+  cycle, and from new a renewal equation on a grid, a `PairCurve`, two
+  equations solved together with a switch that can fail); with
   both repaired at once it is a Markov renewal process on the other
   unit's elapsed repair (`_standby_both.py`, the long run alone). A
   change to the group's rules goes into both: `test_standby_cycle.py`,
   `test_standby_window.py` and `test_standby_both.py` check them against
   the chain of exponential units, closed forms and the simulation.
+  A warm pair (a spare ageing at `dormancy_factor`, failing in standby,
+  switched in with the life it has used) with one repair at a time is a
+  Markov renewal process on the operating unit's used life each time a
+  repair starts (`_standby_warm.py`, the long run alone, a sure switch):
+  `test_standby_warm.py` checks it the same way.
 - **A `MarkovComponent` (`repyability/rbd/markov_node.py`) rides the
   standby groups' rails in a `RepairableRBD`**: it is in `rbd._standby`
   as `_events.MARKOV` (key `"markov"`, one unit), so whatever handles or
@@ -634,8 +640,13 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   Markov chain written out there and holds its routes to its methods on
   `catalogue.safety_function_kinds()` (a new method needs its call in
   `SAFETY_CALLS`, and a row in the capability matrix as
-  `SafetyFunction.method`). `simplified_formulas()` is IEC 61508-6
-  Annex B's, kept only to compare.
+  `SafetyFunction.method`). Its structure is a tree (`_Stage`, a vote
+  of channels; `_Voted`, a vote of parts; `_Series`), drawn by one
+  recursion into both diagrams: a vote's safe dual is `N - k + 1` of its
+  parts not tripped, a series' every part. `simplified_formulas()` is
+  IEC 61508-6 Annex B's, kept only to compare;
+  `test_safety_function.py` checks it against a published worked
+  example (`DECK`).
 
 - **An `EventTree` (`repyability/event_tree.py`) has no evaluation of
   its own.** Each sequence is one `FaultTree` (`sequence_tree`): the AND

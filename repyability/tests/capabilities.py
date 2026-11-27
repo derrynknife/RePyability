@@ -283,6 +283,23 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("SafetyFunction.results", "SafetyFunction.series"),
             ),
             (
+                "Votes of votes (2oo4 as 1oo2 of 2oo2)",
+                ("SafetyFunction.vote",),
+            ),
+            (
+                "A result over uncertain failure rates",
+                ("SafetyFunction.measure_uncertainty",),
+            ),
+            (
+                "Saving and loading (dict, JSON)",
+                (
+                    "SafetyFunction.to_dict",
+                    "SafetyFunction.from_dict",
+                    "SafetyFunction.to_json",
+                    "SafetyFunction.from_json",
+                ),
+            ),
+            (
                 "IEC 61508-6's simplified formulas, to compare",
                 ("SafetyFunction.simplified_formulas",),
             ),
@@ -568,6 +585,18 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         (
             "An upgrade, the unit in service kept",
             "upgraded at a time, the unit in service kept",
+        ),
+        (
+            "An upgrade, block-replaced, the unit in service kept",
+            "upgraded at a time, block-replaced, the unit in service kept",
+        ),
+        (
+            "An upgrade, tested, the unit in service kept",
+            "upgraded at a time, tested, the unit in service kept",
+        ),
+        (
+            "An upgrade, tests that take time",
+            "upgraded at a time, tests that take time",
         ),
         ("A shelf of spares", "a shelf of spares"),
         ("Imperfect repair (Kijima)", "imperfect repair"),

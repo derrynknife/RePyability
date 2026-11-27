@@ -819,19 +819,23 @@ then (up and replaced, or still in a repair or a replacement, which
 ends with the new life). With tests (`"inspection"`), the unit in
 service at the upgrade is replaced in no time, a unit failed unseen
 too (a test due then is not done), and the new unit is tested on the
-same calendar: worked out over a
-horizon for tests and repairs in no time that find every failure, and
-simulated otherwise. The other tasks are not taken with an upgrade yet.
+same calendar. With tests or repairs that take a fixed time, or tests
+that miss failures, it is replaced as the simulation replaces it: a unit
+off line for its test once the test is over, and one in a test that
+found it failed, or in its repair, once that is over. These are worked
+out over a horizon; tests or repairs of varying length are simulated.
+The other tasks are not taken with an upgrade yet.
 
 By default the unit in service at the upgrade is replaced then. With
 `"replace_in_service": False` it stays until its next failure or due
 replacement (its age, its block time, or a test that finds it failed),
 and the unit put in then has the new life: a part bought now and fitted
-when the old one comes out. On its own or under age replacement its
+when the old one comes out. On its own, under age or block replacement,
+or with tests and repairs in no time that find every failure, its
 values over a horizon are worked out (each unit with the life in
-service when it is put in, on one grid); with block replacement or
-tests it is simulated (`availability`, `cost`, `npv_distribution`,
-`compare_npv`), its values over a horizon refusing, saying so.
+service when it is put in); with other tests it is simulated
+(`availability`, `cost`, `npv_distribution`, `compare_npv`), its values
+over a horizon refusing, saying so.
 
 ```python
 newer = surv.Weibull.from_params([12000.0, 2.0])

@@ -394,11 +394,18 @@ Common-cause groups over repaired events (`ccf_groups`) split their
 members' failure rates, as a `RepairableRBD`'s do: the tree's values over
 time and in the long run are then its groups' chains', each conditioned
 on within the smallest part of the tree holding its members, the same as
-the diagram with the same groups gives. Such a tree refuses
-`failure_frequency(t)` (ask `expected_failures(t)` or
-`system_failure_frequency()`) and the importance measures for now
-(convert it with `to_repairable_rbd()`), and a group's members must be
-repaired events.
+the diagram with the same groups gives. So are its failure frequency at
+a time (each event outside the groups failing where it is critical, over
+the groups' joint states then, and each common cause striking at its
+rate where its strike starts the top event) and its importance measures,
+cut-set probabilities and conditional probabilities at a time: an event
+outside the groups is held occurred and not, a member conditioned on its
+state through its group's joint states then, as a `RepairableRBD`'s
+measures at a time (`x=`) take them. A group's members must be repaired
+events, and `to_open_psa()` refuses such a tree: the format's
+common-cause groups split their members' probabilities, not their
+failure rates (export the tree without its groups, or convert it with
+`to_repairable_rbd()`).
 `to_repairable_rbd()` draws the tree as a `RepairableRBD`, for costs,
 spares, crews, maintenance and simulation; a tree with an event that feeds
 several gates cannot be drawn so (a diagram holds a component in one

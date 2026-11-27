@@ -58,7 +58,7 @@ unbounded at 0).
 
 import warnings
 import weakref
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
@@ -173,32 +173,71 @@ def _extrapolated(last: List[np.ndarray]) -> np.ndarray:
     return np.where(np.isfinite(limit) & (ratio > 1.0), limit, c)
 
 
+def _apart(a: np.ndarray, b: np.ndarray) -> float:
+    """How far apart two limits are, relative to the first."""
+    return float(np.max(np.abs(a - b) / np.abs(a)))
+
+
+def halved(
+    solution: Callable[[int], Optional[np.ndarray]],
+    first: int,
+    most: int,
+    rtol: float,
+    twice: bool = False,
+) -> Tuple[Optional[np.ndarray], float]:
+    """The limit of ``solution(steps)`` as the grid's ``steps`` double
+    from ``first`` to ``most`` at most: until two limits agree to
+    ``rtol``, each extrapolated from the last three solutions; and how
+    far apart (relatively) the last two limits were. With ``twice``,
+    limits that do not yet agree are extrapolated again, each from the
+    last three of them (for an error of two orders, which one
+    extrapolation leaves the slower of), and two of those that agree
+    end it as well. The limit is None where too few grids gave a
+    solution (a None one starts afresh)."""
+    steps = first
+    solutions: List[np.ndarray] = []
+    limits: List[np.ndarray] = []
+    again: List[np.ndarray] = []
+    limit: Optional[np.ndarray] = None
+    apart = np.inf
+    while steps <= most:
+        found = solution(steps)
+        steps *= 2
+        if found is None:
+            solutions.clear()
+            limits.clear()
+            again.clear()
+            limit, apart = None, np.inf
+            continue
+        solutions.append(found)
+        if len(solutions) < 3:
+            continue
+        limits.append(_extrapolated(solutions[-3:]))
+        limit = limits[-1]
+        if len(limits) >= 2:
+            apart = _apart(limits[-1], limits[-2])
+        if apart > rtol and twice and len(limits) >= 3:
+            again.append(_extrapolated(limits[-3:]))
+            limit = again[-1]
+            if len(again) >= 2:
+                apart = min(apart, _apart(again[-1], again[-2]))
+        if apart <= rtol:
+            break
+    return limit, apart
+
+
 def _settled(life, repair, unswitched: np.ndarray) -> Tuple[np.ndarray, float]:
     """``W(0)`` for the units' failures, the down time and the system's
     failures, the grid halved until two extrapolated solutions agree, and
     how far apart (relatively) the last two were (``unswitched``: see
     ``_solution``)."""
     end = float(np.ravel(repair.qf(1.0 - TAIL))[0])
-    steps = FIRST_STEPS
-    solutions: List[np.ndarray] = []
-    limit: Optional[np.ndarray] = None
-    apart = np.inf
-    while steps <= MAX_STEPS:
-        solution = _solution(life, repair, end, steps, unswitched)
-        steps *= 2
-        if solution is None:
-            solutions.clear()
-            limit = None
-            continue
-        solutions.append(solution)
-        if len(solutions) < 3:
-            continue
-        before, limit = limit, _extrapolated(solutions[-3:])
-        if before is None:
-            continue
-        apart = float(np.max(np.abs(limit - before) / np.abs(limit)))
-        if apart <= RTOL:
-            break
+    limit, apart = halved(
+        lambda steps: _solution(life, repair, end, steps, unswitched),
+        FIRST_STEPS,
+        MAX_STEPS,
+        RTOL,
+    )
     if limit is None:
         raise NotImplementedError(
             "The standby pair is under repair so much of the time (its "

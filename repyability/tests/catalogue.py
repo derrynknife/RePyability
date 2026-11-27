@@ -956,6 +956,53 @@ def repairable_kinds():
                     repair_cost=5.0,
                 ),
             ),
+            # Kept under block replacement: the block stretch holding
+            # the upgrade split there.
+            "upgraded at a time, block-replaced, the unit in service kept": (
+                system(
+                    unit(
+                        preventive={
+                            "policy": "block",
+                            "interval": 200.0,
+                            "cost": 3.0,
+                        },
+                        upgrade={
+                            "at": 250.0,
+                            "reliability": W([900, 2.0]),
+                            "replace_in_service": False,
+                        },
+                        repair_cost=5.0,
+                    ),
+                )
+            ),
+            # Kept with tests in no time: renewed at the test that finds
+            # it failed, with the new life.
+            "upgraded at a time, tested, the unit in service kept": system(
+                unit(
+                    repairability="instant",
+                    inspection={"interval": 100.0, "cost": 1.0},
+                    upgrade={
+                        "at": 250.0,
+                        "reliability": W([900, 2.0]),
+                        "replace_in_service": False,
+                    },
+                    repair_cost=5.0,
+                ),
+            ),
+            # Tests and repairs of fixed lengths: replaced at the
+            # upgrade, or once the test or repair under way is over.
+            "upgraded at a time, tests that take time": system(
+                unit(
+                    repairability=surv.ExactEventTime.from_params([5.0]),
+                    inspection={
+                        "interval": 100.0,
+                        "cost": 1.0,
+                        "duration": surv.ExactEventTime.from_params([2.0]),
+                    },
+                    upgrade={"at": 250.0, "reliability": W([900, 2.0])},
+                    repair_cost=5.0,
+                ),
+            ),
             "block replacement, in no time": system(
                 unit(
                     repairability="instant",
@@ -1469,6 +1516,23 @@ def repairable_kinds():
                         "reliability": W([1000.0, 2.5]),
                         "repairability": W([300.0, 1.5]),
                         "standby": {"units": 2, "k": 1},
+                        "repair_cost": 3.0,
+                    }
+                },
+                repair_crews=1,
+                downtime_cost_rate=5.0,
+            ),
+            "warm standby pair, Weibull, one crew": RepairableRBD(
+                [("s", "a"), ("a", "t")],
+                {
+                    "a": {
+                        "reliability": W([1000.0, 2.5]),
+                        "repairability": W([300.0, 1.5]),
+                        "standby": {
+                            "units": 2,
+                            "k": 1,
+                            "dormancy_factor": 0.5,
+                        },
                         "repair_cost": 3.0,
                     }
                 },
@@ -2084,7 +2148,8 @@ def safety_function_kinds():
     single channel of undetected failures, voted channels with
     diagnostics, repair and common cause of each kind, a proof test that
     can miss, staggered tests, detected failures that trip, a fitted life,
-    and votes in series."""
+    votes in series, and a vote of votes with a cause shared across
+    them."""
     from repyability import SafetyChannel, SafetyFunction
 
     def channel(du=2e-6, dd=3e-6, safe=5e-6, **options):
@@ -2121,6 +2186,13 @@ def safety_function_kinds():
         "votes in series": SafetyFunction.series(
             vote(2, 3, channel(), beta=0.1),
             SafetyFunction({"valve": channel(du=5e-6)}, 1),
+        ),
+        "a vote of votes": SafetyFunction.vote(
+            1,
+            SafetyFunction({"a1": channel(), "a2": channel()}, 2),
+            SafetyFunction({"b1": channel(), "b2": channel()}, 2),
+            beta=0.1,
+            beta_safe=0.05,
         ),
     }
 

@@ -79,11 +79,13 @@ from repyability.rbd._point_availability import (
     InspectionCurve,
     MinimalRepairCurve,
     MixedCurve,
+    OffLine,
     PartialTestCurve,
     PlanCurve,
     ShiftedCurve,
     StartedBlockCurve,
     SteadyCurve,
+    SwitchedCurve,
     SystemCurve,
     TimeChangedCurve,
     failed_at,
@@ -327,6 +329,22 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
             "then",
         )
     if upgraded == "kept":
+        task = _requirements._kept_task(rbd, node)
+        if task == "block replacement":
+            return (
+                r.NUMERICAL,
+                "block replacement followed on a grid from one block time "
+                "to the next, the stretch holding its upgrade split there, "
+                "each unit with the life in service when it is put in (the "
+                "unit in service at its upgrade kept)",
+            )
+        if task == "tests":
+            return (
+                r.NUMERICAL,
+                "its renewals at its tests summed over the test intervals, "
+                "each unit with the life in service when it is put in (the "
+                "unit in service at its upgrade kept)",
+            )
         return (
             r.NUMERICAL,
             "its renewal equation, solved on a grid, each unit with the "
@@ -334,6 +352,13 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
             "upgrade kept)",
         )
     if upgraded == "tests":
+        if not _requirements._instant_tests_found(rbd, node):
+            return (
+                r.NUMERICAL,
+                "its tested unit followed test by test on a grid up to its "
+                "upgrade, and from there a new unit of the new life's, from "
+                "each test or repair under way then, on the tests' calendar",
+            )
         return (
             r.NUMERICAL,
             "its tests' model up to its upgrade, and from there a new "
@@ -1420,7 +1445,13 @@ def _pair_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
                 f"typical life is about {scale:.3g}): estimate it by "
                 "simulation, with availability()."
             )
-        curve = _standby_cycle.over_time(life, repair, step, n)
+        curve = _standby_cycle.over_time(
+            life,
+            repair,
+            step,
+            n,
+            rbd._standby[node].switching_probability,
+        )
         if end >= horizon or curve.settled(values):
             break
         end = min(
@@ -2316,7 +2347,13 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     return ShiftedCurve(curve, curve.settle + since)
 
 
-def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
+def _plan_curve(
+    rbd,
+    node,
+    horizon: float,
+    start: Optional[NodeState] = None,
+    kept: Optional[Tuple[float, Any, Any]] = None,
+):
     """A component's point availability over ``[0, horizon]``, replaced
     at the times of its plan (its ``"replace_at"``, or those of the
     shutdown it is renewed at) if it is up at them and after the last no
@@ -2328,13 +2365,20 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     ``_block_curve`` starts block replacement). The stretch after the last
     time is as long as the longest of the others, doubled until it
     reaches the horizon, so that nearby horizons are worked out on the
-    same grid, with that stretch's step."""
+    same grid, with that stretch's step.
+
+    ``kept``, ``(at, life, after)``: block replacement on its interval
+    with an upgrade that keeps the unit in service (``rbd`` the diagram
+    before it): the units put into service from ``at`` have ``life``,
+    the stretch that holds ``at`` split there (``plan_availability``'s
+    ``switch``, or the head's, ``_unit_curve``'s), and every later
+    stretch's units of that life."""
     if not math.isfinite(horizon):
         _requirements._require_no_plans(rbd)
     component = rbd.components[node]
     schedule = rbd._preventive[node]
     duration = schedule.duration
-    times, taken = _plan_times(schedule, horizon)
+    times, taken = _plan_times(schedule, horizon, on_period=kept is not None)
     # A shut at 0 does not replace the unit, new or as its state says
     # then: the simulation's tasks fall due after 0 (_Preventive.due).
     taken = [d for t, d in zip(times, taken) if t > 0.0]
@@ -2344,8 +2388,8 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
             rbd, node, horizon, counts=True, start=start, unscheduled=True
         )
     edges = np.concatenate(([0.0], times))
-    gaps = np.diff(edges)
     started = start is not None and not start.new
+    gaps = np.diff(edges)
     # The stretches that start by the horizon (from a state, the one
     # after the head at least).
     used = max(
@@ -2368,6 +2412,22 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
             upgrade.life if begin >= upgrade.at else component.reliability
             for begin in edges[: len(lengths)]
         ]
+    # A unit kept in service at an upgrade: the stretch that holds it
+    # split there (the head's, from a state, as its own curve's).
+    switch = None
+    head_switch = None
+    if kept is not None:
+        at, new_life, after = kept
+        lives = [
+            new_life if begin >= at else component.reliability
+            for begin in edges[: len(lengths)]
+        ]
+        k = int(np.searchsorted(edges[: len(lengths)], at, side="right")) - 1
+        if edges[k] < at < edges[k] + lengths[k]:
+            if started and k == 0:
+                head_switch = kept
+            else:
+                switch = (k, at - edges[k], new_life)
 
     # The time each stretch's replacement takes, where they differ (the
     # first's, from new, starts no replacement: it shares the next one's
@@ -2383,6 +2443,10 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
         )
 
     def followed(lengths, head=None):
+        shift = len(lives) - len(lengths) if lives is not None else 0
+        split = None
+        if switch is not None and switch[0] >= shift:
+            split = (switch[0] - shift,) + switch[1:]
         if schedule.policy == "condition":
             # Inspected at each time and kept unless due.
             return condition_plan_availability(
@@ -2402,6 +2466,7 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
             like,
             None if lives is None else lives[-len(lengths) :],  # noqa
             None if durations is None else durations[-len(lengths) :],  # noqa
+            split,
         )
 
     if not started:
@@ -2409,7 +2474,13 @@ def _plan_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     assert start is not None
     length = float(times[0])
     head = _unit_curve(
-        rbd, node, length, counts=True, start=start, unscheduled=True
+        rbd,
+        node,
+        length,
+        counts=True,
+        start=start,
+        unscheduled=True,
+        switch=head_switch,
     )
     down_sf = None
     if not start.alive:
@@ -2469,17 +2540,24 @@ def _upgraded_curve(
     after = _long_run.after_upgrades(rbd)
     if _requirements._upgrade_kind(rbd, node) == "kept":
         # The unit in service at the upgrade is kept: each unit has the
-        # life in service when it is put in, on one grid throughout.
+        # life in service when it is put in.
+        kept = (at, rbd._upgrades[node].life, after)
+        task = _requirements._kept_task(rbd, node)
+        if task == "block replacement":
+            # The block stretch that holds the upgrade split there.
+            return _plan_curve(before, node, horizon, start, kept=kept)
+        if task == "tests":
+            return _kept_tested_curve(rbd, node, start)
+        # On one grid throughout.
         return _unit_curve(
-            before,
-            node,
-            horizon,
-            counts=True,
-            start=start,
-            switch=(at, rbd._upgrades[node].life, after),
+            before, node, horizon, counts=True, start=start, switch=kept
         )
     rest = max(horizon - at, 0.0)
     just_before = np.array([np.nextafter(at, 0.0)])
+    if node in rbd._inspection and not _requirements._instant_tests_found(
+        rbd, node
+    ):
+        return _swapped_tested_curve(rbd, node, horizon, start)
     if node in rbd._inspection:
         head = _node_curve(
             before,
@@ -2597,6 +2675,128 @@ def _upgraded_curve(
     return StartedBlockCurve(head, MixedCurve(parts, action), at)
 
 
+def _swapped_tested_curve(rbd, node, horizon: float, start):
+    """An upgraded component with tests that take time or miss failures,
+    or repairs that take time, each of a fixed length, whose unit in
+    service at the upgrade's time ``at`` is replaced (see
+    ``_upgraded_curve``): its tested unit's curve (``TestedUnit``) up to
+    ``at``, and from there the new life's, from each state it may be in
+    then, as the simulation replaces it (``_event_loop._swapped_at``):
+
+    - up, or failed unseen (a failure a test missed too): replaced at
+      ``at``, new on the tests' calendar (a test due at ``at`` is not
+      done); a preventive action if it was up;
+    - off line for a test: replaced once the test is over, a preventive
+      action then;
+    - in a test that found it failed, or in its repair (or in the repair
+      it started in): back with the new life once that is over.
+
+    The tests and repairs being of fixed lengths, each of those is a
+    test before ``at`` (``TestedCurve.under_way``), and the unit's curve
+    from each a new unit's put into service then
+    (``TestedUnit.curve``'s ``("back", left)``)."""
+    at = rbd._upgrades[node].at
+    before = _long_run.before_upgrades(rbd)
+    after = _long_run.after_upgrades(rbd)
+    old = _requirements._tested_unit(before, node, any_kind=True)
+    new = _requirements._tested_unit(after, node, any_kind=True)
+    assert old is not None and new is not None
+    head = _tested_unit_curve(before, node, old, at, start)
+    rest = max(horizon - at, 0.0)
+    # The new unit's tests: on the calendar, the first after ``at``.
+    T = head.interval
+    k0 = max(head.k0, int(np.floor((at - head.base) / T)) + 1)
+    if not head.base + k0 * T > at:
+        k0 += 1
+    base = head.base - at
+    up = float(head.at(np.array([np.nextafter(at, 0.0)]))[0])
+    parts, swaps = [], []
+    left = 1.0
+    for wait, chance, planned in head.under_way(at):
+        curve = new.curve(rest, base, k0, ("back", wait))
+        parts.append((chance, OffLine(curve, wait) if planned else curve))
+        if planned:
+            swaps.append((wait, chance))
+        left -= chance
+    # Up, or failed unseen: replaced at once.
+    parts.insert(0, (max(left, 0.0), new.curve(rest, base, k0)))
+    return StartedBlockCurve(
+        head, MixedCurve(parts, (up, 0.0, 0.0), swaps), at
+    )
+
+
+def _kept_tested_curve(rbd, node, start):
+    """An upgraded component with tests and repairs in no time that find
+    every failure, whose unit in service at the upgrade's time ``at`` is
+    kept until a test finds it failed (see ``_upgraded_curve``): the
+    renewals are at the tests, the unit put in at one with the life in
+    service then (a test at ``at`` renews with the new life).
+
+    The component's own curve (``TestedLifeCurve``, the old life
+    throughout) is right but for the units put in from ``at``. The
+    renewals from ``at`` whose unit was put in before it, ``b_n``, start
+    those: so it is that curve, less those starts' renewal curve with
+    the old life, plus theirs with the new (``SwitchedCurve``). ``b_n``
+    is the first unit's chance of being found at the ``n``-th test, and
+    that of each unit renewed at a test before ``at`` (``r_m``), ``sum_m
+    r_m f_{n - m}``, ``f_k`` a unit's chance of being found at its
+    ``k``-th test."""
+    from repyability.rbd._hidden_life import TestedLife, TestedLifeCurve
+
+    upgrade = rbd._upgrades[node]
+    at = upgrade.at
+    before = _long_run.before_upgrades(rbd)
+    interval = float(rbd._inspection[node].interval)
+    old = TestedLife(before.components[node].reliability, interval)
+    plain = _tested_life_curve(before, node, old, start)
+    T, first = interval, plain.first
+    # The tests strictly before ``at``, and the renewals at them.
+    J = int(np.ceil((at - first) / T)) if at > first else 0
+    while J > 0 and not first + (J - 1) * T < at:
+        J -= 1
+    while first + J * T < at:
+        J += 1
+    K = len(old.up)
+    fails = np.maximum(
+        np.where(
+            old.down[:-1] <= 0.5, np.diff(old.down), old.up[:-1] - old.up[1:]
+        ),
+        0.0,
+    )
+    n = np.arange(J + 1, J + K + 1)
+    tests = first + (np.concatenate([[J], n]) - 1) * T
+    down = np.clip(plain.initial_down(tests), 0.0, 1.0)
+    if J == 0:
+        down[0] = 0.0
+    b = np.maximum(np.diff(down), 0.0)
+    if J > 0:
+        m = np.arange(max(1, J - K + 2), J + 1)
+        r = plain._r(m)
+        lag = n[:, None] - m[None, :]
+        inside = (lag >= 1) & (lag <= len(fails))
+        b = b + (
+            np.where(inside, fails[np.clip(lag - 1, 0, len(fails) - 1)], 0.0)
+            @ r
+        )
+    total = np.concatenate([[0.0], np.cumsum(b)])
+
+    def started(x):
+        # The starts by each time: those at the tests up to it.
+        x = np.asarray(x, dtype=float)
+        count = np.floor((x - first) / T + 1e-9) + 1.0 - J
+        return total[np.clip(count, 0, len(b)).astype(np.int64)]
+
+    def nothing(x):
+        return np.zeros(np.shape(x))
+
+    new = TestedLife(upgrade.life, interval)
+    return SwitchedCurve(
+        plain,
+        TestedLifeCurve(old, first, nothing, started),
+        TestedLifeCurve(new, first, nothing, started),
+    )
+
+
 def _own_down(rbd, node, start: NodeState):
     """The survival function of what is left of the repair or
     replacement a component started in (see ``_first_unit``)."""
@@ -2701,18 +2901,22 @@ def _knots(duration) -> np.ndarray:
     return np.empty(0) if duration is None else point_knots(duration)
 
 
-def _plan_times(schedule, horizon: float):
+def _plan_times(schedule, horizon: float, on_period: bool = False):
     """The times a component replaced at given times is replaced at,
     and the model of the time each takes: its plan's (or a shutdown's)
     times, each its ``duration``; at several shutdowns (``shuts``), the
     starts of each in order up to the first after ``horizon`` (enough for
-    the stretches that cover it), each its own shut's."""
-    if schedule.upgrade_at is not None:
+    the stretches that cover it), each its own shut's. ``on_period``:
+    block replacement on its interval, as a plan (a unit kept in service
+    at an upgrade, see ``_plan_curve``)."""
+    if schedule.upgrade_at is not None or on_period:
         # Block replacement on its interval, up to the first time after
         # the horizon, and at the upgrade.
         T = float(schedule.interval)
         last = math.floor(max(horizon, 0.0) / T) + 1
-        times = np.union1d(T * np.arange(1, last + 1), [schedule.upgrade_at])
+        times = T * np.arange(1, last + 1)
+        if schedule.upgrade_at is not None:
+            times = np.union1d(times, [schedule.upgrade_at])
         return times, [schedule.duration] * len(times)
     if schedule.shuts is None:
         times = np.asarray(schedule.times, dtype=float)

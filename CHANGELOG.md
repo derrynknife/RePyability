@@ -18,6 +18,112 @@ release between minors that only adds (0.19.1).
   refuse)"). The first failure's routes by a chain, and by phases (whose
   values may not settle to `rtol`), say so.
 
+- A fault tree with common-cause groups over repaired events gives its
+  failure frequency at a time, `failure_frequency(t)`, and its
+  probability-based measures at a time (Birnbaum, criticality, RAW, RRW,
+  Fussell-Vesely, improvement potential, joint and differential
+  importance, `ranked_cut_sets` and `conditional_probabilities`), which
+  were refused. The frequency counts each event outside the groups where
+  it is critical over the groups' joint states at `t`, from their
+  chains, and each cause at its rate times the rise its strike makes in
+  the top event's probability; the measures hold an event outside the
+  groups occurred and not and condition a member on its state through
+  its group's joint states then, each group within the smallest part of
+  the tree holding its members, as a `RepairableRBD`'s measures at a
+  time do. Checked: each measure against `to_repairable_rbd()`'s at the
+  same times to 1e-12 (within 3e-14), repaired and tested members; the
+  frequency against the pair's four-state Markov chain to 1e-12, and at
+  a late time against `system_failure_frequency()`; its integral against
+  `expected_failures` (1e-6); and against 20,000 seeded simulations of
+  the diagram over 300 h, 0.2284 top events against 0.2229 (-1.7 SE),
+  and the top event given a member down at 250 h, 0.0696 against 0.0671
+  (-0.2 SE). Trees without such groups give the same values to the bit.
+  `to_open_psa()` still refuses such a tree, the format's groups
+  splitting probabilities, not rates.
+- `SafetyFunction.vote(k, *functions, beta=..., beta_detected=...,
+  beta_safe=...)`: a vote of votes (a 2oo4 arrangement wired as 1oo2 of
+  2oo2, say), each function voted on a vote, a vote of votes or votes in
+  series, with a cause shared by every channel beneath the vote. It acts
+  when `k` of the functions act and trips spuriously when `k` of them
+  trip. Checked against the multi-phase Markov chain of the four channels
+  (1e-8) and against the plain vote where each function is one channel
+  (equal).
+- `SafetyFunction.to_dict`, `from_dict`, `to_json` and `from_json`: a
+  function saved with each channel once (its models in surpyval's
+  format) and rebuilt through its constructors.
+- `SafetyFunction.measure_uncertainty(measure, uncertainty)`: the PFDavg,
+  the PFH or the spurious-trip rate over uncertain channel rates (from
+  distributions, or a fitted life from its fit), as an
+  `UncertaintyResult`.
+- `SafetyFunction.simplified_formulas()` takes a proof test that can miss
+  (IEC 61508-6 B.3.2.5: `PTC T1 + (1 - PTC) T2` for `T1` in the down
+  times and the common cause), which it refused. Its PFDavg reproduces
+  the fifteen subsystem values of a published worked example (The 61508
+  Association's "SIL Calculations" slides, 2024) to the three figures
+  printed; the guide sets them beside the exact values.
+
+- A cold standby pair with one repair at a time and a switch that can
+  fail (`"switching_probability"` below 1) is followed over time, from
+  new or from its long-run state, which was refused: `point_availability`,
+  `point_unavailability`, `mission_availability`, `expected_failures`,
+  the expected costs and the other values over a window, and the exact
+  means `availability()` and `cost()` report. The pair starts afresh in
+  two states (a unit starting to operate as the other starts its repair,
+  or with the other ready, as at 0), whose renewal equations are solved
+  together on the grid a sure switch's one is. Checked: exponential
+  units against the Markov chain followed by uniformization at the
+  grid's points to 1e-9, for three rate pairs and switches of 0.9, 0.5
+  and 0 (within 2e-10); a switch that never works against one
+  exponential unit's closed form (1e-9); the Laplace transforms of the
+  unavailability and of the failures against the two states' own, by
+  quadrature of the models (1e-6), for Weibull and Weibull/lognormal
+  pairs; Weibull(1000, 2.5) lives, Weibull(300, 1.5) repairs and a
+  switch of 0.9 over 2,500 h, 0.971158 against 0.970917 simulated
+  (20,000 runs, -0.6 SE) and 0.3365 failures against 0.3388 (+0.6 SE);
+  Weibull(1000, 1.5) lives, LogNormal(5, 0.6) repairs and a switch of
+  0.7 over 1,200 h, 0.958258 against 0.958306 (+0.1 SE) and 0.3385
+  against 0.3382 (-0.1 SE). A sure switch's values are unchanged to the
+  bit.
+- An upgraded component's values over a horizon (`point_availability`,
+  `mission_availability`, `expected_events`, `expected_cost`,
+  `expected_npv`) no longer refuse, from new or from a state, when the
+  unit in service is kept (`"replace_in_service": False`) under block
+  replacement or with tests and repairs in no time that find every
+  failure, nor when it is replaced at the upgrade with tests or repairs
+  of fixed lengths or tests that miss failures. A unit kept is the
+  component's own values with the units put in from the upgrade given
+  the new life (only the block stretch holding the upgrade is split);
+  upgraded to its own life, it is the component, to 1e-12. A unit
+  replaced is replaced as the simulation does: up or failed unseen at
+  the upgrade, off line for its test once the test is over, in a test
+  that found it failed or its repair once that is over. Tests or
+  repairs of varying length, and a unit kept with tests that take time
+  or miss, are still simulated. No seeded result changes.
+
+- The long-run values of a warm standby pair (two units, one needed, a
+  spare that ages at `"dormancy_factor"` while it waits and can fail in
+  standby, a sure switch) of any lives and repairs with one repair at a
+  time (`repair_crews=1`), which only a simulation gave:
+  `mean_availability`, `mean_unavailability`, the frequencies and the
+  cost rate, inside larger diagrams too. Each time a unit starts its
+  repair, what follows depends only on how much of its life the
+  operating unit has used, so the pair is a Markov renewal process on
+  that; it is solved on a grid (the step's sums by quadrature at each
+  point, so a repair far shorter than a step costs nothing), halved
+  until two extrapolated solutions agree to 1e-9. Checked: exponential
+  units equal the Markov chain to 1e-9 for three rate pairs and spares
+  ageing at 0.1, 0.5 and 1 (within 3e-10); exponential lives against
+  their closed form with Weibull and lognormal repairs (1e-8), and an
+  unavailability of 1e-9 against it (1e-6); a spare that hardly ages
+  against the cold pair's cycle; Weibull(1000, 2.5) lives and
+  Weibull(300, 1.5) repairs with a spare ageing at 0.5, 0.953177 against
+  0.952999 simulated (400 runs of 1e6 h, standard error 1.7e-4, -1.0
+  SE), and hot, 0.922191 against 0.922522 (+1.6 SE); Weibull(1000, 1.5)
+  lives and LogNormal(5, 0.6) repairs at 0.2, 0.981165 against 0.981051
+  (-1.0 SE). A warm pair with both units repaired at once or a switch
+  that can fail, and any warm pair over time, are refused as before,
+  pointing to the simulation. `analysis_routes()` reports the pair as
+  numerical.
 - A `Network` of repaired elements may now mix them with fixed
   probabilities and lives that are not repaired, which it refused before
   (as a `FaultTree` does): a probability is down with it at every time
@@ -1120,6 +1226,14 @@ release between minors that only adds (0.19.1).
   now gives 0.99927, 0.98477 and 0.95649 in about ten seconds. A time
   asked beside others now gets the value it gets asked alone, which can
   move a value that settled before by less than `rtol`.
+- The values over a horizon of an upgraded component with tests in no
+  time took its curve from the upgrade on to settle to a constant once
+  it had settled, where a tested unit's repeats every test interval: a
+  memoryless unit's integrals past that point were wrong (0.954 for
+  0.936 mission availability over 1,000 hours of a unit failing at
+  1/200 an hour, then 1/800, tested every 50). They now follow the
+  repeating curve; a life whose curve had not settled by the horizon is
+  unchanged.
 
 - A surpyval model with a hazard ratio (`hr=`) draws its lifetimes with
   it in a `NonRepairableRBD`'s and a `PhasedMission`'s simulations

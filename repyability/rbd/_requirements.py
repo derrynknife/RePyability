@@ -35,6 +35,7 @@ from repyability.rbd._hidden_life import (
 from repyability.rbd._hidden_tests import TestedUnit
 from repyability.rbd._hidden_tests import check as check_tested
 from repyability.rbd._model_utils import (
+    distribution_name,
     failure_time_scale,
     is_fixed_probability,
     model_mean,
@@ -615,10 +616,10 @@ def _upgrade_kind(rbd, node) -> Optional[str]:
     renewal equation on each side of the upgrade, and ``"tests"``, with
     tests, its tests' model on each side (see
     ``_curves._upgraded_curve``); ``"kept"``, the unit in service kept
-    past the upgrade (``replace_in_service`` False): its renewal
-    equation with the life of each unit by when it is put into service,
-    with no task or under age replacement (see
-    ``_require_upgrade_followed``)."""
+    past the upgrade (``replace_in_service`` False): each unit with the
+    life in service when it is put in, with no task, under age or block
+    replacement, or with tests and repairs in no time that find every
+    failure (see ``_require_upgrade_followed``)."""
     upgrade = rbd._upgrades.get(node)
     if upgrade is None:
         return None
@@ -643,36 +644,70 @@ def _kept_task(rbd, node) -> Optional[str]:
     return "age" if schedule.policy == "age" else "block replacement"
 
 
+def _instant_tests_found(rbd, node) -> bool:
+    """Whether a component's tests and repairs take no time and its tests
+    find every failure."""
+    return _instant_tests(rbd, node) and not rbd._inspection[node].partial
+
+
+def _fixed_or_none(model) -> bool:
+    """Whether a test or repair time is none or of a fixed length."""
+    return model is None or distribution_name(model) == "ExactEventTime"
+
+
 def _require_upgrade_followed(rbd, node) -> None:
     """Raise unless an upgraded component's values over a horizon are
-    worked out (see ``_upgrade_kind``): not for a unit kept in service
-    past the upgrade, nor with tests other than in no time, repaired in
-    no time, finding every failure, on a period of their own."""
+    worked out (see ``_upgrade_kind``): with tests, on a period of their
+    own; the unit in service at the upgrade kept, with tests and repairs
+    in no time that find every failure; replaced then, with tests and
+    repairs in no time, or of fixed lengths (``TestedUnit``'s lives and
+    tests on each side)."""
     kind = _upgrade_kind(rbd, node)
-    if kind == "kept" and _kept_task(rbd, node) not in (None, "age"):
-        raise NotImplementedError(
-            f"Component {node!r} keeps the unit in service at its upgrade "
-            "(replace_in_service False) until its next failure or due "
-            "replacement, whose values over a horizon are worked out with "
-            "no task or under age replacement, not yet with "
-            f"{_kept_task(rbd, node)}: estimate them by simulation, with "
-            "availability() or cost() (or npv_distribution())."
-        )
-    if kind != "tests":
+    if kind not in ("tests", "kept") or node not in rbd._inspection:
         return
+    simulate = (
+        "estimate them by simulation, with availability() or cost() (or "
+        "npv_distribution())."
+    )
     inspection = rbd._inspection[node]
+    if inspection.times is not None or inspection.clock is not None:
+        raise NotImplementedError(
+            f"Component {node!r} has tests and is upgraded at a time, "
+            "whose values over a horizon are worked out for tests on a "
+            f"period of their own: {simulate}"
+        )
+    if kind == "kept":
+        if not _instant_tests_found(rbd, node):
+            raise NotImplementedError(
+                f"Component {node!r} keeps the unit in service at its "
+                "upgrade (replace_in_service False) until its next failure "
+                "or due replacement, whose values over a horizon are worked "
+                "out with tests and repairs in no time that find every "
+                "failure, not yet with tests or repairs that take time or "
+                f"tests that miss failures: {simulate}"
+            )
+        return
+    if _instant_tests_found(rbd, node):
+        return
+    component = rbd.components[node]
     if not (
-        _instant_tests(rbd, node)
-        and not inspection.partial
-        and inspection.times is None
-        and inspection.clock is None
+        _fixed_or_none(inspection.duration)
+        and _fixed_or_none(component.time_to_replace)
     ):
         raise NotImplementedError(
             f"Component {node!r} has tests and is upgraded at a time, "
             "whose values over a horizon are worked out for tests and "
-            "repairs in no time that find every failure, on a period of "
-            "their own: estimate them by simulation, with availability() "
-            "or cost() (or npv_distribution())."
+            "repairs in no time or of fixed lengths, not yet for ones of "
+            f"varying length: {simulate}"
+        )
+    for life in (component.reliability, rbd._upgrades[node].life):
+        check_tested(
+            life,
+            component.time_to_replace,
+            inspection.duration,
+            inspection.interval,
+            node,
+            simulate[0].upper() + simulate[1:],
         )
 
 

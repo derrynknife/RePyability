@@ -20,11 +20,17 @@ its ``system_failure_frequency()``, and the spurious-trip rate the safe
 diagram's ``system_failure_frequency()``.
 """
 
+import dataclasses
+import json
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, Hashable, List, Optional, Tuple
+from typing import Any, Dict, Hashable, List, Optional, Tuple, Union
 
+import numpy as np
+
+from repyability._version import __version__
 from repyability.rbd import _long_run, routes
+from repyability.rbd import uncertainty as _uncertainty
 from repyability.rbd._common import _constant_rate
 from repyability.rbd._model_utils import MODEL_ERRORS
 from repyability.rbd.ccf import BetaFactor, CCFGroup
@@ -34,6 +40,7 @@ from repyability.rbd.results import (
     SafetyFunctionResult,
     SILBand,
     SimplifiedSafetyFormulas,
+    UncertaintyResult,
 )
 from repyability.rbd.routes import AnalysisRoute, AnalysisRoutes
 from repyability.utils.checks import (
@@ -43,6 +50,8 @@ from repyability.utils.checks import (
     one_of,
     whole_number,
 )
+from repyability.utils.deprecation import refuse_removed_names
+from repyability.utils.json_io import read_json, write_json
 
 #: The demand modes of IEC 61508-4, and the measure each one's SIL is
 #: read from.
@@ -439,6 +448,138 @@ class _Stage:
         return float(channel.safe) + extra
 
 
+@dataclass(frozen=True)
+class _Series:
+    """Parts in series: the function acts when every part does, and
+    trips spuriously when any part does."""
+
+    parts: Tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class _Voted:
+    """A vote of parts (each a vote, a vote of votes or a series): it acts
+    when ``k`` of them act, and trips spuriously when ``k`` of them trip,
+    with a shared cause over every channel beneath it by kind."""
+
+    parts: Tuple[Any, ...]
+    k: int
+    beta: float
+    beta_detected: float
+    beta_safe: float
+
+
+_Part = Union[_Stage, _Series, _Voted]
+
+
+def _leaves(part: _Part) -> List[_Stage]:
+    """The votes of channels in ``part``, in order."""
+    if isinstance(part, _Stage):
+        return [part]
+    return [stage for inner in part.parts for stage in _leaves(inner)]
+
+
+def _with_channels(part: _Part, channels: Dict[Hashable, Any]) -> _Part:
+    """``part`` with the channels named in ``channels`` replaced."""
+    if isinstance(part, _Stage):
+        return dataclasses.replace(
+            part,
+            channels={
+                name: channels.get(name, channel)
+                for name, channel in part.channels.items()
+            },
+        )
+    return dataclasses.replace(
+        part, parts=tuple(_with_channels(p, channels) for p in part.parts)
+    )
+
+
+def _described(part: _Part, inside: bool = False) -> str:
+    if isinstance(part, _Stage):
+        return f"{part.k}oo{len(part.channels)}"
+    if isinstance(part, _Voted):
+        inner = ", ".join(_described(p, True) for p in part.parts)
+        return f"{part.k}oo{len(part.parts)}({inner})"
+    inner = ", ".join(_described(p, True) for p in part.parts)
+    return f"[{inner}]" if inside and len(part.parts) > 1 else inner
+
+
+def _shared_groups(part: _Part) -> List[List[Hashable]]:
+    """The channels each shared cause spans, by name (a vote's with a
+    beta, of any kind)."""
+    out = []
+    if isinstance(part, _Stage):
+        if len(part.channels) > 1 and (
+            part.beta or part.beta_detected or part.beta_safe
+        ):
+            out.append(list(part.channels))
+        return out
+    if isinstance(part, _Voted) and (
+        part.beta or part.beta_detected or part.beta_safe
+    ):
+        out.append([name for s in _leaves(part) for name in s.channels])
+    for inner in part.parts:
+        out.extend(_shared_groups(inner))
+    return out
+
+
+def _parts(method: str, functions, what: str) -> List[_Series]:
+    """The structures of ``functions``, checked: at least one, each a
+    ``SafetyFunction``, no channel's name in two."""
+    if not functions:
+        raise ValueError(f"{method} needs at least one SafetyFunction.")
+    seen: set = set()
+    out = []
+    for function in functions:
+        if not isinstance(function, SafetyFunction):
+            raise ValueError(
+                f"{method} takes SafetyFunctions, got {function!r}."
+            )
+        shared = seen & set(function.channels)
+        if shared:
+            joined = "put in series" if what == "series" else "voted on"
+            raise ValueError(
+                f"The functions {joined} must name their channels "
+                f"differently; {sorted(map(repr, shared))} is in more "
+                "than one."
+            )
+        seen |= set(function.channels)
+        out.append(function._structure)
+    return out
+
+
+def _shared_over(part: "_Voted", name: str) -> None:
+    """Refuse a shared cause ``name`` over a vote of votes whose channels
+    differ, or one of which shares a cause of that kind already."""
+    stages = _leaves(part)
+    channels = [c for stage in stages for c in stage.channels.values()]
+    names = [n for stage in stages for n in stage.channels]
+    if any(c != channels[0] for c in channels[1:]) or any(
+        s.detected_trips != stages[0].detected_trips for s in stages
+    ):
+        raise ValueError(
+            f"{name} needs the channels beneath the vote alike, as a beta "
+            "factor shares a fraction of one rate among them, and "
+            f"channels {names!r} differ. Give every channel the same "
+            f"SafetyChannel (and detected_trips), or {name}=0."
+        )
+
+    def already(inner) -> bool:
+        if isinstance(inner, _Stage):
+            return len(inner.channels) > 1 and getattr(inner, name) > 0.0
+        if isinstance(inner, _Voted) and getattr(inner, name) > 0.0:
+            return True
+        return any(already(p) for p in inner.parts)
+
+    if any(already(inner) for inner in part.parts):
+        raise ValueError(
+            f"{name} on a vote of votes shares a cause over every channel "
+            "beneath it, and some of them share one of that kind already "
+            "(a channel is in one shared cause of each kind). Give the "
+            f"{name} on the outer vote alone, or on the inner ones alone."
+        )
+
+
 _IN, _OUT = ("function", "input"), ("function", "output")
 
 
@@ -453,6 +594,7 @@ def _alike(stage: _Stage, what: str, name: str) -> None:
         )
 
 
+@refuse_removed_names
 class SafetyFunction:
     """A safety function: channels voted M-out-of-N, with proof tests,
     diagnostics, repair and common cause.
@@ -577,7 +719,7 @@ class SafetyFunction:
             _fraction(beta_safe, "beta_safe"),
             detected_trips,
         )
-        self._build([stage])
+        self._build(_Series((stage,)))
 
     @classmethod
     def series(cls, *functions: "SafetyFunction") -> "SafetyFunction":
@@ -605,33 +747,124 @@ class SafetyFunction:
             If none is given, one is not a ``SafetyFunction``, or two
             share a channel's name.
         """
-        if not functions:
-            raise ValueError("series needs at least one SafetyFunction.")
-        stages: List[_Stage] = []
-        seen: set = set()
-        for function in functions:
-            if not isinstance(function, SafetyFunction):
-                raise ValueError(
-                    f"series takes SafetyFunctions, got {function!r}."
-                )
-            for stage in function._stages:
-                shared = seen & set(stage.channels)
-                if shared:
-                    raise ValueError(
-                        "The functions put in series must name their "
-                        f"channels differently; {sorted(map(repr, shared))} "
-                        "is in more than one."
-                    )
-                seen |= set(stage.channels)
-                stages.append(stage)
+        parts = _parts("series", functions, "series")
         out = cls.__new__(cls)
-        out._build(stages)
+        out._build(
+            _Series(
+                tuple(
+                    inner
+                    for part in parts
+                    for inner in (
+                        part.parts if isinstance(part, _Series) else (part,)
+                    )
+                )
+            )
+        )
         return out
 
-    def _build(self, stages: List[_Stage]) -> None:
+    @classmethod
+    def vote(
+        cls,
+        k: int,
+        *functions: "SafetyFunction",
+        beta: float = 0.0,
+        beta_detected: float = 0.0,
+        beta_safe: float = 0.0,
+    ) -> "SafetyFunction":
+        """A vote of votes: the function acts when ``k`` of ``functions``
+        act, and trips spuriously when ``k`` of them trip.
+
+        A 2oo4 arrangement wired as 1oo2 of 2oo2 is ``vote(1, pair_a,
+        pair_b)``, each pair a 2oo2 ``SafetyFunction``. A function voted
+        on may itself be a vote of votes or votes in series (a sensor
+        vote and its own logic, say). Both diagrams are drawn whole, so
+        the results are the function's own.
+
+        Parameters
+        ----------
+        k : int
+            How many of ``functions`` must act, from 1 to their number.
+        *functions : SafetyFunction
+            What is voted on, their channels named differently.
+        beta : float, optional
+            The fraction of each channel's undetected dangerous failures
+            that come from a cause shared by every channel beneath the
+            vote (a [`BetaFactor`][repyability.BetaFactor] by rate).
+            Needs the channels alike, and none of them in a shared cause
+            of that kind already. By default 0.
+        beta_detected : float, optional
+            The same for the detected dangerous failures. By default 0.
+        beta_safe : float, optional
+            The same for the safe failures. By default 0.
+
+        Returns
+        -------
+        SafetyFunction
+            The function of the vote.
+
+        Raises
+        ------
+        ValueError
+            If ``k`` is not a whole number from 1 to the number of
+            functions, one is not a ``SafetyFunction``, two share a
+            channel's name, or a beta is given for channels that are not
+            alike or already share a cause of its kind.
+
+        Examples
+        --------
+        Two pairs of transmitters, each pair voting 2oo2, the pairs 1oo2:
+
+        >>> from repyability import SafetyChannel, SafetyFunction
+        >>> unit = SafetyChannel(
+        ...     2e-6, dangerous_detected=3e-6, safe=5e-6,
+        ...     repair=8.0, proof_test_interval=8760.0,
+        ... )
+        >>> pair_a = SafetyFunction({"a1": unit, "a2": unit}, k=2)
+        >>> pair_b = SafetyFunction({"b1": unit, "b2": unit}, k=2)
+        >>> function = SafetyFunction.vote(1, pair_a, pair_b, beta=0.05)
+        >>> function
+        SafetyFunction(1oo2(2oo2, 2oo2); channels=['a1', 'a2', 'b1', 'b2'])
+        >>> f"{function.pfd_avg():.3e}"
+        '8.007e-04'
+        """
+        parts = _parts("vote", functions, "vote")
+        k = whole_number(k, "k")
+        if k > len(parts):
+            raise ValueError(
+                f"k must be at most the number of functions voted on, "
+                f"{len(parts)}, got {k}."
+            )
+        part = _Voted(
+            tuple(
+                (
+                    p.parts[0]
+                    if isinstance(p, _Series) and len(p.parts) == 1
+                    else p
+                )
+                for p in parts
+            ),
+            k,
+            _fraction(beta, "beta"),
+            _fraction(beta_detected, "beta_detected"),
+            _fraction(beta_safe, "beta_safe"),
+        )
+        for name, value in (
+            ("beta", part.beta),
+            ("beta_detected", part.beta_detected),
+            ("beta_safe", part.beta_safe),
+        ):
+            if value > 0.0:
+                _shared_over(part, name)
+        out = cls.__new__(cls)
+        out._build(_Series((part,)))
+        return out
+
+    def _build(self, structure: _Series) -> None:
         from repyability.rbd.repairable_rbd import RepairableRBD
 
-        self._stages = list(stages)
+        self._structure = structure
+        stages = _leaves(structure)
+        self._stages = stages
         self.channels: Dict[Hashable, SafetyChannel] = {
             name: channel
             for stage in stages
@@ -646,9 +879,48 @@ class SafetyFunction:
         safe_components: Dict[Any, Any] = {}
         safe_votes: Dict[Any, int] = {}
         safe_groups: List[CCFGroup] = []
-        before: Tuple[Any, ...] = _IN
-        for index, stage in enumerate(stages):
-            vote = ("vote", index)
+        count = iter(range(1 << 30))
+        # The nodes of each kind a stage draws, for the shared causes of
+        # the votes above it.
+        kinds: Dict[int, Dict[str, list]] = {}
+
+        def voted(vote, k, n):
+            votes[vote] = k
+            safe_votes[vote] = n - k + 1
+            components[vote] = PerfectReliability
+            safe_components[vote] = PerfectReliability
+
+        def shared(nodes, beta, tripping):
+            (safe_groups if tripping else groups).append(
+                CCFGroup(nodes, BetaFactor(beta, basis="rate"))
+            )
+
+        def draw(part, before):
+            if isinstance(part, _Series):
+                for inner in part.parts:
+                    before = draw(inner, before)
+                return before
+            if isinstance(part, _Voted):
+                ends = [draw(inner, before) for inner in part.parts]
+                vote = ("vote", next(count))
+                for end in ends:
+                    edges.append((end, vote))
+                    safe_edges.append((end, vote))
+                voted(vote, part.k, len(part.parts))
+                beneath = [kinds[id(stage)] for stage in _leaves(part)]
+                for beta, kind in (
+                    (part.beta, "undetected"),
+                    (part.beta_detected, "detected"),
+                    (part.beta_safe, "tripping"),
+                ):
+                    nodes = [node for nodes in beneath for node in nodes[kind]]
+                    if beta > 0.0 and len(nodes) > 1:
+                        shared(nodes, beta, kind == "tripping")
+                return vote
+            return stage_drawn(part, before)
+
+        def stage_drawn(stage, before):
+            vote = ("vote", next(count))
             undetected, detected, tripping = [], [], []
             for name, channel in stage.channels.items():
                 (repair, _), (test_repair, _) = channel._repairs()
@@ -704,20 +976,19 @@ class SafetyFunction:
             ):
                 if beta > 0.0 and n > 1 and nodes:
                     _alike(stage, what, name)
-                    (safe_groups if nodes is tripping else groups).append(
-                        CCFGroup(nodes, BetaFactor(beta, basis="rate"))
-                    )
+                    shared(nodes, beta, nodes is tripping)
             self._undetected |= set(undetected)
-            for held, count in (
-                (votes, stage.k),
-                (safe_votes, n - stage.k + 1),
-            ):
-                held[vote] = count
-            components[vote] = PerfectReliability
-            safe_components[vote] = PerfectReliability
-            before = vote
-        edges.append((before, _OUT))
-        safe_edges.append((before, _OUT))
+            kinds[id(stage)] = {
+                "undetected": undetected,
+                "detected": detected,
+                "tripping": tripping,
+            }
+            voted(vote, stage.k, n)
+            return vote
+
+        end = draw(structure, _IN)
+        edges.append((end, _OUT))
+        safe_edges.append((end, _OUT))
         self.dangerous = RepairableRBD(
             edges, components, k=votes, ccf_groups=groups or None
         )
@@ -735,10 +1006,10 @@ class SafetyFunction:
             )
 
     def __repr__(self) -> str:
-        votes = ", ".join(
-            f"{stage.k}oo{len(stage.channels)}" for stage in self._stages
+        return (
+            f"SafetyFunction({_described(self._structure)}; "
+            f"channels={list(self.channels)!r})"
         )
-        return f"SafetyFunction({votes}; channels={list(self.channels)!r})"
 
     def pfd_avg(self) -> float:
         """The average probability of failure on demand (PFDavg): the
@@ -946,6 +1217,11 @@ class SafetyFunction:
             " The exact values (pfd_avg, pfh, spurious_trip_rate) hold "
             "for it."
         )
+        if any(isinstance(p, _Voted) for p in self._structure.parts):
+            return (
+                "The simplified formulas are for one vote of channels, "
+                "and this function votes on votes." + use
+            )
         if len(self._stages) > 1:
             return (
                 "The simplified formulas are for one vote, and this "
@@ -968,11 +1244,6 @@ class SafetyFunction:
             return (
                 "The simplified formulas take constant failure rates, "
                 "and the undetected failures' life has none." + use
-            )
-        if channel.proof_test_coverage < 1.0:
-            return (
-                "The simplified formulas here take a proof test that "
-                "finds every failure (proof_test_coverage=1)." + use
             )
         return None
 
@@ -1010,7 +1281,14 @@ class SafetyFunction:
         MTTR^(M-1)``, the safe failures' independent part, plus ``beta_S
         lambda_S`` where ``M > 1``. See [safety
         functions](../guide/safety-functions.md) for how far each lies
-        from the exact value.
+        from the exact value, and for a published worked example they
+        reproduce.
+
+        A proof test that can miss (``proof_test_coverage`` PTC below 1,
+        everything found every ``full_test`` T2) takes ``PTC T1 + (1 -
+        PTC) T2`` in place of ``T1`` in the down times and the common
+        cause, as B.3.2.5 does for the PFDavg; the PFH takes the same
+        down times.
 
         Returns
         -------
@@ -1022,8 +1300,8 @@ class SafetyFunction:
         ------
         NotImplementedError
             For a function of several votes, a vote the annex has no
-            formula for, channels that differ, a life with no constant
-            rate, or a proof test that can miss.
+            formula for, a vote of votes, channels that differ, or a
+            life with no constant rate.
         """
         refusal = self._simplified_refusal()
         if refusal is not None:
@@ -1036,7 +1314,17 @@ class SafetyFunction:
         undetected = float(channel.undetected_rate or 0.0)
         detected = stage.detected(channel)
         dangerous = undetected + detected
+        # IEC 61508-6 B.3.2.5: a failure the proof test finds waits on
+        # average as one of an interval T1, and one it misses as one of
+        # the full test's T2, so the down times and the common cause take
+        # PTC T1 + (1 - PTC) T2 where they take T1.
+        coverage = float(channel.proof_test_coverage)
         interval = float(channel.proof_test_interval)
+        if coverage < 1.0 and channel.full_test is not None:
+            # (The diagrams refuse a coverage below 1 with no full test.)
+            interval = coverage * interval + (1.0 - coverage) * float(
+                channel.full_test
+            )
         if dangerous > 0.0:
             times = tuple(
                 (undetected / dangerous) * (interval / (j + 1) + mrt)
@@ -1076,6 +1364,452 @@ class SafetyFunction:
             down_times=times,
         )
 
+    # -- parameter uncertainty ------------------------------------------
+
+    def measure_uncertainty(
+        self,
+        measure: str,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+    ) -> UncertaintyResult:
+        """A result of the function over plausible values of its channels'
+        failure rates (parameter uncertainty).
+
+        A rate is estimated from records, so it is uncertain: each of the
+        ``n_draws`` draws gives every uncertain rate a plausible value,
+        and the function, rebuilt with them, its ``measure``, worked out
+        as its own method works it out. The spread of the draws, and
+        their percentiles (``interval``), say how well it is known.
+
+        ``uncertainty`` maps a channel's name, or a tuple of names of one
+        population (channels whose rates are one estimate, drawn alike in
+        each draw), to ``{rate: distribution}``, ``rate`` one of
+        ``"dangerous_undetected"``, ``"dangerous_detected"`` and
+        ``"safe"``, the distribution anything with a quantile function
+        (surpyval's ``qf`` or scipy.stats' ``ppf``) of values of at least
+        0: a gamma from a count of failures over a time in service, say.
+        Where ``dangerous_undetected`` is a surpyval model, it is drawn as
+        a diagram's node is (``"fit"``, ``{parameter: distribution}`` or
+        a list of models; see
+        [`mean_availability_uncertainty`][repyability.RepairableRBD.mean_availability_uncertainty]),
+        and ``"fit"`` alone stands for ``{"dangerous_undetected":
+        "fit"}``. Channels sharing a cause (a beta) must be drawn as one
+        population, or not at all, as a beta factor takes them alike.
+
+        Parameters
+        ----------
+        measure : {"pfd_avg", "pfh", "pfh_undetected", "spurious_trip_rate"}
+            The result drawn: ``pfd_avg()``, ``pfh()``,
+            ``pfh(undetected_only=True)`` or ``spurious_trip_rate()``.
+        uncertainty : dict, optional
+            ``{channel or tuple of channels: uncertainty}`` (see above).
+            By default, every channel whose undetected failures' life is
+            a surpyval fit with a parameter covariance or a Bayesian fit,
+            drawn ``"fit"``, once for all the channels holding that fit.
+        n_draws : int, optional
+            The number of draws, by default 1000: one evaluation each.
+        seed : int, optional
+            Seed for the draws.
+        sampling : str, optional
+            ``"random"`` (the default), or ``"sobol"``: the draws from the
+            points of a scrambled Sobol sequence.
+
+        Returns
+        -------
+        UncertaintyResult
+            The measure of every draw (``samples``), its ``nominal`` value
+            with the channels as given, its summaries, and what the band
+            is (``band``: ``"given"`` for distributions given,
+            ``"confidence"`` or ``"credible"`` for fits, or ``"mixed"``).
+
+        Raises
+        ------
+        ValueError
+            If ``measure`` is none of the four, ``uncertainty`` names an
+            unknown channel or rate, a population whose channels hold
+            different rates, or channels sharing a cause apart; if a
+            distribution has no quantile function or gives a value below
+            0; if ``n_draws`` or ``sampling`` is invalid; or, as
+            ``routes.Refused``, if no ``uncertainty`` is given and no
+            channel's life is a fit.
+
+        Examples
+        --------
+        A 1oo2 vote whose undetected failures were 3 in 1.5 million
+        channel-hours: the rate's gamma distribution (shape 3, rate 1.5e6
+        hours) for both channels, one population:
+
+        >>> from scipy import stats
+        >>> from repyability import SafetyChannel, SafetyFunction
+        >>> unit = SafetyChannel(
+        ...     2e-6, dangerous_detected=3e-6, safe=5e-6,
+        ...     repair=8.0, proof_test_interval=8760.0,
+        ... )
+        >>> function = SafetyFunction({"a": unit, "b": unit}, k=1, beta=0.1)
+        >>> rate = stats.gamma(3, scale=1 / 1.5e6)
+        >>> result = function.measure_uncertainty(
+        ...     "pfd_avg", {("a", "b"): {"dangerous_undetected": rate}},
+        ...     n_draws=50, seed=1,
+        ... )
+        >>> f"{result.nominal:.3e}", result.band
+        ('9.585e-04', 'given')
+        >>> lower, upper = result.interval(0.9)
+        >>> f"{lower:.1e}", f"{upper:.1e}"
+        ('3.1e-04', '2.3e-03')
+        """
+        one_of("measure", measure, _MEASURES)
+        sources = self._uncertain_rates(uncertainty)
+
+        def draw(n: int, source) -> List[Dict[Hashable, Any]]:
+            drawn: List[Dict[Hashable, Dict[str, Any]]] = [
+                {} for _ in range(n)
+            ]
+            for names, field, spec, label in sources:
+                value = getattr(self.channels[names[0]], field)
+                if is_number(value):
+                    values = list(
+                        _uncertainty._quantiles(spec, n, source, label, field)
+                    )
+                    if not all(v >= 0.0 and math.isfinite(v) for v in values):
+                        raise ValueError(
+                            f"{label}: the distribution for {field!r} gives "
+                            "values below 0 or not finite; a rate's "
+                            "distribution must give values of at least 0."
+                        )
+                else:
+                    values = _uncertainty.draw_models(
+                        value, spec, n, source, label
+                    )
+                for i in range(n):
+                    for name in names:
+                        drawn[i].setdefault(name, {})[field] = values[i]
+            return [
+                {
+                    name: dataclasses.replace(self.channels[name], **fields)
+                    for name, fields in row.items()
+                }
+                for row in drawn
+            ]
+
+        rows = _uncertainty.draw_with(
+            draw, _uncertainty.check_draws(n_draws), seed, sampling
+        )
+        samples = np.array(
+            [self._with(row)._measure(measure) for row in rows], dtype=float
+        )
+        return UncertaintyResult(
+            samples=samples,
+            nominal=self._measure(measure),
+            n_draws=len(samples),
+            band=_uncertainty.band(
+                _uncertainty.input_band(
+                    getattr(self.channels[names[0]], field), spec
+                )
+                for names, field, spec, _ in sources
+            ),
+        )
+
+    def _measure(self, measure: str) -> float:
+        if measure == "pfd_avg":
+            return self.pfd_avg()
+        if measure == "pfh":
+            return self.pfh()
+        if measure == "pfh_undetected":
+            return self.pfh(undetected_only=True)
+        return self.spurious_trip_rate()
+
+    def _with(self, channels: Dict[Hashable, Any]) -> "SafetyFunction":
+        """This function with the channels named in ``channels``
+        replaced."""
+        out = type(self).__new__(type(self))
+        structure = _with_channels(self._structure, channels)
+        assert isinstance(structure, _Series)
+        out._build(structure)
+        return out
+
+    def _uncertain_rates(self, uncertainty) -> List[tuple]:
+        """``uncertainty``, checked: ``(names, rate, spec, label)`` for
+        each rate drawn."""
+        if uncertainty is None:
+            fits: Dict[int, List[Hashable]] = {}
+            for name, channel in self.channels.items():
+                life = channel.dangerous_undetected
+                if not is_number(life) and _uncertainty.is_fit(life):
+                    fits.setdefault(id(life), []).append(name)
+            if not fits:
+                raise routes.Refused(
+                    "measure_uncertainty needs what is uncertain: no "
+                    "channel's undetected failures' life is a fit with a "
+                    "parameter covariance or a Bayesian fit. Give "
+                    "uncertainty={channel: {rate: distribution}}, e.g. "
+                    "{'a': {'dangerous_undetected': "
+                    "scipy.stats.gamma(3, scale=1 / 1.5e6)}}."
+                )
+            uncertainty = {tuple(names): "fit" for names in fits.values()}
+        if not isinstance(uncertainty, dict):
+            raise ValueError(
+                "uncertainty must be a dict of {channel or tuple of "
+                f"channels: {{rate: distribution}}}}, got {uncertainty!r}."
+            )
+        out = []
+        drawn: Dict[Hashable, Any] = {}
+        for key, spec in uncertainty.items():
+            names = (
+                (key,)
+                if key in self.channels
+                else tuple(key) if isinstance(key, tuple) else (key,)
+            )
+            unknown = [n for n in names if n not in self.channels]
+            if unknown or not names:
+                raise ValueError(
+                    f"uncertainty names {key!r}, which is not a channel "
+                    f"or a tuple of channels; the channels are "
+                    f"{list(self.channels)!r}."
+                )
+            if isinstance(spec, str) and spec == "fit":
+                spec = {"dangerous_undetected": "fit"}
+            if not isinstance(spec, dict) or not spec:
+                raise ValueError(
+                    f"The uncertainty of {key!r} must be {{rate: "
+                    "distribution}, the rate one of "
+                    f"{list(_RATES)!r}, or 'fit', got {spec!r}."
+                )
+            for field, given in spec.items():
+                if field not in _RATES:
+                    raise ValueError(
+                        f"The uncertainty of {key!r} names {field!r}, "
+                        f"which is not a rate; the rates are "
+                        f"{list(_RATES)!r}."
+                    )
+                values = [getattr(self.channels[n], field) for n in names]
+                if any(v is not values[0] and v != values[0] for v in values):
+                    raise ValueError(
+                        f"The channels {list(names)!r} hold different "
+                        f"{field} rates, so they are not one population: "
+                        "draw each on its own."
+                    )
+                for name in names:
+                    if drawn.setdefault((name, field), key) is not key:
+                        raise ValueError(
+                            f"The {field} rate of channel {name!r} is "
+                            "drawn twice; give it under one key."
+                        )
+                out.append((names, field, given, f"Channel {key!r}"))
+        for group in _shared_groups(self._structure):
+            keys = {
+                (field, drawn.get((name, field)))
+                for name in group
+                for field in _RATES
+            }
+            fields = {field for field, _ in keys}
+            if len(keys) != len(fields):
+                raise ValueError(
+                    f"The channels {group!r} share a cause (a beta), which "
+                    "takes them alike, so draw their rates together, as "
+                    f"one population: uncertainty={{{tuple(group)!r}: "
+                    "...}."
+                )
+        return out
+
+    # -- saving ---------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """The function as a JSON-friendly dict (see ``from_dict``): its
+        votes, how they are joined, and each channel once, its models in
+        surpyval's own format, as a diagram saves them (see
+        [`RBD.to_dict`][repyability.RBD.to_dict]).
+
+        Channels that are alike are saved once and loaded as one
+        ``SafetyChannel``, so a vote with a beta is rebuilt with its
+        channels alike.
+
+        Returns
+        -------
+        dict
+            The ``repyability_version`` that wrote it, the ``type``
+            (``"SafetyFunction"``), the ``channels`` (each saved once) and
+            the ``function``: a ``"vote"`` of channels, a ``"vote_of"``
+            functions or a ``"series"``, nested.
+
+        Raises
+        ------
+        NotImplementedError
+            If a model cannot be saved: one that is not surpyval's (nor a
+            RePyability node model).
+
+        Examples
+        --------
+        >>> from repyability import SafetyChannel, SafetyFunction
+        >>> unit = SafetyChannel(
+        ...     2e-6, dangerous_detected=3e-6, safe=5e-6,
+        ...     repair=8.0, proof_test_interval=8760.0,
+        ... )
+        >>> function = SafetyFunction({"a": unit, "b": unit}, k=1, beta=0.1)
+        >>> d = function.to_dict()
+        >>> d["type"], len(d["channels"]), d["function"]["kind"]
+        ('SafetyFunction', 1, 'series')
+        >>> SafetyFunction.from_dict(d).pfd_avg() == function.pfd_avg()
+        True
+        """
+        table: List[SafetyChannel] = []
+
+        def index(channel: SafetyChannel) -> int:
+            for i, known in enumerate(table):
+                if known == channel:
+                    return i
+            table.append(channel)
+            return len(table) - 1
+
+        def saved(part) -> dict:
+            if isinstance(part, _Stage):
+                return {
+                    "kind": "vote",
+                    "k": part.k,
+                    "channels": [
+                        {"name": name, "channel": index(channel)}
+                        for name, channel in part.channels.items()
+                    ],
+                    "beta": part.beta,
+                    "beta_detected": part.beta_detected,
+                    "beta_safe": part.beta_safe,
+                    "detected_trips": part.detected_trips,
+                }
+            if isinstance(part, _Voted):
+                return {
+                    "kind": "vote_of",
+                    "k": part.k,
+                    "parts": [saved(p) for p in part.parts],
+                    "beta": part.beta,
+                    "beta_detected": part.beta_detected,
+                    "beta_safe": part.beta_safe,
+                }
+            return {"kind": "series", "parts": [saved(p) for p in part.parts]}
+
+        function = saved(self._structure)
+        return {
+            "repyability_version": __version__,
+            "type": "SafetyFunction",
+            "channels": [_channel_to_dict(channel) for channel in table],
+            "function": function,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SafetyFunction":
+        """Rebuild a function from ``to_dict``'s output, by calling its
+        constructors again (``SafetyFunction``, ``series`` and ``vote``),
+        so it is checked again. Tuple names, which JSON turns into lists,
+        are turned back.
+
+        Parameters
+        ----------
+        d : dict
+            As ``to_dict`` returns (possibly after a JSON round trip).
+
+        Returns
+        -------
+        SafetyFunction
+            The function.
+
+        Raises
+        ------
+        ValueError
+            If ``d`` is not a safety function's dict, a model kind is
+            unknown, or a constructor rejects the stored inputs.
+        """
+        from repyability.rbd.serialisation import _node_name
+
+        kind = d.get("type") if isinstance(d, dict) else None
+        if kind != "SafetyFunction":
+            raise ValueError(
+                "SafetyFunction.from_dict takes a safety function's "
+                'to_dict() document, whose "type" is "SafetyFunction", '
+                f"got {kind!r}."
+            )
+        table = [_channel_from_dict(saved) for saved in d["channels"]]
+
+        def loaded(part: dict) -> "SafetyFunction":
+            what = part.get("kind")
+            if what == "vote":
+                return cls(
+                    {
+                        _node_name(entry["name"]): table[entry["channel"]]
+                        for entry in part["channels"]
+                    },
+                    part["k"],
+                    beta=part["beta"],
+                    beta_detected=part["beta_detected"],
+                    beta_safe=part["beta_safe"],
+                    detected_trips=part["detected_trips"],
+                )
+            if what == "vote_of":
+                return cls.vote(
+                    part["k"],
+                    *(loaded(p) for p in part["parts"]),
+                    beta=part["beta"],
+                    beta_detected=part["beta_detected"],
+                    beta_safe=part["beta_safe"],
+                )
+            if what == "series":
+                return cls.series(*(loaded(p) for p in part["parts"]))
+            raise ValueError(
+                f"Unknown part of a safety function {what!r}: expected "
+                "'vote', 'vote_of' or 'series'."
+            )
+
+        return loaded(d["function"])
+
+    def to_json(self, fp=None, **json_kwargs) -> Optional[str]:
+        """The function as a JSON document (see ``to_dict``): returned,
+        or written to ``fp``.
+
+        Parameters
+        ----------
+        fp : str, os.PathLike or file, optional
+            A path, or a file opened for writing, to write the document
+            to; by default None: it is returned.
+        **json_kwargs
+            Passed to ``json.dumps``, e.g. ``indent=2``.
+
+        Returns
+        -------
+        str or None
+            The JSON document, or None once written to ``fp``.
+
+        Raises
+        ------
+        NotImplementedError
+            If a model cannot be saved (see ``to_dict``).
+        TypeError
+            If a channel's name cannot be encoded as JSON.
+        """
+        return write_json(json.dumps(self.to_dict(), **json_kwargs), fp)
+
+    @classmethod
+    def from_json(cls, s) -> "SafetyFunction":
+        """Rebuild a function from ``to_json``'s output.
+
+        Parameters
+        ----------
+        s : str, os.PathLike or file
+            The JSON document: its text, a path to a file holding it, or
+            a file opened for reading.
+
+        Returns
+        -------
+        SafetyFunction
+            The function.
+
+        Raises
+        ------
+        ValueError
+            If ``s`` is not valid JSON, or for the reasons ``from_dict``
+            gives.
+        """
+        return cls.from_dict(json.loads(read_json(s)))
+
     def analysis_routes(self) -> AnalysisRoutes:
         """How each result of this function is computed, found without
         running it: exactly, numerically, by simulation, or not at all.
@@ -1091,7 +1825,8 @@ class SafetyFunction:
             An [`AnalysisRoute`][repyability.AnalysisRoute] for each of
             ``pfd_avg``, ``pfd_breakdown``, ``pfh``,
             ``spurious_trip_rate``, ``safe_failure_fraction``, ``sil``,
-            ``results`` and ``simplified_formulas``.
+            ``results``, ``measure_uncertainty`` and
+            ``simplified_formulas``.
         """
         dangerous = self.dangerous.analysis_routes()
         pfd_avg = dangerous["mean_unavailability"]
@@ -1125,6 +1860,12 @@ class SafetyFunction:
                     trips,
                     breakdown,
                 ),
+                "measure_uncertainty": _worst(
+                    "Each draw's value as its method gives it.",
+                    pfd_avg,
+                    pfh,
+                    trips,
+                ),
                 "simplified_formulas": (
                     AnalysisRoute(
                         routes.EXACT,
@@ -1136,6 +1877,46 @@ class SafetyFunction:
                 ),
             }
         )
+
+
+#: The rates a channel's uncertainty may draw.
+_RATES = ("dangerous_undetected", "dangerous_detected", "safe")
+#: The results ``measure_uncertainty`` draws.
+_MEASURES = ("pfd_avg", "pfh", "pfh_undetected", "spurious_trip_rate")
+#: A channel's fields, as saved.
+_FIELDS = tuple(field.name for field in dataclasses.fields(SafetyChannel))
+
+
+def _value_to_dict(value):
+    """A channel's field as saved: a number, ``"instant"`` or None as it
+    is, a model in its saved form."""
+    from repyability.rbd.serialisation import serialise_model
+
+    if value is None or isinstance(value, str) or is_number(value):
+        return value
+    return {"model": serialise_model(value)}
+
+
+def _channel_to_dict(channel: SafetyChannel) -> dict:
+    return {
+        field: _value_to_dict(getattr(channel, field)) for field in _FIELDS
+    }
+
+
+def _channel_from_dict(saved: dict) -> SafetyChannel:
+    from repyability.rbd.serialisation import deserialise_model
+
+    return SafetyChannel(
+        **{
+            field: (
+                deserialise_model(value["model"])
+                if isinstance(value, dict)
+                else value
+            )
+            for field, value in saved.items()
+            if field in _FIELDS
+        }
+    )
 
 
 def _revealed(rate: float, repair) -> dict:
