@@ -1280,11 +1280,14 @@ def _standby_crews(rbd) -> Optional[int]:
     return rbd.repair_crews if _crews._crews_limited(rbd) else None
 
 
-def _standby_cycle_blocker(rbd, node) -> Optional[str]:
+def _standby_cycle_blocker(
+    rbd, node, over_time: bool = False
+) -> Optional[str]:
     """Why a standby group with lives or repairs that are not exponential
     has no long-run values from its cycle (``_standby_cycle``, or
     ``_standby_both`` with both units repaired at once), as the refusal's
-    message, or None."""
+    message, or None. With ``over_time``, why it has no values over time
+    from its cycle's renewal equation (one repair at a time alone)."""
     from repyability.rbd import _standby_cycle
     from repyability.rbd._covariate_schedule import ClockLife
 
@@ -1295,8 +1298,22 @@ def _standby_cycle_blocker(rbd, node) -> Optional[str]:
         for m in (component.reliability, component.time_to_replace)
     ):
         reason = "its life or repair is not a distribution of times"
+    if reason is None and over_time and _standby_crews(rbd) != 1:
+        reason = (
+            "both units can be repaired at once (one repair at a time, "
+            "repair_crews=1, is followed over time)"
+        )
     if reason is None:
         return None
+    if over_time:
+        return (
+            f"Component {node!r} is {rbd._standby[node].what}, whose "
+            "values over time come from a Markov chain of its units, "
+            "which needs their lives and repair times exponential, or (a "
+            "cold standby pair, one needed, a sure switch, one repair at "
+            f"a time) from its cycle's renewal equation; {reason}: "
+            "simulate it with availability() or cost()."
+        )
     return (
         f"Component {node!r} is {rbd._standby[node].what}, whose exact "
         "long-run values come from a Markov chain of its units, which "
@@ -1304,6 +1321,26 @@ def _standby_cycle_blocker(rbd, node) -> Optional[str]:
         "standby pair, one needed, a sure switch) from its cycle; "
         f"{reason}: simulate it with availability() or cost()."
     )
+
+
+def _standby_by_cycle(rbd, node) -> bool:
+    """Whether a standby group's units are not exponential, so that its
+    values come from its cycle if at all (see ``_standby_cycle``)."""
+    try:
+        _standby_rates(rbd, node)
+    except NotImplementedError:
+        return True
+    return False
+
+
+def _require_standby_over_time(rbd, node) -> None:
+    """Raise if a standby group has no values over time: its units are
+    not exponential, and its cycle's renewal equation does not give them
+    either."""
+    if _standby_by_cycle(rbd, node):
+        message = _standby_cycle_blocker(rbd, node, over_time=True)
+        if message is not None:
+            raise NotImplementedError(message)
 
 
 def _require_standby_long_run(rbd, node) -> None:

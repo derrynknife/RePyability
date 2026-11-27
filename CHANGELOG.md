@@ -12,6 +12,31 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A cold standby pair of any lives and repairs with one repair at a time
+  (`repair_crews=1`) over time, from new, which only a simulation gave:
+  `point_availability`, `point_unavailability`, `mission_availability`,
+  `expected_failures`, `expected_events`, the expected costs and the
+  other values over a window, and from a stationary `NodeState` its
+  long-run state. Both units are ready at 0; the pair first regenerates
+  when the first fails and then after each cycle, so its unavailability
+  and its expected failures and repairs solve a renewal equation, worked
+  out on a grid as a unit's is (measures that keep each cell's mass and
+  mean, the renewals by a power series' inverse) on two grids, one of
+  half the other's step, extrapolated. `availability()` and `cost()` now
+  report such a pair's exact means by default (their simulations are
+  unchanged). Checked: exponential units equal the Markov chain followed
+  by uniformization to 1e-9 at the grid's points (within 2e-10), and
+  within the bound of a linear curve between them; Weibull and lognormal
+  pairs' Laplace transforms against the models' own by quadrature
+  (1e-6); Weibull(1000, 2.5) lives and Weibull(300, 1.5) repairs over
+  2,500 h 0.992249 against 0.992008 simulated (20,000 runs, standard
+  error 2.1e-4, -1.2 SE; 400,000 runs: 0.992309, +1.3 SE) and 0.1279
+  failures against 0.1328 (+1.9 SE; 400,000 runs: 0.1275, -0.7 SE);
+  Weibull(1000, 1.5) lives with LogNormal(5, 0.6) repairs over 1,200 h
+  0.994124 against 0.993631 (-2.1 SE; 400,000 runs: 0.994115, -0.2 SE)
+  and 0.0679 failures against 0.0722 (+2.3 SE; 400,000 runs: 0.0680,
+  +0.1 SE). Over time, the pair with both units repaired at once, warm
+  spares, failing switches and more units stay simulated.
 - Long-run values of a cold standby pair of any lives and repairs with
   both units repaired at once (a crew each, the default), which only a
   simulation gave (one repair at a time already had its cycle): two
