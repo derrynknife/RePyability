@@ -12,6 +12,17 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- An upgraded component that keeps the unit in service until its next
+  failure or due replacement (the upgrade's `"replace_in_service":
+  False`) is worked out over a horizon on its own or under age
+  replacement: `point_availability`, `mission_availability`,
+  `expected_events`, `expected_cost` and `expected_npv` no longer
+  refuse it, from new or from a state. Each unit has the life in
+  service when it is put in, on one renewal equation; upgraded to its
+  own life it is the component without its upgrade, to rounding. With
+  block replacement or tests a unit kept is still simulated. No seeded
+  result changes.
+
 - `MarkovComponent(states, rates, up=None, capacity=None, start=None)`:
   a component given as a continuous-time Markov chain, for one that is
   not a life and a repair (a degraded state it is restored from, a

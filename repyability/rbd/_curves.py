@@ -317,6 +317,13 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
             "from there with the new life, from the states it may be in "
             "then",
         )
+    if upgraded == "kept":
+        return (
+            r.NUMERICAL,
+            "its renewal equation, solved on a grid, each unit with the "
+            "life in service when it is put in (the unit in service at its "
+            "upgrade kept)",
+        )
     if upgraded == "tests":
         return (
             r.NUMERICAL,
@@ -1896,6 +1903,7 @@ def _unit_curve(
     start: Optional[NodeState] = None,
     unscheduled: bool = False,
     first: Optional[First] = None,
+    switch: Optional[Tuple[float, Any, Any]] = None,
 ):
     """A component's point availability from new over ``[0, horizon]``
     (see ``_point_availability.unit_curve``): on a grid of
@@ -1912,7 +1920,10 @@ def _unit_curve(
     preventive maintenance, and follows it to the horizon: the head of a
     block-replacement curve, up to its first block time. ``first``, in
     place of a ``start``, gives the unit at 0 itself (see
-    ``_upgraded_curve``)."""
+    ``_upgraded_curve``). ``switch``, ``(at, life, after)``, gives the
+    units put into service from ``at`` the life ``life`` (an upgrade
+    that keeps the unit in service; ``after`` the diagram once upgraded,
+    whose long run the curve settles at), see ``unit_curve``."""
     _requirements._require_time_models(rbd, node)
     _requirements._require_no_opportunities(rbd, node)
     _requirements._require_full_restoration(rbd, node)
@@ -1940,12 +1951,13 @@ def _unit_curve(
         return _sf_values(duration.sf, s)
 
     maintenance_sf = None if duration is None else duration_sf
+    settled = rbd if switch is None else switch[2]
     try:
         if unscheduled:
             raise ValueError("followed to the horizon")
-        long_run: Optional[float] = _long_run._node_availability(rbd, node)
+        long_run: Optional[float] = _long_run._node_availability(settled, node)
         rates: Optional[Tuple[float, float, float]] = (
-            _long_run._node_frequencies(rbd, node) if counts else None
+            _long_run._node_frequencies(settled, node) if counts else None
         )
     except (ValueError, NotImplementedError):
         long_run, rates = None, None
@@ -1989,10 +2001,25 @@ def _unit_curve(
                 if not np.isfinite(scale)
                 else min(scale, first_scale)
             )
+    switched = None
+    if switch is not None:
+        new_life = switch[1]
+        new_scale = _up_scale(new_life, age)
+        if np.isfinite(new_scale) and new_scale > 0.0:
+            scale = (
+                new_scale if not np.isfinite(scale) else min(scale, new_scale)
+            )
+        switched = (
+            float(switch[0]),
+            lambda x: 1.0 - _sf_values(new_life.sf, x),
+            point_knots(new_life),
+        )
     if schedule is not None:
-        up, cycle, _, _ = _long_run._maintenance_cycle(rbd, node, schedule)
+        up, cycle, _, _ = _long_run._maintenance_cycle(
+            settled, node, settled._preventive[node]
+        )
     else:
-        up = model_mean(life)
+        up = model_mean(settled.components[node].reliability)
         cycle = up + model_mean(repair)
     horizon = max(horizon, 0.0)
     step = horizon / 1024.0 if horizon > 0.0 else np.inf
@@ -2009,8 +2036,10 @@ def _unit_curve(
         survive = float(_sf_values(up_sf, np.array([age]))[0])
     end = max(horizon, 16.0 * step)
     settles = age is None or survive ** (horizon // age) < 1e-10
+    # With a switch, the grid reaches past it before it settles.
+    reach = 0.0 if switched is None else switched[0]
     if long_run is not None and settles and np.isfinite(cycle) and cycle > 0.0:
-        end = min(end, max(8.0 * cycle, 16.0 * step))
+        end = min(end, max(reach + 8.0 * cycle, reach + 16.0 * step))
     while True:
         n = int(np.ceil(end / step))
         if n > _POINT_MAX:
@@ -2047,6 +2076,7 @@ def _unit_curve(
                         else stage_model.stage_probabilities
                     ),
                     first=first,
+                    switch=switched,
                 )
         except NotImplementedError as error:
             raise NotImplementedError(
@@ -2067,6 +2097,7 @@ def _unit_curve(
         tail = curve.times[len(curve.times) - len(curve.times) // 4 :]
         if (
             long_run is not None
+            and tail[0] > reach
             and np.all(np.abs(curve.at(tail) - long_run) < 1e-10)
             and (age is None or survive ** (end // age) < 1e-10)
             and (events is None or events.settled())
@@ -2325,7 +2356,10 @@ def _upgraded_curve(
     new life's, from the states the unit may be in then (see
     ``MixedCurve``), as ``StartedBlockCurve`` joins them.
 
-    At ``at`` the unit up is replaced: under age replacement as at its
+    A unit kept in service past the upgrade (``replace_in_service``
+    False) is followed on one grid, each unit with the life in service
+    when it is put in (see ``_unit_curve``'s ``switch``). Otherwise,
+    at ``at`` the unit up is replaced: under age replacement as at its
     age (at its cost and in its time; a replacement due then is that
     one), with tests in no time (a unit failed unseen too, uncounted; a
     test due then is not done, the new unit working). A unit in a
@@ -2343,6 +2377,17 @@ def _upgraded_curve(
     at = rbd._upgrades[node].at
     before = _long_run.before_upgrades(rbd)
     after = _long_run.after_upgrades(rbd)
+    if _requirements._upgrade_kind(rbd, node) == "kept":
+        # The unit in service at the upgrade is kept: each unit has the
+        # life in service when it is put in, on one grid throughout.
+        return _unit_curve(
+            before,
+            node,
+            horizon,
+            counts=True,
+            start=start,
+            switch=(at, rbd._upgrades[node].life, after),
+        )
     rest = max(horizon - at, 0.0)
     just_before = np.array([np.nextafter(at, 0.0)])
     if node in rbd._inspection:
