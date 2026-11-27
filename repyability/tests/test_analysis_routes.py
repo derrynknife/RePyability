@@ -465,6 +465,10 @@ NETWORK_CALLS = {
         for name in (
             "sf",
             "ff",
+            "Hf",
+            "df",
+            "hf",
+            "parameter_sensitivity",
             "birnbaum_importance",
             "improvement_potential",
             "risk_achievement_worth",
@@ -555,8 +559,10 @@ def test_the_network_report_covers_every_public_analysis():
         "analysis_routes",
         "from_dict",
         "from_json",
+        "levers",
         "to_dict",
         "to_json",
+        "with_levers",
     }
 
 

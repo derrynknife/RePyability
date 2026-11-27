@@ -548,6 +548,37 @@ def _fault_tree_levers(tree) -> List[_Lever]:
     )
 
 
+def _network_levers(net) -> List[_Lever]:
+    """Every lever of a ``net``work, as its ``parameter_sensitivity``
+    reports them: each link's and failing node's model's parameters, by
+    their own names, in the order of ``net.models`` (the links, then the
+    nodes). A moved model goes back into the link or node it belongs to."""
+    args = net._init_args
+    out: List[_Lever] = []
+    for name, model in net.models.items():
+        is_link = name in net.links
+        for parameter, value, moved, bounds, scale in _model_levers(
+            "", model, lambda m: m
+        ):
+
+            def build(v, name=name, moved=moved, is_link=is_link):
+                changed = moved(v)
+                if is_link:
+                    u, w, _ = args["links"][name]
+                    return {
+                        **args,
+                        "links": {**args["links"], name: (u, w, changed)},
+                    }
+                return {**args, "nodes": {**args["nodes"], name: changed}}
+
+            out.append(
+                _Lever(
+                    name, parameter, value, False, build, name, bounds, scale
+                )
+            )
+    return out
+
+
 def _model_levers_of(
     args: dict, field: str, models: Mapping, groups, entry=lambda key, m: m
 ) -> List[_Lever]:
@@ -677,13 +708,17 @@ def _shutdown_levers(args: dict) -> List[_Lever]:
 
 
 def _levers_of(rbd) -> List[_Lever]:
-    """``rbd``'s levers, repairable or not, or a fault tree's."""
+    """``rbd``'s levers, repairable or not, or a fault tree's or a
+    network's."""
     from repyability.fault_tree import FaultTree
+    from repyability.network import Network
 
     from .non_repairable_rbd import NonRepairableRBD
 
     if isinstance(rbd, FaultTree):
         return _fault_tree_levers(rbd)
+    if isinstance(rbd, Network):
+        return _network_levers(rbd)
     if isinstance(rbd, NonRepairableRBD):
         return _nonrepairable_levers(rbd)
     return _levers(rbd)
@@ -1125,6 +1160,7 @@ def _no_lever(rbd, key, name: str, found: dict) -> ValueError:
     if one is close (#232): of the levers of ``key``, or else of the keys,
     which are named by the kind of diagram."""
     from repyability.fault_tree import FaultTree
+    from repyability.network import Network
 
     from .rbd import _close_name
     from .repairable_rbd import RepairableRBD
@@ -1141,6 +1177,8 @@ def _no_lever(rbd, key, name: str, found: dict) -> ValueError:
     hint = "" if close is None else f" Did you mean {close!r}?"
     if isinstance(rbd, FaultTree):
         holders = "event with a model or common-cause group"
+    elif isinstance(rbd, Network):
+        holders = "link or node with a model"
     elif isinstance(rbd, RepairableRBD):
         holders = (
             "node with a model, common-cause group or the repair crews (None)"

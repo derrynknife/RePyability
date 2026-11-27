@@ -42,6 +42,7 @@ import dataclasses
 import json
 from collections import deque
 from typing import (
+    TYPE_CHECKING,
     Any,
     Collection,
     Dict,
@@ -107,6 +108,9 @@ from repyability.utils.checks import (
 from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.json_io import read_json, write_json
 from repyability.utils.wrappers import numpy_seed
+
+if TYPE_CHECKING:  # pragma: no cover
+    from repyability.rbd.results import Lever
 
 #: How the exact values are worked out: ``"bdd"`` (the default), by the
 #: decision diagram built from the network, or ``"paths"``, by the Shannon
@@ -1381,6 +1385,351 @@ class Network:
             for j, name in enumerate(names)
         }
 
+    def _sf_and_ff(self, x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """The probabilities that the terminals are joined and that they
+        are parted at times ``x``, each worked out in its own right (so a
+        small one keeps its precision)."""
+        return self._value(x), self._value(x, _PARTED)
+
+    def _time_scale(self) -> float:
+        """The shortest typical failure time over the elements' models (see
+        ``NonRepairableRBD._time_scale``), to size a step at time 0 by;
+        NaN if none has one."""
+        scales = [_measures.model_scale(m) for m in self.models.values()]
+        scales = [s for s in scales if np.isfinite(s) and s > 0.0]
+        return min(scales) if scales else float("nan")
+
+    @property
+    def _init_args(self) -> dict:
+        """The constructor's arguments, as ``with_levers`` rebuilds the
+        network from them."""
+        return {
+            "links": {
+                name: (u, v, self.models[name])
+                for name, (u, v) in self.links.items()
+            },
+            "source": self.source,
+            "target": self.target,
+            "nodes": dict(self.nodes),
+        }
+
+    @check_x
+    def Hf(self, x=None):
+        """The cumulative hazard ``H(x) = -ln R(x)`` of the connection, ``R``
+        its [`sf`][repyability.Network.sf]: exact, ``+inf`` where the
+        terminals are certainly parted. While the connection is more
+        likely to hold than not it is ``-log1p(-F(x))`` from the
+        unreliability ``F``, so that a small one keeps its precision, as
+        [`NonRepairableRBD.Hf`][repyability.NonRepairableRBD.Hf] has it.
+
+        Parameters
+        ----------
+        x : float or array_like, optional
+            The time/s; may be left out if every model is a fixed
+            probability.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The cumulative hazard: a float for a scalar ``x``.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is left out of a network whose models depend on time.
+        NotImplementedError
+            As for ``sf``.
+
+        Examples
+        --------
+        One link with an exponential life: ``H(x)`` is its rate times
+        ``x``.
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> link = Network(
+        ...     {"a": ("s", "t", surv.Exponential.from_params([0.01]))},
+        ...     "s",
+        ...     "t",
+        ... )
+        >>> round(link.Hf(50), 6)
+        0.5
+        """
+        return _measures.cumulative_hazard(*self._sf_and_ff(x))
+
+    @check_x
+    def df(self, x=None, dx: float = 1e-6):
+        """The density of the time to disconnection, ``f(x) = -dR/dx``.
+
+        By a central finite difference of the exact
+        [`sf`][repyability.Network.sf], with step ``dx * |x|``, relative
+        to ``x`` (at 0, ``dx`` of the shortest of the elements' typical
+        failure times), so that it does not depend on the unit of time, as
+        [`NonRepairableRBD.df`][repyability.NonRepairableRBD.df] takes the
+        diagram's: the difference is of the unreliability while the
+        connection is more likely to hold than not, which keeps its
+        precision, the lower point is clipped at 0, and a negative result
+        (rounding) is clipped to 0. It assumes the reliability is smooth
+        near ``x``, which does not hold where an element's model has a kink
+        or a step; a network of probabilities alone has a density of 0.
+
+        Parameters
+        ----------
+        x : float or array_like, optional
+            The time/s; may be left out if every model is a fixed
+            probability.
+        dx : float, optional
+            The relative step of the difference, by default 1e-6.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The density: a float for a scalar ``x``.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is left out of a network whose models depend on time.
+        NotImplementedError
+            As for ``sf``.
+
+        Examples
+        --------
+        One link with an exponential life: ``f(x) = rate * exp(-rate x)``.
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> link = Network(
+        ...     {"a": ("s", "t", surv.Exponential.from_params([0.01]))},
+        ...     "s",
+        ...     "t",
+        ... )
+        >>> round(link.df(50), 6)
+        0.006065
+        """
+        return _measures.density_by_differences(
+            self._sf_and_ff,
+            x,
+            _measures.difference_steps(x, dx, self._time_scale),
+        )
+
+    @check_x
+    def hf(self, x=None, dx: float = 1e-6):
+        """The hazard rate of the connection, ``h(x) = f(x) / R(x)``: the
+        numerical density of [`df`][repyability.Network.df] over the exact
+        [`sf`][repyability.Network.sf], ``+inf`` where the terminals are
+        certainly parted.
+
+        Parameters
+        ----------
+        x : float or array_like, optional
+            The time/s; may be left out if every model is a fixed
+            probability.
+        dx : float, optional
+            The relative step of the difference, passed to ``df``, by
+            default 1e-6.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The hazard rate: a float for a scalar ``x``.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is left out of a network whose models depend on time.
+        NotImplementedError
+            As for ``sf``.
+
+        Examples
+        --------
+        One link with an exponential life has a constant hazard rate:
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> link = Network(
+        ...     {"a": ("s", "t", surv.Exponential.from_params([0.01]))},
+        ...     "s",
+        ...     "t",
+        ... )
+        >>> round(link.hf(50), 6)
+        0.01
+        """
+        sf = np.asarray(self.sf(x), dtype=float)
+        density = np.asarray(self.df(x, dx=dx), dtype=float)
+        return np.divide(
+            density, sf, out=np.full_like(density, np.inf), where=sf > 0
+        )
+
+    def parameter_sensitivity(
+        self, x=None, rel_step: float = 1e-5
+    ) -> Dict[Hashable, Dict[str, Any]]:
+        """The sensitivity of the probability that the terminals are joined
+        (``sf``) to each parameter of the links' and nodes' models.
+
+        In the guide's Greeks it is the levers' *deltas* (see
+        [Sensitivities: the Greeks](../guide/greeks.md)).
+
+        For element ``e`` with parameter ``theta``, ``d sf / d theta =
+        I_B(e) * d sf_e(x; theta) / d theta``: its Birnbaum importance
+        times how far its model's reliability moves with the parameter,
+        the latter by a central difference with step ``rel_step *
+        |theta|`` (``rel_step`` if ``theta`` is 0), the model rebuilt with
+        ``from_params`` (one-sided where one side is not a valid value, nan
+        where neither is), as
+        [`NonRepairableRBD.parameter_sensitivity`][repyability.NonRepairableRBD.parameter_sensitivity]
+        works out the diagram's. An element given as a probability has one
+        parameter, ``p``. An element whose model is not a surpyval
+        distribution with parameters to rebuild is left out.
+        [`levers`][repyability.Network.levers] lists the parameters, with
+        their values and ranges, and
+        [`with_levers`][repyability.Network.with_levers] builds the network
+        with them moved.
+
+        Parameters
+        ----------
+        x : float or array_like, optional
+            The time/s; may be left out if every model is a fixed
+            probability.
+        rel_step : float, optional
+            The relative step of the differences, by default 1e-5.
+
+        Returns
+        -------
+        dict
+            ``{element: {parameter: sensitivity}}``, by surpyval's
+            parameter names: floats for a scalar ``x``, arrays otherwise.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is left out of a network whose models depend on time.
+        NotImplementedError
+            As for ``sf``.
+
+        Examples
+        --------
+        One link with an exponential life: ``R = exp(-rate x)``, so
+        ``dR/d rate = -x exp(-rate x)``, about -9.048 at ``x = 10`` with
+        rate 0.01:
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> link = Network(
+        ...     {"a": ("s", "t", surv.Exponential.from_params([0.01]))},
+        ...     "s",
+        ...     "t",
+        ... )
+        >>> sens = link.parameter_sensitivity(10)
+        >>> {name: round(v, 3) for name, v in sens["a"].items()}
+        {'failure_rate': -9.048}
+        """
+        from repyability.rbd._model_utils import lever_spec
+        from repyability.rbd.non_repairable_rbd import _dsf_dparam
+
+        times, scalar = _times(self, x)
+        birnbaum = self._birnbaum(times)
+        out: Dict[Hashable, Dict[str, Any]] = {}
+        for name, model in self.models.items():
+            spec = lever_spec(model)
+            if spec is None:
+                continue
+            values = {
+                parameter: birnbaum[name]
+                * _dsf_dparam(spec, j, times, rel_step)
+                for j, parameter in enumerate(spec.names)
+            }
+            out[name] = {
+                parameter: float(value[0]) if scalar else value
+                for parameter, value in values.items()
+            }
+        return out
+
+    def levers(self) -> List["Lever"]:
+        """The parameters ``parameter_sensitivity`` moves, in the order it
+        reports them: each link's and failing node's model's, by surpyval's
+        names (``p`` for one given as a probability), each a
+        [`Lever`][repyability.Lever] with its value and range, as a
+        diagram's ``levers()`` lists them. Nothing is worked out;
+        [`with_levers`][repyability.Network.with_levers] sets them. The
+        levers are the models' own parameters: those of the units inside a
+        composite model are not reached (see the guide's Greeks).
+
+        Returns
+        -------
+        list of Lever
+            The levers, in ``parameter_sensitivity``'s order.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> net = Network(
+        ...     {"a": ("s", "t", surv.Weibull.from_params([100, 2]))},
+        ...     "s",
+        ...     "t",
+        ...     nodes={"t": 0.05},
+        ... )
+        >>> for lever in net.levers():
+        ...     print(lever.key, lever.name, lever.value, lever.bounds)
+        a alpha 100.0 (0.0, inf)
+        a beta 2.0 (0.0, inf)
+        t p 0.05 (0.0, 1.0)
+        """
+        from repyability.rbd import _sensitivity
+
+        return _sensitivity.public_levers(self)
+
+    def with_levers(self, values) -> "Network":
+        """A copy of this network with parameters at new values, each moved
+        as ``parameter_sensitivity`` moves it: a link's or node's model
+        rebuilt with the parameter changed (one given as a probability
+        keeps being one). ``levers()`` lists the parameters.
+
+        Parameters
+        ----------
+        values : dict
+            Each parameter's new value, by its
+            [`Lever`][repyability.Lever] (from ``levers()``) or by its
+            ``(key, name)``, as ``parameter_sensitivity`` reports it.
+
+        Returns
+        -------
+        Network
+            The new network, built as this one was with the parameters
+            moved; this one is unchanged.
+
+        Raises
+        ------
+        ValueError
+            For a parameter the network does not have (with the closest
+            name), or a value its model refuses (one outside the lever's
+            ``bounds``).
+        TypeError
+            If ``values`` is not a dict, a lever is neither a ``Lever``
+            nor a ``(key, name)``, or a value is not a number.
+
+        Examples
+        --------
+        Twice the Weibull scale: at 100 the link survives with probability
+        ``exp(-(100 / 200) ** 2)``, about 0.7788, where it did with
+        ``exp(-1)``:
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> net = Network(
+        ...     {"a": ("s", "t", surv.Weibull.from_params([100, 2]))},
+        ...     "s",
+        ...     "t",
+        ... )
+        >>> longer = net.with_levers({("a", "alpha"): 200.0})
+        >>> round(float(longer.sf(100)), 4)
+        0.7788
+        """
+        from repyability.rbd import _sensitivity
+
+        return _sensitivity.with_levers(self, values)
+
     def time_to_reliability(self, target, upper_bound: Optional[float] = None):
         """The time at which the reliability falls to ``target``: the
         inverse of ``sf``, by root-finding, as
@@ -2510,6 +2859,24 @@ class Network:
                     "Every simple path between the terminals, listed.",
                 )
             ),
+        )
+        out["Hf"] = built(
+            r.EXACT,
+            "The exact reliability and unreliability, as -log of one of "
+            "them.",
+        )
+        give(
+            ("df", "hf"),
+            built(
+                r.NUMERICAL,
+                "The exact reliability, differentiated by central "
+                "differences.",
+            ),
+        )
+        out["parameter_sensitivity"] = built(
+            r.NUMERICAL,
+            "The exact Birnbaum importance times each parameter's "
+            "derivative, by differences.",
         )
         fixed = r.refusal(self._require_time_varying)
         give(
