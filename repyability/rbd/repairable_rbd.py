@@ -55,6 +55,7 @@ from repyability.rbd.results import (
     ExpectedCost,
     ExpectedEvents,
     ExpectedNPV,
+    FirstFailureBounds,
     ImportanceTable,
     Lever,
     MaintenanceEffect,
@@ -3681,7 +3682,9 @@ class RepairableRBD(RBD):
         common-cause groups, a coupled sub-system) refuses and points to
         ``method="simulate"``, which reads the first failures off
         [`simulate_timelines`][repyability.RepairableRBD.simulate_timelines]:
-        the share of simulations with no failure by each time.
+        the share of simulations with no failure by each time; and to
+        [`first_failure_bounds`][repyability.RepairableRBD.first_failure_bounds],
+        which brackets it without simulating.
 
         Parameters
         ----------
@@ -3770,7 +3773,9 @@ class RepairableRBD(RBD):
         [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf],
         which has the routes: exact for a series structure and for
         exponential lives and repairs (one linear solve over the Markov
-        chain's up states), and ``method="simulate"`` for the rest.
+        chain's up states), and ``method="simulate"`` for the rest, with
+        [`mean_time_to_first_failure_bound`][repyability.RepairableRBD.mean_time_to_first_failure_bound]
+        a lower bound without simulating.
 
         For a pair of exponential units in parallel with one repair crew,
         the mean time to the first failure is ``(3 lam + mu) / (2 lam^2)``,
@@ -3825,6 +3830,113 @@ class RepairableRBD(RBD):
             engine,
             confidence,
         )
+
+    def first_failure_bounds(self, t, state=None) -> FirstFailureBounds:
+        """Bounds on the probability that the system runs to each time
+        ``t`` without a failure, from values worked out without
+        simulating: wherever
+        [`expected_events`][repyability.RepairableRBD.expected_events]
+        is, including where
+        [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf]
+        refuses (a redundant structure of other lives than exponential,
+        maintenance, tests, standby or common-cause groups).
+
+        The first failure has happened by ``t`` at least as often as the
+        system is down at ``t`` (or at any time before), and no more
+        often than the expected number of system failures in ``[0, t)``
+        (plus the chance that it is down at the start). So, with ``Q``
+        the unavailability
+        ([`point_unavailability`][repyability.RepairableRBD.point_unavailability])
+        and ``W(t)`` the expected failures,
+        ``1 - Q(0) - W(t) <= R(t) <= 1 - Q(t)``. The bracket is tight
+        where ``W(t)`` is well under 1 (a reliable system, a short
+        mission) and says less as ``W(t)`` nears 1. Where the diagram can
+        be down for planned work (maintenance, tests or shuts that take
+        time), it can be down without having failed, so the upper bound
+        is 1 (``planned_outages`` says so).
+
+        Each bound is as accurate as the values it comes from (the
+        expected failures to about 1e-7, the unavailability to about
+        4e-7). Where the first failure is exact, it lies within them.
+
+        Parameters
+        ----------
+        t : float or array-like
+            Times from 0 (or from ``state``).
+        state : dict or str, optional
+            Start from the components' current states, as for
+            [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf].
+            A system down at the start has failed.
+
+        Returns
+        -------
+        FirstFailureBounds
+            ``lower`` and ``upper`` of the reliability, with the expected
+            failures and the unavailability they come from.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``expected_events`` and ``point_unavailability``, with
+            their messages.
+
+        Examples
+        --------
+        A pair of Weibull units in parallel, each repaired in about 10
+        hours, where ``first_failure_sf`` refuses:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> unit = {
+        ...     "reliability": surv.Weibull.from_params([1000, 2]),
+        ...     "repairability": surv.Exponential.from_params([0.1]),
+        ... }
+        >>> pair = RepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {"a": unit, "b": unit},
+        ... )
+        >>> bounds = pair.first_failure_bounds(1000.0)
+        >>> round(bounds.lower, 4), round(bounds.upper, 4)
+        (0.9865, 0.9999)
+        """
+        return _first_failure.first_failure_bounds(self, t, state)
+
+    def mean_time_to_first_failure_bound(self, state=None) -> float:
+        """A lower bound on the mean time to the first system failure,
+        wherever
+        [`expected_events`][repyability.RepairableRBD.expected_events]
+        is worked out: the area under the lower bound of
+        [`first_failure_bounds`][repyability.RepairableRBD.first_failure_bounds],
+        ``max(0, 1 - Q(0) - W(t))``, integrated to where it reaches 0.
+
+        It is close to the mean where the system's failures are rare
+        before its first one is likely, and says less otherwise. (The
+        upper bound's area, the mean time up before the system is first
+        down for good, says little, and is not given.)
+
+        Parameters
+        ----------
+        state : dict or str, optional
+            As for
+            [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf].
+
+        Returns
+        -------
+        float
+            The lower bound, in the models' unit; ``inf`` if the system's
+            expected failures never reach 1.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``expected_events``.
+
+        Examples
+        --------
+        See
+        [`first_failure_bounds`][repyability.RepairableRBD.first_failure_bounds].
+        """
+        return _first_failure.mean_time_to_first_failure_bound(self, state)
 
     def point_availability(
         self,

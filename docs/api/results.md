@@ -30,6 +30,8 @@
 
 ::: repyability.ExpectedEvents
 
+::: repyability.FirstFailureBounds
+
 ::: repyability.EventsByWindow
 
 ::: repyability.CostByWindow

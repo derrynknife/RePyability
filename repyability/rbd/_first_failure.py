@@ -32,6 +32,17 @@ structure, scheduled maintenance, tests, standby groups, common-cause
 groups, a coupled sub-system) is simulated on request:
 ``method="simulate"`` reads each history's first failure off
 ``simulate_timelines``.
+
+Wherever the expected events are worked out, the first failure is also
+bracketed (``first_failure_bounds``). With ``F(t)`` the probability that
+the system has failed by ``t`` (or was down at the start), ``Q(t)`` its
+unavailability and ``W(t)`` its expected failures in ``[0, t)``: a system
+down at ``s <= t`` has failed by ``t``, so ``F(t) >= Q(s)``; and the
+first failure is one of the failures counted, so ``F(t) <= Q(0) + W(t)``.
+The first holds only while every outage is a failure: a diagram that can
+be down for planned work (maintenance, tests or shuts that take time) can
+be down without having failed, and its upper bound is 1. The mean's lower
+bound is the integral of ``max(0, 1 - Q(0) - W(t))``.
 """
 
 import math
@@ -41,11 +52,21 @@ from typing import Any, Dict, NoReturn, Optional, Tuple
 import numpy as np
 
 from repyability.rbd import _crew_chain as crew_chain
-from repyability.rbd import _crews, _curves, _overrides, _requirements
+from repyability.rbd import (
+    _crews,
+    _curves,
+    _overrides,
+    _requirements,
+    _unplanned,
+)
 from repyability.rbd._common import _constant_rate, _repair_rate
-from repyability.rbd._mean_lifetime import mean_lifetime, model_knots
+from repyability.rbd._mean_lifetime import (
+    _integrate,
+    mean_lifetime,
+    model_knots,
+)
 from repyability.rbd.modular import NODE, SERIES, GraphStructure
-from repyability.rbd.results import ConfidenceInterval
+from repyability.rbd.results import ConfidenceInterval, FirstFailureBounds
 from repyability.utils.checks import (
     nonnegative_times,
     one_of,
@@ -62,7 +83,9 @@ _ENDED = 1e-18
 _SPREAD, _MARGIN = 12.0, 20.0
 
 _SIMULATE = (
-    " Estimate it with method='simulate' (with t_simulation and mc_samples)."
+    " Estimate it with method='simulate' (with t_simulation and "
+    "mc_samples), or bracket it with first_failure_bounds(t) (and its mean "
+    "with mean_time_to_first_failure_bound()), from the expected failures."
 )
 
 
@@ -610,3 +633,125 @@ def mean_time_to_first_failure(
         n_samples=n,
         method="simulated",
     )
+
+
+# -- the bracket -------------------------------------------------------------
+
+
+def _start_down(rbd, state) -> float:
+    """``Q(0)``: the probability that the system is down at the start."""
+    return float(
+        np.asarray(rbd.point_unavailability(np.array([0.0]), state=state))[0]
+    )
+
+
+def _expected_failures(rbd, times: np.ndarray, state) -> np.ndarray:
+    return np.asarray(
+        rbd.expected_events(times, state=state).system_failures, dtype=float
+    ).reshape(times.shape)
+
+
+def first_failure_bounds(rbd, t, state=None) -> FirstFailureBounds:
+    """See ``RepairableRBD.first_failure_bounds``."""
+    times = nonnegative_times(t).ravel()
+    scalar = np.ndim(t) == 0
+    failures = _expected_failures(rbd, times, state)
+    down = np.asarray(
+        rbd.point_unavailability(np.concatenate(([0.0], times)), state=state),
+        dtype=float,
+    ).reshape(times.size + 1)
+    at_start, unavailability = float(down[0]), down[1:]
+    lower = np.clip(1.0 - at_start - failures, 0.0, 1.0)
+    planned = _unplanned.takes_planned_outages(rbd)
+    if planned:
+        upper = np.ones(times.shape)
+    else:
+        # The first failure's probability never falls: it is at least the
+        # unavailability at every time given up to each.
+        order = np.argsort(times, kind="stable")
+        highest = np.maximum.accumulate(
+            np.maximum(unavailability[order], at_start)
+        )
+        upper = np.empty(times.shape)
+        upper[order] = np.clip(1.0 - highest, 0.0, 1.0)
+
+    def shaped(values: np.ndarray):
+        return float(values[0]) if scalar else values.reshape(np.shape(t))
+
+    return FirstFailureBounds(
+        time=shaped(times),
+        lower=shaped(lower),
+        upper=shaped(upper),
+        expected_failures=shaped(failures),
+        unavailability=shaped(unavailability),
+        planned_outages=planned,
+    )
+
+
+#: The relative accuracy of the lower bound of the mean: below the
+#: expected failures' own (about 1e-7), which it is no more accurate than.
+_MEAN_RTOL = 1e-8
+#: The times at which the expected failures are worked out at once, in the
+#: search for the time the lower bound reaches 0.
+_BATCH = 16
+#: The relative width that time is found to.
+_END_RTOL = 1e-6
+
+
+def _bound_ends(rbd, state, up: float) -> Tuple[float, float]:
+    """``(low, high)``, within ``_END_RTOL`` of each other, with ``W(low) <
+    up <= W(high)``: where the lower bound ``up - W(t)`` reaches 0; ``(inf,
+    inf)`` if it never does. Searched for from 1 (whatever the unit of
+    time): down by powers of 2, ``_BATCH`` at a time; up by doubling one
+    at a time, as the expected events are worked out to the furthest time
+    asked; then on a geometric grid between the two found."""
+    low = high = 1.0
+    if _expected_failures(rbd, np.array([1.0]), state)[0] < up:
+        while _expected_failures(rbd, np.array([high]), state)[0] < up:
+            low, high = high, 2.0 * high
+            if high > 1e300:
+                return math.inf, math.inf
+    else:
+        while low == high:
+            times = high * 2.0 ** -np.arange(_BATCH, 0, -1.0)
+            short = _expected_failures(rbd, times, state) < up
+            if not short.any():
+                high = times[0]
+                low = high
+                if high < 1e-300:
+                    return 0.0, 0.0
+                continue
+            k = int(np.sum(short))
+            low = times[k - 1]
+            high = times[k] if k < times.size else high
+    while high - low > _END_RTOL * high:
+        times = np.geomspace(low, high, _BATCH + 2)[1:-1]
+        short = _expected_failures(rbd, times, state) < up
+        k = int(np.sum(short))
+        low = times[k - 1] if k else low
+        high = times[k] if k < times.size else high
+    return low, high
+
+
+def mean_time_to_first_failure_bound(rbd, state=None) -> float:
+    """See ``RepairableRBD.mean_time_to_first_failure_bound``."""
+    up = 1.0 - _start_down(rbd, state)
+    if up <= 0.0:
+        return 0.0
+    low, high = _bound_ends(rbd, state, up)
+    if not math.isfinite(high):
+        return math.inf
+    if high == 0.0:
+        return 0.0
+
+    def bound(x: np.ndarray) -> np.ndarray:
+        # Always with ``high`` among the windows, so that every call sums
+        # on the same pieces and the curve is one function of time.
+        counted = _expected_failures(rbd, np.append(x, high), state)[:-1]
+        return np.maximum(up - counted, 0.0)
+
+    # Pieces an octave long up to ``low``; the rest, to ``high``, is a
+    # triangle at most ``_END_RTOL`` of the whole.
+    edges = np.concatenate(([0.0], low * 2.0 ** -np.arange(30.0, -1.0, -1.0)))
+    mean = _integrate(bound, edges, _MEAN_RTOL)
+    return mean + 0.5 * float(bound(np.array([low]))[0]) * (high - low)

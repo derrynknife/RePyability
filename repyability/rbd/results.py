@@ -1771,6 +1771,49 @@ class ExpectedEvents(_ResultMapping):
 
 
 @dataclass
+class FirstFailureBounds(_ResultMapping):
+    """Bounds on the probability that a repairable system runs to each
+    time without a failure: returned by
+    [`RepairableRBD.first_failure_bounds`][repyability.RepairableRBD.first_failure_bounds].
+
+    With ``F(t)`` the probability of a system failure by ``t`` (or of the
+    system down at the start), ``W(t)`` the expected number of system
+    failures in ``[0, t)`` and ``Q(t)`` the probability that the system is
+    down at ``t``: ``max(Q(0), Q(s)) <= F(t) <= Q(0) + W(t)`` for each
+    ``s <= t`` given, so the reliability of the first failure,
+    ``1 - F(t)``, lies in ``[lower, upper]``. Each value is a float for
+    one time, or an array in the shape of the times given.
+
+    Attributes
+    ----------
+    time : float or numpy.ndarray
+        The times, from 0 (or from the state given).
+    lower : float or numpy.ndarray
+        The lower bound of the reliability: ``max(0, 1 - Q(0) - W(t))``.
+        Close to the reliability while ``W(t)`` is well under 1.
+    upper : float or numpy.ndarray
+        The upper bound: ``1 - Q(s)`` at the largest unavailability at a
+        time given up to ``t`` (and at 0). 1 where the system can be
+        down for planned work (``planned_outages``), as it can then be
+        down without having failed.
+    expected_failures : float or numpy.ndarray
+        ``W(t)``, as ``expected_events(t).system_failures``.
+    unavailability : float or numpy.ndarray
+        ``Q(t)``, as ``point_unavailability(t)``.
+    planned_outages : bool
+        Whether the diagram can be down for planned work (maintenance,
+        tests or shuts that take time), so that ``upper`` is 1.
+    """
+
+    time: Any
+    lower: Any
+    upper: Any
+    expected_failures: Any
+    unavailability: Any
+    planned_outages: bool
+
+
+@dataclass
 class RateBreakdown(_ResultMapping):
     """How fast a system's availability (or reliability) is changing at
     each time, and each node's part in it: returned by
