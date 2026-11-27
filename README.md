@@ -29,7 +29,8 @@ taking already-fitted lifetime models (from
   every node (K-terminal and all-terminal reliability), by a decision
   diagram that keeps meshed networks fast; with repaired links, the
   connection's availability over time and in the long run, and how often
-  it is lost.
+  it is lost; with link capacities, the distribution of the maximum flow
+  between two terminals (at a time, in the long run and over a window).
 - **Phased missions**: missions through phases (take-off, cruise,
   landing), each with its own diagram over the same components: the exact
   mission reliability and the chance of failing in each phase, with
@@ -229,8 +230,8 @@ Which analyses each model type has (the method; — where it has none):
 | The core that does not reduce | `core_structure` | `core_structure` | — | — | — | — |
 | Junctions (drawing nodes) | `junctions` | `junctions` | — | — | — | — |
 | Convert to and from an RBD | — | — | `to_rbd` | `to_rbd` | `from_diagram` | — |
-| Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — | — |
-| Capacity over time | — | `point_capacity` | — | — | — | — |
+| Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | `capacity_distribution` | — | — |
+| Capacity over time | — | `point_capacity` | — | `point_capacity` | — | — |
 | How each analysis is computed | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` |
 | Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | `to_dict` | `to_dict` |
 | Export to Open-PSA (MEF) | — | — | `to_open_psa` | — | — | — |

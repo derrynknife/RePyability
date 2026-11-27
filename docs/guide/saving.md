@@ -72,7 +72,7 @@ Condition-based state (`NodeState`) is not part of the RBD and is not saved.
 A `FaultTree` saves the same way (`to_dict`, `to_json`, `from_dict`,
 `from_json`: its gates, events (a repaired event's spec as a diagram's
 component's) and common-cause groups), and so does a
-`Network` (#315): its terminals, each link's two nodes and model, and the
+`Network` (#315): its terminals, each link's two nodes, model and capacity, and the
 failing nodes' models, the models as a diagram's nodes' are saved (a
 repaired element's spec as a diagram's component's), under
 `"type": "Network"`. A model given as a probability is saved as the
@@ -93,7 +93,7 @@ Every Monte-Carlo method takes a `seed`:
 | `RepairableRBD` | `availability`, `cost`, `compare` with `control_variate=False` (or where the exact methods do not reach), `spares_demand` and `maintenance_effect` with `method="simulate"` (or, over a window, where the exact methods do not reach) |
 | Node models | `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random`, `DegradingNode.random`, `MarkovComponent.random`, and the `mean` of a `StandbyModel`, `LoadSharingModel` or `DegradingNode` with `method="simulate"` (or with `mc_samples` or `seed`, where it has no exact mean) |
 | `PhasedMission` | `reliability`, `unreliability`, `phase_failure_probabilities` and `expected_mission_time` with `method="simulate"`, `reliability_interval` |
-| `Network` | `sf`, `ff` and `mean` with `method="simulate"`, `random`, `sf_uncertainty`, `mean_uncertainty` |
+| `Network` | `sf`, `ff`, `mean`, `capacity_distribution`, `point_capacity` and `mission_capacity` with `method="simulate"`, `random`, `sf_uncertainty`, `mean_uncertainty` |
 | `Repairable` | every simulation-backed method |
 
 surpyval samples from numpy's **global** random number generator, so a seed
