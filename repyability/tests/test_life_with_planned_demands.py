@@ -542,9 +542,10 @@ def test_every_demand_fails_it_with_a_probability_of_1():
 # no demand, each cell's failures and renewals kept by their mass and mean.
 # Its error is second order in the step: about ``(h / s)^2 / 8`` of the
 # chance moved by each failure and renewal, ``h`` the largest step and
-# ``s`` the life's typical up time (``_curves._up_scale``), with a first
-# order term local to the cells a fixed repair ends in. Over a window of a
-# few up times the bounds below take ``4 (h / s)^2``.
+# ``s`` the life's typical up time (``_curves._up_scale``); a fixed repair
+# carries a share at a point as its hat, so that its renewals are not all
+# on one side of a demand. Over a window of a few up times the bounds
+# below take ``4 (h / s)^2``.
 
 
 def grid_bound(curve) -> float:
@@ -759,3 +760,199 @@ def test_an_imperfect_repair_is_refused_over_a_window():
     route = rbd.analysis_routes()["point_availability"]
     assert route.route == "refused"
     assert "repaired imperfectly" in route.reason
+
+
+# -- long windows ------------------------------------------------------------
+#
+# From a lattice point to a lattice cell what the life and the repair carry
+# depends on the steps between alone, so the renewal sums are convolutions
+# (by FFT in blocks); the demands' survival is a ratio of the clock's
+# values, taken against one reference in each block. A window of many up
+# times (up to ``MAX_STEPS`` steps) is worked out in ``O(n log n)``.
+
+
+def long_rbd(demand, repair, life=None):
+    return RepairableRBD(
+        ONE,
+        {
+            "a": {
+                "reliability": W([20.0, 2.0]) if life is None else life,
+                "repairability": repair,
+                "demand": {"probability": 0.2, **demand},
+                "repair_cost": 1.0,
+            }
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "demand, repair, seed",
+    [
+        (
+            {"times": list(7.0 * np.arange(1, 286))},
+            surv.ExactEventTime.from_params([7.0]),
+            860,
+        ),
+        (
+            {
+                "plan": {
+                    "times": [0.0, 500.0, 1200.0],
+                    "rates": [0.1, 0.4, 0.05],
+                }
+            },
+            surv.LogNormal.from_params([0.0, 0.5]),
+            861,
+        ),
+    ],
+    ids=["tests every 7, repairs of 7", "plan"],
+)
+def test_a_long_window_agrees_with_the_simulation(demand, repair, seed):
+    # 120 typical up times (past the 82 that 4096 steps of a 50th of one
+    # allowed before): a demand every 7 whose failure's repair ends at the
+    # next demand (not called on), or a plan whose rate changes twice;
+    # the mission availability and the failures against 2000 seeded
+    # simulations (design fixed first), within 4 standard errors.
+    from repyability.rbd._curves import _up_scale
+
+    rbd = long_rbd(demand, repair)
+    horizon, n = 2000.0, 2000
+    assert horizon / _up_scale(W([20.0, 2.0]), None) > 4096 / 50
+    numerical = rbd.mission_availability(horizon)
+    expected = rbd.expected_failures(horizon)
+    run = rbd.availability(
+        horizon, mc_samples=n, seed=seed, control_variate=False
+    )
+    spread = float(np.std(run.uptimes / horizon)) / math.sqrt(n)
+    assert abs(float(run.mean_availability) - numerical) < 4.0 * spread
+    counts = np.asarray(run.cost.samples, dtype=float)
+    spread = float(np.std(counts)) / math.sqrt(n)
+    assert abs(float(np.mean(counts)) - expected) < 4.0 * spread
+
+
+@pytest.mark.parametrize(
+    "repair",
+    [E([0.05]), surv.ExactEventTime.from_params([7.0])],
+    ids=["exponential repair", "repairs that end at the next demand"],
+)
+def test_a_life_that_never_fails_is_the_set_times_component_over_long(repair):
+    # 285 demands over 2000 (the long window's): the demands alone, exact,
+    # to 1e-12.
+    times = list(7.0 * np.arange(1, 286))
+    both = long_rbd({"times": times}, repair, life=E([1e-300]))
+    assert isinstance(both.components["a"].reliability, LifeWithPlannedDemands)
+    alone = RepairableRBD(
+        ONE,
+        {
+            "a": {
+                "reliability": FIXED(0.2),
+                "repairability": repair,
+                "demand_times": times,
+                "repair_cost": 1.0,
+            }
+        },
+    )
+    x = np.linspace(0.0, 2000.0, 4001)
+    np.testing.assert_allclose(
+        both.point_availability(x),
+        alone.point_availability(x),
+        rtol=0.0,
+        atol=1e-12,
+    )
+    for method in ("mission_availability", "expected_failures"):
+        assert getattr(both, method)(2000.0) == pytest.approx(
+            getattr(alone, method)(2000.0), rel=0.0, abs=1e-12
+        )
+
+
+SPREAD = {"times": [30.0, 60.0, 90.0, 150.0, 210.0, 270.0]}
+
+
+def spread_life(times):
+    return LifeWithPlannedDemands(W([80.0, 2.0]), 0.3, times=times)
+
+
+@pytest.mark.parametrize("block", [1, 10**9])
+def test_the_blocks_change_how_the_sums_are_taken_not_what_they_are(
+    monkeypatch, block
+):
+    # Blocks of one cell (an FFT for each) and one block (every point
+    # pushed as it is complete) against the blocks chosen: to 1e-12.
+    from repyability.rbd import _demand_renewal
+
+    x = np.linspace(0.0, 300.0, 601)
+    for life, repair in [
+        (spread_life(SPREAD["times"]), E([0.1])),
+        (spread_life(SPREAD["times"]), surv.ExactEventTime.from_params([5.0])),
+    ]:
+        chosen = _demand_renewal.curve(life, repair, 300.0)
+        monkeypatch.setattr(_demand_renewal, "_block_size", lambda m: block)
+        other = _demand_renewal.curve(life, repair, 300.0)
+        monkeypatch.undo()
+        assert other.block == block and chosen.block != block
+        np.testing.assert_allclose(
+            other.at(x), chosen.at(x), rtol=0, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            other.events(x)["failures"],
+            chosen.events(x)["failures"],
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+
+def test_a_point_off_the_lattice_is_the_lattice_s_own_equations(monkeypatch):
+    # The demand at 150 moved a 1e5th of a step later, off the lattice the
+    # others are on (the lattice kept): its cells, and those after it, are
+    # integrated for it rather than summed from the tables. Moving a
+    # demand by d changes the values by about p d (a renewal's density
+    # and the repair's), at most 0.3 d (1/80 + 0.1) = 5e-8 here: within
+    # 1e-7.
+    from repyability.rbd import _demand_renewal
+
+    repair = E([0.1])
+    on = _demand_renewal.curve(spread_life(SPREAD["times"]), repair, 300.0)
+    nudge = 1e-5 * on.h
+    times = [t + (nudge if t == 150.0 else 0.0) for t in SPREAD["times"]]
+    monkeypatch.setattr(_demand_renewal, "_common_step", lambda *a: 30.0)
+    off = _demand_renewal.curve(spread_life(times), repair, 300.0)
+    assert off.h == on.h and np.sum(off._lat < 0) == 1
+    x = np.linspace(0.0, 300.0, 601)
+    x = x[(x < 150.0) | (x > 150.0 + nudge)]
+    np.testing.assert_allclose(off.at(x), on.at(x), rtol=0, atol=1e-7)
+    np.testing.assert_allclose(
+        off.events(x)["failures"], on.events(x)["failures"], rtol=0, atol=1e-7
+    )
+
+
+def test_with_a_fixed_repair_the_error_falls_as_the_square_of_the_step():
+    # The hand-worked case (a fixed repair, a demand on the lattice): the
+    # error at 68 against a step of 0.0025 falls by (0.04^2 - 0.0025^2) /
+    # (0.02^2 - 0.0025^2) = 4.06 as the step halves (second order): within
+    # 3 and 5. (Shares put wholly at a point, before or after a demand
+    # there, made it first order.)
+    from repyability.rbd._demand_renewal import PlannedDemandsCurve
+
+    life = LifeWithPlannedDemands(
+        W([HAND["alpha"], HAND["beta"]]), HAND["p"], times=[HAND["tau"]]
+    )
+    repair = surv.ExactEventTime.from_params([HAND["r"]])
+    horizon = HAND["horizon"]
+    x = np.array([60.0, horizon])
+    ref = PlannedDemandsCurve(life, repair, horizon, 0.0025).at(x)
+    errors = [
+        np.abs(PlannedDemandsCurve(life, repair, horizon, h).at(x) - ref)
+        for h in (0.04, 0.02)
+    ]
+    ratio = errors[0] / errors[1]
+    assert np.all((3.0 < ratio) & (ratio < 5.0))
+
+
+def test_a_window_past_the_coarsest_grid_is_refused():
+    # 2**17 steps of a 50th of the typical up time (16.65) reach 43,650.
+    from repyability.rbd._demand_renewal import curve
+
+    life = LifeWithPlannedDemands(
+        W([20.0, 2.0]), 0.2, times=[7.0, 14.0], node="a"
+    )
+    with pytest.raises(NotImplementedError, match="by simulation"):
+        curve(life, E([1.0]), 50_000.0)
