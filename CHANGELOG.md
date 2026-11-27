@@ -12,6 +12,28 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A fault tree with common-cause groups over repaired events gives its
+  failure frequency at a time, `failure_frequency(t)`, and its
+  probability-based measures at a time (Birnbaum, criticality, RAW, RRW,
+  Fussell-Vesely, improvement potential, joint and differential
+  importance, `ranked_cut_sets` and `conditional_probabilities`), which
+  were refused. The frequency counts each event outside the groups where
+  it is critical over the groups' joint states at `t`, from their
+  chains, and each cause at its rate times the rise its strike makes in
+  the top event's probability; the measures hold an event outside the
+  groups occurred and not and condition a member on its state through
+  its group's joint states then, each group within the smallest part of
+  the tree holding its members, as a `RepairableRBD`'s measures at a
+  time do. Checked: each measure against `to_repairable_rbd()`'s at the
+  same times to 1e-12 (within 3e-14), repaired and tested members; the
+  frequency against the pair's four-state Markov chain to 1e-12, and at
+  a late time against `system_failure_frequency()`; its integral against
+  `expected_failures` (1e-6); and against 20,000 seeded simulations of
+  the diagram over 300 h, 0.2284 top events against 0.2229 (-1.7 SE),
+  and the top event given a member down at 250 h, 0.0696 against 0.0671
+  (-0.2 SE). Trees without such groups give the same values to the bit.
+  `to_open_psa()` still refuses such a tree, the format's groups
+  splitting probabilities, not rates.
 - A cold standby pair with one repair at a time and a switch that can
   fail (`"switching_probability"` below 1) is followed over time, from
   new or from its long-run state, which was refused: `point_availability`,

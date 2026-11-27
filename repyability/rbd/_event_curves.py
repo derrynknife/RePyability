@@ -11,10 +11,10 @@ the owner's decomposition (a tree's decision diagram, repeated events and
 VOTE gates included), so that the diagram's values over time
 (``point_unavailability``, ``mission_unavailability``,
 ``expected_failures``) and in the long run (``mean_unavailability``,
-``system_failure_frequency``) are the owner's. The events are independent
-(no crews or common-cause groups couple them), so the system's failure
-frequency at a time is ``sum_i I_B^i(t) w_i(t)``, ``w_i`` the event's
-failure intensity (``failing_at``).
+``system_failure_frequency``) are the owner's. Without common-cause
+groups the events are independent (no crews couple them), so the
+system's failure frequency at a time is ``sum_i I_B^i(t) w_i(t)``,
+``w_i`` the event's failure intensity (``failing_at``).
 
 A tree may mix them with events that are not repaired (#831): a fixed
 probability ``q`` (down with it at every time, never failing over time:
@@ -25,7 +25,10 @@ on (``q(t) = F(t)``, ``w(t)`` its density), which follows a curve of its
 own (``LifeCurve``) beside the components' and has no long run. With
 common-cause groups over its repaired events (the diagram's own
 ``ccf_groups``), the diagram's values are its groups' chains' (see
-``_ccf_groups``), conditioned on module by module over the structure.
+``_ccf_groups``), conditioned on module by module over the structure;
+so is the failure frequency at a time (``grouped_failure_frequency``),
+and the owner's measures at a time condition on the groups' joint
+states then (``grouped_at``).
 """
 
 from typing import Any, Dict, Hashable, Mapping, Optional, Tuple
@@ -254,11 +257,19 @@ def failing_at(rbd: Structured, times: np.ndarray):
     (not under repair nor in a test), exactly ``lambda (1 - q(t))``; any
     other's intensity is the rate of change of its expected failures,
     by differences on its curve's grid (``_rates.differences``)."""
-    horizon = float(times.max()) if times.size else 0.0
-    scale = horizon if horizon > 0.0 else _typical_life(rbd)
     # A little past the last time, for the differences there.
     curves, states = _curves_to(rbd, times, counts=True, past=1.01)
     down = _curves._nodes_down_at(rbd, curves, times, states)
+    return down, _intensities(rbd, curves, down, times)
+
+
+def _intensities(
+    rbd: Structured, curves: dict, down: dict, times: np.ndarray
+) -> Dict[Hashable, np.ndarray]:
+    """The failure intensity at the ``times`` of each event of ``curves``
+    (see ``failing_at``), ``down`` its probability of being down then."""
+    horizon = float(times.max()) if times.size else 0.0
+    scale = horizon if horizon > 0.0 else _typical_life(rbd)
     intensity = {}
     for node, curve in curves.items():
         if isinstance(curve, LifeCurve):
@@ -272,14 +283,50 @@ def failing_at(rbd: Structured, times: np.ndarray):
             intensity[node] = _rates.differences(
                 _Failures(curve), times, scale
             )
-    return down, intensity
+    return intensity
+
+
+def _grouped(rbd: Structured, times: np.ndarray, counts=False, past=1.0):
+    """With common-cause groups: the curves of the events outside them
+    (to ``past * max(times)``, counting their events with ``counts``),
+    their states (new), and the system over the groups' chains (see
+    ``_ccf_chain.GroupsSystem``)."""
+    from repyability.rbd import _ccf_groups
+
+    horizon = past * float(times.max()) if times.size else 0.0
+    grouped = _ccf_groups._groups_curve(rbd, horizon, counts=counts)
+    states = _curves._states(rbd, None, frozenset())
+    return grouped.curves, states, grouped.system
+
+
+def grouped_at(rbd: Structured, times: np.ndarray) -> Tuple[dict, list]:
+    """With common-cause groups, at the ``times``: each event's
+    probability of being down (one outside the groups in its own right,
+    see ``down_at``; a member's from its group's chain, summed over its
+    combinations), and each group's members' joint states then (its
+    ``_ccf_chain.GroupStates``), which ``_ccf_groups._ccf_tabled``
+    conditions on."""
+    from repyability.rbd._ccf_chain import GroupStates
+
+    curves, states, system = _grouped(rbd, times)
+    down = _curves._nodes_down_at(rbd, curves, times, states)
+    tables = []
+    for group in system.groups:
+        chances = np.asarray(group.probabilities(times), dtype=float)
+        tables.append(GroupStates(tuple(group.members), group.down, chances))
+        for k, member in enumerate(group.members):
+            down[member] = chances @ np.where(group.down[:, k], 1.0, 0.0)
+    return down, tables
 
 
 def failure_frequency(rbd: Structured, times: np.ndarray) -> np.ndarray:
     """The system's failure frequency at the ``times``: each event's
     failure intensity where it is critical, ``sum_i I_B^i(t) w_i(t)``,
     the Birnbaum importances at the events' availabilities then, from one
-    pass of the structure (see ``RBD._importances``)."""
+    pass of the structure (see ``RBD._importances``). With common-cause
+    groups, see ``grouped_failure_frequency``."""
+    if rbd.ccf_groups:
+        return grouped_failure_frequency(rbd, times)
     down, intensity = failing_at(rbd, times)
     size = len(times)
     none: frozenset = frozenset()
@@ -293,6 +340,29 @@ def failure_frequency(rbd: Structured, times: np.ndarray) -> np.ndarray:
     total = np.zeros(size)
     for node, rate in intensity.items():
         total += importance[node] * rate
+    return total
+
+
+def grouped_failure_frequency(
+    rbd: Structured, times: np.ndarray
+) -> np.ndarray:
+    """``failure_frequency`` with common-cause groups over the repaired
+    events, as ``_windows._window_counts`` counts the diagram's failures
+    through the groups' system (``_ccf_chain.GroupsSystem.evaluate``), at
+    the ``times`` rather than over a window: each event outside the
+    groups' failure intensity times its Birnbaum importance then, over
+    the groups' joint states, and each of the groups' causes' rate times
+    the rise in the system's unavailability its strike makes then (a
+    member's own failures are its own cause's). Its integral is
+    ``expected_failures``, less the failures at exact times."""
+    curves, states, system = _grouped(rbd, times, counts=True, past=1.01)
+    down = _curves._nodes_down_at(rbd, curves, times, states)
+    intensity = _intensities(rbd, curves, down, times)
+    values = {node: 1.0 - q for node, q in down.items()}
+    importance, _, _, rate, _ = system.evaluate(values, times)
+    total = np.array(np.broadcast_to(rate, times.shape), dtype=float)
+    for node, value in intensity.items():
+        total += importance[node] * value
     return total
 
 
