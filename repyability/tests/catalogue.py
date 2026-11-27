@@ -892,7 +892,8 @@ def repairable_kinds():
                 ),
             ),
             # Upgraded, the unit in service kept until it fails or is
-            # due: simulated.
+            # due: each unit with the life in service when it is put in,
+            # over a horizon.
             "upgraded at a time, the unit in service kept": system(
                 unit(
                     preventive={"interval": 200.0, "cost": 3.0},

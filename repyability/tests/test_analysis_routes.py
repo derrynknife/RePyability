@@ -1350,24 +1350,13 @@ def test_the_readme_says_what_is_simulated():
                 "upgraded at a time, block-replaced",
                 "upgraded at a time, age-replaced",
                 "upgraded at a time, tested",
+                "upgraded at a time, the unit in service kept",
             )
             for analysis, route in (
                 ("expected_npv", "numerical"),
                 ("point_availability", "numerical"),
                 ("availability", "simulated"),
             )
-        ]
-        + [
-            (
-                repairable["upgraded at a time, the unit in service kept"],
-                "expected_npv",
-                "refused",
-            ),
-            (
-                repairable["upgraded at a time, the unit in service kept"],
-                "availability",
-                "simulated",
-            ),
         ],
         'A shelf of spares (a component\'s `"spares"`: a stock reordered '
         "one for one, each order arriving a lead time later)": [

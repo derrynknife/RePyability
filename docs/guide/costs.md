@@ -827,9 +827,11 @@ By default the unit in service at the upgrade is replaced then. With
 `"replace_in_service": False` it stays until its next failure or due
 replacement (its age, its block time, or a test that finds it failed),
 and the unit put in then has the new life: a part bought now and fitted
-when the old one comes out. That is simulated (`availability`, `cost`,
-`npv_distribution`, `compare_npv`); its values over a horizon refuse,
-saying so.
+when the old one comes out. On its own or under age replacement its
+values over a horizon are worked out (each unit with the life in
+service when it is put in, on one grid); with block replacement or
+tests it is simulated (`availability`, `cost`, `npv_distribution`,
+`compare_npv`), its values over a horizon refusing, saying so.
 
 ```python
 newer = surv.Weibull.from_params([12000.0, 2.0])
@@ -859,6 +861,8 @@ swapped.compare_npv(held, 70080.0, discount_rate=math.log(1.08) / 8760.0,
                     mc_samples=2000, seed=1)
 # -> mean -1258.3 (standard error 114.2): fitting the new pump when the
 #    old one comes out is worth about 1,260 more over eight years
+held.mission_availability(70080.0)               # -> 0.99616
+held.expected_cost(70080.0).mean                 # -> 203504.0
 ```
 
 ### A plan against what happened
