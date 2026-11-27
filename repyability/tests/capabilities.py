@@ -287,8 +287,12 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("SafetyFunction.vote",),
             ),
             (
-                "A result over uncertain failure rates",
+                "A result over uncertain failure rates and betas",
                 ("SafetyFunction.measure_uncertainty",),
+            ),
+            (
+                "Levers: rates, repairs, proof tests and betas, set",
+                ("SafetyFunction.levers", "SafetyFunction.with_levers"),
             ),
             (
                 "Saving and loading (dict, JSON)",

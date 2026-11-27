@@ -24,7 +24,16 @@ import dataclasses
 import json
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, Hashable, List, Optional, Tuple, Union
+from typing import (
+    Any,
+    Dict,
+    Hashable,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import numpy as np
 
@@ -36,6 +45,7 @@ from repyability.rbd._model_utils import MODEL_ERRORS
 from repyability.rbd.ccf import BetaFactor, CCFGroup
 from repyability.rbd.helper_classes import PerfectReliability
 from repyability.rbd.results import (
+    Lever,
     PFDBreakdown,
     SafetyFunctionResult,
     SILBand,
@@ -479,8 +489,16 @@ def _leaves(part: _Part) -> List[_Stage]:
     return [stage for inner in part.parts for stage in _leaves(inner)]
 
 
-def _with_channels(part: _Part, channels: Dict[Hashable, Any]) -> _Part:
-    """``part`` with the channels named in ``channels`` replaced."""
+def _with_channels(
+    part: _Part,
+    channels: Dict[Hashable, Any],
+    betas: Optional[Dict[int, Dict[str, float]]] = None,
+) -> _Part:
+    """``part`` with the channels named in ``channels`` replaced, and the
+    common-cause fractions of the votes in ``betas`` (by the ``id`` of
+    the vote in ``part``, ``{field: value}``)."""
+    betas = betas or {}
+    fields: Dict[str, Any] = dict(betas.get(id(part), {}))
     if isinstance(part, _Stage):
         return dataclasses.replace(
             part,
@@ -488,10 +506,36 @@ def _with_channels(part: _Part, channels: Dict[Hashable, Any]) -> _Part:
                 name: channels.get(name, channel)
                 for name, channel in part.channels.items()
             },
+            **fields,
         )
-    return dataclasses.replace(
-        part, parts=tuple(_with_channels(p, channels) for p in part.parts)
+    fields["parts"] = tuple(
+        _with_channels(p, channels, betas) for p in part.parts
     )
+    return dataclasses.replace(part, **fields)
+
+
+def _votes(structure: _Part) -> List[Tuple[Tuple[Hashable, ...], _Part]]:
+    """Each vote over more than one channel, keyed by the tuple of its
+    channels' names, inner votes before the votes on them. Of votes over
+    the same channels (a vote of one function), the innermost."""
+    out: List[Tuple[Tuple[Hashable, ...], _Part]] = []
+    seen: set = set()
+
+    def walk(part) -> None:
+        if not isinstance(part, _Stage):
+            for inner in part.parts:
+                walk(inner)
+            if isinstance(part, _Series):
+                return
+        names = tuple(
+            name for stage in _leaves(part) for name in stage.channels
+        )
+        if len(names) > 1 and frozenset(names) not in seen:
+            seen.add(frozenset(names))
+            out.append((names, part))
+
+    walk(structure)
+    return out
 
 
 def _described(part: _Part, inside: bool = False) -> str:
@@ -848,13 +892,6 @@ class SafetyFunction:
             _fraction(beta_detected, "beta_detected"),
             _fraction(beta_safe, "beta_safe"),
         )
-        for name, value in (
-            ("beta", part.beta),
-            ("beta_detected", part.beta_detected),
-            ("beta_safe", part.beta_safe),
-        ):
-            if value > 0.0:
-                _shared_over(part, name)
         out = cls.__new__(cls)
         out._build(_Series((part,)))
         return out
@@ -901,6 +938,9 @@ class SafetyFunction:
                     before = draw(inner, before)
                 return before
             if isinstance(part, _Voted):
+                for name in ("beta", "beta_detected", "beta_safe"):
+                    if getattr(part, name) > 0.0:
+                        _shared_over(part, name)
                 ends = [draw(inner, before) for inner in part.parts]
                 vote = ("vote", next(count))
                 for end in ends:
@@ -1364,6 +1404,282 @@ class SafetyFunction:
             down_times=times,
         )
 
+    # -- levers ---------------------------------------------------------
+
+    def levers(self) -> List[Lever]:
+        """The function's levers: each channel's rates, repairs and proof
+        test, and each vote's common-cause fractions, with their values
+        and ranges, for [`with_levers`][repyability.SafetyFunction.with_levers]
+        to set. No result is worked out.
+
+        A channel's levers are keyed by its name, or, for channels that
+        share a cause (a beta over them), by the tuple of their names,
+        once for them all: they are alike, and a lever moves them
+        together. They are ``"dangerous_undetected"``,
+        ``"dangerous_detected"``, ``"safe"``, ``"repair"`` (its mean
+        time; 0 is instant), ``"undetected_repair"`` (where it is
+        given), ``"proof_test_interval"`` (the full test moves with it,
+        every so many tests as before), ``"proof_test_coverage"`` (where
+        a ``full_test`` is given, as a coverage below 1 needs one) and
+        ``"proof_test_offset"``; a model in place of a rate or a repair
+        time gives its parameters instead (``"dangerous_undetected.alpha"``,
+        ``"repair.failure_rate"``, ...). Each vote over more than one
+        channel, keyed by the tuple of its channels' names (inner votes
+        before the votes on them), has ``"beta"``, ``"beta_detected"``
+        and ``"beta_safe"``, each where it can be set (the channels
+        beneath alike, and no other vote over them sharing a cause of
+        that kind).
+
+        Returns
+        -------
+        list of Lever
+            Each a [`Lever`][repyability.Lever], the channels' first.
+
+        Examples
+        --------
+        >>> from repyability import SafetyChannel, SafetyFunction
+        >>> unit = SafetyChannel(
+        ...     2e-6, dangerous_detected=3e-6, repair=8.0,
+        ...     proof_test_interval=8760.0,
+        ... )
+        >>> function = SafetyFunction({"a": unit, "b": unit}, k=1, beta=0.1)
+        >>> for lever in function.levers()[:2]:
+        ...     print(lever.key, lever.name, lever.value)
+        ('a', 'b') dangerous_undetected 2e-06
+        ('a', 'b') dangerous_detected 3e-06
+        >>> [lever.name for lever in function.levers()[-3:]]
+        ['beta', 'beta_detected', 'beta_safe']
+        """
+        return [
+            Lever(
+                key=key,
+                name=name,
+                value=value,
+                discrete=False,
+                bounds=bounds,
+            )
+            for key, name, value, bounds, _ in self._lever_list()
+        ]
+
+    def with_levers(self, values) -> "SafetyFunction":
+        """A copy of this function with levers at new values (see
+        ``levers()``): a channel's rate, repair or proof test, for every
+        channel the lever is keyed by, or a vote's common-cause fraction.
+
+        Parameters
+        ----------
+        values : dict
+            Each lever's new value, by its [`Lever`][repyability.Lever]
+            (from ``levers()``) or by its ``(key, name)``.
+
+        Returns
+        -------
+        SafetyFunction
+            The new function, built as this one was with the levers
+            moved; this one is unchanged.
+
+        Raises
+        ------
+        ValueError
+            For a lever the function does not have (with the closest
+            name), or a value the function refuses (one outside the
+            lever's ``bounds``, or a beta for channels that are not
+            alike).
+        TypeError
+            If ``values`` is not a dict, a lever is neither a ``Lever``
+            nor a ``(key, name)``, or a value is not a number.
+
+        Examples
+        --------
+        Proof tests every six months rather than yearly:
+
+        >>> from repyability import SafetyChannel, SafetyFunction
+        >>> unit = SafetyChannel(
+        ...     2e-6, dangerous_detected=3e-6, repair=8.0,
+        ...     proof_test_interval=8760.0,
+        ... )
+        >>> function = SafetyFunction({"a": unit, "b": unit}, k=1, beta=0.1)
+        >>> sooner = function.with_levers(
+        ...     {(("a", "b"), "proof_test_interval"): 4380.0}
+        ... )
+        >>> f"{function.pfd_avg():.3e} {sooner.pfd_avg():.3e}"
+        '9.585e-04 4.595e-04'
+        """
+        from repyability.rbd import _sensitivity
+
+        if not isinstance(values, Mapping):
+            raise TypeError(
+                "with_levers takes a dict of new values, by Lever (from "
+                "levers()) or by (key, name), got "
+                f"{type(values).__name__}."
+            )
+        changes = [
+            (_sensitivity._named(lever), value)
+            for lever, value in values.items()
+        ]
+        changed = self
+        for (key, name), value in changes:
+            found = {
+                (k, n): (bounds, build)
+                for k, n, _, bounds, build in changed._lever_list()
+            }
+            if (key, name) not in found:
+                changed._unsettable(key, name, value)
+                raise _no_lever(key, name, list(found))
+            if not is_number(value):
+                raise TypeError(
+                    f"The lever {name!r} of {key!r} must be given a number, "
+                    f"got {value!r}."
+                )
+            (low, high), build = found[(key, name)]
+            try:
+                changed = build(float(value))
+            except (ValueError, TypeError) as error:
+                raise ValueError(
+                    f"The lever {name!r} of {key!r} cannot be {value!r} (its "
+                    f"values lie between {low:g} and {high:g}): {error}"
+                ) from error
+        return self._with({}) if changed is self else changed
+
+    def _unsettable(self, key, name: str, value) -> None:
+        """Say why a vote's common-cause fraction ``name``, not listed as
+        a lever, cannot be set, where ``key`` names a vote's channels."""
+        if name not in _BETAS or not isinstance(key, tuple):
+            return
+        for names, part in _votes(self._structure):
+            if frozenset(names) == frozenset(key):
+                try:
+                    self._with({}, {id(part): {name: 0.5}})
+                except ValueError as error:
+                    raise ValueError(
+                        f"The lever {name!r} of {key!r} cannot be "
+                        f"{value!r}: {error}"
+                    ) from error
+
+    def _lever_list(self) -> List[tuple]:
+        """``(key, name, value, bounds, build)`` for each lever, ``build(v)``
+        the function with it at ``v``."""
+        from repyability.rbd import _sensitivity
+
+        groups = _shared_groups(self._structure)
+        keys: Dict[Hashable, Hashable] = {}
+        for name in self.channels:
+            # The largest group holding it: the groups are nested.
+            largest: List[Hashable] = []
+            for group in groups:
+                if name in group and len(group) > len(largest):
+                    largest = group
+            keys[name] = tuple(largest) if largest else name
+        out: List[tuple] = []
+        done: List[Hashable] = []
+        for name, channel in self.channels.items():
+            key = keys[name]
+            if any(key == seen for seen in done):
+                continue
+            done.append(key)
+            members = [n for n in self.channels if keys[n] == key]
+
+            def build(fields, members=members):
+                return self._with(
+                    {
+                        n: dataclasses.replace(self.channels[n], **fields)
+                        for n in members
+                    }
+                )
+
+            def field_levers(field, value, bounds, build=build):
+                if value is None:
+                    return
+                if isinstance(value, str) or is_number(value):
+                    number = 0.0 if isinstance(value, str) else float(value)
+                    out.append(
+                        (
+                            key,
+                            field,
+                            number,
+                            bounds,
+                            lambda v, field=field: build({field: v}),
+                        )
+                    )
+                    return
+                for (
+                    named,
+                    number,
+                    moved,
+                    ranges,
+                    _,
+                ) in _sensitivity._model_levers(
+                    field, value, lambda m, field=field: {field: m}
+                ):
+                    out.append(
+                        (
+                            key,
+                            named,
+                            float(number),
+                            ranges,
+                            lambda v, moved=moved: build(moved(v)),
+                        )
+                    )
+
+            interval = float(channel.proof_test_interval)
+            offset = float(channel.proof_test_offset)
+            rates = (0.0, math.inf)
+            field_levers(
+                "dangerous_undetected", channel.dangerous_undetected, rates
+            )
+            field_levers(
+                "dangerous_detected", channel.dangerous_detected, rates
+            )
+            field_levers("safe", channel.safe, rates)
+            field_levers("repair", channel.repair, rates)
+            field_levers("undetected_repair", channel.undetected_repair, rates)
+
+            def tested(v, channel=channel, build=build):
+                fields: Dict[str, Any] = {"proof_test_interval": v}
+                if channel.full_test is not None:
+                    # A full test every so many tests, as before.
+                    fields["full_test"] = channel.full_test * (
+                        v / float(channel.proof_test_interval)
+                    )
+                return build(fields)
+
+            out.append(
+                (
+                    key,
+                    "proof_test_interval",
+                    interval,
+                    (offset, math.inf),
+                    tested,
+                )
+            )
+            if channel.full_test is not None:
+                # (A coverage below 1 needs a full test.)
+                field_levers(
+                    "proof_test_coverage",
+                    channel.proof_test_coverage,
+                    (0.0, 1.0),
+                )
+            field_levers("proof_test_offset", offset, (0.0, interval))
+        for names, part in _votes(self._structure):
+            for field in _BETAS:
+                value = float(getattr(part, field))
+
+                def shared(v, part=part, field=field):
+                    return self._with(
+                        {}, {id(part): {field: _fraction(v, field)}}
+                    )
+
+                if value == 0.0:
+                    # Listed where it can be set: the channels beneath
+                    # alike, and no other vote over them sharing a cause
+                    # of this kind.
+                    try:
+                        shared(0.5)
+                    except ValueError:
+                        continue
+                out.append((names, field, value, (0.0, 1.0), shared))
+        return out
+
     # -- parameter uncertainty ------------------------------------------
 
     def measure_uncertainty(
@@ -1463,11 +1779,30 @@ class SafetyFunction:
         one_of("measure", measure, _MEASURES)
         sources = self._uncertain_rates(uncertainty)
 
-        def draw(n: int, source) -> List[Dict[Hashable, Any]]:
+        def draw(n: int, source) -> List[tuple]:
             drawn: List[Dict[Hashable, Dict[str, Any]]] = [
                 {} for _ in range(n)
             ]
-            for names, field, spec, label in sources:
+            fractions: List[Dict[int, Dict[str, float]]] = [
+                {} for _ in range(n)
+            ]
+            for names, field, spec, label, vote in sources:
+                if vote is not None:
+                    values = list(
+                        _uncertainty._quantiles(spec, n, source, label, field)
+                    )
+                    if not all(0.0 <= v <= 1.0 for v in values):
+                        raise ValueError(
+                            f"{label}: the distribution for {field!r} gives "
+                            "values outside [0, 1]; a common-cause "
+                            "fraction's distribution must give values in "
+                            "[0, 1] (a beta distribution, say)."
+                        )
+                    for i in range(n):
+                        fractions[i].setdefault(id(vote), {})[field] = values[
+                            i
+                        ]
+                    continue
                 value = getattr(self.channels[names[0]], field)
                 if is_number(value):
                     values = list(
@@ -1487,18 +1822,27 @@ class SafetyFunction:
                     for name in names:
                         drawn[i].setdefault(name, {})[field] = values[i]
             return [
-                {
-                    name: dataclasses.replace(self.channels[name], **fields)
-                    for name, fields in row.items()
-                }
-                for row in drawn
+                (
+                    {
+                        name: dataclasses.replace(
+                            self.channels[name], **fields
+                        )
+                        for name, fields in row.items()
+                    },
+                    betas,
+                )
+                for row, betas in zip(drawn, fractions)
             ]
 
         rows = _uncertainty.draw_with(
             draw, _uncertainty.check_draws(n_draws), seed, sampling
         )
         samples = np.array(
-            [self._with(row)._measure(measure) for row in rows], dtype=float
+            [
+                self._with(channels, betas)._measure(measure)
+                for channels, betas in rows
+            ],
+            dtype=float,
         )
         return UncertaintyResult(
             samples=samples,
@@ -1506,9 +1850,14 @@ class SafetyFunction:
             n_draws=len(samples),
             band=_uncertainty.band(
                 _uncertainty.input_band(
-                    getattr(self.channels[names[0]], field), spec
+                    (
+                        getattr(vote, field)
+                        if vote is not None
+                        else getattr(self.channels[names[0]], field)
+                    ),
+                    spec,
                 )
-                for names, field, spec, _ in sources
+                for names, field, spec, _, vote in sources
             ),
         )
 
@@ -1521,18 +1870,24 @@ class SafetyFunction:
             return self.pfh(undetected_only=True)
         return self.spurious_trip_rate()
 
-    def _with(self, channels: Dict[Hashable, Any]) -> "SafetyFunction":
+    def _with(
+        self,
+        channels: Dict[Hashable, Any],
+        betas: Optional[Dict[int, Dict[str, float]]] = None,
+    ) -> "SafetyFunction":
         """This function with the channels named in ``channels``
-        replaced."""
+        replaced, and the votes' common-cause fractions in ``betas`` (by
+        the ``id`` of the vote in this function's structure)."""
         out = type(self).__new__(type(self))
-        structure = _with_channels(self._structure, channels)
+        structure = _with_channels(self._structure, channels, betas)
         assert isinstance(structure, _Series)
         out._build(structure)
         return out
 
     def _uncertain_rates(self, uncertainty) -> List[tuple]:
-        """``uncertainty``, checked: ``(names, rate, spec, label)`` for
-        each rate drawn."""
+        """``uncertainty``, checked: ``(names, field, spec, label, vote)``
+        for each rate drawn (``vote`` None) and each vote's common-cause
+        fraction (``vote`` the vote in this function's structure)."""
         if uncertainty is None:
             fits: Dict[int, List[Hashable]] = {}
             for name, channel in self.channels.items():
@@ -1575,14 +1930,27 @@ class SafetyFunction:
                 raise ValueError(
                     f"The uncertainty of {key!r} must be {{rate: "
                     "distribution}, the rate one of "
-                    f"{list(_RATES)!r}, or 'fit', got {spec!r}."
+                    f"{list(_RATES)!r} (or a vote's {list(_BETAS)!r}), or "
+                    f"'fit', got {spec!r}."
                 )
             for field, given in spec.items():
+                if field in _BETAS:
+                    out.append(self._uncertain_beta(key, names, field, given))
+                    if (
+                        drawn.setdefault((id(out[-1][-1]), field), key)
+                        is not key
+                    ):
+                        raise ValueError(
+                            f"The {field} of the vote over {list(names)!r} "
+                            "is drawn twice; give it under one key."
+                        )
+                    continue
                 if field not in _RATES:
                     raise ValueError(
                         f"The uncertainty of {key!r} names {field!r}, "
                         f"which is not a rate; the rates are "
-                        f"{list(_RATES)!r}."
+                        f"{list(_RATES)!r}, and a vote's common-cause "
+                        f"fractions {list(_BETAS)!r}."
                     )
                 values = [getattr(self.channels[n], field) for n in names]
                 if any(v is not values[0] and v != values[0] for v in values):
@@ -1597,8 +1965,13 @@ class SafetyFunction:
                             f"The {field} rate of channel {name!r} is "
                             "drawn twice; give it under one key."
                         )
-                out.append((names, field, given, f"Channel {key!r}"))
-        for group in _shared_groups(self._structure):
+                out.append((names, field, given, f"Channel {key!r}", None))
+        shared = _shared_groups(self._structure) + [
+            [name for stage in _leaves(vote) for name in stage.channels]
+            for *_, vote in out
+            if vote is not None
+        ]
+        for group in shared:
             keys = {
                 (field, drawn.get((name, field)))
                 for name in group
@@ -1613,6 +1986,27 @@ class SafetyFunction:
                     "...}."
                 )
         return out
+
+    def _uncertain_beta(self, key, names, field: str, given) -> tuple:
+        """The source for a vote's common-cause fraction ``field`` drawn
+        from ``given``: ``key`` must name the vote's channels."""
+        votes = _votes(self._structure)
+        vote = {frozenset(n): part for n, part in votes}.get(frozenset(names))
+        if vote is None:
+            raise ValueError(
+                f"The uncertainty of {key!r} names {field!r}, a vote's "
+                f"common-cause fraction, and {key!r} is not the channels of "
+                "a vote; the votes are "
+                f"{[n for n, _ in votes]!r}."
+            )
+        try:
+            self._with({}, {id(vote): {field: 0.5}})
+        except ValueError as error:
+            raise ValueError(
+                f"The {field} of the vote over {list(names)!r} cannot be "
+                f"drawn: {error}"
+            ) from None
+        return (names, field, given, f"Vote {key!r}", vote)
 
     # -- saving ---------------------------------------------------------
 
@@ -1881,6 +2275,31 @@ class SafetyFunction:
 
 #: The rates a channel's uncertainty may draw.
 _RATES = ("dangerous_undetected", "dangerous_detected", "safe")
+#: A vote's common-cause fractions, by kind.
+_BETAS = ("beta", "beta_detected", "beta_safe")
+
+
+def _no_lever(key, name: str, found: List[tuple]) -> ValueError:
+    """The error for a lever the function does not have, with the closest
+    name if one is close."""
+    from repyability.rbd.rbd import _close_name
+
+    names = [n for k, n in found if k == key]
+    if names:
+        close = _close_name(name, names)
+        hint = "" if close is None else f" Did you mean {close!r}?"
+        return ValueError(
+            f"{key!r} has no lever {name!r}.{hint} Its levers are: {names}."
+        )
+    keys = list(dict.fromkeys(k for k, _ in found))
+    close = _close_name(key, keys)
+    hint = "" if close is None else f" Did you mean {close!r}?"
+    return ValueError(
+        f"{key!r} has no levers: it is no channel, channels sharing a "
+        f"cause or vote.{hint} The keys with levers are: {keys}."
+    )
+
+
 #: The results ``measure_uncertainty`` draws.
 _MEASURES = ("pfd_avg", "pfh", "pfh_undetected", "spurious_trip_rate")
 #: A channel's fields, as saved.
