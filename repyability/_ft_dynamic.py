@@ -485,12 +485,17 @@ class Dynamic:
     # -- simulation --------------------------------------------------------
 
     def _lives(
-        self, names: Set[Hashable], size: int, entropy: Optional[int]
+        self,
+        names: Set[Hashable],
+        size: int,
+        entropy: Optional[int],
+        uniforms: Optional[Callable[[Hashable], np.ndarray]] = None,
     ) -> Dict[Hashable, np.ndarray]:
         """Each event's life (its age at occurring), from a stream of its
         own: the event's place among the tree's events and ``entropy``
         key it, so a part simulated alone draws what the whole tree
-        draws."""
+        draws; or, given ``uniforms``, ``uniforms(event)`` (keyed by the
+        event's name, for common random numbers: see ``_paired``)."""
         from repyability.rbd._model_utils import is_fixed_probability
         from repyability.rbd._sampling import stream_sampler
 
@@ -500,7 +505,11 @@ class Dynamic:
         for i, e in enumerate(events):
             if e not in names:
                 continue
-            u = np.random.Generator(np.random.PCG64(streams[i])).random(size)
+            u = (
+                np.random.Generator(np.random.PCG64(streams[i])).random(size)
+                if uniforms is None
+                else uniforms(e)
+            )
             model = self.tree.events[e]
             if isinstance(model, float) or is_fixed_probability(model):
                 p = (
@@ -521,10 +530,15 @@ class Dynamic:
         return out
 
     def simulate(
-        self, root: Hashable, size: int, entropy: Optional[int]
+        self,
+        root: Hashable,
+        size: int,
+        entropy: Optional[int],
+        uniforms: Optional[Callable[[Hashable], np.ndarray]] = None,
     ) -> np.ndarray:
         """``size`` simulated times at which ``root`` occurs (``inf``
-        where it never does), its subtree simulated alone."""
+        where it never does), its subtree simulated alone (each event's
+        uniforms ``uniforms(event)`` where given, see ``_lives``)."""
         gates = self.tree._gates
         needed: Set[Hashable] = set()
         stack = [root]
@@ -537,7 +551,10 @@ class Dynamic:
             if x in self.role:
                 stack.append(self.role[x])
         lives = self._lives(
-            {x for x in needed if x in self.tree.events}, size, entropy
+            {x for x in needed if x in self.tree.events},
+            size,
+            entropy,
+            uniforms,
         )
         times: Dict[Hashable, np.ndarray] = {}
         done: Set[Hashable] = set()

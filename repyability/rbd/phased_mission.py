@@ -35,6 +35,7 @@ naming a component has occurred from a decision diagram of those events
 over the segments (``_cut_set_plan``).
 """
 
+import dataclasses
 import math
 from typing import (
     Any,
@@ -2293,6 +2294,98 @@ class PhasedMission:
             upper=band[1],
         )
 
+    def compare(
+        self,
+        other: "PhasedMission",
+        mc_samples: int = 100_000,
+        seed=None,
+        *,
+        confidence: float = 0.95,
+        method: Optional[str] = None,
+    ) -> ConfidenceInterval:
+        """How much more (or less) likely this mission is to succeed than
+        ``other``: exactly where ``reliability`` works out both, and
+        otherwise by simulation with common random numbers, as
+        [`NonRepairableRBD.compare`][repyability.NonRepairableRBD.compare]
+        compares two diagrams.
+
+        Simulated, both missions are played ``mc_samples`` times, a
+        component of the same name in both drawing the same random
+        numbers for its life (the same quantile of its own model), and a
+        block on standby the same for whether it starts in a phase of the
+        same number, so the differences come from how the missions
+        differ, not from chance. ``reliability_interval`` draws as it did.
+
+        Parameters
+        ----------
+        other : PhasedMission
+            The mission to compare with.
+        mc_samples : int, optional
+            Simulated, the number of missions of each, by default 100_000.
+        seed : int, optional
+            Simulated, the seed, by default None.
+        confidence : float, optional
+            The confidence level of the interval, by default 0.95.
+        method : str, optional
+            None (the default): exact where both reliabilities are, else
+            simulated. ``"exact"``: refused where one is not exact.
+            ``"simulate"``: simulated whatever.
+
+        Returns
+        -------
+        ConfidenceInterval
+            This mission's reliability minus ``other``'s: exact
+            (``method="exact"``, with no error), or the mean of the paired
+            differences of success (``"simulated"``), with its standard
+            error and a normal interval within ``[-1, 1]``.
+
+        Raises
+        ------
+        TypeError
+            If ``other`` is not a ``PhasedMission``.
+        ValueError
+            If ``mc_samples``, ``confidence`` or ``method`` is not valid.
+        NotImplementedError
+            Simulated, if a block's life cannot be drawn from uniforms;
+            with ``method="exact"``, as ``reliability`` refuses.
+
+        Examples
+        --------
+        The way back cut from 10 hours to 5, for a unit failing at 0.01 an
+        hour: ``exp(-0.15) - exp(-0.2)``, about 0.042.
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> unit = surv.Exponential.from_params([0.01])
+        >>> one = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": unit})
+        >>> long = PhasedMission([("out", 10.0, one), ("back", 10.0, one)])
+        >>> short = PhasedMission([("out", 10.0, one), ("back", 5.0, one)])
+        >>> gain = short.compare(long)
+        >>> round(gain.estimate, 4), gain.method
+        (0.042, 'exact')
+        """
+        from repyability.rbd import _paired
+
+        _paired.check(method, mc_samples, confidence)
+        _paired.same_kind(
+            self, other, "a mission compares with another mission"
+        )
+        if method != "simulate":
+            try:
+                exact = float(self.reliability() - other.reliability())
+            except NotImplementedError:
+                if method == "exact":
+                    raise
+            else:
+                return _paired.exact(exact, confidence)
+        key = _paired.key(seed)
+        count = (len(self.phases), len(other.phases))
+        ours = _mission_runs.keyed(self, mc_samples, key).phase == count[0]
+        theirs = _mission_runs.keyed(other, mc_samples, key).phase == count[1]
+        return _paired.simulated(
+            ours.astype(float) - theirs.astype(float), confidence, clip=1.0
+        )
+
     def analysis_routes(self) -> Dict[str, routes.AnalysisRoute]:
         """How each analysis of the mission is computed, found without
         running it: exactly, by simulation, or not at all.
@@ -2400,6 +2493,26 @@ class PhasedMission:
         )
         for name in ("reliability_over_time", "failure_drivers", "summary"):
             out[name] = whole
+        replay = r.refusal(lambda: _mission_runs.replayable(self))
+        if diagram.route != r.REFUSED:
+            out["compare"] = dataclasses.replace(
+                diagram,
+                reason="The difference of the two missions' reliabilities, "
+                "where the other's is worked out too; otherwise, or with "
+                "method='simulate', missions of both played with common "
+                "random numbers. " + diagram.reason,
+            )
+        else:
+            out["compare"] = (
+                r.refused(replay)
+                if replay
+                else r.AnalysisRoute(
+                    r.SIMULATED,
+                    "Missions of both played, a component of the same name "
+                    "drawing the same random numbers in both (common random "
+                    "numbers).",
+                )
+            )
         return with_importances(out)
 
     def _method(self, method: str, mc_samples, seed, name: str) -> str:
