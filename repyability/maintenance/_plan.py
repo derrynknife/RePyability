@@ -769,6 +769,9 @@ _OWN_KEYS = (
     "identical",
     "spares",
     "demand_rate",
+    "demand_times",
+    "demand_plan",
+    "demand_basis",
 )
 
 
@@ -803,7 +806,8 @@ class UnitPlan:
     standby group of such units), ``duty`` (the share of the time it
     operates, for a life in operating hours), ``covariates`` (a
     surpyval ``StepSchedule``), ``spares`` (its shelf of spares) and
-    ``demand_rate`` (the demands per unit of time on a life that is a
+    ``demand_rate``, ``demand_times``, ``demand_plan`` and
+    ``demand_basis`` (when the demands come on a life that is a
     probability of failing per demand) are as in the spec.
 
     Three terms are the unit's own money, which a valuation
@@ -884,6 +888,18 @@ class UnitPlan:
     demand_rate : float, optional
         The demands per unit of time on a unit whose life is a
         probability of failing per demand, as a spec's ``"demand_rate"``.
+    demand_times : sequence of float, optional
+        The set times at which such a unit is called on, as a spec's
+        ``"demand_times"`` (a recurrence rule's through
+        ``CalendarContext.rule_times``).
+    demand_plan : dict or schedule.DutySchedule, optional
+        The demands per unit of time on such a unit from each of a plan's
+        times, as a spec's ``"demand_plan"`` (``"times"`` and
+        ``"rates"``).
+    demand_basis : str, optional
+        What its demands are counted in, as a spec's ``"demand_basis"``:
+        ``"calendar"`` (the default) or the unit's ``"operating"`` time,
+        which its duty puts on the calendar.
 
     Examples
     --------
@@ -918,6 +934,9 @@ class UnitPlan:
     identical: Optional[dict] = None
     spares: Optional[dict] = None
     demand_rate: Optional[float] = None
+    demand_times: Any = None
+    demand_plan: Any = None
+    demand_basis: Optional[str] = None
 
     #: The node a plan valued alone is in its one-node diagram
     #: (``diagram()``): what its results' tables name.

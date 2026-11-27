@@ -28,6 +28,7 @@ from repyability.rbd import (
     _chain_transient,
     _covariate_schedule,
     _crews,
+    _demands,
     _duty,
     _long_run,
     _overrides,
@@ -256,6 +257,12 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
         )
     if _duty.planned_life(rbd, node) is not None:
         return _time_changed_over_time(rbd, node, kind)
+    demands = _demands.demand_times_life(rbd, node)
+    if demands is not None:
+        why = _demands.over_time_blocker(rbd, node)
+        if why is not None:
+            return r.REFUSED, _demands.blocked(demands, why)
+        return r.EXACT, _demands.HOW
     message = r.refusal(partial(_requirements._require_time_models, rbd, node))
     if not message:
         message = r.refusal(
@@ -590,6 +597,7 @@ def _plain_unit(rbd, node) -> bool:
     return not (
         isinstance(rbd.components[node], RepairableRBD)
         or _duty.planned_life(rbd, node) is not None
+        or _demands.demand_times_life(rbd, node) is not None
         or node in rbd._standby
         or node in rbd._inspection
         or node in rbd._preventive
@@ -661,6 +669,8 @@ def _node_curve(
             start,
         )
         return TimeChangedCurve(inner, plan)
+    if _demands.demand_times_life(rbd, node) is not None:
+        return _demands.demand_curve(rbd, node, start)
     if node in rbd._standby:
         return _standby_curve(rbd, node, start)
     if _requirements._upgrade_kind(rbd, node) not in (None, "plan"):
