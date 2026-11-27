@@ -3992,9 +3992,35 @@ the set-times component (1e-12, every value); a plan of one rate against
 the rate's own renewal equation; the hand-worked case within `4 (h /
 s)^2`; seeded simulations at set times, on a plan and from an age within
 4 standard errors; routes and refusals. Left: the long run and mean
-lives (none: the demands end, or the plan is no renewal process), and a
-horizon of many up times (the grid is `O(n^2)`, at most `MAX_STEPS`
-points).
+lives (none: the demands end, or the plan is no renewal process).
+
+**Long windows (added after).** Weekly tests over many years of a unit
+that lasts a few weeks: the grid's direct sums were `O(n^2)`, so a
+window of more than about 80 typical up times was refused. The grid's
+uniform points are now a lattice whose step makes every demand, plan
+time and fixed repair end a point where they share a common step (as
+weekly tests do); from a lattice point to a lattice cell what the life
+and the repair carry depends on the steps between alone, and the
+demands' survival is a ratio of the clock's values, so the sums are
+convolutions, by FFT in blocks (`O(n log n)`); a point off the lattice
+is integrated for, as before. Up to `2**17` steps, so about 2,600
+typical up times at the coarsest step (a 50th of one). The shared
+renewal grid (`unit_curve`) cannot take it: it inverts a power series,
+which needs a kernel that is one convolution, and the demands make
+this one depend on when each unit starts. Found on the way: a fixed
+repair put each share of failures' renewals at one point, before or
+after a demand there where its mass is on both sides, an error first
+order in the step (3.6e-5 on the hand-worked case, 3.7e-4 on expected
+failures with a repair of 3.3); a share now carries a fixed repair as
+its hat, and the demands' failures, exact times, are repaired exactly,
+a repair that ends at a point in service after the demands there.
+Checks: windows of 2000 (120 up times) against 2000 seeded simulations
+at tests every 7 with repairs of 7, and on a plan, within 4 standard
+errors; a life that never fails over them, against the set-times
+component to 1e-12; the blocks' size changing nothing (1e-12); a
+demand off the lattice by a 1e5th of a step against it on (1e-7); the
+error falling as the step squared with a fixed repair; and the
+coarsest grid's refusal.
 
 ### UC-73: "The standby generator is started at three planned outages next year, and it fails to start on 10% of starts. How available is it, how many failed starts do we expect, and what do the repairs cost? And the fire pump, called on more in summer than in winter?"
 
