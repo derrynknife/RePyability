@@ -815,11 +815,13 @@ def _calendar_grid(
         return middle, width / period
     # A tested component's test and repair times have exact CDFs in its
     # profile, which may bend sharply within a cell (a test of hours,
-    # say): two Gauss-Legendre points a cell, exact for its linear grid
-    # values, and to the cell's fourth power for the rest.
-    side = 0.5 * width / np.sqrt(3.0)
-    times = np.stack([middle - side, middle + side], axis=1).ravel()
-    return times, np.repeat(0.5 * width / period, 2)
+    # say): three Gauss-Legendre points a cell, exact for its linear grid
+    # values, and to the cell's sixth power for the rest (two points, to
+    # its fourth, left a product of two units' repairs 1e-8 off).
+    points, shares = np.polynomial.legendre.leggauss(3)
+    times = middle[:, None] + 0.5 * width[:, None] * points[None, :]
+    weights = 0.5 * width[:, None] * shares[None, :] / period
+    return times.ravel(), weights.ravel()
 
 
 def _block_profile(rbd, node, times: np.ndarray, rates: bool = False):
