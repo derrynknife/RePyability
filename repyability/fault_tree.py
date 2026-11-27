@@ -65,6 +65,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from repyability.rbd import _measures
+from repyability.rbd._importances import with_importances
 from repyability.rbd._ordered_bdd import OrderedBDD
 from repyability.rbd._units import diagram_unit
 from repyability.rbd.modular import (
@@ -90,6 +91,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from repyability.rbd.repairable_rbd import RepairableRBD
     from repyability.rbd.results import (
         ConditionalProbabilities,
+        ImportanceTable,
         Lever,
         PrimeImplicant,
         UncertaintyResult,
@@ -2451,6 +2453,76 @@ class FaultTree:
             given_not_occurred=self._out(not_occurred, shape),
         )
 
+    def importances(
+        self, t: Optional[ArrayLike] = None, *, simulate: bool = False
+    ) -> "ImportanceTable":
+        """Every importance measure in one table.
+
+        Calls each importance method of this model in turn (Birnbaum,
+        improvement potential, risk achievement and reduction worth,
+        criticality, Fussell-Vesely, differential, joint, Barlow-Proschan
+        and structural, those the model has) with the arguments given, and
+        gathers what they return. Each entry of ``measures`` is exactly
+        the method's own result; nothing is computed a second way. A
+        measure this model cannot work out is named under ``refused`` with
+        the reason its method gives (as
+        [`analysis_routes`][repyability.FaultTree.analysis_routes] has it), and
+        a measure only a simulation gives is listed there as simulated
+        unless ``simulate=True``.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            The time/s, as for each measure. May be left out when no
+            event's probability depends on time.
+        simulate : bool, optional
+            Whether to run the measures that are simulated. By default
+            False: they are listed under ``refused`` with ``"simulated:
+            pass simulate=True"``.
+
+        Returns
+        -------
+        ImportanceTable
+            [`ImportanceTable`][repyability.ImportanceTable]: ``measures``
+            (``{method name: {component: value}}``), ``refused``
+            (``{method name: reason}``) and ``rows()``, one plain dict
+            per component for a table. The joint importance, which is per
+            pair, is in ``measures`` and not in ``rows()``.
+
+        Raises
+        ------
+        NotImplementedError
+            If no measure can be worked out here; the message gives each
+            one's reason.
+        ValueError
+            If ``simulate`` is not a bool.
+
+        Examples
+        --------
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["valve", "flow"]),
+        ...      "flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+        ... )
+        >>> table = tree.importances()
+        >>> sorted(table.measures)[:2]
+        ['birnbaum_importance', 'criticality_importance']
+        >>> sorted(table.refused)
+        ['barlow_proschan_importance']
+        >>> table.rows()[2]["component"]
+        'valve'
+        """
+        from repyability.rbd import _importances
+
+        calls = {
+            name: (lambda name: lambda: getattr(self, name)(t))(name)
+            for name in _importances.MEASURES
+            if name != "structural_importance"
+        }
+        calls["structural_importance"] = self.structural_importance
+        return _importances.table(self, calls, simulate)
+
     def birnbaum_importance(self, t: Optional[ArrayLike] = None) -> dict:
         """Birnbaum importance of each basic event.
 
@@ -3719,7 +3791,7 @@ class FaultTree:
         if self.is_dynamic or not self.is_coherent:
             self._gate_routes(out, built)
         self._repaired_routes(out, built)
-        return r.AnalysisRoutes(sorted(out.items()))
+        return with_importances(out)
 
     def _repaired_routes(self, out: dict, built) -> None:
         """The routes of the analyses of repaired events, in ``out``:

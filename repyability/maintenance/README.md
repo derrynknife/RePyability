@@ -3803,6 +3803,26 @@ a shelf across levels, and the compiled engine's shelf.
   period), are not here. The best times for the tests are not searched
   for.
 
+**A unit that fails on demand, in the diagram (added after).** "Our
+standby pump fails to start on 2% of demands, and it is called on about
+once every two days: how available is the line, and what does its repair
+cost a year?" Who asks: the reliability engineer with OREDA's
+fail-to-start probability. What they know: the probability per demand,
+how often demands come, and the repair time. Before, a `RepairableRBD`
+took the probability only in its simulations and refused the exact
+methods, as a probability says nothing about time. Solved as a spec key
+(and a `UnitPlan`'s `demand_rate`): demands a Poisson process at
+`demand_rate`, as `failure_finding` takes them, each failing a working
+unit with the probability, so its failures are an exponential life of
+rate `demand_rate * p`, built once when the diagram is, which every
+route then takes. Hand-worked: one pump repaired in 2 days on average is
+available `0.5 / (0.5 + 0.5 * 0.02) = 0.98039`. Checks
+(`test_demand_rate.py`): every method against the diagram given that
+life, to the bit, seeded runs included; the closed form; the levers,
+saving, units and refusals. Left: a unit that wears out and may also
+fail on a demand (two components in series for now), and demands at
+fixed times.
+
 
 ### UC-25: "How much of our downtime and lost production is planned and how much is from failures, and how many failures does the plan avoid each year against running to failure?"
 

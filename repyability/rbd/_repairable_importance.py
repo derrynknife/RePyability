@@ -1045,3 +1045,33 @@ def pfd_breakdown(
         groups=groups,
         fractions=fractions,
     )
+
+
+def importances(
+    rbd, working_nodes, broken_nodes, x, window, state, simulate: bool
+):
+    """``RepairableRBD.importances``: every measure's own method, called
+    with the arguments given (the Barlow-Proschan importance takes no
+    ``x``), gathered in a table."""
+    from repyability.rbd import _importances
+
+    given = {
+        "working_nodes": working_nodes,
+        "broken_nodes": broken_nodes,
+        "window": window,
+        "state": state,
+    }
+
+    def call(name: str):
+        extra = {} if name == "barlow_proschan_importance" else {"x": x}
+        return lambda: getattr(rbd, name)(**given, **extra)
+
+    calls = {
+        name: call(name)
+        for name in _importances.MEASURES
+        if name != "structural_importance"
+    }
+    calls["structural_importance"] = lambda: rbd.structural_importance(
+        working_nodes, broken_nodes
+    )
+    return _importances.table(rbd, calls, simulate)

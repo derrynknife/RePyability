@@ -233,13 +233,13 @@ simulation then runs with it: `availability()`, `cost()`,
 on the rules above, in Python.
 
 ```python
-rbd = RepairableRBD(edges, {
-    "pump": {"reliability": pump_life, "repairability": pump_repair,
-             "spares": {"stock": 2, "lead_time": 2016.0}},
-    ...
-})
-rbd.availability(8760.0, mc_samples=2000, seed=1)
+stocked = dict(pump, spares={"stock": 2, "lead_time": 2016.0})
+kept = RepairableRBD(edges, {"pump": stocked, "seal": seal})
+kept.availability(8760.0, mc_samples=2000, seed=1).mean_availability   # -> 0.9854
 ```
+
+The pumps' waits for a spare take the year's availability from 0.9937,
+with a pump always on hand, to 0.9854.
 
 - **The exact and numerical analyses refuse the node** (the long run,
   the values over time, the expected events and costs, the importance

@@ -554,6 +554,30 @@ the causes that strike more than one member the group's. A hidden group's
 tests can find several members' failures at once, so a jump with a test in
 it is split by the Shapley value of what changes then, worked out exactly.
 
+## Every measure in one call
+
+`importances` runs every measure the model has and returns them as a table,
+so a ranking can be read side by side. It is on `NonRepairableRBD`,
+`RepairableRBD`, `FaultTree`, `Network` and `PhasedMission`, and takes the
+arguments the single measures share (the time, and the nodes held working
+or broken where the class has them).
+
+```python
+table = rbd.importances(50)
+table.measures["birnbaum_importance"]   # exactly birnbaum_importance(50)
+table.refused                           # {measure: reason} for the rest
+table.rows()                            # one plain dict per component
+```
+
+Each entry of `measures` is what the measure's own method returns, so the
+table cannot disagree with it. A measure the model refuses is listed under
+`refused` with the message its method raises (the same as
+`analysis_routes()`), and one only a simulation gives is listed there as
+"simulated: pass simulate=True" until you pass `simulate=True`. The joint
+importance, which is per pair of components, is in `measures` but not in
+`rows()`. If no measure can be worked out, the call raises and names each
+one's reason.
+
 ## Limits
 
 - A perfect junction node (`PerfectReliability`, such as the vote of a

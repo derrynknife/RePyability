@@ -1010,7 +1010,13 @@ def _check_state(rbd, node, state: NodeState, simulated=False) -> None:
             raise NotImplementedError(
                 f"Component {node!r}: its {what} model is a probability, "
                 "not a distribution of times, so it cannot start part "
-                "way through a life or repair: leave it out (new)."
+                "way through a life or repair: leave it out (new)"
+                + (
+                    ", or give its spec a demand_rate, which makes its "
+                    "failures a life."
+                    if what == "reliability"
+                    else "."
+                )
             )
     if state.alive:
         # A unit with hidden failures was known to be up only at its

@@ -119,6 +119,7 @@ NONREPAIRABLE_CALLS = {
         X, state={}
     ),
     "structural_importance": lambda rbd: rbd.structural_importance(),
+    "importances": lambda rbd: rbd.importances(X),
     "random": lambda rbd: rbd.random(200, seed=1),
     "random_block": lambda rbd: rbd.random_block(1, seed=1),
     "unreliability_interval": lambda rbd: rbd.unreliability_interval(
@@ -255,6 +256,7 @@ REPAIRABLE_CALLS = {
             "optimal_replacement_intervals",
             "optimal_inspection_intervals",
             "structural_importance",
+            "importances",
         )
     },
     "total_cost": lambda rbd: rbd.total_cost(1000.0),
@@ -467,6 +469,7 @@ NETWORK_CALLS = {
         )
     },
     "structural_importance": lambda net: net.structural_importance(),
+    "importances": lambda net: net.importances(X),
     "cut_sets": lambda net: net.cut_sets(),
     "path_sets": lambda net: net.path_sets(),
     "minimal_cut_sets": lambda net: net.minimal_cut_sets(),
@@ -602,6 +605,7 @@ PHASED_CALLS = {
             "risk_reduction_worth",
             "criticality_importance",
             "fussell_vesely",
+            "importances",
         )
     },
     "reliability_interval": (
@@ -1252,6 +1256,14 @@ def test_the_readme_says_what_is_simulated():
             (repairable["a shelf of spares"], "cost", "simulated"),
             (repairable["a shelf of spares"], "expected_cost", "refused"),
         ],
+        "A probability of failing per demand (fail to start) in a "
+        "repairable diagram": [
+            (repairable["demand"], "mean_availability", "exact"),
+            (repairable["demand"], "point_availability", "numerical"),
+            (repairable["demand"], "availability", "simulated"),
+            (repairable["fixed probability"], "mean_availability", "refused"),
+            (repairable["fixed probability"], "availability", "simulated"),
+        ],
         "Spares with repair crews, standby groups, opportunistic "
         "maintenance, imperfect repair or partial restoration": [
             (crew, "spares_stock", "refused"),
@@ -1360,6 +1372,7 @@ FAULT_TREE_CALLS = {
     "mean": lambda tree: tree.mean(),
     "random": lambda tree: tree.random(200, seed=1),
     "structural_importance": lambda tree: tree.structural_importance(),
+    "importances": lambda tree: tree.importances(X),
     "sf_uncertainty": lambda tree: tree.sf_uncertainty(
         X, uncertain_event(tree), n_draws=2, seed=1
     ),

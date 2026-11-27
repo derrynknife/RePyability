@@ -413,6 +413,8 @@ def _serialise_component(value) -> dict:
             }
         if value.get("replace_after") is not None:
             out["replace_after"] = int(value["replace_after"])
+        if value.get("demand_rate") is not None:
+            out["demand_rate"] = float(value["demand_rate"])
         if value.get("duty") is not None:
             duty = value["duty"]
             # A share, or a duty plan that changes over time (its dict).
@@ -607,6 +609,8 @@ def _deserialise_component(d: dict) -> Any:
             out["repair"] = dict(d["repair"])
         if "replace_after" in d:
             out["replace_after"] = d["replace_after"]
+        if "demand_rate" in d:
+            out["demand_rate"] = d["demand_rate"]
         if "duty" in d:
             duty = d["duty"]
             if isinstance(duty, dict):

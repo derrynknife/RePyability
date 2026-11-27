@@ -24,6 +24,8 @@ from repyability.rbd._degradation import (
     is_degradation,
 )
 from repyability.rbd._model_utils import (
+    distribution_name,
+    is_fixed_probability,
     is_mixture,
 )
 
@@ -76,6 +78,7 @@ COMPONENT_SPEC_KEYS = (
         "escalation",
         "retire_at",
         "spares",
+        "demand_rate",
     )
 )
 
@@ -698,6 +701,80 @@ def _validate_component_spec(node, spec: dict) -> None:
                 f"surpyval.ExactEventTime.from_params([{value:g}])"
                 f"{instant}."
             )
+
+
+def demand_probability(node, spec: dict) -> Optional[float]:
+    """The probability ``p`` that a demand fails a component whose spec
+    gives a ``"demand_rate"`` (see ``on_demand``), checked with its rate:
+    its reliability a ``surpyval.FixedEventProbability``, its rate a
+    finite number above 0. None for a spec with no demand rate."""
+    rate = spec.get("demand_rate")
+    if rate is None:
+        return None
+    if not is_number(rate) or not (0.0 < float(rate) < math.inf):
+        raise ValueError(
+            f"Component {node!r}: demand_rate must be a finite number "
+            f"above 0, the demands per unit of time; got {rate!r}."
+        )
+    life: Any = spec.get("reliability")
+    if distribution_name(life) != "FixedEventProbability":
+        if is_fixed_probability(life):
+            raise ValueError(
+                f"Component {node!r}: a demand_rate takes the probability "
+                "that a demand fails the unit as "
+                "surpyval.FixedEventProbability.from_params(p); its "
+                f"reliability is a {distribution_name(life)}."
+            )
+        raise ValueError(
+            f"Component {node!r}: a demand_rate goes with a probability "
+            "of failing per demand (surpyval.FixedEventProbability), and "
+            "its reliability is a life. For a unit that wears out and may "
+            "also fail on a demand, draw the two modes as two components "
+            "in series: one with the life, one with the probability and "
+            "the demand_rate."
+        )
+    if spec.get("duty") is not None:
+        raise ValueError(
+            f"Component {node!r}: a demand_rate is the demands per unit "
+            "of the diagram's time, which a duty would stretch as though "
+            "they came only while it runs: give the demand_rate on the "
+            "calendar, and no duty."
+        )
+    return float(np.ravel(life.ff(1.0))[0])
+
+
+def on_demand(components: dict) -> dict:
+    """The components, each spec with a ``"demand_rate"`` ``d`` given the
+    life its demands make: demands arriving as a Poisson process of rate
+    ``d``, each failing a working unit with its probability ``p``, so that
+    its failures are a Poisson process of rate ``d p``, an exponential
+    life (one object for each probability and rate, so that components
+    sharing them share it). A probability of 0 never fails: its spec
+    drops the rate, and the node is a junction. The specs as given keep
+    the probability and the rate, for saving and levers."""
+    import surpyval as surv
+
+    built: dict = {}
+    out = {}
+    for name, component in components.items():
+        if isinstance(component, dict):
+            p = demand_probability(name, component)
+            if p is not None:
+                rest = {
+                    key: value
+                    for key, value in component.items()
+                    if key != "demand_rate"
+                }
+                if p > 0.0:
+                    life = component["reliability"]
+                    rate = float(component["demand_rate"])
+                    key = (id(life), rate)
+                    if key not in built:
+                        built[key] = surv.Exponential.from_params([rate * p])
+                    rest["reliability"] = built[key]
+                component = rest
+        out[name] = component
+    return out
 
 
 def _saved_name(saved: dict) -> str:

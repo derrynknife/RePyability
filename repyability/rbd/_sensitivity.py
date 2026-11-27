@@ -337,6 +337,16 @@ def _spec_levers(spec: dict) -> List[tuple]:
                 float(standby.get("units", 2)),
             )
         )
+    rate: Any = spec.get("demand_rate")
+    if is_number(rate):
+        # The demands per unit of time on a probability of failing per
+        # demand (the probability is the reliability's lever).
+
+        def moved_rate(v):
+            return {**spec, "demand_rate": v}
+
+        d = float(rate)
+        out.append(("demand_rate", d, moved_rate, False, (0.0, math.inf), d))
     repair = spec.get("repair")
     if isinstance(repair, dict) and "q" in repair:
 

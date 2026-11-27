@@ -253,6 +253,7 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("reliability_rate", "availability_rate"),
             ),
             ("Uncertainty importance", ("uncertainty_importance",)),
+            ("Every measure in one call", ("importances",)),
             ("All measures given a state", ("importances_given_state",)),
             (
                 "Top event given each event",
@@ -456,6 +457,7 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("A fitted Crow-AMSAA process", "fitted Crow-AMSAA process"),
         ("A fitted G1, ARA or ARI process", "fitted ARA process"),
         ("A probability per demand", "fixed probability"),
+        ("A probability per demand, with a demand rate", "demand"),
         ("A mixture life", "mixture life"),
         ("A fitted degradation process life", "degradation process life"),
         ("Operated part of the time (duty)", "operated part of the time"),
