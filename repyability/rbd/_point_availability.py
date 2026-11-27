@@ -2729,14 +2729,19 @@ class MixedCurve:
     takes ``drop`` off its point availability there; and ``swaps``,
     ``(time, probability)``, replacements later on that take nothing
     down (a unit off line for its test at an upgrade, replaced once the
-    test is over)."""
+    test is over; ``time`` a fixed time, or what is left of a test of
+    varying length, with its ``cdf``)."""
 
     def __init__(self, parts: list, action=(0.0, 0.0, 0.0), swaps=()):
         from repyability.rbd._curves import _settling
 
         self.parts = [(float(w), curve) for w, curve in parts if w > 0.0]
         self.action = tuple(float(v) for v in action)
-        self.swaps = [(float(t), float(p)) for t, p in swaps if p > 0.0]
+        self.swaps = [
+            (t if hasattr(t, "cdf") else float(t), float(p))
+            for t, p in swaps
+            if p > 0.0
+        ]
         # Settled once every part has, repeating as they do (a tested
         # unit's parts every test interval).
         self.settle, self.period = _settling(c for _, c in self.parts)
@@ -2772,7 +2777,11 @@ class MixedCurve:
         out["preventive"] = out["preventive"] + probability * after
         out["planned"] = out["planned"] + planned * after
         for time, chance in self.swaps:
-            out["preventive"] = out["preventive"] + chance * (x > time)
+            if hasattr(time, "cdf"):
+                over = np.where(x > 0.0, time.cdf(np.maximum(x, 0.0)), 0.0)
+            else:
+                over = x > time
+            out["preventive"] = out["preventive"] + chance * over
         return out
 
     def atoms(self, stop: float) -> Atoms:
@@ -2794,7 +2803,8 @@ class MixedCurve:
                 ),
             )
         for time, chance in self.swaps:
-            if time < stop:
+            # A test of varying length ends at no exact time.
+            if not hasattr(time, "cdf") and time < stop:
                 none = np.zeros(1)
                 parts.append(
                     Atoms(
@@ -2826,17 +2836,22 @@ class MixedCurve:
 class OffLine:
     """``curve``, a unit's from a start at which it is off line for a
     test until ``until``: its downtime before then is planned, not
-    unplanned (see ``failed_at``); all else is ``curve``'s."""
+    unplanned (see ``failed_at``); all else is ``curve``'s. ``until`` is
+    a fixed time, or what is left of a test of varying length (with its
+    ``sf``), whose chance of not being over yet is planned."""
 
-    def __init__(self, curve, until: float):
+    def __init__(self, curve, until):
         self.curve = curve
-        self.until = float(until)
+        self.until = until if hasattr(until, "sf") else float(until)
 
     def __getattr__(self, name):
         return getattr(self.curve, name)
 
     def failed_at(self, x: np.ndarray) -> np.ndarray:
         x = np.asarray(x, dtype=float)
+        if hasattr(self.until, "sf"):
+            testing = self.until.sf(np.maximum(x, 0.0))
+            return np.maximum(failed_at(self.curve, x) - testing, 0.0)
         return np.where(x < self.until, 0.0, failed_at(self.curve, x))
 
 
@@ -2847,12 +2862,14 @@ class SwitchedCurve:
     ``old`` and ``new`` the same starts' curves with the old life and
     the new. The curves are linear in their starts, so the sum is
     exact; to the same life, ``old`` and ``new`` are the same and
-    ``plain`` is left."""
+    ``plain`` is left. ``weight`` scales ``old`` and ``new``: curves from
+    starts made to add up to 1 (see ``_hidden_tests._Starts``)."""
 
-    def __init__(self, plain, old, new):
+    def __init__(self, plain, old, new, weight: float = 1.0):
         from repyability.rbd._curves import _settling
 
-        self.curves = ((1.0, plain), (-1.0, old), (1.0, new))
+        w = float(weight)
+        self.curves = ((1.0, plain), (-w, old), (w, new))
         self.settle, self.period = _settling(c for _, c in self.curves)
 
     def _sum(self, value: Callable) -> np.ndarray:
