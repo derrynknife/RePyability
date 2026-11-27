@@ -739,15 +739,26 @@ def _mission_levers(mission) -> List[_Lever]:
 def _network_levers(net) -> List[_Lever]:
     """Every lever of a ``net``work, as its ``parameter_sensitivity``
     reports them: each link's and failing node's model's parameters, by
-    their own names, in the order of ``net.models`` (the links, then the
+    their own names, or a repaired one's spec's levers, as a diagram's
+    component's, in the order of ``net.models`` (the links, then the
     nodes). A moved model goes back into the link or node it belongs to."""
     args = net._init_args
     out: List[_Lever] = []
     for name, model in net.models.items():
         is_link = name in net.links
-        for parameter, value, moved, bounds, scale in _model_levers(
-            "", model, lambda m: m
-        ):
+        # A repaired element's spec: its life's, repair's and tests'
+        # levers, as a diagram's component's (``reliability.<name>``, ...).
+        found = (
+            [
+                (parameter, value, moved, bounds, scale)
+                for parameter, value, moved, _, bounds, scale in _spec_levers(
+                    model
+                )
+            ]
+            if isinstance(model, dict)
+            else _model_levers("", model, lambda m: m)
+        )
+        for parameter, value, moved, bounds, scale in found:
 
             def build(v, name=name, moved=moved, is_link=is_link):
                 changed = moved(v)

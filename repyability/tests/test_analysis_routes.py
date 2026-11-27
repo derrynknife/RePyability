@@ -552,6 +552,10 @@ NETWORK_CALLS = {
     "mean_availability": lambda net: net.mean_availability(),
     "mean_unavailability": lambda net: net.mean_unavailability(),
     "system_failure_frequency": lambda net: net.system_failure_frequency(),
+    # Simulated, and the first loss.
+    "availability": lambda net: net.availability(X, mc_samples=200, seed=1),
+    "first_failure_sf": lambda net: net.first_failure_sf(X),
+    "mean_time_to_first_failure": lambda net: net.mean_time_to_first_failure(),
     # With link capacities: at a time (in the long run, repaired), and
     # over time.
     "capacity_distribution": lambda net: net.capacity_distribution(
@@ -1305,6 +1309,11 @@ def test_the_readme_says_what_is_simulated():
             (
                 repairable["standby group, Weibull"],
                 "mean_availability",
+                "numerical",
+            ),
+            (
+                repairable["standby group, Weibull"],
+                "point_availability",
                 "refused",
             ),
         ],
@@ -1330,7 +1339,20 @@ def test_the_readme_says_what_is_simulated():
                 ("capacity_distribution", "exact"),
                 ("point_capacity", "numerical"),
                 ("mission_capacity", "numerical"),
-                ("availability", "refused"),
+                ("availability", "simulated"),
+            )
+        ]
+        + [
+            (
+                repairable["Markov component beside one repair crew"],
+                name,
+                route,
+            )
+            for name, route in (
+                ("mean_availability", "exact"),
+                ("point_availability", "numerical"),
+                ("first_failure_sf", "numerical"),
+                ("availability", "simulated"),
             )
         ],
         "Opportunistic maintenance (renewals at a group's stops)": [

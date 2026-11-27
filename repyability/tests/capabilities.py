@@ -287,8 +287,12 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("SafetyFunction.vote",),
             ),
             (
-                "A result over uncertain failure rates",
+                "A result over uncertain failure rates and betas",
                 ("SafetyFunction.measure_uncertainty",),
+            ),
+            (
+                "Levers: rates, repairs, proof tests and betas, set",
+                ("SafetyFunction.levers", "SafetyFunction.with_levers"),
             ),
             (
                 "Saving and loading (dict, JSON)",
@@ -597,6 +601,14 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         (
             "An upgrade, tests that take time",
             "upgraded at a time, tests that take time",
+        ),
+        (
+            "An upgrade, tests of varying length",
+            "upgraded at a time, tests of varying length",
+        ),
+        (
+            "An upgrade, tests that take time, the unit in service kept",
+            "upgraded at a time, tests that take time, the unit kept",
         ),
         ("A shelf of spares", "a shelf of spares"),
         ("Imperfect repair (Kijima)", "imperfect repair"),

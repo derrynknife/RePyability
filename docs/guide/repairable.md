@@ -1204,7 +1204,7 @@ the pair is up 0.9910.)
   errors) and 0.96494 with a crew each (0.96522, +1.8).
   A warm spare (`"dormancy_factor"` above 0: it ages at that share of an
   operating unit's rate while it waits, and can fail in standby) is in
-  the long-run values with one repair at a time and a sure switch. Each
+  the long-run values with one repair at a time. Each
   time a unit starts its repair, what follows depends only on how much
   of its life the operating unit has used, so the pair is a Markov
   renewal process on that, solved on a grid halved until two solutions
@@ -1213,6 +1213,18 @@ the pair is up 0.9910.)
   standard errors), against 0.98830 cold and 0.92219 hot. Lives whose
   hazard falls steeply from 0 (a Weibull shape below 1) settle slowly,
   and may warn with how nearly they did.
+  Its switch can fail too: the spare then goes on ageing while the
+  failed unit is repaired, so the pair is also followed on how much of
+  its life a waiting spare has used when a unit starts to operate. With
+  a switch that works nine times in ten the same pair is up 0.92583 of
+  the time, and 0.90116 with one that works eight times in ten (400 runs
+  of 1,000,000 h: 0.90089, -1.1 standard errors).
+  With a crew each (no `repair_crews`) and a sure switch the warm pair
+  is in the long-run values too: it is followed as well on how long the
+  other unit's repair has left each time a unit starts to operate after
+  the pair was down. The same pair with a spare ageing at half the rate
+  is then up 0.96728 of the time (400 runs of 1,000,000 h: 0.96727,
+  -0.1 standard errors), against 0.95318 with one crew.
   Over time, with one repair at a time, a switch that can fail is
   followed too: the pair then starts afresh in two states (the other unit
   starting its repair, or ready), whose renewal equations are solved
@@ -1387,19 +1399,21 @@ shares.levels.tolist()                   # -> [0.0, 60.0, 100.0]
 shares.probabilities[1]                  # -> 0.03816   the time at 60
 ```
 
-`point_capacity` and `mission_capacity` follow the states over time. The
-simulations do not follow a capacity that comes from a model (as for a
-`DegradingNode`), so `availability()` refuses such a diagram: give the
-node a capacity in the diagram's `capacity=` to simulate it at one
-level.
+`point_capacity` and `mission_capacity` follow the states over time, and
+the simulations (`availability()`) follow the state it is in, at that
+state's level: the capacity's time at each level, its mean and the
+demand delivered.
 
 A Markov component is restored by its own transitions, so it takes no
 `"repairability"`, maintenance, tests, spares or maintenance group (write
-them as states and rates), is no member of a common-cause group, and a
-diagram with one takes no `repair_crews` (put the components that share
-crews in a nested `RepairableRBD`). The first failure's exact values and
-the spares analyses refuse a diagram with one, and `analysis_routes()`
-says how everything else is worked out.
+them as states and rates), and is no member of a common-cause group. It
+takes no repair crew either: a diagram's `repair_crews` serve its other
+components, whose chain goes beside the component's own (as a nested
+`RepairableRBD` with crews of its own does), exactly, in the long run,
+over time and to the first failure. The first failure takes its chain
+in, its failed states absorbing; the spares analyses refuse a diagram
+with one, and `analysis_routes()` says how everything else is worked
+out.
 
 A chain with no way back from its failed states has a lifetime instead:
 `sf`, `ff`, `df`, `mean`, `qf` and `random`, as any life has. It is then

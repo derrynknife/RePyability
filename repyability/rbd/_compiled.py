@@ -128,6 +128,7 @@ def _unsupported_level(
 
     from . import _crews, _demands, _duty, _shelves
     from ._covariate_schedule import scheduled
+    from .modular import Decomposition
 
     if _shelves.of(rbd) is not None:
         # A repair that waits for a spare is the Python loop's alone.
@@ -135,6 +136,10 @@ def _unsupported_level(
     if rbd._too_meshed() is not None:
         # Its structure is the graph itself (modular.GraphStructure).
         return "a structure too meshed to work out"
+    if not isinstance(rbd._decomposition(), Decomposition):
+        # A network's connection, searched along its links (see
+        # network._Joined), has no terms to lay out.
+        return "a network's connection"
     if rbd._upgrades:
         # A unit's life changes at the upgrade (the Python loop's
         # _UpgradedComponent).

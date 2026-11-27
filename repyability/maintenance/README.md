@@ -87,13 +87,15 @@ Not yet single:
 | UC-65 | One pump's plan valued alone: its NPV over eight years at 7%, its cash flows by year, its spread, its plan against what happened, its long-run cost and best interval; with its salvage, its prices' growth and its retirement on the plan | **Built**: `UnitPlan.expected_npv`, `cash_flows`, `npv_distribution`, `plan_vs_actual`, `expected_cost`, `expected_cost_rate`, `events_by_period`, `failures_by_period`, `optimal_replacement_interval`, `optimal_inspection_interval` and `analysis_routes`, each its one-node diagram's (`UnitPlan.diagram`), on a `CalendarContext` if given; `UnitPlan(salvage=, escalation=, retire_at=)` and the spec keys of the same names |
 | UC-59 | A part renewed at a short stop every month and again at the long yearly overhaul, each renewal as long as its shut | **Built**: a `"preventive"` spec's `"shutdown"` as a list of shutdowns, exact over a horizon |
 | UC-60 | A part upgraded in year 3 and block-replaced before and after, the new model on the same interval | **Built**: an `"upgrade"` with a `"preventive"` block policy, numerical over a horizon and simulated |
-| UC-72 | A part upgraded in year 3 that is age-replaced or tested, swapped at the upgrade or kept in service until it next comes out | **Built**: an `"upgrade"` with a `"preventive"` age policy or an `"inspection"`, numerical over a horizon (tests and repairs in no time, or of fixed lengths, tests that miss too) and simulated; `"replace_in_service": False` numerical over a horizon with no task, age or block replacement, or tests and repairs in no time that find every failure, simulated with other tests |
+| UC-72 | A part upgraded in year 3 that is age-replaced or tested, swapped at the upgrade or kept in service until it next comes out | **Built**: an `"upgrade"` with a `"preventive"` age policy or an `"inspection"`, numerical over a horizon (tests and repairs of any length, tests that miss too) and simulated; `"replace_in_service": False` numerical over a horizon with no task, age or block replacement, or tests |
 | UC-66 | A pump whose seal is a redundant pair, replaced whole when both have failed: its life is a diagram | **Built**: a `NonRepairableRBD` as a life wherever a life is taken (`UnitPlan`, a spec's `"reliability"`, `NonRepairable`), by its functions; `NonRepairableRBD.qf` inverts its `ff` to near machine precision |
 | UC-64 | What a part costs per year once upgraded: the long run of the diagram with the new life, the time before the upgrade ignored | **Built**: the long-run methods of a diagram with an `"upgrade"` give the values of the diagram after it |
 | UC-68 | "95% sure": the least spend that keeps a bad year's downtime (hours or cost) under a limit, with the frontier and both planned and unplanned downtime | **Built** (simulated): `RepairableRBD.least_spend_for_downtime` and `UnitPlan.least_spend_for_downtime`, with redundancy, interval, test-interval, upgrade, crew and call-out levers, and parameter uncertainty (`uncertainty=`); risk measures in `repyability.value._risk` |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 | UC-73 | A unit that fails on demand, called on at set times (planned starts, a recurrence rule) or at a rate that changes over the year: its availability, failures and cost over a window | **Built**: a spec's (and a `UnitPlan`'s) `"demand_times"`, exact over a window and simulated; `"demand_plan"`, exact over a window where repairs take no time and simulated otherwise; `"demand_basis"` for demands counted in operating time |
 | UC-74 | Repairable spares for a fleet at several bases with a depot behind them: each site's stock of each part for a fleet availability target at the least spend, and the whole front of spend against availability | **Built**: `RepairableRBD.spares_front` and `spares_allocation` (a series diagram; METRIC and VARI-METRIC) |
+| UC-75 | The same fleet with redundant parts (two pumps, either enough): a missing part that need not ground the system, and the stock chosen by the availability it buys | **Built**: `spares_front` and `spares_allocation` on any diagram without a sub-system, and `objective="availability"` |
+| UC-76 | A remote base that repairs less itself and waits longer for the depot: a base's own repair fraction, repair time and ship time | **Built**: a part's `"base_repair_fraction"`, `"base_repair_time"` and `"ship_time"` as `{base: value}` |
 
 ## How a use case is added
 
@@ -3672,8 +3674,12 @@ a shelf across levels, and the compiled engine's shelf.
   The tests and repairs being of fixed lengths, each of those is a test
   before the upgrade, with its row's chances (`TestedCurve.under_way`),
   and the curve from each a new unit's put into service then
-  (`TestedUnit.curve`'s `("back", left)`); tests or repairs of varying
-  length are simulated. With `"replace_in_service": False`
+  (`TestedUnit.curve`'s `("back", left)`); of varying length, what is
+  left of each is a distribution (the test's, or the test's and the
+  repair's together, given that they are not over by the upgrade,
+  `_hidden_tests._Spread`), and the units back from all of one kind
+  are one mixture, put into service by it. With
+  `"replace_in_service": False`
   the unit stays until its next failure or due replacement (its age,
   its block time, or a test that finds it failed), and the unit put in
   then has the new life. Over a horizon, with no task or under age
@@ -3699,9 +3705,16 @@ a shelf across levels, and the compiled engine's shelf.
   failure, the renewals are at the tests: the component's own curve,
   less the renewal curve of the renewals from the upgrade whose unit
   was put in before it with the old life, plus theirs with the new
-  (`_curves._kept_tested_curve`, `SwitchedCurve`). With other tests a
-  unit kept is simulated, the values over a horizon refused with the
-  simulation to run. The simulation draws each life from the
+  (`_curves._kept_tested_curve`, `SwitchedCurve`). With tests or
+  repairs that take time, or tests that miss, the same holds of the
+  first unit of each line put into service from the upgrade on: up to
+  it the component is its own tested unit, and from it a new unit's
+  line, of the old life or the new (`_curves._kept_timed_curve`).
+  Those units are what the tests before the upgrade that found
+  failures put in after it, and what the tests after it that find a
+  unit put in before it put in; the tests after it that find failures,
+  `r_n`, less the first cycles of the former and the cycles from
+  earlier such tests, are the latter (`_hidden_tests.kept_starts`). The simulation draws each life from the
   life in service when it starts (UC-52); with tests, the unit put in
   before the upgrade is replaced at the upgrade or, off line for a test
   then, once the test is over (`_event_loop._swapped_at`). The long run
@@ -3757,7 +3770,17 @@ a shelf across levels, and the compiled engine's shelf.
   "upgraded at a time, tested", "upgraded at a time, the unit in
   service kept", "upgraded at a time, block-replaced, the unit in
   service kept", "upgraded at a time, tested, the unit in service kept"
-  and "upgraded at a time, tests that take time".
+  and "upgraded at a time, tests that take time", "upgraded at a time,
+  tests of varying length" and "upgraded at a time, tests that take
+  time, the unit kept". Kept with tests or repairs that take time, or
+  tests that miss, to the same life it is the component to 1e-12; a
+  memoryless unit kept with repairs of 7 against its chain test by test
+  (1e-8, from the walk's split restarts, `(lambda h)^2 / 8` each); the
+  simulation, 20,000 runs within four standard errors, replaced with a
+  test (and a repair) of varying length and kept with both varying, with
+  fixed lengths and with tests that miss, from new, an age and a repair
+  (largest |z| 2.9, the same seed's draw as the component's own without
+  the upgrade, -3.0).
 - **Learned / open questions:**
   - The default is Derryn's: the unit in service at the upgrade is
     replaced then; the option keeps it.
@@ -3771,9 +3794,14 @@ a shelf across levels, and the compiled engine's shelf.
     curves swapped from the old life to the new.
   - Tests that take time, or miss failures, on an upgraded part that is
     swapped are followed on each side of the upgrade with tests and
-    repairs of fixed lengths (the default); of varying length, what is
-    left of them at the upgrade is a distribution, and they are
-    simulated. A unit kept with such tests is simulated too.
+    repairs of fixed lengths; of varying length, what is left of them at
+    the upgrade is a distribution, taken as a spread restart, as a
+    repair under way at 0 is. A unit kept with such tests follows by
+    linearity from the first unit of each line put in from the upgrade:
+    those units come from the tests that find failures, the ones before
+    the upgrade (a few restarts cut at it) and those after it that find
+    a unit put in before it (`r_n` less what the units put in from the
+    upgrade make up).
   - Building this found that a mixture of curves from the upgrade
     (`MixedCurve`) took itself to settle to a constant, though a tested
     unit's repeats every test interval: a memoryless tested unit's
@@ -4430,4 +4458,162 @@ points).
   and refuse one that is not a series system. Left for later, each its own use case: parts
   within parts (MOD-METRIC), a redundant diagram (a missing part that
   need not ground the system), cannibalisation, lateral supply between
-  bases, and a base with repair times or a ship time of its own.
+  bases, and a base with repair times or a ship time of its own. (A
+  redundant diagram is UC-75, and a base's own times UC-76.)
+
+
+### UC-75: "Each system has two pumps and runs on either. A pump owed to a system does not ground it, so why would I stock pumps as if it did? What should each site hold for 95% of the fleet, and what does the redundancy save?"
+
+- **Status:** built: `spares_front` and `spares_allocation` on a diagram
+  that is not a series system, and their `objective` (`rbd/_echelons.py`),
+  numerical.
+- **Who asks, and why:** UC-74's planner, whose systems have redundancy.
+  UC-74 takes every part as needed, so it refused any diagram but a
+  series one, and its front buys what removes the most backorders per
+  dollar: a backorder of a redundant part is counted as one of a part
+  that grounds the system.
+- **What they know:** UC-74's, and the diagram: which parts stand in for
+  each other. Here UC-74's fleet (12 and 8 systems, the same valve and
+  two controllers, each needed) with two pumps in each system, either
+  enough, each failing once in 2,000 h.
+- **What they want back:** UC-74's, with the availability that of the
+  diagram, and the stock chosen by the availability each dollar buys.
+- **How it is solved (the pipelines as UC-74; the holes taken as
+  independent):** each part's backorders at a base are UC-74's. A base's
+  `N Z` places of a part are each empty with chance `q = EBO / (N Z)`,
+  and its availability is the diagram's chance of working with each
+  component there with chance `1 - q`, independently (the diagram's own
+  structure, as `system_probability` works it out). For a series system
+  that is UC-74's product. A part given by its `"demand_rate"` and not
+  drawn in the diagram is needed by every system.
+  - *The front by availability* (`objective="availability"`; the default,
+    `"auto"`, takes it for a diagram that is not a series system, and
+    backorders for one that is, as UC-74). A part's loss is the fleet
+    availability its holes cost with the other parts at the stocks they
+    have reached. For each count of the part the best split between the
+    depot and the bases is found as in UC-74, by that loss; the counts on
+    the lower convex hull of the loss from the count reached are kept,
+    and the step that buys the most availability per dollar, over the
+    parts, is taken. Every part's hull is then drawn again, as its loss
+    depends on the others' stocks.
+- **Today:** by hand (UC-74's script, the pumps' demand doubled):
+  - *With nothing held:* a pump's place is empty with chance `5.8176 /
+    24 = 0.2424` at both bases, so the pair is up with `1 - 0.2424^2 =
+    0.94124`; with the valve's 0.9504 and the controllers' `0.88435^2`
+    the availability is 0.69961 (as needed parts, the pumps alone would
+    leave `0.7576^2 = 0.574`).
+  - *For 95%, by availability:* 210,000, with no pump at a base:
+
+    | Part | Depot | North | South |
+    |---|---|---|---|
+    | pump | 4 | 0 | 0 |
+    | valve | 2 | 1 | 1 |
+    | controller | 4 | 1 | 1 |
+
+    for an availability of 0.95444 (north 0.95174, south 0.95847), with
+    6.2541 backorders, most of them pumps a system does without.
+  - *By backorders* (UC-74's front on this diagram) the first stock to
+    reach 95% costs 278,000: twelve pumps (seven at the depot), a valve
+    fewer at the depot and a controller fewer, for 0.95577 and 1.5051
+    backorders. The redundancy is worth 68,000 of spares here, and
+    backorders do not see it.
+- **Checks:** the hand-worked numbers; every point of both fronts, both
+  methods, against the model written out with the pair's `1 - q^2`; a
+  diagram that is not series-parallel against every state of its places;
+  a series diagram worked out through its structure against the product;
+  one part's front by availability, on a pair and on series systems,
+  against a search of every stock vector (nothing at a point's spend or
+  less is more available), and two parts' on a pair the same; UC-74's
+  results unchanged to the last bit (its fronts before and after,
+  compared in full); the unit of time.
+  *The independence of the holes*, by error analysis and a seeded
+  simulation: with `B` backorders at a base of `P = N Z` places, the
+  holes are in places drawn evenly, so a pair has both empty with chance
+  `E[B (B - 1)] / (P (P - 1))`, where the model has `(E[B] / P)^2`. In
+  UC-74's exact setting (nothing at the depot, fixed depot repairs), two
+  pumps at the north base and one at the south, that is 0.02993 and
+  0.03852 against the model's 0.02561 and 0.03283. The simulation
+  (2,000 runs as UC-74's, the holes placed by a seeded draw at the end
+  of each; bound fixed before running: four standard errors from the
+  first form) gave 0.02950 (standard error 0.00119) and 0.03606
+  (0.00155).
+- **Learned / open questions:** taking the holes as independent
+  understates a pair's chance of being down, here by 14 to 15% of it
+  (0.004 to 0.006 of a base's availability): backorders vary more than
+  their mean says, and two holes at once are likelier for it. The exact
+  form above needs the backorders' second moment, which the pipelines
+  have (for a pair; a general diagram needs the chance of each set of
+  places): left for later. The front by availability has UC-74's
+  guarantee for one part where a base's loss is convex in its stock (a
+  part the system needs, a pair); with several parts each step is the
+  best per dollar from the stock reached, which does not prove that
+  nothing at a point's spend does better. On UC-74's small case of two
+  needed parts one point of five was 0.0018 of availability short of
+  the best stock at its spend (VARI-METRIC; none with METRIC, nor on the
+  pair). On a series system the two objectives differ with several
+  parts (the availability is their product) or where a part is owed
+  more than a base has places; `"backorders"` stays the default there,
+  as the textbook's and UC-74's. Where two
+  parts are each owed in every place of a base, no one part's spares
+  raise its availability from 0 and the front by availability is
+  refused, naming `objective="backorders"`. A sub-system is still
+  refused. Along a front by availability the split of every part is
+  chosen again at each point.
+
+### UC-76: "Our south base is remote: it repairs fewer pumps itself, takes longer when it does, and waits ten days for the depot where the north waits three. What does that do to the stock?"
+
+- **Status:** built: a part's `"base_repair_fraction"`,
+  `"base_repair_time"` and `"ship_time"` as `{base: value}`
+  (`rbd/_echelons.py`), numerical.
+- **Who asks, and why:** UC-74's planner, whose bases differ. UC-74
+  took one repair fraction, one base repair time and one ship time for
+  every base.
+- **What they know:** UC-74's, with the south base's own: 10% of its
+  pumps repaired there (the north 30%) in 96 h (48 h), and an order
+  arriving in 240 h for pumps and valves (72 h) and 360 h for
+  controllers (120 h).
+- **What they want back:** UC-74's.
+- **How it is solved:** UC-74's model is written per base, so only its
+  inputs change: the depot's demand is `m0 = sum of m_j (1 - r_j)`, a
+  base's share of it `f_j = m_j (1 - r_j) / m0`, and its pipeline has
+  mean `m_j [r_j T_j + (1 - r_j)(O_j + EBO0 / m0)]` and VARI-METRIC's
+  variance `m_j [r_j T_j + (1 - r_j) O_j] + f_j (1 - f_j) EBO0 + f_j^2
+  VBO0`. The depot's repair time stays one number.
+- **Today:** by hand:
+  - *The pumps' depot* takes `12 / 2000 x 0.7 + 8 / 2000 x 0.9 = 0.0078`
+    an hour, a pipeline of 4.68; the north's share is 0.5385. With
+    nothing held the pipelines are 2.9088 (north, as UC-74) and `8 /
+    2000 x (0.1 x 96 + 0.9 x 840) = 3.0624` (south, from 1.9392).
+  - *One pump at the depot:* `EBO0 = 3.689279`, `VBO0 = 4.602341`, an
+    order waits 472.98 h; the north's pipeline has mean 2.375335 and
+    variance 2.640069, the south's 2.605144 and 2.799643.
+  - *With nothing held* the south's availability is 0.42355 (0.56311 as
+    UC-74), and UC-74's stock for 95% (246,000) now gives 0.91961 (the
+    south 0.86331).
+  - *The cheapest stock on the front for 95%* costs 295,000:
+
+    | Part | Depot | North | South |
+    |---|---|---|---|
+    | pump | 4 | 2 | 3 |
+    | valve | 2 | 1 | 1 |
+    | controller | 3 | 2 | 2 |
+
+    for 0.96183 (north 0.96502, south 0.95705): the stock moves from the
+    depot to the bases, and to the south.
+- **Checks:** the hand-worked numbers; the same value for every base as
+  `{base: value}` against one number (every point of the front, equal in
+  full); every point of the front against a search of every stock
+  vector on a small case with a base's own values; UC-74's simulation
+  with each base's own times: where resupply times are independent
+  (nothing at the depot, fixed depot repairs; two pumps at each base)
+  the depot's backorders 4.6780 (standard error 0.0084) against 4.68 and
+  the bases' 1.1757 (0.0056) and 1.2939 (0.0066) against 1.1765 and
+  1.2992; with three at the depot, its backorders 1.8797 (0.0101)
+  against 1.8963, an order's wait 240.4 h (1.0) against 243.1, and the
+  bases' 0.3183 (0.0033) and 0.4605 (0.0041) against VARI-METRIC's
+  0.3167 and 0.4657 and METRIC's 0.2425 and 0.4162 (bounds as UC-74's,
+  fixed before running: four standard errors where exact, VARI-METRIC
+  closer than METRIC elsewhere).
+- **Learned / open questions:** the demand per system is still one
+  number for every base (a base that flies more would have its own);
+  the depot is one site.

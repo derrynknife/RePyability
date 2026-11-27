@@ -478,8 +478,6 @@ def test_a_lifetime_and_a_repairable_chain_each_say_where_they_go():
 
 def test_what_a_repairable_chain_does_not_take_is_refused_with_the_reason():
     component = three_states()
-    with pytest.raises(ValueError, match="repair crews"):
-        system(component, repair_crews=1)
     for key, value in (
         ("repairability", E([1.0])),
         ("preventive", {"interval": 10.0}),
@@ -675,3 +673,100 @@ def test_one_in_a_nested_diagram_is_simulated_as_its_chain():
     failures = np.asarray(histories.system.failures, dtype=float)
     error = failures.std(ddof=1) / math.sqrt(len(failures))
     assert abs(failures.mean() - outer.expected_failures(window)) < 4 * error
+
+
+# -- capacities simulated by state, and crews beside it ----------------------
+
+LEVELS = {"working": 100.0, "degraded": 60.0, "failed": 0.0}
+
+
+def test_the_simulation_follows_the_capacity_of_each_state():
+    # Alone in series, the system's capacity is the component's state's:
+    # its time at 0 is the system's down time, and at 60 and 100 its up
+    # time, simulation by simulation.
+    alone = RepairableRBD(
+        [("s", "a"), ("a", "t")], {"a": three_states(capacity=LEVELS)}
+    )
+    result = alone.availability(
+        200.0, mc_samples=400, seed=3, control_variate=False
+    )
+    time = result.capacity_time
+    assert set(time) <= {0.0, 60.0, 100.0}
+    assert time[60.0] > 0.0
+    assert time.get(0.0, 0.0) == pytest.approx(result.system_downtime)
+    assert time[60.0] + time[100.0] == pytest.approx(result.system_uptime)
+    # The expected capacity over the window, as the exact methods give
+    # it: within four standard errors of the simulations'.
+    exact = alone.mission_capacity(200.0)
+    # Each simulation's mean capacity: against the design capacity, 100,
+    # the fraction of it delivered.
+    assert result.demand == 100.0
+    each = 100.0 * np.asarray(result.delivered, dtype=float)
+    error = each.std(ddof=1) / math.sqrt(len(each))
+    assert abs(each.mean() - exact.mean) <= 4.0 * error
+
+
+def test_a_capacity_by_state_beside_other_nodes_against_the_exact_values():
+    rbd = system(
+        three_states(capacity=LEVELS), capacity={"b": 100.0, "c": 150.0}
+    )
+    result = rbd.availability(
+        300.0, mc_samples=2000, seed=11, control_variate=False
+    )
+    exact = rbd.mission_capacity(300.0)
+    assert result.demand == 150.0
+    each = 150.0 * np.asarray(result.delivered, dtype=float)
+    error = each.std(ddof=1) / math.sqrt(len(each))
+    assert abs(each.mean() - exact.mean) <= 4.0 * error
+    shares = {
+        level: spent / (result.n_simulations * 300.0)
+        for level, spent in result.capacity_time.items()
+    }
+    for level, p in zip(exact.levels, exact.probabilities):
+        assert shares.get(float(level), 0.0) == pytest.approx(p, abs=3e-3)
+
+
+def test_crews_serve_the_other_components_beside_a_markov_component():
+    # A Markov component takes no crew: with one crew for b and c, the
+    # system is the component beside the crews' chain of b and c, as
+    # with b and c in a nested diagram with the crew of their own.
+    pair = [("s", "b"), ("s", "c"), ("b", "t"), ("c", "t")]
+    parts = {
+        "b": unit(),
+        "c": {"reliability": E([0.02]), "repairability": E([0.2])},
+    }
+    flat = RepairableRBD(
+        [("s", "m"), ("m", "b"), ("m", "c"), ("b", "t"), ("c", "t")],
+        {"m": three_states(), **parts},
+        repair_crews=1,
+    )
+    nested = RepairableRBD(
+        [("s", "m"), ("m", "n"), ("n", "t")],
+        {"m": three_states(), "n": RepairableRBD(pair, parts, repair_crews=1)},
+    )
+    assert [job.node for job in flat.crew_jobs()] == ["b", "c"]
+    x = np.array([1.0, 20.0, 200.0])
+    for value in (
+        lambda r: r.mean_availability(),
+        lambda r: r.system_failure_frequency(),
+        lambda r: r.point_availability(x),
+        lambda r: r.point_unavailability(x),
+        lambda r: r.mission_availability(200.0),
+        lambda r: r.expected_failures(x),
+    ):
+        np.testing.assert_allclose(value(flat), value(nested), rtol=1e-12)
+    # The first failure: the component's beside the pair's with the crew.
+    alone = RepairableRBD([("s", "m"), ("m", "t")], {"m": three_states()})
+    crewed = RepairableRBD(pair, parts, repair_crews=1)
+    np.testing.assert_allclose(
+        flat.first_failure_sf(x),
+        alone.first_failure_sf(x) * crewed.first_failure_sf(x),
+        rtol=1e-12,
+    )
+    # The simulation, with the crew taking b's and c's jobs only.
+    result = flat.availability(
+        200.0, mc_samples=2000, seed=7, control_variate=False
+    )
+    each = np.asarray(result.uptimes, dtype=float) / 200.0
+    error = each.std(ddof=1) / math.sqrt(len(each))
+    assert abs(each.mean() - flat.mission_availability(200.0)) <= 4.0 * error

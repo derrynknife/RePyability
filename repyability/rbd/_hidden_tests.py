@@ -56,7 +56,7 @@ but an exponential life's, which follow the unit's exposure there
 any time.
 """
 
-from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -182,6 +182,136 @@ class _Left:
         p = 1.0 - 1e-12 * self.known
         q = float(np.ravel(self.model.qf(np.array([p])))[0])
         return max(q - self.down_for, 0.0)
+
+
+def _survival(duration) -> Callable:
+    """``P(duration > x)`` (``duration`` a ``_Duration``, ``_Left`` or
+    ``_Spread``), as a function of ``x``."""
+    own = getattr(duration, "sf", None)
+    if own is not None:
+        return own
+    if duration.fixed is not None:
+        fixed = float(duration.fixed)
+        return lambda x: (np.asarray(x, dtype=float) < fixed).astype(float)
+    model = duration.model
+    return lambda x: np.clip(_values(model.sf, x), 0.0, 1.0)
+
+
+#: Gauss-Legendre points for the survival function of a test's time and
+#: a repair's together, both spread (see ``_Spread.total``).
+_GAUSS_SUM = np.polynomial.legendre.leggauss(32)
+
+
+class _Spread:
+    """A time until a unit is back in service, as a ``_Duration`` (its
+    ``sf``, ``cdf`` and ``tail``; ``fixed`` if it is a fixed time),
+    built from tests' and repairs' times (see ``total``, ``past`` and
+    ``mixed``)."""
+
+    def __init__(self, sf: Callable, tail: float, fixed=None):
+        self.sf = sf
+        self._tail = float(tail)
+        self.fixed = None if fixed is None else float(fixed)
+        self.model = None
+
+    def cdf(self, x) -> np.ndarray:
+        return 1.0 - self.sf(x)
+
+    def tail(self) -> float:
+        return self._tail
+
+    @classmethod
+    def of(cls, duration) -> "_Spread":
+        """A ``_Duration`` (or ``_Left``) as one."""
+        if isinstance(duration, cls):
+            return duration
+        return cls(_survival(duration), duration.tail(), duration.fixed)
+
+    @classmethod
+    def total(cls, test, repair) -> "_Spread":
+        """A test's time and then a repair's (``_Duration``s): the time
+        from a test that finds a failure until the unit is back. With
+        both spread, ``P(D + R > x) = P(D > x) + integral_0^{F_D(x)}
+        P(R > x - Q_D(p)) dp``, by Gauss-Legendre quadrature on the
+        probabilities (``Q_D`` the test's quantile function)."""
+        if test.fixed is not None and repair.fixed is not None:
+            fixed = test.fixed + repair.fixed
+            return cls(_at_most(fixed), fixed, fixed)
+        tail = test.tail() + repair.tail()
+        if test.fixed is not None or repair.fixed is not None:
+            shift, spread = (
+                (test.fixed, repair)
+                if test.fixed is not None
+                else (repair.fixed, test)
+            )
+            sf = _survival(spread)
+
+            def shifted(x):
+                x = np.asarray(x, dtype=float)
+                return np.where(x < shift, 1.0, sf(np.maximum(x - shift, 0.0)))
+
+            return cls(shifted, tail)
+        test_sf, repair_sf = _survival(test), _survival(repair)
+        points, weights = _GAUSS_SUM
+        model = test.model
+
+        def summed(x):
+            x = np.asarray(x, dtype=float)
+            flat = np.maximum(x.ravel(), 0.0)
+            top = np.clip(_values(model.ff, flat), 0.0, 1.0)
+            p = 0.5 * top[:, None] * (1.0 + points[None, :])
+            d = np.clip(_values(model.qf, p), 0.0, None)
+            left = np.where(
+                d < flat[:, None],
+                repair_sf(np.maximum(flat[:, None] - d, 0.0)),
+                1.0,
+            )
+            inner = 0.5 * top * (left @ weights)
+            out = np.clip(test_sf(flat) + inner, 0.0, 1.0)
+            return out.reshape(x.shape)
+
+        return cls(summed, tail)
+
+    def past(self, elapsed: float) -> Tuple[float, "_Spread"]:
+        """The chance that it lasts longer than ``elapsed``, and what is
+        then left of it (``elapsed`` on, a fixed time at least ``0``)."""
+        e = float(elapsed)
+        if self.fixed is not None:
+            if self.fixed >= e:
+                rest = self.fixed - e
+                return 1.0, _Spread(_at_most(rest), rest, rest)
+            return 0.0, _Spread(_at_most(0.0), 0.0, 0.0)
+        sf = self.sf
+        known = float(np.ravel(sf(np.array([e])))[0])
+        if known <= 0.0:
+            return 0.0, _Spread(_at_most(0.0), 0.0, 0.0)
+
+        def left(x):
+            x = np.asarray(x, dtype=float)
+            return np.clip(sf(e + np.maximum(x, 0.0)) / known, 0.0, 1.0)
+
+        return known, _Spread(left, max(self._tail - e, 0.0))
+
+    @classmethod
+    def mixed(cls, parts) -> Tuple[float, Optional["_Spread"]]:
+        """``parts``, ``(weight, spread)``, as one: their total weight,
+        and their mixture (None if they weigh nothing)."""
+        parts = [(float(w), s) for w, s in parts if w > 0.0]
+        total = sum(w for w, _ in parts)
+        if total <= 0.0:
+            return 0.0, None
+        if len(parts) == 1:
+            return total, parts[0][1]
+
+        def sf(x):
+            return sum(w * s.sf(x) for w, s in parts) / total
+
+        return total, cls(sf, max(s.tail() for _, s in parts))
+
+
+def _at_most(fixed: float) -> Callable:
+    """The survival function of a fixed time."""
+    return lambda x: (np.asarray(x, dtype=float) < fixed).astype(float)
 
 
 _GAUSS = np.polynomial.legendre.leggauss(8)
@@ -421,6 +551,94 @@ class _Restart:
         """Where in the ``lag``-th interval its CDF bends."""
         local = self._knots - lag * self.T
         return local[(local >= 0.0) & (local < self.T)]
+
+
+class _MixedEntry:
+    """``_Entry``'s for one interval, weighted (see ``_Starts``): the
+    units each puts into service, added; the sum is exact as each is."""
+
+    def __init__(self, parts):
+        self.parts = parts
+        self.on_grid = sum(w * entry.on_grid for w, entry in parts)
+        self.atom = None
+
+    def cdf(self, s) -> np.ndarray:
+        return sum(w * entry.cdf(s) for w, entry in self.parts)
+
+    def failed(self, rate: float, j: np.ndarray, s: np.ndarray, cdf=None):
+        return sum(w * entry.failed(rate, j, s) for w, entry in self.parts)
+
+    def whole(self, rate: float) -> np.ndarray:
+        return sum(w * entry.whole(rate) for w, entry in self.parts)
+
+
+class _Starts(_Restart):
+    """Units put into service at several times, as one ``_Restart`` on
+    the frame from a test: ``parts``, ``(weight, restart, lag)``, each a
+    ``_Restart`` on the same setup moved on by ``lag`` whole intervals
+    (a test's restart from the ``lag``-th test), weighted. It is their
+    mixture, its weights made to add up to 1 (``weight`` their total):
+    the curves are linear in their starts, so a curve from it, times
+    ``weight``, is the parts' curves added (see
+    ``_curves._kept_timed_curve``)."""
+
+    def __init__(self, setup: "_Setup", parts):
+        parts = [(float(w), r, int(lag)) for w, r, lag in parts if w > 0.0]
+        self.weight = sum(w for w, _, _ in parts)
+        if self.weight <= 0.0:
+            raise ValueError("no units put into service")
+        self.T, self.steps, self.h = setup.interval, setup.steps, setup.h
+        lags = max(lag + r.lags for _, r, lag in parts)
+        masses = np.zeros((lags, self.steps + 1))
+        #: The parts in each interval: (weight, restart, its own lag).
+        self._by_lag: List[list] = [[] for _ in range(lags)]
+        for w, r, lag in parts:
+            share = w / self.weight
+            masses[lag : lag + r.lags] += share * r.masses  # noqa: E203
+            for own in range(r.lags):
+                self._by_lag[lag + own].append((share, r, own))
+        in_each = masses.sum(axis=1)
+        last = np.flatnonzero(in_each > 0.0)
+        count = int(last[-1]) + 1 if last.size else 1
+        self.masses = masses[:count]
+        self._by_lag = self._by_lag[:count]
+        share = in_each[:count]
+        self._pending = np.concatenate([np.cumsum(share[::-1])[::-1], [0.0]])
+        self.atom = None
+        self._entries = {}
+        self._mixed: Dict[int, Optional[_MixedEntry]] = {}
+        self.duration = None
+        self.shift = 0.0
+
+    def cdf(self, lag: int, s) -> np.ndarray:
+        s = np.asarray(s, dtype=float)
+        if lag < 0 or lag >= self.lags:
+            return np.zeros(s.shape)
+        out = np.zeros(s.shape)
+        for w, r, own in self._by_lag[lag]:
+            out = out + w * r.cdf(own, s)
+        return out
+
+    def entry(self, lag: int):
+        if lag not in self._mixed:
+            parts = []
+            if 0 <= lag < self.lags:
+                parts = [(w, r.entry(own)) for w, r, own in self._by_lag[lag]]
+            self._mixed[lag] = _MixedEntry(parts) if parts else None
+        found = self._mixed[lag]
+        if found is None:
+            return _Entry(
+                lambda s: np.zeros(np.shape(s)),
+                self.h * np.arange(self.steps + 1),
+                None,
+            )
+        return found
+
+    def knots(self, lag: int) -> np.ndarray:
+        if lag < 0 or lag >= self.lags:
+            return np.empty(0)
+        parts = [r.knots(own) for _, r, own in self._by_lag[lag]]
+        return np.unique(np.concatenate(parts)) if parts else np.empty(0)
 
 
 class _Setup:
@@ -1387,7 +1605,7 @@ class TestedCurve:
             inspections=self._whole(self.rows.inspected, tests).reshape(shape),
         )
 
-    def under_way(self, at: float) -> List[Tuple[float, float, bool]]:
+    def under_way(self, at: float) -> List[Tuple[Any, float, bool]]:
         """With tests and repairs of fixed lengths, what is under way at
         ``at`` (after 0) that keeps the unit down past it: for each test
         before ``at`` whose unit is not back by then, ``(left, chance,
@@ -1396,10 +1614,17 @@ class TestedCurve:
         its test (``planned``; a test over at ``at`` too, ``left`` 0) or
         a failure the test found, in the test and then its repair; and
         the repair the unit started in, if it is not over by ``at``. Each
-        test's chances are its row's (``tested`` and ``found``)."""
+        test's chances are its row's (``tested`` and ``found``).
+
+        With a test or a repair of varying length, ``left`` is what is
+        left of it (a ``_Spread``), the chance that much less, by the
+        chance that it is not over by ``at``."""
+        setup = self.setup
+        if setup.test.fixed is None or setup.fix.fixed is None:
+            return self._spread_under_way(at)
         D = self.setup.test.fixed or 0.0
         R = self.setup.fix.fixed or 0.0
-        out: List[Tuple[float, float, bool]] = []
+        out: List[Tuple[Any, float, bool]] = []
         if self.first_restart is not None and self.first_restart.atom:
             lag, offset = self.first_restart.atom
             back = lag * self.interval + offset - (self.interval - self.first)
@@ -1418,6 +1643,40 @@ class TestedCurve:
                 out.append(
                     (when + D + R - at, float(self.rows.found[row]), False)
                 )
+        return [part for part in out if part[1] > 0.0]
+
+    def _spread_under_way(self, at: float) -> List[Tuple[object, float, bool]]:
+        """``under_way`` with a test or a repair of varying length."""
+        setup = self.setup
+        T = self.interval
+        out: List[Tuple[object, float, bool]] = []
+        first = self.first_restart
+        if first is not None:
+            # On the frame from the test before 0.
+            frame = T - self.first
+            if first.atom:
+                lag, offset = first.atom
+                back = lag * T + offset - frame
+                if back > at:
+                    out.append((back - at, 1.0, False))
+            else:
+                spread = _Spread.of(first.duration)
+                chance, left = spread.past(at + frame - first.shift)
+                out.append((left, chance, False))
+        count = int(self._tests_before(np.array([float(at)]))[0])
+        test = _Spread.of(setup.test)
+        total = _Spread.total(setup.test, setup.fix)
+        k = np.arange(1, count + 1)
+        for when, row in zip(self._test_time(k), self._index(k)):
+            elapsed = at - float(when)
+            if elapsed > total.tail():
+                continue
+            if self.timed:
+                chance, left = test.past(elapsed)
+                tested = float(self.rows.tested[row]) * chance
+                out.append((left, tested, True))
+            chance, left = total.past(elapsed)
+            out.append((left, float(self.rows.found[row]) * chance, False))
         return [part for part in out if part[1] > 0.0]
 
     def atoms(self, stop: float) -> Atoms:
@@ -1710,7 +1969,16 @@ class TestedUnit:
             alive = (age + float(first), 1.0 / known, age)
         elif start[0] == "back":
             frame = T - float(first)
-            first_restart = _Restart.at(setup, frame + float(start[1]))
+            left = start[1]
+            if isinstance(left, _Restart):
+                # Already on this frame (see ``_Starts``).
+                first_restart = left
+            elif isinstance(left, _Spread) and left.fixed is None:
+                first_restart = _Restart.after(setup, frame, left)
+            else:
+                fixed = left.fixed if isinstance(left, _Spread) else left
+                assert fixed is not None
+                first_restart = _Restart.at(setup, frame + float(fixed))
         else:
             frame = T - float(first)
             repair = setup.fix
@@ -1905,3 +2173,84 @@ class TestedUnit:
             + settled.max() * tail[np.minimum(np.arange(n), whole)]
         )
         return rows, bound[1:]
+
+
+def kept_starts(unit: TestedUnit, plain: TestedCurve, at: float, stop: float):
+    """The units of a tested component put into service from ``at`` on
+    (an upgrade that keeps the unit in service, whose units put in from
+    then have another life, see ``_curves._kept_timed_curve``), each the
+    first of its line put in from ``at``: ``(pre, found, A)``, on the
+    frame from the test before 0 of ``plain`` (the component's own curve,
+    ``unit``'s, to ``stop``), ``A`` being ``at`` on it.
+
+    - ``pre``, ``(weight, left)``: what the tests before ``at`` that found
+      a failure (and the repair the unit started in) put in from ``at``,
+      ``left`` after ``A``: each test's chance (its row's ``found``) by the
+      chance that its test and repair are not over by then;
+    - ``found[n]``, for the tests from ``at`` on: the chance that the
+      ``n``-th finds the failure of a unit put in before ``at`` (whose
+      repair then puts in the next from ``at``). The tests that find
+      failures are ``r_n`` (``plain``'s), of units put in before ``at``
+      or from it; those from it are the first cycles of ``pre``'s units
+      (``_walk``) and the cycles from the tests from ``at`` that found
+      failures, ``sum_{m} r_m q(n - m)``, so ``found[n] = r_n - f_n -
+      sum_{J <= m < n} r_m q(n - m)``, ``f`` ``pre``'s."""
+    setup = unit.setup
+    T = setup.interval
+    A = at + T - plain.first
+    total = _Spread.total(setup.test, setup.fix)
+    pre: List[Tuple[float, _Spread]] = []
+    first = plain.first_restart
+    if first is not None:
+        if first.atom:
+            lag, offset = first.atom
+            back = lag * T + offset
+            if back >= A:
+                rest = back - A
+                pre.append((1.0, _Spread(_at_most(rest), rest, rest)))
+        else:
+            pre.append(_Spread.of(first.duration).past(A - first.shift))
+    before = int(plain._tests_before(np.array([float(at)]))[0])
+    N = max(int(plain._count(np.array([float(stop)]), False)[0]), before)
+    k = np.arange(1, N + 1)
+    r = np.concatenate([[0.0], plain.rows.found[plain._index(k)]])
+    for m in range(1, before + 1):
+        elapsed = at - float(plain._test_time(m))
+        if elapsed <= total.tail():
+            chance, after = total.past(elapsed)
+            pre.append((float(r[m]) * chance, after))
+    pre = [(w, after) for w, after in pre if w > 0.0]
+    found = np.zeros(N + 1)
+    if N <= before:
+        return pre, found, A
+    per, coverage = unit.per, unit.coverage
+    reached = np.zeros(N + 1)
+    if pre:
+        starts = starts_on(setup, pre, found, A)
+        fail = _padded(_walk(setup, starts).fail, N + 1) * starts.weight
+        positions = (plain.k1 + np.arange(N + 1)) % per
+        reached += _found(fail, positions, coverage, per)[0][: N + 1]
+    found_by = _detections(unit._regular(), coverage, per, N + 1)[0]
+    position = (plain.k1 + np.arange(N + 1) - 1) % per
+    for m in range(before + 1, N):
+        reached[m + 1 :] += r[m] * found_by[position[m], 1 : N + 1 - m]  # noqa
+    found[before + 1 :] = np.maximum(  # noqa: E203
+        r[before + 1 :] - reached[before + 1 :], 0.0  # noqa: E203
+    )
+    return pre, found, A
+
+
+def starts_on(setup: _Setup, pre, found: np.ndarray, A: float) -> _Starts:
+    """``kept_starts``' units, on ``setup`` (a tested unit's of either
+    life, on the same tests), as a ``_Starts`` on the frame from the test
+    before 0."""
+    parts = []
+    for weight, left in pre:
+        if left.fixed is not None:
+            restart = _Restart.at(setup, A + left.fixed)
+        else:
+            restart = _Restart.after(setup, A, left)
+        parts.append((weight, restart, 0))
+    for n in np.flatnonzero(found > 0.0):
+        parts.append((float(found[n]), setup.restart, int(n)))
+    return _Starts(setup, parts)

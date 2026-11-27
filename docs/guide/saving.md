@@ -163,6 +163,7 @@ maintenance or hidden failures):
 | `availability` (with the capacity over time and the delivered fraction), `cost` | simulated | Discrete-event simulation. |
 | `compare` | numerical | The difference of the two designs' expected values: their MTTFs (`mean`), or a repairable system's mission availability and expected cost (#236); with `method="simulate"` (`control_variate=False` for a repairable one), both simulated with common random numbers. |
 | `spares_demand`, `spares_stock` | numerical | Each component's replacements, a renewal process, counted on a grid (to about `1e-6`); `spares_demand(method="simulate")` counts them in simulations instead. |
+| `spares_front`, `spares_allocation` | numerical | Each part's demand its components' long-run replacement rates; the pipelines of METRIC and VARI-METRIC, a base's availability the diagram's at each part's chance of a hole, and the stocks by marginal analysis. |
 | `allocate_redundancy` (both kinds of RBD) | exact | Exact scoring: `method="exact"` is a proven optimum, `"greedy"` a heuristic. Cold standby (`strategy="cold"` or `"choose"`) that needs two or more units working, of units that are not identical Exponentials, is scored from 10 000 seeded simulated lifetimes. |
 
 The nodes can change a route:

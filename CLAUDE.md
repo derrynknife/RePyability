@@ -356,8 +356,16 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   A warm pair (a spare ageing at `dormancy_factor`, failing in standby,
   switched in with the life it has used) with one repair at a time is a
   Markov renewal process on the operating unit's used life each time a
-  repair starts (`_standby_warm.py`, the long run alone, a sure switch):
-  `test_standby_warm.py` checks it the same way.
+  repair starts (`_standby_warm.py`, the long run alone); with a switch
+  that can fail it has a second family of states, a unit starting to
+  operate with the spare waiting on at the life it has used (after a
+  failed switch the spare goes on ageing through the repair):
+  `test_standby_warm.py` checks it the same way. With both repaired at
+  once and a sure switch (`_standby_warm_both.py`) the second family is
+  a unit starting to operate, new, with the other some time from the
+  end of its repair (a repair's time is drawn when it starts, as the
+  loop draws it), followed on a finer grid of the repair's range:
+  `test_standby_warm_both.py`.
 - **A `MarkovComponent` (`repyability/rbd/markov_node.py`) rides the
   standby groups' rails in a `RepairableRBD`**: it is in `rbd._standby`
   as `_events.MARKOV` (key `"markov"`, one unit), so whatever handles or
@@ -689,7 +697,16 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   from a mean and variance (`_pipeline`). The front is marginal analysis
   on each part's lower convex hull of backorders against the count held
   (`_Curve`, a step given only once no count further on can change it),
-  so each point has the fewest backorders at its spend or less.
+  so each point has the fewest backorders at its spend or less. A
+  base's availability is the diagram's at each part's chance of a hole
+  (`_up`: the product where every part is needed, kept as it was to the
+  last bit; the holes taken as independent, which understates a pair's
+  chance of both missing, UC-75), and its repair fraction, repair time
+  and ship time may be its own (UC-76). The front by availability
+  (`_Fleet.losses`) uses the same hull on a loss that depends on the
+  other parts' stocks, so every hull is drawn again from the count
+  reached after each step; it is exact for one part and a heuristic for
+  several.
   `test_spares_echelons.py` checks it against the model written out term
   by term, a search of every stock vector, `spares_stock` for one site,
   and a simulation of the two echelons written in the test (exact where

@@ -12,6 +12,153 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- The long-run values of a warm standby pair whose units are both
+  repaired at once (`"dormancy_factor"` above 0, a sure switch, a crew
+  for each unit), which were refused: `mean_availability`,
+  `mean_unavailability`, the frequencies and the cost rate. The pair is
+  followed on the operating unit's used life each time a repair starts
+  beside it, and on how long the other unit's repair has left each time
+  a unit starts to operate after the pair was down, the second on a
+  finer grid of the repair's range (`_standby_warm_both.py`). Checked:
+  exponential units against the Markov chain to 1e-9, for three rate
+  pairs and spares ageing at 0.1, 0.5 and 1 (within 3e-10); a spare
+  that hardly ages against the cold pair with a crew each (1e-6;
+  within 5e-9); a hot pair against two units each a life and a repair
+  in turn, its unavailability the square of one's (1e-8; within
+  2e-11); Weibull(1000, 2.5) lives, Weibull(300, 1.5) repairs and a
+  spare ageing at 0.5, 0.967283 against 0.967274 simulated (8 seeded
+  batches of 50 runs of 1e6 h, -0.1 SE) and 2.4919e-4 failures an hour
+  against 2.4938e-4 (+0.3 SE); Weibull(1000, 1.5) lives, LogNormal(5,
+  0.6) repairs and 0.2, 0.987048 against 0.986974 (-1.1 SE) and
+  1.4788e-4 against 1.4837e-4 (+0.8 SE). That last pair's values agree
+  to 1.7e-9 on the largest grid, not 1e-9, and say so in a warning
+  (its life's density is not smooth at 0); it takes some 25 s, the
+  others 2 to 10. A warm pair with both repaired at once and a switch
+  that can fail is still refused, naming `repair_crews=1`.
+
+- A network of repaired elements has levers: `levers()` and
+  `with_levers` take its elements' specs' parameters (named as a
+  diagram's component's, `"reliability.failure_rate"`, ...),
+  `parameter_sensitivity(x)` gives its availability's derivative in each
+  at `x`, or in the long run with `x` left out, and `tornado(x)` (its
+  `quantity` now `"availability"` by default for such a network) the
+  availability with each at its low and high. They are the drawn
+  diagram's (`to_rbd`) where it can be drawn. `parameter_sensitivity`'s
+  `rel_step` is now None by default, 1e-5 as before for a network that is
+  not repaired.
+
+- `RepairableRBD.spares_front` and `spares_allocation` (repairable
+  spares over bases and a depot) take a diagram that is not a series
+  system, which they refused: a base's availability is the diagram's own
+  with each of a part's places empty with the chance its backorders
+  give, independently, so a part with a stand-in need not ground a
+  system. A diagram with a sub-system is still refused.
+- Their `objective`: `"backorders"` (the front as it was: the fewest
+  expected backorders at each spend), `"availability"` (each step the
+  spares that add the most fleet availability per unit of spend from the
+  stock reached) or `"auto"`, the default: `"backorders"` for a series
+  system, whose results are unchanged to the last bit, and
+  `"availability"` otherwise. `SparesAllocation.objective` says which.
+- A part's `"base_repair_fraction"`, `"base_repair_time"` and
+  `"ship_time"` may each be a base's own, as `{base: value}`.
+- A part's `"demand_rate"` may come with its `"nodes"` (it was refused):
+  the nodes say where the part sits in the diagram, and the rate replaces
+  their own. A part with a `"demand_rate"` that is no component of the
+  diagram is needed by every system, as before.
+- A network of repaired elements is simulated: `Network.availability(t)`
+  runs its histories as a `RepairableRBD`'s `availability` does, as the
+  network's drawn diagram where it can be drawn (`to_rbd`) and otherwise
+  on the Python event loop with the connection found by a search along
+  the working links (both draw the same for a seed); so is a network too
+  large for its decision diagram. `first_failure_sf(x)` and
+  `mean_time_to_first_failure()` give the time to the first loss of the
+  connection, exactly for links in series and from the Markov chain of
+  the elements' states, and by `method="simulate"` otherwise. A network
+  with probabilities or lives that are not repaired refuses them, naming
+  the elements.
+
+- `Network.to_rbd()` draws a network of repaired elements as a
+  `RepairableRBD`, each element a component with its spec, whose values
+  over time and in the long run are the network's (to 1e-12; its mission
+  availability to the diagram's own 4e-6), and which takes the costs,
+  crews, maintenance and spares a network does not. It also draws a
+  network whose links work both ways, where every path between the
+  terminals crosses each link the same way (a series-parallel network),
+  which it refused before; a bridge, whose middle link is crossed both
+  ways, still refuses, now with a `NotImplementedError` naming the link.
+- `SafetyFunction.levers()` and `with_levers()`: each channel's rates,
+  repairs and proof test (once for channels sharing a cause, which move
+  together), a model's parameters in place of a rate, and each vote's
+  betas, keyed by the tuple of its channels; a proof test interval takes
+  the full test with it.
+- `SafetyFunction.measure_uncertainty` draws a vote's `beta`,
+  `beta_detected` and `beta_safe` under the tuple of the vote's
+  channels, which it refused. Seeded draws of rates are unchanged.
+- The safety-function guide says how far the simplified formulas with a
+  proof test that misses lie from the exact values (the PFH of 1oo2 and
+  2oo3 is right to first order; the PFDavg of 1oo2 and the PFH of 1oo3
+  are high by 10.1% at PTC 90%, T2 = 5 T1, however small the rate), and
+  how conservative `detected_trips=True` is for a channel holding an
+  undetected failure (exactly `(1 + λDD MTTR)^(N - M + 1)` on the PFDavg
+  of 1oo1 and 1oo2).
+
+- The long-run values of a warm standby pair with one repair at a time
+  whose switch can fail (`"dormancy_factor"` above 0 with
+  `"switching_probability"` below 1, `repair_crews=1`), which were
+  refused: `mean_availability`, `mean_unavailability`, the frequencies
+  and the cost rate. After a failed switch the pair is down while the
+  failed unit is repaired and the spare goes on ageing (it may fail in
+  that repair), so beside the operating unit's used life each time a
+  repair starts, the pair is followed on the waiting spare's each time
+  a unit starts to operate with it waiting: two coupled equations on
+  the grid the sure switch's one is solved on. Checked: exponential
+  units against the Markov chain to 1e-9, for three rate pairs, spares
+  ageing at 0.1, 0.5 and 1 and switches of 0.9, 0.5 and 0 (within
+  2e-10); exponential lives against their closed form with Weibull and
+  lognormal repairs and a switch of 0.7 (1e-8; within 2e-10); a switch
+  that fails once in 1e12 against the sure one (1e-8; within 1e-11); a
+  spare that hardly ages against the cold pair's two states (1e-6;
+  within 2e-9); Weibull(1000, 2.5) lives, Weibull(300, 1.5) repairs, a
+  spare ageing at 0.5 and a switch of 0.8, 0.901162 against 0.900888
+  simulated (8 seeded batches of 50 runs of 1e6 h, -1.1 SE) and
+  4.3164e-4 failures an hour against 4.3191e-4 (+0.3 SE);
+  Weibull(1000, 1.5) lives, LogNormal(5, 0.6) repairs, 0.2 and 0.5,
+  0.901068 against 0.901249 (+0.9 SE) and 5.8515e-4 against 5.8417e-4
+  (-0.9 SE). A sure switch's values are unchanged to the bit. A
+  failing switch takes some 3 to 15 s where the sure one takes about
+  one (more for a switch that never works).
+
+- An upgraded component with tests no longer refuses its values over a
+  horizon (`point_availability`, `mission_availability`,
+  `expected_events`, `expected_cost`, `expected_npv`) when its tests or
+  repairs are of varying length, nor when the unit in service is kept
+  (`"replace_in_service": False`) with tests or repairs that take time
+  or tests that miss failures. Replaced at the upgrade, a unit off line
+  for its test or in a repair is replaced once what is left of it is
+  over, as a distribution. Kept, each unit has the life in service when
+  its repair puts it in: the component's own values, less the line of
+  the first units put in from the upgrade with the old life, plus the
+  same with the new; upgraded to its own life, it is the component to
+  1e-12. Only tests on a calendar of their own are still simulated. No
+  seeded result changes.
+
+- A `MarkovComponent` with a capacity in each state is simulated:
+  `availability()` (and `cost()`), which refused such a diagram, follow
+  the state it is in, at that state's level (the capacity's time at
+  each level, its mean and the demand delivered). Checked against
+  `mission_capacity`, within four standard errors, and, alone in
+  series, against the system's up and down time simulation by
+  simulation. Seeded results without such a component are unchanged.
+- A diagram with `repair_crews` takes a `MarkovComponent`, which it
+  refused at construction: the component takes no crew (it is restored
+  by its own transitions), and the crews serve the other components,
+  their chain beside the component's own, as beside a nested
+  `RepairableRBD` with crews of its own. The long run, the values over
+  time and over a window, the importance measures and the first failure
+  are those of the same diagram with the crewed components nested (to
+  1e-12); the redundancy allocation with crews refuses it, naming
+  `compare()`.
+
 - The values over a window of a life that wears out with demands at
   set times or on a plan beside it (a spec's `"demand"` with `"times"`
   or `"plan"`), which only the simulations gave: `point_availability`,

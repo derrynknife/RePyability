@@ -60,7 +60,12 @@ from repyability.rbd._hidden_life import (
     TestedLifeCurve,
     TestedLifeSteady,
 )
-from repyability.rbd._hidden_tests import TestedUnit
+from repyability.rbd._hidden_tests import (
+    TestedUnit,
+    _Spread,
+    kept_starts,
+    starts_on,
+)
 from repyability.rbd._level_replacement import LevelHead, level_model
 from repyability.rbd._long_run import (
     _TESTED_CYCLE,
@@ -347,6 +352,16 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
                 "to the next, the stretch holding its upgrade split there, "
                 "each unit with the life in service when it is put in (the "
                 "unit in service at its upgrade kept)",
+            )
+        if task == "tests" and not _requirements._instant_tests_found(
+            rbd, node
+        ):
+            return (
+                r.NUMERICAL,
+                "its tested unit followed test by test on a grid, and from "
+                "the first unit put in from its upgrade on, that unit's "
+                "line with the new life for the old (the unit in service at "
+                "its upgrade kept)",
             )
         if task == "tests":
             return (
@@ -1540,24 +1555,39 @@ def _nested_curve(
 
 
 def _crew_nested(rbd, forced) -> list:
-    """The nested RBDs the crews' chain is followed over time with:
-    those not held working or broken. Raise if there are too many."""
+    """The nodes the crews' chain is followed over time beside, each
+    independent of it, as a pattern up or down: the nested RBDs (with
+    crews of their own) and the Markov components (restored by their own
+    transitions, see ``_crews._crew_served``), those not held working or
+    broken. Raise if there are too many."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     nested = [
         node
         for node, component in rbd.components.items()
-        if isinstance(component, RepairableRBD) and node not in forced
+        if (isinstance(component, RepairableRBD) or _crews._markov(rbd, node))
+        and node not in forced
     ]
     if len(nested) > _MAX_CREW_NESTED:
         raise NotImplementedError(
             f"With limited repair crews, the availability over time is "
-            "worked out for each pattern of the nested RBDs up and down: "
-            f"{len(nested)} nested RBDs are more than the "
+            "worked out for each pattern of the nested RBDs and Markov "
+            f"components up and down: {len(nested)} are more than the "
             f"{_MAX_CREW_NESTED} it takes. Simulate it with "
             "availability()."
         )
     return nested
+
+
+def _beside_crews(
+    rbd, node, horizon: float, counts=False, start=None, stages=False
+):
+    """The curve of a node beside the crews' chain (``_crew_nested``):
+    a nested RBD's, or a Markov component's own chain (with its
+    ``stages``, its capacity's, as ``_availability_curves``'s)."""
+    return _node_curve(
+        rbd, node, rbd.components[node], horizon, counts, False, stages, start
+    )
 
 
 def _crew_vectors(
@@ -1734,12 +1764,7 @@ def _crew_curve(
         np.column_stack(vectors),
     )
     curves = {
-        node: _nested_curve(
-            rbd.components[node],
-            horizon,
-            counts=counts,
-            start=states.get(node),
-        )
+        node: _beside_crews(rbd, node, horizon, counts, states.get(node))
         for node in nested
     }
     return _chain_transient.CrewCurve(rbd, uniformized, curves)
@@ -1899,12 +1924,7 @@ def _crew_window(
         )
         horizon = float(np.max(ends)) if len(ends) else 0.0
         curves = {
-            node: _nested_curve(
-                rbd.components[node],
-                horizon,
-                counts=True,
-                start=states.get(node),
-            )
+            node: _beside_crews(rbd, node, horizon, True, states.get(node))
             for node in nested
         }
         totals = _windows._window_counts(
@@ -2565,6 +2585,8 @@ def _upgraded_curve(
             # The block stretch that holds the upgrade split there.
             return _plan_curve(before, node, horizon, start, kept=kept)
         if task == "tests":
+            if not _requirements._instant_tests_found(rbd, node):
+                return _kept_timed_curve(rbd, node, horizon, start)
             return _kept_tested_curve(rbd, node, start)
         # On one grid throughout.
         return _unit_curve(
@@ -2730,16 +2752,74 @@ def _swapped_tested_curve(rbd, node, horizon: float, start):
     up = float(head.at(np.array([np.nextafter(at, 0.0)]))[0])
     parts, swaps = [], []
     left = 1.0
+    # What is left of tests or repairs of varying length: those of each
+    # kind together, as one mixture (the curves are linear in it).
+    spread: Dict[bool, list] = {True: [], False: []}
     for wait, chance, planned in head.under_way(at):
+        if isinstance(wait, _Spread):
+            if wait.fixed is None:
+                spread[planned].append((chance, wait))
+                left -= chance
+                continue
+            wait = wait.fixed
         curve = new.curve(rest, base, k0, ("back", wait))
         parts.append((chance, OffLine(curve, wait) if planned else curve))
         if planned:
             swaps.append((wait, chance))
         left -= chance
+    for planned, group in spread.items():
+        weight, mixture = _Spread.mixed(group)
+        if mixture is None:
+            continue
+        curve = new.curve(rest, base, k0, ("back", mixture))
+        parts.append((weight, OffLine(curve, mixture) if planned else curve))
+        if planned:
+            swaps.append((mixture, weight))
     # Up, or failed unseen: replaced at once.
     parts.insert(0, (max(left, 0.0), new.curve(rest, base, k0)))
     return StartedBlockCurve(
         head, MixedCurve(parts, (up, 0.0, 0.0), swaps), at
+    )
+
+
+def _kept_timed_curve(rbd, node, horizon: float, start):
+    """An upgraded component with tests or repairs that take time, or
+    tests that miss failures, whose unit in service at the upgrade's
+    time ``at`` is kept until a test finds it failed (see
+    ``_upgraded_curve``): each unit has the life in service when it is
+    put into service, once the test that found its predecessor failed
+    and the repair are over.
+
+    Up to the first unit put in from ``at`` on, the component is its own
+    tested unit (``TestedUnit``, the old life throughout); from there, a
+    new unit's line on the same tests, of the old life or the new. So it
+    is the component's own curve, less the curve from those first units
+    with the old life, plus theirs with the new (``SwitchedCurve``); the
+    curves are linear in their starts, and before a start each is down,
+    which the two cancel. Those units (``_hidden_tests.kept_starts``)
+    are what the tests before ``at`` that found failures put in from it,
+    and what the tests from ``at`` that find the failure of a unit put in
+    before it do (``TestedUnit.curve``'s ``("back", starts)``)."""
+    at = rbd._upgrades[node].at
+    before = _long_run.before_upgrades(rbd)
+    after = _long_run.after_upgrades(rbd)
+    old = _requirements._tested_unit(before, node, any_kind=True)
+    new = _requirements._tested_unit(after, node, any_kind=True)
+    assert old is not None and new is not None
+    plain = _tested_unit_curve(before, node, old, horizon, start)
+    if not at < horizon:
+        return plain
+    pre, found, A = kept_starts(old, plain, at, horizon)
+    if not pre and not found.any():
+        return plain
+    olds = starts_on(old.setup, pre, found, A)
+    news = starts_on(new.setup, pre, found, A)
+    base, k0 = plain.base, plain.k0
+    return SwitchedCurve(
+        plain,
+        old.curve(horizon, base, k0, ("back", olds)),
+        new.curve(horizon, base, k0, ("back", news)),
+        olds.weight,
     )
 
 

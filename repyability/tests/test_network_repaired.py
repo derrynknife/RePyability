@@ -197,6 +197,67 @@ def test_a_series_parallel_network_is_its_diagram(name):
         ), method
 
 
+def drawn_networks():
+    """Repaired networks that can be drawn as a block diagram: the
+    series-parallel ones (links that work both ways) and the bridge with
+    its links one way (no cycle)."""
+    cases = {name: net for name, (net, _) in series_parallel().items()}
+    c = general()
+    cases["directed bridge with a node"] = Network(
+        {n: (u, v, c[n]) for n, (u, v) in BRIDGE.items()},
+        "s",
+        "t",
+        nodes={"x": spec(W([300.0, 1.2]), E([0.2]))},
+        directed=True,
+    )
+    return cases
+
+
+@pytest.mark.parametrize("name", sorted(drawn_networks()))
+def test_a_drawn_network_is_its_repairable_diagram(name):
+    # to_rbd() draws the repaired elements as a RepairableRBD's
+    # components, whose values are the network's.
+    net = drawn_networks()[name]
+    rbd = net.to_rbd()
+    assert isinstance(rbd, RepairableRBD)
+    assert set(rbd.nodes) == set(net.models)
+    # The network's mission availability is one less its mission
+    # unavailability, integrated to its own size; the diagram integrates
+    # its availability, to its stated 4e-6 (they differ by up to 3.3e-9
+    # here). Its mission unavailability is the network's.
+    np.testing.assert_allclose(
+        rbd.mission_availability(TIMES),
+        net.mission_availability(TIMES),
+        rtol=0,
+        atol=4e-6,
+    )
+    for method in set(OVER_TIME) - {"mission_availability"}:
+        np.testing.assert_allclose(
+            getattr(rbd, method)(TIMES),
+            getattr(net, method)(TIMES),
+            rtol=1e-12,
+            atol=0,
+            err_msg=method,
+        )
+    for method in LONG_RUN:
+        assert getattr(rbd, method)() == pytest.approx(
+            getattr(net, method)(), rel=1e-12, abs=0
+        ), method
+
+
+def test_what_to_rbd_refuses_of_a_repaired_network():
+    # The bridge's middle link is crossed both ways; a probability
+    # beside repaired links is no component of a RepairableRBD.
+    with pytest.raises(NotImplementedError, match="'c' is crossed both"):
+        exponential_bridge().to_rbd()
+    net, _ = series_parallel()["parallel"]
+    mixed = Network(
+        {"a": ("s", "t", net.models["a"]), "p": ("s", "t", 0.1)}, "s", "t"
+    )
+    with pytest.raises(NotImplementedError, match=r"\['p'\] are prob"):
+        mixed.to_rbd()
+
+
 @pytest.mark.parametrize("name", sorted(series_parallel()))
 def test_the_failure_frequency_integrates_to_the_expected_failures(name):
     # The integral of w(t) over a window is the diagram's expected
@@ -654,19 +715,91 @@ def test_a_repaired_network_has_no_lifetime(call):
         call(exponential_bridge())
 
 
-@pytest.mark.parametrize(
-    "call",
-    [
-        lambda net: net.levers(),
-        lambda net: net.with_levers({}),
-        lambda net: net.parameter_sensitivity(1.0),
-        lambda net: net.tornado(1.0),
-        lambda net: net.to_rbd(),
-    ],
-)
-def test_what_a_repaired_network_does_not_give_yet(call):
-    with pytest.raises(NotImplementedError, match="not available .* yet"):
-        call(exponential_bridge())
+@pytest.mark.parametrize("name", sorted(drawn_networks()))
+def test_the_levers_are_the_drawn_diagrams(name):
+    # The levers of the elements' specs, named as a diagram's component's;
+    # the sensitivity and the tornado those of the diagram drawn, which
+    # works them out its own way (a lever's sensitivity, differences of
+    # values that agree to 1e-12 over a step of 1e-5 or 1e-2 of the
+    # lever: to 1e-6).
+    net = drawn_networks()[name]
+    rbd = net.to_rbd()
+    ours = [(lever.key, lever.name, lever.value) for lever in net.levers()]
+    theirs = [(lever.key, lever.name, lever.value) for lever in rbd.levers()]
+    assert sorted(ours, key=str) == sorted(theirs, key=str)
+    for x in (None, 50.0, TIMES[1:]):
+        sens = net.parameter_sensitivity(x)
+        expected = rbd.parameter_sensitivity(x=x)
+        assert set(sens) == set(expected)
+        for key, values in expected.items():
+            for lever, value in values.items():
+                np.testing.assert_allclose(
+                    sens[key][lever], value, rtol=1e-6, atol=1e-14
+                )
+    for x in (None, 50.0):
+        ours = net.tornado(x)
+        theirs = rbd.tornado(x=x)
+        assert ours.base_value == pytest.approx(theirs.base_value, rel=1e-12)
+        mine = {(row.key, row.name): row for row in ours.rows}
+        for row in theirs.rows:
+            other = mine[(row.key, row.name)]
+            assert (other.low, other.high) == (row.low, row.high)
+            assert other.value_low == pytest.approx(row.value_low, rel=1e-12)
+            assert other.value_high == pytest.approx(row.value_high, rel=1e-12)
+    lever = net.levers()[0]
+    moved = net.with_levers({lever: lever.value * 2})
+    np.testing.assert_allclose(
+        moved.point_unavailability(TIMES),
+        rbd.with_levers(
+            {(lever.key, lever.name): lever.value * 2}
+        ).point_unavailability(TIMES),
+        rtol=1e-12,
+        atol=0,
+    )
+
+
+def test_a_lever_moves_the_bridge_by_its_birnbaum_importance():
+    # Only the element's curve moves: the network's availability moves
+    # by its Birnbaum importance times the element's own availability's
+    # change, the element worked out alone as a network of one link.
+    net = exponential_bridge()
+    x, h = 30.0, 1e-2
+    sens = net.parameter_sensitivity(x)
+    birnbaum = net.birnbaum_importance(x)
+    for name in ("a", "c"):
+        lam, mu = exponential()[name]
+        for lever, value in (
+            ("reliability.failure_rate", lam),
+            ("repairability.failure_rate", mu),
+        ):
+
+            def alone(v):
+                rates = {
+                    "reliability.failure_rate": lam,
+                    "repairability.failure_rate": mu,
+                    lever: v,
+                }
+                link = spec(
+                    E([rates["reliability.failure_rate"]]),
+                    E([rates["repairability.failure_rate"]]),
+                )
+                one = Network({"l": ("s", "t", link)}, "s", "t")
+                return float(one.point_unavailability(x))
+
+            step = h * value
+            own = -(alone(value + step) - alone(value - step)) / (2 * step)
+            assert sens[name][lever] == pytest.approx(
+                birnbaum[name] * own, rel=1e-9
+            ), (name, lever)
+    assert net.analysis_routes()["parameter_sensitivity"].route == "numerical"
+
+
+def test_the_tornado_of_a_repaired_network_refuses_reliability():
+    with pytest.raises(NotImplementedError, match="point_availability"):
+        exponential_bridge().tornado(1.0, quantity="reliability")
+    lives = Network({"a": ("s", "t", W([100.0, 2.0]))}, "s", "t")
+    with pytest.raises(Refused, match="component specs"):
+        lives.tornado(1.0, quantity="availability")
 
 
 def test_every_public_method_is_given_or_refused():
@@ -691,8 +824,10 @@ def test_a_repaired_network_too_large_says_what_can_be_done(monkeypatch):
     for method in OVER_TIME + ("failure_frequency",) + LONG_RUN:
         with pytest.raises(NotImplementedError) as error:
             getattr(net, method)(*(() if method in LONG_RUN else (1.0,)))
-        assert "MAX_STATES, can be raised" in str(error.value)
-        assert "method=" not in str(error.value)
+        assert "raise the limit, repyability.network.MAX_STATES" in str(
+            error.value
+        )
+        assert "availability(t)" in str(error.value)
         assert routes[method].route == "refused"
         assert routes[method].reason == str(error.value)
     assert routes["birnbaum_importance"].reason == str(error.value)

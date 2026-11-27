@@ -501,8 +501,8 @@ def _crew_rates(
         np.column_stack(ups + [chain.split(up) for up in ups]),
     )
     curves = {
-        node: _curves._nested_curve(
-            rbd.components[node], 1.01 * scale, start=states.get(node)
+        node: _curves._beside_crews(
+            rbd, node, 1.01 * scale, start=states.get(node)
         )
         for node in nested
     }
