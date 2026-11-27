@@ -12,6 +12,28 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Long-run values of a cold standby pair of any lives and repairs with
+  both units repaired at once (a crew each, the default), which only a
+  simulation gave (one repair at a time already had its cycle): two
+  units, one needed, a cold spare that switches in surely. Each time a
+  unit starts to operate, what follows depends only on how long the
+  other's repair has run, so the pair is a Markov renewal process on that
+  time; its equation is solved on a grid (the times rounded to it, from
+  the distribution functions alone, by fast Fourier transforms), halved
+  until two extrapolated solutions agree to 1e-8. `mean_availability`,
+  `mean_unavailability`, the frequencies and the cost rate take it,
+  inside larger diagrams too, and `analysis_routes()` says so. Checked:
+  exponential units equal the Markov chain to 1e-9 (within 2e-10);
+  exponential repairs against the memoryless closed form (1e-7) for
+  Weibull lives of shape 3 and 0.8 and a lognormal; an unavailability of
+  4e-13 against its quadrature; Weibull(1000, 2.5) lives and
+  Weibull(300, 1.5) repairs 0.991724 against 0.991722 simulated (400
+  runs of 1e6 h, standard error 6.4e-5, -0.03 SE), and Weibull(1000,
+  1.5) lives with LogNormal(5, 0.6) repairs 0.992867 against 0.992870
+  (standard error 4.9e-5, +0.04 SE). A pair whose lives are a small
+  fraction of its repairs warns where the grid does not settle, and is
+  refused where it cannot. Warm spares, failing switches, more units and
+  values over time stay simulated.
 - `RepairableRBD.spares_front(bases, parts, budget=, target_availability=)`
   and `spares_allocation(...)`: repairable spares over two echelons, the
   bases a fleet's systems run from and a depot behind them (Sherbrooke's
