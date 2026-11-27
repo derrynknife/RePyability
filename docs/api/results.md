@@ -30,6 +30,8 @@
 
 ::: repyability.ExpectedEvents
 
+::: repyability.FirstFailureBounds
+
 ::: repyability.EventsByWindow
 
 ::: repyability.CostByWindow
@@ -103,6 +105,10 @@
 ::: repyability.PlanRobustness
 
 ::: repyability.Lever
+
+::: repyability.TornadoResult
+
+::: repyability.TornadoRow
 
 ::: repyability.StressStrengthResult
 

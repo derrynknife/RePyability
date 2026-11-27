@@ -224,9 +224,9 @@ def _pieces(f: Callable, a: np.ndarray, b: np.ndarray):
     return (y @ _GK_W) * half, (y @ _G7_W) * half
 
 
-def _integrate(f: Callable, edges: np.ndarray) -> float:
+def _integrate(f: Callable, edges: np.ndarray, rtol: float = RTOL) -> float:
     """The integral of ``f`` from ``edges[0]`` to ``edges[-1]``, each piece
-    halved until its Gauss-Kronrod and Gauss estimates agree to ``RTOL``,
+    halved until its Gauss-Kronrod and Gauss estimates agree to ``rtol``,
     relative: to its own integral, plus its width's share of the whole
     (for pieces near zero)."""
     a, b = edges[:-1], edges[1:]
@@ -236,7 +236,7 @@ def _integrate(f: Callable, edges: np.ndarray) -> float:
         kronrod, gauss = _pieces(f, a, b)
         estimate = done + float(kronrod.sum())
         error = np.abs(kronrod - gauss)
-        allowed = RTOL * (np.abs(kronrod) + abs(estimate) * (b - a) / span)
+        allowed = rtol * (np.abs(kronrod) + abs(estimate) * (b - a) / span)
         middle = 0.5 * (a + b)
         finished = (error <= allowed) | (middle <= a) | (middle >= b)
         done += float(kronrod[finished].sum())
@@ -246,7 +246,7 @@ def _integrate(f: Callable, edges: np.ndarray) -> float:
         if 2 * a.size > _MAX_PIECES:
             warnings.warn(
                 "The integral of the survival function did not reach its "
-                f"target accuracy ({RTOL:g}, relative) within "
+                f"target accuracy ({rtol:g}, relative) within "
                 f"{_MAX_PIECES} pieces; the mean may be less accurate.",
                 RuntimeWarning,
                 stacklevel=outside_level(),
