@@ -231,6 +231,15 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
             "moved; at times or over a window, of the values over time.",
         ),
     )
+    give(
+        ("tornado",),
+        from_long_run(
+            r.EXACT,
+            "The long-run availability (or cost rate) with each lever at "
+            "its low and at its high, the diagram rebuilt; at a time or over "
+            "a window, its values over time.",
+        ),
+    )
     # The cost analyses refuse a diagram with nothing priced (not even
     # an acquisition cost) first; with an acquisition cost alone there
     # is no running cost, exactly.

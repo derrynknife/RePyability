@@ -10,9 +10,9 @@ exactly or numerically where it can be, and simulated on request:
 - ``RepairableRBD``: availability (long run, over time and over a mission,
   and the unavailability to its own precision), failures and costs,
   maintenance, inspections, spares, repair crews, and simulated histories.
-- ``FaultTree``, ``Network`` and ``PhasedMission``: the other ways to draw
-  a system; ``StandbyModel``, ``LoadSharingModel``, ``RepeatedNode`` and
-  ``CCFGroup`` the dependencies within one.
+- ``FaultTree``, ``Network``, ``PhasedMission`` and ``EventTree``: the other
+  ways to draw a system; ``StandbyModel``, ``LoadSharingModel``,
+  ``RepeatedNode`` and ``CCFGroup`` the dependencies within one.
 - ``stress_strength`` and ``stress_strength_over_time``: the chance a
   strength exceeds a stress (interference), exact or numerical.
 
@@ -29,6 +29,7 @@ https://derrynknife.github.io/RePyability/
 """
 
 from repyability._version import __version__
+from repyability.event_tree import EventTree
 from repyability.fault_tree import FaultTree
 from repyability.maintenance import (
     AgePolicy,
@@ -167,6 +168,7 @@ from repyability.rbd.results import (
     NPVComparison,
     NPVDistribution,
     NPVUncertainty,
+    OutcomeFrequencies,
     PFDBreakdown,
     PlanRobustness,
     PlanVsActual,
@@ -176,6 +178,11 @@ from repyability.rbd.results import (
     ReliabilityRedundancyAllocation,
     ReplacementCycle,
     RestorationCriticalityIndex,
+    SafetyFunctionResult,
+    SequenceFrequencies,
+    SequenceProbabilities,
+    SILBand,
+    SimplifiedSafetyFormulas,
     SimulatedSparesStock,
     SimulatedSwitchTime,
     SimulationSamples,
@@ -185,12 +192,19 @@ from repyability.rbd.results import (
     StressStrengthResult,
     StructureSummary,
     TimelineSimulation,
+    TornadoResult,
+    TornadoRow,
     TotalCostAllocation,
     UncertaintyImportance,
     UncertaintyResult,
     UpDownImportance,
 )
 from repyability.rbd.routes import AnalysisRoute, AnalysisRoutes
+from repyability.rbd.safety_function import (
+    SafetyChannel,
+    SafetyFunction,
+    sil_band,
+)
 from repyability.rbd.shards import run_shard
 from repyability.rbd.shocks import shock_nodes
 from repyability.rbd.standby_node import StandbyModel
@@ -296,6 +310,8 @@ __all__ = [
     "PrimeImplicant",
     "ModelParameters",
     "Lever",
+    "TornadoResult",
+    "TornadoRow",
     "RedundancyAllocation",
     "ReliabilityRedundancyAllocation",
     "TotalCostAllocation",
@@ -370,6 +386,16 @@ __all__ = [
     "PlanRobustness",
     "RateBreakdown",
     "PFDBreakdown",
+    "EventTree",
+    "SequenceProbabilities",
+    "SequenceFrequencies",
+    "OutcomeFrequencies",
+    "SafetyChannel",
+    "SafetyFunction",
+    "SafetyFunctionResult",
+    "SILBand",
+    "SimplifiedSafetyFormulas",
+    "sil_band",
     "AvailabilityAllocation",
     "SparesDemand",
     "SimulatedSparesStock",

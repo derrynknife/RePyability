@@ -132,6 +132,32 @@ grid.risk_achievement_worth(1.0)["GB"]        # -> 7.0029    the risk with GB do
 grid.barlow_proschan_importance()["GB"]       # -> 0.26291   the outages it causes, over the whole life
 ```
 
+`Hf`, `df` and `hf` give the connection's cumulative hazard, failure
+density and hazard rate, as a diagram's do: `Hf` is exact, `-log` of the
+reliability (worked out from the unreliability while that is the smaller, so
+a small one keeps its precision), and `df` and `hf` are central differences
+of the exact values, with a step relative to the time, so that they do not
+depend on the unit of time.
+
+```python
+grid.Hf(1.0)    # -> 0.015023
+grid.df(1.0)    # -> 0.029521
+grid.hf(1.0)    # -> 0.029968
+```
+
+`parameter_sensitivity(x)` gives how far the reliability at `x` moves with
+each parameter of each link's and node's model: its Birnbaum importance
+times how far the element's own reliability moves with the parameter, as for
+a diagram (see [Sensitivities: the Greeks](greeks.md)). `levers()` lists the
+parameters it moves, each with its value and range, and
+`with_levers({("GA", "failure_rate"): 0.04})` builds the network with them
+moved, so that the slope can be checked, or a design tried.
+
+```python
+grid.parameter_sensitivity(1.0)["GA"]["failure_rate"]   # -> -0.085537
+grid.with_levers({("GA", "failure_rate"): 0.04}).sf(1.0)   # -> 0.99038
+```
+
 `bx_life(x)` and `time_to_reliability(target)` invert `sf`: the time by
 which `x` percent of connections are cut, and at which the reliability
 falls to `target`.
@@ -164,14 +190,20 @@ mean = grid.mean_uncertainty({lines: rate}, n_draws=400, seed=1)
 round(mean.nominal, 4)               # -> 8.518
 ```
 
+`bx_life_uncertainty` and `time_to_reliability_uncertainty` give a B-life
+with its band the same way, each draw's time found by inverting its exact
+reliability: `grid.bx_life_uncertainty(10, {lines: rate}, n_draws=400,
+seed=1)`.
+
 A network saves and loads as a diagram does (see [Saving and
 loading](saving.md#saving-and-loading)): `to_dict` and `to_json` keep the
 terminals, each link's two nodes and model, and the failing nodes' models,
 in surpyval's own format, so a fit's covariance round-trips; `from_dict`
 and `from_json` rebuild it. `analysis_routes()` says how each analysis is
 worked out, without running it: exact from the decision diagram, numerical
-(`mean`, the B-lives and `barlow_proschan_importance`), simulated
-(`random` and the uncertainty's draws), or refused, with the message the
+(`mean`, `df`, `hf`, `parameter_sensitivity`, the B-lives and
+`barlow_proschan_importance`), simulated (`random` and the uncertainty's
+draws), or refused, with the message the
 method raises, for a network too large for its diagram.
 
 ```python

@@ -3208,6 +3208,86 @@ class PlanRobustness(_ResultMapping):
         )
 
 
+@dataclass(frozen=True)
+class SequenceProbabilities(_ResultMapping):
+    """Each sequence's probability given an event tree's initiating event.
+
+    Returned by
+    [`EventTree.sequence_probabilities`][repyability.EventTree.sequence_probabilities].
+
+    Attributes
+    ----------
+    probabilities : dict
+        ``{path: probability}``, each path a tuple of ``"success"``,
+        ``"failure"`` or None per heading: floats for a number ``t``,
+        arrays for an array. Exact, they sum to 1.
+    outcomes : dict
+        ``{path: outcome}``.
+    approximation : str or None
+        None for the exact values, or the approximation asked for
+        (``"rare_event"`` or ``"independent"``).
+    """
+
+    probabilities: Dict[Tuple, Any]
+    outcomes: Dict[Tuple, Hashable]
+    approximation: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class SequenceFrequencies(_ResultMapping):
+    """Each sequence's frequency: an event tree's initiating event's
+    frequency times the sequence's probability.
+
+    Returned by
+    [`EventTree.sequence_frequencies`][repyability.EventTree.sequence_frequencies].
+
+    Attributes
+    ----------
+    frequencies : dict
+        ``{path: frequency}`` (per unit time, as the initiator's): floats
+        for a number ``t``, arrays for an array. Exact, they sum to
+        ``initiator_frequency``.
+    outcomes : dict
+        ``{path: outcome}``.
+    initiator_frequency : float
+        The initiating event's frequency.
+    approximation : str or None
+        None for the exact values, or the approximation asked for.
+    """
+
+    frequencies: Dict[Tuple, Any]
+    outcomes: Dict[Tuple, Hashable]
+    initiator_frequency: float
+    approximation: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class OutcomeFrequencies(_ResultMapping):
+    """Each outcome's frequency: the sum of its sequences'.
+
+    Returned by
+    [`EventTree.outcome_frequencies`][repyability.EventTree.outcome_frequencies].
+
+    Attributes
+    ----------
+    frequencies : dict
+        ``{outcome: frequency}``, in the order the outcomes first appear:
+        floats for a number ``t``, arrays for an array. Exact, they sum to
+        ``initiator_frequency``.
+    sequences : dict
+        ``{outcome: [path, ...]}``: the paths that end in each.
+    initiator_frequency : float
+        The initiating event's frequency.
+    approximation : str or None
+        None for the exact values, or the approximation asked for.
+    """
+
+    frequencies: Dict[Hashable, Any]
+    sequences: Dict[Hashable, List[Tuple]]
+    initiator_frequency: float
+    approximation: Optional[str] = None
+
+
 @dataclass
 class PFDBreakdown(_ResultMapping):
     """Where a safety function's average probability of failure on demand
@@ -3253,6 +3333,123 @@ class PFDBreakdown(_ResultMapping):
     components: Dict[Hashable, float]
     groups: Dict[Tuple[Hashable, ...], float]
     fractions: Dict[Hashable, float]
+
+
+@dataclass(frozen=True)
+class SILBand(_ResultMapping):
+    """The safety integrity level a PFDavg or a PFH falls in: returned
+    by [`sil_band`][repyability.sil_band] and
+    [`SafetyFunction.sil`][repyability.SafetyFunction.sil].
+
+    The bands are those of IEC 61508-1 Table 2 (PFDavg, low demand) and
+    Table 3 (PFH per hour, high demand or continuous). Each takes its
+    lower edge and not its upper one.
+
+    Attributes
+    ----------
+    sil : int
+        The level, 1 to 4, or 0 where the value is at or above SIL 1's
+        upper edge (no SIL). A value below SIL 4's band is SIL 4: the
+        standard has no level above it.
+    mode : str
+        The demand mode: ``"low_demand"``, ``"high_demand"`` or
+        ``"continuous"``.
+    measure : str
+        What the level was read from: ``"pfd_avg"`` or ``"pfh"``.
+    value : float
+        The value judged: the PFDavg, or the PFH per hour.
+    lower, upper : float
+        The band's edges, ``lower <= value < upper`` (but for a value
+        below SIL 4's band, whose ``lower`` is that band's; ``upper`` is
+        infinite where there is no SIL).
+    margin_to_lower : float
+        ``value / lower``: the factor the value must fall by to reach
+        the next level (below 1 for a value under SIL 4's band).
+    margin_to_upper : float
+        ``upper / value``: the factor the value can grow by before it
+        leaves the band for the level below.
+    risk_reduction_factor : float or None
+        ``1 / value`` for a PFDavg; None for a PFH.
+    """
+
+    sil: int
+    mode: str
+    measure: str
+    value: float
+    lower: float
+    upper: float
+    margin_to_lower: float
+    margin_to_upper: float
+    risk_reduction_factor: Optional[float]
+
+
+@dataclass(frozen=True)
+class SafetyFunctionResult(_ResultMapping):
+    """A safety function's results: returned by
+    [`SafetyFunction.results`][repyability.SafetyFunction.results].
+
+    Attributes
+    ----------
+    mode : str
+        The demand mode the SIL was read in.
+    pfd_avg : float
+        The average probability of failure on demand.
+    pfh : float
+        The average frequency of a dangerous failure of the function,
+        per unit time: every failure of it.
+    pfh_undetected : float
+        The part of ``pfh`` that an undetected failure completes, which
+        is what IEC 61508-6 Annex B's formulas count.
+    spurious_trip_rate : float
+        Spurious trips per unit time.
+    mean_time_to_spurious_trip : float
+        Its reciprocal (infinite where the rate is 0).
+    sil : SILBand
+        The level of ``pfd_avg`` (low demand) or of ``pfh`` (high demand,
+        continuous), with its band and margins.
+    pfd_breakdown : PFDBreakdown
+        Where the PFDavg comes from, by channel and failure kind
+        (``(name, "DU")``, ``(name, "DD")``) and by common cause.
+    safe_failure_fraction : dict
+        Each channel's safe failure fraction.
+    diagnostic_coverage : dict
+        Each channel's diagnostic coverage.
+    """
+
+    mode: str
+    pfd_avg: float
+    pfh: float
+    pfh_undetected: float
+    spurious_trip_rate: float
+    mean_time_to_spurious_trip: float
+    sil: SILBand
+    pfd_breakdown: PFDBreakdown
+    safe_failure_fraction: Dict[Hashable, float]
+    diagnostic_coverage: Dict[Hashable, float]
+
+
+@dataclass(frozen=True)
+class SimplifiedSafetyFormulas(_ResultMapping):
+    """The simplified formulas' values for a vote: returned by
+    [`SafetyFunction.simplified_formulas`][repyability.SafetyFunction.simplified_formulas].
+
+    Attributes
+    ----------
+    pfd_avg : float
+        IEC 61508-6 Annex B's PFDavg (B.3.2.2).
+    pfh : float
+        Its PFH (B.3.3.2), per unit time.
+    spurious_trip_rate : float
+        The rare-event spurious-trip rate, per unit time.
+    down_times : tuple
+        The formulas' mean down times ``t_1 ... t_r``: the channel's
+        (``t_CE``), the group's (``t_GE``), and so on.
+    """
+
+    pfd_avg: float
+    pfh: float
+    spurious_trip_rate: float
+    down_times: Tuple[float, ...]
 
 
 @dataclass(frozen=True)
@@ -3308,6 +3505,87 @@ class Lever(_ResultMapping):
     discrete: bool
     bounds: Tuple[float, float]
     calendar: bool = False
+
+
+@dataclass(frozen=True)
+class TornadoRow(_ResultMapping):
+    """One lever's row of a [`TornadoResult`][repyability.TornadoResult]:
+    the system's value with the lever at its low and at its high, every
+    other lever at its value.
+
+    Attributes
+    ----------
+    key : Hashable
+        Whose lever it is, as [`Lever`][repyability.Lever] keys it.
+    name : str
+        The lever's name, as ``Lever`` names it.
+    base : float
+        The lever's value in the diagram.
+    low : float
+        The lever's low: the range's lower end given, or by default its
+        value less a share (``relative``) of its scale (one fewer for a
+        lever that counts), cut to the lever's range of values.
+    high : float
+        The lever's high, likewise: its value plus the share (one more
+        for a lever that counts), cut to its range of values.
+    value_low : float
+        The system's value with the lever at ``low``.
+    value_high : float
+        The system's value with the lever at ``high``.
+    swing : float
+        ``abs(value_high - value_low)``, by which the rows are sorted.
+    cut : bool
+        Whether the range was cut to the lever's range of values (a
+        probability's to ``[0, 1]``, say).
+    """
+
+    key: Hashable
+    name: str
+    base: float
+    low: float
+    high: float
+    value_low: float
+    value_high: float
+    swing: float
+    cut: bool
+
+
+@dataclass
+class TornadoResult(_ResultMapping):
+    """The numbers of a tornado chart: which levers move the system's
+    value most, and by how much. ``tornado()`` of a
+    [`RepairableRBD`][repyability.RepairableRBD.tornado],
+    [`NonRepairableRBD`][repyability.NonRepairableRBD.tornado] or
+    [`FaultTree`][repyability.FaultTree.tornado] gives it; drawing the
+    chart is left to the caller.
+
+    Attributes
+    ----------
+    quantity : str
+        What the values are of: ``"availability"`` or ``"cost_rate"`` (a
+        repairable diagram), ``"reliability"`` (a non-repairable one) or
+        ``"top_event_probability"`` (a fault tree).
+    base_value : float
+        The system's value with every lever at its value.
+    rows : list of TornadoRow
+        A row for each lever, sorted by its swing, the largest first.
+    skipped : list of dict
+        The levers left out, each ``{"key", "name", "reason"}``: a
+        covariate or a lever at 0 given no range, or one whose diagram at
+        an end cannot be built or worked out.
+    """
+
+    quantity: str
+    base_value: float
+    rows: List[TornadoRow]
+    skipped: List[Dict[str, Any]]
+
+    def __repr__(self) -> str:
+        return (
+            f"TornadoResult(quantity={self.quantity!r}, "
+            f"base_value={self.base_value:.6g}, rows={len(self.rows)}, "
+            f"skipped={len(self.skipped)})"
+        )
 
 
 def _meeting(levels: np.ndarray, demand: float) -> np.ndarray:

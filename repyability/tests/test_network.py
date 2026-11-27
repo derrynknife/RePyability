@@ -900,6 +900,10 @@ CALLS = {
         for name in (
             "sf",
             "ff",
+            "Hf",
+            "df",
+            "hf",
+            "parameter_sensitivity",
             "birnbaum_importance",
             "improvement_potential",
             "risk_achievement_worth",
@@ -920,11 +924,21 @@ CALLS = {
     "time_to_reliability": lambda net: net.time_to_reliability(0.5),
     "bx_life": lambda net: net.bx_life(10),
     "random": lambda net: net.random(10, seed=1),
+    "compare": lambda net: net.compare(net, mc_samples=10, seed=1),
+    "importances": lambda net: net.importances(10.0),
     "sf_uncertainty": lambda net: net.sf_uncertainty(
         10.0, {"a": [W([90, 2])]}, n_draws=2, seed=1
     ),
     "mean_uncertainty": lambda net: net.mean_uncertainty(
         {"a": [W([90, 2])]}, n_draws=2, seed=1
+    ),
+    "bx_life_uncertainty": lambda net: net.bx_life_uncertainty(
+        10, {"a": [W([90, 2])]}, n_draws=2, seed=1
+    ),
+    "time_to_reliability_uncertainty": (
+        lambda net: net.time_to_reliability_uncertainty(
+            0.5, {"a": [W([90, 2])]}, n_draws=2, seed=1
+        )
     ),
 }
 
@@ -942,8 +956,10 @@ def test_the_routes_say_how_each_analysis_is_worked_out(monkeypatch):
         "analysis_routes",
         "from_dict",
         "from_json",
+        "levers",
         "to_dict",
         "to_json",
+        "with_levers",
     }
     assert report["sf"].route == report["fussell_vesely"].route == "exact"
     assert report["joint_importance"].route == "exact"
@@ -962,12 +978,13 @@ def test_the_routes_say_how_each_analysis_is_worked_out(monkeypatch):
     with pytest.raises(ValueError, match=re.escape(report["bx_life"].reason)):
         fixed.bx_life(10)
     # Too large a diagram: every exact value refused, with the message
-    # the methods raise, and the simulation (and the paths) left.
+    # the methods raise, and the simulations (and the paths) left.
     monkeypatch.setattr(network_module, "MAX_STATES", 3)
     large = bridge({n: W([100.0, 1.5]) for n in "abcde"})
     report = large.analysis_routes()
+    assert report["compare"].route == "simulated"
     for name, route in report.items():
-        if name in ("random", "path_sets", "minimal_path_sets"):
+        if name in ("random", "compare", "path_sets", "minimal_path_sets"):
             assert route.route != "refused"
             CALLS[name](large)
             continue

@@ -9,7 +9,6 @@ import functools
 import inspect
 import math
 import pickle
-import zlib
 from copy import copy
 from dataclasses import dataclass, field
 from queue import PriorityQueue
@@ -35,6 +34,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from repyability.utils.checks import (
+    is_number,
     no_distribution,
     one_of,
     real_array,
@@ -45,7 +45,7 @@ from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from . import _ccf_modules
 from . import _montecarlo as montecarlo
-from . import _sensitivity
+from . import _paired, _sensitivity
 from . import capacity as _capacity
 from . import redundancy_allocation
 from ._bayesian_life import PosteriorPredictive, as_life
@@ -115,6 +115,7 @@ from .results import (
     RateBreakdown,
     RedundancyAllocation,
     ReliabilityRedundancyAllocation,
+    TornadoResult,
     UncertaintyImportance,
     UncertaintyResult,
 )
@@ -5774,6 +5775,16 @@ class NonRepairableRBD(RBD):
                 else ""
             ),
         )
+        out["tornado"] = built(
+            r.EXACT,
+            "The exact reliability with each parameter at its low and at "
+            "its high, the RBD rebuilt"
+            + (
+                ", summed over the common-cause groups' outcomes."
+                if grouped
+                else "."
+            ),
+        )
         # Each node's own values need no structure; the uncertainty's draws
         # are each worked out exactly.
         return with_importances(
@@ -6998,13 +7009,13 @@ class NonRepairableRBD(RBD):
         Two independent estimates from 20_000 lifetimes each would give it
         with a standard error of about 0.42.
         """
-        if method not in (None, "exact", "simulate"):
-            raise ValueError(
-                "method must be None (exact where both MTTFs are), 'exact' "
-                f"or 'simulate', got {method!r}."
-            )
-        montecarlo.check_count(mc_samples, False, "mc_samples")
-        montecarlo.check_confidence(confidence)
+        _paired.check(method, mc_samples, confidence)
+        _paired.same_kind(
+            self,
+            other,
+            "convert a fault tree with to_rbd() or FaultTree.from_rbd() "
+            "to compare it with a diagram",
+        )
         if method != "simulate":
             try:
                 exact = float(self._exact_mean() - other._exact_mean())
@@ -7012,31 +7023,12 @@ class NonRepairableRBD(RBD):
                 if method == "exact":
                     raise
             else:
-                return ConfidenceInterval(
-                    estimate=exact,
-                    lower=exact,
-                    upper=exact,
-                    confidence=confidence,
-                    standard_error=0.0,
-                    n_samples=0,
-                    method="exact",
-                )
-        key = int(np.random.SeedSequence(seed).generate_state(1, np.uint64)[0])
+                return _paired.exact(exact, confidence)
+        key = _paired.key(seed)
         differences = self._keyed_lifetimes(
             mc_samples, key
         ) - other._keyed_lifetimes(mc_samples, key)
-        estimate = float(np.mean(differences))
-        standard_error = montecarlo.standard_error(differences, False)
-        z = montecarlo.z_value(confidence)
-        return ConfidenceInterval(
-            estimate=estimate,
-            lower=estimate - z * standard_error,
-            upper=estimate + z * standard_error,
-            confidence=confidence,
-            standard_error=standard_error,
-            n_samples=mc_samples,
-            method="simulated",
-        )
+        return _paired.simulated(differences, confidence)
 
     def _keyed_lifetimes(self, n: int, key: int) -> np.ndarray:
         """``n`` lifetimes in which each component draws its uniforms from
@@ -7044,9 +7036,8 @@ class NonRepairableRBD(RBD):
         place in its draw (common random numbers, see ``compare``)."""
         self._require_replayable()
 
-        def stream(name: str, j: int) -> np.ndarray:
-            crc = zlib.crc32(name.encode())
-            return np.random.default_rng([key, crc, j]).random(n)
+        def stream(label: str, j: int) -> np.ndarray:
+            return _paired.uniforms(key, label, j, n)
 
         lifetimes = {}
         for drawn in self._draw_order():
@@ -8728,6 +8719,114 @@ class NonRepairableRBD(RBD):
         0.7788
         """
         return _sensitivity.with_levers(self, values)
+
+    def tornado(
+        self,
+        x: Optional[float] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        *,
+        quantity: str = "reliability",
+        ranges: Optional[dict] = None,
+        relative: float = _sensitivity.TORNADO_RELATIVE,
+    ) -> TornadoResult:
+        """The numbers of a tornado chart: the system's reliability at
+        ``x`` with each parameter at its low and at its high, every other
+        at its value, the parameters sorted by how far they swing it.
+
+        Where ``parameter_sensitivity`` gives each parameter's slope, this
+        gives what a range of it does: each end is the RBD rebuilt with
+        the parameter there (as ``with_levers`` builds it), its
+        reliability worked out exactly (``sf``). A parameter's range is
+        ``ranges[lever]`` where given, and otherwise a share ``relative``
+        of its scale either way: of its value, or for a parameter on a
+        log scale (a LogNormal's ``mu``) of 1, which moves the time it is
+        the log of by that share. A range is cut to the parameter's range
+        of values (``Lever.bounds``: a probability's to ``[0, 1]``), and
+        its row says so. A regression node's covariate has no relative
+        change (its zero is its unit's), nor has a parameter at 0, so
+        without a range they are listed in ``skipped``, as is one whose
+        RBD cannot be built or worked out at an end, with the reason.
+
+        Parameters
+        ----------
+        x : float, optional
+            One time. May be left out only for a fixed-probability RBD.
+        working_nodes : Collection[Hashable], optional
+            Nodes held working, as for ``sf``.
+        broken_nodes : Collection[Hashable], optional
+            Nodes held failed, as for ``sf``.
+        quantity : str, optional
+            ``"reliability"``, the one quantity.
+        ranges : dict, optional
+            ``{lever: (low, high)}``, each lever by its
+            [`Lever`][repyability.Lever] (from ``levers()``) or its
+            ``(key, name)``.
+        relative : float, optional
+            The share of each parameter's scale it moves either way where
+            no range is given, in ``(0, 1)``; by default 0.1.
+
+        Returns
+        -------
+        TornadoResult
+            The base reliability, a [`TornadoRow`][repyability.TornadoRow]
+            for each parameter, the largest swing first, and those
+            skipped.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is left out for a time-varying RBD or is not one
+            time, or a range or share is not valid.
+        NotImplementedError
+            Where ``sf`` refuses the RBD.
+
+        Examples
+        --------
+        Two exponential units in series, failing at 0.01 and 0.02 an
+        hour: at 10 hours the system survives with probability
+        ``exp(-0.3)``, and a tenth more or less on the second's rate
+        swings it the more:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {"a": E([0.01]), "b": E([0.02])},
+        ... )
+        >>> result = rbd.tornado(10)
+        >>> round(result.base_value, 4)
+        0.7408
+        >>> for row in result.rows:
+        ...     print(row.key, round(row.value_low, 4),
+        ...           round(row.value_high, 4))
+        b 0.7558 0.7261
+        a 0.7483 0.7334
+        """
+        one_of("quantity", quantity, ("reliability",))
+        if x is None:
+            if not self.is_fixed:
+                raise ValueError(
+                    "x is required: this RBD is time-varying (at least one "
+                    "node model's probability depends on time)."
+                )
+            x = 1.0
+        if np.ndim(x) != 0 or not is_number(x):
+            raise ValueError(
+                "tornado takes one time x (its rows are sorted by the swing "
+                f"there), got {x!r}: call it once for each time."
+            )
+        self._held_nodes(working_nodes, broken_nodes)
+
+        def evaluate(rbd) -> float:
+            return float(
+                np.ravel(rbd.sf(float(x), working_nodes, broken_nodes))[0]
+            )
+
+        return _sensitivity._tornado(
+            self, evaluate, quantity, ranges, relative
+        )
 
     def differential_importance(
         self,

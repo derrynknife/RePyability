@@ -1113,6 +1113,27 @@ def repairable_kinds():
             "demand": system(
                 unit(reliability=FIXED(0.1), demand_rate=0.05, repair_cost=5.0)
             ),
+            # Demands at set times (UC-73): a life that ends only at them,
+            # on the calendar, exact over a window and simulated.
+            "demand times": system(
+                unit(
+                    reliability=FIXED(0.1),
+                    demand_times=[50.0, 120.0, 200.0, 260.0],
+                    repair_cost=5.0,
+                )
+            ),
+            # Demands at a rate that changes, counted in the unit's
+            # operating time on a duty: an exponential life in demands
+            # on the composed plan, simulated (its repairs take time).
+            "demand plan": system(
+                unit(
+                    reliability=FIXED(0.1),
+                    demand_plan={"times": [0.0, 150.0], "rates": [0.1, 0.02]},
+                    duty=0.5,
+                    demand_basis="operating",
+                    repair_cost=5.0,
+                )
+            ),
             "mixture life": system(
                 unit(reliability=mixture_life(), replace_cost=10.0)
             ),
@@ -1897,3 +1918,192 @@ def repairable_kinds():
         }
     )
     return out
+
+
+def safety_function_kinds():
+    """The safety functions of every kind their results are checked on: a
+    single channel of undetected failures, voted channels with
+    diagnostics, repair and common cause of each kind, a proof test that
+    can miss, staggered tests, detected failures that trip, a fitted life,
+    and votes in series."""
+    from repyability import SafetyChannel, SafetyFunction
+
+    def channel(du=2e-6, dd=3e-6, safe=5e-6, **options):
+        options.setdefault("repair", 8.0)
+        options.setdefault("proof_test_interval", 8760.0)
+        return SafetyChannel(du, dangerous_detected=dd, safe=safe, **options)
+
+    def vote(k, n, unit, **options):
+        return SafetyFunction({f"c{i}": unit for i in range(n)}, k, **options)
+
+    betas = {"beta": 0.1, "beta_detected": 0.05, "beta_safe": 0.1}
+    return {
+        "1oo1, undetected failures alone": vote(
+            1, 1, channel(dd=0.0, safe=0.0, repair="instant")
+        ),
+        "1oo2": vote(1, 2, channel()),
+        "2oo3, common cause": vote(2, 3, channel(), **betas),
+        "2oo4, no formula": vote(2, 4, channel(), beta=0.1),
+        "a proof test that can miss": vote(
+            1,
+            2,
+            channel(proof_test_coverage=0.9, full_test=5 * 8760.0),
+            beta=0.1,
+        ),
+        "staggered tests": SafetyFunction(
+            {"a": channel(), "b": channel(proof_test_offset=4380.0)}, 1
+        ),
+        "detected failures trip": vote(
+            2, 3, channel(), detected_trips=True, **betas
+        ),
+        "a fitted life": vote(
+            1, 2, channel(du=W([4e5, 1.5]), undetected_repair="instant")
+        ),
+        "votes in series": SafetyFunction.series(
+            vote(2, 3, channel(), beta=0.1),
+            SafetyFunction({"valve": channel(du=5e-6)}, 1),
+        ),
+    }
+
+
+def event_tree_kinds():
+    """The event trees of every kind their analyses are checked on:
+    protection layers alone (LOPA), with paths that do not ask a heading;
+    independent heading trees; trees sharing a support event; a heading
+    tree with a NOT gate; lifetime models; and repaired events with an
+    initiator tree of repaired events."""
+    from repyability import EventTree
+
+    def tree(top, inputs, events, kind="or"):
+        return FaultTree({top: (kind, inputs)}, events)
+
+    lopa = EventTree(
+        0.2,
+        [("alarm", 0.1), ("relief", 0.01), ("dike", 0.05)],
+        {
+            ("success", None, None): "safe",
+            ("failure", "success", None): "safe",
+            ("failure", "failure", "success"): "contained",
+            ("failure", "failure", "failure"): "release",
+        },
+    )
+    independent = EventTree(
+        0.1,
+        [
+            (
+                "injection",
+                tree("no injection", ["a", "b"], {"a": 0.02, "b": 0.03}),
+            ),
+            (
+                "cooling",
+                tree("no cooling", ["c", "d"], {"c": 0.1, "d": 0.2}, "and"),
+            ),
+        ],
+    )
+    shared = EventTree(
+        0.1,
+        [
+            ("detection", 0.01),
+            (
+                "injection",
+                tree(
+                    "no injection",
+                    ["pump A", "power"],
+                    {"pump A": 0.05, "power": 0.01},
+                ),
+            ),
+            (
+                "recirculation",
+                tree(
+                    "no recirculation",
+                    ["pump B", "power"],
+                    {"pump B": 0.1, "power": 0.01},
+                ),
+            ),
+        ],
+        {
+            ("success", "success", "success"): "ok",
+            ("success", "success", "failure"): "damage",
+            ("success", "failure", None): "damage",
+            ("failure", None, None): "damage",
+        },
+    )
+    not_gate = EventTree(
+        0.3,
+        [
+            (
+                "isolation",
+                tree(
+                    "no isolation",
+                    ["valve", "power"],
+                    {"valve": 0.05, "power": 0.02},
+                ),
+            ),
+            (
+                "bypass",
+                FaultTree(
+                    {
+                        "no bypass": ("and", ["line", "powered"]),
+                        "powered": ("not", ["power"]),
+                    },
+                    {"line": 0.1, "power": 0.02},
+                ),
+            ),
+        ],
+    )
+    lifetimes = EventTree(
+        0.05,
+        [
+            (
+                "first",
+                tree(
+                    "first fails",
+                    ["x", "shared"],
+                    {"x": W([100, 2]), "shared": E([0.002])},
+                ),
+            ),
+            (
+                "second",
+                tree(
+                    "second fails",
+                    ["y", "shared"],
+                    {"y": W([80, 1.5]), "shared": E([0.002])},
+                ),
+            ),
+        ],
+    )
+
+    def spec(rate, repair=0.5):
+        return {"reliability": E([rate]), "repairability": E([repair])}
+
+    repaired = EventTree(
+        tree(
+            "trip", ["feed", "grid"], {"feed": spec(0.01), "grid": spec(0.002)}
+        ),
+        [
+            (
+                "backup",
+                tree(
+                    "no backup",
+                    ["diesel", "bus"],
+                    {"diesel": spec(0.02), "bus": spec(0.001)},
+                ),
+            ),
+            (
+                "battery",
+                tree(
+                    "no battery",
+                    ["cells", "bus"],
+                    {"cells": spec(0.005), "bus": spec(0.001)},
+                ),
+            ),
+        ],
+    )
+    return {
+        "protection layers (LOPA)": lopa,
+        "independent headings": independent,
+        "a shared support event": shared,
+        "a heading with a NOT gate": not_gate,
+        "lifetime models": lifetimes,
+        "repaired events, an initiator tree": repaired,
+    }

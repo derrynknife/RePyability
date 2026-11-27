@@ -52,8 +52,9 @@ A component can be given as:
   [below](#repair-crews)), imperfect repair (`"repair"` and
   `"replace_after"`; see [below](#imperfect-repair)), and the share of the
   time it operates (`"duty"`; see [below](#operating-part-of-the-time)),
-  and the rate of demands on a probability of failing per demand
-  (`"demand_rate"`; see [below](#failing-on-demand)).
+  and when demands come on a probability of failing per demand
+  (`"demand_rate"`, `"demand_times"`, `"demand_plan"` and
+  `"demand_basis"`; see [below](#failing-on-demand)).
   Any other key raises
   `ValueError`, so a mistyped cost key is never silently priced at zero;
 - `"repairability": "instant"` for a component repaired in zero time (see
@@ -235,14 +236,60 @@ and the node is a [junction](#junctions). Without a demand rate, a
 probability per demand is simulated only (a unit fails at once with the
 probability, or never), and the exact analyses refuse it, naming the key.
 
-The demands come at random, at a rate: demands at fixed times (a
-geometric count) are not modelled. A unit that wears out while it runs
-and may also fail on a demand is two failure modes: draw them as two
-components in series, one with the life and one with the probability and
-the demand rate. A spare that may fail to start when a unit of its
-standby group fails is the group's `"switching_probability"` (see
-[Standby groups](#standby-groups)), and a duty is refused with a demand
-rate (give the rate on the calendar).
+#### Demands at set times, or at a rate that changes
+
+Demands that do not come at random at a steady rate (a standby generator
+started at planned outages, a fire pump called on more in summer) are a
+demand plan:
+
+- `"demand_times"`: the times the unit is called on (after 0; a
+  recurrence rule's through `CalendarContext.rule_times(rule)`). Each
+  demand that meets the unit working fails it with probability `p`, so its
+  life can end only at them; the plan is on the calendar, so a repaired
+  unit meets the demands after its repair (one repaired at a demand's
+  instant is not called on by it). Its values over a window
+  (`point_availability`, `mission_availability`, `expected_failures`,
+  `expected_cost`) are exact: demand `k` fails it with chance `f_k = p (1 -
+  sum_{j<k} f_j P(R >= t_k - t_j))`, `R` its repair time, and it is down
+  at `t` with chance `sum_{t_k <= t} f_k P(R > t - t_k)`. A list of times
+  ends, so the long-run analyses are refused; a task, tests, a
+  maintenance group or a shutdown on it are simulated.
+- `"demand_plan"`: the expected demands per unit of time from each of its
+  times, `{"times": [0, ...], "rates": [...]}` (or a
+  `schedule.DutySchedule`, its shares the rates). The unit's life is
+  exponential at rate `p` counted in demands, put on the diagram's clock
+  by the expected demands `Λ(t)`, as a [duty plan that changes over
+  time](#operating-part-of-the-time) is: new at 0 it survives to `t` with
+  `exp(-p Λ(t))`. Its values over a window are worked out where its
+  repairs take no time, and simulated otherwise. A plan of one rate is
+  that `"demand_rate"`.
+
+```python
+generator = {
+    "reliability": surv.FixedEventProbability.from_params(0.1),
+    "demand_times": [10.0, 20.0, 30.0],  # days
+    "repairability": surv.ExactEventTime.from_params([15.0]),
+}
+rbd = RepairableRBD([("s", "gen"), ("gen", "t")], {"gen": generator})
+rbd.expected_failures(50.0)  # -> 0.281 = 0.1 + 0.09 + 0.091
+rbd.mission_availability(50.0)  # -> 0.9157
+```
+
+A demand plan (`"demand_rate"`, `"demand_times"` or `"demand_plan"`; one
+of them) is on the diagram's clock, and a `"duty"` is then refused, as it
+would stretch the demands as though they came only while the unit runs.
+With `"demand_basis": "operating"` the plan is counted in the unit's
+operating time, and its duty puts it on the calendar: a rate times the
+share, each time at the calendar time the unit reaches it, a plan's
+rates through the duty plan's operating time. A task counted in
+operating time is refused with set times or a plan (give its times on
+the calendar).
+
+A unit that wears out while it runs and may also fail on a demand is two
+failure modes: draw them as two components in series, one with the life
+and one with the probability and its demands. A spare that may fail to
+start when a unit of its standby group fails is the group's
+`"switching_probability"` (see [Standby groups](#standby-groups)).
 
 ### Covariates that change over time
 

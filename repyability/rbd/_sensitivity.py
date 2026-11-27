@@ -548,6 +548,37 @@ def _fault_tree_levers(tree) -> List[_Lever]:
     )
 
 
+def _network_levers(net) -> List[_Lever]:
+    """Every lever of a ``net``work, as its ``parameter_sensitivity``
+    reports them: each link's and failing node's model's parameters, by
+    their own names, in the order of ``net.models`` (the links, then the
+    nodes). A moved model goes back into the link or node it belongs to."""
+    args = net._init_args
+    out: List[_Lever] = []
+    for name, model in net.models.items():
+        is_link = name in net.links
+        for parameter, value, moved, bounds, scale in _model_levers(
+            "", model, lambda m: m
+        ):
+
+            def build(v, name=name, moved=moved, is_link=is_link):
+                changed = moved(v)
+                if is_link:
+                    u, w, _ = args["links"][name]
+                    return {
+                        **args,
+                        "links": {**args["links"], name: (u, w, changed)},
+                    }
+                return {**args, "nodes": {**args["nodes"], name: changed}}
+
+            out.append(
+                _Lever(
+                    name, parameter, value, False, build, name, bounds, scale
+                )
+            )
+    return out
+
+
 def _model_levers_of(
     args: dict, field: str, models: Mapping, groups, entry=lambda key, m: m
 ) -> List[_Lever]:
@@ -677,13 +708,17 @@ def _shutdown_levers(args: dict) -> List[_Lever]:
 
 
 def _levers_of(rbd) -> List[_Lever]:
-    """``rbd``'s levers, repairable or not, or a fault tree's."""
+    """``rbd``'s levers, repairable or not, or a fault tree's or a
+    network's."""
     from repyability.fault_tree import FaultTree
+    from repyability.network import Network
 
     from .non_repairable_rbd import NonRepairableRBD
 
     if isinstance(rbd, FaultTree):
         return _fault_tree_levers(rbd)
+    if isinstance(rbd, Network):
+        return _network_levers(rbd)
     if isinstance(rbd, NonRepairableRBD):
         return _nonrepairable_levers(rbd)
     return _levers(rbd)
@@ -1125,6 +1160,7 @@ def _no_lever(rbd, key, name: str, found: dict) -> ValueError:
     if one is close (#232): of the levers of ``key``, or else of the keys,
     which are named by the kind of diagram."""
     from repyability.fault_tree import FaultTree
+    from repyability.network import Network
 
     from .rbd import _close_name
     from .repairable_rbd import RepairableRBD
@@ -1141,6 +1177,8 @@ def _no_lever(rbd, key, name: str, found: dict) -> ValueError:
     hint = "" if close is None else f" Did you mean {close!r}?"
     if isinstance(rbd, FaultTree):
         holders = "event with a model or common-cause group"
+    elif isinstance(rbd, Network):
+        holders = "link or node with a model"
     elif isinstance(rbd, RepairableRBD):
         holders = (
             "node with a model, common-cause group or the repair crews (None)"
@@ -1219,3 +1257,219 @@ def parameter_sensitivity(
         of=of,
         unit_costs=unit_costs,
     )
+
+
+#: What ``tornado`` moves a lever by, by default: a share of its scale.
+TORNADO_RELATIVE = 0.1
+
+
+def _tornado_ranges(rbd, ranges) -> Dict[Tuple[Hashable, str], tuple]:
+    """``ranges`` as ``{(key, name): (low, high)}``, each a lever of
+    ``rbd`` given two numbers in order, a counting lever's whole."""
+    if ranges is None:
+        return {}
+    if not isinstance(ranges, Mapping):
+        raise TypeError(
+            "ranges takes a dict of (low, high) by lever, each by its Lever "
+            "(from levers()) or as (key, name), got "
+            f"{type(ranges).__name__}."
+        )
+    found = {(lever.key, lever.name): lever for lever in _levers_of(rbd)}
+    out = {}
+    for given, span in ranges.items():
+        key, name = _named(given)
+        if (key, name) not in found:
+            raise _no_lever(rbd, key, name, found)
+        if not (
+            isinstance(span, (tuple, list))
+            and len(span) == 2
+            and all(is_number(v) and math.isfinite(v) for v in span)
+            and float(span[0]) <= float(span[1])
+        ):
+            raise ValueError(
+                f"ranges[{(key, name)!r}] must be (low, high), two finite "
+                f"numbers with low <= high, got {span!r}."
+            )
+        if found[(key, name)].discrete and not all(map(is_whole, span)):
+            raise ValueError(
+                f"The lever {name!r} of {key!r} counts, so its range is of "
+                f"whole numbers, got {span!r}."
+            )
+        out[(key, name)] = (float(span[0]), float(span[1]))
+    return out
+
+
+def _tornado_span(lever: _Lever, given, relative: float):
+    """``(low, high)`` of ``lever``: the range given, else for a counting
+    lever one fewer and one more, else ``relative`` of its scale either
+    way (see ``_proportional_scale``); or the reason it has none."""
+    if given is not None:
+        return given
+    if lever.discrete:
+        return lever.value - 1.0, lever.value + 1.0
+    if lever.scale is None:
+        return (
+            "a covariate, whose zero is its unit's (0 degrees C is not "
+            "0 K), so a relative range of it depends on the unit it is "
+            "given in: give its range in ranges"
+        )
+    step = relative * abs(lever.scale)
+    if step == 0.0:
+        return (
+            "its value is 0, so a relative range of it is empty: give its "
+            "range in ranges"
+        )
+    return lever.value - step, lever.value + step
+
+
+def _built(rbd, lever: _Lever, value: float):
+    """``rbd`` built with ``lever`` at ``value`` (raising what its
+    constructor raises), reusing what a repairable diagram has worked out
+    for the components the lever leaves as they are (see ``_rebuilt``)."""
+    changed = type(rbd)(**lever.build(value))
+    from .repairable_rbd import RepairableRBD
+
+    if isinstance(rbd, RepairableRBD):
+        changed.__dict__["_kept"] = rbd._cache.copied(*_REUSED)
+    return changed
+
+
+def _tornado(
+    rbd,
+    evaluate: Callable[[Any], float],
+    quantity: str,
+    ranges,
+    relative,
+):
+    """The tornado data of ``rbd`` (a diagram or a fault tree): for
+    each lever, ``evaluate`` of the diagram rebuilt with the lever at its
+    low and at its high, every other lever at its value; sorted by the
+    swing, the levers with no range listed as skipped."""
+    from .results import TornadoResult, TornadoRow
+
+    if not (is_number(relative) and 0.0 < float(relative) < 1.0):
+        raise ValueError(
+            "relative must be a number in (0, 1), the share of each "
+            f"lever's scale it is moved by either way, got {relative!r}."
+        )
+    given = _tornado_ranges(rbd, ranges)
+    base_value = float(evaluate(rbd))
+    rows, skipped = [], []
+    for lever in _levers_of(rbd):
+        span = _tornado_span(
+            lever, given.get((lever.key, lever.name)), float(relative)
+        )
+        if isinstance(span, str):
+            skipped.append(
+                {"key": lever.key, "name": lever.name, "reason": span}
+            )
+            continue
+        lower, upper = lever.bounds
+        low, high = max(span[0], lower), min(span[1], upper)
+        if low > high:
+            skipped.append(
+                {
+                    "key": lever.key,
+                    "name": lever.name,
+                    "reason": f"the range {span} lies outside its values, "
+                    f"between {lower:g} and {upper:g}",
+                }
+            )
+            continue
+        values: List[float] = []
+        failed = None
+        for end in (low, high):
+            if end == lever.value:
+                values.append(base_value)
+                continue
+            try:
+                values.append(float(evaluate(_built(rbd, lever, end))))
+            except (ValueError, TypeError, NotImplementedError) as error:
+                failed = f"at {end:g}: {error}"
+                break
+        if failed is not None:
+            skipped.append(
+                {"key": lever.key, "name": lever.name, "reason": failed}
+            )
+            continue
+        rows.append(
+            TornadoRow(
+                key=lever.key,
+                name=lever.name,
+                base=lever.value,
+                low=low,
+                high=high,
+                value_low=values[0],
+                value_high=values[1],
+                swing=abs(values[1] - values[0]),
+                cut=(low, high) != (span[0], span[1]),
+            )
+        )
+    # Stable: levers of one swing keep the levers' order.
+    rows.sort(key=lambda row: -row.swing)
+    return TornadoResult(
+        quantity=quantity, base_value=base_value, rows=rows, skipped=skipped
+    )
+
+
+def tornado(
+    rbd,
+    working_nodes: Optional[Collection[Hashable]],
+    broken_nodes: Optional[Collection[Hashable]],
+    *,
+    x,
+    window,
+    state,
+    quantity: str,
+    ranges,
+    relative,
+):
+    """See ``RepairableRBD.tornado``."""
+    from repyability.utils.checks import one_of
+
+    one_of("quantity", quantity, QUANTITIES)
+    if x is not None and window is not None:
+        raise ValueError(
+            "Give the time x or a window's length, not both: x is the "
+            "availability at that time, window over [0, window)."
+        )
+    if x is not None:
+        if np.ndim(x) != 0:
+            raise ValueError(
+                "tornado takes one time x (its rows are sorted by the swing "
+                f"there), got {x!r}: call it once for each time."
+            )
+        if quantity == "cost_rate":
+            raise ValueError(
+                "The cost rate is in the long run, or the mean cost per "
+                "unit time over a window: give window, not x."
+            )
+        if not (is_number(x) and math.isfinite(x) and x >= 0.0):
+            raise ValueError(f"x must be a time, 0 or more, got {x!r}.")
+    if window is not None and not (
+        is_number(window) and math.isfinite(window) and window > 0.0
+    ):
+        raise ValueError(
+            f"window must be a positive, finite length, got {window!r}."
+        )
+    if state is not None and x is None and window is None:
+        raise ValueError(
+            "state is where the components start from, for the values at a "
+            "time (x) or over a window (window): give one of them. The "
+            "long-run values do not depend on it."
+        )
+    working, broken = rbd._held_nodes(working_nodes, broken_nodes)
+    asked = _Asked(
+        None if x is None else float(x),
+        None if window is None else float(window),
+        state,
+        working,
+        broken,
+    )
+
+    def evaluate(diagram) -> float:
+        value = float(_value(diagram, quantity, asked)[0])
+        # _value gives the unavailability, for its precision.
+        return 1.0 - value if quantity == "availability" else value
+
+    return _tornado(rbd, evaluate, quantity, ranges, relative)

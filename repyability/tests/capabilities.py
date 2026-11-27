@@ -20,11 +20,13 @@ import warnings
 from typing import Dict, List, Tuple
 
 from repyability import (
+    EventTree,
     FaultTree,
     Network,
     NonRepairableRBD,
     PhasedMission,
     RepairableRBD,
+    SafetyFunction,
 )
 from repyability.rbd import routes
 
@@ -37,7 +39,13 @@ MODELS = {
     "FaultTree": FaultTree,
     "Network": Network,
     "PhasedMission": PhasedMission,
+    "EventTree": EventTree,
 }
+
+#: The classes that build a model type's diagrams and take their results
+#: from its methods: a row names such a class's method as ``Class.method``,
+#: and it is shown under the model type the class builds.
+BUILDERS = {"SafetyFunction": (SafetyFunction, "RepairableRBD")}
 
 #: Each capability, by section: for each model type, the methods that give
 #: it (the first a model has is shown), or none.
@@ -233,6 +241,50 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
         ],
     ),
     (
+        "Event trees (an initiating event through its barriers)",
+        [
+            (
+                "Each sequence's probability and frequency",
+                ("sequence_probabilities", "sequence_frequencies"),
+            ),
+            ("Each outcome's frequency", ("outcome_frequencies",)),
+            (
+                "Each sequence as one fault tree (its prime implicants)",
+                ("sequence_tree",),
+            ),
+        ],
+    ),
+    (
+        "Safety functions (voted channels, proof tests, diagnostics)",
+        [
+            (
+                "PFDavg, and where it comes from",
+                ("SafetyFunction.pfd_avg", "SafetyFunction.pfd_breakdown"),
+            ),
+            (
+                "PFH (frequency of a dangerous failure)",
+                ("SafetyFunction.pfh",),
+            ),
+            ("Spurious-trip rate", ("SafetyFunction.spurious_trip_rate",)),
+            (
+                "SIL band, safe failure fraction",
+                ("SafetyFunction.sil", "SafetyFunction.safe_failure_fraction"),
+            ),
+            (
+                "Every result in one call, votes in series",
+                ("SafetyFunction.results", "SafetyFunction.series"),
+            ),
+            (
+                "IEC 61508-6's simplified formulas, to compare",
+                ("SafetyFunction.simplified_formulas",),
+            ),
+            (
+                "How each result is computed",
+                ("SafetyFunction.analysis_routes",),
+            ),
+        ],
+    ),
+    (
         "Importance measures",
         [
             ("Birnbaum", ("birnbaum_importance",)),
@@ -267,6 +319,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
             (
                 "Parameter sensitivity, levers",
                 ("parameter_sensitivity", "levers", "with_levers"),
+            ),
+            (
+                "Tornado data (each lever at its low and high)",
+                ("tornado",),
             ),
         ],
     ),
@@ -370,7 +426,7 @@ FAMILIES: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {
                 "barlow_proschan_importance",
             ),
         ),
-        ("Sensitivity", ("parameter_sensitivity",)),
+        ("Sensitivity", ("parameter_sensitivity", "tornado")),
         ("Uncertainty", ("sf_uncertainty", "mean_uncertainty")),
         ("Allocation", ("allocate_redundancy", "simple_allocation")),
         ("Capacity", ("capacity_distribution",)),
@@ -407,7 +463,7 @@ FAMILIES: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {
                 "pfd_breakdown",
             ),
         ),
-        ("Sensitivity", ("parameter_sensitivity",)),
+        ("Sensitivity", ("parameter_sensitivity", "tornado")),
         (
             "Uncertainty",
             (
@@ -463,6 +519,8 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("A fitted G1, ARA or ARI process", "fitted ARA process"),
         ("A probability per demand", "fixed probability"),
         ("A probability per demand, with a demand rate", "demand"),
+        ("A probability per demand, at set times", "demand times"),
+        ("A probability per demand, on a demand plan", "demand plan"),
         ("A mixture life", "mixture life"),
         ("A fitted degradation process life", "degradation process life"),
         ("Operated part of the time (duty)", "operated part of the time"),
@@ -536,11 +594,22 @@ def _model_table() -> str:
         lines.append(f"| **{section}** |" + " |" * len(names))
         for label, methods in rows:
             cells = []
-            for cls in MODELS.values():
-                have = [m for m in methods if callable(getattr(cls, m, None))]
+            for name, cls in MODELS.items():
+                have = [m for m in methods if _has(name, cls, m)]
                 cells.append(f"`{have[0]}`" if have else "—")
             lines.append(f"| {label} | " + " | ".join(cells) + " |")
     return "\n".join(lines)
+
+
+def _has(name: str, cls, method: str) -> bool:
+    """Whether the model type ``name`` has ``method``: its own, or as
+    ``Class.method`` that of a class that builds its diagrams (see
+    ``BUILDERS``)."""
+    builder, _, own = method.rpartition(".")
+    if builder:
+        built, model = BUILDERS[builder]
+        return model == name and callable(getattr(built, own, None))
+    return callable(getattr(cls, method, None))
 
 
 def _gap_kind(call, rbd) -> bool:

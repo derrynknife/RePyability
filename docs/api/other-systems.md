@@ -1,4 +1,4 @@
-# Fault trees, phased missions and networks
+# Fault trees, phased missions, networks and safety functions
 
 ::: repyability.FaultTree
 
@@ -9,3 +9,11 @@
 ::: repyability.BlockSetting
 
 ::: repyability.Network
+
+::: repyability.EventTree
+
+::: repyability.SafetyFunction
+
+::: repyability.SafetyChannel
+
+::: repyability.sil_band

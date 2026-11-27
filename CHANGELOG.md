@@ -43,6 +43,124 @@ release between minors that only adds (0.19.1).
   chain that can never fail now gives exactly 1. No seeded result
   changes.
 
+- Demand plans for a probability of failing per demand in a
+  `RepairableRBD` (a `"reliability"` that is a
+  `surpyval.FixedEventProbability`), beside `"demand_rate"`:
+  `"demand_times"`, the set times the unit is called on (a recurrence
+  rule's through `CalendarContext.rule_times`), a life that ends only at
+  one of them and is not restarted by a repair; its values over a window
+  (`point_availability`, `mission_availability`, `expected_failures`,
+  `expected_cost`) are exact, a sum over the demands, its long run is
+  refused, and the Python engine simulates it, drawing the demands a unit
+  survives from its own failure stream. `"demand_plan"`, the demands per
+  unit of time from each of its times (`{"times", "rates"}` or a
+  `schedule.DutySchedule`): an exponential life in demands on the plan's
+  clock, as a duty plan that changes over time, worked out over a window
+  where its repairs take no time and simulated otherwise. A duty with a
+  demand plan or rate is refused unless `"demand_basis": "operating"`
+  says it is counted in operating time, which the duty then puts on the
+  calendar (a demand rate with a duty was refused before). `UnitPlan`
+  takes `demand_times`, `demand_plan` and `demand_basis`; they are saved,
+  and the probability is the lever. Seeded results of every other node
+  are unchanged.
+- `df`, `hf`, `Hf`, `parameter_sensitivity`, `levers` and `with_levers` on
+  `Network`, as `NonRepairableRBD` and `FaultTree` have them. `Hf` is exact
+  from the reliability and unreliability; `df` and `hf` differ the exact
+  reliability with a step relative to the time (and, at 0, to the
+  elements' typical life), so no unit of time matters; `parameter_sensitivity`
+  is each element's Birnbaum importance times how far its model's
+  reliability moves with a parameter, and `levers` and `with_levers` list
+  and move those parameters, each with the range its model accepts.
+  `analysis_routes()` and the capability matrix show them.
+- `EventTree(initiator, headings, sequences=None)`: an event tree. The
+  initiator is a frequency, or a `FaultTree` of repaired events whose
+  `system_failure_frequency()` it is; each heading a `FaultTree` (its top
+  event, the barrier failing) or a probability (a protection layer, for
+  LOPA); the paths `{path: outcome}` give each heading's success, failure
+  or None (not asked), and must partition the initiator (by default every
+  combination is its own outcome). `sequence_probabilities(t)`,
+  `sequence_frequencies(t)` and `outcome_frequencies(t)` are exact where
+  headings share basic events: each sequence is one fault tree, the AND
+  of each failed heading's top and the NOT of each succeeded one's, over
+  the headings' gates and their events (one event to a name; two models
+  for one name are refused), evaluated by the NOT-gate decision diagram
+  (`sequence_tree(path)` returns it). `approximation="rare_event"` leaves
+  out the successes, as other tools quantify a sequence, and
+  `"independent"` takes the product of the branches.
+  `birnbaum_importance(outcome, t)` and `fussell_vesely(outcome, t)` give
+  each event's importance to an outcome's frequency; `analysis_routes()`,
+  `to_dict`/`from_dict` and JSON. New results `SequenceProbabilities`,
+  `SequenceFrequencies` and `OutcomeFrequencies`; a guide page, "Event
+  trees".
+- `bx_life_uncertainty` and `time_to_reliability_uncertainty` on
+  `FaultTree` and `Network`: a B-life, or the time to a reliability, with
+  its band over the uncertainty of the events' or links' models, as
+  `NonRepairableRBD` has them. The draws are `sf_uncertainty`'s (a
+  tree's are its diagram's), each draw's time found by inverting its exact
+  reliability, so a tree's result is its diagram's and a series network's
+  the series diagram's, bit for bit; several levels at once come from one
+  set of draws. They refuse what `bx_life` refuses (a tree of
+  probabilities, dynamic or NOT gates, repaired events; a network of
+  fixed probabilities). `analysis_routes()` and the capability matrix
+  show them.
+
+
+
+- `compare` on `FaultTree`, `Network` and `PhasedMission`, as on the
+  diagrams: a `ConfidenceInterval` of the difference, exact where both
+  values are worked out and otherwise from paired simulations with common
+  random numbers (an element of the same name in both drawing the same
+  uniforms). A tree compares the mean times to its top event (simulated
+  for dynamic gates, from the tree's own draws), or given `t` the top
+  event probabilities; a static tree's simulated comparison is its
+  diagram's on the same seed. A network compares its mean lifetimes, a
+  mission its reliabilities (standby switches paired by phase). `random`
+  and `reliability_interval` draw as before. Comparing different kinds
+  is refused, naming the conversion; `NonRepairableRBD.compare` now
+  refuses another kind the same way (its draws are unchanged).
+- `SafetyFunction(channels, k, beta=0, beta_detected=0, beta_safe=0,
+  detected_trips=False)`: a safety function of channels voted
+  `k`-out-of-N, each a `SafetyChannel` (its dangerous undetected,
+  dangerous detected and safe failure rates, its repair, its proof
+  test's interval, coverage and offset; `SafetyChannel.from_rate` splits
+  a total rate by a dangerous fraction and a diagnostic coverage).
+  `results(mode)` gives, in one `SafetyFunctionResult`, the PFDavg
+  (`pfd_avg()`), the average frequency of a dangerous failure
+  (`pfh()`; `pfh(undetected_only=True)` for the part an undetected
+  failure completes, which is what IEC 61508-6's formulas count), the
+  spurious-trip rate (`spurious_trip_rate()`), the SIL band of the
+  demand mode (`sil(mode)`, a `SILBand` with the band's edges, the
+  margin to each and the risk reduction factor; `sil_band(value, mode)`
+  for any value), each channel's safe failure fraction, and the
+  PFDavg's shares (`pfd_breakdown()`). The function draws two
+  `RepairableRBD`s, `dangerous` and `safe` (the dual vote: `k` channels
+  failed safe together trip), and takes each value from their
+  `mean_unavailability` and `system_failure_frequency`, so the values
+  are exact or numerical, with no rare-event formula.
+  `SafetyFunction.series` puts votes in series (sensors, logic, final
+  elements) into one function. `simplified_formulas()` evaluates IEC
+  61508-6 Annex B's formulas for 1oo1, 1oo2, 2oo2, 2oo3 and 1oo3 votes,
+  to set beside the exact values: the guide's new
+  [safety functions](docs/guide/safety-functions.md) page tabulates
+  both and says where they part (a few percent at `lambda_DU T1` of
+  0.02, 24% for a 2oo3 vote at 0.18, and a factor of two and more in the
+  PFH
+  where diagnostics detect most failures, as the annex leaves out the
+  failures a detected failure completes). `analysis_routes()` gives the
+  two diagrams' routes. No architectural-constraint verdict is made.
+- Tornado data: `tornado()` on `RepairableRBD`, `NonRepairableRBD` and
+  `FaultTree` gives the system's availability or cost rate (the
+  reliability at `x`, the top event probability at `t`) with each lever
+  of `levers()` at its low and at its high, every other at its value,
+  each end the diagram rebuilt as `with_levers` builds it and worked out
+  exactly or numerically. A `TornadoResult` holds the base value, a
+  `TornadoRow` per lever (its low and high, the values there and the
+  swing), sorted by the swing, and the levers skipped with the reason. By
+  default a lever moves a tenth of its scale either way (`relative=`; a
+  log-scale parameter's of 1, a counting lever one fewer and one more),
+  cut to its range of values; `ranges=` gives a lever its own range,
+  which a regression node's covariate needs. A quantity only simulation
+  gives is refused.
 - `RepairableRBD.first_failure_bounds(t, state=None)` brackets the
   reliability of the first system failure wherever `expected_events` is
   worked out, including where `first_failure_sf` refuses (a redundant

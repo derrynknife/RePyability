@@ -17,7 +17,15 @@ block on standby or guaranteed, every life drawn as before, so plays out
 as the plain simulation did, to the last bit.
 """
 
-from typing import Dict, Hashable, List, NamedTuple, Optional, Tuple
+from typing import (
+    Callable,
+    Dict,
+    Hashable,
+    List,
+    NamedTuple,
+    Optional,
+    Tuple,
+)
 
 import numpy as np
 
@@ -83,21 +91,66 @@ def draw(mission, size: int, antithetic: bool) -> Dict[Hashable, np.ndarray]:
     return lives
 
 
+def replayable(mission) -> None:
+    """Raise unless every block's life can be drawn from uniforms, as
+    common random numbers (``PhasedMission.compare``) need."""
+    for node, life in mission._lives.items():
+        if lifetime_sampler(life.at(0)) is None:
+            raise NotImplementedError(
+                "Common random numbers need every block's draws to be "
+                "replayable from uniforms (surpyval parametric "
+                "distributions and the composite nodes built from them); "
+                f"those of block {node!r} are not."
+            )
+
+
+def keyed(mission, size: int, key: int) -> Runs:
+    """``size`` missions in which each block draws its life's uniforms
+    from a stream of its own, keyed by ``key`` and its name, and each
+    switch on standby from one keyed by its phase's number and block
+    (common random numbers, see ``_paired``)."""
+    from repyability.rbd import _paired
+
+    replayable(mission)
+    lives: Dict[Hashable, np.ndarray] = {}
+    for node, life in mission._lives.items():
+        sampler = lifetime_sampler(life.at(0))
+        assert sampler is not None
+        u = np.column_stack(
+            [_paired.element(key, node, j, size) for j in range(sampler.width)]
+        )
+        lives[node] = np.asarray(sampler.draw(u), dtype=float)
+    switches = draw_switches(
+        mission,
+        size,
+        uniforms=lambda j, node: _paired.uniforms(
+            key, f"switch {j} {node!r}", 0, size
+        ),
+    )
+    return play(mission, lives, size, switches=switches)
+
+
 def draw_switches(
-    mission, size: int, antithetic: bool = False
+    mission,
+    size: int,
+    antithetic: bool = False,
+    uniforms: Optional[Callable[[int, Hashable], np.ndarray]] = None,
 ) -> Dict[Tuple[int, Hashable], np.ndarray]:
     """For each phase and block on standby in it whose switch can fail,
     by ``(phase number, block)``: whether it starts if called on in each
     of ``size`` missions, from numpy's global RNG as it stands (drawn
     after the lives, in phase order, then the phase's order of calling
-    on its blocks; none where every switch is perfect)."""
+    on its blocks; none where every switch is perfect), or from
+    ``uniforms(phase number, block)`` where given."""
     out: Dict[Tuple[int, Hashable], np.ndarray] = {}
     for j, setting in enumerate(mission._settings):
         for node in setting.standby_order(mission.components):
             chance = behaviour(setting.setting(node)).switching
             if chance == 1.0:
                 continue
-            if antithetic:
+            if uniforms is not None:
+                u = uniforms(j, node)
+            elif antithetic:
                 half = np.random.random_sample(size // 2)
                 u = np.empty(size)
                 u[0::2], u[1::2] = half, 1.0 - half

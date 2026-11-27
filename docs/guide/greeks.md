@@ -160,6 +160,39 @@ faster.mean_availability()             # -> 0.99482
 The station gains 0.00019, a little less than the delta times the step,
 `0.001055 × 0.2 = 0.00021`: the gain from faster repairs tapers off.
 
+### Tornado data: what a range of each lever does
+
+The deltas are slopes, each in its lever's own unit. `tornado()` puts the
+levers on one footing the way a tornado chart does: the system's value
+with each lever at its low and at its high, every other lever at its
+value, the levers sorted by how far they swing it. By default each moves
+a tenth of its scale either way (of its value; of 1 for a parameter on a
+log scale, such as a LogNormal's `mu`; one fewer and one more standby
+unit or crew), cut to its range of values; `ranges=` gives a lever its
+own range, which a regression node's covariate needs (its zero is its
+unit's, so a tenth of it means nothing), and `relative=` another share.
+Each end is the diagram rebuilt as `with_levers` builds it, worked out
+exactly or numerically as by default; a quantity that only a simulation
+gives is refused, as the difference of two simulations is mostly noise.
+
+```python
+spread = station.tornado()
+spread.base_value                    # -> 0.994626
+top = spread.rows[0]
+top.key, top.name                    # ('valve', 'preventive.duration.failure_rate')
+top.value_low, top.value_high        # (0.99435, 0.994853)
+round(spread.rows[1].swing, 6)       # -> 0.000482   the valve's interval, 72 to 88 days
+```
+
+A tenth either way on how fast the valve's maintenance is done swings the
+station the most, then its interval, then the valve's own life and repair;
+the pumps' lives' shapes hardly move it. `x=` and `window=` take a time or
+a window, `quantity="cost_rate"` the cost rate. The rows carry each
+lever's low and high, the values there and the swing, and `to_dict()`
+gives them as plain data for a chart. `NonRepairableRBD.tornado(x)` does
+the same for the reliability at `x`, and `FaultTree.tornado(t)` for the
+top event probability.
+
 ### DIM: shares of a change
 
 The differential importance is each component's (or lever's) share of the
@@ -359,6 +392,9 @@ ownership (`discount_rate=`, see [Costs](costs.md#discounting)).
 | Theta | `reliability_rate(x)` | `availability_rate(x)`, from new or `state` | |
 | `barlow_proschan_importance` | whole life, or by `x` | long run, `window`, `state` | whole life, or by `t` |
 | `uncertainty_importance` | at `x`; `of=` the MTTF, a B-life, a time to a reliability | long run; `of=` the availability at `x` or over missions `x`, from new or `state`, or the cost rate | |
+
+A `Network` has `parameter_sensitivity(x)`, `levers` and `with_levers` over
+the parameters of its links' and nodes' models, at `x`, as a diagram has them.
 
 With limited repair crews or common-cause groups, the measures follow the
 crews' and the groups' Markov chains: theta and the Barlow–Proschan shares

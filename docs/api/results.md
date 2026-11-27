@@ -40,6 +40,18 @@
 
 ::: repyability.PFDBreakdown
 
+::: repyability.SequenceProbabilities
+
+::: repyability.SequenceFrequencies
+
+::: repyability.OutcomeFrequencies
+
+::: repyability.SafetyFunctionResult
+
+::: repyability.SILBand
+
+::: repyability.SimplifiedSafetyFormulas
+
 ::: repyability.ExpectedCost
 
 ::: repyability.ExpectedNPV
@@ -99,6 +111,10 @@
 ::: repyability.PlanRobustness
 
 ::: repyability.Lever
+
+::: repyability.TornadoResult
+
+::: repyability.TornadoRow
 
 ::: repyability.StressStrengthResult
 

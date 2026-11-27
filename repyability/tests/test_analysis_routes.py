@@ -106,6 +106,7 @@ NONREPAIRABLE_CALLS = {
             "reliability_rate",
             "barlow_proschan_importance",
             "parameter_sensitivity",
+            "tornado",
             "capacity_distribution",
         )
     },
@@ -252,6 +253,7 @@ REPAIRABLE_CALLS = {
             "barlow_proschan_importance",
             "pfd_breakdown",
             "parameter_sensitivity",
+            "tornado",
             "expected_cost_rate",
             "capacity_distribution",
             "optimal_replacement_intervals",
@@ -477,6 +479,10 @@ NETWORK_CALLS = {
         for name in (
             "sf",
             "ff",
+            "Hf",
+            "df",
+            "hf",
+            "parameter_sensitivity",
             "birnbaum_importance",
             "improvement_potential",
             "risk_achievement_worth",
@@ -498,11 +504,20 @@ NETWORK_CALLS = {
     "time_to_reliability": lambda net: net.time_to_reliability(0.5),
     "bx_life": lambda net: net.bx_life(10),
     "random": lambda net: net.random(200, seed=1),
+    "compare": lambda net: net.compare(net, mc_samples=2000, seed=1),
     "sf_uncertainty": lambda net: net.sf_uncertainty(
         X, uncertain_element(net), n_draws=20, seed=1
     ),
     "mean_uncertainty": lambda net: net.mean_uncertainty(
         uncertain_element(net), n_draws=5, seed=1
+    ),
+    "time_to_reliability_uncertainty": (
+        lambda net: net.time_to_reliability_uncertainty(
+            0.5, uncertain_element(net), n_draws=2, seed=1
+        )
+    ),
+    "bx_life_uncertainty": lambda net: net.bx_life_uncertainty(
+        10, uncertain_element(net), n_draws=2, seed=1
     ),
 }
 
@@ -558,8 +573,10 @@ def test_the_network_report_covers_every_public_analysis():
         "analysis_routes",
         "from_dict",
         "from_json",
+        "levers",
         "to_dict",
         "to_json",
+        "with_levers",
     }
 
 
@@ -640,6 +657,9 @@ PHASED_CALLS = {
         lambda mission: mission.failure_drivers(mc_samples=200, seed=1)
     ),
     "summary": lambda mission: mission.summary(mc_samples=200, seed=1),
+    "compare": lambda mission: mission.compare(
+        mission, mc_samples=2000, seed=1
+    ),
 }
 
 
@@ -1313,6 +1333,12 @@ def test_the_readme_says_what_is_simulated():
             (repairable["demand"], "availability", "simulated"),
             (repairable["fixed probability"], "mean_availability", "refused"),
             (repairable["fixed probability"], "availability", "simulated"),
+            (repairable["demand times"], "point_availability", "numerical"),
+            (repairable["demand times"], "mission_availability", "numerical"),
+            (repairable["demand times"], "mean_availability", "refused"),
+            (repairable["demand times"], "availability", "simulated"),
+            (repairable["demand plan"], "point_availability", "refused"),
+            (repairable["demand plan"], "availability", "simulated"),
         ],
         "Spares with repair crews, standby groups, opportunistic "
         "maintenance, imperfect repair or partial restoration": [
@@ -1409,6 +1435,7 @@ FAULT_TREE_CALLS = {
             "joint_importance",
             "barlow_proschan_importance",
             "parameter_sensitivity",
+            "tornado",
             "conditional_probabilities",
             "point_unavailability",
             "mean_unavailability",
@@ -1421,6 +1448,7 @@ FAULT_TREE_CALLS = {
     "bx_life": lambda tree: tree.bx_life(10),
     "mean": lambda tree: tree.mean(),
     "random": lambda tree: tree.random(200, seed=1),
+    "compare": lambda tree: tree.compare(tree, mc_samples=2000, seed=1),
     "structural_importance": lambda tree: tree.structural_importance(),
     "importances": lambda tree: tree.importances(X),
     "sf_uncertainty": lambda tree: tree.sf_uncertainty(
@@ -1428,6 +1456,14 @@ FAULT_TREE_CALLS = {
     ),
     "mean_uncertainty": lambda tree: tree.mean_uncertainty(
         uncertain_event(tree), n_draws=2, seed=1
+    ),
+    "time_to_reliability_uncertainty": (
+        lambda tree: tree.time_to_reliability_uncertainty(
+            0.5, uncertain_event(tree), n_draws=2, seed=1
+        )
+    ),
+    "bx_life_uncertainty": lambda tree: tree.bx_life_uncertainty(
+        10, uncertain_event(tree), n_draws=2, seed=1
     ),
 }
 
