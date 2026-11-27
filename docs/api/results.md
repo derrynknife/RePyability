@@ -40,6 +40,12 @@
 
 ::: repyability.PFDBreakdown
 
+::: repyability.SafetyFunctionResult
+
+::: repyability.SILBand
+
+::: repyability.SimplifiedSafetyFormulas
+
 ::: repyability.ExpectedCost
 
 ::: repyability.ExpectedNPV

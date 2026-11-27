@@ -103,6 +103,7 @@ nav:
       - "Sensitivities: the Greeks": guide/greeks.md
       - Condition-based evaluation: guide/condition-based.md
       - Redundancy models: guide/redundancy-models.md
+      - Safety functions (PFDavg, PFH, SIL): guide/safety-functions.md
       - Common-cause failures: guide/common-cause.md
       - Common causes with wear-out lives and ages: guide/common-cause-ages.md
       - Repairable systems: guide/repairable.md

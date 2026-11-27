@@ -37,3 +37,23 @@ def test_every_public_method_has_a_row_or_is_listed_as_none():
             and method not in capabilities.NOT_ANALYSES
         )
         assert not missing, (name, missing)
+
+
+def test_every_builder_s_public_method_has_a_row():
+    # A class that builds a model type's diagrams (a SafetyFunction, a
+    # RepairableRBD's) has its methods in rows too, as ``Class.method``.
+    named = {
+        method
+        for _, rows in capabilities.CAPABILITIES
+        for _, methods in rows
+        for method in methods
+    }
+    for name, (cls, _) in capabilities.BUILDERS.items():
+        missing = sorted(
+            method
+            for method in dir(cls)
+            if not method.startswith("_")
+            and callable(getattr(cls, method))
+            and f"{name}.{method}" not in named
+        )
+        assert not missing, (name, missing)

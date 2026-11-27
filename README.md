@@ -46,6 +46,11 @@ taking already-fitted lifetime models (from
   load sharing; junctions (a vote point that never fails); beta-factor and
   MGL common-cause groups, splitting a probability or a failure rate, in
   block diagrams, repairable systems and fault trees.
+- **Safety functions**: voted channels with proof tests, diagnostics,
+  repair and common cause (`SafetyFunction`): the PFDavg, the PFH, the
+  spurious-trip rate and the SIL band from one call, exact, with IEC
+  61508-6 Annex B's simplified formulas beside them
+  ([the guide](docs/guide/safety-functions.md)).
 - **Repairable systems**: exact long-run availability, failure frequency and
   MUT/MDT/MTBF; exact availability over time and over a mission, and the
   unavailability to its own precision (a PFD of 1e-17); simulated
@@ -218,6 +223,14 @@ Which analyses each model type has (the method; — where it has none):
 | Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | — |
 | Export to Open-PSA (MEF) | — | — | `to_open_psa` | — | — |
 | Import from Open-PSA (MEF) | — | — | `from_open_psa` | — | — |
+| **Safety functions (voted channels, proof tests, diagnostics)** | | | | | |
+| PFDavg, and where it comes from | — | `SafetyFunction.pfd_avg` | — | — | — |
+| PFH (frequency of a dangerous failure) | — | `SafetyFunction.pfh` | — | — | — |
+| Spurious-trip rate | — | `SafetyFunction.spurious_trip_rate` | — | — | — |
+| SIL band, safe failure fraction | — | `SafetyFunction.sil` | — | — | — |
+| Every result in one call, votes in series | — | `SafetyFunction.results` | — | — | — |
+| IEC 61508-6's simplified formulas, to compare | — | `SafetyFunction.simplified_formulas` | — | — | — |
+| How each result is computed | — | `SafetyFunction.analysis_routes` | — | — | — |
 | **Importance measures** | | | | | |
 | Birnbaum | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` | `birnbaum_importance` |
 | Structural | `structural_importance` | `structural_importance` | `structural_importance` | `structural_importance` | — |
