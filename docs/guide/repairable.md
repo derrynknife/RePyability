@@ -1095,8 +1095,19 @@ the pair is up 0.9910.)
   400 runs of 1,000,000 h 0.991722 (0.0 standard errors). A pair under
   repair nearly all the time (lives a small fraction of the repairs) may
   warn that the grid did not settle, or be refused.
-  Warm spares, a switch that can fail, more units and values over time are
-  simulated, for now.
+  Over time, from new (both units ready), the pair with one repair at a
+  time is followed too: it first starts afresh when the first unit fails,
+  and then after each cycle, so its unavailability and its expected
+  failures and repairs solve a renewal equation, on a grid as a single
+  unit's are (to about 1e-9 at the grid's points, the curve linear
+  between them). `point_availability`, `mission_availability`,
+  `expected_failures`, the expected costs and the other values over a
+  window take it, and `availability()` reports its exact mean. The pair
+  above is up 0.99225 of its first 2,500 h and has failed 0.1279 times by
+  then; 400,000 runs give 0.99231 (+1.3 standard errors) and 0.1275
+  (-0.7).
+  Warm spares, a switch that can fail, more units, and the values over
+  time with both units repaired at once are simulated, for now.
 - **Simulation.** `availability`, `cost` and `compare` simulate groups
   whatever their units' models, in Python.
 
