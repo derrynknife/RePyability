@@ -36,12 +36,13 @@ first (for two terminals, the path that lasts longest): its lifetime is
 the network's.
 
 A directed network (``directed=True``: each link works from its first
-node to its second) takes two terminals and is decided from its simple
-paths from the source to the target, as ``METHOD = "paths"`` decides an
-undirected one; ``to_rbd`` gives the reliability block diagram of one
-with no cycle. Whether more than two terminals are joined along one-way
-links depends on the order they are reached in, which the frontier's
-parts do not say, so that is refused.
+node to its second) works while its source reaches the target, or every
+one of several terminals, along working links. Its decision diagram
+(``_directed_plan``) follows, in place of the frontier's parts, which
+frontier nodes the source has reached and which of the others each of
+the others leads to, so that a cycle needs nothing more; ``to_rbd``
+gives the reliability block diagram of one with no cycle and two
+terminals.
 
 The importance measures beyond Birnbaum's (#315) are the diagram's
 formulas (``rbd/_measures.py``) over the network's values with an element
@@ -269,10 +270,10 @@ _NONE_FAIL, _NONE_WORK = -1, -2
 
 class _TooLarge(NotImplementedError):
     """A network too large to work out exactly: ``what`` is too large,
-    the ``limit`` (a name of this module) it passes, and the ``advice``
-    for a network of lifetimes."""
+    the ``limit`` (a name of this module) it passes, None for one that
+    cannot be raised, and the ``advice`` for a network of lifetimes."""
 
-    def __init__(self, what: str, limit: str, advice: str):
+    def __init__(self, what: str, limit: Optional[str], advice: str):
         super().__init__(f"{what} {advice}")
         self.what = what
         self.limit = limit
@@ -289,8 +290,10 @@ class Network:
     working links join every one of them to the others (K-terminal
     reliability; ``terminals="all"`` for every node, all-terminal
     reliability). A link works both ways, unless the network is
-    ``directed``. Nodes work for ever unless given a model in ``nodes``;
-    the terminals can be given one too, and a failed terminal parts them.
+    ``directed``: it then works while paths along its links lead from
+    the source to every other terminal. Nodes work for ever unless given
+    a model in ``nodes``; the terminals can be given one too, and a
+    failed terminal parts them.
     Every element fails independently of the others.
 
     The exact values come from a binary decision diagram built from the
@@ -323,7 +326,9 @@ class Network:
         time) and lives that are not repaired (down from their failure
         on, so that the network has no long run).
     source : Hashable, optional
-        One terminal: a node of the network.
+        One terminal: a node of the network. In a directed network, the
+        node the others are reached from, which may be given with
+        ``terminals``.
     target : Hashable, optional
         The other terminal, another node. Give both, or ``terminals``.
     nodes : dict, optional
@@ -334,13 +339,17 @@ class Network:
         The nodes that must stay connected to each other, two or more, in
         place of ``source`` and ``target``; ``"all"`` for every node of
         the network. Two terminals are the same network as ``source``
-        and ``target``.
+        and ``target``. In a directed network they are the nodes to
+        reach from ``source`` (from the first of a list, if no source is
+        given; ``"all"`` needs the source).
     directed : bool, optional
         Whether each link works one way only, from its first node to its
         second, by default False. A directed network works while a path
-        along its links leads from ``source`` to ``target``; it takes two
-        terminals. [`to_rbd`][repyability.Network.to_rbd] gives its
-        reliability block diagram.
+        along its links leads from ``source`` to ``target``, or, given
+        ``terminals``, to every one of them (the paths may share links;
+        it does not ask for a way back to the source).
+        [`to_rbd`][repyability.Network.to_rbd] gives the reliability
+        block diagram of one with two terminals.
     capacity : dict, optional
         The most each link carries while it works, by link name, by
         default None: a positive number (``inf`` for no limit). A link
@@ -361,7 +370,8 @@ class Network:
     terminals : tuple
         The terminals.
     source, target : Hashable
-        The two terminals (None for a network of more than two).
+        The two terminals (None for a network of more than two, but
+        for a directed one's source).
     directed : bool
         Whether the links work one way only.
     capacity : dict
@@ -377,12 +387,13 @@ class Network:
         different nodes, a model has no ``sf`` or ``ff``, a terminal or a
         node in ``nodes`` is in no link, the terminals are the same node
         or fewer than two, both ``terminals`` and a source or target are
-        given, a node has the name of a link, a repaired element's
+        given (but a directed network's source), a directed network's
+        terminals are ``"all"`` or a set with no source, a node has the
+        name of a link, a repaired element's
         spec has a key other than its life, repair and tests, or a
         capacity is not a positive number or is not a link's.
     NotImplementedError
-        If a directed network is given more than two terminals, or
-        capacities are given with more than two terminals.
+        If capacities are given with more than two terminals.
 
     Examples
     --------
@@ -466,19 +477,13 @@ class Network:
             out.setdefault(u, []).append((name, v))
             out.setdefault(v, [])
         self.terminals, self._all_terminals = self._terminals(
-            source, target, terminals, adjacent
+            source, target, terminals, adjacent, self.directed
         )
-        if self.directed and len(self.terminals) > 2:
-            raise NotImplementedError(
-                "A directed network takes two terminals, a source and a "
-                f"target: {len(self.terminals)} were given. Whether more "
-                "than two are joined along one-way links depends on the "
-                "order they are reached in, which the network's decision "
-                "diagram does not follow. Give source= and target=, or "
-                "leave directed=False if the links work both ways."
-            )
         if len(self.terminals) == 2:
             source, target = self.terminals
+        elif self.directed:
+            # The node the others are reached from.
+            source, target = self.terminals[0], None
         else:
             source = target = None
         self.nodes: Dict[Hashable, Any] = dict(nodes or {})
@@ -548,9 +553,38 @@ class Network:
         self._refused: Optional[str] = None
 
     @staticmethod
-    def _terminals(source, target, terminals, adjacent) -> Tuple[tuple, bool]:
+    def _terminals(
+        source, target, terminals, adjacent, directed: bool = False
+    ) -> Tuple[tuple, bool]:
         """The terminals, checked, and whether they are every node
-        (``terminals="all"``)."""
+        (``terminals="all"``). A directed network's first terminal is
+        the node the others are reached from: its ``source``, or the
+        first of a list."""
+        if directed and terminals is not None and target is None:
+            every = isinstance(terminals, str) and terminals == "all"
+            ordered = isinstance(terminals, (list, tuple))
+            if source is None and (
+                every or isinstance(terminals, (set, frozenset))
+            ):
+                raise ValueError(
+                    "A directed network works while its terminals are all "
+                    "reached from one of them: say which with source= "
+                    "(or list the terminals, the first being that one)."
+                )
+            if source is not None and source not in adjacent:
+                raise ValueError(
+                    f"Terminal {source!r} is in no link of the network."
+                )
+            if source is not None and ordered:
+                if len(set(terminals)) != len(terminals):
+                    raise ValueError(
+                        f"terminals names a node twice: {terminals!r}."
+                    )
+                terminals = [source] + [n for n in terminals if n != source]
+            named, _ = Network._terminals(None, None, terminals, adjacent)
+            if source is not None:
+                named = (source,) + tuple(n for n in named if n != source)
+            return named, every
         if terminals is None:
             if source is None or target is None:
                 raise ValueError(
@@ -730,16 +764,9 @@ class Network:
                         f"The network has more than {MAX_PATHS:,} paths "
                         "between its terminals, too many to list.",
                         "MAX_PATHS",
-                        (
-                            "A directed network's exact values come from "
-                            "its paths: simulate it (method='simulate'), "
-                            "or, if it has no cycle, work it out as a "
-                            "diagram: to_rbd()."
-                            if self.directed
-                            else "Its exact values come from its decision "
-                            "diagram (network.METHOD = 'bdd', the "
-                            "default), or simulate it: method='simulate'."
-                        ),
+                        "Its exact values come from its decision "
+                        "diagram (network.METHOD = 'bdd', the "
+                        "default), or simulate it: method='simulate'.",
                     )
                 continue
             stack.append((other, step, visited | {other}, 0))
@@ -860,11 +887,51 @@ class Network:
         """
         return sorted(self.cut_sets(), key=_set_order)
 
+    def _directed_links(self) -> Tuple[dict, list]:
+        """The links of a directed network that can matter (each from a
+        node the source reaches along the links to one that leads to a
+        terminal, none into the source, nor out of the target of two
+        terminals), and the order they are decided in: by the
+        breadth-first order of their later end, from the source along
+        the links, so that the links into a node tend to come before
+        those out of it. No link if some terminal cannot be reached."""
+
+        def reached(starts, forward: bool) -> Set[Hashable]:
+            beside: Dict[Hashable, List[Hashable]] = {}
+            for u, v in self.links.values():
+                a, b = (u, v) if forward else (v, u)
+                beside.setdefault(a, []).append(b)
+            seen, stack = set(starts), list(starts)
+            while stack:
+                for other in beside.get(stack.pop(), ()):
+                    if other not in seen:
+                        seen.add(other)
+                        stack.append(other)
+            return seen
+
+        source, others = self.terminals[0], self.terminals[1:]
+        after, before = reached([source], True), reached(others, False)
+        if not after.issuperset(others):
+            return {}, []
+        ends = {source} if len(others) > 1 else {source, others[0]}
+        links = {
+            name: (u, v)
+            for name, (u, v) in self.links.items()
+            if u in after
+            and v in before
+            and v != source
+            and (u == source or u not in ends)
+        }
+        ahead: Dict[Hashable, List[Tuple[Hashable, Hashable]]] = {}
+        for name, (u, v) in links.items():
+            ahead.setdefault(u, []).append((name, v))
+        return links, _order_from(source, links, ahead)
+
     def _decomposition(self) -> "_Plan":
         """The plan of the probability that the terminals are joined (see
         ``shannon.py``), as a ``_Plan``: the decision diagram built from the
-        network, or with ``METHOD = "paths"``, and for a directed network,
-        the Shannon decomposition of its simple paths."""
+        network, or with ``METHOD = "paths"`` the Shannon decomposition of
+        its simple paths."""
         if self._plan is None:
             if METHOD not in ("bdd", "paths"):
                 raise ValueError(
@@ -881,12 +948,21 @@ class Network:
                         f"{len(self.terminals)}. Use network.METHOD = "
                         "'bdd' (the default)."
                     )
-                if METHOD == "paths" or self.directed:
+                if METHOD == "paths":
                     paths = self._simple_paths()
                     # Nothing joins the terminals: they are always parted.
                     self._plan = (
                         _plan_from_steps(*_shannon_plan(paths))
                         if paths
+                        else _constant(_FAIL)
+                    )
+                elif self.directed:
+                    links, order = self._directed_links()
+                    self._plan = (
+                        _directed_plan(
+                            order, links, set(self.nodes), self.terminals
+                        )
+                        if links
                         else _constant(_FAIL)
                     )
                 else:
@@ -901,9 +977,13 @@ class Network:
                     # The advice is to simulate, which is not there yet.
                     refusal = NotImplementedError(
                         f"{refusal.what} A network of repaired elements is "
-                        "not simulated yet: the limit, "
-                        f"repyability.network.{refusal.limit}, can be "
-                        "raised."
+                        "not simulated yet"
+                        + (
+                            "."
+                            if refusal.limit is None
+                            else ": the limit, repyability.network."
+                            f"{refusal.limit}, can be raised."
+                        )
                     )
                 self._refused = str(refusal)
                 raise refusal from None
@@ -1913,6 +1993,8 @@ class Network:
             args["capacity"] = dict(self.capacity)
         if self._all_terminals:
             args["terminals"] = "all"
+            if self.directed:
+                args["source"] = self.source
         elif len(self.terminals) == 2:
             args["source"], args["target"] = self.terminals
         else:
@@ -3140,7 +3222,8 @@ class Network:
         """The network's ``size`` lifetimes, each element's in ``lives``:
         the life of the link that joins the terminals, the links added
         longest-lived first (for two terminals, the longest-lasting
-        path's)."""
+        path's; in a directed network, the link with which the source
+        reaches the last of the terminals)."""
         # A link lasts no longer than the failing nodes it joins.
         index: Dict[Hashable, int] = {}
         for u_, v_ in self.links.values():
@@ -3160,25 +3243,32 @@ class Network:
         order = np.argsort(-last, axis=1, kind="stable")
         out = np.empty(size)
         if self.directed:
-            s, t = index[self.source], index[self.target]
+            s = index[self.source]
+            wanted = [False] * len(index)
+            for node in self.terminals[1:]:
+                wanted[index[node]] = True
             for i in range(size):
-                # The nodes reached from the source along the links so far.
+                # The nodes reached from the source along the links so
+                # far, and how many terminals are still to reach.
                 after: List[List[int]] = [[] for _ in index]
                 reached = [False] * len(index)
                 reached[s] = True
+                left = len(self.terminals) - 1
                 out[i] = -np.inf
                 for j in order[i]:
                     a, b = int(ends[j, 0]), int(ends[j, 1])
                     after[a].append(b)
                     if reached[a] and not reached[b]:
                         reached[b] = True
+                        left -= wanted[b]
                         stack = [b]
                         while stack:
                             for c in after[stack.pop()]:
                                 if not reached[c]:
                                     reached[c] = True
+                                    left -= wanted[c]
                                     stack.append(c)
-                    if reached[t]:
+                    if not left:
                         out[i] = last[i, j]
                         break
             return np.maximum(out, 0.0)
@@ -4081,6 +4171,13 @@ class Network:
             terminals = [_node_name(node) for node in terminals]
         return cls(
             links,
+            # The node a directed network's terminals are reached from
+            # (the first of a list).
+            source=(
+                _node_name(d["source"])
+                if directed and terminals == "all"
+                else None
+            ),
             nodes=nodes or None,
             terminals=terminals,
             directed=directed,
@@ -4200,6 +4297,13 @@ class Network:
                 "link that works both ways is not an edge of a reliability "
                 "block diagram, which is followed one way."
             )
+        if len(self.terminals) > 2:
+            raise Refused(
+                "to_rbd() draws a network of two terminals, a diagram's "
+                f"input and output: this one has {len(self.terminals)}. "
+                "The network's own methods work it out (sf, the importance "
+                "measures, random)."
+            )
         # The links on a way from the source to the target: none into the
         # source or out of the target, each from a node the source reaches
         # to one that reaches the target.
@@ -4310,11 +4414,10 @@ class Network:
         The exact values come from the network's decision diagram, so a
         network of more than ``MAX_STATES`` states refuses every analysis
         but the simulation (and two terminals' paths, listed), with the
-        message the methods raise, as a directed network of more than
-        ``MAX_PATHS`` paths does; an element whose model has no
+        message the methods raise; an element whose model has no
         reliability of its own makes the analyses built on it refuse, as
         it does. The routes are the same for two terminals, several and
-        all of them.
+        all of them, and for directed links.
 
         Returns
         -------
@@ -4694,12 +4797,14 @@ class Network:
 
     def __repr__(self) -> str:
         unit = "" if self.unit is None else f", unit {self.unit!r}"
-        if self._all_terminals:
-            joined = "all terminals"
-        elif len(self.terminals) == 2:
+        if len(self.terminals) == 2:
             joined = f"{self.source!r} to {self.target!r}"
+        elif self._all_terminals:
+            joined = "all terminals"
         else:
             joined = f"{len(self.terminals)} terminals"
+        if self.directed and len(self.terminals) > 2:
+            joined += f" from {self.source!r}"
         links = "directed links" if self.directed else "links"
         return (
             f"Network({len(self.links)} {links}, {len(self.nodes)} failing "
@@ -4742,29 +4847,40 @@ def _link_order(
     keeps the frontiers narrower (the smaller sum over the links of two to
     the frontier's size). A link out of the first terminal's part cannot
     join the terminals, and is left out."""
-    candidates = []
-    for root in terminals[:_ORDER_ROOTS]:
-        position = {root: 0}
-        queue = deque([root])
-        while queue:
-            u = queue.popleft()
-            for _, v in adjacent[u]:
-                if v not in position:
-                    position[v] = len(position)
-                    queue.append(v)
-        names = [
-            name
-            for name, (u, v) in links.items()
-            if u in position and v in position
-        ]
-        names.sort(
-            key=lambda n: (
-                max(position[links[n][0]], position[links[n][1]]),
-                min(position[links[n][0]], position[links[n][1]]),
-            )
-        )
-        candidates.append(names)
+    candidates = [
+        _order_from(root, links, adjacent) for root in terminals[:_ORDER_ROOTS]
+    ]
     return min(candidates, key=lambda order: _order_cost(order, links))
+
+
+def _order_from(
+    root: Hashable,
+    links: Dict[Hashable, Tuple[Hashable, Hashable]],
+    adjacent: Dict[Hashable, List[Tuple[Hashable, Hashable]]],
+) -> List[Hashable]:
+    """The links between the nodes found from ``root`` along
+    ``adjacent``, by the breadth-first order of their later end (then of
+    their earlier one)."""
+    position = {root: 0}
+    queue = deque([root])
+    while queue:
+        u = queue.popleft()
+        for _, v in adjacent.get(u, ()):
+            if v not in position:
+                position[v] = len(position)
+                queue.append(v)
+    names = [
+        name
+        for name, (u, v) in links.items()
+        if u in position and v in position
+    ]
+    names.sort(
+        key=lambda n: (
+            max(position[links[n][0]], position[links[n][1]]),
+            min(position[links[n][0]], position[links[n][1]]),
+        )
+    )
+    return names
 
 
 def _order_cost(order: Sequence[Hashable], links) -> float:
@@ -5117,14 +5233,8 @@ def _unique_rows(rows: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
             words[0], return_index=True, return_inverse=True
         )
         return rows[first], inverse.reshape(-1)
-    order = np.lexsort(words[::-1])
-    new = np.ones(count, dtype=bool)
-    for word in words:
-        ordered = word[order]
-        new[1:] |= ordered[1:] != ordered[:-1]
-    inverse = np.empty(count, dtype=np.int64)
-    inverse[order] = np.cumsum(new) - 1
-    return rows[order[new]], inverse
+    index, inverse = _distinct(words)
+    return rows[index], inverse
 
 
 def _frontier_plan(
@@ -5325,16 +5435,29 @@ def _frontier_plan(
             )
         state = unique
 
+    return _reduced(
+        [name for name, _, _, _ in decisions], outcomes, len(state)
+    )
+
+
+def _reduced(
+    names: List[Hashable],
+    outcomes: List[Tuple[np.ndarray, np.ndarray]],
+    last: int,
+) -> _Plan:
+    """The decision diagram of the decisions ``names``, each state's two
+    ``outcomes`` at each (the index of the state after, or ``_NONE_FAIL``,
+    ``_NONE_WORK``), with ``last`` states after the last, reduced: a state
+    whose outcomes agree is dropped, and equal ones shared."""
     # Reduce from the last decision up: each state's slot, the states after
     # the last decision all parted.
-    names = [name for name, _, _, _ in decisions]
-    slot = np.full(len(state), _FAIL, dtype=np.int64)
+    slot = np.full(last, _FAIL, dtype=np.int64)
     pivots: List[int] = []
     sizes: List[int] = []
     actives: List[np.ndarray] = []
     inactives: List[np.ndarray] = []
     filled = 2
-    for k in range(len(decisions) - 1, -1, -1):
+    for k in range(len(names) - 1, -1, -1):
         branches = []
         for code in outcomes[k]:
             branches.append(
@@ -5367,3 +5490,273 @@ def _frontier_plan(
         np.concatenate(inactives) if inactives else np.zeros(0, np.int64),
         int(slot[0]),
     )
+
+
+#: The most nodes a directed network's decision diagram follows at once
+#: (each a bit of a 64-bit word).
+_DIRECTED_WIDTH = 64
+
+
+def _distinct(words: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    """One row of each distinct row of the columns ``words`` (its index),
+    and each row's index among them."""
+    count = len(words[0])
+    order = np.lexsort(words[::-1])
+    new = np.zeros(count, dtype=bool)
+    new[:1] = True
+    for word in words:
+        ordered = word[order]
+        new[1:] |= ordered[1:] != ordered[:-1]
+    inverse = np.empty(count, dtype=np.int64)
+    inverse[order] = np.cumsum(new) - 1
+    return order[new], inverse
+
+
+def _directed_plan(
+    order: Sequence[Hashable],
+    links: Dict[Hashable, Tuple[Hashable, Hashable]],
+    failing: Set[Hashable],
+    terminals: Sequence[Hashable],
+) -> _Plan:
+    """The decision diagram of whether every one of the ``terminals`` is
+    reached from the first along working one-way ``links`` (each from its
+    first node to its second), the links decided in ``order``, as a
+    ``_Plan``.
+
+    A state before a decision says, of the nodes followed (those with
+    links decided and links to come, and the terminals not reached yet),
+    which the source reaches along the working links so far, and which
+    of the others each of the others reaches (through any nodes, followed
+    or not): a link that works from a reached node reaches its end and
+    all that it reaches, and one between two others adds to what leads
+    where. A cycle needs nothing more. What cannot change the outcome is
+    left out of a state, so that equal ones merge: a node that is reached
+    and has no link to come out of it, one that is not and can no longer
+    be (no link to come into it or into a node that reaches it), and one
+    that leads to no terminal and to no link to come. The terminals are
+    parted once one of them can no longer be reached, and joined once
+    all of them are. A node that can fail is decided before its first
+    link. The states of a decision are worked out together, a row each
+    (each node a bit of 64-bit words), and the diagram reduced as an
+    undirected network's is (``_reduced``).
+
+    Raises
+    ------
+    NotImplementedError
+        If the diagram would have more than ``MAX_STATES`` states, or
+        follows more than 64 nodes at once.
+    """
+    source, others = terminals[0], set(terminals[1:])
+    first: Dict[Hashable, int] = {}
+    last: Dict[Hashable, int] = {}
+    into: Dict[Hashable, int] = {}
+    out_of: Dict[Hashable, int] = {}
+    for i, name in enumerate(order):
+        u, v = links[name]
+        for w in (u, v):
+            first.setdefault(w, i)
+            last[w] = i
+        out_of[u] = out_of.get(u, 0) + 1
+        into[v] = into.get(v, 0) + 1
+    if not set(terminals) <= first.keys():
+        return _constant(_FAIL)  # no link leads to some terminal
+
+    one, none = np.uint64(1), np.uint64(0)
+    bits = one << np.arange(_DIRECTED_WIDTH, dtype=np.uint64)
+    # The bit of each node followed, the bits free to give, and those of
+    # the terminals that stay with no link to come.
+    bit: Dict[Hashable, int] = {}
+    free: List[int] = []
+    lingering: Dict[Hashable, int] = {}
+    outside = len(terminals)
+    sourced = False
+    # The states before the next decision: the nodes reached, as the bits
+    # of a word, and for each other node (a column) the bits of the nodes
+    # it reaches, itself among them (0 for a node left out).
+    reached = np.zeros(1, dtype=np.uint64)
+    reach = np.zeros((1, 0), dtype=np.uint64)
+    names: List[Hashable] = []
+    outcomes: List[Tuple[np.ndarray, np.ndarray]] = []
+    states = 1
+
+    def enter(node: Hashable) -> int:
+        nonlocal outside, sourced, reach
+        if free:
+            bit[node] = free.pop()
+        else:
+            bit[node] = reach.shape[1]
+            if len(bit) > _DIRECTED_WIDTH:
+                raise _TooLarge(
+                    "The directed network's decision diagram would follow "
+                    f"more than {_DIRECTED_WIDTH} nodes at once (those with "
+                    "links decided and links to come, and the terminals "
+                    "not yet reached), too many to work out exactly.",
+                    None,
+                    "Simulate it: method='simulate'.",
+                )
+            reach = np.hstack(
+                [reach, np.zeros((len(reach), 1), dtype=np.uint64)]
+            )
+        outside -= node in terminals
+        sourced = sourced or node == source
+        return bit[node]
+
+    def word(nodes) -> np.uint64:
+        return np.uint64(sum(1 << bit[w] for w in nodes))
+
+    def decide(name, entering, ends, leaving, staying) -> None:
+        """One decision's outcomes, and the states after it: of the
+        variable ``name``, the nodes ``entering``, the link's ends'
+        bits (None for a node's decision), and the bits of the nodes
+        ``leaving`` and of the terminals ``staying`` with no link to
+        come."""
+        nonlocal reached, reach, states
+        count = len(reached)
+        # The nodes with links to come into them and out of them, and
+        # the terminals to reach.
+        into_bits = word(w for w in bit if into.get(w))
+        out_bits = word(w for w in bit if out_of.get(w))
+        to_reach = word(w for w in bit if w in others)
+        sides: List[Optional[Tuple[np.ndarray, np.ndarray]]] = []
+        entered_reached, entered_reach = reached.copy(), reach.copy()
+        for node in entering:
+            if node == source:
+                entered_reached |= bits[bit[node]]
+            else:
+                entered_reach[:, bit[node]] = bits[bit[node]]
+        if ends is None:
+            # A node that can fail: one that has failed is left out, and
+            # a failed terminal parts them.
+            sides.append((entered_reached, entered_reach))
+            sides.append(None if name in terminals else (reached, reach))
+        else:
+            a, b = ends
+            # From a reached node: its end is reached, and all that
+            # reaches.
+            newly = np.where(
+                (entered_reached & bits[a]) != 0, entered_reach[:, b], none
+            )
+            work_reach = entered_reach & ~newly[:, None]
+            # Between two others: what reaches its start reaches all its
+            # end does.
+            work_reach = work_reach | np.where(
+                (work_reach & bits[a]) != 0, work_reach[:, b : b + 1], none
+            )
+            sides.append((entered_reached | newly, work_reach))
+            sides.append((entered_reached, entered_reach))
+        columns = bits[: reach.shape[1]]
+        gone = np.uint64(sum(1 << b for b in leaving))
+        codes: List[np.ndarray] = []
+        kept: List[Optional[tuple]] = []
+        for side in sides:
+            code = np.full(count, _NONE_FAIL, dtype=np.int64)
+            codes.append(code)
+            if side is None:
+                kept.append(None)
+                continue
+            got, leads = side
+            # A node with no link to come leaves: what reached it reaches
+            # what it did already; a terminal still to reach stays, as
+            # what the others reach.
+            leads = leads & ~gone
+            for b in leaving:
+                leads[:, b] = 0
+            for b in staying:
+                leads[:, b] &= bits[b]
+            got = got & out_bits
+            unreached = np.bitwise_or.reduce(leads & columns, axis=1)
+            work = np.full(count, not outside) & ((unreached & to_reach) == 0)
+            # The nodes that can still be reached: by a link to come, or
+            # from one that can.
+            open_ = unreached & into_bits
+            live = np.bitwise_or.reduce(
+                np.where((open_[:, None] & columns) != 0, leads, none),
+                axis=1,
+            )
+            dead = unreached & ~live
+            fail = (dead & to_reach) != 0
+            if sourced:
+                # Nothing reached has a link to come.
+                fail |= got == 0
+            leads = np.where(
+                (dead[:, None] & columns) != 0, none, leads & ~dead[:, None]
+            )
+            # The nodes that lead somewhere: to a terminal, or to a link
+            # to come.
+            useful = (unreached & ~dead) & (out_bits | to_reach)
+            idle = (leads & useful[:, None]) == 0
+            useless = np.bitwise_or.reduce(
+                np.where(idle & (leads != 0), columns, none), axis=1
+            )
+            leads = np.where(idle, none, leads & ~useless[:, None])
+            code[work] = _NONE_WORK
+            alive = ~work & ~fail
+            kept.append((alive, got[alive], leads[alive]))
+        ahead = [k for k in kept if k is not None]
+        reached = np.concatenate([got for _, got, _ in ahead])
+        reach = np.vstack([leads for _, _, leads in ahead])
+        if len(reached):
+            # The states' words: the reached nodes, then the others'
+            # columns, as many to a word as fit.
+            used = np.flatnonzero((reach != 0).any(axis=0))
+            span = reach.shape[1]
+            per_word = max(1, 64 // span)
+            words = [reached]
+            for start in range(0, len(used), per_word):
+                packed = np.zeros(len(reached), dtype=np.uint64)
+                for column in used[start : start + per_word]:
+                    packed = (packed << np.uint64(span % 64)) | reach[
+                        :, column
+                    ]
+                words.append(packed)
+            index, inverse = _distinct(words)
+            reached, reach = reached[index], reach[index]
+            offset = 0
+            for code, after in zip(codes, kept):
+                if after is None:
+                    continue
+                number = int(after[0].sum())
+                code[after[0]] = inverse[offset : offset + number]
+                offset += number
+        names.append(name)
+        outcomes.append((codes[0], codes[1]))
+        states += len(reached)
+        if states > MAX_STATES:
+            raise _TooLarge(
+                "The network's decision diagram has more than "
+                f"{MAX_STATES:,} states (what its nodes reach before a "
+                "decision), too many to work out exactly.",
+                "MAX_STATES",
+                "Simulate it: method='simulate'.",
+            )
+
+    for i, name in enumerate(order):
+        u, v = links[name]
+        for w in (u, v):
+            if first[w] == i and w in failing:
+                enter(w)
+                decide(w, [w], None, [], [])
+        entering = [w for w in (u, v) if first[w] == i and w not in failing]
+        for w in entering:
+            enter(w)
+        out_of[u] -= 1
+        into[v] -= 1
+        ended = [w for w in (u, v) if last[w] == i]
+        decide(
+            name,
+            entering,
+            (bit[u], bit[v]),
+            [bit[w] for w in ended if w not in others],
+            [bit[w] for w in ended if w in others],
+        )
+        for w in ended:
+            if w in others:
+                lingering[w] = bit[w]
+            else:
+                free.append(bit.pop(w))
+        # A terminal reached in every state left is followed no more.
+        for w, b in list(lingering.items()):
+            if not reach[:, b].any():
+                free.append(bit.pop(w))
+                del lingering[w]
+    return _reduced(names, outcomes, len(reached))
