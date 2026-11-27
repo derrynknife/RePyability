@@ -102,6 +102,9 @@ def replayable(mission) -> None:
                 "distributions and the composite nodes built from them); "
                 f"those of block {node!r} are not."
             )
+    from repyability.rbd import _mission_repairs
+
+    _mission_repairs.replayable(mission)
 
 
 def keyed(mission, size: int, key: int) -> Runs:
@@ -120,6 +123,11 @@ def keyed(mission, size: int, key: int) -> Runs:
             [_paired.element(key, node, j, size) for j in range(sampler.width)]
         )
         lives[node] = np.asarray(sampler.draw(u), dtype=float)
+    if mission.repairability:
+        from repyability.rbd import _mission_repairs
+
+        source = _mission_repairs.Source(mission, size, key=key)
+        return _mission_repairs.play(mission, lives, size, source)
     switches = draw_switches(
         mission,
         size,
@@ -160,6 +168,70 @@ def draw_switches(
     return out
 
 
+class State(NamedTuple):
+    """The blocks' states in the missions being played (see the module
+    docstring), each by block: the age at which it fails, the mission's
+    time less its age, and when it failed (``inf`` while it has not)."""
+
+    end: Dict[Hashable, np.ndarray]
+    offset: Dict[Hashable, np.ndarray]
+    dead: Dict[Hashable, np.ndarray]
+
+
+def started(
+    lives: Dict[Hashable, np.ndarray],
+    nodes: List[Hashable],
+    size: int,
+    held: Optional[Hashable],
+) -> State:
+    """The blocks ``nodes`` at the start of ``size`` missions with the
+    components' ``lives``, the component ``held`` (if any) never
+    failing."""
+    end = {
+        node: (
+            np.full(size, np.inf)
+            if node == held
+            else np.array(lives[node], dtype=float, copy=True)
+        )
+        for node in nodes
+    }
+    offset = {node: np.zeros(size) for node in nodes}
+    # When each block failed (inf while it has not).
+    dead = {node: np.full(size, np.inf) for node in nodes}
+    return State(end, offset, dead)
+
+
+def read(
+    mission, j: int, setting, state: State, start: float, stop: float
+) -> Dict[Hashable, np.ndarray]:
+    """Each block's failure as phase ``j``'s structure reads it, the
+    phase from ``start`` to ``stop``: when it failed or will fail if it
+    runs on (-inf while idle on standby). Brings each block's state up to
+    the phase (its model's, the hazard a guaranteed block does not
+    spend) and notes those that fail in it."""
+    end, offset, dead = state
+    at: Dict[Hashable, np.ndarray] = {}
+    for node in end:
+        life = mission._lives[node]
+        how = behaviour(setting.setting(node))
+        alive = dead[node] > start
+        if life.per_phase is not None and j > 0 and alive.any():
+            age, ends = life.carry(
+                j, start - offset[node][alive], end[node][alive]
+            )
+            end[node][alive] = ends
+            offset[node][alive] = start - age
+        if how.standby:
+            at[node] = np.where(alive, -np.inf, dead[node])
+            continue
+        if not how.spends:
+            _guaranteed(life, j, end[node], offset[node], alive, start, stop)
+        failing = np.where(alive, end[node] + offset[node], dead[node])
+        at[node] = failing
+        dead[node] = np.where(failing <= stop, failing, np.inf)
+    return at
+
+
 def play(
     mission,
     lives: Dict[Hashable, np.ndarray],
@@ -173,48 +245,17 @@ def play(
     (if any) never failing (nor its switch)."""
     switches = switches or {}
     count = len(mission.phases)
-    end = {
-        node: (
-            np.full(size, np.inf)
-            if node == held
-            else np.array(life, dtype=float, copy=True)
-        )
-        for node, life in lives.items()
-    }
-    offset = {node: np.zeros(size) for node in lives}
-    # When each block failed (inf while it has not).
-    dead = {node: np.full(size, np.inf) for node in lives}
+    state = started(lives, list(lives), size, held)
+    end, offset, dead = state
     phase_of = np.full(size, count)
     time_of = np.full(size, np.inf)
-    started: Dict[Tuple[int, Hashable], np.ndarray] = {}
+    started_in: Dict[Tuple[int, Hashable], np.ndarray] = {}
     start = 0.0
     for j, (phase, setting) in enumerate(
         zip(mission.phases, mission._settings)
     ):
         stop = phase.end
-        # Each block's failure as the phase's structure reads it: when it
-        # failed or will fail if it runs on (-inf while idle on standby).
-        at: Dict[Hashable, np.ndarray] = {}
-        for node in lives:
-            life = mission._lives[node]
-            how = behaviour(setting.setting(node))
-            alive = dead[node] > start
-            if life.per_phase is not None and j > 0 and alive.any():
-                age, ends = life.carry(
-                    j, start - offset[node][alive], end[node][alive]
-                )
-                end[node][alive] = ends
-                offset[node][alive] = start - age
-            if how.standby:
-                at[node] = np.where(alive, -np.inf, dead[node])
-                continue
-            if not how.spends:
-                _guaranteed(
-                    life, j, end[node], offset[node], alive, start, stop
-                )
-            failing = np.where(alive, end[node] + offset[node], dead[node])
-            at[node] = failing
-            dead[node] = np.where(failing <= stop, failing, np.inf)
+        at = read(mission, j, setting, state, start, stop)
         idle = setting.standby_order(lives)
         # Each idle block's running time left at the phase's start, its
         # dormancy, and whether it starts if called on.
@@ -247,7 +288,7 @@ def play(
         fails_at = np.maximum(lifetime, start)
         if idle:
             for node in idle:
-                started[(j, node)] = np.zeros(size, dtype=bool)
+                started_in[(j, node)] = np.zeros(size, dtype=bool)
             m = np.flatnonzero(failed)
             fail, when, lost = _take_over(
                 structure,
@@ -270,14 +311,14 @@ def play(
                     left[node],
                     rates[node],
                     (start, stop, phase.duration),
-                    started,
+                    started_in,
                     offset[node],
                     dead[node],
                 )
         phase_of[failed] = j
         time_of[failed] = fails_at[failed]
         start = stop
-    return Runs(phase_of, time_of, started)
+    return Runs(phase_of, time_of, started_in)
 
 
 def _after_standby(
