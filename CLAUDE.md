@@ -553,6 +553,20 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   halvings (right, but slow). `test_evaluation_costs.py` checks the
   points an MTTF takes and its accuracy.
 
+- **A `SafetyFunction` (`repyability/rbd/safety_function.py`) is a
+  builder with no mathematics of its own.** It draws the dangerous
+  diagram (each channel its undetected failures, tested, in series with
+  its detected ones, voted) and the safe one (the dual vote), and takes
+  the PFDavg, the PFH and the spurious-trip rate from their
+  `mean_unavailability` and `system_failure_frequency`: a new result is
+  a `RepairableRBD` method first. Its routes are the diagrams' own;
+  `test_safety_function.py` checks its values against a multi-phase
+  Markov chain written out there and holds its routes to its methods on
+  `catalogue.safety_function_kinds()` (a new method needs its call in
+  `SAFETY_CALLS`, and a row in the capability matrix as
+  `SafetyFunction.method`). `simplified_formulas()` is IEC 61508-6
+  Annex B's, kept only to compare.
+
 - **A measure that is a function of the system's values lives once, in
   `repyability/rbd/_measures.py`** (#314, #315): the ratios (improvement
   potential, the risk worths, criticality, Fussell-Vesely from numerators),
