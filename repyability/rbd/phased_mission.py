@@ -36,12 +36,16 @@ over the segments (``_cut_set_plan``).
 """
 
 import dataclasses
+import json
 import math
 from typing import (
+    TYPE_CHECKING,
     Any,
+    Collection,
     Dict,
     Hashable,
     List,
+    Mapping,
     NamedTuple,
     Optional,
     Sequence,
@@ -50,9 +54,12 @@ from typing import (
 
 import numpy as np
 
-from repyability.rbd import _mission_chain, _mission_runs
+from repyability._version import __version__
+from repyability.rbd import _measures, _mission_chain, _mission_runs
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import bdd, modular, routes
+from repyability.rbd._differential import check as check_differential
+from repyability.rbd._differential import shares
 from repyability.rbd._importances import with_importances
 from repyability.rbd._mission_results import (
     MissionDrivers,
@@ -65,14 +72,27 @@ from repyability.rbd._mission_settings import (
     MissionPhase,
     behaviour,
     life_of,
+    setting_from_dict,
     setting_to_dict,
 )
 from repyability.rbd._ordered_bdd import FALSE, TRUE, OrderedBDD
 from repyability.rbd._units import diagram_unit
+from repyability.rbd.rbd import Pairs
 from repyability.rbd.results import ConfidenceInterval, ImportanceTable
-from repyability.rbd.shannon import _plan_rows, replay, room
-from repyability.utils.checks import one_of, real_array, simulation_options
+from repyability.rbd.shannon import (
+    _plan_rows,
+    replay,
+    room,
+    value_and_gradient,
+)
+from repyability.utils.checks import (
+    is_number,
+    one_of,
+    real_array,
+    simulation_options,
+)
 from repyability.utils.deprecation import refuse_removed_names
+from repyability.utils.json_io import read_json, write_json
 from repyability.utils.wrappers import numpy_seed
 
 #: How the exact values are worked out: ``"bdd"`` (the default), by the
@@ -91,6 +111,9 @@ MAX_NODES = 1_000_000
 #: The most distinct sub-problems the decomposition of the path sets
 #: (``METHOD = "paths"``) solves before it refuses.
 MAX_STATES = 200_000
+
+if TYPE_CHECKING:
+    from repyability.rbd.results import Lever
 
 # Value slots 0 and 1 of a plan hold the mission failing and succeeding.
 _FAIL, _SUCCEED = 0, 1
@@ -296,7 +319,16 @@ class PhasedMission:
     measures (``birnbaum_importance`` and the others) hold a component
     across every phase, working throughout or failed from the start, and
     ``minimal_cut_sets`` gives the events, a component failed by the end
-    of a phase, that together fail the mission.
+    of a phase, that together fail the mission. There is no structural
+    importance: a component's state is one per phase segment, so "the
+    share of the state vectors in which it is critical" has no single
+    meaning for a mission. Nor is there a ``mean``, as a mission that
+    succeeds has no time to failure: ``expected_mission_time`` is the
+    mean time it runs, to its failure or its end. ``levers()`` lists the
+    components' parameters and the phases' durations, which
+    ``parameter_sensitivity`` differences and ``with_levers`` moves, and
+    ``to_dict`` and ``to_json`` save the mission (``from_dict`` and
+    ``from_json`` load it).
 
     Parameters
     ----------
@@ -353,6 +385,8 @@ class PhasedMission:
         phases = list(phases)
         if not phases:
             raise ValueError("A mission needs at least one phase.")
+        # As given, for ``with_levers`` (see ``_from_args``).
+        self._init_args: Dict[str, Any] = {"phases": phases}
         self.components: Dict[Hashable, Any] = {}
         self.phases: List[_Phase] = []
         names: set = set()
@@ -568,6 +602,7 @@ class PhasedMission:
             ]
         )
         mission._settings = phases
+        mission._init_args = {"rbd": rbd, "phases": phases}
         starts = [ph.end - ph.duration for ph in mission.phases]
         mission._lives = {
             node: life_of(node, model, phases, starts)
@@ -644,13 +679,33 @@ class PhasedMission:
             "simulated)."
         )
 
+    def _require_measures(self, what: str) -> None:
+        """Refuse the measures ``what`` of a mission with blocks on
+        standby whose Markov chain cannot be worked out (they are taken
+        from the chain, a block held working or failed in it), naming
+        ``failure_drivers``, which simulates each block's part."""
+        standby = self._standby()
+        if not standby:
+            return
+        try:
+            self._chain_values()
+        except _mission_chain.ChainRefused as error:
+            names = ", ".join(repr(node) for node in standby)
+            raise NotImplementedError(
+                f"The {what} of a mission with blocks on standby ({names}) "
+                "are worked out from its Markov chain, as its reliability "
+                f"is: {error.reason}. failure_drivers gives each block's "
+                "part in the mission's failures, simulated."
+            ) from error
+
     def _chain_values(
         self,
-        held: Optional[Hashable] = None,
+        held: Optional[Dict[Hashable, bool]] = None,
         times: Optional[np.ndarray] = None,
     ) -> "_mission_chain.ChainValues":
         """The values of a mission with blocks on standby from its Markov
-        chain (see ``_mission_chain.run``), the plain ones kept."""
+        chain (see ``_mission_chain.run``: each block ``held`` working,
+        True, or failed from the start, False), the plain ones kept."""
         if held is None and times is None:
             if self._chain_kept is None:
                 self._chain_kept = _mission_chain.run(self)
@@ -729,11 +784,21 @@ class PhasedMission:
         ``len(ends)`` phases, the last perhaps cut short). A component in
         ``held`` has every segment survived with that probability (1:
         working throughout, 0: failed from the start)."""
+        return self._segments_of(self._raw_ends(ends), held)
+
+    def _segments_of(
+        self,
+        raw: Dict[Hashable, Tuple[np.ndarray, np.ndarray]],
+        held: Optional[Dict[Hashable, float]] = None,
+    ) -> Tuple[Dict[int, float], Dict[int, float]]:
+        """``_segments`` from each component's life's probabilities of
+        working and of having failed at the ends, ``raw`` (see
+        ``_raw_ends``)."""
         count = len(self.phases)
         p: Dict[int, float] = {}
         q: Dict[int, float] = {}
         held = held or {}
-        for index, (node, (sf, ff)) in enumerate(self._raw_ends(ends).items()):
+        for index, (node, (sf, ff)) in enumerate(raw.items()):
             chain = (
                 ([held[node]] * len(sf), [1.0 - held[node]] * len(sf))
                 if node in held
@@ -879,29 +944,48 @@ class PhasedMission:
     # Importance and cut sets (#316)
     # ------------------------------------------------------------------
 
+    def _held_outcomes(
+        self, holds: Sequence[Dict[Hashable, bool]]
+    ) -> List[Tuple[float, float]]:
+        """For each of ``holds``, components held working throughout (True:
+        every segment survived) or failed from the start (False: none),
+        the mission's reliability and unreliability, each to its own
+        precision: the plan replayed with their segments so held, or,
+        with blocks on standby, the Markov chain run with them so held."""
+        if self._standby():
+            out = []
+            for held in holds:
+                chain = self._chain_values(held=held)
+                out.append((chain.through[-1], float(sum(chain.failing))))
+            return out
+        count = len(self.phases)
+        plan = self._plan(count)
+        p, q = self._segments()
+        index = {node: i for i, node in enumerate(self.components)}
+        out = []
+        for held in holds:
+            given, failing = dict(p), dict(q)
+            for node, works in held.items():
+                segments = range(
+                    index[node] * count, (index[node] + 1) * count
+                )
+                given.update(dict.fromkeys(segments, 1.0 if works else 0.0))
+                failing.update(dict.fromkeys(segments, 0.0 if works else 1.0))
+            out.append(_outcomes(plan, given, failing))
+        return out
+
     def _held(self) -> Dict[Hashable, Tuple[float, float, float, float]]:
         """For each component, the mission's reliability and unreliability
         with it working throughout (every segment survived), then with it
-        failed from the start (none): the plan replayed with its segments
-        so held."""
-        plan = self._plan(len(self.phases))
-        p, q = self._segments()
-        count = len(self.phases)
-        out: Dict[Hashable, Tuple[float, float, float, float]] = {}
-        for index, component in enumerate(self.components):
-            segments = range(index * count, (index + 1) * count)
-            working = _outcomes(
-                plan,
-                {**p, **dict.fromkeys(segments, 1.0)},
-                {**q, **dict.fromkeys(segments, 0.0)},
-            )
-            failed = _outcomes(
-                plan,
-                {**p, **dict.fromkeys(segments, 0.0)},
-                {**q, **dict.fromkeys(segments, 1.0)},
-            )
-            out[component] = (*working, *failed)
-        return out
+        failed from the start (none); see ``_held_outcomes``."""
+        components = list(self.components)
+        values = self._held_outcomes(
+            [{node: works} for node in components for works in (True, False)]
+        )
+        return {
+            node: (*values[2 * k], *values[2 * k + 1])
+            for k, node in enumerate(components)
+        }
 
     def _measures(self) -> Dict[Hashable, Tuple[float, float, float]]:
         """Each component's Birnbaum importance, ``R(works) - R(failed)``,
@@ -1395,8 +1479,13 @@ class PhasedMission:
         mission's decision diagram replayed with the component's segments
         so held, and the difference is taken from the probabilities of
         succeeding or of failing, whichever are the smaller, so a small
-        importance in a reliable mission keeps its precision. Exact, at
-        the mission's end; it assumes independent components.
+        importance in a reliable mission keeps its precision. With blocks
+        on standby, each is the mission's Markov chain run with the block
+        so held (working: it never fails, nor does its switch, though it
+        idles until called on; failed: from the start), where the chain
+        is worked out (every life at a constant rate), as for
+        ``reliability``; the other measures follow. Exact, at the
+        mission's end; it assumes independent components.
 
         Returns
         -------
@@ -1407,7 +1496,8 @@ class PhasedMission:
         ------
         NotImplementedError
             If the mission's decision diagram needs more than ``MAX_NODES``
-            nodes.
+            nodes, or a block is on standby and the mission's Markov chain
+            cannot be worked out (naming ``failure_drivers``).
 
         Examples
         --------
@@ -1434,7 +1524,7 @@ class PhasedMission:
         >>> {k: round(v, 6) for k, v in mission.birnbaum_importance().items()}
         {'e1': 0.999, 'e2': 0.999}
         """
-        self._require_exact("importance measures")
+        self._require_measures("importance measures")
         return {
             component: birnbaum
             for component, (birnbaum, _, _) in self._measures().items()
@@ -1462,7 +1552,8 @@ class PhasedMission:
         ------
         NotImplementedError
             If the mission's decision diagram needs more than ``MAX_NODES``
-            nodes.
+            nodes, or a block is on standby and the mission's Markov chain
+            cannot be worked out (naming ``failure_drivers``).
 
         Examples
         --------
@@ -1484,7 +1575,7 @@ class PhasedMission:
         >>> {k: round(v, 6) for k, v in potential.items()}
         {'e1': 0.003372, 'e2': 0.003372}
         """
-        self._require_exact("importance measures")
+        self._require_measures("importance measures")
         return {
             component: potential
             for component, (_, potential, _) in self._measures().items()
@@ -1514,7 +1605,8 @@ class PhasedMission:
         ------
         NotImplementedError
             If the mission's decision diagram needs more than ``MAX_NODES``
-            nodes.
+            nodes, or a block is on standby and the mission's Markov chain
+            cannot be worked out (naming ``failure_drivers``).
 
         Examples
         --------
@@ -1541,7 +1633,7 @@ class PhasedMission:
         >>> round(1 / mission.unreliability(), 2)
         228.74
         """
-        self._require_exact("importance measures")
+        self._require_measures("importance measures")
         _, failure = self._exact(len(self.phases))
         with np.errstate(divide="ignore", invalid="ignore"):
             return {
@@ -1572,7 +1664,8 @@ class PhasedMission:
         ------
         NotImplementedError
             If the mission's decision diagram needs more than ``MAX_NODES``
-            nodes.
+            nodes, or a block is on standby and the mission's Markov chain
+            cannot be worked out (naming ``failure_drivers``).
 
         Examples
         --------
@@ -1594,7 +1687,7 @@ class PhasedMission:
         >>> {k: round(v, 4) for k, v in rrw.items()}
         {'e1': 4.374, 'e2': 4.374}
         """
-        self._require_exact("importance measures")
+        self._require_measures("importance measures")
         _, failure = self._exact(len(self.phases))
         with np.errstate(divide="ignore", invalid="ignore"):
             return {
@@ -1648,7 +1741,8 @@ class PhasedMission:
             If ``kind`` is neither ``"failure"`` nor ``"success"``.
         NotImplementedError
             If the mission's decision diagram needs more than ``MAX_NODES``
-            nodes.
+            nodes, or a block is on standby and the mission's Markov chain
+            cannot be worked out (naming ``failure_drivers``).
 
         Examples
         --------
@@ -1677,7 +1771,7 @@ class PhasedMission:
         >>> round(1 - 1 / mission.risk_reduction_worth()["e1"], 4)
         0.7714
         """
-        self._require_exact("importance measures")
+        self._require_measures("importance measures")
         one_of("kind", kind, ("failure", "success"))
         success, failure = self._exact(len(self.phases))
         mission, which = (failure, 1) if kind == "failure" else (success, 2)
@@ -1770,7 +1864,7 @@ class PhasedMission:
         >>> {k: round(v, 4) for k, v in fv.items()}
         {'e1': 0.7941, 'e2': 0.7941}
         """
-        self._require_exact("importance measures")
+        self._require_exact("Fussell-Vesely importance")
         _, failure = self._exact(len(self.phases))
         numerators = self._fv_numerators(method)
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -1778,6 +1872,291 @@ class PhasedMission:
                 component: float(np.float64(numerator) / failure)
                 for component, numerator in numerators.items()
             }
+
+    def differential_importance(
+        self,
+        *,
+        change: str = "uniform",
+        kind: str = "failure",
+        groups: Optional[Mapping[Hashable, Collection[Hashable]]] = None,
+    ) -> Dict[Hashable, float]:
+        """Each component's share of the change in the mission's
+        reliability when they all change together: the differential
+        importance measure (DIM, Borgonovo & Apostolakis, 2001), as
+        [`NonRepairableRBD.differential_importance`][repyability.NonRepairableRBD.differential_importance]
+        defines it over the components, each held across every phase.
+
+        ``change="uniform"`` moves every component's probability by as
+        much, and shares out the Birnbaum importance (see
+        [`birnbaum_importance`][repyability.PhasedMission.birnbaum_importance]);
+        ``"proportional"`` each by the same fraction of itself, and shares
+        out the criticality importance of that ``kind`` (see
+        [`criticality_importance`][repyability.PhasedMission.criticality_importance]).
+        The shares add up to 1, and a group's share is the sum of its
+        members' (``groups``). NaN where there is nothing to share out. At
+        the mission's end; with blocks on standby, from the mission's
+        Markov chain, as the Birnbaum importance is.
+
+        Parameters
+        ----------
+        change : str, optional
+            ``"uniform"`` (the default) or ``"proportional"``.
+        kind : str, optional
+            With a proportional change, which of each component's
+            probabilities moves in proportion: ``"failure"`` (the
+            default), of failing, or ``"success"``, of working.
+        groups : dict, optional
+            ``{name: components}``: each group's share, the sum of its
+            components', instead of each component's.
+
+        Returns
+        -------
+        dict[Hashable, float]
+            The shares, by component or group name.
+
+        Raises
+        ------
+        ValueError
+            For an unknown ``change`` or ``kind``, or a group naming an
+            unknown component.
+        NotImplementedError
+            As the Birnbaum importance refuses.
+
+        Examples
+        --------
+        One unit through two phases, and a second needed only in the
+        last, its life running from the mission's start: ``B_a =
+        exp(-0.4)`` (``b`` lasting 20 hours) and ``B_b = exp(-0.2)``.
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> E = surv.Exponential.from_params
+        >>> one = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": E([0.01])})
+        >>> two = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {"a": E([0.01]), "b": E([0.02])},
+        ... )
+        >>> mission = PhasedMission([("out", 10.0, one), ("back", 10.0, two)])
+        >>> shares = mission.differential_importance()
+        >>> {k: round(v, 4) for k, v in shares.items()}
+        {'a': 0.4502, 'b': 0.5498}
+        """
+        check_differential("components", change, kind)
+        if change == "uniform":
+            values = self.birnbaum_importance()
+        else:
+            values = self.criticality_importance(kind)
+        return shares(values, groups)
+
+    def joint_importance(self) -> Dict[Tuple[Hashable, Hashable], float]:
+        """The joint (second-order) importance of each pair of components
+        over the mission: whether improving the two together is worth more
+        than improving each (Hong & Lie, 1993), as
+        [`NonRepairableRBD.joint_importance`][repyability.NonRepairableRBD.joint_importance]
+        defines it, each component held across every phase.
+
+        ``JRI(i, j) = R(1_i, 1_j) - R(1_i, 0_j) - R(0_i, 1_j) + R(0_i,
+        0_j)``, with ``1`` a component working throughout and ``0`` failed
+        from the start: how much component ``j``'s Birnbaum importance
+        rises when ``i`` goes from failed to working. Each value is the
+        mission's decision diagram replayed with the two so held (with
+        blocks on standby, the mission's Markov chain run so), and the sum
+        is taken of the probabilities of succeeding or of failing,
+        whichever are the smaller, so a small one keeps its precision.
+        Positive, the two are complements (needed together); negative,
+        substitutes (either will do); 0 where neither changes what the
+        other is worth. Exact, at the mission's end.
+
+        Returns
+        -------
+        dict
+            ``{(i, j): JRI}`` for each pair once, its names in order as
+            text, and found either way round.
+
+        Raises
+        ------
+        NotImplementedError
+            As the Birnbaum importance refuses.
+
+        Examples
+        --------
+        Two engines, both needed to take off and either to cruise: with
+        either failed from the start the mission fails, so the two are
+        complements, each worth everything with the other working and
+        nothing without it.
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> engine = surv.Exponential.from_params([0.01])
+        >>> both = NonRepairableRBD(
+        ...     [("s", "e1"), ("e1", "e2"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> either = NonRepairableRBD(
+        ...     [("s", "e1"), ("s", "e2"), ("e1", "t"), ("e2", "t")],
+        ...     {"e1": engine, "e2": engine},
+        ... )
+        >>> mission = PhasedMission(
+        ...     [("take-off", 0.1, both), ("cruise", 5.0, either)]
+        ... )
+        >>> mission.joint_importance()["e1", "e2"]
+        1.0
+        """
+        self._require_measures("importance measures")
+        success, failure = self._exact(len(self.phases))
+        names = list(self.components)
+        pairs = [(i, j) for k, i in enumerate(names) for j in names[k + 1 :]]
+        values = self._held_outcomes(
+            [
+                {i: first, j: second}
+                for i, j in pairs
+                for first, second in (
+                    (True, True),
+                    (True, False),
+                    (False, True),
+                    (False, False),
+                )
+            ]
+        )
+        out = Pairs()
+        for n, (i, j) in enumerate(pairs):
+            both, one, other, neither = values[4 * n : 4 * n + 4]
+            if success <= failure:
+                value = both[0] - one[0] - other[0] + neither[0]
+            else:
+                value = -(both[1] - one[1] - other[1] + neither[1])
+            out[Pairs.oriented(i, j)] = float(value)
+        return out
+
+    def barlow_proschan_importance(self, x=None) -> Dict[Hashable, Any]:
+        """Each component's Barlow-Proschan importance over the mission:
+        the probability that the mission's failure is caused by the
+        component's, given that it fails during its phases by ``x``, or
+        by its end.
+
+        In phase ``j``, component ``i``'s failure at time ``t`` fails the
+        mission when the mission has got that far with ``i`` critical to
+        phase ``j`` then: the rate of change of the mission's reliability
+        ``R(t)`` (see
+        [`reliability_over_time`][repyability.PhasedMission.reliability_over_time])
+        with the probability that ``i`` survives the phase so far, ``p_ij(t)
+        = R_i(t) / R_i(T_{j-1})``, times how fast that falls, ``f_i(t) /
+        R_i(T_{j-1})``, its density (its model's ``df``, or differences of
+        its ``ff``) over its reliability at the phase's start. The
+        derivatives are one reverse pass of the mission's decision
+        diagram, and each component's part is integrated by adaptive
+        quadrature (to about ``1e-9``, relative) on pieces split at the
+        phases' boundaries; its share of the parts' sum is its importance,
+        and the shares add up to 1. Each part is a component's term of
+        ``-dR/dt`` within the phases. A failure at a phase's start, of a
+        phase that needs a component already failed, is caused by no
+        failure then and takes no part: the shares are of the failures
+        during the phases. With one phase it is the diagram's
+        [`barlow_proschan_importance`][repyability.NonRepairableRBD.barlow_proschan_importance]
+        at the phase's end.
+
+        Parameters
+        ----------
+        x : float or array_like, optional
+            Mission times, from 0 to the duration, by which the mission has
+            failed; by default its end.
+
+        Returns
+        -------
+        dict
+            Each component's share: floats for a scalar ``x`` or the
+            mission's end, arrays otherwise; nan where the mission cannot
+            have failed during its phases by then.
+
+        Raises
+        ------
+        ValueError
+            If a time is not from 0 to the mission's duration.
+        NotImplementedError
+            If a block is on standby (its failure fails the mission only
+            once it is called on), naming ``failure_drivers``, or the
+            mission's decision diagram is too large.
+
+        Examples
+        --------
+        Two units in series through one phase, with failure rates 1 and 3
+        per thousand hours: the second causes three quarters of the
+        failures.
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> E = surv.Exponential.from_params
+        >>> series = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {"a": E([0.001]), "b": E([0.003])},
+        ... )
+        >>> mission = PhasedMission([("only", 100.0, series)])
+        >>> shares = mission.barlow_proschan_importance()
+        >>> {k: round(v, 6) for k, v in shares.items()}
+        {'a': 0.25, 'b': 0.75}
+        """
+        self._require_exact("Barlow-Proschan importance")
+        times = None if x is None else self._times(x, "x")
+        count = len(self.phases)
+        plans = [self._plan(j + 1) for j in range(count)]
+        rows = [_plan_rows(plan) for plan in plans]
+        components = list(self.components)
+        starts = self._starts()
+        before = {
+            node: np.concatenate([[1.0], sf[:-1]])
+            for node, (sf, _) in self._raw_ends().items()
+        }
+        guaranteed = {node: self._guaranteed(node) for node in components}
+        lives = {node: self._lives[node].model for node in components}
+
+        def importance(t: np.ndarray) -> Dict[Hashable, np.ndarray]:
+            # dR/dp_ij at each time, over R_i(T_{j-1}): the rate of change
+            # of the mission's reliability per unit of component i's
+            # density, 0 where it cannot fail then.
+            out = {node: np.zeros(t.shape) for node in components}
+            for k, (j, raw) in enumerate(self._cut_short(t)):
+                p, q = self._segments_of(raw)
+                pivots, actives, inactives, names = rows[j]
+                _, gradient, reached = value_and_gradient(
+                    pivots,
+                    actives,
+                    inactives,
+                    plans[j][1],
+                    [p[name] for name in names],
+                    [q[name] for name in names],
+                    1.0,
+                    0.0,
+                    len(names),
+                )
+                found = {
+                    name: value
+                    for name, value, has in zip(names, gradient, reached)
+                    if has
+                }
+                for i, node in enumerate(components):
+                    start = before[node][j]
+                    if guaranteed[node][j] or start <= 0.0:
+                        continue
+                    # dR/dp_ij, as -dF/dp_ij (the replay is of failing).
+                    out[node][k] = -found.get(i * count + j, 0.0) / start
+            return out
+
+        def parts(t: np.ndarray) -> Dict[Hashable, np.ndarray]:
+            t = np.ravel(np.asarray(t, dtype=float))
+            return _measures.rate_parts(
+                importance(t),
+                lambda node, at: _measures.density(lives[node], at),
+                t,
+            )
+
+        models = [m for node in components for m in self._lives[node].models()]
+        return _measures.barlow_proschan(
+            parts,
+            models,
+            times if times is None or times.ndim else float(times),
+            lambda _: self.duration,
+            knots=starts[1:],
+        )
 
     def minimal_cut_sets(self) -> List[frozenset]:
         """The mission's minimal cut sets: sets of events ``(component,
@@ -1897,15 +2276,36 @@ class PhasedMission:
             self._require_exact()
             curve = self._chain_values(times=times).curve
             return np.asarray(curve, dtype=float)
+        out = np.empty(times.size)
+        for k, (j, raw) in enumerate(self._cut_short(np.ravel(times))):
+            out[k] = _outcomes(self._plan(j + 1), *self._segments_of(raw))[0]
+        return out.reshape(times.shape)
+
+    def _cut_short(self, times: np.ndarray):
+        """For each of ``times`` (a flat array), the phase under way then
+        (the latest to start by then) and each component's life's
+        probabilities of working and of having failed at the ends of the
+        phases before it and at the time (see ``_raw_ends``): each model
+        asked once for every time."""
         starts, ends = self._starts(), [phase.end for phase in self.phases]
-        out = np.empty(times.shape)
-        for i, t in np.ndenumerate(times):
-            j = int(np.searchsorted(starts, t, side="right")) - 1
-            cut = ends[: j + 1] if t == ends[j] else ends[:j] + [float(t)]
-            out[i] = _outcomes(
-                self._plan(j + 1), *self._segments(np.array(cut))
-            )[0]
-        return out
+        whole = self._raw_ends()
+        at = self._raw_ends(times)
+        phases = np.searchsorted(starts, times, side="right") - 1
+        for k, j in enumerate(phases):
+            j = int(j)
+            if times[k] == ends[j]:
+                yield j, {
+                    node: (sf[: j + 1], ff[: j + 1])
+                    for node, (sf, ff) in whole.items()
+                }
+            else:
+                yield j, {
+                    node: (
+                        np.append(sf[:j], at[node][0][k]),
+                        np.append(ff[:j], at[node][1][k]),
+                    )
+                    for node, (sf, ff) in whole.items()
+                }
 
     def reliability_over_time(
         self,
@@ -1984,11 +2384,105 @@ class PhasedMission:
             out = self._exact_over_time(times)
         return float(out) if out.ndim == 0 else out
 
+    def expected_mission_time(
+        self,
+        method: Optional[str] = None,
+        *,
+        mc_samples: Optional[int] = None,
+        seed=None,
+    ) -> float:
+        """The expected time the mission runs: until it fails, or to its
+        end, whichever comes first.
+
+        A mission that succeeds has no time to failure, so it has no mean
+        life (``mean``); this is the integral of the reliability over the
+        mission's time (see
+        [`reliability_over_time`][repyability.PhasedMission.reliability_over_time]),
+        from 0 to the duration, ``E[min(T, duration)]``: the duration
+        less the time a failed mission loses. Exact, it is integrated by
+        adaptive Gauss-Legendre quadrature (to about ``1e-9``, relative),
+        on pieces split at the phases' boundaries.
+
+        Parameters
+        ----------
+        method : str, optional
+            ``"exact"``: the reliability over time integrated (numerical).
+            ``"simulate"``: the mean over simulated missions of the time
+            each runs. By default exact, unless a block is on standby and
+            the mission's Markov chain cannot be worked out.
+        mc_samples : int, optional
+            The number of simulated missions, by default 10_000 (used only
+            when simulated).
+        seed : int, optional
+            Seeds the simulation, by default None.
+
+        Returns
+        -------
+        float
+            The expected time the mission runs, in the components' unit.
+
+        Raises
+        ------
+        ValueError
+            If ``method`` is unknown, or ``mc_samples`` or ``seed`` is
+            given with ``method="exact"``.
+        NotImplementedError
+            With ``method="exact"``, as ``reliability_over_time`` refuses.
+
+        Examples
+        --------
+        One exponential unit for 20 hours: ``(1 - exp(-0.2)) / 0.01``.
+
+        >>> import math
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> unit = surv.Exponential.from_params([0.01])
+        >>> one = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": unit})
+        >>> mission = PhasedMission([("out", 10.0, one), ("back", 10.0, one)])
+        >>> math.isclose(
+        ...     mission.expected_mission_time(),
+        ...     (1 - math.exp(-0.2)) / 0.01,
+        ...     rel_tol=1e-9,
+        ... )
+        True
+        """
+        from repyability.rbd import _rates
+        from repyability.rbd._mean_lifetime import model_knots
+
+        method, _ = self._choose(
+            method, mc_samples, seed, "expected_mission_time"
+        )
+        if method == "simulate":
+            runs = self._simulated_runs(
+                10_000 if mc_samples is None else mc_samples, seed
+            )
+            return float(np.mean(np.minimum(runs.time, self.duration)))
+        knots = np.concatenate(
+            [np.empty(0)]
+            + [
+                model_knots(model)
+                for life in self._lives.values()
+                for model in life.models()
+            ]
+        )
+        inside = knots[(knots > 0.0) & (knots < self.duration)]
+        edges = np.unique(
+            np.concatenate([[0.0], [p.end for p in self.phases], inside])
+        )
+        if self.duration == 0.0:
+            return 0.0
+        return float(
+            _rates.integral(
+                lambda t: self._exact_over_time(np.asarray(t))[:, None], edges
+            )[0]
+        )
+
     def _phase_failures(self, held: Optional[Hashable] = None) -> List[float]:
         """The exact probability of failing in each phase, with the
         component ``held`` (if any) working throughout."""
         if self._standby():
-            return list(self._chain_values(held=held).failing)
+            hold = None if held is None else {held: True}
+            return list(self._chain_values(held=hold).failing)
         segments = self._segments(held=None if held is None else {held: 1.0})
         out: List[float] = []
         before = 0.0
@@ -2386,6 +2880,390 @@ class PhasedMission:
             ours.astype(float) - theirs.astype(float), confidence, clip=1.0
         )
 
+    # ------------------------------------------------------------------
+    # Levers
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _from_args(cls, args: Dict[str, Any]) -> "PhasedMission":
+        """The mission built from its constructor's arguments (see
+        ``_init_args``): ``from_diagram``'s, with the diagram under
+        ``"rbd"``, or the constructor's own."""
+        if "rbd" in args:
+            return cls.from_diagram(args["rbd"], args["phases"])
+        return cls(args["phases"])
+
+    def parameter_sensitivity(
+        self, rel_step: float = 1e-5
+    ) -> Dict[Hashable, Dict[str, float]]:
+        """The sensitivity of the mission's reliability to each lever: each
+        component's model's parameters, by surpyval's names, and each
+        phase's duration.
+
+        Each derivative is a central difference of the mission's exact
+        reliability, the mission rebuilt with the lever moved either way
+        by ``rel_step`` of its value (``rel_step`` itself at 0), as
+        [`with_levers`][repyability.PhasedMission.with_levers] builds it:
+        a component's model in every phase that uses it, a phase's
+        duration moving the later phases with it. It is one-sided where
+        one side is not a valid value, and nan where neither is; it is
+        differenced on the mission's unreliability where that is the
+        smaller, so a small change keeps its precision. A block's model
+        of a phase's own (a ``BlockSetting``'s ``model``) is not a lever.
+        ``levers()`` lists them, with their values and ranges.
+
+        In the guide's Greeks it is the levers' *deltas* (see
+        [Sensitivities: the Greeks](../guide/greeks.md)).
+
+        Parameters
+        ----------
+        rel_step : float, optional
+            The relative step of the differences, by default 1e-5.
+
+        Returns
+        -------
+        dict
+            ``{component: {parameter: derivative}}``, and the phases'
+            durations under ``None``, as ``{"phase.<name>.duration":
+            derivative}``.
+
+        Raises
+        ------
+        ValueError
+            If ``rel_step`` is not a number between 0 and 1.
+        NotImplementedError
+            As ``reliability`` refuses, or, with blocks on standby whose
+            Markov chain cannot be worked out, naming ``failure_drivers``.
+
+        Examples
+        --------
+        One exponential unit for 10 hours then 10 more: ``R = exp(-20
+        rate)``, so ``dR/d rate = -20 exp(-0.2)``, and each phase's
+        duration moves it by ``-0.01 exp(-0.2)``.
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> unit = surv.Exponential.from_params([0.01])
+        >>> one = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": unit})
+        >>> mission = PhasedMission([("out", 10.0, one), ("back", 10.0, one)])
+        >>> sens = mission.parameter_sensitivity()
+        >>> round(sens["a"]["failure_rate"], 4)
+        -16.3746
+        >>> round(sens[None]["phase.back.duration"], 6)
+        -0.008187
+        """
+        from repyability.rbd import _sensitivity
+
+        self._require_measures("parameter sensitivities")
+        if not (is_number(rel_step) and 0.0 < float(rel_step) < 1.0):
+            raise ValueError(
+                f"rel_step must be a number between 0 and 1, got {rel_step!r}."
+            )
+        success, failure = self._exact(len(self.phases))
+        # Differences of the smaller of the two keep their precision.
+        smaller = 1 if failure <= success else 0
+        sign = -1.0 if smaller else 1.0
+        base = np.array([sign * (failure if smaller else success)])
+        out: Dict[Hashable, Dict[str, float]] = {}
+        for lever in _sensitivity._mission_levers(self):
+
+            def at(value, lever=lever):
+                try:
+                    changed = PhasedMission._from_args(lever.build(value))
+                except (ValueError, TypeError):
+                    return None
+                found = changed._exact(len(changed.phases))
+                return np.array([sign * found[smaller]])
+
+            change = _sensitivity._difference(at, lever, float(rel_step), base)
+            out.setdefault(lever.key, {})[lever.name] = float(change[0])
+        return out
+
+    def levers(self) -> List["Lever"]:
+        """The levers ``parameter_sensitivity`` moves, in the order it
+        reports them: each component's model's parameters, by surpyval's
+        names (a regression block's covariates), then each phase's
+        duration, under ``None`` as ``"phase.<name>.duration"``; each a
+        [`Lever`][repyability.Lever] with its value and range, as a
+        diagram's ``levers()`` lists them. Nothing is worked out;
+        [`with_levers`][repyability.PhasedMission.with_levers] sets them.
+
+        Returns
+        -------
+        list of Lever
+            The levers, in ``parameter_sensitivity``'s order.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> unit = surv.Weibull.from_params([100, 2])
+        >>> one = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": unit})
+        >>> mission = PhasedMission([("out", 10.0, one), ("back", 5.0, one)])
+        >>> for lever in mission.levers():
+        ...     print(lever.key, lever.name, lever.value)
+        a alpha 100.0
+        a beta 2.0
+        None phase.out.duration 10.0
+        None phase.back.duration 5.0
+        """
+        from repyability.rbd import _sensitivity
+
+        return _sensitivity.public_levers(self)
+
+    def with_levers(self, values) -> "PhasedMission":
+        """A copy of this mission with levers at new values: a component's
+        model rebuilt with the parameter changed, in every phase's diagram
+        that uses it, or a phase's duration. ``levers()`` lists them.
+
+        Parameters
+        ----------
+        values : dict
+            Each lever's new value, by its [`Lever`][repyability.Lever]
+            (from ``levers()``) or by its ``(key, name)``, as
+            ``parameter_sensitivity`` reports it.
+
+        Returns
+        -------
+        PhasedMission
+            The new mission, built as this one was with the levers moved;
+            this one is unchanged.
+
+        Raises
+        ------
+        ValueError
+            For a lever the mission does not have (with the closest name),
+            or a value its model or the mission refuses (one outside the
+            lever's ``bounds``).
+        TypeError
+            If ``values`` is not a dict, a lever is neither a ``Lever``
+            nor a ``(key, name)``, or a value is not a number.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> unit = surv.Exponential.from_params([0.01])
+        >>> one = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": unit})
+        >>> mission = PhasedMission([("out", 10.0, one), ("back", 10.0, one)])
+        >>> shorter = mission.with_levers({(None, "phase.back.duration"): 5.0})
+        >>> shorter.duration
+        15.0
+        """
+        from repyability.rbd import _sensitivity
+
+        return _sensitivity.with_levers(self, values)
+
+    # ------------------------------------------------------------------
+    # Saving
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """The mission as a JSON-friendly dict (see ``from_dict``), as a
+        diagram saves itself (see [`RBD.to_dict`][repyability.RBD.to_dict]).
+
+        A mission built from a diagram per phase saves each phase's name,
+        duration and diagram (``NonRepairableRBD.to_dict``); one drawn as
+        one diagram (``from_diagram``) saves the diagram once, and each
+        phase's name, duration, blocks' settings (their states,
+        covariates, models, start probabilities and dormancy) and vote
+        counts.
+
+        Returns
+        -------
+        dict
+            The ``repyability_version`` that wrote it, the ``type``
+            (``"PhasedMission"``), the ``phases`` and, for a mission drawn
+            as one diagram, the ``rbd``.
+
+        Raises
+        ------
+        NotImplementedError
+            If a model cannot be serialised: one that is not surpyval's
+            (nor a RePyability node model).
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> unit = surv.Weibull.from_params([100, 2])
+        >>> one = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": unit})
+        >>> mission = PhasedMission([("out", 10.0, one), ("back", 5.0, one)])
+        >>> d = mission.to_dict()
+        >>> d["type"], [phase["duration"] for phase in d["phases"]]
+        ('PhasedMission', [10.0, 5.0])
+        """
+        out: Dict[str, Any] = {
+            "repyability_version": __version__,
+            "type": "PhasedMission",
+        }
+        if "rbd" not in self._init_args:
+            out["phases"] = [
+                {
+                    "name": phase.name,
+                    "duration": phase.duration,
+                    "rbd": phase.rbd.to_dict(),
+                }
+                for phase in self.phases
+            ]
+            return out
+        out["rbd"] = self._init_args["rbd"].to_dict()
+        out["phases"] = [
+            {
+                "name": setting.name,
+                "duration": setting.duration,
+                "blocks": [
+                    {
+                        "node": node,
+                        "setting": setting_to_dict(given, saving=True),
+                    }
+                    for node, given in setting.blocks.items()
+                ],
+                "k": [
+                    {"node": node, "k": count}
+                    for node, count in setting.k.items()
+                ],
+            }
+            for setting in self._settings
+        ]
+        return out
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PhasedMission":
+        """Rebuild a mission from ``to_dict``'s output, by calling the
+        constructor (or ``from_diagram``) again, so it is checked again.
+        Tuple names, which JSON turns into lists, are turned back.
+
+        Parameters
+        ----------
+        d : dict
+            As ``to_dict`` returns (possibly after a JSON round trip).
+
+        Returns
+        -------
+        PhasedMission
+            The mission.
+
+        Raises
+        ------
+        ValueError
+            If ``d`` is not a mission's dict, a model kind is unknown, or
+            the constructor rejects the stored inputs.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> unit = surv.Weibull.from_params([100, 2])
+        >>> one = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": unit})
+        >>> mission = PhasedMission([("out", 10.0, one), ("back", 5.0, one)])
+        >>> again = PhasedMission.from_dict(mission.to_dict())
+        >>> again.reliability() == mission.reliability()
+        True
+        """
+        from repyability.rbd.non_repairable_rbd import NonRepairableRBD
+        from repyability.rbd.serialisation import _node_name
+
+        kind = d.get("type") if isinstance(d, Mapping) else None
+        if kind != "PhasedMission":
+            raise ValueError(
+                "PhasedMission.from_dict takes a mission's to_dict() "
+                f'document, whose "type" is "PhasedMission", got {kind!r}.'
+            )
+        if "rbd" not in d:
+            return cls(
+                [
+                    (
+                        _node_name(phase["name"]),
+                        phase["duration"],
+                        NonRepairableRBD.from_dict(phase["rbd"]),
+                    )
+                    for phase in d["phases"]
+                ]
+            )
+        return cls.from_diagram(
+            NonRepairableRBD.from_dict(d["rbd"]),
+            [
+                MissionPhase(
+                    _node_name(phase["name"]),
+                    phase["duration"],
+                    blocks={
+                        _node_name(entry["node"]): setting_from_dict(
+                            entry["setting"]
+                        )
+                        for entry in phase.get("blocks") or ()
+                    },
+                    k={
+                        _node_name(entry["node"]): entry["k"]
+                        for entry in phase.get("k") or ()
+                    },
+                )
+                for phase in d["phases"]
+            ],
+        )
+
+    def to_json(self, fp=None, **json_kwargs) -> Optional[str]:
+        """The mission as a JSON document (see ``to_dict``): returned, or
+        written to ``fp`` (as surpyval's models' ``to_json(fp)`` writes
+        them).
+
+        Parameters
+        ----------
+        fp : str, os.PathLike or file, optional
+            A path, or a file opened for writing, to write the document to;
+            by default None: it is returned.
+        **json_kwargs
+            Passed to ``json.dumps``, e.g. ``indent=2``.
+
+        Returns
+        -------
+        str or None
+            The JSON document, or None once written to ``fp``.
+
+        Raises
+        ------
+        NotImplementedError
+            If a model cannot be serialised (see ``to_dict``).
+        TypeError
+            If a name cannot be encoded as JSON.
+        """
+        return write_json(json.dumps(self.to_dict(), **json_kwargs), fp)
+
+    @classmethod
+    def from_json(cls, s) -> "PhasedMission":
+        """Rebuild a mission from ``to_json``'s output.
+
+        Parameters
+        ----------
+        s : str, os.PathLike or file
+            The JSON document: its text, a path to a file holding it, or a
+            file opened for reading.
+
+        Returns
+        -------
+        PhasedMission
+            The mission.
+
+        Raises
+        ------
+        ValueError
+            If ``s`` is not valid JSON, or for the reasons given in
+            ``from_dict``.
+        FileNotFoundError
+            If ``s`` is neither a JSON document nor the path of a file.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PhasedMission
+        >>> unit = surv.Weibull.from_params([100, 2])
+        >>> one = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": unit})
+        >>> mission = PhasedMission([("out", 10.0, one), ("back", 5.0, one)])
+        >>> round(PhasedMission.from_json(mission.to_json()).reliability(), 4)
+        0.9778
+        """
+        return cls.from_dict(json.loads(read_json(s)))
+
     def analysis_routes(self) -> Dict[str, routes.AnalysisRoute]:
         """How each analysis of the mission is computed, found without
         running it: exactly, by simulation, or not at all.
@@ -2455,7 +3333,7 @@ class PhasedMission:
         }
         out["phase_failure_probabilities"] = diagram
         measures = r.refusal(
-            lambda: self._require_exact("importance measures")
+            lambda: self._require_measures("importance measures")
         )
         for name in (
             "birnbaum_importance",
@@ -2463,9 +3341,15 @@ class PhasedMission:
             "risk_achievement_worth",
             "risk_reduction_worth",
             "criticality_importance",
+            "differential_importance",
+            "joint_importance",
         ):
             out[name] = r.refused(measures) if measures else diagram
-        cuts = measures or refused or r.refusal(self._cut_set_plan)
+        cuts = (
+            r.refusal(lambda: self._require_exact("Fussell-Vesely importance"))
+            or refused
+            or r.refusal(self._cut_set_plan)
+        )
         out["fussell_vesely"] = (
             r.refused(cuts)
             if cuts
@@ -2473,6 +3357,41 @@ class PhasedMission:
                 r.EXACT,
                 "The mission's minimal cut sets, their occurrence a "
                 "decision diagram over the components' segments.",
+                nodes,
+                "reliabilities",
+            )
+        )
+        densities = (
+            r.refusal(
+                lambda: self._require_exact("Barlow-Proschan importance")
+            )
+            or refused
+        )
+        out["barlow_proschan_importance"] = (
+            r.refused(densities)
+            if densities
+            else r.with_nodes(
+                r.NUMERICAL,
+                "Each component's part of the rate at which the mission "
+                "fails within its phases (the decision diagram's "
+                "derivative by the component's segment, times its "
+                "density), integrated over the mission's time by adaptive "
+                "Gauss-Legendre quadrature (to about 1e-9).",
+                nodes,
+                "reliabilities",
+            )
+        )
+        moved = r.refusal(
+            lambda: self._require_measures("parameter sensitivities")
+        )
+        out["parameter_sensitivity"] = (
+            r.refused(moved or diagram.reason)
+            if moved or diagram.route == r.REFUSED
+            else r.with_nodes(
+                r.NUMERICAL,
+                "Differences of the mission's exact reliability, the "
+                "mission rebuilt with each lever moved either way. "
+                + diagram.reason,
                 nodes,
                 "reliabilities",
             )
@@ -2493,6 +3412,18 @@ class PhasedMission:
         )
         for name in ("reliability_over_time", "failure_drivers", "summary"):
             out[name] = whole
+        out["expected_mission_time"] = (
+            whole
+            if whole.route != r.EXACT
+            else r.with_nodes(
+                r.NUMERICAL,
+                "The reliability over the mission's time integrated by "
+                "adaptive Gauss-Legendre quadrature (to about 1e-9). "
+                + diagram.reason,
+                nodes,
+                "reliabilities",
+            )
+        )
         replay = r.refusal(lambda: _mission_runs.replayable(self))
         if diagram.route != r.REFUSED:
             out["compare"] = dataclasses.replace(

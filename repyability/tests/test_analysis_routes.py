@@ -651,11 +651,18 @@ PHASED_CALLS = {
             "risk_reduction_worth",
             "criticality_importance",
             "fussell_vesely",
+            "differential_importance",
+            "joint_importance",
+            "barlow_proschan_importance",
+            "parameter_sensitivity",
             "importances",
         )
     },
     "reliability_interval": (
         lambda mission: mission.reliability_interval(200, seed=1)
+    ),
+    "expected_mission_time": (
+        lambda mission: mission.expected_mission_time(mc_samples=200, seed=1)
     ),
     "reliability_over_time": (
         lambda mission: mission.reliability_over_time(
@@ -681,14 +688,18 @@ def mission():
 
 @pytest.mark.parametrize(
     "limit, expected",
-    [(None, {"exact", "simulated"}), (5, {"refused", "simulated"})],
+    [
+        (None, {"exact", "numerical", "simulated"}),
+        (5, {"refused", "simulated"}),
+    ],
     ids=["worked out", "too large"],
 )
 def test_every_mission_method_does_what_the_report_says(
     limit, expected, monkeypatch
 ):
-    # A mission's analyses are exact, or refused once its decision diagram
-    # passes the limit, and its interval simulated (#316).
+    # A mission's analyses are exact (numerical where integrated or
+    # differenced), or refused once its decision diagram passes the
+    # limit, and its interval simulated (#316).
     if limit is not None:
         monkeypatch.setattr(phased_mission, "MAX_NODES", limit)
     phased = mission()
@@ -721,6 +732,12 @@ def test_the_mission_report_covers_every_public_analysis():
         "analysis_routes",
         "from_diagram",
         "minimal_cut_sets",
+        "from_dict",
+        "from_json",
+        "to_dict",
+        "to_json",
+        "levers",
+        "with_levers",
     }
 
 

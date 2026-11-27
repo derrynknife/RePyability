@@ -181,6 +181,7 @@ Which analyses each model type has (the method; — where it has none):
 | Top event probability | — | — | `top_event_probability` | — | — | — |
 | Each phase's failure probability | — | — | — | — | `phase_failure_probabilities` | — |
 | Reliability over a mission's time | — | — | — | — | `reliability_over_time` | — |
+| Expected time a mission runs (to failure or its end) | — | — | — | — | `expected_mission_time` | — |
 | A mission's results from one run | — | — | — | — | `summary` | — |
 | **Availability and outages** | | | | | | |
 | Reliability and mean time to the first failure | — | `first_failure_sf` | — | — | — | — |
@@ -226,7 +227,7 @@ Which analyses each model type has (the method; — where it has none):
 | Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — | — |
 | Capacity over time | — | `point_capacity` | — | — | — | — |
 | How each analysis is computed | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` |
-| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | — | `to_dict` |
+| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | `to_dict` | `to_dict` |
 | Export to Open-PSA (MEF) | — | — | `to_open_psa` | — | — | — |
 | Import from Open-PSA (MEF) | — | — | `from_open_psa` | — | — | — |
 | **Event trees (an initiating event through its barriers)** | | | | | | |
@@ -249,9 +250,9 @@ Which analyses each model type has (the method; — where it has none):
 | Risk reduction worth | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | — |
 | Criticality | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` | — |
 | Fussell-Vesely | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` |
-| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | — | — |
-| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | — | — |
-| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | — | — |
+| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | — |
+| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | — |
+| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | — |
 | Shares of a safety function's PFDavg, common cause apart | — | `pfd_breakdown` | — | — | — | — |
 | Each block's part in each phase's failures | — | — | — | — | `failure_drivers` | — |
 | Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — | — |
@@ -259,7 +260,7 @@ Which analyses each model type has (the method; — where it has none):
 | Every measure in one call | `importances` | `importances` | `importances` | `importances` | `importances` | — |
 | All measures given a state | `importances_given_state` | — | — | — | — | — |
 | Top event given each event | — | — | `conditional_probabilities` | — | — | — |
-| Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — | — |
+| Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — |
 | Tornado data (each lever at its low and high) | `tornado` | `tornado` | `tornado` | `tornado` | — | — |
 | **Uncertainty** | | | | | | |
 | Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | `sf_uncertainty` | `sf_uncertainty` | `reliability_interval` | — |
