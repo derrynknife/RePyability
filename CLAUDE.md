@@ -639,8 +639,13 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   Markov chain written out there and holds its routes to its methods on
   `catalogue.safety_function_kinds()` (a new method needs its call in
   `SAFETY_CALLS`, and a row in the capability matrix as
-  `SafetyFunction.method`). `simplified_formulas()` is IEC 61508-6
-  Annex B's, kept only to compare.
+  `SafetyFunction.method`). Its structure is a tree (`_Stage`, a vote
+  of channels; `_Voted`, a vote of parts; `_Series`), drawn by one
+  recursion into both diagrams: a vote's safe dual is `N - k + 1` of its
+  parts not tripped, a series' every part. `simplified_formulas()` is
+  IEC 61508-6 Annex B's, kept only to compare;
+  `test_safety_function.py` checks it against a published worked
+  example (`DECK`).
 
 - **An `EventTree` (`repyability/event_tree.py`) has no evaluation of
   its own.** Each sequence is one `FaultTree` (`sequence_tree`): the AND
