@@ -245,16 +245,17 @@ def test_two_states_give_the_exponential_unit_s_values_over_time():
     assert chain.mission_unavailability(100.0) == pytest.approx(
         plain.mission_unavailability(100.0), abs=1e-12
     )
-    # The plain unit's availability and expected events come from its
-    # renewal equation on a grid, to about 1e-7; the chain's are exact.
+    # The plain unit's availability and expected events are its closed
+    # form's (on its renewal grid they were about 1e-7 off); the chain's
+    # are exact.
     np.testing.assert_allclose(
         chain.point_availability(TIMES),
         plain.point_availability(TIMES),
         rtol=0,
-        atol=1e-7,
+        atol=1e-12,
     )
     assert chain.expected_failures(100.0) == pytest.approx(
-        plain.expected_failures(100.0), abs=1e-7
+        plain.expected_failures(100.0), abs=1e-12
     )
 
 

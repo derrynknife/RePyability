@@ -89,7 +89,11 @@ from repyability.rbd._point_availability import (
     failed_at,
 )
 from repyability.rbd._point_availability import knots as point_knots
-from repyability.rbd._point_availability import unit_curve
+from repyability.rbd._point_availability import (
+    on_grid,
+    repair_scale,
+    unit_curve,
+)
 from repyability.rbd._sampling import stream_sampler
 from repyability.rbd.node_state import NodeState
 from repyability.rbd.routes import AnalysisRoute
@@ -2117,8 +2121,13 @@ def _unit_curve(
         step = min(step, scale / _POINT_STEPS)
     if not np.isfinite(step):
         step = 1.0
+    # A fixed repair time bends the curve at that time: on the grid, as
+    # the replacement age is (the age alone, where no step has both).
+    fixed = repair_scale(repair_sf, point_knots(repair)).fixed
     if age is not None and step < age:
-        step = age / np.ceil(age / step)
+        step = on_grid(step, age, fixed)
+    elif age is None and fixed is not None:
+        step = on_grid(step, fixed)
     # Units that each reach their age are maintained at nearly fixed
     # times, which the curve follows until they have all but ended.
     survive = 0.0
@@ -2634,7 +2643,8 @@ def _ongoing(head, key: str, model, at: float, own=None):
     atoms) each on its own, the rest at a constant rate in each of
     ``_ONGOING_CELLS`` cells back from ``at``, each cell's integral of
     ``P(T > v)`` exact (``integral_0^x P(T > v) dv`` at the cells'
-    ends), tabulated a cell apart in ``s``."""
+    ends), tabulated a cell apart in ``s`` and a monotone cubic between
+    (so a survival function still)."""
     from repyability.rbd._block_replacement import _cumulative
 
     if model is None:
@@ -2684,9 +2694,17 @@ def _ongoing(head, key: str, model, at: float, own=None):
     left = np.clip(left / total, 0.0, 1.0)
     left = np.minimum.accumulate(left)
 
+    # Between the table's points by a monotone cubic: taken as linear, a
+    # repair's survival function a cell apart (a 2,000th of its longest)
+    # was 2e-5 off, as much as the curve after the upgrade then was.
+    from scipy.interpolate import PchipInterpolator
+
+    table = PchipInterpolator(s, left, extrapolate=False)
+
     def sf(x):
         x = np.asarray(x, dtype=float)
-        return np.interp(x, s, left, right=0.0)
+        inside = np.clip(x, 0.0, s[-1])
+        return np.where(x > s[-1], 0.0, np.clip(table(inside), 0.0, 1.0))
 
     # Its quantiles, for the grid's cells (see ``point_knots``).
     from repyability.rbd._point_availability import _KNOT_PROBABILITIES

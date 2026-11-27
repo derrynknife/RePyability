@@ -399,8 +399,13 @@ def test_held_components_take_no_part():
     rbd = mixed()
     rate = rbd.availability_rate([1.0, 5.0], broken_nodes=["b"])
     np.testing.assert_array_equal(rate.node_rate["b"], 0.0)
+    # (At 1.0 the curves are on their early grids, of a step of 0.0012:
+    # differences 0.024 either side are 3.1e-5 from the rate there, and
+    # 3.5e-6 at 0.003.)
     np.testing.assert_allclose(
-        rate.rate, own_rate(rbd, [1.0, 5.0], broken_nodes=["b"]), rtol=3e-5
+        rate.rate,
+        own_rate(rbd, [1.0, 5.0], h=0.003, broken_nodes=["b"]),
+        rtol=3e-5,
     )
 
 

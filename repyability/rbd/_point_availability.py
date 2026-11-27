@@ -37,11 +37,20 @@ at its units' (see ``RepairableRBD.point_availability``).
   replacement age -- are kept out of the grid (a ``GridCurve``'s dips):
   their survival functions are exact at any time, however short they are.
 
+- The curve from 0 is worked out again on *early grids*, each a quarter
+  of the step of the one before, down to a step that resolves the repair
+  time and the first bends of the life (``unit_curve``): a grid sized by
+  the life is linear across steps in which a repair many times shorter
+  starts and ends, and was 1e-5 off within its first steps.
+
 The error falls as the square of the step. With the default of 1,000 steps
-over a unit's typical up time it is about 4e-7 (up to 4e-6 soon after the
-start, for a unit whose repairs last some dozens of steps); a mission
-average over more than a few steps is exact to about 4e-8, and the
-long-run value is reached to about 1e-12.
+over a unit's typical up time it is about 1e-9 past the early grids and
+1e-8 within them; a mission average over more than a few steps is exact
+to about 1e-8, and the long-run value is reached to about 1e-12. The
+expected failures are exact to about 1e-7: a sum of times on the grid is
+spread a little wider than the times are (by a sixth of a step squared
+for each), which moves the count of renewals by that over twice the
+cycle's mean squared.
 
 Under age replacement, the units that each reach their replacement age are
 maintained at nearly fixed times too: the ``n``-th after the first at
@@ -82,6 +91,7 @@ shares of the up time.
 """
 
 import math
+from fractions import Fraction
 from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
 import numpy as np
@@ -101,6 +111,28 @@ _CHAIN_VALUES = 2**24
 #: A lifetime that ends at up to this many exact times (an exact lifetime,
 #: say) has the first unit's failures at them kept as dips.
 _MAX_ATOMS = 16
+
+#: An early grid (see ``unit_curve``): its step is the grid's before it
+#: over ``_EARLY_RATIO``, and it has ``_EARLY_STEPS`` steps, or as many
+#: as reach where the grid before it is fine enough (``_EARLY_MOST`` at
+#: most). The grids go on while a line across a step is more than
+#: ``_EARLY_ERROR`` off the curve as a repair starts and ends within it
+#: (``_fine``; for a fixed repair time, until that is ``_FIXED_STEPS``
+#: steps, on the grid), or the first unit's failure time is not linear
+#: across each of
+#: the first ``_BEND_CELLS`` cells to ``_EARLY_BEND``; at most
+#: ``_EARLY_GRIDS`` of them.
+_EARLY_RATIO = 4
+_EARLY_STEPS = 1024
+_EARLY_MOST = 2**14
+_EARLY_ERROR = 1e-8
+_FIXED_STEPS = 4
+_BEND_CELLS = 8
+_EARLY_BEND = 1e-9
+_EARLY_GRIDS = 8
+#: The most parts a replacement age and a fixed repair time are whole
+#: multiples of, for a grid to have both on its points (``on_grid``).
+_COMMON = 64
 
 #: The probabilities whose quantiles split the grid's cells for the
 #: integrals: finely in both tails.
@@ -125,6 +157,106 @@ def knots(model) -> np.ndarray:
     except MODEL_ERRORS:  # a model whose qf cannot take these
         return np.empty(0)
     return q[np.isfinite(q)]
+
+
+class RepairScale(NamedTuple):
+    """A repair time's scales (see ``repair_scale``): ``width``, over
+    which its density is spread (inf if unknown); ``fixed``, the time
+    itself if it is a fixed one (else None); and its quantiles ``times``
+    with the probability ``left`` of lasting longer than each."""
+
+    width: float
+    fixed: Optional[float]
+    times: np.ndarray
+    left: np.ndarray
+
+    def reach(self, share: float) -> float:
+        """The time by which all but ``share`` of the repairs are over
+        (the last quantile known, for a smaller share)."""
+        if self.fixed is not None:
+            return self.fixed
+        if not self.times.size:
+            return 0.0
+        late = self.times[self.left <= share]
+        return float(late[0] if late.size else self.times[-1])
+
+
+def repair_scale(sf: Callable, splits) -> RepairScale:
+    """The scales of a repair time with survival function ``sf`` (and
+    quantiles ``splits``): its width, the middle half of its
+    distribution, or its lower quartile if that is less (most of the
+    density near 0, with a long tail); a fixed time itself. Where the
+    quantiles do not say (none, a repair in no time, or one part at a
+    fixed time and part spread), a width of inf."""
+    q = np.unique(np.asarray(splits, dtype=float))
+    q = q[np.isfinite(q) & (q > 0.0)]
+    left = np.asarray(sf(q), dtype=float) if q.size else np.empty(0)
+    unknown = RepairScale(np.inf, None, q, left)
+    lower, upper = q[left <= 0.75], q[left <= 0.25]
+    if not upper.size:
+        return unknown
+    width = float(upper[0] - lower[0])
+    if width > 0.0:
+        return RepairScale(min(width, float(lower[0])), None, q, left)
+    fixed = float(upper[0])
+    if float(np.asarray(sf(np.array([fixed * (1.0 - 1e-12)])))[0]) < 1.0:
+        return unknown
+    return RepairScale(np.inf, fixed, q, left)
+
+
+def _fine(repair: RepairScale, cdfs, step: float) -> float:
+    """How fine a grid of ``step`` is for the repair time: 1 or more if
+    a line across a step is within ``_EARLY_ERROR`` of the curve there
+    (or a fixed repair time is ``_FIXED_STEPS`` steps or more), and
+    else the share of that error it is. A unit that fails within a step
+    of its start (with the probability the ``cdfs`` of its life give
+    there: the first unit's and a new one's) is back at the repair's
+    rate, about one over its width: the curve bends by that probability
+    over the step and the width, and a line across the step is an eighth
+    of that times the step squared off. As the repairs that could be
+    under way end, the curve straightens: a grid too coarse by a share
+    is fine once all but that share of them are over."""
+    if repair.fixed is not None:
+        return repair.fixed / (_FIXED_STEPS * step)
+    if not np.isfinite(repair.width):
+        return np.inf
+    at = np.array([step])
+    failing = max(float(np.asarray(cdf(at))[0]) for cdf in cdfs)
+    if not failing > 0.0:
+        return np.inf
+    return 8.0 * _EARLY_ERROR * repair.width / (step * failing)
+
+
+def _bend(cdf: Optional[Callable], step: float) -> float:
+    """How far ``cdf`` is from linear across each of the first cells of a
+    grid of ``step``, at most: at their middles (0 for no ``cdf``). A life
+    whose density is unbounded at 0, or rises from 0 there, bends within
+    the first steps of any grid sized by its scale."""
+    if cdf is None:
+        return 0.0
+    edges = step * np.arange(_BEND_CELLS + 1)
+    at = np.asarray(cdf(edges), dtype=float)
+    middle = np.asarray(cdf(edges[:-1] + 0.5 * step), dtype=float)
+    return float(np.max(np.abs(middle - 0.5 * (at[:-1] + at[1:]))))
+
+
+def on_grid(step: float, time: float, other: Optional[float] = None) -> float:
+    """The greatest step up to ``step`` of which ``time`` is a multiple
+    (``step`` itself for a ``time`` shorter than it), and ``other`` too
+    where the two are whole multiples of a time no shorter than half of
+    ``step`` (else ``time`` alone)."""
+    if other is not None and other > 0.0 and time > 0.0:
+        ratio = Fraction(other / time).limit_denominator(_COMMON)
+        common = time / ratio.denominator
+        if (
+            ratio > 0
+            and abs(ratio.numerator * common - other) <= 1e-12 * other
+            and common >= 0.5 * step
+        ):
+            return common / max(np.ceil(common / step), 1.0)
+    if not 0.0 < step <= time:
+        return step
+    return time / np.ceil(time / step)
 
 
 def _cell_integrals(f: Callable, t: np.ndarray, splits) -> np.ndarray:
@@ -557,11 +689,96 @@ def unit_curve(
     followed one after another (``ChainDips``) only when the maintenance
     takes no time, and only those started before ``at``; else the grid
     takes them.
+
+    The grid's step follows the unit's life, and a repair many times
+    shorter bends the curve within the first steps: a unit that fails at
+    once is back within a step. The curve from 0 is therefore worked out
+    again on *early grids*, each a quarter of the step of the one before
+    and ``_EARLY_STEPS`` steps long (or to where the one before is fine
+    enough), down to a step across which the curve is all but a line
+    (``_fine``), and each is the curve up to its end
+    (``GridCurve.early``): the same equations, on a step for each time
+    scale. So is a life that bends within the first steps (a density
+    unbounded at 0, as a Weibull's of shape below 1, or one that rises
+    from 0): the early grids go on until the first unit's failure time
+    is all but linear across the first cells (``_bend``). A fixed
+    repair time bends the curve at exactly that time
+    (the first unit's repairs start to end), so the early grids have it
+    on their points where it is longer than their step (but where a
+    replacement age falls within them, which they keep on theirs).
     """
+    arguments = dict(
+        age=age,
+        maintenance_sf=maintenance_sf,
+        maintenance_splits=maintenance_splits,
+        counts=counts,
+        stages=stages,
+        first=first,
+        switch=switch,
+    )
+    curve = _grid_curve(
+        up_cdf, up_splits, repair_sf, repair_splits, step, n, **arguments
+    )
+    repair = repair_scale(repair_sf, repair_splits)
+    first_cdf = up_cdf if first is None else first.cdf
+    cdfs = [cdf for cdf in (up_cdf, first_cdf) if cdf is not None]
+    last = curve
+    for _ in range(_EARLY_GRIDS):
+        fine = _fine(repair, cdfs, step)
+        if fine >= 1.0 and _bend(first_cdf, step) <= _EARLY_BEND:
+            break
+        finer = step / _EARLY_RATIO
+        steps = _EARLY_STEPS
+        if fine < 1.0:
+            # To where this grid is fine enough for the repairs left.
+            reach = int(np.ceil(repair.reach(fine) / finer))
+            steps = min(max(steps, reach), _EARLY_MOST)
+        n = min(_EARLY_RATIO * n, steps)
+        if switch is not None:
+            # Before the switch the unit is the first life's alone (and
+            # its replacements one after another are counted as that
+            # unit's are); a grid that would reach it is left out.
+            if n * finer >= switch[0]:
+                break
+            arguments["switch"] = None
+        fixed = repair.fixed
+        if fixed is not None and (age is None or age > n * finer):
+            finer = on_grid(finer, fixed)
+        step = finer
+        last.early = _grid_curve(
+            up_cdf, up_splits, repair_sf, repair_splits, step, n, **arguments
+        )
+        if last.failed_curve is not None:
+            last.failed_curve.early = last.early.failed_curve
+        last = last.early
+    return curve
+
+
+def _grid_curve(
+    up_cdf: Callable,
+    up_splits,
+    repair_sf: Callable,
+    repair_splits,
+    step: float,
+    n: int,
+    age: Optional[float] = None,
+    maintenance_sf: Optional[Callable] = None,
+    maintenance_splits=(),
+    counts: bool = False,
+    stages: Optional[Callable] = None,
+    first: Optional[First] = None,
+    switch: Optional[Tuple[float, Callable, Any]] = None,
+) -> "GridCurve":
+    """A unit's curve on one grid, ``k step`` for ``k`` up to ``n`` (see
+    ``unit_curve``, which gives it its early grids)."""
     if switch is not None and stages is not None:
         raise NotImplementedError(
             "the stages of a unit whose life changes are not followed"
         )
+    # One step more than asked for, left out of the curve: a grid's last
+    # point holds only the half of its mass that its last cell gives it
+    # (the cell after it the rest), so the values there would be off.
+    n += 1
     t = step * np.arange(n + 1)
     size = n + 1
     convolve = _Spectra(size).convolve
@@ -840,13 +1057,13 @@ def unit_curve(
         dips.append(
             (first_survive, first_due, maintenance_sf, maintenance_splits)
         )
-    curve = GridCurve(step, smooth, dips, chain=chain)
+    curve = GridCurve(step, smooth[:-1], dips, chain=chain)
     if maintenance_sf is not None or (first is not None and first.maintenance):
         # Down in a repair alone, on the same grid, for the split of its
         # downtime into planned and unplanned.
         failed_smooth = 1.0 - failed
         failed_smooth[0] = 1.0
-        curve.failed_curve = GridCurve(step, failed_smooth, repairs_dips)
+        curve.failed_curve = GridCurve(step, failed_smooth[:-1], repairs_dips)
     if stages is not None:
         # In each stage: the first unit by its own age, the later ones by
         # the renewals against the probability at each age (a unit renewed
@@ -861,11 +1078,11 @@ def unit_curve(
                 lambda x: np.zeros((len(occupied), np.size(x)))
             )
         curve.stages = StageCurves(
-            t,
+            t[:-1],
             first_stages,
             np.vstack(
                 [np.maximum(convolve(later, row), 0.0) for row in occupied]
-            ),
+            )[:, :-1],
         )
     if not counts:
         return curve
@@ -918,17 +1135,17 @@ def unit_curve(
     if first_cdf is not None and atom1 > 0.0:
         first_atoms.insert(0, (0.0, atom1))
     curve.unit_events = UnitEvents(
-        t,
+        t[:-1],
         first_cdf if first_cdf is not None else (lambda x: np.zeros(len(x))),
         first_atoms,
         float(repair_sf(np.zeros(1))[0]),
-        np.maximum(later_lived, 0.0),
+        np.maximum(later_lived, 0.0)[:-1],
         age=limit if others is not None else None,
         survive=preventive,
         fixed=fixed,
         chain=chain,
         count=max(count, 0),
-        others=others,
+        others=None if others is None else others[:-1],
         takedown=maintenance_sf is not None,
         maintenance_drop=(
             0.0
@@ -1575,7 +1792,10 @@ class GridCurve:
     ``long_run`` if given (it has settled there by then), and the grid then
     reaches the times it is needed at. ``unit_events``, if counted, are the
     unit's expected events (see ``UnitEvents``), and ``stages``, if
-    followed, the stages of a unit that degrades (see ``StageCurves``)."""
+    followed, the stages of a unit that degrades (see ``StageCurves``).
+    ``early``, if given, is the same unit's curve on a finer grid from 0,
+    which is the curve up to that grid's end (see ``unit_curve``): every
+    value before it is the early grid's."""
 
     period = None
 
@@ -1597,6 +1817,19 @@ class GridCurve:
         #: For a unit whose maintenance takes time: the curve of its
         #: probability of not being in a repair (see ``failed_at``).
         self.failed_curve: Optional["GridCurve"] = None
+        #: The curve on a finer grid, up to that grid's end.
+        self.early: Optional["GridCurve"] = None
+
+    def _early(self, x: np.ndarray, own: np.ndarray, value: Callable):
+        """``own`` (the values at ``x`` on this grid, along its last
+        axis) with those of the early grid, ``value(early, x)``, up to
+        its end."""
+        if self.early is None:
+            return own
+        inside = x <= self.early.times[-1]
+        if inside.any():
+            own[..., inside] = value(self.early, x[inside])
+        return own
 
     def failed_at(self, x: np.ndarray) -> np.ndarray:
         """Its probability of being in a repair, after a failure, at each
@@ -1614,7 +1847,12 @@ class GridCurve:
         shared among the stages (see ``StageCurves``), so that the rows add
         up to it."""
         assert self.stages is not None, "stages were not asked for"
-        return self.stages.shares(x) * self.at(np.asarray(x, dtype=float))
+        x = np.asarray(x, dtype=float)
+        return self._early(
+            x,
+            self.stages.shares(x) * self._own_at(x),
+            lambda early, inside: early.stages_at(inside),
+        )
 
     def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
         """The unit's expected events before each time ``x`` (in
@@ -1624,7 +1862,17 @@ class GridCurve:
         ``"preventive"`` actions (maintenance, taking time or not) and
         ``"inspections"`` (none)."""
         assert self.unit_events is not None, "counts were not asked for"
-        return self.unit_events.events(x)
+        x = np.asarray(x, dtype=float)
+        out = self.unit_events.events(x)
+        if self.early is None:
+            return out
+        inside = x <= self.early.times[-1]
+        if inside.any():
+            early = self.early.events(x[inside])
+            for key, values in out.items():
+                out[key] = values = np.array(values, dtype=float)
+                values[inside] = early[key]
+        return out
 
     def atoms(self, stop: float) -> Atoms:
         """The unit's events at exact times before ``stop``."""
@@ -1637,6 +1885,13 @@ class GridCurve:
         return np.inf if self.long_run is None else float(self.times[-1])
 
     def at(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        return self._early(
+            x, self._own_at(x), lambda early, inside: early.at(inside)
+        )
+
+    def _own_at(self, x: np.ndarray) -> np.ndarray:
+        """Its values on its own grid, whatever its early grid."""
         out = np.interp(x, self.times, self.smooth)
         for probability, start, sf, _ in self.dips:
             after = x >= start
@@ -1651,7 +1906,12 @@ class GridCurve:
     def knots(self, start: float, stop: float) -> np.ndarray:
         """The times in ``[start, stop]`` between which the curve is
         smooth."""
-        times = np.concatenate([self.times, self.breaks(start, stop)])
+        parts = [self.times, self.breaks(start, stop)]
+        early = self.early
+        while early is not None:
+            parts.append(early.times)
+            early = early.early
+        times = np.concatenate(parts)
         return times[(times >= start) & (times <= stop)]
 
     def breaks(self, start: float, stop: float) -> np.ndarray:
@@ -1663,14 +1923,19 @@ class GridCurve:
             parts.append(begin + np.append(0.0, splits))
         if self.chain is not None:
             parts.append(self.chain.knots(start, stop))
+        if self.early is not None:
+            # Its end is in its breaks.
+            parts.append(self.early.breaks(start, stop))
         times = np.concatenate(parts)
         return times[(times >= start) & (times <= stop)]
 
     def grids(self) -> list:
-        """Its grid, to its end (see ``curve_grids``)."""
+        """Its grid, to its end, and its early grids, each to its own
+        (see ``curve_grids``)."""
         if len(self.times) < 2:
             return []
-        return [(float(self.times[1]), float(self.times[-1]))]
+        own = [(float(self.times[1]), float(self.times[-1]))]
+        return own + ([] if self.early is None else self.early.grids())
 
     def _grid_at(self, x: np.ndarray) -> np.ndarray:
         """Its values on its grid alone, without its dips."""
@@ -1687,6 +1952,15 @@ class GridCurve:
         their own fine grids. A dip far shorter than a step (a few hours'
         maintenance on a grid of days) would be smoothed over by the
         differences of the whole curve."""
+        x = np.asarray(x, dtype=float)
+        return self._early(
+            x,
+            self._own_derivative(x, scale),
+            lambda early, inside: early.derivative(inside, scale),
+        )
+
+    def _own_derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """Its rate of change on its own grid, whatever its early grid."""
         from repyability.rbd._rates import differences
 
         ends = self.times[[0, -1]]
@@ -1695,7 +1969,7 @@ class GridCurve:
             return ends[(ends >= start) & (ends <= stop)]
 
         out = differences(
-            _GridPart(self._grid_at, breaks, self.grids()), x, scale
+            _GridPart(self._grid_at, breaks, self.grids()[:1]), x, scale
         )
         for probability, start, sf, splits in self.dips:
             after = x >= start
