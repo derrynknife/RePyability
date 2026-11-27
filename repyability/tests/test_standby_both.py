@@ -231,7 +231,12 @@ def test_lives_too_short_for_the_grid_are_refused(monkeypatch):
     [
         (
             "warm spare",
-            pair(W([1000.0, 2.5]), E([0.01]), dormancy_factor=0.5),
+            pair(
+                W([1000.0, 2.5]),
+                E([0.01]),
+                dormancy_factor=0.5,
+                switching_probability=0.9,
+            ),
         ),
         (
             "3 units",

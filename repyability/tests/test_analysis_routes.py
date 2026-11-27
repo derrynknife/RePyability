@@ -1305,6 +1305,11 @@ def test_the_readme_says_what_is_simulated():
             (
                 repairable["standby group, Weibull"],
                 "mean_availability",
+                "numerical",
+            ),
+            (
+                repairable["standby group, Weibull"],
+                "point_availability",
                 "refused",
             ),
         ],

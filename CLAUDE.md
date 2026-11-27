@@ -360,7 +360,12 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   that can fail it has a second family of states, a unit starting to
   operate with the spare waiting on at the life it has used (after a
   failed switch the spare goes on ageing through the repair):
-  `test_standby_warm.py` checks it the same way.
+  `test_standby_warm.py` checks it the same way. With both repaired at
+  once and a sure switch (`_standby_warm_both.py`) the second family is
+  a unit starting to operate, new, with the other some time from the
+  end of its repair (a repair's time is drawn when it starts, as the
+  loop draws it), followed on a finer grid of the repair's range:
+  `test_standby_warm_both.py`.
 - **A `MarkovComponent` (`repyability/rbd/markov_node.py`) rides the
   standby groups' rails in a `RepairableRBD`**: it is in `rbd._standby`
   as `_events.MARKOV` (key `"markov"`, one unit), so whatever handles or
