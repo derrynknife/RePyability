@@ -3,7 +3,9 @@
 The MEF (version 2.0d) holds static fault trees: gates ``or``, ``and``,
 ``atleast`` (k-out-of-n) and ``not``, basic events with a probability or
 a time-dependent expression of the mission time (``exponential``,
-``Weibull``), and common-cause groups (here the beta-factor model). It has
+``Weibull``) or of a repaired or tested component (``GLM``,
+``periodic-test``), and common-cause groups (here the beta-factor model).
+It has
 no dynamic gates, so a tree with PAND, SPARE or SEQ gates is refused; an
 FDEP gate is exported as its static equivalent (each event it forces an OR
 of the event and its triggers), which is exact.
@@ -71,13 +73,16 @@ def _number(x: float) -> str:
 
 
 def _expression(event: Hashable, model, t: Optional[float]) -> str:
-    """The MEF expression of an event's probability."""
+    """The MEF expression of an event's probability (of a repaired or
+    tested event, its unavailability)."""
     from surpyval import Exponential, Weibull
 
     from repyability.rbd._model_utils import parametric_spec
 
     if isinstance(model, float):
         return f"<float value={_number(model)}/>"
+    if isinstance(model, dict):
+        return _repaired_expression(event, model)
     if t is not None:
         value = float(np.ravel(model.ff(t))[0])
         return f"<float value={_number(value)}/>"
@@ -109,6 +114,103 @@ def _expression(event: Hashable, model, t: Optional[float]) -> str:
     )
 
 
+#: The keys of a tested event's ``"inspection"`` the format holds.
+_TEST_KEYS = ("interval", "offset", "duration")
+
+
+def _rate(event: Hashable, model, what: str) -> float:
+    """The rate of an exponential ``model``, the event's ``what``; refused
+    for any other model."""
+    from surpyval import Exponential
+
+    from repyability.rbd._model_utils import distribution_name, parametric_spec
+
+    spec = parametric_spec(model)
+    if spec is None or spec.cls is not Exponential or spec.extras:
+        kind = distribution_name(model) or type(model).__name__
+        raise NotImplementedError(
+            f"Repaired event {event!r}: its {what} is a {kind}, and the "
+            "format's repaired and tested events (GLM, periodic-test) "
+            "have exponential lives and repairs: pass t to export each "
+            "event's unavailability at that time."
+        )
+    return float(spec.params[0])
+
+
+def _repaired_expression(event: Hashable, spec: dict) -> str:
+    """The MEF expression of a repaired or tested event's unavailability
+    over the mission time: ``GLM`` for one repaired as it fails, and
+    ``periodic-test`` for a hidden failure found by tests (4 arguments
+    with an instant repair, 5 with an exponential one, and 11 for tests
+    that take a fixed time)."""
+    lam = _rate(event, spec["reliability"], "life")
+    repair = spec["repairability"]
+    instant = isinstance(repair, str) and repair == "instant"
+    mu = None if instant else _rate(event, repair, "repair time")
+    test = spec.get("inspection")
+    time = "<system-mission-time/>"
+
+    def floats(*values: float) -> str:
+        return "".join(f"<float value={_number(v)}/>" for v in values)
+
+    if test is None:
+        if mu is None:
+            raise NotImplementedError(
+                f"Repaired event {event!r} is repaired at once, so it is "
+                "never down: the format's GLM takes a repair rate. Give "
+                "it an exponential repair time, or leave it out."
+            )
+        return f"<GLM>{floats(0.0, lam, mu)}{time}</GLM>"
+    from repyability.rbd._spec import _validate_inspection
+
+    extra = sorted(map(str, set(test) - set(_TEST_KEYS)))
+    if extra:
+        raise NotImplementedError(
+            f"Tested event {event!r}: its inspection has {extra}, which "
+            "the format's periodic-test does not hold (it has the "
+            f"interval, the first test and a fixed test time: "
+            f"{', '.join(_TEST_KEYS)}). Pass t to export each event's "
+            "unavailability at that time."
+        )
+    schedule, _ = _validate_inspection(event, test)
+    tau = schedule.interval
+    theta = schedule.offset or tau
+    duration = test.get("duration")
+    if schedule.duration is None:
+        # The 4 arguments with an instant repair, else the 5.
+        rates = (lam,) if mu is None else (lam, mu)
+        return (
+            f"<periodic-test>{floats(*rates, tau, theta)}{time}"
+            "</periodic-test>"
+        )
+    if not isinstance(duration, (int, float, np.number)) or isinstance(
+        duration, (bool, np.bool_)
+    ):
+        raise NotImplementedError(
+            f"Tested event {event!r}: its test takes a time drawn from "
+            f"{duration!r}, and the format's periodic-test takes a fixed "
+            "test time. Pass t to export each event's unavailability at "
+            "that time."
+        )
+    if mu is None:
+        raise NotImplementedError(
+            f"Tested event {event!r} is repaired at once after a test "
+            "that takes time, and the format's periodic-test with a test "
+            "time takes a repair rate: give the event an exponential "
+            "repair time, or pass t to export each event's unavailability "
+            "at that time."
+        )
+    # lambda, lambda* (no failure in a test: the unit does not age), mu,
+    # tau, theta, gamma (no failure caused by the test), the test time,
+    # x (off line in the test), sigma (every failure found), omega (no
+    # bad restart) and the time.
+    return (
+        f"<periodic-test>{floats(lam, 0.0, mu, tau, theta, 0.0)}"
+        f'{floats(float(duration))}<bool value="false"/>{floats(1.0, 0.0)}'
+        f"{time}</periodic-test>"
+    )
+
+
 def to_open_psa(tree, t: Optional[float], name: str) -> str:
     """The MEF document of ``tree`` (see ``FaultTree.to_open_psa``)."""
     from repyability.fault_tree import Forced
@@ -136,6 +238,13 @@ def to_open_psa(tree, t: Optional[float], name: str) -> str:
             )
         for m in group.members:
             members[m] = i
+    events = dict(tree.events)
+    if tree.is_repairable and t is not None:
+        from repyability.rbd._event_curves import down_at
+
+        # Each event's unavailability at t, worked out in its own right.
+        down = down_at(tree._repaired, np.array([t]))
+        events = {e: float(np.ravel(down[e])[0]) for e in events}
     gates = tree._gates
     groups = [_Group(i) for i in range(len(tree.ccf_groups))]
     ids = _identifiers([name] + list(gates) + list(tree.events) + groups)
@@ -201,7 +310,7 @@ def to_open_psa(tree, t: Optional[float], name: str) -> str:
         )
     lines.append("  </define-fault-tree>")
     lines.append("  <model-data>")
-    for e, model in tree.events.items():
+    for e, model in events.items():
         if e in members:
             continue
         lines.append(
@@ -223,10 +332,10 @@ def _escape(text: str) -> str:
 _REFUSED = {
     **dict.fromkeys(
         ("GLM", "periodic-test"),
-        "it is the unavailability of a repaired or tested component, which "
-        "is not read yet: give the event a component spec ('reliability', "
-        "'repairability' and, for a tested one, 'inspection') in the "
-        "FaultTree instead",
+        "it is read as a basic event's whole expression of the mission "
+        "time (a repaired or tested event, its last argument "
+        "<system-mission-time/> and the others constants), not inside "
+        "another expression",
     ),
     **dict.fromkeys(
         ("MGL", "alpha-factor", "phi-factor"),
@@ -640,6 +749,8 @@ class _Reader:
             for a in expression
             if a.tag not in ("label", "attributes")
         ]
+        if expression.tag in ("GLM", "periodic-test"):
+            return self._repaired(expression, args, where)
         life = {"exponential": 2, "Weibull": 4}.get(expression.tag)
         if (
             life == len(args)
@@ -666,6 +777,134 @@ class _Reader:
                 "no model: pass mission_time to read it at that time."
             )
         return float(value.at(self.mission_time))
+
+    def _repaired(self, expression, args: list, where: str) -> dict:
+        """The component spec of a repaired event (``GLM``) or a tested
+        one (``periodic-test``), where the expression is one: refused,
+        saying why, where it is not."""
+        import surpyval as surv
+
+        tag = expression.tag
+        if not (
+            args
+            and args[-1].tag == "system-mission-time"
+            and not any(self._expression(a, where).timed for a in args[:-1])
+        ):
+            _refuse(tag, where)
+        values = [self._constant(a, where) for a in args[:-1]]
+        counts = (3,) if tag == "GLM" else (3, 4, 10)
+        if len(values) not in counts:
+            raise ValueError(
+                f"{where}: <{tag}> takes "
+                f"{' or '.join(str(n + 1) for n in counts)} arguments, "
+                f"got {len(args)}."
+            )
+
+        def rate(value: float, what: str):
+            if not (np.isfinite(value) and value > 0.0):
+                raise ValueError(
+                    f"{where}: the {what} of its <{tag}> must be a "
+                    f"positive, finite rate, got {value!r}."
+                )
+            return surv.Exponential.from_params([value])
+
+        if tag == "GLM":
+            gamma, failure, repair = values
+            if gamma != 0.0:
+                raise NotImplementedError(
+                    f"{where}: its <GLM> fails on demand at the start with "
+                    f"probability gamma = {gamma!r}, and a repaired event "
+                    "here is new (working) at 0, with no component spec "
+                    "for a failure at the start: only gamma = 0 is read."
+                )
+            if repair == 0.0:
+                # Never repaired: the exponential life itself.
+                return rate(failure, "failure rate")
+            return {
+                "reliability": rate(failure, "failure rate"),
+                "repairability": rate(repair, "repair rate"),
+            }
+        mu: Optional[float]
+        if len(values) == 3:
+            lam, tau, theta = values
+            mu, duration = None, 0.0
+        elif len(values) == 4:
+            lam, mu, tau, theta = values
+            duration = 0.0
+        else:
+            lam, lam_test, mu, tau, theta = values[:5]
+            gamma, duration, x, sigma, omega = values[5:]
+            fixed = {
+                "lambda* (the failure rate in a test: a test here does "
+                "not age the unit)": (lam_test, 0.0),
+                "gamma (a failure caused by the test)": (gamma, 0.0),
+                "x (the unit available in its test: a test here takes "
+                "it off line)": (x, 0.0),
+                "sigma (the chance that a test finds a failure: a "
+                "test here that misses one leaves it to a full test, "
+                "which the format has not)": (sigma, 1.0),
+                "omega (a bad restart after a test or repair)": (
+                    omega,
+                    0.0,
+                ),
+            }
+            differ = [
+                f"{what} = {value!r}, not {wanted!r}"
+                for what, (value, wanted) in fixed.items()
+                if value != wanted
+            ]
+            if differ:
+                raise NotImplementedError(
+                    f"{where}: its 11-argument <periodic-test> is read "
+                    "where it is a tested event's, and it has "
+                    + "; ".join(differ)
+                    + ". Give the event a component spec in the "
+                    "FaultTree instead, or read the document at a "
+                    "mission time after replacing the expression by its "
+                    "value."
+                )
+            if not (np.isfinite(duration) and duration >= 0.0):
+                raise ValueError(
+                    f"{where}: the test time of its <periodic-test> must "
+                    f"be a finite time, 0 or more, got {duration!r}."
+                )
+        if not (np.isfinite(tau) and tau > 0.0):
+            raise ValueError(
+                f"{where}: the time between tests of its <periodic-test> "
+                f"must be positive and finite, got {tau!r}."
+            )
+        if not (np.isfinite(theta) and theta >= 0.0):
+            raise ValueError(
+                f"{where}: the time of the first test of its "
+                f"<periodic-test> must be a finite time, 0 or more, got "
+                f"{theta!r}."
+            )
+        if theta > tau or (theta == 0.0 and duration > 0.0):
+            raise NotImplementedError(
+                f"{where}: its <periodic-test> has its first test at "
+                f"theta = {theta!r}, with tests every {tau!r}, and a "
+                "tested event's first test falls after 0 and within its "
+                "first interval (its inspection offset): give the event "
+                "a component spec in the FaultTree instead."
+            )
+        inspection: Dict[str, float] = {"interval": tau}
+        if 0.0 < theta < tau:
+            inspection["offset"] = theta
+        if duration > 0.0:
+            inspection["duration"] = duration
+        if mu == 0.0:
+            raise NotImplementedError(
+                f"{where}: its <periodic-test> has a repair rate of 0, so "
+                "a failure found is never repaired, which a tested event "
+                "here is: give it a repair rate."
+            )
+        return {
+            "reliability": rate(lam, "failure rate"),
+            "repairability": (
+                "instant" if mu is None else rate(mu, "repair rate")
+            ),
+            "inspection": inspection,
+        }
 
     # -- formulas ---------------------------------------------------------
 

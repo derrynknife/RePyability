@@ -38,6 +38,22 @@ release between minors that only adds (0.19.1).
   the cut sets refuse such a mission. Missions without repairs play as
   before, to the last bit. Repair between phases or missions (a
   turnaround) is not modelled.
+
+- `FaultTree.to_open_psa` and `FaultTree.from_open_psa` exchange trees of
+  repaired and tested events. An event with an exponential life and
+  repair is written as the format's `GLM` (no failure on demand), and a
+  tested one with an exponential life as its `periodic-test`: 4 arguments
+  with an instant repair, 5 with an exponential repair, and 11 for a test
+  that takes a fixed time (the unit off line and not ageing in it, every
+  failure found). The reader takes these forms back as component specs;
+  a `GLM` with a failure on demand, a `periodic-test` whose first test
+  falls past its first interval, and an 11-argument form with a failure
+  in or caused by the test, a unit available in it, a test that can miss
+  a failure or a bad restart are refused, naming what they have. Other
+  lives and repairs, a test time that is not fixed and an inspection's
+  other options are refused by the writer, naming the event;
+  `to_open_psa(t)` writes each repaired event's unavailability at `t`.
+
 - `PhasedMission` takes common-cause groups (`ccf_groups=`, on the
   constructor and `from_diagram`): a shared cause that strikes in one
   phase fails its members from then on. A group's model has a life for
