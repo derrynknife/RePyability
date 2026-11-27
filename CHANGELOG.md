@@ -42,6 +42,59 @@ release between minors that only adds (0.19.1).
   state, which moves a value by up to about 1e-15 (1e-13 of a mean). A
   chain that can never fail now gives exactly 1. No seeded result
   changes.
+- A switch that can fail (`"switching_probability"` below 1) in the
+  long-run values of a cold standby pair of any lives and repairs, with
+  one repair at a time and with both units repaired at once, which only
+  a simulation gave. After a failed switch the pair is down while the
+  failed unit is repaired, which then operates again with the spare
+  still waiting, so the pair starts afresh in a second state (a unit
+  starting to operate with the other ready); a switch that never works
+  leaves one unit. Checked: exponential units equal the Markov chain to
+  1e-9 for three rate pairs, switches of 0.9, 0.5 and 0 and both crew
+  settings (within 4e-11); exponential repairs against the two-state
+  closed form (1e-7); Weibull(1000, 2.5) lives, Weibull(300, 1.5)
+  repairs and a switch of 0.9, 0.962044 with one crew against 0.962088
+  simulated (400 runs of 1e6 h, standard error 1.8e-4, +0.3 SE) and
+  0.964939 with a crew each against 0.965220 (standard error 1.6e-4,
+  +1.8 SE). Over time such a pair is refused, pointing to the
+  simulation.
+- A life that wears out with a demand mode beside it, in one component
+  of a `RepairableRBD` (a pump that wears and may fail to start): a
+  spec's `"demand": {"probability": p, "rate": d}` beside its
+  `"reliability"`. The two compete and are renewed together, so the
+  unit's survival is `R(t) exp(-d p t)`, a life every exact, numerical
+  and simulated analysis takes; with an exponential life of rate `λ` it
+  is the exponential of rate `λ + d p`, to the bit. The spec is kept as
+  given: saved, held by a `UnitPlan`'s `demand` and listed as the levers
+  `demand.probability` and `demand.rate`. A duty moves the life alone,
+  or the demands too with `"demand_basis": "operating"`. A
+  `"demand_rate"` on a life is still refused, now naming `"demand"`.
+
+- A cold standby pair of any lives and repairs with one repair at a time
+  (`repair_crews=1`) over time, from new, which only a simulation gave:
+  `point_availability`, `point_unavailability`, `mission_availability`,
+  `expected_failures`, `expected_events`, the expected costs and the
+  other values over a window, and from a stationary `NodeState` its
+  long-run state. Both units are ready at 0; the pair first regenerates
+  when the first fails and then after each cycle, so its unavailability
+  and its expected failures and repairs solve a renewal equation, worked
+  out on a grid as a unit's is (measures that keep each cell's mass and
+  mean, the renewals by a power series' inverse) on two grids, one of
+  half the other's step, extrapolated. `availability()` and `cost()` now
+  report such a pair's exact means by default (their simulations are
+  unchanged). Checked: exponential units equal the Markov chain followed
+  by uniformization to 1e-9 at the grid's points (within 2e-10), and
+  within the bound of a linear curve between them; Weibull and lognormal
+  pairs' Laplace transforms against the models' own by quadrature
+  (1e-6); Weibull(1000, 2.5) lives and Weibull(300, 1.5) repairs over
+  2,500 h 0.992249 against 0.992008 simulated (20,000 runs, standard
+  error 2.1e-4, -1.2 SE; 400,000 runs: 0.992309, +1.3 SE) and 0.1279
+  failures against 0.1328 (+1.9 SE; 400,000 runs: 0.1275, -0.7 SE);
+  Weibull(1000, 1.5) lives with LogNormal(5, 0.6) repairs over 1,200 h
+  0.994124 against 0.993631 (-2.1 SE; 400,000 runs: 0.994115, -0.2 SE)
+  and 0.0679 failures against 0.0722 (+2.3 SE; 400,000 runs: 0.0680,
+  +0.1 SE). Over time, the pair with both units repaired at once, warm
+  spares, failing switches and more units stay simulated.
 - Long-run values of a cold standby pair of any lives and repairs with
   both units repaired at once (a crew each, the default), which only a
   simulation gave (one repair at a time already had its cycle): two

@@ -156,13 +156,19 @@ def by_functions(model) -> bool:
     destructive degradation model, and any other surpyval model with
     them. A ``NonRepairableRBD`` whose reliability changes with time is
     one too: a subassembly replaced whole at its failure, taken by its
-    functions (its ``qf`` inverting its ``ff``)."""
+    functions (its ``qf`` inverting its ``ff``); and so is a life with a
+    demand mode beside it (``_demands.LifeWithDemands``)."""
     from surpyval import NonParametric, Parametric
 
     from ._degradation import is_degradation
+    from ._demands import LifeWithDemands
     from .joint_node import is_joint
 
-    if is_diagram_life(model) or is_markov_life(model):
+    if (
+        is_diagram_life(model)
+        or is_markov_life(model)
+        or isinstance(model, LifeWithDemands)
+    ):
         return True
     if not type(model).__module__.startswith("surpyval."):
         return False

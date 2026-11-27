@@ -1172,6 +1172,16 @@ def repairable_kinds():
             "demand": system(
                 unit(reliability=FIXED(0.1), demand_rate=0.05, repair_cost=5.0)
             ),
+            # A life that wears out with a demand mode beside it (a pump
+            # that wears and may fail to start): competing risks, renewed
+            # together, a life of the summed hazard, which every route
+            # takes as it takes any life.
+            "life with a demand mode": system(
+                unit(
+                    demand={"probability": 0.1, "rate": 0.05},
+                    repair_cost=5.0,
+                )
+            ),
             # Demands at set times (UC-73): a life that ends only at them,
             # on the calendar, exact over a window and simulated.
             "demand times": system(
@@ -1438,6 +1448,23 @@ def repairable_kinds():
                         "repair_cost": 3.0,
                     }
                 },
+                downtime_cost_rate=5.0,
+            ),
+            "cold standby pair, Weibull, failing switch": RepairableRBD(
+                [("s", "a"), ("a", "t")],
+                {
+                    "a": {
+                        "reliability": W([1000.0, 2.5]),
+                        "repairability": W([300.0, 1.5]),
+                        "standby": {
+                            "units": 2,
+                            "k": 1,
+                            "switching_probability": 0.9,
+                        },
+                        "repair_cost": 3.0,
+                    }
+                },
+                repair_crews=1,
                 downtime_cost_rate=5.0,
             ),
             "common cause, tested": RepairableRBD(

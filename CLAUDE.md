@@ -340,6 +340,18 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   (`_standby_chain`) beside it, the generators added over pairs of
   states; `test_first_failure_groups.py` checks both against the
   simulation.
+- **A cold standby pair of lives or repairs that are not exponential
+  copies the same rules** (`_events._StandbyGroup`: a cold spare does not
+  age and is switched in as new, a repaired unit fills the empty position
+  or waits, and after a failed switch the spare waits on while the failed
+  unit is repaired and operates again): with one repair at a time it regenerates whenever a unit
+  fails with the other ready (`_standby_cycle.py`: the long run from one
+  cycle, and from new a renewal equation on a grid, a `PairCurve`); with
+  both repaired at once it is a Markov renewal process on the other
+  unit's elapsed repair (`_standby_both.py`, the long run alone). A
+  change to the group's rules goes into both: `test_standby_cycle.py`,
+  `test_standby_window.py` and `test_standby_both.py` check them against
+  the chain of exponential units, closed forms and the simulation.
 - **A `MarkovComponent` (`repyability/rbd/markov_node.py`) rides the
   standby groups' rails in a `RepairableRBD`**: it is in `rbd._standby`
   as `_events.MARKOV` (key `"markov"`, one unit), so whatever handles or

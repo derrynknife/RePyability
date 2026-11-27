@@ -285,9 +285,38 @@ rates through the duty plan's operating time. A task counted in
 operating time is refused with set times or a plan (give its times on
 the calendar).
 
-A unit that wears out while it runs and may also fail on a demand is two
-failure modes: draw them as two components in series, one with the life
-and one with the probability and its demands. A spare that may fail to
+A unit that wears out while it runs and may also fail on a demand (a
+pump that wears, and may fail to start) is two failure modes in one
+component. Give its life as `"reliability"` and the demand mode beside it
+as `"demand": {"probability": p, "rate": d}`. The two compete and are
+renewed together at a repair: the unit's hazard is its life's plus `d p`,
+its survival `R(t) exp(-d p t)`, a life that every exact, numerical and
+simulated analysis takes as it takes any life given by its functions
+(with an exponential life of rate `λ`, it is the exponential of rate
+`λ + d p`, to the bit). From new, it is the life and the demand mode as
+two components in series; once repaired it differs, as the two modes are
+renewed at once.
+
+```python
+pump = {
+    "reliability": surv.Weibull.from_params([2000.0, 2.0]),  # days
+    "demand": {"probability": 0.02, "rate": 0.5},
+    "repairability": surv.Exponential.from_params([1 / 2.0]),
+}
+rbd = RepairableRBD([("s", "pump"), ("pump", "t")], {"pump": pump})
+rbd.mean_availability()  # -> 0.98030
+```
+
+The probability and the rate are saved, held by a `UnitPlan`'s `demand`,
+and listed by `levers()` as `demand.probability` (in `[0, 1]`) and
+`demand.rate` (above 0); a probability of 0 leaves the life alone. The
+demands are on the diagram's clock: a `"duty"` moves the life alone,
+unless `"demand_basis": "operating"` counts the demands in its operating
+time, which the duty then moves too (a duty plan that changes over time
+needs that). Demands at set times or on a plan beside a life, and a
+demand mode on a group of units, are not modelled: draw them as two
+components in series, one with the life and one with the probability and
+its demands. A spare that may fail to
 start when a unit of its standby group fails is the group's
 `"switching_probability"` (see [Standby groups](#standby-groups)).
 
@@ -1128,8 +1157,26 @@ the pair is up 0.9910.)
   400 runs of 1,000,000 h 0.991722 (0.0 standard errors). A pair under
   repair nearly all the time (lives a small fraction of the repairs) may
   warn that the grid did not settle, or be refused.
-  Warm spares, a switch that can fail, more units and values over time are
-  simulated, for now.
+  Over time, from new (both units ready), the pair with one repair at a
+  time is followed too: it first starts afresh when the first unit fails,
+  and then after each cycle, so its unavailability and its expected
+  failures and repairs solve a renewal equation, on a grid as a single
+  unit's are (to about 1e-9 at the grid's points, the curve linear
+  between them). `point_availability`, `mission_availability`,
+  `expected_failures`, the expected costs and the other values over a
+  window take it, and `availability()` reports its exact mean. The pair
+  above is up 0.99225 of its first 2,500 h and has failed 0.1279 times by
+  then; 400,000 runs give 0.99231 (+1.3 standard errors) and 0.1275
+  (-0.7).
+  A switch that can fail (`"switching_probability"` below 1) is in the
+  long-run values of both: after a failed switch the pair is down while
+  the failed unit is repaired, which then operates again with the spare
+  still waiting, so the pair has a second state it starts afresh in. The
+  same pair with a switch that works nine times in ten is up 0.96204 of
+  the time with one crew (400 runs of 1,000,000 h: 0.96209, +0.3 standard
+  errors) and 0.96494 with a crew each (0.96522, +1.8).
+  Warm spares, more units, and over time a switch that can fail or both
+  units repaired at once are simulated, for now.
 - **Simulation.** `availability`, `cost` and `compare` simulate groups
   whatever their units' models, in Python.
 

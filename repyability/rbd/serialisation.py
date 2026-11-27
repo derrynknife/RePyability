@@ -36,6 +36,7 @@ from repyability.non_repairable import NonRepairable
 from repyability.rbd import _usage
 from repyability.rbd._bayesian_life import PosteriorPredictive, as_life
 from repyability.rbd._degradation import is_degradation
+from repyability.rbd._demands import LifeWithDemands
 from repyability.rbd._model_utils import (
     by_functions,
     distribution_name,
@@ -203,6 +204,10 @@ def _serialise_model(model: Any) -> dict:
         # A Bayesian fit (or its posterior predictive, which it loads as):
         # the fit in surpyval's format, its posterior whole.
         return {"kind": "posterior_predictive", **as_life(model).to_dict()}
+    if isinstance(model, LifeWithDemands):
+        # A life with a demand mode beside it: the life's saved form, the
+        # demands' rate and probability.
+        return {"kind": "life_with_demands", **model.to_dict()}
     if is_life_at_usage(model):
         # surpyval's life at a usage rate: its model in surpyval's format
         # and the rate.
@@ -336,6 +341,8 @@ def deserialise_model(d: dict) -> Any:
         return surpyval.from_dict(d["regression"]).at(_loaded_row(d))
     if kind == "life_at_usage":
         return _usage.from_dict(d)
+    if kind == "life_with_demands":
+        return LifeWithDemands.from_dict(d)
     if kind == "load_sharing":
         return LoadSharingModel(
             [surpyval.from_dict(md) for md in d["models"]],
@@ -427,6 +434,11 @@ def _serialise_component(value) -> dict:
             ]
         if value.get("demand_plan") is not None:
             out["demand_plan"] = _demand_plan_dict(value["demand_plan"])
+        if value.get("demand") is not None:
+            # A demand mode beside the life: its probability and rate.
+            out["demand"] = {
+                key: float(number) for key, number in value["demand"].items()
+            }
         if value.get("demand_basis") is not None:
             out["demand_basis"] = str(value["demand_basis"])
         if value.get("duty") is not None:
@@ -626,6 +638,8 @@ def _deserialise_component(d: dict) -> Any:
         for key in ("demand_rate", "demand_basis"):
             if key in d:
                 out[key] = d[key]
+        if "demand" in d:
+            out["demand"] = dict(d["demand"])
         if "demand_times" in d:
             out["demand_times"] = list(d["demand_times"])
         if "demand_plan" in d:
